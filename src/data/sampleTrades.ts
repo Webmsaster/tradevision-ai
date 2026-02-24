@@ -12,10 +12,10 @@ import { Trade } from '@/types/trade';
 //   5. Loss Aversion: small wins (+1-2%) but large losses (-3-5%)
 //   6. BTC/USDT consistency: ~70% win rate across 10+ trades
 //
-// PnL formulas:
-//   Long:  pnl = (exitPrice - entryPrice) * quantity * leverage - fees
-//   Short: pnl = (entryPrice - exitPrice) * quantity * leverage - fees
-//   pnlPercent = pnl / (entryPrice * quantity) * 100
+// PnL formulas (leverage does NOT multiply PnL, only affects margin):
+//   Long:  pnl = (exitPrice - entryPrice) * quantity - fees
+//   Short: pnl = (entryPrice - exitPrice) * quantity - fees
+//   pnlPercent = pnl / (entryPrice * quantity / leverage) * 100
 // =============================================================================
 
 export const sampleTrades: Trade[] = [

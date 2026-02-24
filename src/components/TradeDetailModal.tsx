@@ -3,25 +3,12 @@
 import { useEffect } from 'react';
 import { Trade } from '@/types/trade';
 import { useFocusTrap } from '@/hooks/useFocusTrap';
+import { formatDetailDate, formatPrice, formatPercent, formatCurrency } from '@/utils/formatters';
 
 interface TradeDetailModalProps {
   trade: Trade | null;
   isOpen: boolean;
   onClose: () => void;
-}
-
-function formatDetailDate(dateStr: string): string {
-  const d = new Date(dateStr);
-  const months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-  const month = months[d.getMonth()];
-  const day = String(d.getDate()).padStart(2, '0');
-  const year = d.getFullYear();
-  const hours = String(d.getHours()).padStart(2, '0');
-  const minutes = String(d.getMinutes()).padStart(2, '0');
-  return `${month} ${day}, ${year} ${hours}:${minutes}`;
 }
 
 function formatHoldTime(entryDate: string, exitDate: string): string {
@@ -36,20 +23,6 @@ function formatHoldTime(entryDate: string, exitDate: string): string {
     return `${days}d ${hours}h`;
   }
   return `${hours}h ${minutes}m`;
-}
-
-function formatPrice(value: number): string {
-  return `$${value.toFixed(2)}`;
-}
-
-function formatPnl(value: number): string {
-  const sign = value > 0 ? '+' : '';
-  return `${sign}$${value.toFixed(2)}`;
-}
-
-function formatPercent(value: number): string {
-  const sign = value > 0 ? '+' : '';
-  return `${sign}${value.toFixed(2)}%`;
 }
 
 export default function TradeDetailModal({ trade, isOpen, onClose }: TradeDetailModalProps) {
@@ -99,11 +72,11 @@ export default function TradeDetailModal({ trade, isOpen, onClose }: TradeDetail
           {/* Row 1 */}
           <div className="trade-detail-item">
             <span className="trade-detail-item-label">Entry Price</span>
-            <span className="trade-detail-item-value">{formatPrice(trade.entryPrice)}</span>
+            <span className="trade-detail-item-value">${formatPrice(trade.entryPrice)}</span>
           </div>
           <div className="trade-detail-item">
             <span className="trade-detail-item-label">Exit Price</span>
-            <span className="trade-detail-item-value">{formatPrice(trade.exitPrice)}</span>
+            <span className="trade-detail-item-value">${formatPrice(trade.exitPrice)}</span>
           </div>
           <div className="trade-detail-item">
             <span className="trade-detail-item-label">Quantity</span>
@@ -133,7 +106,7 @@ export default function TradeDetailModal({ trade, isOpen, onClose }: TradeDetail
           </div>
           <div className="trade-detail-item">
             <span className="trade-detail-item-label">Fees</span>
-            <span className="trade-detail-item-value">{formatPrice(trade.fees)}</span>
+            <span className="trade-detail-item-value">${formatPrice(trade.fees)}</span>
           </div>
           <div className="trade-detail-item">
             <span className="trade-detail-item-label">Strategy</span>
@@ -204,7 +177,7 @@ export default function TradeDetailModal({ trade, isOpen, onClose }: TradeDetail
         {/* PnL Hero */}
         <div className="trade-detail-pnl">
           <div className="trade-detail-pnl-value" style={{ color: pnlColor }}>
-            {formatPnl(trade.pnl)}
+            {trade.pnl > 0 ? '+' : ''}{formatCurrency(trade.pnl)}
           </div>
           <div className="trade-detail-pnl-percent" style={{ color: pnlColor }}>
             {formatPercent(trade.pnlPercent)}

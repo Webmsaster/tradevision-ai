@@ -4,6 +4,7 @@ import { Trade } from '@/types/trade';
 import { exportToJSON, exportToCSV, importFromJSON } from '@/utils/storage';
 import { useTradeStorage } from '@/hooks/useTradeStorage';
 import CSVImport from '@/components/CSVImport';
+import ConfirmDialog from '@/components/ConfirmDialog';
 
 export default function ImportPage() {
   const { trades, importTrades, clearAll } = useTradeStorage();
@@ -100,13 +101,15 @@ export default function ImportPage() {
   // ---------------------------------------------------------------------------
   // Clear all data handler
   // ---------------------------------------------------------------------------
-  function handleClearAllData() {
-    const confirmed = window.confirm(
-      'Are you sure you want to delete all trading data? This action cannot be undone.'
-    );
-    if (!confirmed) return;
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
+  function handleClearAllData() {
+    setShowClearConfirm(true);
+  }
+
+  function confirmClearAll() {
     clearAll();
+    setShowClearConfirm(false);
     setNotification({ message: 'All trading data has been cleared.', type: 'success' });
   }
 
@@ -232,6 +235,15 @@ export default function ImportPage() {
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        isOpen={showClearConfirm}
+        title="Clear All Data"
+        message="Are you sure you want to delete all trading data? This action cannot be undone."
+        confirmLabel="Clear All"
+        onConfirm={confirmClearAll}
+        onCancel={() => setShowClearConfirm(false)}
+      />
     </div>
   );
 }

@@ -1,11 +1,11 @@
 'use client';
-import { Suspense, useState, useMemo, useCallback } from 'react';
+import { Suspense, useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Trade } from '@/types/trade';
-import { calculatePnl } from '@/utils/calculations';
 import { useTradeStorage } from '@/hooks/useTradeStorage';
 import TradeTable from '@/components/TradeTable';
 import TradeForm from '@/components/TradeForm';
+import ConfirmDialog from '@/components/ConfirmDialog';
 import SyncErrorToast from '@/components/SyncErrorToast';
 
 export default function TradesPage() {
@@ -82,34 +82,59 @@ function TradesPageContent() {
     setDateTo('');
   }
 
-  function handleAddTrade(trade: Omit<Trade, 'id' | 'pnl' | 'pnlPercent'>) {
-    const pnlResult = calculatePnl(trade);
-    const newTrade: Trade = {
-      ...trade,
-      id: crypto.randomUUID(),
-      pnl: pnlResult.pnl,
-      pnlPercent: pnlResult.pnlPercent,
-    };
-    addTrade(newTrade);
+  // TradeForm already returns a complete Trade with id, pnl, pnlPercent
+  function handleAddTrade(trade: Trade) {
+    addTrade(trade);
     setShowForm(false);
   }
 
   function handleUpdateTrade(trade: Trade) {
-    const pnlResult = calculatePnl(trade);
-    const updatedTrade: Trade = {
-      ...trade,
-      pnl: pnlResult.pnl,
-      pnlPercent: pnlResult.pnlPercent,
-    };
-    editTrade(updatedTrade);
+    editTrade(trade);
     setEditingTrade(null);
     setShowForm(false);
   }
 
+  // Undo state for trade deletion
+  const [undoTrade, setUndoTrade] = useState<Trade | null>(null);
+  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    };
+  }, []);
+
+  function dismissUndo() {
+    setUndoTrade(null);
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+  }
+
+  function handleUndoDelete() {
+    if (undoTrade) {
+      addTrade(undoTrade);
+      dismissUndo();
+    }
+  }
+
+  // Confirm dialog state for trade deletion
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
   function handleDeleteTrade(id: string) {
-    const confirmed = window.confirm('Are you sure you want to delete this trade? This action cannot be undone.');
-    if (!confirmed) return;
-    removeTrade(id);
+    setConfirmDeleteId(id);
+  }
+
+  function confirmDelete() {
+    if (!confirmDeleteId) return;
+    const tradeToDelete = trades.find(t => t.id === confirmDeleteId);
+    removeTrade(confirmDeleteId);
+    setConfirmDeleteId(null);
+
+    // Show undo toast
+    if (tradeToDelete) {
+      setUndoTrade(tradeToDelete);
+      if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+      undoTimerRef.current = setTimeout(() => setUndoTrade(null), 5000);
+    }
   }
 
   function handleEdit(trade: Trade) {
@@ -227,6 +252,28 @@ function TradesPageContent() {
         onSubmit={editingTrade ? handleUpdateTrade : handleAddTrade}
         onClose={handleCloseForm}
       />
+
+      <ConfirmDialog
+        isOpen={!!confirmDeleteId}
+        title="Delete Trade"
+        message="Are you sure you want to delete this trade?"
+        confirmLabel="Delete"
+        onConfirm={confirmDelete}
+        onCancel={() => setConfirmDeleteId(null)}
+      />
+
+      {undoTrade && (
+        <div className="undo-toast">
+          <span>Trade deleted</span>
+          <button className="btn btn-ghost btn-sm" onClick={handleUndoDelete}>
+            Undo
+          </button>
+          <button className="undo-toast-dismiss" onClick={dismissUndo} aria-label="Dismiss">
+            &#10005;
+          </button>
+        </div>
+      )}
+
       <SyncErrorToast message={syncError} onDismiss={dismissSyncError} />
     </div>
   );

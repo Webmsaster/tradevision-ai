@@ -1,7 +1,8 @@
 'use client';
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Trade } from '@/types/trade';
 import { useAuth } from '@/lib/auth-context';
+import { SETTINGS_CHANGED_EVENT, SETTINGS_KEY } from '@/lib/constants';
 import {
   loadTrades, saveTrades, addTrade as addTradeLocal,
   updateTrade as updateTradeLocal, deleteTrade as deleteTradeLocal,
@@ -25,7 +26,7 @@ function isValidHttpsUrl(url: string): boolean {
 // Fire webhook notification for trade events (best-effort, never blocks)
 function fireWebhook(event: 'onTradeAdd' | 'onTradeEdit' | 'onTradeDelete', trade?: Trade) {
   try {
-    const raw = localStorage.getItem('tradevision-settings');
+    const raw = localStorage.getItem(SETTINGS_KEY);
     if (!raw) return;
     const settings = JSON.parse(raw);
     const wh = settings.webhook;
@@ -54,7 +55,7 @@ function fireWebhook(event: 'onTradeAdd' | 'onTradeEdit' | 'onTradeDelete', trad
 
 function getActiveAccountId(): string {
   try {
-    const raw = localStorage.getItem('tradevision-settings');
+    const raw = localStorage.getItem(SETTINGS_KEY);
     if (raw) {
       const settings = JSON.parse(raw);
       if (settings.activeAccountId) return settings.activeAccountId;
@@ -71,6 +72,10 @@ export function useTradeStorage() {
   const [activeAccountId, setActiveAccountId] = useState('default');
   const isCloud = !!user && !!supabase;
 
+  // Ref for allTrades so removeTrade callback stays stable
+  const allTradesRef = useRef(allTrades);
+  allTradesRef.current = allTrades;
+
   // Listen for settings changes to update active account
   useEffect(() => {
     setActiveAccountId(getActiveAccountId());
@@ -78,8 +83,8 @@ export function useTradeStorage() {
       const detail = (e as CustomEvent).detail;
       if (detail?.activeAccountId) setActiveAccountId(detail.activeAccountId);
     };
-    window.addEventListener('tradevision-settings-changed', handler);
-    return () => window.removeEventListener('tradevision-settings-changed', handler);
+    window.addEventListener(SETTINGS_CHANGED_EVENT, handler);
+    return () => window.removeEventListener(SETTINGS_CHANGED_EVENT, handler);
   }, []);
 
   // Filter trades by active account
@@ -158,7 +163,7 @@ export function useTradeStorage() {
   }, [isCloud, supabase, user]);
 
   const removeTrade = useCallback(async (tradeId: string) => {
-    const removedTrade = allTrades.find(t => t.id === tradeId);
+    const removedTrade = allTradesRef.current.find(t => t.id === tradeId);
     const updated = deleteTradeLocal(tradeId);
     setAllTrades(updated);
     fireWebhook('onTradeDelete', removedTrade);
@@ -170,7 +175,7 @@ export function useTradeStorage() {
         setSyncError('Failed to sync trade deletion to cloud. Your data is saved locally.');
       }
     }
-  }, [isCloud, supabase, user, allTrades]);
+  }, [isCloud, supabase, user]);
 
   const importTrades = useCallback(async (newTrades: Trade[]) => {
     const existing = loadTrades();

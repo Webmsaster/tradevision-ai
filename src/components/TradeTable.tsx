@@ -3,6 +3,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { Trade } from '@/types/trade';
 import TradeDetailModal from '@/components/TradeDetailModal';
+import { formatTradeDate, formatPrice, formatPnl, formatPercent } from '@/utils/formatters';
 
 interface TradeTableProps {
   trades: Trade[];
@@ -24,33 +25,6 @@ type SortKey =
   | 'fees';
 
 type SortDirection = 'asc' | 'desc';
-
-function formatDate(date: Date | string): string {
-  const d = typeof date === 'string' ? new Date(date) : date;
-  const months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-  const month = months[d.getMonth()];
-  const day = String(d.getDate()).padStart(2, '0');
-  const hours = String(d.getHours()).padStart(2, '0');
-  const minutes = String(d.getMinutes()).padStart(2, '0');
-  return `${month} ${day}, ${hours}:${minutes}`;
-}
-
-function formatPrice(value: number): string {
-  return value.toFixed(2);
-}
-
-function formatPnl(value: number): string {
-  const sign = value > 0 ? '+' : '';
-  return `${sign}${value.toFixed(2)}`;
-}
-
-function formatPercent(value: number): string {
-  const sign = value > 0 ? '+' : '';
-  return `${sign}${value.toFixed(1)}%`;
-}
 
 const PAGE_SIZE = 25;
 
@@ -217,7 +191,7 @@ export default function TradeTable({
           <tbody>
             {paginatedTrades.map((trade) => (
               <tr key={trade.id} onClick={() => setSelectedTrade(trade)} style={{ cursor: 'pointer' }}>
-                <td>{formatDate(trade.exitDate)}</td>
+                <td>{formatTradeDate(trade.exitDate)}</td>
                 <td>{trade.pair}</td>
                 <td>
                   <span

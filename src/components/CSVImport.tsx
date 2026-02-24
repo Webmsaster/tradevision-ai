@@ -9,6 +9,7 @@ import {
   autoDetectMapping,
   PLATFORM_PRESETS,
 } from '@/utils/csvParser';
+import { formatPrice, formatPnl, formatShortDate } from '@/utils/formatters';
 
 interface CSVImportProps {
   onImport: (trades: Trade[]) => void;
@@ -265,27 +266,6 @@ export default function CSVImport({ onImport }: CSVImportProps) {
     return '';
   }
 
-  function formatPrice(value: number): string {
-    return value.toFixed(2);
-  }
-
-  function formatPnl(value: number): string {
-    const sign = value > 0 ? '+' : '';
-    return `${sign}${value.toFixed(2)}`;
-  }
-
-  function formatDate(dateStr: string): string {
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return dateStr;
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-    ];
-    const month = months[d.getMonth()];
-    const day = String(d.getDate()).padStart(2, '0');
-    const year = d.getFullYear();
-    return `${month} ${day}, ${year}`;
-  }
 
   // -------------------------------------------------------------------------
   // Render
@@ -551,8 +531,8 @@ export default function CSVImport({ onImport }: CSVImportProps) {
                     >
                       {formatPnl(trade.pnl)}
                     </td>
-                    <td>{formatDate(trade.entryDate)}</td>
-                    <td>{formatDate(trade.exitDate)}</td>
+                    <td>{formatShortDate(trade.entryDate)}</td>
+                    <td>{formatShortDate(trade.exitDate)}</td>
                   </tr>
                 ))}
               </tbody>

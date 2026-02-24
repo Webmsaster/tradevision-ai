@@ -3,6 +3,7 @@
 import { useMemo, useState, useEffect } from 'react';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
+import { SETTINGS_CHANGED_EVENT, SETTINGS_KEY } from '@/lib/constants';
 import { calculateAllStats, calculateEquityCurve } from '@/utils/calculations';
 import { generateAllInsights } from '@/utils/aiAnalysis';
 import { useTradeStorage } from '@/hooks/useTradeStorage';
@@ -24,7 +25,7 @@ interface DashboardWidgets {
 function loadWidgetSettings(): DashboardWidgets {
   const defaults: DashboardWidgets = { equityCurve: true, weeklySummary: true, recentTrades: true, aiInsights: true };
   try {
-    const raw = localStorage.getItem('tradevision-settings');
+    const raw = localStorage.getItem(SETTINGS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed.widgets && typeof parsed.widgets === 'object') {
@@ -56,8 +57,8 @@ export default function DashboardPage() {
       const detail = (e as CustomEvent).detail;
       if (detail?.widgets) setWidgets(detail.widgets);
     };
-    window.addEventListener('tradevision-settings-changed', handler);
-    return () => window.removeEventListener('tradevision-settings-changed', handler);
+    window.addEventListener(SETTINGS_CHANGED_EVENT, handler);
+    return () => window.removeEventListener(SETTINGS_CHANGED_EVENT, handler);
   }, []);
 
   // Detect demo mode by checking if sample data IDs are present

@@ -6,10 +6,15 @@ const API_CACHE = `${CACHE_VERSION}-api`;
 // App shell resources to pre-cache on install
 const APP_SHELL_FILES = [
   '/',
+  '/trades',
+  '/analytics',
+  '/calculator',
   '/manifest.json',
   '/favicon.svg',
   '/icon-192.svg',
   '/icon-512.svg',
+  '/icon-192.png',
+  '/icon-512.png',
 ];
 
 // Install event: pre-cache app shell

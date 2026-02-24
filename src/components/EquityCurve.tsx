@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useId } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, TooltipProps } from 'recharts';
 import { EquityCurvePoint } from '@/types/trade';
 import { formatCurrency } from '@/utils/formatters';
@@ -86,6 +86,10 @@ export default function EquityCurve({ data, height }: EquityCurveProps) {
     );
   }
 
+  const uniqueId = useId();
+  const equityGradientId = `equityGradient-${uniqueId}`;
+  const drawdownGradientId = `drawdownGradient-${uniqueId}`;
+
   const latestEquity = data[data.length - 1].equity;
   const lineColor = latestEquity >= 0 ? colors.green : colors.red;
 
@@ -96,11 +100,11 @@ export default function EquityCurve({ data, height }: EquityCurveProps) {
         <ResponsiveContainer width="100%" height={height || 350}>
           <AreaChart data={data} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
             <defs>
-              <linearGradient id="equityGradient" x1="0" y1="0" x2="0" y2="1">
+              <linearGradient id={equityGradientId} x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor={lineColor} stopOpacity={0.3} />
                 <stop offset="100%" stopColor={lineColor} stopOpacity={0} />
               </linearGradient>
-              <linearGradient id="drawdownGradient" x1="0" y1="0" x2="0" y2="1">
+              <linearGradient id={drawdownGradientId} x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor={colors.red} stopOpacity={0.15} />
                 <stop offset="100%" stopColor={colors.red} stopOpacity={0} />
               </linearGradient>
@@ -125,7 +129,7 @@ export default function EquityCurve({ data, height }: EquityCurveProps) {
               dataKey="equity"
               stroke={lineColor}
               strokeWidth={2}
-              fill="url(#equityGradient)"
+              fill={`url(#${equityGradientId})`}
               activeDot={{ r: 5, stroke: lineColor, strokeWidth: 2, fill: '#0f1729' }}
             />
             <Area
@@ -134,7 +138,7 @@ export default function EquityCurve({ data, height }: EquityCurveProps) {
               stroke={colors.red}
               strokeWidth={1}
               strokeOpacity={0.4}
-              fill="url(#drawdownGradient)"
+              fill={`url(#${drawdownGradientId})`}
               activeDot={{ r: 3, stroke: colors.red, strokeWidth: 1, fill: '#0f1729' }}
             />
           </AreaChart>

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { SETTINGS_CHANGED_EVENT, SETTINGS_KEY as SETTINGS_STORAGE_KEY } from '@/lib/constants';
 
 interface WebhookSettings {
   enabled: boolean;
@@ -26,7 +27,7 @@ interface DashboardWidgets {
   aiInsights: boolean;
 }
 
-const SETTINGS_KEY = 'tradevision-settings';
+const SETTINGS_KEY = SETTINGS_STORAGE_KEY;
 const VALID_PLATFORMS = ['discord', 'telegram', 'custom'] as const;
 
 function isValidSettings(obj: unknown): obj is Settings {
@@ -114,7 +115,7 @@ export default function SettingsPage() {
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
     // Dispatch event so other components can react
-    window.dispatchEvent(new CustomEvent('tradevision-settings-changed', { detail: settings }));
+    window.dispatchEvent(new CustomEvent(SETTINGS_CHANGED_EVENT, { detail: settings }));
   }
 
   async function handleTestWebhook() {
