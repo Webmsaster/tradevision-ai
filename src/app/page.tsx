@@ -1,16 +1,40 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import Link from 'next/link';
+import dynamic from 'next/dynamic';
 import { calculateAllStats, calculateEquityCurve } from '@/utils/calculations';
 import { generateAllInsights } from '@/utils/aiAnalysis';
-import { sampleTrades } from '@/data/sampleTrades';
 import { useTradeStorage } from '@/hooks/useTradeStorage';
 import StatCard from '@/components/StatCard';
-import EquityCurve from '@/components/EquityCurve';
+import Skeleton from '@/components/Skeleton';
 import TradeTable from '@/components/TradeTable';
 import InsightCard from '@/components/InsightCard';
 import WeeklySummary from '@/components/WeeklySummary';
+
+interface DashboardWidgets {
+  equityCurve: boolean;
+  weeklySummary: boolean;
+  recentTrades: boolean;
+  aiInsights: boolean;
+}
+
+function loadWidgetSettings(): DashboardWidgets {
+  try {
+    const raw = localStorage.getItem('tradevision-settings');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed.widgets) return parsed.widgets;
+    }
+  } catch {}
+  return { equityCurve: true, weeklySummary: true, recentTrades: true, aiInsights: true };
+}
+
+// Lazy load Recharts-based component – no SSR needed
+const EquityCurve = dynamic(() => import('@/components/EquityCurve'), {
+  ssr: false,
+  loading: () => <Skeleton variant="card" />,
+});
 
 /**
  * Format a number as a currency string with dollar sign, commas, and 2 decimal places.
@@ -28,6 +52,17 @@ function formatCurrency(n: number): string {
 
 export default function DashboardPage() {
   const { trades, isLoading, setAllTrades, clearAll } = useTradeStorage();
+  const [widgets, setWidgets] = useState<DashboardWidgets>({ equityCurve: true, weeklySummary: true, recentTrades: true, aiInsights: true });
+
+  useEffect(() => {
+    setWidgets(loadWidgetSettings());
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.widgets) setWidgets(detail.widgets);
+    };
+    window.addEventListener('tradevision-settings-changed', handler);
+    return () => window.removeEventListener('tradevision-settings-changed', handler);
+  }, []);
 
   // Detect demo mode by checking if sample data IDs are present
   const isDemoData = trades.length > 0 && trades[0]?.id?.startsWith('sample-');
@@ -55,9 +90,11 @@ export default function DashboardPage() {
   const topInsights = useMemo(() => insights.slice(0, 3), [insights]);
 
   /**
-   * Load the built-in sample data set, persist it, and switch to demo mode.
+   * Load the built-in sample data set on demand, persist it, and switch to demo mode.
+   * Uses dynamic import so the sample data bundle is only fetched when clicked.
    */
-  const handleLoadSampleData = () => {
+  const handleLoadSampleData = async () => {
+    const { sampleTrades } = await import('@/data/sampleTrades');
     setAllTrades(sampleTrades);
   };
 
@@ -208,12 +245,14 @@ export default function DashboardPage() {
       </div>
 
       {/* Equity Curve -- full width */}
-      <div className="dashboard-equity">
-        <EquityCurve data={equityCurveData} />
-      </div>
+      {widgets.equityCurve && (
+        <div className="dashboard-equity">
+          <EquityCurve data={equityCurveData} />
+        </div>
+      )}
 
       {/* Weekly Performance Summary */}
-      {trades.length > 0 && (
+      {widgets.weeklySummary && trades.length > 0 && (
         <div className="glass-card dashboard-weekly">
           <WeeklySummary trades={trades} />
         </div>
@@ -222,56 +261,60 @@ export default function DashboardPage() {
       {/* Bottom two-column layout: Recent Trades + AI Insights */}
       <div className="dashboard-bottom">
         {/* Left column -- Recent Trades */}
-        <div className="glass-card dashboard-section">
-          <div className="dashboard-section-header">
-            <span className="dashboard-section-title">Recent Trades</span>
-            <Link href="/trades" className="dashboard-section-link">
-              View All
-            </Link>
+        {widgets.recentTrades && (
+          <div className="glass-card dashboard-section">
+            <div className="dashboard-section-header">
+              <h2 className="dashboard-section-title">Recent Trades</h2>
+              <Link href="/trades" className="dashboard-section-link">
+                View All
+              </Link>
+            </div>
+            <TradeTable trades={recentTrades} compact={true} />
           </div>
-          <TradeTable trades={recentTrades} compact={true} />
-        </div>
+        )}
 
         {/* Right column -- AI Insights */}
-        <div className="glass-card dashboard-section">
-          <div className="dashboard-section-header">
-            <span className="dashboard-section-title">AI Insights</span>
-            <Link href="/insights" className="dashboard-section-link">
-              View All
-            </Link>
-          </div>
+        {widgets.aiInsights && (
+          <div className="glass-card dashboard-section">
+            <div className="dashboard-section-header">
+              <h2 className="dashboard-section-title">AI Insights</h2>
+              <Link href="/insights" className="dashboard-section-link">
+                View All
+              </Link>
+            </div>
 
-          {topInsights.length > 0 ? (
-            <div className="dashboard-insights-list">
-              {topInsights.map((insight) => (
-                <InsightCard key={insight.id} insight={insight} />
-              ))}
-            </div>
-          ) : (
-            <div className="dashboard-no-insights">
-              <div className="dashboard-no-insights-icon">
-                <svg
-                  width="32"
-                  height="32"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  style={{ color: 'var(--text-secondary)' }}
-                >
-                  <path d="M22 11.08V12a10 10 0 11-5.93-9.14" />
-                  <polyline points="22 4 12 14.01 9 11.01" />
-                </svg>
+            {topInsights.length > 0 ? (
+              <div className="dashboard-insights-list">
+                {topInsights.map((insight) => (
+                  <InsightCard key={insight.id} insight={insight} />
+                ))}
               </div>
-              <p>
-                No actionable insights detected. Your trading looks solid --
-                keep it up!
-              </p>
-            </div>
-          )}
-        </div>
+            ) : (
+              <div className="dashboard-no-insights">
+                <div className="dashboard-no-insights-icon">
+                  <svg
+                    width="32"
+                    height="32"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    <path d="M22 11.08V12a10 10 0 11-5.93-9.14" />
+                    <polyline points="22 4 12 14.01 9 11.01" />
+                  </svg>
+                </div>
+                <p>
+                  No actionable insights detected. Your trading looks solid --
+                  keep it up!
+                </p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </>
   );
