@@ -1,43 +1,65 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { Trade, AIInsight } from '@/types/trade';
-import { loadTrades } from '@/utils/storage';
+import { AIInsight } from '@/types/trade';
 import { generateAllInsights } from '@/utils/aiAnalysis';
+import { useTradeStorage } from '@/hooks/useTradeStorage';
 import InsightCard from '@/components/InsightCard';
 
 type FilterType = 'all' | 'warning' | 'positive' | 'neutral';
 
 export default function InsightsPage() {
   const router = useRouter();
-  const [trades, setTrades] = useState<Trade[]>([]);
-  const [insights, setInsights] = useState<AIInsight[]>([]);
+  const { trades } = useTradeStorage();
   const [activeFilter, setActiveFilter] = useState<FilterType>('all');
+  const [selectedCategory, setSelectedCategory] = useState<string>('');
+  const [dateFrom, setDateFrom] = useState<string>('');
+  const [dateTo, setDateTo] = useState<string>('');
 
   const handleViewTrades = (tradeIds: string[]) => {
     const params = new URLSearchParams({ highlight: tradeIds.join(',') });
     router.push(`/trades?${params.toString()}`);
   };
 
-  useEffect(() => {
-    const storedTrades = loadTrades();
-    setTrades(storedTrades);
+  // Filter trades by date range before generating insights
+  const filteredTrades = useMemo(() => {
+    if (!dateFrom && !dateTo) return trades;
+    return trades.filter((trade) => {
+      const entryDate = new Date(trade.entryDate);
+      if (dateFrom && entryDate < new Date(dateFrom)) return false;
+      if (dateTo) {
+        const toEnd = new Date(dateTo);
+        toEnd.setHours(23, 59, 59, 999);
+        if (entryDate > toEnd) return false;
+      }
+      return true;
+    });
+  }, [trades, dateFrom, dateTo]);
 
-    if (storedTrades.length > 0) {
-      const allInsights = generateAllInsights(storedTrades);
-      setInsights(allInsights);
-    }
-  }, []);
+  const insights = useMemo<AIInsight[]>(() => {
+    if (filteredTrades.length === 0) return [];
+    return generateAllInsights(filteredTrades);
+  }, [filteredTrades]);
+
+  // Extract unique categories from insights
+  const categories = useMemo(() => {
+    const cats = new Set(insights.map((i) => i.category));
+    return Array.from(cats).sort();
+  }, [insights]);
 
   const filteredInsights = useMemo(() => {
-    const filtered =
+    let filtered =
       activeFilter === 'all'
         ? insights
         : insights.filter((insight) => insight.type === activeFilter);
 
+    if (selectedCategory) {
+      filtered = filtered.filter((insight) => insight.category === selectedCategory);
+    }
+
     return [...filtered].sort((a, b) => b.severity - a.severity);
-  }, [insights, activeFilter]);
+  }, [insights, activeFilter, selectedCategory]);
 
   const warningCount = useMemo(
     () => insights.filter((i) => i.type === 'warning').length,
@@ -110,6 +132,52 @@ export default function InsightsPage() {
         <p className="page-subtitle">
           Pattern detection and trading behavior analysis
         </p>
+      </div>
+
+      <div className="insights-filters">
+        <div className="insights-filters-group">
+          <label className="insights-filter-label">Category</label>
+          <select
+            className="input insights-category-select"
+            value={selectedCategory}
+            onChange={(e) => setSelectedCategory(e.target.value)}
+          >
+            <option value="">All Categories</option>
+            {categories.map((cat) => (
+              <option key={cat} value={cat}>{cat}</option>
+            ))}
+          </select>
+        </div>
+        <div className="insights-filters-group">
+          <label className="insights-filter-label">From</label>
+          <input
+            type="date"
+            className="input insights-date-input"
+            value={dateFrom}
+            onChange={(e) => setDateFrom(e.target.value)}
+          />
+        </div>
+        <div className="insights-filters-group">
+          <label className="insights-filter-label">To</label>
+          <input
+            type="date"
+            className="input insights-date-input"
+            value={dateTo}
+            onChange={(e) => setDateTo(e.target.value)}
+          />
+        </div>
+        {(selectedCategory || dateFrom || dateTo) && (
+          <button
+            className="insights-filters-clear"
+            onClick={() => {
+              setSelectedCategory('');
+              setDateFrom('');
+              setDateTo('');
+            }}
+          >
+            Clear Filters
+          </button>
+        )}
       </div>
 
       <div className="insights-filter-tabs">

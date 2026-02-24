@@ -650,6 +650,22 @@ tr:last-child td { border-bottom: none; }
 .insights-empty-icon { font-size: 3rem; margin-bottom: 16px; opacity: 0.5; }
 .insights-empty-title { font-size: 1.2rem; font-weight: 600; color: var(--text-primary); margin-bottom: 8px; }
 .insights-empty-text { color: var(--text-secondary); font-size: 0.9rem; }
+.insights-filters {
+  display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;
+  margin-bottom: 20px; padding: 16px 20px;
+  background: var(--glass-bg); border: 1px solid var(--border); border-radius: var(--radius-lg);
+}
+.insights-filters-group { display: flex; flex-direction: column; gap: 4px; }
+.insights-filter-label { font-size: 0.75rem; font-weight: 500; color: var(--text-muted); }
+.insights-category-select { min-width: 180px; width: auto; }
+.insights-date-input { width: 160px; }
+.insights-filters-clear {
+  padding: 10px 16px; border: 1px solid var(--border); background: transparent;
+  color: var(--text-secondary); font-size: 0.8rem; font-weight: 500; cursor: pointer;
+  border-radius: var(--radius-md); transition: all var(--transition-fast); font-family: inherit;
+  margin-left: auto;
+}
+.insights-filters-clear:hover { border-color: var(--accent-blue); color: var(--text-primary); }
 
 /* ============================================
    Page: Import
@@ -746,6 +762,60 @@ tr:last-child td { border-bottom: none; }
 .login-info code { background: var(--bg-secondary); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.8rem; }
 
 /* ============================================
+   Component: ErrorBoundary
+   ============================================ */
+.error-boundary {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 100vh; padding: 32px;
+}
+.error-boundary-card {
+  text-align: center; padding: 48px 40px; max-width: 480px; width: 100%;
+}
+.error-boundary-icon {
+  color: var(--loss); margin-bottom: 20px;
+  display: flex; justify-content: center;
+}
+.error-boundary-title {
+  font-size: 1.5rem; font-weight: 700; color: var(--text-primary); margin-bottom: 12px;
+}
+.error-boundary-message {
+  font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 20px; line-height: 1.6;
+}
+.error-boundary-detail {
+  font-size: 0.8rem; color: var(--text-muted); margin-bottom: 24px;
+  padding: 12px; background: var(--bg-secondary); border-radius: var(--radius-md);
+  border: 1px solid var(--border); word-break: break-word;
+}
+
+/* ============================================
+   Component: Skeleton
+   ============================================ */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--glass-bg) 25%,
+    var(--border) 50%,
+    var(--glass-bg) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: var(--radius-md);
+}
+.skeleton-text {
+  height: 16px; width: 100%; margin-bottom: 8px;
+}
+.skeleton-card {
+  height: 120px; width: 100%;
+}
+.skeleton-table-row {
+  height: 48px; width: 100%; margin-bottom: 8px;
+}
+
+/* ============================================
    Responsive
    ============================================ */
 @media (max-width: 1200px) {
@@ -786,6 +856,10 @@ tr:last-child td { border-bottom: none; }
   .analytics-highlights { grid-template-columns: 1fr; }
 
   /* Insights */
+  .insights-filters { flex-direction: column; align-items: stretch; }
+  .insights-category-select { min-width: unset; width: 100%; }
+  .insights-date-input { width: 100%; }
+  .insights-filters-clear { margin-left: 0; }
   .insights-filter-tabs { width: 100%; overflow-x: auto; }
   .insights-stats { flex-direction: column; gap: 12px; }
 
