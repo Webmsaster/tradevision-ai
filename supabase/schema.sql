@@ -27,6 +27,8 @@ create table if not exists trades (
   setup_type text,
   timeframe text,
   market_condition text check (market_condition in ('trending', 'ranging', 'volatile', 'calm')),
+  screenshot_url text,
+  account_id text not null default 'default',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

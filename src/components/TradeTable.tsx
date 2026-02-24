@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Trade } from '@/types/trade';
 import TradeDetailModal from '@/components/TradeDetailModal';
 
@@ -52,6 +52,8 @@ function formatPercent(value: number): string {
   return `${sign}${value.toFixed(1)}%`;
 }
 
+const PAGE_SIZE = 25;
+
 export default function TradeTable({
   trades,
   onEdit,
@@ -61,6 +63,12 @@ export default function TradeTable({
   const [sortKey, setSortKey] = useState<SortKey>('exitDate');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [selectedTrade, setSelectedTrade] = useState<Trade | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+
+  // Reset to page 1 when trades change (e.g. filters applied)
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [trades.length]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -171,6 +179,12 @@ export default function TradeTable({
     );
   };
 
+  // Pagination
+  const totalPages = compact ? 1 : Math.ceil(sortedTrades.length / PAGE_SIZE);
+  const paginatedTrades = compact
+    ? sortedTrades
+    : sortedTrades.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
   if (trades.length === 0) {
     return (
       <div className="trade-table-wrapper">
@@ -201,7 +215,7 @@ export default function TradeTable({
             </tr>
           </thead>
           <tbody>
-            {sortedTrades.map((trade) => (
+            {paginatedTrades.map((trade) => (
               <tr key={trade.id} onClick={() => setSelectedTrade(trade)} style={{ cursor: 'pointer' }}>
                 <td>{formatDate(trade.exitDate)}</td>
                 <td>{trade.pair}</td>
@@ -260,6 +274,30 @@ export default function TradeTable({
           </tbody>
         </table>
       </div>
+
+      {/* Pagination controls */}
+      {!compact && totalPages > 1 && (
+        <div className="trade-table-pagination">
+          <button
+            className="btn btn-ghost btn-sm"
+            disabled={currentPage === 1}
+            onClick={() => setCurrentPage(p => p - 1)}
+          >
+            Previous
+          </button>
+          <span className="trade-table-page-info">
+            Page {currentPage} of {totalPages} ({sortedTrades.length} trades)
+          </span>
+          <button
+            className="btn btn-ghost btn-sm"
+            disabled={currentPage === totalPages}
+            onClick={() => setCurrentPage(p => p + 1)}
+          >
+            Next
+          </button>
+        </div>
+      )}
+
       <TradeDetailModal
         trade={selectedTrade}
         isOpen={!!selectedTrade}

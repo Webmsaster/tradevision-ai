@@ -35,6 +35,7 @@ export default function CalculatorPage() {
         slDistancePercent: 0,
         positionSize: 0,
         positionValue: 0,
+        marginRequired: 0,
         maxLoss: 0,
         potentialProfit: null as number | null,
         rrRatio: null as number | null,
@@ -45,16 +46,18 @@ export default function CalculatorPage() {
 
     const riskAmount = (accountBalance * riskPercent) / 100;
     const slDistancePercent = (slDistance / entryPrice) * 100;
-    const positionSize = riskAmount / slDistance / leverage;
+    // Position size is determined by risk, not leverage.
+    // Leverage only affects the margin (collateral) required.
+    const positionSize = riskAmount / slDistance;
     const positionValue = positionSize * entryPrice;
+    const marginRequired = positionValue / leverage;
     const maxLoss = riskAmount;
 
     let potentialProfit: number | null = null;
     let rrRatio: number | null = null;
 
     if (takeProfitNum !== null && takeProfitNum > 0) {
-      potentialProfit =
-        Math.abs(takeProfitNum - entryPrice) * positionSize * leverage;
+      potentialProfit = Math.abs(takeProfitNum - entryPrice) * positionSize;
       rrRatio = riskAmount > 0 ? potentialProfit / riskAmount : null;
     }
 
@@ -72,6 +75,7 @@ export default function CalculatorPage() {
       slDistancePercent,
       positionSize,
       positionValue,
+      marginRequired,
       maxLoss,
       potentialProfit,
       rrRatio,
@@ -257,6 +261,13 @@ export default function CalculatorPage() {
               value={calculations.valid ? fmt(calculations.positionValue) : '—'}
               prefix="$"
             />
+            {leverage > 1 && (
+              <StatCard
+                label="Margin Required"
+                value={calculations.valid ? fmt(calculations.marginRequired) : '—'}
+                prefix="$"
+              />
+            )}
             <StatCard
               label="Max Loss"
               value={calculations.valid ? fmt(calculations.maxLoss) : '—'}

@@ -513,14 +513,28 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (!file) return;
-                    if (file.size > 2 * 1024 * 1024) {
-                      setErrors(prev => ({ ...prev, screenshot: 'Image must be under 2 MB' }));
+                    if (file.size > 5 * 1024 * 1024) {
+                      setErrors(prev => ({ ...prev, screenshot: 'Image must be under 5 MB' }));
                       return;
                     }
                     setErrors(prev => { const { screenshot: _, ...rest } = prev; return rest; });
-                    const reader = new FileReader();
-                    reader.onload = () => setScreenshot(reader.result as string);
-                    reader.readAsDataURL(file);
+                    // Compress image: resize to max 800px wide and convert to JPEG
+                    const img = new Image();
+                    img.onload = () => {
+                      const MAX_WIDTH = 800;
+                      const scale = img.width > MAX_WIDTH ? MAX_WIDTH / img.width : 1;
+                      const canvas = document.createElement('canvas');
+                      canvas.width = img.width * scale;
+                      canvas.height = img.height * scale;
+                      const ctx = canvas.getContext('2d');
+                      if (ctx) {
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        const compressed = canvas.toDataURL('image/jpeg', 0.6);
+                        setScreenshot(compressed);
+                      }
+                      URL.revokeObjectURL(img.src);
+                    };
+                    img.src = URL.createObjectURL(file);
                   }}
                 />
               )}

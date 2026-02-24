@@ -29,6 +29,8 @@ function dbToTrade(row: Record<string, unknown>): Trade {
     setupType: row.setup_type as string | undefined,
     timeframe: row.timeframe as string | undefined,
     marketCondition: row.market_condition as Trade['marketCondition'],
+    screenshot: row.screenshot_url as string | undefined,
+    accountId: (row.account_id as string) ?? 'default',
   };
 }
 
@@ -55,6 +57,8 @@ function tradeToDb(trade: Trade, userId: string) {
     setup_type: trade.setupType ?? null,
     timeframe: trade.timeframe ?? null,
     market_condition: trade.marketCondition ?? null,
+    screenshot_url: trade.screenshot ?? null,
+    account_id: trade.accountId ?? 'default',
   };
 }
 

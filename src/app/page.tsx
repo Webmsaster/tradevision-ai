@@ -11,6 +11,7 @@ import Skeleton from '@/components/Skeleton';
 import TradeTable from '@/components/TradeTable';
 import InsightCard from '@/components/InsightCard';
 import WeeklySummary from '@/components/WeeklySummary';
+import SyncErrorToast from '@/components/SyncErrorToast';
 
 interface DashboardWidgets {
   equityCurve: boolean;
@@ -51,7 +52,7 @@ function formatCurrency(n: number): string {
 }
 
 export default function DashboardPage() {
-  const { trades, isLoading, setAllTrades, clearAll } = useTradeStorage();
+  const { trades, isLoading, setAllTrades, clearAll, syncError, dismissSyncError } = useTradeStorage();
   const [widgets, setWidgets] = useState<DashboardWidgets>({ equityCurve: true, weeklySummary: true, recentTrades: true, aiInsights: true });
 
   useEffect(() => {
@@ -316,6 +317,7 @@ export default function DashboardPage() {
           </div>
         )}
       </div>
+      <SyncErrorToast message={syncError} onDismiss={dismissSyncError} />
     </>
   );
 }

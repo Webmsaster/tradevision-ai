@@ -5,9 +5,10 @@ import { calculatePnl } from '@/utils/calculations';
 import { useTradeStorage } from '@/hooks/useTradeStorage';
 import TradeTable from '@/components/TradeTable';
 import TradeForm from '@/components/TradeForm';
+import SyncErrorToast from '@/components/SyncErrorToast';
 
 export default function TradesPage() {
-  const { trades, addTrade, editTrade, removeTrade } = useTradeStorage();
+  const { trades, addTrade, editTrade, removeTrade, syncError, dismissSyncError } = useTradeStorage();
   const [showForm, setShowForm] = useState(false);
   const [editingTrade, setEditingTrade] = useState<Trade | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -180,7 +181,7 @@ export default function TradesPage() {
           Total PnL:{' '}
           <span
             className="trades-summary-stat"
-            style={{ color: totalPnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)' }}
+            style={{ color: totalPnl >= 0 ? 'var(--profit)' : 'var(--loss)' }}
           >
             ${totalPnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </span>
@@ -198,6 +199,7 @@ export default function TradesPage() {
         onSubmit={editingTrade ? handleUpdateTrade : handleAddTrade}
         onClose={handleCloseForm}
       />
+      <SyncErrorToast message={syncError} onDismiss={dismissSyncError} />
     </div>
   );
 }
