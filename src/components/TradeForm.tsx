@@ -44,6 +44,7 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
   const [setupType, setSetupType] = useState('');
   const [timeframe, setTimeframe] = useState('');
   const [marketCondition, setMarketCondition] = useState<Trade['marketCondition'] | ''>('');
+  const [screenshot, setScreenshot] = useState<string>('');
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   // ---- populate fields when editing ----
@@ -66,6 +67,7 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
       setSetupType(editTrade.setupType ?? '');
       setTimeframe(editTrade.timeframe ?? '');
       setMarketCondition(editTrade.marketCondition ?? '');
+      setScreenshot(editTrade.screenshot ?? '');
     } else {
       resetForm();
     }
@@ -106,6 +108,7 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
     setSetupType('');
     setTimeframe('');
     setMarketCondition('');
+    setScreenshot('');
     setErrors({});
   }
 
@@ -192,6 +195,7 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
       setupType: setupType.trim() || undefined,
       timeframe: timeframe || undefined,
       marketCondition: marketCondition || undefined,
+      screenshot: screenshot || undefined,
     };
 
     const { pnl, pnlPercent } = calculatePnl(tradeBase as Omit<Trade, 'id' | 'pnl' | 'pnlPercent'>);
@@ -481,6 +485,46 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
                 <option value="volatile">Volatile</option>
                 <option value="calm">Calm</option>
               </select>
+            </div>
+            {/* Screenshot Upload */}
+            <div className="form-group trade-form-full">
+              <label className="form-label">Chart Screenshot</label>
+              {screenshot ? (
+                <div style={{ position: 'relative', marginBottom: '8px' }}>
+                  <img
+                    src={screenshot}
+                    alt="Trade screenshot"
+                    style={{ maxWidth: '100%', maxHeight: '200px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)' }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    style={{ position: 'absolute', top: '4px', right: '4px' }}
+                    onClick={() => setScreenshot('')}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ) : (
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="form-input"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    if (file.size > 2 * 1024 * 1024) {
+                      setErrors(prev => ({ ...prev, screenshot: 'Image must be under 2 MB' }));
+                      return;
+                    }
+                    setErrors(prev => { const { screenshot: _, ...rest } = prev; return rest; });
+                    const reader = new FileReader();
+                    reader.onload = () => setScreenshot(reader.result as string);
+                    reader.readAsDataURL(file);
+                  }}
+                />
+              )}
+              {errors.screenshot && <span className="form-error">{errors.screenshot}</span>}
             </div>
           </div>
 

@@ -219,6 +219,18 @@ export default function TradeDetailModal({ trade, isOpen, onClose }: TradeDetail
           </div>
         )}
 
+        {/* Screenshot */}
+        {trade.screenshot && (
+          <div className="trade-detail-screenshot">
+            <div className="trade-detail-notes-label">Chart Screenshot</div>
+            <img
+              src={trade.screenshot}
+              alt={`${trade.pair} trade chart`}
+              style={{ maxWidth: '100%', borderRadius: '8px', marginTop: '8px', border: '1px solid rgba(255,255,255,0.1)' }}
+            />
+          </div>
+        )}
+
         {/* Notes */}
         {trade.notes && (
           <div className="trade-detail-notes">
