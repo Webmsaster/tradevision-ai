@@ -125,3 +125,17 @@
   border-radius: 4px;
   font-size: 0.8rem;
 }
+
+@media (max-width: 768px) {
+  .login-container {
+    padding: 1rem;
+  }
+
+  .login-card {
+    padding: 1.5rem;
+  }
+
+  .login-title {
+    font-size: 1.4rem;
+  }
+}

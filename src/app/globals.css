@@ -497,11 +497,16 @@ tr:last-child td {
 
   .page-container {
     padding: 16px;
+    padding-top: 60px;
   }
 
   .page-header {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .grid-4 {
+    grid-template-columns: 1fr;
   }
 }
 

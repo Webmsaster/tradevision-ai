@@ -111,3 +111,15 @@
   color: var(--text-secondary);
   font-size: 0.9rem;
 }
+
+@media (max-width: 768px) {
+  .insights-filter-tabs {
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .insights-stats {
+    flex-direction: column;
+    gap: 12px;
+  }
+}
