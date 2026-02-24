@@ -308,6 +308,23 @@ export function exportToCSV(trades: Trade[]): void {
   }
 }
 
+function isValidTrade(obj: unknown): obj is Trade {
+  if (!obj || typeof obj !== 'object') return false;
+  const t = obj as Record<string, unknown>;
+  return (
+    typeof t.id === 'string' &&
+    typeof t.pair === 'string' &&
+    (t.direction === 'long' || t.direction === 'short') &&
+    typeof t.entryPrice === 'number' && t.entryPrice > 0 &&
+    typeof t.exitPrice === 'number' && t.exitPrice > 0 &&
+    typeof t.quantity === 'number' && t.quantity > 0 &&
+    typeof t.entryDate === 'string' &&
+    typeof t.exitDate === 'string' &&
+    typeof t.pnl === 'number' &&
+    typeof t.pnlPercent === 'number'
+  );
+}
+
 /**
  * Import trades from a JSON file.
  * Accepts both a raw Trade[] array and a wrapped { trades: Trade[] } format.
@@ -321,13 +338,19 @@ export function importFromJSON(file: File): Promise<Trade[]> {
         const text = reader.result as string;
         const parsed = JSON.parse(text);
 
-        if (Array.isArray(parsed)) {
-          resolve(parsed as Trade[]);
-          return;
-        }
+        const rawTrades = Array.isArray(parsed)
+          ? parsed
+          : parsed && typeof parsed === 'object' && Array.isArray(parsed.trades)
+            ? parsed.trades
+            : null;
 
-        if (parsed && typeof parsed === 'object' && Array.isArray(parsed.trades)) {
-          resolve(parsed.trades as Trade[]);
+        if (rawTrades) {
+          const valid = rawTrades.filter(isValidTrade);
+          if (valid.length === 0) {
+            reject(new Error('No valid trades found in the file.'));
+          } else {
+            resolve(valid);
+          }
           return;
         }
 
