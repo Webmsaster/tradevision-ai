@@ -20,7 +20,7 @@ const nextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: blob:",
               "font-src 'self'",
-              "connect-src 'self' https://*.supabase.co https://*.supabase.in wss://*.supabase.co https://discord.com https://api.telegram.org",
+              "connect-src 'self' https: wss://*.supabase.co",
               "frame-ancestors 'none'",
               "base-uri 'self'",
               "form-action 'self'",

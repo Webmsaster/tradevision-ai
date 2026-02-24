@@ -85,6 +85,17 @@ export function useTradeStorage() {
     return () => clearTimeout(timer);
   }, [syncError]);
 
+  // Sync across tabs via storage event
+  useEffect(() => {
+    const handler = (e: StorageEvent) => {
+      if (e.key === 'trading-journal-trades') {
+        setAllTrades(loadTrades());
+      }
+    };
+    window.addEventListener('storage', handler);
+    return () => window.removeEventListener('storage', handler);
+  }, []);
+
   // Load trades on mount and when auth state changes
   useEffect(() => {
     async function load() {
@@ -143,7 +154,7 @@ export function useTradeStorage() {
     fireWebhook('onTradeDelete', removedTrade);
     if (isCloud) {
       try {
-        await deleteTradeFromSupabase(supabase!, tradeId);
+        await deleteTradeFromSupabase(supabase!, tradeId, user!.id);
       } catch (err) {
         console.error('Cloud sync failed for removeTrade:', err);
         setSyncError('Failed to sync trade deletion to cloud. Your data is saved locally.');

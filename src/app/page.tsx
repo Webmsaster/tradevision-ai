@@ -12,6 +12,7 @@ import TradeTable from '@/components/TradeTable';
 import InsightCard from '@/components/InsightCard';
 import WeeklySummary from '@/components/WeeklySummary';
 import SyncErrorToast from '@/components/SyncErrorToast';
+import { formatCurrency } from '@/utils/formatters';
 
 interface DashboardWidgets {
   equityCurve: boolean;
@@ -36,20 +37,6 @@ const EquityCurve = dynamic(() => import('@/components/EquityCurve'), {
   ssr: false,
   loading: () => <Skeleton variant="card" />,
 });
-
-/**
- * Format a number as a currency string with dollar sign, commas, and 2 decimal places.
- * Negative numbers are displayed with a leading minus sign before the dollar sign.
- */
-function formatCurrency(n: number): string {
-  const isNegative = n < 0;
-  const abs = Math.abs(n);
-  const formatted = abs.toLocaleString('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-  return isNegative ? `-$${formatted}` : `$${formatted}`;
-}
 
 export default function DashboardPage() {
   const { trades, isLoading, setAllTrades, clearAll, syncError, dismissSyncError } = useTradeStorage();

@@ -4,16 +4,7 @@ import { useMemo } from 'react';
 import { calculateAllStats, calculatePerformanceByDayOfWeek } from '@/utils/calculations';
 import { TradeStats, PerformanceByTime } from '@/types/trade';
 import { useTradeStorage } from '@/hooks/useTradeStorage';
-
-function formatCurrency(n: number): string {
-  const sign = n < 0 ? '-' : '';
-  return `${sign}$${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
-function formatFinite(value: number, decimals = 2): string {
-  if (!Number.isFinite(value)) return 'N/A';
-  return value.toFixed(decimals);
-}
+import { formatCurrency, formatFinite } from '@/utils/formatters';
 
 export default function ReportPage() {
   const { trades, isLoading } = useTradeStorage();

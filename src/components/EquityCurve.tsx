@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, TooltipProps } from 'recharts';
 import { EquityCurvePoint } from '@/types/trade';
+import { formatCurrency } from '@/utils/formatters';
 
 interface EquityCurveProps {
   data: EquityCurvePoint[];
@@ -14,10 +15,6 @@ function formatDate(dateStr: string): string {
   const month = date.getMonth() + 1;
   const day = date.getDate();
   return `${month}/${day}`;
-}
-
-function formatCurrency(value: number): string {
-  return `$${value.toFixed(2)}`;
 }
 
 interface TooltipPayloadEntry {
@@ -67,10 +64,17 @@ function CustomTooltip({ active, payload, label, green, red }: CustomTooltipProp
 export default function EquityCurve({ data, height }: EquityCurveProps) {
   const [colors, setColors] = useState({ green: '#00ff88', red: '#ff4757' });
   useEffect(() => {
-    const green = getComputedStyle(document.documentElement).getPropertyValue('--profit').trim();
-    const red = getComputedStyle(document.documentElement).getPropertyValue('--loss').trim();
-    if (green) setColors(c => ({ ...c, green }));
-    if (red) setColors(c => ({ ...c, red }));
+    function readColors() {
+      const green = getComputedStyle(document.documentElement).getPropertyValue('--profit').trim();
+      const red = getComputedStyle(document.documentElement).getPropertyValue('--loss').trim();
+      if (green) setColors(c => ({ ...c, green }));
+      if (red) setColors(c => ({ ...c, red }));
+    }
+    readColors();
+    // Re-read colors when theme changes
+    const observer = new MutationObserver(readColors);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    return () => observer.disconnect();
   }, []);
 
   if (!data || data.length === 0) {

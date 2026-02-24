@@ -14,15 +14,20 @@ export function calculatePnl(
 ): { pnl: number; pnlPercent: number } {
   const { direction, entryPrice, exitPrice, quantity, leverage, fees } = trade;
 
+  // quantity = total units in the position (full exposure).
+  // Leverage only affects the margin (collateral) required, not the raw PnL.
   let pnl: number;
   if (direction === 'long') {
-    pnl = (exitPrice - entryPrice) * quantity * leverage - fees;
+    pnl = (exitPrice - entryPrice) * quantity - fees;
   } else {
-    pnl = (entryPrice - exitPrice) * quantity * leverage - fees;
+    pnl = (entryPrice - exitPrice) * quantity - fees;
   }
 
-  const invested = entryPrice * quantity;
-  const pnlPercent = invested !== 0 ? (pnl / invested) * 100 : 0;
+  // pnlPercent = return on margin (capital actually deployed).
+  // margin = positionValue / leverage
+  const positionValue = entryPrice * quantity;
+  const margin = positionValue / (leverage || 1);
+  const pnlPercent = margin !== 0 ? (pnl / margin) * 100 : 0;
 
   return { pnl, pnlPercent };
 }
@@ -129,10 +134,13 @@ export function calculateMaxDrawdown(trades: Trade[]): {
       maxDrawdown = drawdown;
     }
 
-    if (peak > 0) {
-      const drawdownPercent = (drawdown / peak) * 100;
+    // Calculate drawdown as percentage of peak.
+    // When peak <= 0 (all trades are losses), use absolute equity as reference.
+    if (drawdown > 0) {
+      const reference = peak > 0 ? peak : Math.abs(equity);
+      const drawdownPercent = reference > 0 ? (drawdown / reference) * 100 : 0;
       if (drawdownPercent > maxDrawdownPercent) {
-        maxDrawdownPercent = drawdownPercent;
+        maxDrawdownPercent = Math.min(drawdownPercent, 100);
       }
     }
   }

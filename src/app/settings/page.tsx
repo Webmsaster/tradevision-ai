@@ -50,12 +50,26 @@ function saveSettings(settings: ReturnType<typeof loadSettings>) {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
 }
 
+type Settings = { webhook: WebhookSettings; accounts: Account[]; activeAccountId: string; widgets: DashboardWidgets };
+
+const DEFAULT_SETTINGS: Settings = {
+  webhook: {
+    enabled: false,
+    url: '',
+    platform: 'discord',
+    events: { onTradeAdd: true, onTradeEdit: false, onTradeDelete: true },
+  },
+  accounts: [{ id: 'default', name: 'Main Account', broker: '' }],
+  activeAccountId: 'default',
+  widgets: { equityCurve: true, weeklySummary: true, recentTrades: true, aiInsights: true },
+};
+
 export default function SettingsPage() {
-  const [settings, setSettings] = useState(loadSettings);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [saved, setSaved] = useState(false);
   const [testResult, setTestResult] = useState<string>('');
 
-  // Load from localStorage on mount
+  // Load persisted settings on client-side only
   useEffect(() => {
     setSettings(loadSettings());
   }, []);

@@ -2,6 +2,7 @@ import { Trade } from '@/types/trade';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 const STORAGE_KEY = 'trading-journal-trades';
+const SCREENSHOTS_KEY = 'trading-journal-screenshots';
 
 // ---------------------------------------------------------------------------
 // Helper: convert between DB snake_case and app camelCase
@@ -102,12 +103,15 @@ export async function saveTradeToSupabase(
 
 export async function deleteTradeFromSupabase(
   supabase: SupabaseClient,
-  tradeId: string
+  tradeId: string,
+  userId?: string
 ): Promise<boolean> {
-  const { error } = await supabase
+  let query = supabase
     .from('trades')
     .delete()
     .eq('id', tradeId);
+  if (userId) query = query.eq('user_id', userId);
+  const { error } = await query;
 
   if (error) {
     console.error('Failed to delete trade from Supabase:', error);
@@ -153,11 +157,34 @@ export async function clearAllSupabaseTrades(
 
 /**
  * Save trades array to localStorage.
+ * Screenshots are stripped out and stored separately to keep the main
+ * trades payload small and prevent hitting the localStorage quota.
  */
 export function saveTrades(trades: Trade[]): void {
   try {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(trades));
+    if (typeof window === 'undefined') return;
+
+    // Separate screenshots from trade data
+    const screenshots: Record<string, string> = {};
+    const tradesWithoutScreenshots = trades.map(t => {
+      if (t.screenshot) {
+        screenshots[t.id] = t.screenshot;
+        const { screenshot: _, ...rest } = t;
+        return rest;
+      }
+      return t;
+    });
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(tradesWithoutScreenshots));
+
+    // Store screenshots separately; if quota is exceeded, trade data is still safe
+    if (Object.keys(screenshots).length > 0) {
+      try {
+        const existing = JSON.parse(localStorage.getItem(SCREENSHOTS_KEY) || '{}');
+        localStorage.setItem(SCREENSHOTS_KEY, JSON.stringify({ ...existing, ...screenshots }));
+      } catch {
+        console.warn('Failed to save screenshots — storage quota may be full.');
+      }
     }
   } catch (error) {
     console.error('Failed to save trades to localStorage:', error);
@@ -165,7 +192,7 @@ export function saveTrades(trades: Trade[]): void {
 }
 
 /**
- * Load trades array from localStorage.
+ * Load trades array from localStorage and re-attach screenshots.
  * Returns an empty array if data is not found, unparseable, or running on the server.
  */
 export function loadTrades(): Trade[] {
@@ -181,7 +208,19 @@ export function loadTrades(): Trade[] {
     if (!Array.isArray(parsed)) {
       return [];
     }
-    return parsed as Trade[];
+
+    // Re-attach screenshots from separate store
+    let screenshots: Record<string, string> = {};
+    try {
+      screenshots = JSON.parse(localStorage.getItem(SCREENSHOTS_KEY) || '{}');
+    } catch {}
+
+    return (parsed as Trade[]).map(t => {
+      if (screenshots[t.id]) {
+        return { ...t, screenshot: screenshots[t.id] };
+      }
+      return t;
+    });
   } catch (error) {
     console.error('Failed to load trades from localStorage:', error);
     return [];
@@ -385,6 +424,7 @@ export function clearAllData(): void {
   try {
     if (typeof window !== 'undefined') {
       localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(SCREENSHOTS_KEY);
     }
   } catch (error) {
     console.error('Failed to clear trade data from localStorage:', error);

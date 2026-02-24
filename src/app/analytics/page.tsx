@@ -8,6 +8,7 @@ import {
 } from '@/utils/calculations';
 import { Trade, TradeStats, PerformanceByTime } from '@/types/trade';
 import { useTradeStorage } from '@/hooks/useTradeStorage';
+import { formatFinite } from '@/utils/formatters';
 import StatCard from '@/components/StatCard';
 import Skeleton from '@/components/Skeleton';
 
@@ -35,11 +36,6 @@ function formatHoldTime(ms: number): string {
   }
 }
 
-function formatFinite(value: number | undefined, decimals = 2): string {
-  if (value === undefined || value === null) return 'N/A';
-  if (!Number.isFinite(value)) return 'N/A';
-  return value.toFixed(decimals);
-}
 
 export default function AnalyticsPage() {
   const { trades, isLoading: loading } = useTradeStorage();

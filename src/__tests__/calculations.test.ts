@@ -50,8 +50,8 @@ describe('calculatePnl', () => {
       notes: '',
       tags: [],
     });
-    expect(result.pnl).toBe(19); // (110-100)*2*1 - 1
-    expect(result.pnlPercent).toBeCloseTo(9.5); // 19 / 200 * 100
+    expect(result.pnl).toBe(19); // (110-100)*2 - 1
+    expect(result.pnlPercent).toBeCloseTo(9.5); // 19 / (200/1) * 100
   });
 
   it('calculates short trade PnL correctly', () => {
@@ -72,7 +72,7 @@ describe('calculatePnl', () => {
     expect(result.pnlPercent).toBe(10);
   });
 
-  it('applies leverage correctly', () => {
+  it('leverage does not multiply PnL but affects pnlPercent', () => {
     const result = calculatePnl({
       direction: 'long',
       entryPrice: 100,
@@ -86,7 +86,10 @@ describe('calculatePnl', () => {
       notes: '',
       tags: [],
     });
-    expect(result.pnl).toBe(50); // (105-100)*1*10
+    // PnL = (105-100)*1 = 5 (leverage does NOT multiply PnL)
+    expect(result.pnl).toBe(5);
+    // pnlPercent = return on margin: 5 / (100/10) * 100 = 50%
+    expect(result.pnlPercent).toBe(50);
   });
 
   it('handles zero investment', () => {

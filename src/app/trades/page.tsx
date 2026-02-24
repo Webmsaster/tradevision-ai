@@ -1,5 +1,6 @@
 'use client';
-import { useState, useMemo } from 'react';
+import { Suspense, useState, useMemo } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { Trade } from '@/types/trade';
 import { calculatePnl } from '@/utils/calculations';
 import { useTradeStorage } from '@/hooks/useTradeStorage';
@@ -8,7 +9,20 @@ import TradeForm from '@/components/TradeForm';
 import SyncErrorToast from '@/components/SyncErrorToast';
 
 export default function TradesPage() {
+  return (
+    <Suspense>
+      <TradesPageContent />
+    </Suspense>
+  );
+}
+
+function TradesPageContent() {
   const { trades, addTrade, editTrade, removeTrade, syncError, dismissSyncError } = useTradeStorage();
+  const searchParams = useSearchParams();
+  const highlightIds = useMemo(() => {
+    const raw = searchParams.get('highlight');
+    return raw ? new Set(raw.split(',')) : null;
+  }, [searchParams]);
   const [showForm, setShowForm] = useState(false);
   const [editingTrade, setEditingTrade] = useState<Trade | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -17,6 +31,10 @@ export default function TradesPage() {
   const [dateTo, setDateTo] = useState('');
 
   const filteredTrades = useMemo(() => {
+    // When highlight param is set, only show those trades
+    if (highlightIds && !searchQuery && directionFilter === 'all' && !dateFrom && !dateTo) {
+      return trades.filter(t => highlightIds.has(t.id));
+    }
     return trades.filter((trade) => {
       if (searchQuery && !trade.pair.toLowerCase().includes(searchQuery.toLowerCase())) {
         return false;
@@ -42,9 +60,10 @@ export default function TradesPage() {
 
       return true;
     });
-  }, [trades, searchQuery, directionFilter, dateFrom, dateTo]);
+  }, [trades, searchQuery, directionFilter, dateFrom, dateTo, highlightIds]);
 
   const hasActiveFilters = searchQuery !== '' || directionFilter !== 'all' || dateFrom !== '' || dateTo !== '';
+  const isHighlightMode = highlightIds && !hasActiveFilters;
 
   const totalPnl = useMemo(() => {
     return filteredTrades.reduce((sum, t) => sum + (t.pnl ?? 0), 0);
@@ -114,6 +133,15 @@ export default function TradesPage() {
           + Add Trade
         </button>
       </div>
+
+      {isHighlightMode && (
+        <div className="dashboard-banner" style={{ marginBottom: 16 }}>
+          <span className="dashboard-banner-text">
+            Showing {filteredTrades.length} related trade{filteredTrades.length !== 1 ? 's' : ''} from insight
+          </span>
+          <a href="/trades" className="dashboard-banner-btn">Show All Trades</a>
+        </div>
+      )}
 
       <div className="trades-filters">
         <input
