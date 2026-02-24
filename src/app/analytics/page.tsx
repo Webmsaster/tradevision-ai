@@ -1,45 +1,24 @@
 'use client';
 import { useMemo } from 'react';
-import { Trade } from '@/types/trade';
+import dynamic from 'next/dynamic';
 import {
   calculateAllStats,
-  calculateEquityCurve,
   calculatePerformanceByDayOfWeek,
   calculatePerformanceByHour,
-  calculateStreaks,
 } from '@/utils/calculations';
+import { Trade, TradeStats, PerformanceByTime } from '@/types/trade';
 import { useTradeStorage } from '@/hooks/useTradeStorage';
 import StatCard from '@/components/StatCard';
-import EquityCurve from '@/components/EquityCurve';
-import PerformanceChart from '@/components/PerformanceChart';
 import Skeleton from '@/components/Skeleton';
 
-interface TradeStats {
-  totalTrades: number;
-  winRate: number;
-  avgWin: number;
-  avgLoss: number;
-  riskReward: number;
-  expectancy: number;
-  maxDrawdown: number;
-  maxDrawdownPercent: number;
-  profitFactor: number;
-  sharpeRatio: number;
-  totalPnl: number;
-  bestTrade: Trade | null;
-  worstTrade: Trade | null;
-  longestWinStreak: number;
-  longestLossStreak: number;
-  avgHoldTime: number;
-}
-
-interface PerformanceByTime {
-  label: string;
-  trades: number;
-  winRate: number;
-  avgPnl: number;
-  totalPnl: number;
-}
+// Lazy load Recharts-based component – no SSR needed
+const PerformanceChart = dynamic(
+  () => import('@/components/PerformanceChart'),
+  {
+    ssr: false,
+    loading: () => <Skeleton variant="card" />,
+  }
+);
 
 function formatHoldTime(ms: number): string {
   if (ms <= 0) return 'N/A';
@@ -56,17 +35,18 @@ function formatHoldTime(ms: number): string {
   }
 }
 
+function formatFinite(value: number | undefined, decimals = 2): string {
+  if (value === undefined || value === null) return 'N/A';
+  if (!Number.isFinite(value)) return 'N/A';
+  return value.toFixed(decimals);
+}
+
 export default function AnalyticsPage() {
   const { trades, isLoading: loading } = useTradeStorage();
 
   const stats = useMemo<TradeStats | null>(() => {
     if (trades.length === 0) return null;
     return calculateAllStats(trades) as TradeStats;
-  }, [trades]);
-
-  const equityCurve = useMemo(() => {
-    if (trades.length === 0) return [];
-    return calculateEquityCurve(trades);
   }, [trades]);
 
   const performanceByDay = useMemo<PerformanceByTime[]>(() => {
@@ -77,11 +57,6 @@ export default function AnalyticsPage() {
   const performanceByHour = useMemo<PerformanceByTime[]>(() => {
     if (trades.length === 0) return [];
     return calculatePerformanceByHour(trades) as PerformanceByTime[];
-  }, [trades]);
-
-  const streaks = useMemo(() => {
-    if (trades.length === 0) return { longestWinStreak: 0, longestLossStreak: 0 };
-    return calculateStreaks(trades);
   }, [trades]);
 
   if (loading) {
@@ -132,11 +107,11 @@ export default function AnalyticsPage() {
       <div className="analytics-stats-grid">
         <StatCard
           label="Sharpe Ratio"
-          value={stats?.sharpeRatio?.toFixed(2) ?? 'N/A'}
+          value={formatFinite(stats?.sharpeRatio)}
         />
         <StatCard
           label="Profit Factor"
-          value={stats?.profitFactor?.toFixed(2) ?? 'N/A'}
+          value={formatFinite(stats?.profitFactor)}
         />
         <StatCard
           label="Avg Win"
@@ -151,15 +126,15 @@ export default function AnalyticsPage() {
       <div className="analytics-stats-grid">
         <StatCard
           label="Risk:Reward Ratio"
-          value={stats?.riskReward?.toFixed(2) ?? 'N/A'}
+          value={formatFinite(stats?.riskReward)}
         />
         <StatCard
           label="Longest Win Streak"
-          value={stats?.longestWinStreak?.toString() ?? streaks.longestWinStreak.toString()}
+          value={stats?.longestWinStreak?.toString() ?? '0'}
         />
         <StatCard
           label="Longest Loss Streak"
-          value={stats?.longestLossStreak?.toString() ?? streaks.longestLossStreak.toString()}
+          value={stats?.longestLossStreak?.toString() ?? '0'}
         />
         <StatCard
           label="Avg Hold Time"

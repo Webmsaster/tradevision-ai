@@ -19,6 +19,8 @@ export interface Trade {
   setupType?: string;   // e.g. "breakout", "pullback", "reversal"
   timeframe?: string;   // e.g. "1m", "5m", "15m", "1h", "4h", "1d"
   marketCondition?: 'trending' | 'ranging' | 'volatile' | 'calm';
+  screenshot?: string;   // base64 data URL of an attached chart screenshot
+  accountId?: string;    // for multi-account support
 }
 
 export interface TradeStats {

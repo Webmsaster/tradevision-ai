@@ -330,7 +330,13 @@ function isValidTrade(obj: unknown): obj is Trade {
  * Accepts both a raw Trade[] array and a wrapped { trades: Trade[] } format.
  */
 export function importFromJSON(file: File): Promise<Trade[]> {
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
   return new Promise((resolve, reject) => {
+    if (file.size > MAX_FILE_SIZE) {
+      reject(new Error('File too large. Maximum size is 10 MB.'));
+      return;
+    }
+
     const reader = new FileReader();
 
     reader.onload = () => {

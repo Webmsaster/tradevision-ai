@@ -885,4 +885,128 @@ tr:last-child td { border-bottom: none; }
 
   /* TradeDetailModal */
   .trade-detail-grid { grid-template-columns: repeat(2, 1fr); }
+
+  /* Report */
+  .report-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ============================================
+   Report / Print Export
+   ============================================ */
+
+.report-page {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 32px 24px;
+}
+
+.report-header {
+  margin-bottom: 32px;
+}
+
+.report-header h1 {
+  font-size: 1.6rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.report-date {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin-bottom: 16px;
+}
+
+.report-print-btn {
+  margin-bottom: 8px;
+}
+
+.report-section {
+  margin-bottom: 32px;
+}
+
+.report-section h2 {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin-bottom: 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.report-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+
+.report-stat {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  padding: 16px;
+  text-align: center;
+}
+
+.report-stat-label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.report-stat-value {
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+.report-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.report-table th {
+  text-align: left;
+  padding: 10px 12px;
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.report-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.report-footer {
+  text-align: center;
+  padding-top: 24px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  border-top: 1px solid var(--border);
+}
+
+/* Print styles */
+@media print {
+  body { background: white !important; color: black !important; }
+  .sidebar, .mobile-toggle, .sidebar-overlay, .report-print-btn { display: none !important; }
+  .main-content { margin-left: 0 !important; padding: 0 !important; }
+  .app-layout { display: block !important; }
+  .report-page { padding: 0; max-width: 100%; }
+  .report-stat { border: 1px solid #ddd; }
+  .report-table th, .report-table td { border-bottom: 1px solid #ddd; }
+  .report-section h2 { border-bottom: 1px solid #ddd; }
+  .report-footer { border-top: 1px solid #ddd; }
+  :root {
+    --profit: #16a34a;
+    --loss: #dc2626;
+    --text-muted: #6b7280;
+    --border: #e5e7eb;
+    --glass-bg: #f9fafb;
+    --glass-border: #e5e7eb;
+  }
 }

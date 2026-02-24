@@ -34,6 +34,8 @@ const PLATFORM_OPTIONS = [
   { value: 'generic', label: 'Generic' },
 ];
 
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+
 const EMPTY_MAPPING: CSVColumnMapping = {
   pair: '',
   direction: '',
@@ -86,10 +88,12 @@ export default function CSVImport({ onImport }: CSVImportProps) {
     const droppedFiles = e.dataTransfer.files;
     if (droppedFiles.length > 0) {
       const droppedFile = droppedFiles[0];
-      if (droppedFile.name.endsWith('.csv') || droppedFile.type === 'text/csv') {
-        setFile(droppedFile);
-      } else {
+      if (!(droppedFile.name.endsWith('.csv') || droppedFile.type === 'text/csv')) {
         setError('Please upload a .csv file.');
+      } else if (droppedFile.size > MAX_FILE_SIZE) {
+        setError('File too large. Maximum size is 10 MB.');
+      } else {
+        setFile(droppedFile);
       }
     }
   }
@@ -98,16 +102,25 @@ export default function CSVImport({ onImport }: CSVImportProps) {
     setError('');
     const selected = e.target.files?.[0];
     if (selected) {
-      if (selected.name.endsWith('.csv') || selected.type === 'text/csv') {
-        setFile(selected);
-      } else {
+      if (!(selected.name.endsWith('.csv') || selected.type === 'text/csv')) {
         setError('Please upload a .csv file.');
+      } else if (selected.size > MAX_FILE_SIZE) {
+        setError('File too large. Maximum size is 10 MB.');
+      } else {
+        setFile(selected);
       }
     }
   }
 
   function handleDropzoneClick() {
     fileInputRef.current?.click();
+  }
+
+  function handleDropzoneKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      fileInputRef.current?.click();
+    }
   }
 
   function handleRemoveFile() {
@@ -307,7 +320,11 @@ export default function CSVImport({ onImport }: CSVImportProps) {
         <div className="csv-step-content">
           <div
             className={`csv-dropzone${dragOver ? ' drag-over' : ''}`}
+            role="button"
+            tabIndex={0}
+            aria-label="Upload CSV file. Drag and drop or press Enter to browse files."
             onClick={handleDropzoneClick}
+            onKeyDown={handleDropzoneKeyDown}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}

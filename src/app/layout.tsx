@@ -5,6 +5,7 @@ import Sidebar from '@/components/Sidebar';
 import ThemeProvider from '@/components/ThemeProvider';
 import ErrorBoundary from '@/components/ErrorBoundary';
 import { AuthProvider } from '@/lib/auth-context';
+import ServiceWorkerRegistration from '@/components/ServiceWorkerRegistration';
 
 const inter = Inter({
   subsets: ['latin'],
@@ -12,6 +13,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://tradevision-ai-bay.vercel.app'),
   title: 'TradeVision AI | Trading Journal & Performance Analyzer',
   description: 'AI-powered trading journal that helps traders analyze performance, identify systematic mistakes, and improve their edge through data-driven insights.',
   keywords: ['trading journal', 'performance analyzer', 'AI trading', 'crypto trading', 'trade tracker'],
@@ -31,6 +33,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className={inter.className}>
+        <ServiceWorkerRegistration />
         <AuthProvider>
           <ThemeProvider>
             <ErrorBoundary>

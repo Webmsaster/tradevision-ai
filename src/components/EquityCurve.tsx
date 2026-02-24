@@ -20,13 +20,26 @@ function formatCurrency(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
-function CustomTooltip({ active, payload, label, green, red }: any) {
+interface TooltipPayloadEntry {
+  dataKey: string;
+  value: number;
+}
+
+interface CustomTooltipProps {
+  active?: boolean;
+  payload?: TooltipPayloadEntry[];
+  label?: string;
+  green: string;
+  red: string;
+}
+
+function CustomTooltip({ active, payload, label, green, red }: CustomTooltipProps) {
   if (!active || !payload || payload.length === 0) {
     return null;
   }
 
-  const equityEntry = payload.find((p: any) => p.dataKey === 'equity');
-  const drawdownEntry = payload.find((p: any) => p.dataKey === 'drawdown');
+  const equityEntry = payload.find((p) => p.dataKey === 'equity');
+  const drawdownEntry = payload.find((p) => p.dataKey === 'drawdown');
 
   const equityValue = equityEntry?.value as number | undefined;
   const drawdownValue = drawdownEntry?.value as number | undefined;

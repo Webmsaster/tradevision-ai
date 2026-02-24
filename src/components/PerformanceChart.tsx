@@ -60,7 +60,33 @@ const TITLES: Record<PerformanceChartProps['type'], string> = {
 // Custom tooltips
 // ---------------------------------------------------------------------------
 
-function DistributionTooltip({ active, payload, label }: any) {
+interface DistributionTooltipProps {
+  active?: boolean;
+  payload?: Array<{ value: number; payload: BucketDatum }>;
+  label?: string;
+}
+
+interface PieTooltipProps {
+  active?: boolean;
+  payload?: Array<{ payload: PieDatum }>;
+}
+
+interface TimeTooltipProps {
+  active?: boolean;
+  payload?: Array<{ payload: PerformanceByTime }>;
+  label?: string;
+  green: string;
+  red: string;
+}
+
+interface PairTooltipProps {
+  active?: boolean;
+  payload?: Array<{ payload: PairDatum }>;
+  green: string;
+  red: string;
+}
+
+function DistributionTooltip({ active, payload, label }: DistributionTooltipProps) {
   if (!active || !payload?.length) return null;
   return (
     <div className="perf-tooltip">
@@ -70,9 +96,9 @@ function DistributionTooltip({ active, payload, label }: any) {
   );
 }
 
-function PieTooltip({ active, payload }: any) {
+function PieTooltip({ active, payload }: PieTooltipProps) {
   if (!active || !payload?.length) return null;
-  const d = payload[0].payload as PieDatum;
+  const d = payload[0].payload;
   return (
     <div className="perf-tooltip">
       <div className="perf-tooltip-label">{d.name}</div>
@@ -83,9 +109,9 @@ function PieTooltip({ active, payload }: any) {
   );
 }
 
-function TimeTooltip({ active, payload, label, green, red }: any) {
+function TimeTooltip({ active, payload, label, green, red }: TimeTooltipProps) {
   if (!active || !payload?.length) return null;
-  const d = payload[0].payload as PerformanceByTime;
+  const d = payload[0].payload;
   return (
     <div className="perf-tooltip">
       <div className="perf-tooltip-label">{label}</div>
@@ -99,9 +125,9 @@ function TimeTooltip({ active, payload, label, green, red }: any) {
   );
 }
 
-function PairTooltip({ active, payload, green, red }: any) {
+function PairTooltip({ active, payload, green, red }: PairTooltipProps) {
   if (!active || !payload?.length) return null;
-  const d = payload[0].payload as PairDatum;
+  const d = payload[0].payload;
   return (
     <div className="perf-tooltip">
       <div className="perf-tooltip-label">{d.pair}</div>
@@ -116,6 +142,16 @@ function PairTooltip({ active, payload, green, red }: any) {
 // Custom pie label
 // ---------------------------------------------------------------------------
 
+interface PieLabelProps {
+  cx: number;
+  cy: number;
+  midAngle: number;
+  innerRadius: number;
+  outerRadius: number;
+  percent: number;
+  name: string;
+}
+
 function renderPieLabel({
   cx,
   cy,
@@ -124,7 +160,7 @@ function renderPieLabel({
   outerRadius,
   percent,
   name,
-}: any) {
+}: PieLabelProps) {
   const RADIAN = Math.PI / 180;
   const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
   const x = cx + radius * Math.cos(-midAngle * RADIAN);
