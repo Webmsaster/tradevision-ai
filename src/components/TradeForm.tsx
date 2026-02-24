@@ -71,6 +71,23 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
     }
   }, [editTrade, isOpen]);
 
+  // Escape key and body scroll lock
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+
+    document.addEventListener('keydown', handleEscape);
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.removeEventListener('keydown', handleEscape);
+      document.body.style.overflow = '';
+    };
+  }, [isOpen, onClose]);
+
   function resetForm() {
     setPair('');
     setDirection('long');
@@ -181,7 +198,7 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
 
     const trade: Trade = {
       ...tradeBase,
-      id: editTrade ? editTrade.id : 'trade-' + Date.now() + Math.random().toString(36).substr(2, 9),
+      id: editTrade ? editTrade.id : crypto.randomUUID(),
       pnl,
       pnlPercent,
     } as Trade;
@@ -195,11 +212,11 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
   if (!isOpen) return null;
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="trade-form-title">
       <div className="modal-content" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="trade-form-header">
-          <h2 className="trade-form-title">{editTrade ? 'Edit Trade' : 'Add New Trade'}</h2>
+          <h2 id="trade-form-title" className="trade-form-title">{editTrade ? 'Edit Trade' : 'Add New Trade'}</h2>
           <button className="trade-form-close" onClick={onClose} aria-label="Close">
             &#x2715;
           </button>

@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect } from 'react';
 import { Trade } from '@/types/trade';
 
 interface TradeDetailModalProps {
@@ -51,6 +52,23 @@ function formatPercent(value: number): string {
 }
 
 export default function TradeDetailModal({ trade, isOpen, onClose }: TradeDetailModalProps) {
+  // Escape key and body scroll lock
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+
+    document.addEventListener('keydown', handleEscape);
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.removeEventListener('keydown', handleEscape);
+      document.body.style.overflow = '';
+    };
+  }, [isOpen, onClose]);
+
   if (!isOpen || !trade) {
     return null;
   }
@@ -58,15 +76,15 @@ export default function TradeDetailModal({ trade, isOpen, onClose }: TradeDetail
   const pnlColor = trade.pnl >= 0 ? 'var(--profit)' : 'var(--loss)';
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="trade-detail-title">
       <div className="modal-content" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="trade-detail-header">
-          <span className="trade-detail-pair">{trade.pair}</span>
+          <span id="trade-detail-title" className="trade-detail-pair">{trade.pair}</span>
           <span className={`trade-detail-direction ${trade.direction}`}>
             {trade.direction === 'long' ? 'LONG' : 'SHORT'}
           </span>
-          <button className="trade-detail-close" onClick={onClose} title="Close">
+          <button className="trade-detail-close" onClick={onClose} title="Close" aria-label="Close">
             &#10005;
           </button>
         </div>
