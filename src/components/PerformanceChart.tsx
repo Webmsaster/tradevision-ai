@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import {
   BarChart,
   Bar,
@@ -45,13 +45,6 @@ interface PieDatum {
 }
 
 // ---------------------------------------------------------------------------
-// Colors
-// ---------------------------------------------------------------------------
-
-const GREEN = '#00ff88';
-const RED = '#ff4757';
-
-// ---------------------------------------------------------------------------
 // Chart titles
 // ---------------------------------------------------------------------------
 
@@ -90,13 +83,13 @@ function PieTooltip({ active, payload }: any) {
   );
 }
 
-function TimeTooltip({ active, payload, label }: any) {
+function TimeTooltip({ active, payload, label, green, red }: any) {
   if (!active || !payload?.length) return null;
   const d = payload[0].payload as PerformanceByTime;
   return (
     <div className="perf-tooltip">
       <div className="perf-tooltip-label">{label}</div>
-      <div className="perf-tooltip-value" style={{ color: d.totalPnl >= 0 ? GREEN : RED }}>
+      <div className="perf-tooltip-value" style={{ color: d.totalPnl >= 0 ? green : red }}>
         ${d.totalPnl.toFixed(2)}
       </div>
       <div className="perf-tooltip-value">
@@ -106,13 +99,13 @@ function TimeTooltip({ active, payload, label }: any) {
   );
 }
 
-function PairTooltip({ active, payload }: any) {
+function PairTooltip({ active, payload, green, red }: any) {
   if (!active || !payload?.length) return null;
   const d = payload[0].payload as PairDatum;
   return (
     <div className="perf-tooltip">
       <div className="perf-tooltip-label">{d.pair}</div>
-      <div className="perf-tooltip-value" style={{ color: d.totalPnl >= 0 ? GREEN : RED }}>
+      <div className="perf-tooltip-value" style={{ color: d.totalPnl >= 0 ? green : red }}>
         ${d.totalPnl.toFixed(2)}
       </div>
     </div>
@@ -257,14 +250,14 @@ function fmt(n: number): string {
   return n.toFixed(0);
 }
 
-function buildPieData(trades: Trade[]): PieDatum[] {
+function buildPieData(trades: Trade[], green: string, red: string): PieDatum[] {
   if (trades.length === 0) return [];
   const wins = trades.filter((t) => t.pnl > 0).length;
   const losses = trades.length - wins;
   const total = trades.length;
   return [
-    { name: 'Wins', value: wins, color: GREEN, percent: (wins / total) * 100 },
-    { name: 'Losses', value: losses, color: RED, percent: (losses / total) * 100 },
+    { name: 'Wins', value: wins, color: green, percent: (wins / total) * 100 },
+    { name: 'Losses', value: losses, color: red, percent: (losses / total) * 100 },
   ];
 }
 
@@ -289,6 +282,15 @@ export default function PerformanceChart({
   data,
   height = 300,
 }: PerformanceChartProps) {
+  // ---- theme-aware chart colors ----
+  const [chartColors, setChartColors] = useState({ green: '#00ff88', red: '#ff4757' });
+  useEffect(() => {
+    const green = getComputedStyle(document.documentElement).getPropertyValue('--profit').trim();
+    const red = getComputedStyle(document.documentElement).getPropertyValue('--loss').trim();
+    if (green) setChartColors(c => ({ ...c, green }));
+    if (red) setChartColors(c => ({ ...c, red }));
+  }, []);
+
   // ---- derived data ----
   const distributionData = useMemo(
     () => (type === 'pnl-distribution' ? buildDistributionData(trades) : []),
@@ -296,8 +298,8 @@ export default function PerformanceChart({
   );
 
   const pieData = useMemo(
-    () => (type === 'win-loss-pie' ? buildPieData(trades) : []),
-    [type, trades],
+    () => (type === 'win-loss-pie' ? buildPieData(trades, chartColors.green, chartColors.red) : []),
+    [type, trades, chartColors],
   );
 
   const pairData = useMemo(
@@ -342,7 +344,7 @@ export default function PerformanceChart({
         <Tooltip content={<DistributionTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
         <Bar dataKey="count" radius={[4, 4, 0, 0]} maxBarSize={48}>
           {distributionData.map((d, i) => (
-            <Cell key={i} fill={d.isPositive ? GREEN : RED} fillOpacity={0.8} />
+            <Cell key={i} fill={d.isPositive ? chartColors.green : chartColors.red} fillOpacity={0.8} />
           ))}
         </Bar>
       </BarChart>
@@ -392,10 +394,10 @@ export default function PerformanceChart({
               Math.abs(v) >= 1000 ? `$${(v / 1000).toFixed(1)}k` : `$${v}`
             }
           />
-          <Tooltip content={<TimeTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+          <Tooltip content={<TimeTooltip green={chartColors.green} red={chartColors.red} />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
           <Bar dataKey="totalPnl" radius={[4, 4, 0, 0]} maxBarSize={48}>
             {data.map((d, i) => (
-              <Cell key={i} fill={d.totalPnl >= 0 ? GREEN : RED} fillOpacity={0.8} />
+              <Cell key={i} fill={d.totalPnl >= 0 ? chartColors.green : chartColors.red} fillOpacity={0.8} />
             ))}
           </Bar>
         </BarChart>
@@ -430,10 +432,10 @@ export default function PerformanceChart({
             tickLine={false}
             width={56}
           />
-          <Tooltip content={<PairTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+          <Tooltip content={<PairTooltip green={chartColors.green} red={chartColors.red} />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
           <Bar dataKey="totalPnl" radius={[0, 4, 4, 0]} maxBarSize={28}>
             {pairData.map((d, i) => (
-              <Cell key={i} fill={d.totalPnl >= 0 ? GREEN : RED} fillOpacity={0.8} />
+              <Cell key={i} fill={d.totalPnl >= 0 ? chartColors.green : chartColors.red} fillOpacity={0.8} />
             ))}
           </Bar>
         </BarChart>

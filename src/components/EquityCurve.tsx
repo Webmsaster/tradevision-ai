@@ -1,5 +1,6 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, TooltipProps } from 'recharts';
 import { EquityCurvePoint } from '@/types/trade';
 
@@ -19,13 +20,13 @@ function formatCurrency(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
-function CustomTooltip({ active, payload, label }: TooltipProps<number, string>) {
+function CustomTooltip({ active, payload, label, green, red }: any) {
   if (!active || !payload || payload.length === 0) {
     return null;
   }
 
-  const equityEntry = payload.find((p) => p.dataKey === 'equity');
-  const drawdownEntry = payload.find((p) => p.dataKey === 'drawdown');
+  const equityEntry = payload.find((p: any) => p.dataKey === 'equity');
+  const drawdownEntry = payload.find((p: any) => p.dataKey === 'drawdown');
 
   const equityValue = equityEntry?.value as number | undefined;
   const drawdownValue = drawdownEntry?.value as number | undefined;
@@ -36,7 +37,7 @@ function CustomTooltip({ active, payload, label }: TooltipProps<number, string>)
       {equityValue !== undefined && (
         <div
           className="equity-tooltip-value"
-          style={{ color: equityValue >= 0 ? '#00ff88' : '#ff4757' }}
+          style={{ color: equityValue >= 0 ? green : red }}
         >
           {formatCurrency(equityValue)}
         </div>
@@ -51,6 +52,14 @@ function CustomTooltip({ active, payload, label }: TooltipProps<number, string>)
 }
 
 export default function EquityCurve({ data, height }: EquityCurveProps) {
+  const [colors, setColors] = useState({ green: '#00ff88', red: '#ff4757' });
+  useEffect(() => {
+    const green = getComputedStyle(document.documentElement).getPropertyValue('--profit').trim();
+    const red = getComputedStyle(document.documentElement).getPropertyValue('--loss').trim();
+    if (green) setColors(c => ({ ...c, green }));
+    if (red) setColors(c => ({ ...c, red }));
+  }, []);
+
   if (!data || data.length === 0) {
     return (
       <div className="glass-card equity-curve">
@@ -61,7 +70,7 @@ export default function EquityCurve({ data, height }: EquityCurveProps) {
   }
 
   const latestEquity = data[data.length - 1].equity;
-  const lineColor = latestEquity >= 0 ? '#00ff88' : '#ff4757';
+  const lineColor = latestEquity >= 0 ? colors.green : colors.red;
 
   return (
     <div className="glass-card equity-curve">
@@ -75,8 +84,8 @@ export default function EquityCurve({ data, height }: EquityCurveProps) {
                 <stop offset="100%" stopColor={lineColor} stopOpacity={0} />
               </linearGradient>
               <linearGradient id="drawdownGradient" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#ff4757" stopOpacity={0.15} />
-                <stop offset="100%" stopColor="#ff4757" stopOpacity={0} />
+                <stop offset="0%" stopColor={colors.red} stopOpacity={0.15} />
+                <stop offset="100%" stopColor={colors.red} stopOpacity={0} />
               </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
@@ -93,7 +102,7 @@ export default function EquityCurve({ data, height }: EquityCurveProps) {
               axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
               tickLine={{ stroke: 'rgba(255,255,255,0.1)' }}
             />
-            <Tooltip content={<CustomTooltip />} />
+            <Tooltip content={<CustomTooltip green={colors.green} red={colors.red} />} />
             <Area
               type="monotone"
               dataKey="equity"
@@ -105,11 +114,11 @@ export default function EquityCurve({ data, height }: EquityCurveProps) {
             <Area
               type="monotone"
               dataKey="drawdown"
-              stroke="#ff4757"
+              stroke={colors.red}
               strokeWidth={1}
               strokeOpacity={0.4}
               fill="url(#drawdownGradient)"
-              activeDot={{ r: 3, stroke: '#ff4757', strokeWidth: 1, fill: '#0f1729' }}
+              activeDot={{ r: 3, stroke: colors.red, strokeWidth: 1, fill: '#0f1729' }}
             />
           </AreaChart>
         </ResponsiveContainer>

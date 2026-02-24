@@ -24,10 +24,15 @@ export function useTradeStorage() {
     async function load() {
       setIsLoading(true);
       if (isCloud) {
-        const cloudTrades = await loadTradesFromSupabase(supabase!, user!.id);
-        setTrades(cloudTrades);
-        // Also cache to localStorage for offline access
-        saveTrades(cloudTrades);
+        try {
+          const cloudTrades = await loadTradesFromSupabase(supabase!, user!.id);
+          setTrades(cloudTrades);
+          // Also cache to localStorage for offline access
+          saveTrades(cloudTrades);
+        } catch (err) {
+          console.error('Cloud load failed, falling back to local:', err);
+          setTrades(loadTrades());
+        }
       } else {
         setTrades(loadTrades());
       }
@@ -42,7 +47,11 @@ export function useTradeStorage() {
     setTrades(updated);
     // Sync to cloud if available
     if (isCloud) {
-      await saveTradeToSupabase(supabase!, trade, user!.id);
+      try {
+        await saveTradeToSupabase(supabase!, trade, user!.id);
+      } catch (err) {
+        console.error('Cloud sync failed for addTrade:', err);
+      }
     }
   }, [isCloud, supabase, user]);
 
@@ -50,7 +59,11 @@ export function useTradeStorage() {
     const updated = updateTradeLocal(trade);
     setTrades(updated);
     if (isCloud) {
-      await saveTradeToSupabase(supabase!, trade, user!.id);
+      try {
+        await saveTradeToSupabase(supabase!, trade, user!.id);
+      } catch (err) {
+        console.error('Cloud sync failed for editTrade:', err);
+      }
     }
   }, [isCloud, supabase, user]);
 
@@ -58,7 +71,11 @@ export function useTradeStorage() {
     const updated = deleteTradeLocal(tradeId);
     setTrades(updated);
     if (isCloud) {
-      await deleteTradeFromSupabase(supabase!, tradeId);
+      try {
+        await deleteTradeFromSupabase(supabase!, tradeId);
+      } catch (err) {
+        console.error('Cloud sync failed for removeTrade:', err);
+      }
     }
   }, [isCloud, supabase, user]);
 
@@ -70,7 +87,11 @@ export function useTradeStorage() {
     saveTrades(merged);
     setTrades(merged);
     if (isCloud) {
-      await saveBulkTradesToSupabase(supabase!, unique, user!.id);
+      try {
+        await saveBulkTradesToSupabase(supabase!, unique, user!.id);
+      } catch (err) {
+        console.error('Cloud sync failed for importTrades:', err);
+      }
     }
     return unique.length;
   }, [isCloud, supabase, user]);
@@ -79,7 +100,11 @@ export function useTradeStorage() {
     clearAllData();
     setTrades([]);
     if (isCloud) {
-      await clearAllSupabaseTrades(supabase!, user!.id);
+      try {
+        await clearAllSupabaseTrades(supabase!, user!.id);
+      } catch (err) {
+        console.error('Cloud sync failed for clearAll:', err);
+      }
     }
   }, [isCloud, supabase, user]);
 
@@ -87,7 +112,11 @@ export function useTradeStorage() {
     saveTrades(newTrades);
     setTrades(newTrades);
     if (isCloud) {
-      await saveBulkTradesToSupabase(supabase!, newTrades, user!.id);
+      try {
+        await saveBulkTradesToSupabase(supabase!, newTrades, user!.id);
+      } catch (err) {
+        console.error('Cloud sync failed for setAllTrades:', err);
+      }
     }
   }, [isCloud, supabase, user]);
 
