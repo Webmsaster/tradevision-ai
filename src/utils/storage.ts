@@ -215,12 +215,14 @@ export function loadTrades(): Trade[] {
       screenshots = JSON.parse(localStorage.getItem(SCREENSHOTS_KEY) || '{}');
     } catch {}
 
-    return (parsed as Trade[]).map(t => {
-      if (screenshots[t.id]) {
-        return { ...t, screenshot: screenshots[t.id] };
-      }
-      return t;
-    });
+    return (parsed as unknown[])
+      .filter(isValidTrade)
+      .map(t => {
+        if (screenshots[t.id]) {
+          return { ...t, screenshot: screenshots[t.id] };
+        }
+        return t;
+      });
   } catch (error) {
     console.error('Failed to load trades from localStorage:', error);
     return [];

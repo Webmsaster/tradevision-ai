@@ -66,7 +66,7 @@ export default function ReportPage() {
           </div>
           <div className="report-stat">
             <span className="report-stat-label">Total PnL</span>
-            <span className="report-stat-value" style={{ color: stats.totalPnl >= 0 ? 'var(--profit)' : 'var(--loss)' }}>
+            <span className={`report-stat-value ${stats.totalPnl >= 0 ? 'text-profit' : 'text-loss'}`}>
               {formatCurrency(stats.totalPnl)}
             </span>
           </div>
@@ -88,7 +88,7 @@ export default function ReportPage() {
           </div>
           <div className="report-stat">
             <span className="report-stat-label">Max Drawdown</span>
-            <span className="report-stat-value" style={{ color: 'var(--loss)' }}>{formatCurrency(stats.maxDrawdown)}</span>
+            <span className="report-stat-value text-loss">{formatCurrency(stats.maxDrawdown)}</span>
           </div>
           <div className="report-stat">
             <span className="report-stat-label">Risk:Reward</span>
@@ -114,7 +114,7 @@ export default function ReportPage() {
                 <td>{p.pair}</td>
                 <td>{p.trades}</td>
                 <td>{p.winRate.toFixed(1)}%</td>
-                <td style={{ color: p.pnl >= 0 ? 'var(--profit)' : 'var(--loss)' }}>
+                <td className={p.pnl >= 0 ? 'text-profit' : 'text-loss'}>
                   {formatCurrency(p.pnl)}
                 </td>
               </tr>
@@ -140,7 +140,7 @@ export default function ReportPage() {
                 <td>{d.label}</td>
                 <td>{d.trades}</td>
                 <td>{d.winRate.toFixed(1)}%</td>
-                <td style={{ color: d.totalPnl >= 0 ? 'var(--profit)' : 'var(--loss)' }}>
+                <td className={d.totalPnl >= 0 ? 'text-profit' : 'text-loss'}>
                   {formatCurrency(d.totalPnl)}
                 </td>
               </tr>
@@ -174,10 +174,10 @@ export default function ReportPage() {
                   <td>{t.direction.toUpperCase()}</td>
                   <td>${t.entryPrice.toFixed(2)}</td>
                   <td>${t.exitPrice.toFixed(2)}</td>
-                  <td style={{ color: t.pnl >= 0 ? 'var(--profit)' : 'var(--loss)' }}>
+                  <td className={t.pnl >= 0 ? 'text-profit' : 'text-loss'}>
                     {t.pnl >= 0 ? '+' : ''}{t.pnl.toFixed(2)}
                   </td>
-                  <td style={{ color: t.pnlPercent >= 0 ? 'var(--profit)' : 'var(--loss)' }}>
+                  <td className={t.pnlPercent >= 0 ? 'text-profit' : 'text-loss'}>
                     {t.pnlPercent >= 0 ? '+' : ''}{t.pnlPercent.toFixed(2)}%
                   </td>
                 </tr>

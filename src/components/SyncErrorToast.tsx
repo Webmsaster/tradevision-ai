@@ -1,11 +1,22 @@
 'use client';
 
+import { useEffect } from 'react';
+
 interface SyncErrorToastProps {
   message: string | null;
   onDismiss: () => void;
 }
 
 export default function SyncErrorToast({ message, onDismiss }: SyncErrorToastProps) {
+  useEffect(() => {
+    if (!message) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onDismiss();
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [message, onDismiss]);
+
   if (!message) return null;
 
   return (

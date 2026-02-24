@@ -281,15 +281,7 @@ export default function SettingsPage() {
           {settings.accounts.map((account) => (
             <div
               key={account.id}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '12px',
-                padding: '12px',
-                borderRadius: '8px',
-                background: settings.activeAccountId === account.id ? 'rgba(0,255,136,0.08)' : 'rgba(255,255,255,0.03)',
-                border: settings.activeAccountId === account.id ? '1px solid rgba(0,255,136,0.2)' : '1px solid rgba(255,255,255,0.06)',
-              }}
+              className={`settings-account-row${settings.activeAccountId === account.id ? ' active' : ''}`}
             >
               <input
                 type="radio"

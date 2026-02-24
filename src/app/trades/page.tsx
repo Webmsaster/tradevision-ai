@@ -1,5 +1,5 @@
 'use client';
-import { Suspense, useState, useMemo } from 'react';
+import { Suspense, useState, useMemo, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Trade } from '@/types/trade';
 import { calculatePnl } from '@/utils/calculations';
@@ -117,10 +117,10 @@ function TradesPageContent() {
     setShowForm(true);
   }
 
-  function handleCloseForm() {
+  const handleCloseForm = useCallback(() => {
     setShowForm(false);
     setEditingTrade(null);
-  }
+  }, []);
 
   return (
     <div className="page-container">

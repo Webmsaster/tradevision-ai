@@ -1,5 +1,6 @@
 'use client';
 import { useMemo } from 'react';
+import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import {
   calculateAllStats,
@@ -84,9 +85,9 @@ export default function AnalyticsPage() {
         <div className="empty-state">
           <h2>No Trades Found</h2>
           <p>Import your trades to see detailed analytics and performance charts.</p>
-          <a href="/import" className="btn btn-primary">
+          <Link href="/import" className="btn btn-primary">
             Go to Import
-          </a>
+          </Link>
         </div>
       </div>
     );

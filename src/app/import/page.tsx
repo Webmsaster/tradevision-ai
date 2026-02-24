@@ -2,7 +2,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Trade } from '@/types/trade';
 import { exportToJSON, exportToCSV, importFromJSON } from '@/utils/storage';
-import { sampleTrades } from '@/data/sampleTrades';
 import { useTradeStorage } from '@/hooks/useTradeStorage';
 import CSVImport from '@/components/CSVImport';
 
@@ -90,6 +89,7 @@ export default function ImportPage() {
   // Sample data handler
   // ---------------------------------------------------------------------------
   async function handleLoadSampleData() {
+    const { sampleTrades } = await import('@/data/sampleTrades');
     const count = await importTrades(sampleTrades);
     setNotification({
       message: `Loaded ${count} sample trade${count !== 1 ? 's' : ''}.`,

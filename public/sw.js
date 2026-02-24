@@ -55,7 +55,13 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // App shell and static assets: cache-first with network fallback
+  // Navigation requests (HTML pages): network-first so deployments take effect immediately
+  if (request.mode === 'navigate') {
+    event.respondWith(networkFirst(request, APP_SHELL_CACHE));
+    return;
+  }
+
+  // Static assets (JS, CSS, images): cache-first with network fallback
   event.respondWith(cacheFirst(request, APP_SHELL_CACHE));
 });
 

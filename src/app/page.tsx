@@ -97,7 +97,23 @@ export default function DashboardPage() {
   // Render: waiting for client-side hydration
   // ------------------------------------------------------------------
   if (isLoading) {
-    return null;
+    return (
+      <>
+        <div className="dashboard-header">
+          <Skeleton variant="text" />
+          <Skeleton variant="text" />
+        </div>
+        <div className="dashboard-kpi-grid">
+          <Skeleton variant="card" count={4} />
+        </div>
+        <div className="dashboard-kpi-secondary">
+          <Skeleton variant="card" count={3} />
+        </div>
+        <div className="dashboard-equity">
+          <Skeleton variant="card" />
+        </div>
+      </>
+    );
   }
 
   // ------------------------------------------------------------------

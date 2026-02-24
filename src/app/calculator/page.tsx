@@ -243,6 +243,14 @@ export default function CalculatorPage() {
                   Short
                 </button>
               </div>
+              {entryPrice > 0 && stopLoss > 0 && (
+                (direction === 'long' && stopLoss >= entryPrice) ||
+                (direction === 'short' && stopLoss <= entryPrice)
+              ) && (
+                <p className="calc-sl-warning">
+                  Stop Loss should be {direction === 'long' ? 'below' : 'above'} entry price for a {direction} position.
+                </p>
+              )}
             </div>
           </div>
         </div>
