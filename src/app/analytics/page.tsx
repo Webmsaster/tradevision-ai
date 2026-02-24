@@ -12,7 +12,6 @@ import {
 import StatCard from '@/components/StatCard';
 import EquityCurve from '@/components/EquityCurve';
 import PerformanceChart from '@/components/PerformanceChart';
-import './page.css';
 
 interface TradeStats {
   totalTrades: number;

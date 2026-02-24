@@ -2,7 +2,6 @@
 
 import { useState, useMemo } from 'react';
 import StatCard from '@/components/StatCard';
-import './page.css';
 
 type Direction = 'long' | 'short';
 

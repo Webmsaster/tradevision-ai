@@ -9,7 +9,6 @@ import {
   autoDetectMapping,
   PLATFORM_PRESETS,
 } from '@/utils/csvParser';
-import './CSVImport.css';
 
 interface CSVImportProps {
   onImport: (trades: Trade[]) => void;

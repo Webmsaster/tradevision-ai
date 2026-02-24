@@ -1,7 +1,6 @@
 'use client';
 
 import { Trade } from '@/types/trade';
-import './TradeDetailModal.css';
 
 interface TradeDetailModalProps {
   trade: Trade | null;

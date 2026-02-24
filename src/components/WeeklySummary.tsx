@@ -1,7 +1,6 @@
 'use client';
 import { useMemo } from 'react';
 import { Trade } from '@/types/trade';
-import './WeeklySummary.css';
 
 interface WeeklySummaryProps {
   trades: Trade[];

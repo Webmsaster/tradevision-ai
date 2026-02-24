@@ -1,7 +1,6 @@
 'use client';
 
 import React from 'react';
-import './StatCard.css';
 
 interface StatCardProps {
   label: string;

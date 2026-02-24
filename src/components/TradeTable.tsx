@@ -3,7 +3,6 @@
 import { useState, useMemo } from 'react';
 import { Trade } from '@/types/trade';
 import TradeDetailModal from '@/components/TradeDetailModal';
-import './TradeTable.css';
 
 interface TradeTableProps {
   trades: Trade[];

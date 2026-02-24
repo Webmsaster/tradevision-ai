@@ -4,7 +4,6 @@ import { Trade } from '@/types/trade';
 import { loadTrades, saveTrades, exportToJSON, importFromJSON, clearAllData } from '@/utils/storage';
 import { sampleTrades } from '@/data/sampleTrades';
 import CSVImport from '@/components/CSVImport';
-import './page.css';
 
 export default function ImportPage() {
   const [trades, setTrades] = useState<Trade[]>([]);

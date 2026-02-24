@@ -14,7 +14,6 @@ import {
   Pie,
 } from 'recharts';
 import { Trade, PerformanceByTime } from '@/types/trade';
-import './PerformanceChart.css';
 
 // ---------------------------------------------------------------------------
 // Types

@@ -3,7 +3,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Trade } from '@/types/trade';
 import { calculatePnl } from '@/utils/calculations';
-import './TradeForm.css';
 
 interface TradeFormProps {
   isOpen: boolean;

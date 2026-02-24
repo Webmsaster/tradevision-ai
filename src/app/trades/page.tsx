@@ -5,7 +5,6 @@ import { loadTrades, saveTrades, addTrade, updateTrade, deleteTrade } from '@/ut
 import { calculatePnl } from '@/utils/calculations';
 import TradeTable from '@/components/TradeTable';
 import TradeForm from '@/components/TradeForm';
-import './page.css';
 
 export default function TradesPage() {
   const [trades, setTrades] = useState<Trade[]>([]);

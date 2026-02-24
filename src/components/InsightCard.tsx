@@ -2,7 +2,6 @@
 
 import React from 'react';
 import { AIInsight } from '@/types/trade';
-import './InsightCard.css';
 
 interface InsightCardProps {
   insight: AIInsight;

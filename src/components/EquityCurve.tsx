@@ -2,7 +2,6 @@
 
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, TooltipProps } from 'recharts';
 import { EquityCurvePoint } from '@/types/trade';
-import './EquityCurve.css';
 
 interface EquityCurveProps {
   data: EquityCurvePoint[];

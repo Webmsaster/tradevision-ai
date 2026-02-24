@@ -6,7 +6,6 @@ import { Trade, AIInsight } from '@/types/trade';
 import { loadTrades } from '@/utils/storage';
 import { generateAllInsights } from '@/utils/aiAnalysis';
 import InsightCard from '@/components/InsightCard';
-import './page.css';
 
 type FilterType = 'all' | 'warning' | 'positive' | 'neutral';
 

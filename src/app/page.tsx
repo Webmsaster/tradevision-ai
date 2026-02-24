@@ -12,7 +12,6 @@ import EquityCurve from '@/components/EquityCurve';
 import TradeTable from '@/components/TradeTable';
 import InsightCard from '@/components/InsightCard';
 import WeeklySummary from '@/components/WeeklySummary';
-import './page.css';
 
 /**
  * Format a number as a currency string with dollar sign, commas, and 2 decimal places.
@@ -123,10 +122,10 @@ export default function DashboardPage() {
           get AI-powered insights.
         </p>
         <div className="dashboard-empty-actions">
-          <button className="btn-primary" onClick={handleLoadSampleData}>
+          <button className="btn btn-primary" onClick={handleLoadSampleData}>
             Load Sample Data
           </button>
-          <Link href="/import" className="btn-secondary">
+          <Link href="/import" className="btn btn-secondary">
             Import Your Trades
           </Link>
         </div>

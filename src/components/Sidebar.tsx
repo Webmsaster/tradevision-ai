@@ -4,7 +4,6 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState } from 'react';
 import { useTheme } from '@/components/ThemeProvider';
-import './Sidebar.css';
 
 const navItems = [
   {
