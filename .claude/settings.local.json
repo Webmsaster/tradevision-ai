@@ -7,7 +7,9 @@
       "Bash(node node_modules/next/dist/bin/next build:*)",
       "Bash(cd:*)",
       "mcp__filesystem__directory_tree",
-      "Bash(tail:*)"
+      "Bash(tail:*)",
+      "Bash(cd \"/c/Meine Websites/AI Trading Journal & Performance Analyzer\" && npm install -D tailwindcss @tailwindcss/postcss postcss 2>&1)",
+      "Bash(head:*)"
     ]
   }
 }

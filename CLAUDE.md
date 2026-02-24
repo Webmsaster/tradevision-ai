@@ -26,7 +26,7 @@ supabase/        # Database schema (schema.sql)
 ## Key Architecture Decisions
 - **Dual storage:** Supabase for authenticated users, localStorage as fallback (works without backend)
 - **Client-side AI:** All 13 pattern detectors run in the browser (no API calls needed)
-- **No Tailwind:** Uses custom CSS with CSS variables for theming
+- **Tailwind v4 + CSS variables:** All styles consolidated in `globals.css`, Tailwind utilities available via `@theme` tokens
 
 ## Development
 ```bash
@@ -44,4 +44,4 @@ npm run test    # Run tests (vitest)
 - Functional components with named exports
 - Trade calculations in `utils/calculations.ts`
 - AI insights logic in `utils/aiAnalysis.ts`
-- Component styles in co-located `.css` files
+- All styles in `src/app/globals.css` — use Tailwind utilities for new code
