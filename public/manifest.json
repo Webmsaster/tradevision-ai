@@ -2,8 +2,11 @@
   "name": "TradeVision AI - Trading Journal",
   "short_name": "TradeVision",
   "description": "AI-powered trading journal and performance analyzer",
+  "id": "/",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "orientation": "portrait-primary",
   "background_color": "#0a0e1a",
   "theme_color": "#3b82f6",
   "icons": [
