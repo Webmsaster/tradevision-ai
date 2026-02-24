@@ -143,10 +143,27 @@ export default function TradeTable({
         : '\u25BC'
       : '';
 
+    // Determine aria-sort value for the column header
+    const ariaSortValue: 'ascending' | 'descending' | 'none' = isSorted
+      ? sortDirection === 'asc'
+        ? 'ascending'
+        : 'descending'
+      : 'none';
+
     return (
       <th
+        role="columnheader"
+        aria-sort={ariaSortValue}
         className={isSorted ? 'sorted' : ''}
         onClick={() => handleSort(key)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            handleSort(key);
+          }
+        }}
+        tabIndex={0}
+        style={{ cursor: 'pointer' }}
       >
         {label}
         {arrow && <span className="sort-arrow">{arrow}</span>}
@@ -180,7 +197,7 @@ export default function TradeTable({
               {renderSortHeader('PnL ($)', 'pnl')}
               {renderSortHeader('PnL (%)', 'pnlPercent')}
               {!compact && renderSortHeader('Fees', 'fees')}
-              {!compact && <th>Actions</th>}
+              {!compact && <th role="columnheader">Actions</th>}
             </tr>
           </thead>
           <tbody>

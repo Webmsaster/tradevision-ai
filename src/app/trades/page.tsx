@@ -119,11 +119,12 @@ export default function TradesPage() {
           type="text"
           className="input trades-search"
           placeholder="Search by pair (e.g. BTC/USD)..."
+          aria-label="Search trades by pair"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
         />
 
-        <div className="trades-direction-filter">
+        <div className="trades-direction-filter" role="group" aria-label="Filter by direction">
           <button
             className={`trades-direction-btn ${directionFilter === 'all' ? 'active' : ''}`}
             onClick={() => setDirectionFilter('all')}
@@ -145,15 +146,17 @@ export default function TradesPage() {
         </div>
 
         <div className="trades-date-inputs">
-          <span>From</span>
+          <label htmlFor="filter-date-from">From</label>
           <input
+            id="filter-date-from"
             type="date"
             className="input"
             value={dateFrom}
             onChange={(e) => setDateFrom(e.target.value)}
           />
-          <span>To</span>
+          <label htmlFor="filter-date-to">To</label>
           <input
+            id="filter-date-to"
             type="date"
             className="input"
             value={dateTo}

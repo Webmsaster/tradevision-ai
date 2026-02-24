@@ -121,7 +121,7 @@ export default function CalculatorPage() {
       <div className="calc-layout">
         {/* ---- Left: Input Form ---- */}
         <div className="glass-card calc-form">
-          <div className="calc-form-title">Position Parameters</div>
+          <h2 className="calc-form-title">Position Parameters</h2>
 
           <div className="calc-form-grid">
             {/* Account Balance */}
