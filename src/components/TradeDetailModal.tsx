@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react';
 import { Trade } from '@/types/trade';
+import { useFocusTrap } from '@/hooks/useFocusTrap';
 
 interface TradeDetailModalProps {
   trade: Trade | null;
@@ -69,6 +70,8 @@ export default function TradeDetailModal({ trade, isOpen, onClose }: TradeDetail
     };
   }, [isOpen, onClose]);
 
+  const focusTrapRef = useFocusTrap(isOpen);
+
   if (!isOpen || !trade) {
     return null;
   }
@@ -77,7 +80,7 @@ export default function TradeDetailModal({ trade, isOpen, onClose }: TradeDetail
 
   return (
     <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="trade-detail-title">
-      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+      <div className="modal-content" ref={focusTrapRef} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="trade-detail-header">
           <span id="trade-detail-title" className="trade-detail-pair">{trade.pair}</span>

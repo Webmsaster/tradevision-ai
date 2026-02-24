@@ -22,14 +22,22 @@ interface DashboardWidgets {
 }
 
 function loadWidgetSettings(): DashboardWidgets {
+  const defaults: DashboardWidgets = { equityCurve: true, weeklySummary: true, recentTrades: true, aiInsights: true };
   try {
     const raw = localStorage.getItem('tradevision-settings');
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed.widgets) return parsed.widgets;
+      if (parsed.widgets && typeof parsed.widgets === 'object') {
+        return {
+          equityCurve: typeof parsed.widgets.equityCurve === 'boolean' ? parsed.widgets.equityCurve : true,
+          weeklySummary: typeof parsed.widgets.weeklySummary === 'boolean' ? parsed.widgets.weeklySummary : true,
+          recentTrades: typeof parsed.widgets.recentTrades === 'boolean' ? parsed.widgets.recentTrades : true,
+          aiInsights: typeof parsed.widgets.aiInsights === 'boolean' ? parsed.widgets.aiInsights : true,
+        };
+      }
     }
   } catch {}
-  return { equityCurve: true, weeklySummary: true, recentTrades: true, aiInsights: true };
+  return defaults;
 }
 
 // Lazy load Recharts-based component – no SSR needed

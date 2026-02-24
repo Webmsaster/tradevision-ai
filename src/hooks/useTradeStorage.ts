@@ -13,6 +13,15 @@ import {
   clearAllSupabaseTrades,
 } from '@/utils/storage';
 
+function isValidHttpsUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 // Fire webhook notification for trade events (best-effort, never blocks)
 function fireWebhook(event: 'onTradeAdd' | 'onTradeEdit' | 'onTradeDelete', trade?: Trade) {
   try {
@@ -21,6 +30,7 @@ function fireWebhook(event: 'onTradeAdd' | 'onTradeEdit' | 'onTradeDelete', trad
     const settings = JSON.parse(raw);
     const wh = settings.webhook;
     if (!wh?.enabled || !wh?.url || !wh.events?.[event]) return;
+    if (!isValidHttpsUrl(wh.url)) return;
 
     const msg = event === 'onTradeAdd'
       ? `New trade: ${trade?.pair} ${trade?.direction?.toUpperCase()} — PnL: $${trade?.pnl?.toFixed(2)}`
@@ -201,7 +211,11 @@ export function useTradeStorage() {
     setAllTrades(newTrades);
     if (isCloud) {
       try {
-        await saveBulkTradesToSupabase(supabase!, newTrades, user!.id);
+        // Clear existing cloud data first to prevent stale trades from persisting
+        await clearAllSupabaseTrades(supabase!, user!.id);
+        if (newTrades.length > 0) {
+          await saveBulkTradesToSupabase(supabase!, newTrades, user!.id);
+        }
       } catch (err) {
         console.error('Cloud sync failed for setAllTrades:', err);
         setSyncError('Failed to sync trades to cloud. Your data is saved locally.');

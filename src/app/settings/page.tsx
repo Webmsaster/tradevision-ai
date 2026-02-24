@@ -27,11 +27,46 @@ interface DashboardWidgets {
 }
 
 const SETTINGS_KEY = 'tradevision-settings';
+const VALID_PLATFORMS = ['discord', 'telegram', 'custom'] as const;
 
-function loadSettings(): { webhook: WebhookSettings; accounts: Account[]; activeAccountId: string; widgets: DashboardWidgets } {
+function isValidSettings(obj: unknown): obj is Settings {
+  if (!obj || typeof obj !== 'object') return false;
+  const s = obj as Record<string, unknown>;
+
+  // Validate webhook
+  if (s.webhook && typeof s.webhook === 'object') {
+    const wh = s.webhook as Record<string, unknown>;
+    if (typeof wh.url === 'string' && wh.url && !wh.url.startsWith('https://')) {
+      // Reject non-HTTPS webhook URLs
+      (s.webhook as Record<string, unknown>).url = '';
+      (s.webhook as Record<string, unknown>).enabled = false;
+    }
+    if (typeof wh.platform === 'string' && !(VALID_PLATFORMS as readonly string[]).includes(wh.platform)) {
+      (s.webhook as Record<string, unknown>).platform = 'discord';
+    }
+  }
+
+  // Validate accounts array
+  if (!Array.isArray(s.accounts) || s.accounts.length === 0) return false;
+
+  // Validate widgets
+  if (s.widgets && typeof s.widgets === 'object') {
+    const w = s.widgets as Record<string, unknown>;
+    for (const key of ['equityCurve', 'weeklySummary', 'recentTrades', 'aiInsights']) {
+      if (typeof w[key] !== 'boolean') w[key] = true;
+    }
+  }
+
+  return true;
+}
+
+function loadSettings(): Settings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (isValidSettings(parsed)) return parsed;
+    }
   } catch {}
   return {
     webhook: {
@@ -85,6 +120,16 @@ export default function SettingsPage() {
   async function handleTestWebhook() {
     if (!settings.webhook.url) {
       setTestResult('Please enter a webhook URL first.');
+      return;
+    }
+    try {
+      const parsed = new URL(settings.webhook.url);
+      if (parsed.protocol !== 'https:') {
+        setTestResult('Webhook URL must use HTTPS.');
+        return;
+      }
+    } catch {
+      setTestResult('Invalid URL format.');
       return;
     }
     setTestResult('Sending...');

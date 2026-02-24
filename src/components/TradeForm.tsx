@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Trade } from '@/types/trade';
 import { calculatePnl } from '@/utils/calculations';
+import { useFocusTrap } from '@/hooks/useFocusTrap';
 
 interface TradeFormProps {
   isOpen: boolean;
@@ -212,12 +213,14 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
     onClose();
   }
 
+  const focusTrapRef = useFocusTrap(isOpen);
+
   // ---- render ----
   if (!isOpen) return null;
 
   return (
     <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="trade-form-title">
-      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+      <div className="modal-content" ref={focusTrapRef} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="trade-form-header">
           <h2 id="trade-form-title" className="trade-form-title">{editTrade ? 'Edit Trade' : 'Add New Trade'}</h2>
