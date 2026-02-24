@@ -1,25 +1,18 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Trade } from '@/types/trade';
-import { loadTrades, saveTrades, exportToJSON, importFromJSON, clearAllData } from '@/utils/storage';
+import { exportToJSON, exportToCSV, importFromJSON } from '@/utils/storage';
 import { sampleTrades } from '@/data/sampleTrades';
+import { useTradeStorage } from '@/hooks/useTradeStorage';
 import CSVImport from '@/components/CSVImport';
 
 export default function ImportPage() {
-  const [trades, setTrades] = useState<Trade[]>([]);
+  const { trades, importTrades, clearAll } = useTradeStorage();
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-  const [sampleDataLoaded, setSampleDataLoaded] = useState(false);
   const [jsonFile, setJsonFile] = useState<File | null>(null);
 
-  // Load trades on mount
-  useEffect(() => {
-    const loaded = loadTrades();
-    setTrades(loaded);
-
-    // Check if sample data is already loaded by looking for sample IDs
-    const hasSample = loaded.some((t) => t.id.startsWith('sample-'));
-    setSampleDataLoaded(hasSample);
-  }, []);
+  // Check if sample data is already loaded by looking for sample IDs
+  const sampleDataLoaded = useMemo(() => trades.some((t) => t.id.startsWith('sample-')), [trades]);
 
   // Auto-dismiss notification after 3 seconds
   useEffect(() => {
@@ -33,15 +26,10 @@ export default function ImportPage() {
   // ---------------------------------------------------------------------------
   // CSV Import handler
   // ---------------------------------------------------------------------------
-  function handleCSVImport(newTrades: Trade[]) {
-    const existing = loadTrades();
-    const existingIds = new Set(existing.map((t) => t.id));
-    const uniqueNewTrades = newTrades.filter((t) => !existingIds.has(t.id));
-    const merged = [...existing, ...uniqueNewTrades];
-    saveTrades(merged);
-    setTrades(merged);
+  async function handleCSVImport(newTrades: Trade[]) {
+    const count = await importTrades(newTrades);
     setNotification({
-      message: `Successfully imported ${uniqueNewTrades.length} trade${uniqueNewTrades.length !== 1 ? 's' : ''} from CSV.`,
+      message: `Successfully imported ${count} trade${count !== 1 ? 's' : ''} from CSV.`,
       type: 'success',
     });
   }
@@ -60,12 +48,7 @@ export default function ImportPage() {
         return;
       }
 
-      const existing = loadTrades();
-      const existingIds = new Set(existing.map((t) => t.id));
-      const uniqueNewTrades = importedTrades.filter((t) => !existingIds.has(t.id));
-      const merged = [...existing, ...uniqueNewTrades];
-      saveTrades(merged);
-      setTrades(merged);
+      const count = await importTrades(importedTrades);
       setJsonFile(null);
 
       // Reset the file input
@@ -73,7 +56,7 @@ export default function ImportPage() {
       if (fileInput) fileInput.value = '';
 
       setNotification({
-        message: `Successfully imported ${uniqueNewTrades.length} trade${uniqueNewTrades.length !== 1 ? 's' : ''} from JSON.`,
+        message: `Successfully imported ${count} trade${count !== 1 ? 's' : ''} from JSON.`,
         type: 'success',
       });
     } catch (error) {
@@ -83,30 +66,33 @@ export default function ImportPage() {
   }
 
   // ---------------------------------------------------------------------------
-  // Export handler
+  // Export handlers
   // ---------------------------------------------------------------------------
-  function handleExport() {
+  function handleExportJSON() {
     if (trades.length === 0) {
       setNotification({ message: 'No trades to export.', type: 'error' });
       return;
     }
     exportToJSON(trades);
-    setNotification({ message: 'Trading data exported successfully.', type: 'success' });
+    setNotification({ message: 'Trading data exported as JSON.', type: 'success' });
+  }
+
+  function handleExportCSV() {
+    if (trades.length === 0) {
+      setNotification({ message: 'No trades to export.', type: 'error' });
+      return;
+    }
+    exportToCSV(trades);
+    setNotification({ message: 'Trading data exported as CSV.', type: 'success' });
   }
 
   // ---------------------------------------------------------------------------
   // Sample data handler
   // ---------------------------------------------------------------------------
-  function handleLoadSampleData() {
-    const existing = loadTrades();
-    const existingIds = new Set(existing.map((t) => t.id));
-    const uniqueSampleTrades = sampleTrades.filter((t) => !existingIds.has(t.id));
-    const merged = [...existing, ...uniqueSampleTrades];
-    saveTrades(merged);
-    setTrades(merged);
-    setSampleDataLoaded(true);
+  async function handleLoadSampleData() {
+    const count = await importTrades(sampleTrades);
     setNotification({
-      message: `Loaded ${uniqueSampleTrades.length} sample trade${uniqueSampleTrades.length !== 1 ? 's' : ''}.`,
+      message: `Loaded ${count} sample trade${count !== 1 ? 's' : ''}.`,
       type: 'success',
     });
   }
@@ -120,9 +106,7 @@ export default function ImportPage() {
     );
     if (!confirmed) return;
 
-    clearAllData();
-    setTrades([]);
-    setSampleDataLoaded(false);
+    clearAll();
     setNotification({ message: 'All trading data has been cleared.', type: 'success' });
   }
 
@@ -196,9 +180,14 @@ export default function ImportPage() {
             <p className="import-trade-count">
               You have <strong>{trades.length}</strong> trade{trades.length !== 1 ? 's' : ''}
             </p>
-            <button className="btn btn-primary" onClick={handleExport}>
-              Export as JSON
-            </button>
+            <div style={{ display: 'flex', gap: '12px' }}>
+              <button className="btn btn-primary" onClick={handleExportJSON}>
+                Export as JSON
+              </button>
+              <button className="btn btn-secondary" onClick={handleExportCSV}>
+                Export as CSV
+              </button>
+            </div>
           </div>
 
           {/* Sample Data */}

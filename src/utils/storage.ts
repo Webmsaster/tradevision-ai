@@ -245,6 +245,70 @@ export function exportToJSON(trades: Trade[]): void {
 }
 
 /**
+ * Export trades as a downloadable CSV file.
+ * Headers: Pair,Direction,Entry Price,Exit Price,Quantity,Leverage,Fees,PnL,PnL %,Entry Date,Exit Date,Strategy,Emotion,Notes
+ */
+export function exportToCSV(trades: Trade[]): void {
+  try {
+    const headers = [
+      'Pair',
+      'Direction',
+      'Entry Price',
+      'Exit Price',
+      'Quantity',
+      'Leverage',
+      'Fees',
+      'PnL',
+      'PnL %',
+      'Entry Date',
+      'Exit Date',
+      'Strategy',
+      'Emotion',
+      'Notes',
+    ];
+
+    const escapeCSV = (value: string): string => {
+      if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+        return `"${value.replace(/"/g, '""')}"`;
+      }
+      return value;
+    };
+
+    const rows = trades.map((t) =>
+      [
+        escapeCSV(t.pair),
+        t.direction,
+        t.entryPrice.toString(),
+        t.exitPrice.toString(),
+        t.quantity.toString(),
+        t.leverage.toString(),
+        t.fees.toString(),
+        t.pnl.toFixed(2),
+        t.pnlPercent.toFixed(2),
+        t.entryDate,
+        t.exitDate,
+        escapeCSV(t.strategy ?? ''),
+        t.emotion ?? '',
+        escapeCSV(t.notes ?? ''),
+      ].join(',')
+    );
+
+    const csv = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'trading-journal-export.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    console.error('Failed to export trades to CSV:', error);
+  }
+}
+
+/**
  * Import trades from a JSON file.
  * Accepts both a raw Trade[] array and a wrapped { trades: Trade[] } format.
  */
