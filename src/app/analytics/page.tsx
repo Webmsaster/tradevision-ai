@@ -1,7 +1,6 @@
 'use client';
-import { useState, useEffect, useMemo } from 'react';
+import { useMemo } from 'react';
 import { Trade } from '@/types/trade';
-import { loadTrades } from '@/utils/storage';
 import {
   calculateAllStats,
   calculateEquityCurve,
@@ -9,9 +8,11 @@ import {
   calculatePerformanceByHour,
   calculateStreaks,
 } from '@/utils/calculations';
+import { useTradeStorage } from '@/hooks/useTradeStorage';
 import StatCard from '@/components/StatCard';
 import EquityCurve from '@/components/EquityCurve';
 import PerformanceChart from '@/components/PerformanceChart';
+import Skeleton from '@/components/Skeleton';
 
 interface TradeStats {
   totalTrades: number;
@@ -56,14 +57,7 @@ function formatHoldTime(ms: number): string {
 }
 
 export default function AnalyticsPage() {
-  const [trades, setTrades] = useState<Trade[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const stored = loadTrades();
-    setTrades(stored);
-    setLoading(false);
-  }, []);
+  const { trades, isLoading: loading } = useTradeStorage();
 
   const stats = useMemo<TradeStats | null>(() => {
     if (trades.length === 0) return null;
@@ -93,7 +87,18 @@ export default function AnalyticsPage() {
   if (loading) {
     return (
       <div className="page-container">
-        <p>Loading analytics...</p>
+        <div className="page-header">
+          <div>
+            <Skeleton variant="text" />
+            <Skeleton variant="text" />
+          </div>
+        </div>
+        <div className="analytics-stats-grid">
+          <Skeleton variant="card" count={4} />
+        </div>
+        <div className="analytics-stats-grid">
+          <Skeleton variant="card" count={4} />
+        </div>
       </div>
     );
   }

@@ -3,6 +3,7 @@ import { Inter } from 'next/font/google';
 import './globals.css';
 import Sidebar from '@/components/Sidebar';
 import ThemeProvider from '@/components/ThemeProvider';
+import ErrorBoundary from '@/components/ErrorBoundary';
 import { AuthProvider } from '@/lib/auth-context';
 
 const inter = Inter({
@@ -32,12 +33,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className={inter.className}>
         <AuthProvider>
           <ThemeProvider>
-            <div className="app-layout">
-              <Sidebar />
-              <main className="main-content">
-                {children}
-              </main>
-            </div>
+            <ErrorBoundary>
+              <div className="app-layout">
+                <Sidebar />
+                <main className="main-content">
+                  {children}
+                </main>
+              </div>
+            </ErrorBoundary>
           </ThemeProvider>
         </AuthProvider>
       </body>
