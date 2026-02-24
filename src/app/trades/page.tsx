@@ -1,24 +1,19 @@
 'use client';
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { Trade } from '@/types/trade';
-import { loadTrades, saveTrades, addTrade, updateTrade, deleteTrade } from '@/utils/storage';
 import { calculatePnl } from '@/utils/calculations';
+import { useTradeStorage } from '@/hooks/useTradeStorage';
 import TradeTable from '@/components/TradeTable';
 import TradeForm from '@/components/TradeForm';
 
 export default function TradesPage() {
-  const [trades, setTrades] = useState<Trade[]>([]);
+  const { trades, addTrade, editTrade, removeTrade } = useTradeStorage();
   const [showForm, setShowForm] = useState(false);
   const [editingTrade, setEditingTrade] = useState<Trade | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [directionFilter, setDirectionFilter] = useState<'all' | 'long' | 'short'>('all');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
-
-  useEffect(() => {
-    const stored = loadTrades();
-    setTrades(stored);
-  }, []);
 
   const filteredTrades = useMemo(() => {
     return trades.filter((trade) => {
@@ -75,8 +70,7 @@ export default function TradesPage() {
       pnl: pnlResult.pnl,
       pnlPercent: pnlResult.pnlPercent,
     };
-    const updated = addTrade(newTrade);
-    setTrades(updated);
+    addTrade(newTrade);
     setShowForm(false);
   }
 
@@ -87,8 +81,7 @@ export default function TradesPage() {
       pnl: pnlResult.pnl,
       pnlPercent: pnlResult.pnlPercent,
     };
-    const updated = updateTrade(updatedTrade);
-    setTrades(updated);
+    editTrade(updatedTrade);
     setEditingTrade(null);
     setShowForm(false);
   }
@@ -96,8 +89,7 @@ export default function TradesPage() {
   function handleDeleteTrade(id: string) {
     const confirmed = window.confirm('Are you sure you want to delete this trade? This action cannot be undone.');
     if (!confirmed) return;
-    const updated = deleteTrade(id);
-    setTrades(updated);
+    removeTrade(id);
   }
 
   function handleEdit(trade: Trade) {

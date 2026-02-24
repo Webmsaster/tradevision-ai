@@ -1,12 +1,11 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import Link from 'next/link';
-import { Trade } from '@/types/trade';
-import { loadTrades, saveTrades } from '@/utils/storage';
 import { calculateAllStats, calculateEquityCurve } from '@/utils/calculations';
 import { generateAllInsights } from '@/utils/aiAnalysis';
 import { sampleTrades } from '@/data/sampleTrades';
+import { useTradeStorage } from '@/hooks/useTradeStorage';
 import StatCard from '@/components/StatCard';
 import EquityCurve from '@/components/EquityCurve';
 import TradeTable from '@/components/TradeTable';
@@ -28,22 +27,11 @@ function formatCurrency(n: number): string {
 }
 
 export default function DashboardPage() {
-  const [trades, setTrades] = useState<Trade[]>([]);
+  const { trades, isLoading, setAllTrades, clearAll } = useTradeStorage();
   const [isDemo, setIsDemo] = useState(false);
-  const [isLoaded, setIsLoaded] = useState(false);
 
-  // Load trades from localStorage on mount
-  useEffect(() => {
-    const saved = loadTrades();
-    if (saved.length > 0) {
-      setTrades(saved);
-      // Check if these are the sample trades by comparing the first trade id
-      if (saved[0]?.id?.startsWith('sample-')) {
-        setIsDemo(true);
-      }
-    }
-    setIsLoaded(true);
-  }, []);
+  // Detect demo mode whenever trades change
+  const isDemoData = trades.length > 0 && trades[0]?.id?.startsWith('sample-');
 
   // Calculate stats from the current set of trades
   const stats = useMemo(() => calculateAllStats(trades), [trades]);
@@ -71,8 +59,7 @@ export default function DashboardPage() {
    * Load the built-in sample data set, persist it, and switch to demo mode.
    */
   const handleLoadSampleData = () => {
-    saveTrades(sampleTrades);
-    setTrades(sampleTrades);
+    setAllTrades(sampleTrades);
     setIsDemo(true);
   };
 
@@ -80,15 +67,14 @@ export default function DashboardPage() {
    * Clear demo data, remove from storage, and reset state.
    */
   const handleClearDemo = () => {
-    saveTrades([]);
-    setTrades([]);
+    clearAll();
     setIsDemo(false);
   };
 
   // ------------------------------------------------------------------
   // Render: waiting for client-side hydration
   // ------------------------------------------------------------------
-  if (!isLoaded) {
+  if (isLoading) {
     return null;
   }
 
@@ -148,7 +134,7 @@ export default function DashboardPage() {
   return (
     <>
       {/* Demo mode banner */}
-      {isDemo && (
+      {(isDemo || isDemoData) && (
         <div className="dashboard-banner">
           <span className="dashboard-banner-text">
             <svg
