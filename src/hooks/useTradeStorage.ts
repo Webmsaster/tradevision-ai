@@ -13,6 +13,35 @@ import {
   clearAllSupabaseTrades,
 } from '@/utils/storage';
 
+// Fire webhook notification for trade events (best-effort, never blocks)
+function fireWebhook(event: 'onTradeAdd' | 'onTradeEdit' | 'onTradeDelete', trade?: Trade) {
+  try {
+    const raw = localStorage.getItem('tradevision-settings');
+    if (!raw) return;
+    const settings = JSON.parse(raw);
+    const wh = settings.webhook;
+    if (!wh?.enabled || !wh?.url || !wh.events?.[event]) return;
+
+    const msg = event === 'onTradeAdd'
+      ? `New trade: ${trade?.pair} ${trade?.direction?.toUpperCase()} — PnL: $${trade?.pnl?.toFixed(2)}`
+      : event === 'onTradeEdit'
+        ? `Trade updated: ${trade?.pair} — PnL: $${trade?.pnl?.toFixed(2)}`
+        : `Trade deleted: ${trade?.pair ?? 'unknown'}`;
+
+    const payload = wh.platform === 'discord'
+      ? { content: msg }
+      : wh.platform === 'telegram'
+        ? { text: msg }
+        : { event, message: msg, trade };
+
+    fetch(wh.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).catch(() => {}); // best-effort
+  } catch {}
+}
+
 export function useTradeStorage() {
   const { user, supabase } = useAuth();
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -45,6 +74,7 @@ export function useTradeStorage() {
     // Always save locally first
     const updated = addTradeLocal(trade);
     setTrades(updated);
+    fireWebhook('onTradeAdd', trade);
     // Sync to cloud if available
     if (isCloud) {
       try {
@@ -58,6 +88,7 @@ export function useTradeStorage() {
   const editTrade = useCallback(async (trade: Trade) => {
     const updated = updateTradeLocal(trade);
     setTrades(updated);
+    fireWebhook('onTradeEdit', trade);
     if (isCloud) {
       try {
         await saveTradeToSupabase(supabase!, trade, user!.id);
@@ -68,8 +99,10 @@ export function useTradeStorage() {
   }, [isCloud, supabase, user]);
 
   const removeTrade = useCallback(async (tradeId: string) => {
+    const removedTrade = trades.find(t => t.id === tradeId);
     const updated = deleteTradeLocal(tradeId);
     setTrades(updated);
+    fireWebhook('onTradeDelete', removedTrade);
     if (isCloud) {
       try {
         await deleteTradeFromSupabase(supabase!, tradeId);
@@ -77,7 +110,7 @@ export function useTradeStorage() {
         console.error('Cloud sync failed for removeTrade:', err);
       }
     }
-  }, [isCloud, supabase, user]);
+  }, [isCloud, supabase, user, trades]);
 
   const importTrades = useCallback(async (newTrades: Trade[]) => {
     const existing = loadTrades();
