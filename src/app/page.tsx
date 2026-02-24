@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useMemo } from 'react';
 import Link from 'next/link';
 import { calculateAllStats, calculateEquityCurve } from '@/utils/calculations';
 import { generateAllInsights } from '@/utils/aiAnalysis';
@@ -28,9 +28,8 @@ function formatCurrency(n: number): string {
 
 export default function DashboardPage() {
   const { trades, isLoading, setAllTrades, clearAll } = useTradeStorage();
-  const [isDemo, setIsDemo] = useState(false);
 
-  // Detect demo mode whenever trades change
+  // Detect demo mode by checking if sample data IDs are present
   const isDemoData = trades.length > 0 && trades[0]?.id?.startsWith('sample-');
 
   // Calculate stats from the current set of trades
@@ -60,7 +59,6 @@ export default function DashboardPage() {
    */
   const handleLoadSampleData = () => {
     setAllTrades(sampleTrades);
-    setIsDemo(true);
   };
 
   /**
@@ -68,7 +66,6 @@ export default function DashboardPage() {
    */
   const handleClearDemo = () => {
     clearAll();
-    setIsDemo(false);
   };
 
   // ------------------------------------------------------------------
@@ -134,7 +131,7 @@ export default function DashboardPage() {
   return (
     <>
       {/* Demo mode banner */}
-      {(isDemo || isDemoData) && (
+      {isDemoData && (
         <div className="dashboard-banner">
           <span className="dashboard-banner-text">
             <svg
