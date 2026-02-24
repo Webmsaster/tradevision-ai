@@ -51,6 +51,7 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
+      if (!supabase) return;
       if (isSignUp) {
         const { error } = await supabase.auth.signUp({ email, password });
         if (error) throw error;

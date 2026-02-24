@@ -20,6 +20,7 @@
     "uuid": "^11.0.0"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.2.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^22.10.0",
@@ -29,6 +30,8 @@
     "@types/uuid": "^10.0.0",
     "@vitejs/plugin-react": "^5.1.4",
     "jsdom": "^28.1.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.2.1",
     "typescript": "^5.7.0",
     "vitest": "^4.0.18"
   }
