@@ -1,0 +1,119 @@
+.insight-card {
+  padding: 20px;
+  position: relative;
+  border-left: 3px solid transparent;
+}
+
+.insight-card.warning {
+  border-left-color: var(--loss);
+}
+
+.insight-card.positive {
+  border-left-color: var(--profit);
+}
+
+.insight-card.neutral {
+  border-left-color: var(--accent-blue);
+}
+
+.insight-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.insight-card-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.insight-card-icon.warning {
+  color: var(--loss);
+}
+
+.insight-card-icon.positive {
+  color: var(--profit);
+}
+
+.insight-card-icon.neutral {
+  color: var(--accent-blue);
+}
+
+.insight-card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.insight-card-category {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 0.65rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: var(--glass-bg);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.insight-card-description {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin-bottom: 12px;
+}
+
+.insight-card-severity {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-bottom: 12px;
+}
+
+.severity-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border);
+  transition: background var(--transition-fast);
+}
+
+.severity-dot.filled.warning {
+  background: var(--loss);
+}
+
+.severity-dot.filled.positive {
+  background: var(--profit);
+}
+
+.severity-dot.filled.neutral {
+  background: var(--accent-blue);
+}
+
+.insight-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.insight-view-trades {
+  font-size: 0.8rem;
+  color: var(--accent-blue);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-weight: 500;
+  padding: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.insight-view-trades:hover {
+  opacity: 0.8;
+  text-decoration: underline;
+}

@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(npx next build:*)",
+      "Bash(node node_modules/next/dist/bin/next build:*)",
+      "Bash(cd:*)",
+      "mcp__filesystem__directory_tree",
+      "Bash(tail:*)"
+    ]
+  }
+}

@@ -1,0 +1,49 @@
+.performance-chart {
+  padding: 24px;
+}
+
+.performance-chart-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 20px;
+}
+
+.performance-chart-container {
+  margin: 0 -12px;
+}
+
+.perf-tooltip {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  box-shadow: var(--glass-shadow);
+}
+
+.perf-tooltip-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.perf-tooltip-value {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.performance-chart-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.pie-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  fill: var(--text-primary);
+}
