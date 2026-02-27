@@ -35,8 +35,8 @@
   --bg-card-hover: rgba(17, 24, 39, 0.95);
   --text-primary: #f1f5f9;
   --text-secondary: #94a3b8;
-  --text-muted: #64748b;
-  --accent-blue: #3b82f6;
+  --text-muted: #7a8a9c;
+  --accent-blue: #2563eb;
   --accent-blue-glow: rgba(59, 130, 246, 0.3);
   --accent-purple: #8b5cf6;
   --profit: #00ff88;
@@ -65,7 +65,7 @@
   --bg-card-hover: rgba(255, 255, 255, 1);
   --text-primary: #0f172a;
   --text-secondary: #475569;
-  --text-muted: #94a3b8;
+  --text-muted: #64748b;
   --border: rgba(0, 0, 0, 0.08);
   --border-hover: rgba(0, 0, 0, 0.15);
   --glass-bg: rgba(255, 255, 255, 0.7);

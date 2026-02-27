@@ -54,6 +54,9 @@ self.addEventListener('fetch', (event) => {
   // Skip chrome-extension and other non-http requests
   if (!url.protocol.startsWith('http')) return;
 
+  // Skip Next.js build assets — they use content hashes and are immutable
+  if (url.pathname.startsWith('/_next/')) return;
+
   // API requests: network-first with cache fallback
   if (url.pathname.startsWith('/api/') || url.hostname.includes('supabase')) {
     event.respondWith(networkFirst(request, API_CACHE));
