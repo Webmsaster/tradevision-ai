@@ -1,16 +1,16 @@
 import { test, expect } from '@playwright/test';
+import { gotoAndWaitForApp, waitForAppReady } from './helpers';
 
 test.describe('CSV Import & Sample Data', () => {
   test.beforeEach(async ({ page }) => {
-    // Clear localStorage before each test
-    await page.goto('/import');
+    await gotoAndWaitForApp(page, '/import');
     await page.evaluate(() => localStorage.clear());
-    await page.reload();
-    await page.waitForLoadState('networkidle');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitForAppReady(page);
+    await expect(page.getByRole('heading', { name: 'Import & Export' })).toBeVisible();
   });
 
   test('should display the Import & Export page with sections', async ({ page }) => {
-    await expect(page.getByRole('heading', { name: 'Import & Export' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Import from CSV' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Import from JSON Backup' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Export Data' })).toBeVisible();
@@ -18,24 +18,17 @@ test.describe('CSV Import & Sample Data', () => {
   });
 
   test('should load sample data and show success notification', async ({ page }) => {
-    // Click "Load Sample Data" button
     await page.getByRole('button', { name: 'Load Sample Data' }).click();
 
-    // A success notification should appear
-    await expect(page.getByText(/Loaded.*sample/i)).toBeVisible({ timeout: 10000 });
-
-    // The "Sample data loaded" text should appear
+    const successNotice = page.locator('.import-notification.success');
+    await expect(successNotice).toContainText(/Loaded\s+\d+\s+sample\s+trade/i, { timeout: 10000 });
     await expect(page.getByText('Sample data loaded')).toBeVisible({ timeout: 10000 });
   });
 
   test('should show trade count after loading sample data', async ({ page }) => {
     await page.getByRole('button', { name: 'Load Sample Data' }).click();
 
-    // Wait for the data to load
     await expect(page.getByText('Sample data loaded')).toBeVisible({ timeout: 10000 });
-
-    // The trade count display should show more than 0 trades
-    const tradeCountText = page.locator('text=/You have \\d+ trade/');
-    await expect(tradeCountText).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('.import-trade-count strong')).not.toHaveText('0', { timeout: 10000 });
   });
 });

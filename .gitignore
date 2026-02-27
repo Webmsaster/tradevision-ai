@@ -40,6 +40,7 @@ next-env.d.ts
 /blob-report/
 /playwright/.cache/
 .playwright-mcp/
+/.playwright-test-results*/
 
 # lighthouse reports
 lh-*.json

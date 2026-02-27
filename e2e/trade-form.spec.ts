@@ -1,12 +1,13 @@
 import { test, expect } from '@playwright/test';
+import { gotoAndWaitForApp, waitForAppReady } from './helpers';
 
 test.describe('Trade Form', () => {
   test.beforeEach(async ({ page }) => {
-    // Clear localStorage before each test for a clean state
-    await page.goto('/trades');
+    await gotoAndWaitForApp(page, '/trades');
     await page.evaluate(() => localStorage.clear());
-    await page.reload();
-    await page.waitForLoadState('networkidle');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitForAppReady(page);
+    await expect(page.getByRole('heading', { name: 'Trade History' })).toBeVisible();
   });
 
   test('should open the Add Trade form', async ({ page }) => {
@@ -18,10 +19,8 @@ test.describe('Trade Form', () => {
     await page.getByRole('button', { name: '+ Add Trade' }).click();
     await expect(page.getByRole('heading', { name: 'Add New Trade' })).toBeVisible();
 
-    // Click the submit button inside the modal (exact match to avoid ambiguity)
     await page.getByRole('button', { name: 'Add Trade', exact: true }).click();
 
-    // Validation error messages should appear
     await expect(page.getByText('Pair is required')).toBeVisible();
     await expect(page.getByText('Valid entry price is required')).toBeVisible();
     await expect(page.getByText('Valid exit price is required')).toBeVisible();
@@ -33,29 +32,18 @@ test.describe('Trade Form', () => {
   test('should add a new trade and see it in the table', async ({ page }) => {
     await page.getByRole('button', { name: '+ Add Trade' }).click();
 
-    // Fill in the required fields
-    await page.getByPlaceholder('BTC/USDT').fill('ETH/USDT');
+    const modal = page.getByRole('dialog');
+    await modal.getByPlaceholder('BTC/USDT').fill('ETH/USDT');
 
-    // Direction defaults to "Long", so no change needed
+    await modal.locator('.form-group:has(.form-label:text("Entry Price")) input').fill('2000');
+    await modal.locator('.form-group:has(.form-label:text("Exit Price")) input').fill('2200');
+    await modal.locator('.form-group:has(.form-label:text("Quantity")) input').fill('1');
 
-    // Entry Price - target by placeholder within the modal
-    const modal = page.locator('.modal-content');
-    const priceInputs = modal.locator('input[placeholder="0.00"]');
-    await priceInputs.nth(0).fill('2000'); // Entry Price
-    await priceInputs.nth(1).fill('2200'); // Exit Price
-    await priceInputs.nth(2).fill('1');    // Quantity
-
-    // Entry Date
     const dateInputs = modal.locator('input[type="datetime-local"]');
     await dateInputs.first().fill('2026-01-15T10:00');
-
-    // Exit Date
     await dateInputs.nth(1).fill('2026-01-16T14:00');
 
-    // Submit the form (exact match)
     await page.getByRole('button', { name: 'Add Trade', exact: true }).click();
-
-    // Verify the trade appears in the table
     await expect(page.getByText('ETH/USDT')).toBeVisible();
   });
 
