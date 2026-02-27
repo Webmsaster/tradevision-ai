@@ -302,7 +302,7 @@ export default function CSVImport({ onImport }: CSVImportProps) {
             className={`csv-dropzone${dragOver ? ' drag-over' : ''}`}
             role="button"
             tabIndex={0}
-            aria-label="Upload CSV file. Drag and drop or press Enter to browse files."
+            aria-label="Drag & drop your CSV file here or click to browse files"
             onClick={handleDropzoneClick}
             onKeyDown={handleDropzoneKeyDown}
             onDragOver={handleDragOver}
