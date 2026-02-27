@@ -130,8 +130,9 @@ export default function CalculatorPage() {
           <div className="calc-form-grid">
             {/* Account Balance */}
             <div className="input-group">
-              <label className="input-label">Account Balance ($)</label>
+              <label htmlFor="calc-balance" className="input-label">Account Balance ($)</label>
               <input
+                id="calc-balance"
                 className="input"
                 type="number"
                 min={0}
@@ -142,8 +143,9 @@ export default function CalculatorPage() {
 
             {/* Risk Per Trade */}
             <div className="input-group">
-              <label className="input-label">Risk Per Trade (%)</label>
+              <label htmlFor="calc-risk" className="input-label">Risk Per Trade (%)</label>
               <input
+                id="calc-risk"
                 className="input"
                 type="number"
                 min={0.1}
@@ -171,8 +173,9 @@ export default function CalculatorPage() {
 
             {/* Entry Price */}
             <div className="input-group">
-              <label className="input-label">Entry Price ($)</label>
+              <label htmlFor="calc-entry" className="input-label">Entry Price ($)</label>
               <input
+                id="calc-entry"
                 className="input"
                 type="number"
                 min={0}
@@ -185,8 +188,9 @@ export default function CalculatorPage() {
 
             {/* Stop Loss */}
             <div className="input-group">
-              <label className="input-label">Stop Loss Price ($)</label>
+              <label htmlFor="calc-stoploss" className="input-label">Stop Loss Price ($)</label>
               <input
+                id="calc-stoploss"
                 className="input"
                 type="number"
                 min={0}
@@ -199,8 +203,9 @@ export default function CalculatorPage() {
 
             {/* Take Profit */}
             <div className="input-group">
-              <label className="input-label">Take Profit Price ($) — optional</label>
+              <label htmlFor="calc-takeprofit" className="input-label">Take Profit Price ($) — optional</label>
               <input
+                id="calc-takeprofit"
                 className="input"
                 type="number"
                 min={0}
@@ -213,8 +218,9 @@ export default function CalculatorPage() {
 
             {/* Leverage */}
             <div className="input-group">
-              <label className="input-label">Leverage</label>
+              <label htmlFor="calc-leverage" className="input-label">Leverage</label>
               <input
+                id="calc-leverage"
                 className="input"
                 type="number"
                 min={1}

@@ -114,7 +114,7 @@ body {
 /* ---- Buttons ---- */
 .btn {
   display: inline-flex; align-items: center; gap: 8px;
-  padding: 10px 20px; border-radius: var(--radius-md);
+  padding: 10px 20px; border-radius: var(--radius-md); min-height: 44px;
   font-weight: 500; font-size: 0.875rem; cursor: pointer;
   transition: all var(--transition-normal); border: none; font-family: inherit;
 }
@@ -131,7 +131,7 @@ body {
 
 /* ---- Form Elements ---- */
 .form-input, .input, select, textarea {
-  width: 100%; padding: 10px 14px;
+  width: 100%; padding: 10px 14px; min-height: 44px;
   background: var(--bg-secondary); border: 1px solid var(--border);
   border-radius: var(--radius-md); color: var(--text-primary);
   font-family: inherit; font-size: 0.875rem;
@@ -340,7 +340,7 @@ tr:last-child td { border-bottom: none; }
 .csv-step-indicator.active .csv-step-number { background: var(--accent-blue); border-color: var(--accent-blue); color: white; }
 .csv-step-indicator.completed .csv-step-number { background: var(--profit); border-color: var(--profit); color: white; }
 .csv-step-divider { width: 20px; height: 1px; background: var(--border); }
-.csv-step-label { font-size: 0.8rem; }
+.csv-step-label { font-size: 0.8rem; color: var(--text-secondary); }
 .csv-dropzone {
   border: 2px dashed var(--border); border-radius: var(--radius-lg);
   padding: 60px 40px; text-align: center; cursor: pointer;
@@ -591,8 +591,8 @@ tr:last-child td { border-bottom: none; }
 .trades-search { flex: 1; min-width: 200px; }
 .trades-direction-filter { display: flex; gap: 4px; background: var(--bg-secondary); border-radius: var(--radius-md); padding: 3px; }
 .trades-direction-btn {
-  padding: 6px 14px; border: none; background: transparent; color: var(--text-muted);
-  font-size: 0.8rem; font-weight: 500; cursor: pointer;
+  padding: 8px 14px; border: none; background: transparent; color: var(--text-muted);
+  font-size: 0.8rem; font-weight: 500; cursor: pointer; min-height: 36px;
   border-radius: var(--radius-sm); transition: all var(--transition-fast); font-family: inherit;
 }
 .trades-direction-btn.active { background: var(--accent-blue); color: white; }
@@ -1040,6 +1040,9 @@ tr:last-child td { border-bottom: none; }
 }
 
 /* Settings account rows */
+.settings-account-row input[type="radio"] {
+  width: 20px; height: 20px; min-width: 20px; margin: 2px; accent-color: var(--accent-blue);
+}
 .settings-account-row {
   display: flex;
   align-items: center;

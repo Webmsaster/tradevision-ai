@@ -149,6 +149,7 @@ export default function ImportPage() {
               Restore trades from a previously exported JSON backup file.
             </p>
             <div className="import-json-input">
+              <label htmlFor="json-file-input" className="input-label">JSON file</label>
               <input
                 id="json-file-input"
                 type="file"
