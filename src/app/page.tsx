@@ -41,7 +41,7 @@ function loadWidgetSettings(): DashboardWidgets {
   return defaults;
 }
 
-// Lazy load Recharts-based component – no SSR needed
+// Lazy load Recharts-based component - no SSR needed
 const EquityCurve = dynamic(() => import('@/components/EquityCurve'), {
   ssr: false,
   loading: () => <Skeleton variant="card" />,

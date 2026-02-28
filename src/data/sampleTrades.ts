@@ -19,7 +19,7 @@ import { Trade } from '@/types/trade';
 // =============================================================================
 
 export const sampleTrades: Trade[] = [
-  // ===== TRADE #1 — BTC/USDT Long WIN =====
+  // ===== TRADE #1 - BTC/USDT Long WIN =====
   {
     id: 'sample-1',
     pair: 'BTC/USDT',
@@ -39,7 +39,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #2 — ETH/USDT Long WIN =====
+  // ===== TRADE #2 - ETH/USDT Long WIN =====
   {
     id: 'sample-2',
     pair: 'ETH/USDT',
@@ -59,7 +59,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #3 — SOL/USDT Long WIN =====
+  // ===== TRADE #3 - SOL/USDT Long WIN =====
   {
     id: 'sample-3',
     pair: 'SOL/USDT',
@@ -79,7 +79,7 @@ export const sampleTrades: Trade[] = [
     leverage: 3,
   },
 
-  // ===== TRADE #4 — BTC/USDT Short LOSS (Loss Aversion: large loss -3.7%) =====
+  // ===== TRADE #4 - BTC/USDT Short LOSS (Loss Aversion: large loss -3.7%) =====
   {
     id: 'sample-4',
     pair: 'BTC/USDT',
@@ -99,7 +99,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #5 — DOGE/USDT Long WIN (small win +1.2%) =====
+  // ===== TRADE #5 - DOGE/USDT Long WIN (small win +1.2%) =====
   {
     id: 'sample-5',
     pair: 'DOGE/USDT',
@@ -119,7 +119,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #6 — XRP/USDT Long LOSS (Loss Aversion: large loss) =====
+  // ===== TRADE #6 - XRP/USDT Long LOSS (Loss Aversion: large loss) =====
   {
     id: 'sample-6',
     pair: 'XRP/USDT',
@@ -139,7 +139,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #7 — BTC/USDT Long WIN =====
+  // ===== TRADE #7 - BTC/USDT Long WIN =====
   {
     id: 'sample-7',
     pair: 'BTC/USDT',
@@ -159,7 +159,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #8 — BNB/USDT Short WIN =====
+  // ===== TRADE #8 - BNB/USDT Short WIN =====
   {
     id: 'sample-8',
     pair: 'BNB/USDT',
@@ -179,7 +179,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #9 — AVAX/USDT Long LOSS =====
+  // ===== TRADE #9 - AVAX/USDT Long LOSS =====
   {
     id: 'sample-9',
     pair: 'AVAX/USDT',
@@ -199,7 +199,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #10 — BTC/USDT Long WIN (Bad Time: 3 AM but this one wins) =====
+  // ===== TRADE #10 - BTC/USDT Long WIN (Bad Time: 3 AM but this one wins) =====
   {
     id: 'sample-10',
     pair: 'BTC/USDT',
@@ -219,7 +219,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #11 — ETH/USDT Short LOSS (Bad Time: 2:30 AM) =====
+  // ===== TRADE #11 - ETH/USDT Short LOSS (Bad Time: 2:30 AM) =====
   {
     id: 'sample-11',
     pair: 'ETH/USDT',
@@ -239,7 +239,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #12 — SOL/USDT Short LOSS =====
+  // ===== TRADE #12 - SOL/USDT Short LOSS =====
   {
     id: 'sample-12',
     pair: 'SOL/USDT',
@@ -259,7 +259,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #13 — BTC/USDT Long WIN =====
+  // ===== TRADE #13 - BTC/USDT Long WIN =====
   {
     id: 'sample-13',
     pair: 'BTC/USDT',
@@ -279,7 +279,7 @@ export const sampleTrades: Trade[] = [
     leverage: 3,
   },
 
-  // ===== TRADE #14 — MATIC/USDT Long LOSS =====
+  // ===== TRADE #14 - MATIC/USDT Long LOSS =====
   {
     id: 'sample-14',
     pair: 'MATIC/USDT',
@@ -304,7 +304,7 @@ export const sampleTrades: Trade[] = [
   // Three consecutive losses (#15, #16, #17) followed by an oversized position (#18)
   // ==========================================================================
 
-  // ===== TRADE #15 — ETH/USDT Long LOSS (1st consecutive loss) =====
+  // ===== TRADE #15 - ETH/USDT Long LOSS (1st consecutive loss) =====
   {
     id: 'sample-15',
     pair: 'ETH/USDT',
@@ -324,7 +324,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #16 — SOL/USDT Short LOSS (2nd consecutive loss) =====
+  // ===== TRADE #16 - SOL/USDT Short LOSS (2nd consecutive loss) =====
   {
     id: 'sample-16',
     pair: 'SOL/USDT',
@@ -344,7 +344,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #17 — BNB/USDT Long LOSS (3rd consecutive loss) =====
+  // ===== TRADE #17 - BNB/USDT Long LOSS (3rd consecutive loss) =====
   {
     id: 'sample-17',
     pair: 'BNB/USDT',
@@ -364,7 +364,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #18 — ETH/USDT Long LOSS (REVENGE TRADE: 2.5x normal quantity!) =====
+  // ===== TRADE #18 - ETH/USDT Long LOSS (REVENGE TRADE: 2.5x normal quantity!) =====
   {
     id: 'sample-18',
     pair: 'ETH/USDT',
@@ -372,7 +372,7 @@ export const sampleTrades: Trade[] = [
     entryPrice: 3100,
     exitPrice: 3020,
     quantity: 1.5, // Normal is ~0.5-0.8, this is 2-3x oversized
-    entryDate: '2024-07-06T19:00:00Z', // Same day as #17 — emotional
+    entryDate: '2024-07-06T19:00:00Z', // Same day as #17 - emotional
     exitDate: '2024-07-07T02:00:00Z',
     // pnl = (3020 - 3100) * 1.5 * 3 - 8.00 = (-80) * 1.5 * 3 - 8.00 = -360 - 8.00 = -368.00
     pnl: -368.00,
@@ -388,7 +388,7 @@ export const sampleTrades: Trade[] = [
   // Recovery / Mixed trades #19-#29
   // ==========================================================================
 
-  // ===== TRADE #19 — BTC/USDT Long WIN =====
+  // ===== TRADE #19 - BTC/USDT Long WIN =====
   {
     id: 'sample-19',
     pair: 'BTC/USDT',
@@ -408,7 +408,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #20 — DOGE/USDT Short LOSS =====
+  // ===== TRADE #20 - DOGE/USDT Short LOSS =====
   {
     id: 'sample-20',
     pair: 'DOGE/USDT',
@@ -428,7 +428,7 @@ export const sampleTrades: Trade[] = [
     leverage: 1,
   },
 
-  // ===== TRADE #21 — SOL/USDT Long WIN =====
+  // ===== TRADE #21 - SOL/USDT Long WIN =====
   {
     id: 'sample-21',
     pair: 'SOL/USDT',
@@ -448,7 +448,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #22 — XRP/USDT Short LOSS (Bad Time: 3:45 AM, holding loser) =====
+  // ===== TRADE #22 - XRP/USDT Short LOSS (Bad Time: 3:45 AM, holding loser) =====
   {
     id: 'sample-22',
     pair: 'XRP/USDT',
@@ -468,7 +468,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #23 — BTC/USDT Long WIN =====
+  // ===== TRADE #23 - BTC/USDT Long WIN =====
   {
     id: 'sample-23',
     pair: 'BTC/USDT',
@@ -488,7 +488,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #24 — ETH/USDT Long LOSS (Loss Aversion: -4.2% loss) =====
+  // ===== TRADE #24 - ETH/USDT Long LOSS (Loss Aversion: -4.2% loss) =====
   {
     id: 'sample-24',
     pair: 'ETH/USDT',
@@ -508,7 +508,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #25 — BTC/USDT Short WIN =====
+  // ===== TRADE #25 - BTC/USDT Short WIN =====
   {
     id: 'sample-25',
     pair: 'BTC/USDT',
@@ -528,7 +528,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #26 — AVAX/USDT Long LOSS (Bad Time: 2:10 AM) =====
+  // ===== TRADE #26 - AVAX/USDT Long LOSS (Bad Time: 2:10 AM) =====
   {
     id: 'sample-26',
     pair: 'AVAX/USDT',
@@ -548,7 +548,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #27 — BNB/USDT Long WIN =====
+  // ===== TRADE #27 - BNB/USDT Long WIN =====
   {
     id: 'sample-27',
     pair: 'BNB/USDT',
@@ -568,7 +568,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #28 — DOGE/USDT Short LOSS (Bad Time: 3:20 AM) =====
+  // ===== TRADE #28 - DOGE/USDT Short LOSS (Bad Time: 3:20 AM) =====
   {
     id: 'sample-28',
     pair: 'DOGE/USDT',
@@ -588,7 +588,7 @@ export const sampleTrades: Trade[] = [
     leverage: 1,
   },
 
-  // ===== TRADE #29 — SOL/USDT Short WIN =====
+  // ===== TRADE #29 - SOL/USDT Short WIN =====
   {
     id: 'sample-29',
     pair: 'SOL/USDT',
@@ -613,7 +613,7 @@ export const sampleTrades: Trade[] = [
   // 4 wins in a row (#30-#33) then overleverage on #34 (10x)
   // ==========================================================================
 
-  // ===== TRADE #30 — BTC/USDT Long WIN (streak 1/4) =====
+  // ===== TRADE #30 - BTC/USDT Long WIN (streak 1/4) =====
   {
     id: 'sample-30',
     pair: 'BTC/USDT',
@@ -633,7 +633,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #31 — ETH/USDT Long WIN (streak 2/4) =====
+  // ===== TRADE #31 - ETH/USDT Long WIN (streak 2/4) =====
   {
     id: 'sample-31',
     pair: 'ETH/USDT',
@@ -653,7 +653,7 @@ export const sampleTrades: Trade[] = [
     leverage: 3,
   },
 
-  // ===== TRADE #32 — SOL/USDT Long WIN (streak 3/4) =====
+  // ===== TRADE #32 - SOL/USDT Long WIN (streak 3/4) =====
   {
     id: 'sample-32',
     pair: 'SOL/USDT',
@@ -673,7 +673,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #33 — BTC/USDT Long WIN (streak 4/4) =====
+  // ===== TRADE #33 - BTC/USDT Long WIN (streak 4/4) =====
   {
     id: 'sample-33',
     pair: 'BTC/USDT',
@@ -693,7 +693,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #34 — ETH/USDT Long LOSS (OVERLEVERAGE: 10x after win streak!) =====
+  // ===== TRADE #34 - ETH/USDT Long LOSS (OVERLEVERAGE: 10x after win streak!) =====
   {
     id: 'sample-34',
     pair: 'ETH/USDT',
@@ -717,7 +717,7 @@ export const sampleTrades: Trade[] = [
   // Continued mixed trades #35-#57
   // ==========================================================================
 
-  // ===== TRADE #35 — BTC/USDT Long LOSS =====
+  // ===== TRADE #35 - BTC/USDT Long LOSS =====
   {
     id: 'sample-35',
     pair: 'BTC/USDT',
@@ -737,7 +737,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #36 — SOL/USDT Long WIN =====
+  // ===== TRADE #36 - SOL/USDT Long WIN =====
   {
     id: 'sample-36',
     pair: 'SOL/USDT',
@@ -757,7 +757,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #37 — XRP/USDT Long LOSS =====
+  // ===== TRADE #37 - XRP/USDT Long LOSS =====
   {
     id: 'sample-37',
     pair: 'XRP/USDT',
@@ -777,7 +777,7 @@ export const sampleTrades: Trade[] = [
     leverage: 1,
   },
 
-  // ===== TRADE #38 — BTC/USDT Long WIN =====
+  // ===== TRADE #38 - BTC/USDT Long WIN =====
   {
     id: 'sample-38',
     pair: 'BTC/USDT',
@@ -797,7 +797,7 @@ export const sampleTrades: Trade[] = [
     leverage: 3,
   },
 
-  // ===== TRADE #39 — DOGE/USDT Long LOSS (Bad Time: 2:50 AM) =====
+  // ===== TRADE #39 - DOGE/USDT Long LOSS (Bad Time: 2:50 AM) =====
   {
     id: 'sample-39',
     pair: 'DOGE/USDT',
@@ -817,7 +817,7 @@ export const sampleTrades: Trade[] = [
     leverage: 1,
   },
 
-  // ===== TRADE #40 — ETH/USDT Short WIN =====
+  // ===== TRADE #40 - ETH/USDT Short WIN =====
   {
     id: 'sample-40',
     pair: 'ETH/USDT',
@@ -837,7 +837,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #41 — BTC/USDT Long LOSS =====
+  // ===== TRADE #41 - BTC/USDT Long LOSS =====
   {
     id: 'sample-41',
     pair: 'BTC/USDT',
@@ -857,7 +857,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #42 — MATIC/USDT Long WIN =====
+  // ===== TRADE #42 - MATIC/USDT Long WIN =====
   {
     id: 'sample-42',
     pair: 'MATIC/USDT',
@@ -877,7 +877,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #43 — BNB/USDT Short WIN =====
+  // ===== TRADE #43 - BNB/USDT Short WIN =====
   {
     id: 'sample-43',
     pair: 'BNB/USDT',
@@ -897,7 +897,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #44 — SOL/USDT Short WIN =====
+  // ===== TRADE #44 - SOL/USDT Short WIN =====
   {
     id: 'sample-44',
     pair: 'SOL/USDT',
@@ -917,7 +917,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #45 — BTC/USDT Long WIN =====
+  // ===== TRADE #45 - BTC/USDT Long WIN =====
   {
     id: 'sample-45',
     pair: 'BTC/USDT',
@@ -937,7 +937,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #46 — ETH/USDT Long LOSS (Loss Aversion: large loss) =====
+  // ===== TRADE #46 - ETH/USDT Long LOSS (Loss Aversion: large loss) =====
   {
     id: 'sample-46',
     pair: 'ETH/USDT',
@@ -957,7 +957,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #47 — AVAX/USDT Long LOSS =====
+  // ===== TRADE #47 - AVAX/USDT Long LOSS =====
   {
     id: 'sample-47',
     pair: 'AVAX/USDT',
@@ -977,7 +977,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #48 — BTC/USDT Long LOSS =====
+  // ===== TRADE #48 - BTC/USDT Long LOSS =====
   {
     id: 'sample-48',
     pair: 'BTC/USDT',
@@ -997,7 +997,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #49 — XRP/USDT Long WIN =====
+  // ===== TRADE #49 - XRP/USDT Long WIN =====
   {
     id: 'sample-49',
     pair: 'XRP/USDT',
@@ -1017,7 +1017,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #50 — ETH/USDT Short LOSS (Bad Time: 3:00 AM) =====
+  // ===== TRADE #50 - ETH/USDT Short LOSS (Bad Time: 3:00 AM) =====
   {
     id: 'sample-50',
     pair: 'ETH/USDT',
@@ -1037,7 +1037,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #51 — BTC/USDT Long WIN =====
+  // ===== TRADE #51 - BTC/USDT Long WIN =====
   {
     id: 'sample-51',
     pair: 'BTC/USDT',
@@ -1057,7 +1057,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #52 — SOL/USDT Short LOSS =====
+  // ===== TRADE #52 - SOL/USDT Short LOSS =====
   {
     id: 'sample-52',
     pair: 'SOL/USDT',
@@ -1077,7 +1077,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #53 — DOGE/USDT Long LOSS (Loss Aversion: -4.5%) =====
+  // ===== TRADE #53 - DOGE/USDT Long LOSS (Loss Aversion: -4.5%) =====
   {
     id: 'sample-53',
     pair: 'DOGE/USDT',
@@ -1097,7 +1097,7 @@ export const sampleTrades: Trade[] = [
     leverage: 1,
   },
 
-  // ===== TRADE #54 — BTC/USDT Short WIN =====
+  // ===== TRADE #54 - BTC/USDT Short WIN =====
   {
     id: 'sample-54',
     pair: 'BTC/USDT',
@@ -1117,7 +1117,7 @@ export const sampleTrades: Trade[] = [
     leverage: 3,
   },
 
-  // ===== TRADE #55 — ETH/USDT Long WIN =====
+  // ===== TRADE #55 - ETH/USDT Long WIN =====
   {
     id: 'sample-55',
     pair: 'ETH/USDT',
@@ -1137,7 +1137,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #56 — BNB/USDT Long WIN (small win +1.6%) =====
+  // ===== TRADE #56 - BNB/USDT Long WIN (small win +1.6%) =====
   {
     id: 'sample-56',
     pair: 'BNB/USDT',
@@ -1157,7 +1157,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #57 — SOL/USDT Long WIN (5x leverage — risky but paid off) =====
+  // ===== TRADE #57 - SOL/USDT Long WIN (5x leverage - risky but paid off) =====
   {
     id: 'sample-57',
     pair: 'SOL/USDT',
@@ -1177,7 +1177,7 @@ export const sampleTrades: Trade[] = [
     leverage: 5,
   },
 
-  // ===== TRADE #58 — BTC/USDT Long WIN =====
+  // ===== TRADE #58 - BTC/USDT Long WIN =====
   {
     id: 'sample-58',
     pair: 'BTC/USDT',
@@ -1197,7 +1197,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #59 — XRP/USDT Long WIN =====
+  // ===== TRADE #59 - XRP/USDT Long WIN =====
   {
     id: 'sample-59',
     pair: 'XRP/USDT',
@@ -1217,7 +1217,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #60 — AVAX/USDT Short WIN =====
+  // ===== TRADE #60 - AVAX/USDT Short WIN =====
   {
     id: 'sample-60',
     pair: 'AVAX/USDT',
@@ -1237,7 +1237,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #61 — BTC/USDT Long LOSS =====
+  // ===== TRADE #61 - BTC/USDT Long LOSS =====
   {
     id: 'sample-61',
     pair: 'BTC/USDT',
@@ -1257,7 +1257,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #62 — ETH/USDT Long WIN (small win) =====
+  // ===== TRADE #62 - ETH/USDT Long WIN (small win) =====
   {
     id: 'sample-62',
     pair: 'ETH/USDT',
@@ -1277,7 +1277,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #63 — DOGE/USDT Long LOSS =====
+  // ===== TRADE #63 - DOGE/USDT Long LOSS =====
   {
     id: 'sample-63',
     pair: 'DOGE/USDT',
@@ -1297,7 +1297,7 @@ export const sampleTrades: Trade[] = [
     leverage: 1,
   },
 
-  // ===== TRADE #64 — BTC/USDT Long LOSS =====
+  // ===== TRADE #64 - BTC/USDT Long LOSS =====
   {
     id: 'sample-64',
     pair: 'BTC/USDT',
@@ -1317,7 +1317,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #65 — SOL/USDT Short LOSS (Bad Time: 3:30 AM) =====
+  // ===== TRADE #65 - SOL/USDT Short LOSS (Bad Time: 3:30 AM) =====
   {
     id: 'sample-65',
     pair: 'SOL/USDT',
@@ -1337,7 +1337,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #66 — BNB/USDT Long WIN =====
+  // ===== TRADE #66 - BNB/USDT Long WIN =====
   {
     id: 'sample-66',
     pair: 'BNB/USDT',
@@ -1357,7 +1357,7 @@ export const sampleTrades: Trade[] = [
     leverage: 2,
   },
 
-  // ===== TRADE #67 — BTC/USDT Long WIN =====
+  // ===== TRADE #67 - BTC/USDT Long WIN =====
   {
     id: 'sample-67',
     pair: 'BTC/USDT',

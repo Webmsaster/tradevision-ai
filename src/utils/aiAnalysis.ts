@@ -357,7 +357,7 @@ export function detectGoodRiskManagement(trades: Trade[]): AIInsight | null {
   );
 
   if (grossLoss === 0) {
-    // No losses means infinite profit factor — still counts as good risk management
+    // No losses means infinite profit factor - still counts as good risk management
     return {
       id: generateId(),
       type: 'positive',
@@ -389,7 +389,7 @@ export function detectGoodRiskManagement(trades: Trade[]): AIInsight | null {
       description:
         `Your profit factor is ${profitFactor.toFixed(2)} (above the 1.5 threshold) and your largest single loss ` +
         `was only ${maxLossPercent.toFixed(1)}% of total traded equity. Across ${trades.length} trades, this shows ` +
-        `disciplined position sizing and effective stop-loss usage. Your risk management is a key strength — ` +
+        `disciplined position sizing and effective stop-loss usage. Your risk management is a key strength - ` +
         `maintain these habits as you scale your trading size.`,
       severity: 2,
       relatedTrades: trades.slice(0, 10).map((t) => t.id),

@@ -46,7 +46,7 @@ Copy the example env file and add your Supabase credentials:
 cp .env.local.example .env.local
 ```
 
-> **Note:** The app works fully without Supabase — trades are stored in localStorage.
+> **Note:** The app works fully without Supabase - trades are stored in localStorage.
 
 ### Development
 
@@ -98,19 +98,19 @@ The AI engine runs 13 pattern detectors client-side:
 
 ```
 src/
-├── app/                 # Next.js pages (App Router)
-│   ├── page.tsx         # Dashboard
-│   ├── trades/          # Trade history & management
-│   ├── import/          # CSV/JSON import & export
-│   ├── insights/        # AI pattern insights
-│   ├── analytics/       # Deep analytics & charts
-│   ├── calculator/      # Risk calculator
-│   └── login/           # Authentication
-├── components/          # Reusable React components
-├── lib/                 # Supabase clients & auth context
-├── utils/               # Business logic & helpers
-├── types/               # TypeScript interfaces
-└── data/                # Sample trade data
+|-- app/                 # Next.js pages (App Router)
+|   |-- page.tsx         # Dashboard
+|   |-- trades/          # Trade history & management
+|   |-- import/          # CSV/JSON import & export
+|   |-- insights/        # AI pattern insights
+|   |-- analytics/       # Deep analytics & charts
+|   |-- calculator/      # Risk calculator
+|   `-- login/           # Authentication
+|-- components/          # Reusable React components
+|-- lib/                 # Supabase clients & auth context
+|-- utils/               # Business logic & helpers
+|-- types/               # TypeScript interfaces
+`-- data/                # Sample trade data
 ```
 
 ## License

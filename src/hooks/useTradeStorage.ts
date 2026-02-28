@@ -34,9 +34,9 @@ function fireWebhook(event: 'onTradeAdd' | 'onTradeEdit' | 'onTradeDelete', trad
     if (!isValidHttpsUrl(wh.url)) return;
 
     const msg = event === 'onTradeAdd'
-      ? `New trade: ${trade?.pair} ${trade?.direction?.toUpperCase()} — PnL: $${trade?.pnl?.toFixed(2)}`
+      ? `New trade: ${trade?.pair} ${trade?.direction?.toUpperCase()} - PnL: $${trade?.pnl?.toFixed(2)}`
       : event === 'onTradeEdit'
-        ? `Trade updated: ${trade?.pair} — PnL: $${trade?.pnl?.toFixed(2)}`
+        ? `Trade updated: ${trade?.pair} - PnL: $${trade?.pnl?.toFixed(2)}`
         : `Trade deleted: ${trade?.pair ?? 'unknown'}`;
 
     const payload = wh.platform === 'discord'

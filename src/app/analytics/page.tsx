@@ -13,7 +13,7 @@ import { formatFinite } from '@/utils/formatters';
 import StatCard from '@/components/StatCard';
 import Skeleton from '@/components/Skeleton';
 
-// Lazy load Recharts-based component – no SSR needed
+// Lazy load Recharts-based component - no SSR needed
 const PerformanceChart = dynamic(
   () => import('@/components/PerformanceChart'),
   {

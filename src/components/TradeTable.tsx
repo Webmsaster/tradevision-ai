@@ -217,7 +217,7 @@ export default function TradeTable({
                   {formatPercent(trade.pnlPercent)}
                 </td>
                 {!compact && (
-                  <td>{trade.fees != null ? formatPrice(trade.fees) : '—'}</td>
+                  <td>{trade.fees != null ? formatPrice(trade.fees) : '-'}</td>
                 )}
                 {!compact && (
                   <td>

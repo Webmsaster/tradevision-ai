@@ -1,6 +1,6 @@
 /* ============================================
    AI Trading Journal & Performance Analyzer
-   Consolidated Styles — Tailwind + Design System
+   Consolidated Styles - Tailwind + Design System
    ============================================ */
 
 @import "tailwindcss";
@@ -1057,7 +1057,7 @@ tr:last-child td { border-bottom: none; }
   border-color: rgba(0, 255, 136, 0.2);
 }
 
-/* Sortable table headers – keyboard focus */
+/* Sortable table headers - keyboard focus */
 .trade-table th:focus-visible {
   outline: 2px solid var(--accent-blue);
   outline-offset: -2px;

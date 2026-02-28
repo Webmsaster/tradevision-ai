@@ -183,7 +183,7 @@ export function saveTrades(trades: Trade[]): void {
         const existing = JSON.parse(localStorage.getItem(SCREENSHOTS_KEY) || '{}');
         localStorage.setItem(SCREENSHOTS_KEY, JSON.stringify({ ...existing, ...screenshots }));
       } catch {
-        console.warn('Failed to save screenshots — storage quota may be full.');
+        console.warn('Failed to save screenshots - storage quota may be full.');
       }
     }
   } catch (error) {

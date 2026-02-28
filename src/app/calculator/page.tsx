@@ -203,7 +203,7 @@ export default function CalculatorPage() {
 
             {/* Take Profit */}
             <div className="input-group">
-              <label htmlFor="calc-takeprofit" className="input-label">Take Profit Price ($) — optional</label>
+              <label htmlFor="calc-takeprofit" className="input-label">Take Profit Price ($) - optional</label>
               <input
                 id="calc-takeprofit"
                 className="input"
@@ -267,24 +267,24 @@ export default function CalculatorPage() {
           <div className="calc-results-grid">
             <StatCard
               label="Position Size"
-              value={calculations.valid ? fmtUnits(calculations.positionSize) : '—'}
+              value={calculations.valid ? fmtUnits(calculations.positionSize) : '-'}
               suffix=" units"
             />
             <StatCard
               label="Position Value"
-              value={calculations.valid ? fmt(calculations.positionValue) : '—'}
+              value={calculations.valid ? fmt(calculations.positionValue) : '-'}
               prefix="$"
             />
             {leverage > 1 && (
               <StatCard
                 label="Margin Required"
-                value={calculations.valid ? fmt(calculations.marginRequired) : '—'}
+                value={calculations.valid ? fmt(calculations.marginRequired) : '-'}
                 prefix="$"
               />
             )}
             <StatCard
               label="Max Loss"
-              value={calculations.valid ? fmt(calculations.maxLoss) : '—'}
+              value={calculations.valid ? fmt(calculations.maxLoss) : '-'}
               prefix="$"
               variant="loss"
             />
@@ -293,7 +293,7 @@ export default function CalculatorPage() {
               value={
                 calculations.valid && calculations.potentialProfit !== null
                   ? fmt(calculations.potentialProfit)
-                  : '—'
+                  : '-'
               }
               prefix={calculations.potentialProfit !== null ? '$' : ''}
               variant={calculations.potentialProfit !== null ? 'profit' : 'default'}
