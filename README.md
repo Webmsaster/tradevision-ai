@@ -85,6 +85,18 @@ Common semantic types: `feat`, `fix`, `perf`, `refactor`, `docs`, `chore`, `ci`,
 
 - `Dependabot` checks npm and GitHub Actions dependencies weekly and opens update PRs.
 - CI runs `npm audit --omit=dev --audit-level=high` and fails on high/critical production vulnerabilities.
+- Dependabot patch/minor updates are auto-approved and auto-merged after required checks pass.
+
+## Production Smoke Checks
+
+- Workflow: `.github/workflows/prod-smoke.yml`
+- Runs daily at `06:15 UTC` and can be triggered manually via `workflow_dispatch`.
+- Executes Playwright smoke checks against production for:
+  - login flow
+  - add trade flow
+  - import sample data flow
+  - analytics page load
+- Optional repo variable: `PROD_SMOKE_BASE_URL` (defaults to `https://tradevision-ai-bay.vercel.app`).
 
 ## Database Setup (optional)
 
