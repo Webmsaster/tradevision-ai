@@ -400,7 +400,16 @@ export function importFromJSON(file: File): Promise<Trade[]> {
           if (valid.length === 0) {
             reject(new Error('No valid trades found in the file.'));
           } else {
-            resolve(valid);
+            // Keep the first occurrence of each trade id to avoid duplicate imports
+            // from malformed backups.
+            const deduped: Trade[] = [];
+            const seenIds = new Set<string>();
+            for (const trade of valid) {
+              if (seenIds.has(trade.id)) continue;
+              seenIds.add(trade.id);
+              deduped.push(trade);
+            }
+            resolve(deduped);
           }
           return;
         }

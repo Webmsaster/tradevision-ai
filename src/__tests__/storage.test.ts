@@ -183,6 +183,35 @@ describe('importFromJSON', () => {
     expect(result).toHaveLength(1);
   });
 
+  it('deduplicates duplicate trade ids in a backup file', async () => {
+    const duplicateId = 'dup-1';
+    const wrapper = {
+      exportDate: '2024-01-01',
+      version: '1.0',
+      trades: [
+        makeTrade({ id: duplicateId, pair: 'BTC/USDT' }),
+        makeTrade({ id: duplicateId, pair: 'ETH/USDT' }),
+      ],
+    };
+    const file = makeFile(JSON.stringify(wrapper));
+    const result = await importFromJSON(file);
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe(duplicateId);
+    expect(result[0].pair).toBe('BTC/USDT');
+  });
+
+  it('preserves screenshot data from JSON backup entries', async () => {
+    const wrapper = {
+      exportDate: '2024-01-01',
+      version: '1.0',
+      trades: [makeTrade({ id: 'img-1', screenshot: 'data:image/png;base64,abc123' })],
+    };
+    const file = makeFile(JSON.stringify(wrapper));
+    const result = await importFromJSON(file);
+    expect(result).toHaveLength(1);
+    expect(result[0].screenshot).toBe('data:image/png;base64,abc123');
+  });
+
   it('rejects files with no valid trades', async () => {
     const file = makeFile(JSON.stringify([{ id: 'bad' }]));
     await expect(importFromJSON(file)).rejects.toThrow('No valid trades found');
