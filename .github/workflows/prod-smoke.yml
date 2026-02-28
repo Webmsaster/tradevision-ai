@@ -16,6 +16,14 @@ jobs:
   prod-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+      SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+      SMOKE_ALERT_EMAIL_TO: ${{ secrets.SMOKE_ALERT_EMAIL_TO }}
+      SMOKE_ALERT_EMAIL_FROM: ${{ secrets.SMOKE_ALERT_EMAIL_FROM }}
     steps:
       - uses: actions/checkout@v6
 
@@ -44,45 +52,41 @@ jobs:
           if-no-files-found: ignore
 
       - name: Notify Slack on failure
-        if: failure() && secrets.SLACK_WEBHOOK_URL != ''
+        if: failure() && env.SLACK_WEBHOOK_URL != ''
         continue-on-error: true
         run: |
           RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           MESSAGE=":rotating_light: Production Smoke Check failed for ${GITHUB_REPOSITORY} on ${GITHUB_REF_NAME}. Run: ${RUN_URL}"
           payload=$(printf '{"text":"%s"}' "$MESSAGE")
           curl -fsS -X POST -H "Content-type: application/json" --data "$payload" "$SLACK_WEBHOOK_URL"
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
       - name: Notify Discord on failure
-        if: failure() && secrets.DISCORD_WEBHOOK_URL != ''
+        if: failure() && env.DISCORD_WEBHOOK_URL != ''
         continue-on-error: true
         run: |
           RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           MESSAGE="Production Smoke Check failed for ${GITHUB_REPOSITORY} on ${GITHUB_REF_NAME}. Run: ${RUN_URL}"
           payload=$(printf '{"content":"%s"}' "$MESSAGE")
           curl -fsS -X POST -H "Content-type: application/json" --data "$payload" "$DISCORD_WEBHOOK_URL"
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
       - name: Notify email on failure
         if: >
           failure() &&
-          secrets.SMTP_SERVER != '' &&
-          secrets.SMTP_USERNAME != '' &&
-          secrets.SMTP_PASSWORD != '' &&
-          secrets.SMOKE_ALERT_EMAIL_TO != '' &&
-          secrets.SMOKE_ALERT_EMAIL_FROM != ''
+          env.SMTP_SERVER != '' &&
+          env.SMTP_USERNAME != '' &&
+          env.SMTP_PASSWORD != '' &&
+          env.SMOKE_ALERT_EMAIL_TO != '' &&
+          env.SMOKE_ALERT_EMAIL_FROM != ''
         continue-on-error: true
         uses: dawidd6/action-send-mail@v3
         with:
-          server_address: ${{ secrets.SMTP_SERVER }}
+          server_address: ${{ env.SMTP_SERVER }}
           server_port: 587
-          username: ${{ secrets.SMTP_USERNAME }}
-          password: ${{ secrets.SMTP_PASSWORD }}
+          username: ${{ env.SMTP_USERNAME }}
+          password: ${{ env.SMTP_PASSWORD }}
           subject: "[ALERT] Production Smoke Check failed (${{ github.repository }})"
-          to: ${{ secrets.SMOKE_ALERT_EMAIL_TO }}
-          from: ${{ secrets.SMOKE_ALERT_EMAIL_FROM }}
+          to: ${{ env.SMOKE_ALERT_EMAIL_TO }}
+          from: ${{ env.SMOKE_ALERT_EMAIL_FROM }}
           body: |
             Production Smoke Check failed.
 
