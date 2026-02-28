@@ -168,6 +168,7 @@ export default function Sidebar() {
             <Link
               key={item.href}
               href={item.href}
+              prefetch={false}
               className={`sidebar-link${isActive(item.href) ? ' active' : ''}`}
               onClick={() => setCollapsed(false)}
             >

@@ -21,29 +21,48 @@ const AuthContext = createContext<AuthContextValue>({
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [supabase] = useState(() => createClient());
+  const [supabase, setSupabase] = useState<SupabaseClient | null>(null);
 
   useEffect(() => {
-    if (!supabase) {
+    let mounted = true;
+    let unsubscribe: (() => void) | null = null;
+
+    async function initAuth() {
+      const client = await createClient();
+
+      if (!mounted) return;
+      setSupabase(client);
+
+      if (!client) {
+        setIsLoading(false);
+        return;
+      }
+
+      // Get initial session
+      const {
+        data: { user: initialUser },
+      } = await client.auth.getUser();
+
+      if (!mounted) return;
+      setUser(initialUser ?? null);
       setIsLoading(false);
-      return;
+
+      // Listen for auth changes
+      const {
+        data: { subscription },
+      } = client.auth.onAuthStateChange((_event, session) => {
+        setUser(session?.user ?? null);
+      });
+      unsubscribe = () => subscription.unsubscribe();
     }
 
-    // Get initial session
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      setUser(user ?? null);
-      setIsLoading(false);
-    });
+    initAuth();
 
-    // Listen for auth changes
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-    });
-
-    return () => subscription.unsubscribe();
-  }, [supabase]);
+    return () => {
+      mounted = false;
+      unsubscribe?.();
+    };
+  }, []);
 
   const signOut = async () => {
     if (supabase) {

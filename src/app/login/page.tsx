@@ -6,13 +6,26 @@ import { useAuth } from '@/lib/auth-context';
 
 export default function LoginPage() {
   const router = useRouter();
-  const { supabase } = useAuth();
+  const { supabase, isLoading } = useAuth();
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
+
+  if (isLoading) {
+    return (
+      <div className="login-container">
+        <div className="login-card glass-card">
+          <div className="login-header">
+            <h1 className="login-title">TradeVision AI</h1>
+            <p className="login-subtitle">Loading authentication...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // If Supabase is not configured, show info message
   if (!supabase) {
