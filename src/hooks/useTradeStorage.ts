@@ -75,6 +75,7 @@ export function useTradeStorage() {
   // Ref for allTrades so removeTrade callback stays stable
   const allTradesRef = useRef(allTrades);
   allTradesRef.current = allTrades;
+  const hasLoadedInitialDataRef = useRef(false);
 
   // Listen for settings changes to update active account
   useEffect(() => {
@@ -113,23 +114,41 @@ export function useTradeStorage() {
 
   // Load trades on mount and when auth state changes
   useEffect(() => {
+    let cancelled = false;
+
     async function load() {
-      setIsLoading(true);
-      if (isCloud) {
-        try {
+      const isInitialLoad = !hasLoadedInitialDataRef.current;
+
+      // Only block the UI during the very first data load.
+      if (isInitialLoad) {
+        setIsLoading(true);
+      }
+
+      try {
+        if (isCloud) {
           const cloudTrades = await loadTradesFromSupabase(supabase!, user!.id);
+          if (cancelled) return;
           setAllTrades(cloudTrades);
           saveTrades(cloudTrades);
-        } catch (err) {
-          console.error('Cloud load failed, falling back to local:', err);
+        } else {
+          if (cancelled) return;
           setAllTrades(loadTrades());
         }
-      } else {
+      } catch (err) {
+        if (cancelled) return;
+        console.error('Cloud load failed, falling back to local:', err);
         setAllTrades(loadTrades());
+      } finally {
+        if (cancelled) return;
+        hasLoadedInitialDataRef.current = true;
+        setIsLoading(false);
       }
-      setIsLoading(false);
     }
+
     load();
+    return () => {
+      cancelled = true;
+    };
   }, [user, supabase, isCloud]);
 
   const addTrade = useCallback(async (trade: Trade) => {
