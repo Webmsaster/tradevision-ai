@@ -7,9 +7,12 @@ import CSVImport from '@/components/CSVImport';
 import ConfirmDialog from '@/components/ConfirmDialog';
 
 export default function ImportPage() {
-  const { trades, importTrades, clearAll } = useTradeStorage();
+  const { trades, importTrades, clearAll, setAllTrades } = useTradeStorage();
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [jsonFile, setJsonFile] = useState<File | null>(null);
+  const [jsonImportMode, setJsonImportMode] = useState<'merge' | 'replace'>('merge');
+  const [showReplaceConfirm, setShowReplaceConfirm] = useState(false);
+  const [pendingReplaceTrades, setPendingReplaceTrades] = useState<Trade[] | null>(null);
 
   // Check if sample data is already loaded by looking for sample IDs
   const sampleDataLoaded = useMemo(() => trades.some((t) => t.id.startsWith('sample-')), [trades]);
@@ -37,6 +40,43 @@ export default function ImportPage() {
   // ---------------------------------------------------------------------------
   // JSON Import handler
   // ---------------------------------------------------------------------------
+  function resetJsonFileInput() {
+    setJsonFile(null);
+    const fileInput = document.getElementById('json-file-input') as HTMLInputElement | null;
+    if (fileInput) fileInput.value = '';
+  }
+
+  async function runMergeImport(importedTrades: Trade[]) {
+    const count = await importTrades(importedTrades);
+    resetJsonFileInput();
+    setNotification({
+      message: `Merged ${count} new trade${count !== 1 ? 's' : ''} from JSON.`,
+      type: 'success',
+    });
+  }
+
+  async function runReplaceImport(importedTrades: Trade[]) {
+    await setAllTrades(importedTrades);
+    resetJsonFileInput();
+    setNotification({
+      message: `Replaced existing data with ${importedTrades.length} trade${importedTrades.length !== 1 ? 's' : ''} from JSON.`,
+      type: 'success',
+    });
+  }
+
+  async function confirmReplaceImport() {
+    if (!pendingReplaceTrades) return;
+    try {
+      await runReplaceImport(pendingReplaceTrades);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to replace data from JSON file.';
+      setNotification({ message, type: 'error' });
+    } finally {
+      setPendingReplaceTrades(null);
+      setShowReplaceConfirm(false);
+    }
+  }
+
   async function handleJSONImport() {
     if (!jsonFile) return;
 
@@ -48,17 +88,16 @@ export default function ImportPage() {
         return;
       }
 
-      const count = await importTrades(importedTrades);
-      setJsonFile(null);
-
-      // Reset the file input
-      const fileInput = document.getElementById('json-file-input') as HTMLInputElement;
-      if (fileInput) fileInput.value = '';
-
-      setNotification({
-        message: `Successfully imported ${count} trade${count !== 1 ? 's' : ''} from JSON.`,
-        type: 'success',
-      });
+      if (jsonImportMode === 'replace') {
+        if (trades.length > 0) {
+          setPendingReplaceTrades(importedTrades);
+          setShowReplaceConfirm(true);
+          return;
+        }
+        await runReplaceImport(importedTrades);
+      } else {
+        await runMergeImport(importedTrades);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to import JSON file.';
       setNotification({ message, type: 'error' });
@@ -161,12 +200,35 @@ export default function ImportPage() {
                 }}
               />
             </div>
+            <div className="import-json-mode">
+              <span className="import-json-mode-label">Restore mode</span>
+              <label className="import-json-mode-option">
+                <input
+                  type="radio"
+                  name="json-import-mode"
+                  value="merge"
+                  checked={jsonImportMode === 'merge'}
+                  onChange={() => setJsonImportMode('merge')}
+                />
+                <span>Merge (keep existing trades)</span>
+              </label>
+              <label className="import-json-mode-option">
+                <input
+                  type="radio"
+                  name="json-import-mode"
+                  value="replace"
+                  checked={jsonImportMode === 'replace'}
+                  onChange={() => setJsonImportMode('replace')}
+                />
+                <span>Replace all existing trades</span>
+              </label>
+            </div>
             <button
               className="btn btn-primary"
               disabled={!jsonFile}
               onClick={handleJSONImport}
             >
-              Import JSON
+              {jsonImportMode === 'replace' ? 'Replace with JSON' : 'Import JSON'}
             </button>
           </div>
         </div>
@@ -244,6 +306,18 @@ export default function ImportPage() {
         confirmLabel="Clear All"
         onConfirm={confirmClearAll}
         onCancel={() => setShowClearConfirm(false)}
+      />
+
+      <ConfirmDialog
+        isOpen={showReplaceConfirm}
+        title="Replace Existing Trades?"
+        message={`This will overwrite your current ${trades.length} trade${trades.length !== 1 ? 's' : ''} with the JSON backup. This action cannot be undone.`}
+        confirmLabel="Replace All"
+        onConfirm={confirmReplaceImport}
+        onCancel={() => {
+          setShowReplaceConfirm(false);
+          setPendingReplaceTrades(null);
+        }}
       />
     </div>
   );

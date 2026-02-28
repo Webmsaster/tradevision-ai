@@ -8,7 +8,7 @@ AI-powered trading journal and performance analyzer that helps traders identify 
 - **Trade Management** - Add, edit, delete trades with full metadata (strategy, emotion, confidence, setup type)
 - **AI Insights** - 13 pattern detectors identify behaviors like revenge trading, tilt, overtrading, and positive habits
 - **Analytics** - Deep dive charts: performance by pair, day, hour, PnL distribution, win/loss breakdown
-- **Import/Export** - CSV and JSON import/export, pre-loaded sample data for demo
+- **Import/Export** - CSV and JSON import/export with merge/replace restore modes, pre-loaded sample data for demo
 - **Risk Calculator** - Position sizing, risk-reward ratio, and liquidation price calculator
 - **Auth** - Supabase authentication with localStorage fallback (works offline)
 - **Dark/Light Theme** - Full theme support via CSS variables
@@ -97,6 +97,17 @@ Common semantic types: `feat`, `fix`, `perf`, `refactor`, `docs`, `chore`, `ci`,
   - import sample data flow
   - analytics page load
 - Optional repo variable: `PROD_SMOKE_BASE_URL` (defaults to `https://tradevision-ai-bay.vercel.app`).
+- Optional failure alerts (configure one or more via repository secrets):
+  - Slack: `SLACK_WEBHOOK_URL`
+  - Discord: `DISCORD_WEBHOOK_URL`
+  - Email (SMTP): `SMTP_SERVER`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMOKE_ALERT_EMAIL_TO`, `SMOKE_ALERT_EMAIL_FROM`
+
+## Recovery
+
+- Recovery runbook: [`RECOVERY.md`](./RECOVERY.md)
+- JSON backup restore supports:
+  - `Merge` mode (keeps existing trades and imports missing IDs)
+  - `Replace` mode (overwrites existing dataset after confirmation)
 
 ## Database Setup (optional)
 

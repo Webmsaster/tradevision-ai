@@ -681,6 +681,33 @@ tr:last-child td { border-bottom: none; }
 .import-danger-zone { border-color: rgba(255, 71, 87, 0.3) !important; }
 .import-danger-zone .import-card-title { color: var(--loss); }
 .import-json-input { margin-bottom: 12px; }
+.import-json-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: var(--glass-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.import-json-mode-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.import-json-mode-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+}
+.import-json-mode-option input[type="radio"] {
+  accent-color: var(--accent-blue);
+}
 .import-notification {
   position: fixed; top: 20px; right: 20px; padding: 14px 24px;
   border-radius: var(--radius-md); font-size: 0.9rem; font-weight: 500;
