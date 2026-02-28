@@ -63,6 +63,24 @@ npm run build
 npm start
 ```
 
+## Release Flow
+
+Releases are now automated with `release-please`:
+
+1. Open a PR with a semantic title, for example:
+   - `feat: add monthly performance benchmark`
+   - `fix: prevent duplicate trade import`
+   - `perf: lazy-load analytics chart module`
+2. Merge the PR into `main`.
+3. `release-please` creates or updates a Release PR with:
+   - version bump in `package.json`
+   - `CHANGELOG.md` updates
+4. Merge the Release PR to publish:
+   - a Git tag
+   - a GitHub Release
+
+Common semantic types: `feat`, `fix`, `perf`, `refactor`, `docs`, `chore`, `ci`, `test`, `build`.
+
 ## Database Setup (optional)
 
 1. Create a [Supabase](https://supabase.com) project
