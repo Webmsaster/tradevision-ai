@@ -81,6 +81,11 @@ Releases are now automated with `release-please`:
 
 Common semantic types: `feat`, `fix`, `perf`, `refactor`, `docs`, `chore`, `ci`, `test`, `build`.
 
+## Security Automation
+
+- `Dependabot` checks npm and GitHub Actions dependencies weekly and opens update PRs.
+- CI runs `npm audit --omit=dev --audit-level=high` and fails on high/critical production vulnerabilities.
+
 ## Database Setup (optional)
 
 1. Create a [Supabase](https://supabase.com) project
