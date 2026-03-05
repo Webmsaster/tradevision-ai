@@ -36,28 +36,26 @@ function isValidSettings(obj: unknown): obj is Settings {
   if (!obj || typeof obj !== 'object') return false;
   const s = obj as Record<string, unknown>;
 
-  // Validate webhook
-  if (s.webhook && typeof s.webhook === 'object') {
-    const wh = s.webhook as Record<string, unknown>;
-    if (typeof wh.url === 'string' && wh.url && !wh.url.startsWith('https://')) {
-      // Reject non-HTTPS webhook URLs
-      (s.webhook as Record<string, unknown>).url = '';
-      (s.webhook as Record<string, unknown>).enabled = false;
-    }
-    if (typeof wh.platform === 'string' && !(VALID_PLATFORMS as readonly string[]).includes(wh.platform)) {
-      (s.webhook as Record<string, unknown>).platform = 'discord';
-    }
+  // Required top-level fields must exist
+  if (!s.webhook || typeof s.webhook !== 'object') return false;
+  if (!s.widgets || typeof s.widgets !== 'object') return false;
+  if (!Array.isArray(s.accounts) || s.accounts.length === 0) return false;
+  if (typeof s.activeAccountId !== 'string') return false;
+
+  // Sanitize webhook
+  const wh = s.webhook as Record<string, unknown>;
+  if (typeof wh.url === 'string' && wh.url && !wh.url.startsWith('https://')) {
+    wh.url = '';
+    wh.enabled = false;
+  }
+  if (typeof wh.platform === 'string' && !(VALID_PLATFORMS as readonly string[]).includes(wh.platform)) {
+    wh.platform = 'discord';
   }
 
-  // Validate accounts array
-  if (!Array.isArray(s.accounts) || s.accounts.length === 0) return false;
-
-  // Validate widgets
-  if (s.widgets && typeof s.widgets === 'object') {
-    const w = s.widgets as Record<string, unknown>;
-    for (const key of ['equityCurve', 'weeklySummary', 'recentTrades', 'aiInsights']) {
-      if (typeof w[key] !== 'boolean') w[key] = true;
-    }
+  // Sanitize widgets
+  const w = s.widgets as Record<string, unknown>;
+  for (const key of ['equityCurve', 'weeklySummary', 'recentTrades', 'aiInsights']) {
+    if (typeof w[key] !== 'boolean') w[key] = true;
   }
 
   return true;

@@ -226,7 +226,7 @@ export default function CalculatorPage() {
                 min={1}
                 step={1}
                 value={leverage}
-                onChange={(e) => setLeverage(Math.max(1, parseInt(e.target.value) || 1))}
+                onChange={(e) => setLeverage(Math.max(1, parseInt(e.target.value, 10) || 1))}
               />
             </div>
 
