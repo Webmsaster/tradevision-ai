@@ -8,6 +8,7 @@ import {
   detectLossAversion,
   detectTiltPattern,
   detectConsistentPair,
+  detectGoodRiskManagement,
   detectOvertrading,
   detectWeekendTrading,
   detectImprovingPerformance,
@@ -266,6 +267,48 @@ describe('detectPairSwitching', () => {
     const result = detectPairSwitching(trades);
     expect(result).not.toBeNull();
     expect(result!.category).toBe('pair-switching');
+  });
+});
+
+describe('detectGoodRiskManagement', () => {
+  it('returns null for fewer than 5 trades', () => {
+    const trades = Array.from({ length: 4 }, () => makeTrade({ pnl: 10 }));
+    expect(detectGoodRiskManagement(trades)).toBeNull();
+  });
+
+  it('returns positive insight when all trades are winners (grossLoss === 0)', () => {
+    const trades = Array.from({ length: 5 }, (_, i) =>
+      makeTrade({ pnl: 10, exitDate: `2024-01-0${i + 1}T10:00:00Z` })
+    );
+    const result = detectGoodRiskManagement(trades);
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe('positive');
+    expect(result!.title).toBe('Excellent Risk Management');
+  });
+
+  it('returns positive insight for good profit factor and small max loss', () => {
+    const trades = [
+      makeTrade({ pnl: 100, exitDate: '2024-01-01T10:00:00Z' }),
+      makeTrade({ pnl: 80, exitDate: '2024-01-02T10:00:00Z' }),
+      makeTrade({ pnl: 60, exitDate: '2024-01-03T10:00:00Z' }),
+      makeTrade({ pnl: -2, exitDate: '2024-01-04T10:00:00Z' }),
+      makeTrade({ pnl: -1, exitDate: '2024-01-05T10:00:00Z' }),
+    ];
+    const result = detectGoodRiskManagement(trades);
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe('positive');
+    expect(result!.title).toBe('Strong Risk Management');
+  });
+
+  it('returns null when profit factor is low', () => {
+    const trades = [
+      makeTrade({ pnl: 10, exitDate: '2024-01-01T10:00:00Z' }),
+      makeTrade({ pnl: -20, exitDate: '2024-01-02T10:00:00Z' }),
+      makeTrade({ pnl: 5, exitDate: '2024-01-03T10:00:00Z' }),
+      makeTrade({ pnl: -15, exitDate: '2024-01-04T10:00:00Z' }),
+      makeTrade({ pnl: -10, exitDate: '2024-01-05T10:00:00Z' }),
+    ];
+    expect(detectGoodRiskManagement(trades)).toBeNull();
   });
 });
 

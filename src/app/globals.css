@@ -44,6 +44,7 @@
   --loss: #ff4757;
   --loss-bg: rgba(255, 71, 87, 0.1);
   --neutral: #fbbf24;
+  --text-warning: #f59e0b;
   --border: rgba(255, 255, 255, 0.06);
   --border-hover: rgba(255, 255, 255, 0.12);
   --glass-bg: rgba(255, 255, 255, 0.03);
@@ -75,6 +76,7 @@
   --profit-bg: rgba(22, 163, 74, 0.1);
   --loss: #dc2626;
   --loss-bg: rgba(220, 38, 38, 0.1);
+  --text-warning: #d97706;
   --accent-blue-glow: rgba(59, 130, 246, 0.15);
 }
 

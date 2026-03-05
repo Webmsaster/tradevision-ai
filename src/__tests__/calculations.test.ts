@@ -13,6 +13,8 @@ import {
   calculateSharpeRatio,
   calculateAvgHoldTime,
   calculateAllStats,
+  calculatePerformanceByDayOfWeek,
+  calculatePerformanceByHour,
 } from '@/utils/calculations';
 
 function makeTrade(overrides: Partial<Trade> = {}): Trade {
@@ -327,5 +329,59 @@ describe('calculateAllStats', () => {
     expect(stats.totalPnl).toBe(60);
     expect(stats.bestTrade?.id).toBe('1');
     expect(stats.worstTrade?.id).toBe('2');
+  });
+});
+
+describe('calculatePerformanceByDayOfWeek', () => {
+  it('returns empty array for no trades', () => {
+    expect(calculatePerformanceByDayOfWeek([])).toEqual([]);
+  });
+
+  it('groups trades by day of week with correct stats', () => {
+    // 2024-01-01 = Monday, 2024-01-02 = Tuesday
+    const trades = [
+      makeTrade({ pnl: 10, entryDate: '2024-01-01T10:00:00Z' }),
+      makeTrade({ pnl: -5, entryDate: '2024-01-01T14:00:00Z' }),
+      makeTrade({ pnl: 20, entryDate: '2024-01-02T10:00:00Z' }),
+    ];
+    const result = calculatePerformanceByDayOfWeek(trades);
+    expect(result.length).toBe(2);
+
+    const monday = result.find(r => r.label === 'Monday');
+    expect(monday).toBeDefined();
+    expect(monday!.trades).toBe(2);
+    expect(monday!.totalPnl).toBe(5);
+    expect(monday!.winRate).toBe(50);
+
+    const tuesday = result.find(r => r.label === 'Tuesday');
+    expect(tuesday).toBeDefined();
+    expect(tuesday!.trades).toBe(1);
+    expect(tuesday!.winRate).toBe(100);
+  });
+});
+
+describe('calculatePerformanceByHour', () => {
+  it('returns empty array for no trades', () => {
+    expect(calculatePerformanceByHour([])).toEqual([]);
+  });
+
+  it('groups trades by hour with correct stats', () => {
+    const trades = [
+      makeTrade({ pnl: 10, entryDate: '2024-01-01T09:00:00' }),
+      makeTrade({ pnl: -5, entryDate: '2024-01-02T09:30:00' }),
+      makeTrade({ pnl: 20, entryDate: '2024-01-01T14:00:00' }),
+    ];
+    const result = calculatePerformanceByHour(trades);
+    expect(result.length).toBe(2);
+
+    const hour9 = result.find(r => r.label === '09:00');
+    expect(hour9).toBeDefined();
+    expect(hour9!.trades).toBe(2);
+    expect(hour9!.totalPnl).toBe(5);
+
+    const hour14 = result.find(r => r.label === '14:00');
+    expect(hour14).toBeDefined();
+    expect(hour14!.trades).toBe(1);
+    expect(hour14!.winRate).toBe(100);
   });
 });
