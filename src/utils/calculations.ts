@@ -377,7 +377,7 @@ export function calculateAvgHoldTime(trades: Trade[]): number {
   const totalHoldTime = trades.reduce((sum, trade) => {
     const entry = new Date(trade.entryDate).getTime();
     const exit = new Date(trade.exitDate).getTime();
-    return sum + (exit - entry);
+    return sum + Math.max(0, exit - entry);
   }, 0);
 
   return totalHoldTime / trades.length;

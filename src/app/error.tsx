@@ -13,9 +13,14 @@ export default function GlobalError({
       <p style={{ color: 'var(--text-secondary)', marginBottom: '24px' }}>
         {error.message || 'An unexpected error occurred.'}
       </p>
-      <button className="btn btn-primary" onClick={reset}>
-        Try Again
-      </button>
+      <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+        <button className="btn btn-primary" onClick={reset}>
+          Try Again
+        </button>
+        <a href="/" className="btn btn-ghost">
+          Back to Dashboard
+        </a>
+      </div>
     </div>
   );
 }

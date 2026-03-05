@@ -30,6 +30,8 @@ interface DashboardWidgets {
 const SETTINGS_KEY = SETTINGS_STORAGE_KEY;
 const VALID_PLATFORMS = ['discord', 'telegram', 'custom'] as const;
 
+type Settings = { webhook: WebhookSettings; accounts: Account[]; activeAccountId: string; widgets: DashboardWidgets };
+
 function isValidSettings(obj: unknown): obj is Settings {
   if (!obj || typeof obj !== 'object') return false;
   const s = obj as Record<string, unknown>;
@@ -85,8 +87,6 @@ function loadSettings(): Settings {
 function saveSettings(settings: ReturnType<typeof loadSettings>) {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
 }
-
-type Settings = { webhook: WebhookSettings; accounts: Account[]; activeAccountId: string; widgets: DashboardWidgets };
 
 const DEFAULT_SETTINGS: Settings = {
   webhook: {

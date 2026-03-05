@@ -6,7 +6,7 @@ function generateId(): string {
 }
 
 function getHoldTimeMs(trade: Trade): number {
-  return new Date(trade.exitDate).getTime() - new Date(trade.entryDate).getTime();
+  return Math.max(0, new Date(trade.exitDate).getTime() - new Date(trade.entryDate).getTime());
 }
 
 function getHourOfDay(dateStr: string): number {

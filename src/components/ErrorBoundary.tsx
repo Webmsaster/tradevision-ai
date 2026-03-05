@@ -58,9 +58,14 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
                 {this.state.error.message}
               </p>
             )}
-            <button className="btn btn-primary" onClick={this.handleReset}>
-              Try again
-            </button>
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+              <button className="btn btn-primary" onClick={this.handleReset}>
+                Try again
+              </button>
+              <a href="/" className="btn btn-ghost">
+                Go to Dashboard
+              </a>
+            </div>
           </div>
         </div>
       );

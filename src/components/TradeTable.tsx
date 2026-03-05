@@ -190,7 +190,19 @@ export default function TradeTable({
           </thead>
           <tbody>
             {paginatedTrades.map((trade) => (
-              <tr key={trade.id} onClick={() => setSelectedTrade(trade)} style={{ cursor: 'pointer' }}>
+              <tr
+                key={trade.id}
+                role="row"
+                tabIndex={0}
+                onClick={() => setSelectedTrade(trade)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setSelectedTrade(trade);
+                  }
+                }}
+                style={{ cursor: 'pointer' }}
+              >
                 <td>{formatTradeDate(trade.exitDate)}</td>
                 <td>{trade.pair}</td>
                 <td>
