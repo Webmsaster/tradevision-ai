@@ -9,7 +9,7 @@ export async function createClient(): Promise<SupabaseClient | null> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-  if (!url || !key || url === 'https://your-project.supabase.co') {
+  if (!url || !key || url === 'https://your-project.supabase.co' || url === 'https://placeholder.supabase.co') {
     return null;
   }
 
