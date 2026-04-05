@@ -44,7 +44,7 @@ export function mapCSVToTrades(
 ): Trade[] {
   return data
     .map((row): Trade | null => {
-      const pair = row[mapping.pair]?.trim();
+      const pair = sanitizeCSVField(row[mapping.pair] ?? '');
       const entryPrice = parseFloat(row[mapping.entryPrice]);
       const exitPrice = parseFloat(row[mapping.exitPrice]);
       const quantity = parseFloat(row[mapping.quantity]);
@@ -55,7 +55,7 @@ export function mapCSVToTrades(
       }
 
       // Parse direction -------------------------------------------------
-      const rawDirection = (row[mapping.direction] ?? '').trim().toLowerCase();
+      const rawDirection = sanitizeCSVField(row[mapping.direction] ?? '').toLowerCase();
       let direction: 'long' | 'short';
       if (rawDirection === 'long' || rawDirection === 'buy') {
         direction = 'long';
@@ -239,6 +239,24 @@ export const PLATFORM_PRESETS: Record<string, CSVColumnMapping> = {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+const CSV_INJECTION_PATTERN = /^[=@\t\r]/;
+
+/**
+ * Sanitize a CSV field value to prevent CSV injection (formula injection).
+ * Values starting with =, @, tab, or carriage return could be interpreted
+ * as formulas by spreadsheet software. Note: + and - are NOT stripped
+ * because they appear in valid trading data (e.g. pair names, directions).
+ */
+export function sanitizeCSVField(value: string): string {
+  let sanitized = value.trim();
+  if (!sanitized) return sanitized;
+  // Strip all leading dangerous characters
+  while (sanitized.length > 0 && CSV_INJECTION_PATTERN.test(sanitized)) {
+    sanitized = sanitized.slice(1);
+  }
+  return sanitized;
+}
 
 /**
  * Safely convert a raw date string into an ISO-8601 string.
