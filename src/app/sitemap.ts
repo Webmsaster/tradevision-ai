@@ -1,6 +1,6 @@
 import { MetadataRoute } from 'next';
 
-const BASE_URL = 'https://tradevision-ai-bay.vercel.app';
+const BASE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://tradevision-ai-bay.vercel.app';
 
 // Use a fixed build-time date so lastModified doesn't change on every request
 const LAST_MODIFIED = new Date('2026-02-24');

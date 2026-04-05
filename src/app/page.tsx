@@ -37,7 +37,9 @@ function loadWidgetSettings(): DashboardWidgets {
         };
       }
     }
-  } catch {}
+  } catch (err) {
+    console.error('Failed to load widget settings:', err);
+  }
   return defaults;
 }
 
