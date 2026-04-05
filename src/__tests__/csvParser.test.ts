@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   autoDetectMapping,
   mapCSVToTrades,
+  sanitizeCSVField,
   PLATFORM_PRESETS,
 } from '@/utils/csvParser';
 
@@ -108,6 +109,62 @@ describe('mapCSVToTrades', () => {
     const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic);
     expect(trades[0].direction).toBe('short');
     expect(trades[1].direction).toBe('long');
+  });
+});
+
+describe('sanitizeCSVField', () => {
+  it('returns normal values unchanged', () => {
+    expect(sanitizeCSVField('BTC/USDT')).toBe('BTC/USDT');
+    expect(sanitizeCSVField('long')).toBe('long');
+    expect(sanitizeCSVField('100.50')).toBe('100.50');
+  });
+
+  it('strips = prefix (formula injection)', () => {
+    expect(sanitizeCSVField('=CMD()')).toBe('CMD()');
+    expect(sanitizeCSVField('=1+1')).toBe('1+1');
+  });
+
+  it('preserves + and - prefixes (valid in trading data)', () => {
+    expect(sanitizeCSVField('+long')).toBe('+long');
+    expect(sanitizeCSVField('-500.00')).toBe('-500.00');
+    expect(sanitizeCSVField('+CMD()')).toBe('+CMD()');
+    expect(sanitizeCSVField('-BTC/USDT')).toBe('-BTC/USDT');
+  });
+
+  it('strips @ prefix', () => {
+    expect(sanitizeCSVField('@SUM(A1:A10)')).toBe('SUM(A1:A10)');
+  });
+
+  it('strips tab and subsequent dangerous prefixes', () => {
+    expect(sanitizeCSVField('\t=CMD()')).toBe('CMD()');
+    expect(sanitizeCSVField('\t\t@SUM()')).toBe('SUM()');
+  });
+
+  it('handles empty strings', () => {
+    expect(sanitizeCSVField('')).toBe('');
+    expect(sanitizeCSVField('  ')).toBe('');
+  });
+
+  it('trims whitespace', () => {
+    expect(sanitizeCSVField('  BTC/USDT  ')).toBe('BTC/USDT');
+  });
+});
+
+describe('mapCSVToTrades - CSV injection protection', () => {
+  it('sanitizes pair field with formula prefix', () => {
+    const data = [
+      { 'Pair': '=CMD()', 'Direction': 'long', 'Entry Price': '100', 'Exit Price': '110', 'Quantity': '1', 'Entry Date': '', 'Exit Date': '', 'Fees': '', 'Leverage': '' },
+    ];
+    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic);
+    expect(trades[0].pair).toBe('CMD()');
+  });
+
+  it('sanitizes direction field', () => {
+    const data = [
+      { 'Pair': 'BTC/USDT', 'Direction': '=long', 'Entry Price': '100', 'Exit Price': '110', 'Quantity': '1', 'Entry Date': '', 'Exit Date': '', 'Fees': '', 'Leverage': '' },
+    ];
+    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic);
+    expect(trades[0].direction).toBe('long');
   });
 });
 

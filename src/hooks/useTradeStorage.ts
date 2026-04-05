@@ -49,8 +49,12 @@ function fireWebhook(event: 'onTradeAdd' | 'onTradeEdit' | 'onTradeDelete', trad
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-    }).catch(() => {}); // best-effort
-  } catch {}
+    }).catch((err) => {
+      console.error('Webhook delivery failed:', err);
+    }); // best-effort
+  } catch (err) {
+    console.error('Webhook fire failed:', err);
+  }
 }
 
 function getActiveAccountId(): string {
@@ -60,7 +64,9 @@ function getActiveAccountId(): string {
       const settings = JSON.parse(raw);
       if (settings.activeAccountId) return settings.activeAccountId;
     }
-  } catch {}
+  } catch (err) {
+    console.error('Failed to read active account ID:', err);
+  }
   return 'default';
 }
 
