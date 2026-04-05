@@ -240,14 +240,13 @@ export const PLATFORM_PRESETS: Record<string, CSVColumnMapping> = {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-const CSV_INJECTION_PATTERN = /^[=+\-@\t\r]/;
+const CSV_INJECTION_PATTERN = /^[=@\t\r]/;
 
 /**
  * Sanitize a CSV field value to prevent CSV injection (formula injection).
- * Values starting with =, +, -, @, tab, or carriage return could be
- * interpreted as formulas by spreadsheet software.
- * Returns the sanitized string or null if the value is dangerous and
- * cannot be salvaged (e.g. a pair name starting with "=").
+ * Values starting with =, @, tab, or carriage return could be interpreted
+ * as formulas by spreadsheet software. Note: + and - are NOT stripped
+ * because they appear in valid trading data (e.g. pair names, directions).
  */
 export function sanitizeCSVField(value: string): string {
   let sanitized = value.trim();

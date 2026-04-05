@@ -124,12 +124,11 @@ describe('sanitizeCSVField', () => {
     expect(sanitizeCSVField('=1+1')).toBe('1+1');
   });
 
-  it('strips + prefix', () => {
-    expect(sanitizeCSVField('+CMD()')).toBe('CMD()');
-  });
-
-  it('strips - prefix', () => {
-    expect(sanitizeCSVField('-CMD()')).toBe('CMD()');
+  it('preserves + and - prefixes (valid in trading data)', () => {
+    expect(sanitizeCSVField('+long')).toBe('+long');
+    expect(sanitizeCSVField('-500.00')).toBe('-500.00');
+    expect(sanitizeCSVField('+CMD()')).toBe('+CMD()');
+    expect(sanitizeCSVField('-BTC/USDT')).toBe('-BTC/USDT');
   });
 
   it('strips @ prefix', () => {
