@@ -23,20 +23,20 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Auto-approve semver patch/minor updates
+      - name: Auto-approve patch/minor updates
         if: >-
           steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
           steps.metadata.outputs.update-type == 'version-update:semver-minor'
-        run: gh pr review --repo "$GITHUB_REPOSITORY" "$PR_NUMBER" --approve -b "Auto-approving Dependabot patch/minor update."
+        run: gh pr review --repo "$GITHUB_REPOSITORY" "$PR_NUMBER" --approve -b "Auto-approving Dependabot ${{ steps.metadata.outputs.update-type }}."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
 
-      - name: Enable auto-merge for semver patch/minor updates
+      - name: Enable auto-merge for patch/minor updates
         if: >-
           steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
           steps.metadata.outputs.update-type == 'version-update:semver-minor'
-        run: gh pr merge --repo "$GITHUB_REPOSITORY" "$PR_NUMBER" --auto --merge
+        run: gh pr merge --repo "$GITHUB_REPOSITORY" "$PR_NUMBER" --auto --squash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
