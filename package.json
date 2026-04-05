@@ -20,7 +20,7 @@
     "papaparse": "^5.4.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "recharts": "^2.15.0",
+    "recharts": "^3.8.1",
     "uuid": "^13.0.0"
   },
   "lint-staged": {
