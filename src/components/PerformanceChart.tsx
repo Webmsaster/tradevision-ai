@@ -1,6 +1,6 @@
-'use client';
+"use client";
 
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect } from "react";
 import {
   BarChart,
   Bar,
@@ -12,15 +12,15 @@ import {
   Cell,
   PieChart,
   Pie,
-} from 'recharts';
-import { Trade, PerformanceByTime } from '@/types/trade';
+} from "recharts";
+import { Trade, PerformanceByTime } from "@/types/trade";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 interface PerformanceChartProps {
-  type: 'pnl-distribution' | 'win-loss-pie' | 'by-day' | 'by-hour' | 'by-pair';
+  type: "pnl-distribution" | "win-loss-pie" | "by-day" | "by-hour" | "by-pair";
   trades: Trade[];
   data?: PerformanceByTime[];
   height?: number;
@@ -48,12 +48,12 @@ interface PieDatum {
 // Chart titles
 // ---------------------------------------------------------------------------
 
-const TITLES: Record<PerformanceChartProps['type'], string> = {
-  'pnl-distribution': 'PnL Distribution',
-  'win-loss-pie': 'Win / Loss Ratio',
-  'by-day': 'Performance by Day',
-  'by-hour': 'Performance by Hour',
-  'by-pair': 'Performance by Pair',
+const TITLES: Record<PerformanceChartProps["type"], string> = {
+  "pnl-distribution": "PnL Distribution",
+  "win-loss-pie": "Win / Loss Ratio",
+  "by-day": "Performance by Day",
+  "by-hour": "Performance by Hour",
+  "by-pair": "Performance by Pair",
 };
 
 // ---------------------------------------------------------------------------
@@ -86,12 +86,18 @@ interface PairTooltipProps {
   red: string;
 }
 
-function DistributionTooltip({ active, payload, label }: DistributionTooltipProps) {
+function DistributionTooltip({
+  active,
+  payload,
+  label,
+}: DistributionTooltipProps) {
   if (!active || !payload?.length) return null;
   return (
     <div className="perf-tooltip">
       <div className="perf-tooltip-label">{label}</div>
-      <div className="perf-tooltip-value">{payload[0].value} trade{payload[0].value !== 1 ? 's' : ''}</div>
+      <div className="perf-tooltip-value">
+        {payload[0].value} trade{payload[0].value !== 1 ? "s" : ""}
+      </div>
     </div>
   );
 }
@@ -103,7 +109,7 @@ function PieTooltip({ active, payload }: PieTooltipProps) {
     <div className="perf-tooltip">
       <div className="perf-tooltip-label">{d.name}</div>
       <div className="perf-tooltip-value">
-        {d.value} trade{d.value !== 1 ? 's' : ''} ({d.percent.toFixed(1)}%)
+        {d.value} trade{d.value !== 1 ? "s" : ""} ({d.percent.toFixed(1)}%)
       </div>
     </div>
   );
@@ -115,11 +121,15 @@ function TimeTooltip({ active, payload, label, green, red }: TimeTooltipProps) {
   return (
     <div className="perf-tooltip">
       <div className="perf-tooltip-label">{label}</div>
-      <div className="perf-tooltip-value" style={{ color: d.totalPnl >= 0 ? green : red }}>
+      <div
+        className="perf-tooltip-value"
+        style={{ color: d.totalPnl >= 0 ? green : red }}
+      >
         ${d.totalPnl.toFixed(2)}
       </div>
       <div className="perf-tooltip-value">
-        {d.trades} trade{d.trades !== 1 ? 's' : ''} &middot; {d.winRate.toFixed(1)}% WR
+        {d.trades} trade{d.trades !== 1 ? "s" : ""} &middot;{" "}
+        {d.winRate.toFixed(1)}% WR
       </div>
     </div>
   );
@@ -131,7 +141,10 @@ function PairTooltip({ active, payload, green, red }: PairTooltipProps) {
   return (
     <div className="perf-tooltip">
       <div className="perf-tooltip-label">{d.pair}</div>
-      <div className="perf-tooltip-value" style={{ color: d.totalPnl >= 0 ? green : red }}>
+      <div
+        className="perf-tooltip-value"
+        style={{ color: d.totalPnl >= 0 ? green : red }}
+      >
         ${d.totalPnl.toFixed(2)}
       </div>
     </div>
@@ -143,23 +156,23 @@ function PairTooltip({ active, payload, green, red }: PairTooltipProps) {
 // ---------------------------------------------------------------------------
 
 interface PieLabelProps {
-  cx: number;
-  cy: number;
-  midAngle: number;
-  innerRadius: number;
-  outerRadius: number;
-  percent: number;
-  name: string;
+  cx?: number;
+  cy?: number;
+  midAngle?: number;
+  innerRadius?: number;
+  outerRadius?: number;
+  percent?: number;
+  name?: string;
 }
 
 function renderPieLabel({
-  cx,
-  cy,
-  midAngle,
-  innerRadius,
-  outerRadius,
-  percent,
-  name,
+  cx = 0,
+  cy = 0,
+  midAngle = 0,
+  innerRadius = 0,
+  outerRadius = 0,
+  percent = 0,
+  name = "",
 }: PieLabelProps) {
   const RADIAN = Math.PI / 180;
   const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
@@ -218,7 +231,11 @@ function buildDistributionData(trades: Trade[]): BucketDatum[] {
   const buckets: BucketDatum[] = [];
   // Below min boundary
   if (min < allBounds[0]) {
-    buckets.push({ label: `< ${fmt(allBounds[0])}`, count: 0, isPositive: allBounds[0] >= 0 });
+    buckets.push({
+      label: `< ${fmt(allBounds[0])}`,
+      count: 0,
+      isPositive: allBounds[0] >= 0,
+    });
   }
   for (let i = 0; i < allBounds.length - 1; i++) {
     const lo = allBounds[i];
@@ -261,7 +278,8 @@ function buildDistributionData(trades: Trade[]): BucketDatum[] {
 
   // Remove empty edge buckets
   while (buckets.length > 0 && buckets[0].count === 0) buckets.shift();
-  while (buckets.length > 0 && buckets[buckets.length - 1].count === 0) buckets.pop();
+  while (buckets.length > 0 && buckets[buckets.length - 1].count === 0)
+    buckets.pop();
 
   return buckets;
 }
@@ -281,7 +299,8 @@ function niceStep(absMax: number): number {
 }
 
 function fmt(n: number): string {
-  if (Math.abs(n) >= 1000) return `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k`;
+  if (Math.abs(n) >= 1000)
+    return `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k`;
   if (Number.isInteger(n)) return n.toString();
   return n.toFixed(0);
 }
@@ -292,8 +311,13 @@ function buildPieData(trades: Trade[], green: string, red: string): PieDatum[] {
   const losses = trades.length - wins;
   const total = trades.length;
   return [
-    { name: 'Wins', value: wins, color: green, percent: (wins / total) * 100 },
-    { name: 'Losses', value: losses, color: red, percent: (losses / total) * 100 },
+    { name: "Wins", value: wins, color: green, percent: (wins / total) * 100 },
+    {
+      name: "Losses",
+      value: losses,
+      color: red,
+      percent: (losses / total) * 100,
+    },
   ];
 }
 
@@ -304,7 +328,10 @@ function buildPairData(trades: Trade[]): PairDatum[] {
     map[t.pair] = (map[t.pair] || 0) + t.pnl;
   }
   return Object.entries(map)
-    .map(([pair, totalPnl]) => ({ pair, totalPnl: Math.round(totalPnl * 100) / 100 }))
+    .map(([pair, totalPnl]) => ({
+      pair,
+      totalPnl: Math.round(totalPnl * 100) / 100,
+    }))
     .sort((a, b) => b.totalPnl - a.totalPnl);
 }
 
@@ -319,42 +346,56 @@ export default function PerformanceChart({
   height = 300,
 }: PerformanceChartProps) {
   // ---- theme-aware chart colors ----
-  const [chartColors, setChartColors] = useState({ green: '#00ff88', red: '#ff4757' });
+  const [chartColors, setChartColors] = useState({
+    green: "#00ff88",
+    red: "#ff4757",
+  });
   useEffect(() => {
     function readColors() {
-      const green = getComputedStyle(document.documentElement).getPropertyValue('--profit').trim();
-      const red = getComputedStyle(document.documentElement).getPropertyValue('--loss').trim();
-      if (green) setChartColors(c => ({ ...c, green }));
-      if (red) setChartColors(c => ({ ...c, red }));
+      const green = getComputedStyle(document.documentElement)
+        .getPropertyValue("--profit")
+        .trim();
+      const red = getComputedStyle(document.documentElement)
+        .getPropertyValue("--loss")
+        .trim();
+      if (green) setChartColors((c) => ({ ...c, green }));
+      if (red) setChartColors((c) => ({ ...c, red }));
     }
     readColors();
     const observer = new MutationObserver(readColors);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
     return () => observer.disconnect();
   }, []);
 
   // ---- derived data ----
   const distributionData = useMemo(
-    () => (type === 'pnl-distribution' ? buildDistributionData(trades) : []),
+    () => (type === "pnl-distribution" ? buildDistributionData(trades) : []),
     [type, trades],
   );
 
   const pieData = useMemo(
-    () => (type === 'win-loss-pie' ? buildPieData(trades, chartColors.green, chartColors.red) : []),
+    () =>
+      type === "win-loss-pie"
+        ? buildPieData(trades, chartColors.green, chartColors.red)
+        : [],
     [type, trades, chartColors],
   );
 
   const pairData = useMemo(
-    () => (type === 'by-pair' ? buildPairData(trades) : []),
+    () => (type === "by-pair" ? buildPairData(trades) : []),
     [type, trades],
   );
 
   // ---- empty state ----
   const isEmpty =
-    (type === 'pnl-distribution' && distributionData.length === 0) ||
-    (type === 'win-loss-pie' && pieData.length === 0) ||
-    ((type === 'by-day' || type === 'by-hour') && (!data || data.length === 0)) ||
-    (type === 'by-pair' && pairData.length === 0);
+    (type === "pnl-distribution" && distributionData.length === 0) ||
+    (type === "win-loss-pie" && pieData.length === 0) ||
+    ((type === "by-day" || type === "by-hour") &&
+      (!data || data.length === 0)) ||
+    (type === "by-pair" && pairData.length === 0);
 
   if (isEmpty) {
     return (
@@ -369,24 +410,34 @@ export default function PerformanceChart({
 
   const renderDistribution = () => (
     <ResponsiveContainer width="100%" height={height}>
-      <BarChart data={distributionData} margin={{ top: 4, right: 12, bottom: 4, left: 0 }}>
+      <BarChart
+        data={distributionData}
+        margin={{ top: 4, right: 12, bottom: 4, left: 0 }}
+      >
         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
         <XAxis
           dataKey="label"
-          tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
-          axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
+          tick={{ fill: "var(--text-muted)", fontSize: 11 }}
+          axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
           tickLine={false}
         />
         <YAxis
           allowDecimals={false}
-          tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
-          axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
+          tick={{ fill: "var(--text-muted)", fontSize: 11 }}
+          axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
           tickLine={false}
         />
-        <Tooltip content={<DistributionTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+        <Tooltip
+          content={<DistributionTooltip />}
+          cursor={{ fill: "rgba(255,255,255,0.04)" }}
+        />
         <Bar dataKey="count" radius={[4, 4, 0, 0]} maxBarSize={48}>
           {distributionData.map((d, i) => (
-            <Cell key={i} fill={d.isPositive ? chartColors.green : chartColors.red} fillOpacity={0.8} />
+            <Cell
+              key={i}
+              fill={d.isPositive ? chartColors.green : chartColors.red}
+              fillOpacity={0.8}
+            />
           ))}
         </Bar>
       </BarChart>
@@ -420,26 +471,41 @@ export default function PerformanceChart({
     if (!data) return null;
     return (
       <ResponsiveContainer width="100%" height={height}>
-        <BarChart data={data} margin={{ top: 4, right: 12, bottom: 4, left: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+        <BarChart
+          data={data}
+          margin={{ top: 4, right: 12, bottom: 4, left: 0 }}
+        >
+          <CartesianGrid
+            strokeDasharray="3 3"
+            stroke="rgba(255,255,255,0.06)"
+          />
           <XAxis
             dataKey="label"
-            tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
-            axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
+            tick={{ fill: "var(--text-muted)", fontSize: 11 }}
+            axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
             tickLine={false}
           />
           <YAxis
-            tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
-            axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
+            tick={{ fill: "var(--text-muted)", fontSize: 11 }}
+            axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
             tickLine={false}
             tickFormatter={(v: number) =>
               Math.abs(v) >= 1000 ? `$${(v / 1000).toFixed(1)}k` : `$${v}`
             }
           />
-          <Tooltip content={<TimeTooltip green={chartColors.green} red={chartColors.red} />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+          <Tooltip
+            content={
+              <TimeTooltip green={chartColors.green} red={chartColors.red} />
+            }
+            cursor={{ fill: "rgba(255,255,255,0.04)" }}
+          />
           <Bar dataKey="totalPnl" radius={[4, 4, 0, 0]} maxBarSize={48}>
             {data.map((d, i) => (
-              <Cell key={i} fill={d.totalPnl >= 0 ? chartColors.green : chartColors.red} fillOpacity={0.8} />
+              <Cell
+                key={i}
+                fill={d.totalPnl >= 0 ? chartColors.green : chartColors.red}
+                fillOpacity={0.8}
+              />
             ))}
           </Bar>
         </BarChart>
@@ -456,11 +522,15 @@ export default function PerformanceChart({
           layout="vertical"
           margin={{ top: 4, right: 12, bottom: 4, left: 60 }}
         >
-          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" horizontal={false} />
+          <CartesianGrid
+            strokeDasharray="3 3"
+            stroke="rgba(255,255,255,0.06)"
+            horizontal={false}
+          />
           <XAxis
             type="number"
-            tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
-            axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
+            tick={{ fill: "var(--text-muted)", fontSize: 11 }}
+            axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
             tickLine={false}
             tickFormatter={(v: number) =>
               Math.abs(v) >= 1000 ? `$${(v / 1000).toFixed(1)}k` : `$${v}`
@@ -469,15 +539,24 @@ export default function PerformanceChart({
           <YAxis
             type="category"
             dataKey="pair"
-            tick={{ fill: 'var(--text-muted)', fontSize: 11 }}
-            axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
+            tick={{ fill: "var(--text-muted)", fontSize: 11 }}
+            axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
             tickLine={false}
             width={56}
           />
-          <Tooltip content={<PairTooltip green={chartColors.green} red={chartColors.red} />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+          <Tooltip
+            content={
+              <PairTooltip green={chartColors.green} red={chartColors.red} />
+            }
+            cursor={{ fill: "rgba(255,255,255,0.04)" }}
+          />
           <Bar dataKey="totalPnl" radius={[0, 4, 4, 0]} maxBarSize={28}>
             {pairData.map((d, i) => (
-              <Cell key={i} fill={d.totalPnl >= 0 ? chartColors.green : chartColors.red} fillOpacity={0.8} />
+              <Cell
+                key={i}
+                fill={d.totalPnl >= 0 ? chartColors.green : chartColors.red}
+                fillOpacity={0.8}
+              />
             ))}
           </Bar>
         </BarChart>
@@ -486,13 +565,14 @@ export default function PerformanceChart({
   };
 
   // ---- chart selector ----
-  const chartMap: Record<PerformanceChartProps['type'], () => React.ReactNode> = {
-    'pnl-distribution': renderDistribution,
-    'win-loss-pie': renderPie,
-    'by-day': renderTimeChart,
-    'by-hour': renderTimeChart,
-    'by-pair': renderPairChart,
-  };
+  const chartMap: Record<PerformanceChartProps["type"], () => React.ReactNode> =
+    {
+      "pnl-distribution": renderDistribution,
+      "win-loss-pie": renderPie,
+      "by-day": renderTimeChart,
+      "by-hour": renderTimeChart,
+      "by-pair": renderPairChart,
+    };
 
   return (
     <div className="performance-chart">
