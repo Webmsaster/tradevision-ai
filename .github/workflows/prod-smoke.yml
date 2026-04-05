@@ -78,7 +78,7 @@ jobs:
           env.SMOKE_ALERT_EMAIL_TO != '' &&
           env.SMOKE_ALERT_EMAIL_FROM != ''
         continue-on-error: true
-        uses: dawidd6/action-send-mail@v11
+        uses: dawidd6/action-send-mail@v16
         with:
           server_address: ${{ env.SMTP_SERVER }}
           server_port: 587
