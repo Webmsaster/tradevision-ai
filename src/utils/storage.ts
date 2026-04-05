@@ -213,7 +213,9 @@ export function loadTrades(): Trade[] {
     let screenshots: Record<string, string> = {};
     try {
       screenshots = JSON.parse(localStorage.getItem(SCREENSHOTS_KEY) || '{}');
-    } catch {}
+    } catch (err) {
+      console.error('Failed to parse screenshots from localStorage:', err);
+    }
 
     return (parsed as unknown[])
       .filter(isValidTrade)

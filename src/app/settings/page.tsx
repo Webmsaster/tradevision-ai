@@ -68,7 +68,9 @@ function loadSettings(): Settings {
       const parsed = JSON.parse(raw);
       if (isValidSettings(parsed)) return parsed;
     }
-  } catch {}
+  } catch (err) {
+    console.error('Failed to load settings:', err);
+  }
   return {
     webhook: {
       enabled: false,

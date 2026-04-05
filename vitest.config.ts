@@ -10,6 +10,15 @@ export default defineConfig({
     globals: true,
     css: true,
     exclude: ['e2e/**', 'node_modules/**'],
+    coverage: {
+      provider: 'v8',
+      include: ['src/utils/**'],
+      thresholds: {
+        lines: 70,
+        functions: 70,
+        branches: 70,
+      },
+    },
   },
   resolve: {
     alias: {
