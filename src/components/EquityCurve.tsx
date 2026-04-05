@@ -1,9 +1,17 @@
-'use client';
+"use client";
 
-import { useState, useEffect, useId } from 'react';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, TooltipProps } from 'recharts';
-import { EquityCurvePoint } from '@/types/trade';
-import { formatCurrency } from '@/utils/formatters';
+import { useState, useEffect, useId } from "react";
+import {
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+} from "recharts";
+import { EquityCurvePoint } from "@/types/trade";
+import { formatCurrency } from "@/utils/formatters";
 
 interface EquityCurveProps {
   data: EquityCurvePoint[];
@@ -30,13 +38,19 @@ interface CustomTooltipProps {
   red: string;
 }
 
-function CustomTooltip({ active, payload, label, green, red }: CustomTooltipProps) {
+function CustomTooltip({
+  active,
+  payload,
+  label,
+  green,
+  red,
+}: CustomTooltipProps) {
   if (!active || !payload || payload.length === 0) {
     return null;
   }
 
-  const equityEntry = payload.find((p) => p.dataKey === 'equity');
-  const drawdownEntry = payload.find((p) => p.dataKey === 'drawdown');
+  const equityEntry = payload.find((p) => p.dataKey === "equity");
+  const drawdownEntry = payload.find((p) => p.dataKey === "drawdown");
 
   const equityValue = equityEntry?.value as number | undefined;
   const drawdownValue = drawdownEntry?.value as number | undefined;
@@ -62,18 +76,25 @@ function CustomTooltip({ active, payload, label, green, red }: CustomTooltipProp
 }
 
 export default function EquityCurve({ data, height }: EquityCurveProps) {
-  const [colors, setColors] = useState({ green: '#00ff88', red: '#ff4757' });
+  const [colors, setColors] = useState({ green: "#00ff88", red: "#ff4757" });
   useEffect(() => {
     function readColors() {
-      const green = getComputedStyle(document.documentElement).getPropertyValue('--profit').trim();
-      const red = getComputedStyle(document.documentElement).getPropertyValue('--loss').trim();
-      if (green) setColors(c => ({ ...c, green }));
-      if (red) setColors(c => ({ ...c, red }));
+      const green = getComputedStyle(document.documentElement)
+        .getPropertyValue("--profit")
+        .trim();
+      const red = getComputedStyle(document.documentElement)
+        .getPropertyValue("--loss")
+        .trim();
+      if (green) setColors((c) => ({ ...c, green }));
+      if (red) setColors((c) => ({ ...c, red }));
     }
     readColors();
     // Re-read colors when theme changes
     const observer = new MutationObserver(readColors);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
     return () => observer.disconnect();
   }, []);
 
@@ -98,39 +119,58 @@ export default function EquityCurve({ data, height }: EquityCurveProps) {
       <h3 className="equity-curve-title">Equity Curve</h3>
       <div className="equity-curve-chart">
         <ResponsiveContainer width="100%" height={height || 350}>
-          <AreaChart data={data} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+          <AreaChart
+            data={data}
+            margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
+          >
             <defs>
               <linearGradient id={equityGradientId} x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor={lineColor} stopOpacity={0.3} />
                 <stop offset="100%" stopColor={lineColor} stopOpacity={0} />
               </linearGradient>
-              <linearGradient id={drawdownGradientId} x1="0" y1="0" x2="0" y2="1">
+              <linearGradient
+                id={drawdownGradientId}
+                x1="0"
+                y1="0"
+                x2="0"
+                y2="1"
+              >
                 <stop offset="0%" stopColor={colors.red} stopOpacity={0.15} />
                 <stop offset="100%" stopColor={colors.red} stopOpacity={0} />
               </linearGradient>
             </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+            <CartesianGrid
+              strokeDasharray="3 3"
+              stroke="rgba(255,255,255,0.05)"
+            />
             <XAxis
               dataKey="date"
-              tick={{ fill: '#64748b', fontSize: 12 }}
+              tick={{ fill: "#64748b", fontSize: 12 }}
               tickFormatter={formatDate}
-              axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
-              tickLine={{ stroke: 'rgba(255,255,255,0.1)' }}
+              axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
+              tickLine={{ stroke: "rgba(255,255,255,0.1)" }}
             />
             <YAxis
-              tick={{ fill: '#64748b', fontSize: 12 }}
+              tick={{ fill: "#64748b", fontSize: 12 }}
               tickFormatter={(value: number) => `$${value}`}
-              axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
-              tickLine={{ stroke: 'rgba(255,255,255,0.1)' }}
+              axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
+              tickLine={{ stroke: "rgba(255,255,255,0.1)" }}
             />
-            <Tooltip content={<CustomTooltip green={colors.green} red={colors.red} />} />
+            <Tooltip
+              content={<CustomTooltip green={colors.green} red={colors.red} />}
+            />
             <Area
               type="monotone"
               dataKey="equity"
               stroke={lineColor}
               strokeWidth={2}
               fill={`url(#${equityGradientId})`}
-              activeDot={{ r: 5, stroke: lineColor, strokeWidth: 2, fill: '#0f1729' }}
+              activeDot={{
+                r: 5,
+                stroke: lineColor,
+                strokeWidth: 2,
+                fill: "#0f1729",
+              }}
             />
             <Area
               type="monotone"
@@ -139,7 +179,12 @@ export default function EquityCurve({ data, height }: EquityCurveProps) {
               strokeWidth={1}
               strokeOpacity={0.4}
               fill={`url(#${drawdownGradientId})`}
-              activeDot={{ r: 3, stroke: colors.red, strokeWidth: 1, fill: '#0f1729' }}
+              activeDot={{
+                r: 3,
+                stroke: colors.red,
+                strokeWidth: 1,
+                fill: "#0f1729",
+              }}
             />
           </AreaChart>
         </ResponsiveContainer>

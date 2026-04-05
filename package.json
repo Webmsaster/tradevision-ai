@@ -24,11 +24,7 @@
     "uuid": "^13.0.0"
   },
   "lint-staged": {
-    "*.{ts,tsx}": [
-      "eslint --fix",
-      "prettier --write"
-    ],
-    "*.{json,md}": [
+    "*.{ts,tsx,json,md}": [
       "prettier --write"
     ]
   },
