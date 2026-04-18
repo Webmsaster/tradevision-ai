@@ -2309,6 +2309,62 @@ function LiveSignalsPanel({
             </>
           )}
 
+          {report.deribitSkew && (
+            <>
+              <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
+                Deribit 25Δ Skew (BTC) — option-desk positioning
+              </h3>
+              <div className="live-backtest-stats">
+                <Stat label="Expiry" value={report.deribitSkew.expiry} />
+                <Stat
+                  label="Call IV"
+                  value={
+                    report.deribitSkew.call25dIv !== null
+                      ? `${report.deribitSkew.call25dIv.toFixed(1)}%`
+                      : "—"
+                  }
+                />
+                <Stat
+                  label="Put IV"
+                  value={
+                    report.deribitSkew.put25dIv !== null
+                      ? `${report.deribitSkew.put25dIv.toFixed(1)}%`
+                      : "—"
+                  }
+                />
+                <Stat
+                  label="Skew"
+                  value={`${(report.deribitSkew.skewPct * 100).toFixed(2)}pp`}
+                  tone={
+                    report.deribitSkew.bias === "bullish"
+                      ? "profit"
+                      : report.deribitSkew.bias === "bearish"
+                        ? "loss"
+                        : undefined
+                  }
+                />
+                <Stat
+                  label="Bias"
+                  value={report.deribitSkew.bias.toUpperCase()}
+                  tone={
+                    report.deribitSkew.bias === "bullish"
+                      ? "profit"
+                      : report.deribitSkew.bias === "bearish"
+                        ? "loss"
+                        : undefined
+                  }
+                />
+                <Stat label="Magnitude" value={report.deribitSkew.magnitude} />
+              </div>
+              <p
+                className="live-muted-note"
+                style={{ marginTop: 8, fontSize: 12 }}
+              >
+                {report.deribitSkew.interpretation}
+              </p>
+            </>
+          )}
+
           {report.coinbasePremium && (
             <>
               <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>

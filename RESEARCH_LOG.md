@@ -841,3 +841,38 @@ Wired into `liveSignals.ts` and UI panel alongside Coinbase Premium.
 3. Equity-by-regime chart (stack ensemble equity colored by regime)
 4. Periodic auto-record: when user confirms a paper-trade, auto-close after hold-until time passes
 5. Research: Hyperliquid or dYdX perp flow (DEX perp sentiment vs CEX)
+
+## Iteration 23 (2026-04-18) — Deribit 25Δ Skew: FOUR-WAY BEARISH CONFIRMATION
+
+**Deribit 25-Delta Skew Live** (`src/utils/deribitSkew.ts`):
+
+- Fetches `/api/v2/public/get_book_summary_by_currency?currency=BTC&kind=option`
+- Parses nearest-expiry (>1d) option chain
+- Approximates 25-delta via ATM+5% call and ATM-5% put strikes
+- Computes skew = (call_IV − put_IV) as percentage-points
+- Classifies bullish/bearish + extreme/strong/moderate/noise
+
+**Live snapshot confirms bearish regime with 4-way triangulation:**
+
+- Coinbase Premium: -0.04% (US selling)
+- Bybit Basis: -0.059% backwardation (perp discount, shorts crowded)
+- SOL L/S Ratio: 3.88 (long accounts with negative funding — toxic flow)
+- **Deribit 25Δ Skew: -7.25pp EXTREME** (Put IV 45% vs Call IV 38% — institutions aggressively hedging downside)
+
+Four independent data sources across spot, perp, derivatives, and retail-position = rare high-confidence regime read. System now detects this confluence at-a-glance.
+
+Wired into `liveSignals.ts` and UI panel above Coinbase Premium.
+
+### Iter 23 findings
+
+1. **Deribit skew is the institutional sentiment signal** — options desks are sophisticated, their IV skew reveals expected-distribution bets.
+2. **Four-way confluence is the premium bearish read** — when retail (Coinbase Premium), perp positioning (Bybit basis), retail leverage (L/S), and institutional options (Deribit skew) all point the same way, that's the tier-1 regime signal.
+3. **Strategy contribution pie chart deferred** to iter 24 — not a new signal source, pure visualization. Priority was to secure one more uncorrelated signal first.
+
+### Next iteration targets
+
+1. Strategy contribution pie chart (Recharts PieChart)
+2. Combined sentiment score — roll up 4 signals into one "Regime Confluence" gauge
+3. Research: Hyperliquid perp flow (DEX perp as different retail cohort)
+4. Equity-by-regime stacked chart
+5. Add Deribit skew to the `regimeClassifier` inputs — may improve regime classification accuracy

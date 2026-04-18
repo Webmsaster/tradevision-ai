@@ -32,6 +32,10 @@ import {
 } from "@/utils/coinbasePremium";
 import { fetchBybitBasis, type BybitBasisSnapshot } from "@/utils/bybitBasis";
 import {
+  fetchDeribitSkew,
+  type DeribitSkewSnapshot,
+} from "@/utils/deribitSkew";
+import {
   classifyRegimes,
   type Regime,
   type RegimeWindow,
@@ -134,6 +138,7 @@ export interface LiveSignalsReport {
   volRegime: VolRegimeSnapshot[];
   coinbasePremium?: PremiumSnapshot;
   bybitBasis?: BybitBasisSnapshot;
+  deribitSkew?: DeribitSkewSnapshot;
   currentRegimes?: CurrentRegime[];
   portfolioSummary?: PortfolioSummary;
   alerts?: AlertVerdict[];
@@ -510,6 +515,12 @@ export async function computeLiveSignals(
   } catch {
     // ignore — Bybit may be region-restricted
   }
+  let deribitSkew: DeribitSkewSnapshot | undefined;
+  try {
+    deribitSkew = await fetchDeribitSkew();
+  } catch {
+    // ignore — Deribit may be region-restricted
+  }
 
   // ---- Per-symbol current regime + which strategies are allowed ----
   const currentRegimes: CurrentRegime[] = [];
@@ -594,6 +605,7 @@ export async function computeLiveSignals(
     volRegime,
     coinbasePremium,
     bybitBasis,
+    deribitSkew,
     currentRegimes,
     portfolioSummary,
     alerts,
