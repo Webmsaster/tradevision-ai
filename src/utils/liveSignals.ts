@@ -598,8 +598,20 @@ export async function computeLiveSignals(
     ],
   };
 
-  // ---- Combine into high-confidence alerts ----
-  const alerts = evaluateAllAlerts(champions, health, currentRegimes);
+  // ---- Compute sentiment confluence (needed for 5-star alert) ----
+  const sentimentConfluence = computeSentimentConfluence({
+    coinbasePremium,
+    bybitBasis,
+    deribitSkew,
+  });
+
+  // ---- Combine into high-confidence alerts (confluence = 5th condition) ----
+  const alerts = evaluateAllAlerts(
+    champions,
+    health,
+    currentRegimes,
+    sentimentConfluence,
+  );
 
   return {
     generatedAt: new Date().toISOString(),
@@ -611,11 +623,7 @@ export async function computeLiveSignals(
     coinbasePremium,
     bybitBasis,
     deribitSkew,
-    sentimentConfluence: computeSentimentConfluence({
-      coinbasePremium,
-      bybitBasis,
-      deribitSkew,
-    }),
+    sentimentConfluence,
     currentRegimes,
     portfolioSummary,
     alerts,

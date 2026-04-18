@@ -245,14 +245,18 @@ export default function ResearchPage() {
     const next: Record<string, string> = {};
     for (const a of liveSignals.alerts) {
       next[a.symbol] = a.verdict;
+      const isActionable = a.verdict === "take-hard" || a.verdict === "take";
+      const wasActionable =
+        prev[a.symbol] === "take-hard" || prev[a.symbol] === "take";
       if (
-        a.verdict === "take" &&
-        prev[a.symbol] !== "take" &&
+        isActionable &&
+        !wasActionable &&
         typeof Notification !== "undefined" &&
         Notification.permission === "granted"
       ) {
         try {
-          new Notification(`★★★ ${a.symbol} ${a.action.toUpperCase()}`, {
+          const starStr = "★".repeat(a.stars);
+          new Notification(`${starStr} ${a.symbol} ${a.action.toUpperCase()}`, {
             body: a.summary,
             tag: `alert-${a.symbol}`,
           });
@@ -276,7 +280,7 @@ export default function ResearchPage() {
     const result = await Notification.requestPermission();
     if (result === "granted") {
       new Notification("TradeVision AI", {
-        body: "Alerts enabled — you'll get a ping when a ★★★ TAKE verdict fires.",
+        body: "Alerts enabled — you'll get a ping when a ★★★★+ TAKE verdict fires.",
       });
     }
   }
@@ -1998,7 +2002,8 @@ function LiveSignalsPanel({
           {report.alerts && report.alerts.length > 0 && (
             <>
               <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
-                ★ High-Confidence Alerts (combined verdict)
+                ★ High-Confidence Alerts (5-star verdict: signal + regime +
+                health + edge + sentiment-confluence)
               </h3>
               <div style={{ overflowX: "auto" }}>
                 <table className="live-history-table">
@@ -2030,22 +2035,22 @@ function LiveSignalsPanel({
                           style={{
                             fontSize: 18,
                             color:
-                              a.stars === 3
+                              a.stars >= 4
                                 ? "var(--profit)"
-                                : a.stars === 2
+                                : a.stars === 3
                                   ? "var(--text-secondary)"
-                                  : a.stars === 1
+                                  : a.stars === 2
                                     ? "var(--loss)"
                                     : "var(--text-tertiary)",
                           }}
                         >
                           {"★".repeat(a.stars)}
-                          {"☆".repeat(3 - a.stars)}
+                          {"☆".repeat(5 - a.stars)}
                         </td>
                         <td>
                           <span
                             className={`matrix-verdict matrix-verdict-${
-                              a.verdict === "take"
+                              a.verdict === "take-hard" || a.verdict === "take"
                                 ? "positive"
                                 : a.verdict === "cautious"
                                   ? "inconclusive"
@@ -2055,12 +2060,13 @@ function LiveSignalsPanel({
                             {a.verdict.toUpperCase()}
                           </span>
                         </td>
-                        <td style={{ fontSize: 11, maxWidth: 180 }}>
+                        <td style={{ fontSize: 11, maxWidth: 200 }}>
                           {[
                             a.conditions.signalFired ? "sig✓" : "sig✗",
                             a.conditions.regimeAllows ? "reg✓" : "reg✗",
                             a.conditions.healthyStatus ? "hlt✓" : "hlt✗",
                             a.conditions.positiveEdge ? "edg✓" : "edg✗",
+                            a.conditions.confluenceAligned ? "cnf✓" : "cnf✗",
                           ].join(" ")}
                         </td>
                         <td
@@ -2070,7 +2076,9 @@ function LiveSignalsPanel({
                           {a.summary}
                         </td>
                         <td>
-                          {a.verdict === "take" || a.verdict === "cautious" ? (
+                          {a.verdict === "take-hard" ||
+                          a.verdict === "take" ||
+                          a.verdict === "cautious" ? (
                             <button
                               className="btn btn-primary"
                               style={{ fontSize: 11, padding: "4px 8px" }}

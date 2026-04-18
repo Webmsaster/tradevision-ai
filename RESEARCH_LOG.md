@@ -911,3 +911,58 @@ Wired into `liveSignals.ts` and UI panel above Coinbase Premium.
 3. Hyperliquid perp positioning research (DEX perp funding vs CEX)
 4. Auto-record paper-trade close when hold-until time passes
 5. Sentiment Confluence score as 5th high-confidence alert condition (sig + reg + hlt + edg + confluence ≥ 30 absolute) → 5-star alerts
+
+## Iteration 25 (2026-04-18) — 5-Star Alert System
+
+**Motivation:** The sentiment confluence gauge from iter 24 was pure visualization — users had to read it and mentally combine it with the 4-condition alert verdict. Iter 25 makes it actionable: confluence is now the 5th condition in the alert verdict, turning the system into a hard filter.
+
+**Changes in `src/utils/highConfidenceAlert.ts`:**
+
+- `AlertVerdict.stars` widened from `0|1|2|3` to `0|1|2|3|4|5`
+- New verdict tier `take-hard` at 5/5 (★★★★★) — highest-conviction TAKE
+- New condition `confluenceAligned` — true when:
+  - `|score| ≥ 30` AND
+  - confluence direction matches signal direction (long + positive, short + negative)
+- **New hard-fail:** when confluence OPPOSES signal with `|score| ≥ 50` AND `confidence === "high"` → forced SKIP
+  - Rationale: if retail+perp+options all strongly disagree with our signal, the signal is likely late or wrong
+
+**Thresholds chosen:**
+
+- Align: ±30 (one full tier like "bullish" or "bearish" — enough to call it a directional bias)
+- Hard-fail-oppose: ±50 + high-confidence (only "strong-\*" with 80%+ signal agreement triggers override)
+- This keeps the system permissive when confluence is ambiguous (most common state) but protects against entering against a clear consensus.
+
+**Wiring:**
+
+- `liveSignals.ts` now computes `sentimentConfluence` before `evaluateAllAlerts()` and passes it through
+- Alert UI table:
+  - 5 slots (★★★★★) instead of 3
+  - Color-coded: ★★★★+ green, ★★★ grey, ★★ red, ★ dim
+  - Conditions column now shows `sig reg hlt edg cnf`
+  - Take button active for `take-hard | take | cautious`
+- Browser notifications fire for `take-hard` and `take` (was just `take`) — user gets pinged earlier on 4/5 matches, with 5/5 labeled in the notification title via star string
+
+**Verdict-tier mapping:**
+
+| Stars           | Verdict   | Behavior                                                    |
+| --------------- | --------- | ----------------------------------------------------------- |
+| 5/5             | take-hard | Full size, high conviction                                  |
+| 4/5             | take      | Full size                                                   |
+| 3/5             | cautious  | Half size                                                   |
+| 2/5             | risky     | Skip unless strong conviction                               |
+| <2              | skip      | Skip                                                        |
+| any + hard-fail | skip      | Forced skip (funding hr / PAUSE / strong-oppose-confluence) |
+
+### Iter 25 findings
+
+1. **5-star forces explicit thinking about confluence** — previously the gauge was cosmetic; now if it's flat or opposing, the signal visibly drops a star. Turns gauge into filter.
+2. **Hard-fail on strong-oppose is asymmetric on purpose** — we need ≥50 (not ≥30) and HIGH confidence (not medium) to override. Otherwise mild sentiment noise would block every trade. This matches Kelly / edge intuition: only override when the opposing signal is itself tier-1.
+3. **Take-hard label is meaningful** — in the current bearish market, champion SHORT + 4-way bearish confluence would trigger ★★★★★. Champion LONG in the current regime would cap at ★★★★ even with all other 4 conditions met (confluence opposes by -45) — correctly flagging that timing/regime risk.
+
+### Next iteration targets
+
+1. Strategy contribution pie chart (Recharts PieChart % of P&L per strategy)
+2. Equity-by-regime chart (per-regime portfolio mean-PnL bars)
+3. Auto-close paper trades when `plannedExitTime` passes (signal journal currently keeps them open forever)
+4. Hyperliquid perp positioning research (DEX perp as different retail cohort)
+5. Backtest: validate the confluence-aligned filter on historical Coinbase Premium ✓ signals — would it have improved that strategy's Sharpe from 2.06?
