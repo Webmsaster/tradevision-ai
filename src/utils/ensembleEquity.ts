@@ -21,6 +21,7 @@ import type { WalkForwardConfig } from "@/utils/walkForward";
 import { runMondayReversal, MAKER_COSTS } from "@/utils/intradayLab";
 import { runFundingCarryBacktest } from "@/utils/fundingCarry";
 import type { FundingEvent } from "@/utils/fundingRate";
+import { runLeadLagBacktest } from "@/utils/leadLagStrategy";
 import {
   allocate,
   computeMetrics as computePortMetrics,
@@ -143,6 +144,28 @@ export async function buildEnsembleEquity(
         time: t.closeTime,
         pnlPct: t.netCarryPct,
         strategy: `FundingCarry-${sym}`,
+      })),
+    });
+  }
+
+  // ---- Lead-Lag: BTC→SOL (verified iter4), skip ETH (confirmed negative) ----
+  const btc = candlesByH["BTCUSDT"];
+  const sol = candlesByH["SOLUSDT"];
+  if (btc && sol && btc.length > 100 && sol.length > 100) {
+    const ll = runLeadLagBacktest(btc, sol, "SOLUSDT", {
+      btcThresholdPct: 0.01,
+      altMaxMovePct: 0.005,
+      holdBarsMax: 3,
+      targetRatioToBtc: 0.7,
+      stopPctBtcReversal: 0.008,
+      costs: makerCosts,
+    });
+    streams.push({
+      name: "LeadLag-BTC→SOL",
+      returns: ll.trades.map((t) => ({
+        time: t.entryTime,
+        pnlPct: t.netPnlPct,
+        strategy: "LeadLag-BTC→SOL",
       })),
     });
   }

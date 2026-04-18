@@ -161,3 +161,47 @@ Baseline (100% maker fill):
 3. Funding-Settlement-Minute Reversion — still pending
 4. Vol-regime in liveSignals UI (visible to user)
 5. Continuous forward-testing: store Champion signal predictions + actual outcomes to compute real live Sharpe over time
+
+## Iteration 5 results (2026-04-18)
+
+**Ensemble with Lead-Lag integrated (10 strategies):**
+
+- Portfolio Sharpe **1.58** (up from 1.56), MaxDD **1.4%** (down from 1.8%)
+- Lead-Lag-BTC→SOL: 6.4% weight, Sharpe 9.13, 34 trades — 4th most important strategy in portfolio
+- Total return 23%, ann 5.9%, vol 3.7%, WR 56%, 563 days
+
+**Rolling Deflated Sharpe (90-trade window, 30-trade step):**
+
+| Strategy     | Mean DSR  | Max DSR   | Share ≥0.95 | Share ≥0.80 | Share ≥0.50 |
+| ------------ | --------- | --------- | ----------- | ----------- | ----------- |
+| Champion-BTC | 0.099     | 0.593     | 0%          | 0%          | 6%          |
+| Champion-ETH | 0.116     | 0.436     | 0%          | 0%          | 0%          |
+| Champion-SOL | **0.294** | **0.909** | 0%          | **14%**     | **29%**     |
+
+**Critical insight:** even SOL Champion (which passes 95% on full sample) is significant in only **14% of 90-trade windows**. The edge is REAL but NOT CONSTANT. This is why we need ensemble + vol-gate + position sizing — to smooth over the noise windows.
+
+**Funding-Settlement-Minute Reversion (Inan 2025):**
+
+| Symbol  | Signals | Trades | Return     | WR  | PF       | Sharpe   | DD   |
+| ------- | ------- | ------ | ---------- | --- | -------- | -------- | ---- |
+| **SOL** | 184     | 51     | **+16.1%** | 49% | **1.68** | **1.30** | 6.5% |
+| ETH     | 46      | 21     | +1.2%      | 52% | 1.20     | 1.16     | 2.4% |
+| BTC     | 42      | 21     | -0.9%      | 52% | 0.89     | -0.76    | 4.1% |
+
+SOL funding-minute reversion is a real new edge. ETH marginal. BTC doesn't work.
+
+### Iteration 5 findings
+
+1. **Ensemble continues to improve** with each verified edge added — portfolio DD keeps shrinking.
+2. **Rolling DSR is the most honest metric** we've computed: even our best strategy is only significant 14% of rolling windows. This justifies ensemble + position sizing rather than concentrating on one strategy.
+3. **SOL is the universal winner** — funding-minute reversion, lead-lag, hour-of-day all positive on SOL. Hypothesis: SOL has more retail-driven flow, making structural patterns more persistent.
+4. **BTC is the hardest edge-surface** — most professional activity already arbitraged. Only the slowest edges (Monday, Champion) work.
+5. **Edges are regime/time-local** — expect live performance to drift. Retraining + kill-switches are essential.
+
+### Next iteration targets
+
+1. Add Funding-Minute-Reversion-SOL to ensemble (real diversifier)
+2. Build "live signal journal" — persist each fired signal + its outcome to compute REAL live Sharpe over time
+3. Expose rolling DSR in the research UI (transparency)
+4. Add "strategy health monitor" — if rolling Sharpe drops, flag for review
+5. Investigate: why is ETH weak on lead-lag + funding-minute? Maybe because ETH has become a leading asset (Aliyev 2025 mentions this)
