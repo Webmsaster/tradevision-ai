@@ -1,57 +1,94 @@
-'use client';
+"use client";
 
-import { useMemo, useState, useEffect } from 'react';
-import Link from 'next/link';
-import dynamic from 'next/dynamic';
-import { SETTINGS_CHANGED_EVENT, SETTINGS_KEY } from '@/lib/constants';
-import { calculateAllStats, calculateEquityCurve } from '@/utils/calculations';
-import { generateAllInsights } from '@/utils/aiAnalysis';
-import { useTradeStorage } from '@/hooks/useTradeStorage';
-import StatCard from '@/components/StatCard';
-import Skeleton from '@/components/Skeleton';
-import TradeTable from '@/components/TradeTable';
-import InsightCard from '@/components/InsightCard';
-import WeeklySummary from '@/components/WeeklySummary';
-import SyncErrorToast from '@/components/SyncErrorToast';
-import { formatCurrency } from '@/utils/formatters';
+import { useMemo, useState, useEffect } from "react";
+import Link from "next/link";
+import dynamic from "next/dynamic";
+import { SETTINGS_CHANGED_EVENT, SETTINGS_KEY } from "@/lib/constants";
+import { calculateAllStats, calculateEquityCurve } from "@/utils/calculations";
+import { generateAllInsights } from "@/utils/aiAnalysis";
+import { useTradeStorage } from "@/hooks/useTradeStorage";
+import StatCard from "@/components/StatCard";
+import Skeleton from "@/components/Skeleton";
+import TradeTable from "@/components/TradeTable";
+import InsightCard from "@/components/InsightCard";
+import WeeklySummary from "@/components/WeeklySummary";
+import DayOfWeekHeatmap from "@/components/DayOfWeekHeatmap";
+import SyncErrorToast from "@/components/SyncErrorToast";
+import { formatCurrency } from "@/utils/formatters";
 
 interface DashboardWidgets {
   equityCurve: boolean;
   weeklySummary: boolean;
   recentTrades: boolean;
   aiInsights: boolean;
+  dayOfWeekHeatmap: boolean;
 }
 
 function loadWidgetSettings(): DashboardWidgets {
-  const defaults: DashboardWidgets = { equityCurve: true, weeklySummary: true, recentTrades: true, aiInsights: true };
+  const defaults: DashboardWidgets = {
+    equityCurve: true,
+    weeklySummary: true,
+    recentTrades: true,
+    aiInsights: true,
+    dayOfWeekHeatmap: true,
+  };
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed.widgets && typeof parsed.widgets === 'object') {
+      if (parsed.widgets && typeof parsed.widgets === "object") {
         return {
-          equityCurve: typeof parsed.widgets.equityCurve === 'boolean' ? parsed.widgets.equityCurve : true,
-          weeklySummary: typeof parsed.widgets.weeklySummary === 'boolean' ? parsed.widgets.weeklySummary : true,
-          recentTrades: typeof parsed.widgets.recentTrades === 'boolean' ? parsed.widgets.recentTrades : true,
-          aiInsights: typeof parsed.widgets.aiInsights === 'boolean' ? parsed.widgets.aiInsights : true,
+          equityCurve:
+            typeof parsed.widgets.equityCurve === "boolean"
+              ? parsed.widgets.equityCurve
+              : true,
+          weeklySummary:
+            typeof parsed.widgets.weeklySummary === "boolean"
+              ? parsed.widgets.weeklySummary
+              : true,
+          recentTrades:
+            typeof parsed.widgets.recentTrades === "boolean"
+              ? parsed.widgets.recentTrades
+              : true,
+          aiInsights:
+            typeof parsed.widgets.aiInsights === "boolean"
+              ? parsed.widgets.aiInsights
+              : true,
+          dayOfWeekHeatmap:
+            typeof parsed.widgets.dayOfWeekHeatmap === "boolean"
+              ? parsed.widgets.dayOfWeekHeatmap
+              : true,
         };
       }
     }
   } catch (err) {
-    console.error('Failed to load widget settings:', err);
+    console.error("Failed to load widget settings:", err);
   }
   return defaults;
 }
 
 // Lazy load Recharts-based component - no SSR needed
-const EquityCurve = dynamic(() => import('@/components/EquityCurve'), {
+const EquityCurve = dynamic(() => import("@/components/EquityCurve"), {
   ssr: false,
   loading: () => <Skeleton variant="card" />,
 });
 
 export default function DashboardPage() {
-  const { trades, isLoading, setAllTrades, clearAll, syncError, dismissSyncError } = useTradeStorage();
-  const [widgets, setWidgets] = useState<DashboardWidgets>({ equityCurve: true, weeklySummary: true, recentTrades: true, aiInsights: true });
+  const {
+    trades,
+    isLoading,
+    setAllTrades,
+    clearAll,
+    syncError,
+    dismissSyncError,
+  } = useTradeStorage();
+  const [widgets, setWidgets] = useState<DashboardWidgets>({
+    equityCurve: true,
+    weeklySummary: true,
+    recentTrades: true,
+    aiInsights: true,
+    dayOfWeekHeatmap: true,
+  });
 
   useEffect(() => {
     setWidgets(loadWidgetSettings());
@@ -64,7 +101,7 @@ export default function DashboardPage() {
   }, []);
 
   // Detect demo mode by checking if sample data IDs are present
-  const isDemoData = trades.length > 0 && trades[0]?.id?.startsWith('sample-');
+  const isDemoData = trades.length > 0 && trades[0]?.id?.startsWith("sample-");
 
   // Calculate stats from the current set of trades
   const stats = useMemo(() => calculateAllStats(trades), [trades]);
@@ -80,7 +117,7 @@ export default function DashboardPage() {
     return [...trades]
       .sort(
         (a, b) =>
-          new Date(b.exitDate).getTime() - new Date(a.exitDate).getTime()
+          new Date(b.exitDate).getTime() - new Date(a.exitDate).getTime(),
       )
       .slice(0, 10);
   }, [trades]);
@@ -93,7 +130,7 @@ export default function DashboardPage() {
    * Uses dynamic import so the sample data bundle is only fetched when clicked.
    */
   const handleLoadSampleData = async () => {
-    const { sampleTrades } = await import('@/data/sampleTrades');
+    const { sampleTrades } = await import("@/data/sampleTrades");
     setAllTrades(sampleTrades);
   };
 
@@ -143,7 +180,7 @@ export default function DashboardPage() {
             strokeWidth="1.5"
             strokeLinecap="round"
             strokeLinejoin="round"
-            style={{ opacity: 0.5, color: 'var(--text-secondary)' }}
+            style={{ opacity: 0.5, color: "var(--text-secondary)" }}
           >
             <path d="M12 20V10" />
             <path d="M18 20V4" />
@@ -171,14 +208,13 @@ export default function DashboardPage() {
   // ------------------------------------------------------------------
   // Render: populated dashboard
   // ------------------------------------------------------------------
-  const pnlVariant: 'profit' | 'loss' =
-    stats.totalPnl >= 0 ? 'profit' : 'loss';
+  const pnlVariant: "profit" | "loss" = stats.totalPnl >= 0 ? "profit" : "loss";
 
-  const winRateTrend: 'up' | 'down' | 'neutral' =
-    stats.winRate >= 55 ? 'up' : stats.winRate >= 45 ? 'neutral' : 'down';
+  const winRateTrend: "up" | "down" | "neutral" =
+    stats.winRate >= 55 ? "up" : stats.winRate >= 45 ? "neutral" : "down";
 
   const profitFactorDisplay =
-    stats.profitFactor === Infinity ? 'Inf' : stats.profitFactor.toFixed(2);
+    stats.profitFactor === Infinity ? "Inf" : stats.profitFactor.toFixed(2);
 
   return (
     <>
@@ -233,12 +269,18 @@ export default function DashboardPage() {
         <StatCard
           label="Profit Factor"
           value={profitFactorDisplay}
-          variant={stats.profitFactor >= 1.5 ? 'profit' : stats.profitFactor >= 1 ? 'default' : 'loss'}
+          variant={
+            stats.profitFactor >= 1.5
+              ? "profit"
+              : stats.profitFactor >= 1
+                ? "default"
+                : "loss"
+          }
         />
         <StatCard
           label="Expectancy"
           value={formatCurrency(stats.expectancy)}
-          variant={stats.expectancy >= 0 ? 'profit' : 'loss'}
+          variant={stats.expectancy >= 0 ? "profit" : "loss"}
         />
       </div>
 
@@ -270,6 +312,13 @@ export default function DashboardPage() {
       {widgets.weeklySummary && trades.length > 0 && (
         <div className="glass-card dashboard-weekly">
           <WeeklySummary trades={trades} />
+        </div>
+      )}
+
+      {/* Day of Week Heatmap */}
+      {widgets.dayOfWeekHeatmap && trades.length > 0 && (
+        <div className="glass-card dashboard-weekly">
+          <DayOfWeekHeatmap trades={trades} />
         </div>
       )}
 
@@ -316,7 +365,7 @@ export default function DashboardPage() {
                     strokeWidth="1.5"
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    style={{ color: 'var(--text-secondary)' }}
+                    style={{ color: "var(--text-secondary)" }}
                   >
                     <path d="M22 11.08V12a10 10 0 11-5.93-9.14" />
                     <polyline points="22 4 12 14.01 9 11.01" />

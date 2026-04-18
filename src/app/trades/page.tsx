@@ -1,12 +1,20 @@
-'use client';
-import { Suspense, useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import { useSearchParams } from 'next/navigation';
-import { Trade } from '@/types/trade';
-import { useTradeStorage } from '@/hooks/useTradeStorage';
-import TradeTable from '@/components/TradeTable';
-import TradeForm from '@/components/TradeForm';
-import ConfirmDialog from '@/components/ConfirmDialog';
-import SyncErrorToast from '@/components/SyncErrorToast';
+"use client";
+import {
+  Suspense,
+  useState,
+  useMemo,
+  useCallback,
+  useRef,
+  useEffect,
+} from "react";
+import { useSearchParams } from "next/navigation";
+import { Trade } from "@/types/trade";
+import { useTradeStorage } from "@/hooks/useTradeStorage";
+import TradeTable from "@/components/TradeTable";
+import TradeForm from "@/components/TradeForm";
+import ConfirmDialog from "@/components/ConfirmDialog";
+import SyncErrorToast from "@/components/SyncErrorToast";
+import { exportTradesToCsv } from "@/utils/csvExport";
 
 export default function TradesPage() {
   return (
@@ -17,42 +25,64 @@ export default function TradesPage() {
 }
 
 function TradesPageContent() {
-  const { trades, addTrade, editTrade, removeTrade, syncError, dismissSyncError } = useTradeStorage();
+  const {
+    trades,
+    addTrade,
+    editTrade,
+    removeTrade,
+    syncError,
+    dismissSyncError,
+  } = useTradeStorage();
   const searchParams = useSearchParams();
   const highlightIds = useMemo(() => {
-    const raw = searchParams.get('highlight');
-    return raw ? new Set(raw.split(',')) : null;
+    const raw = searchParams.get("highlight");
+    return raw ? new Set(raw.split(",")) : null;
   }, [searchParams]);
   const [showForm, setShowForm] = useState(false);
   const [editingTrade, setEditingTrade] = useState<Trade | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [directionFilter, setDirectionFilter] = useState<'all' | 'long' | 'short'>('all');
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  const [searchQuery, setSearchQuery] = useState("");
+  const [directionFilter, setDirectionFilter] = useState<
+    "all" | "long" | "short"
+  >("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
 
   const filteredTrades = useMemo(() => {
     // When highlight param is set, only show those trades
-    if (highlightIds && !searchQuery && directionFilter === 'all' && !dateFrom && !dateTo) {
-      return trades.filter(t => highlightIds.has(t.id));
+    if (
+      highlightIds &&
+      !searchQuery &&
+      directionFilter === "all" &&
+      !dateFrom &&
+      !dateTo
+    ) {
+      return trades.filter((t) => highlightIds.has(t.id));
     }
     return trades.filter((trade) => {
-      if (searchQuery && !trade.pair.toLowerCase().includes(searchQuery.toLowerCase())) {
+      if (
+        searchQuery &&
+        !trade.pair.toLowerCase().includes(searchQuery.toLowerCase())
+      ) {
         return false;
       }
 
-      if (directionFilter !== 'all' && trade.direction !== directionFilter) {
+      if (directionFilter !== "all" && trade.direction !== directionFilter) {
         return false;
       }
 
       if (dateFrom) {
-        const tradeDate = trade.exitDate ? trade.exitDate.slice(0, 10) : trade.entryDate.slice(0, 10);
+        const tradeDate = trade.exitDate
+          ? trade.exitDate.slice(0, 10)
+          : trade.entryDate.slice(0, 10);
         if (tradeDate < dateFrom) {
           return false;
         }
       }
 
       if (dateTo) {
-        const tradeDate = trade.exitDate ? trade.exitDate.slice(0, 10) : trade.entryDate.slice(0, 10);
+        const tradeDate = trade.exitDate
+          ? trade.exitDate.slice(0, 10)
+          : trade.entryDate.slice(0, 10);
         if (tradeDate > dateTo) {
           return false;
         }
@@ -62,7 +92,11 @@ function TradesPageContent() {
     });
   }, [trades, searchQuery, directionFilter, dateFrom, dateTo, highlightIds]);
 
-  const hasActiveFilters = searchQuery !== '' || directionFilter !== 'all' || dateFrom !== '' || dateTo !== '';
+  const hasActiveFilters =
+    searchQuery !== "" ||
+    directionFilter !== "all" ||
+    dateFrom !== "" ||
+    dateTo !== "";
   const isHighlightMode = highlightIds && !hasActiveFilters;
 
   const totalPnl = useMemo(() => {
@@ -76,10 +110,10 @@ function TradesPageContent() {
   }, [filteredTrades]);
 
   function clearFilters() {
-    setSearchQuery('');
-    setDirectionFilter('all');
-    setDateFrom('');
-    setDateTo('');
+    setSearchQuery("");
+    setDirectionFilter("all");
+    setDateFrom("");
+    setDateTo("");
   }
 
   // TradeForm already returns a complete Trade with id, pnl, pnlPercent
@@ -125,7 +159,7 @@ function TradesPageContent() {
 
   function confirmDelete() {
     if (!confirmDeleteId) return;
-    const tradeToDelete = trades.find(t => t.id === confirmDeleteId);
+    const tradeToDelete = trades.find((t) => t.id === confirmDeleteId);
     removeTrade(confirmDeleteId);
     setConfirmDeleteId(null);
 
@@ -152,19 +186,34 @@ function TradesPageContent() {
       <div className="page-header">
         <div>
           <h1 className="page-title">Trade History</h1>
-          <p className="page-subtitle">View, filter, and manage all your trades</p>
+          <p className="page-subtitle">
+            View, filter, and manage all your trades
+          </p>
         </div>
-        <button className="btn btn-primary" onClick={() => setShowForm(true)}>
-          + Add Trade
-        </button>
+        <div className="page-header-actions">
+          <button
+            className="btn btn-ghost"
+            onClick={() => exportTradesToCsv(filteredTrades)}
+            disabled={filteredTrades.length === 0}
+            title="Export filtered trades as CSV"
+          >
+            Export CSV
+          </button>
+          <button className="btn btn-primary" onClick={() => setShowForm(true)}>
+            + Add Trade
+          </button>
+        </div>
       </div>
 
       {isHighlightMode && (
         <div className="dashboard-banner" style={{ marginBottom: 16 }}>
           <span className="dashboard-banner-text">
-            Showing {filteredTrades.length} related trade{filteredTrades.length !== 1 ? 's' : ''} from insight
+            Showing {filteredTrades.length} related trade
+            {filteredTrades.length !== 1 ? "s" : ""} from insight
           </span>
-          <a href="/trades" className="dashboard-banner-btn">Show All Trades</a>
+          <a href="/trades" className="dashboard-banner-btn">
+            Show All Trades
+          </a>
         </div>
       )}
 
@@ -178,22 +227,26 @@ function TradesPageContent() {
           onChange={(e) => setSearchQuery(e.target.value)}
         />
 
-        <div className="trades-direction-filter" role="group" aria-label="Filter by direction">
+        <div
+          className="trades-direction-filter"
+          role="group"
+          aria-label="Filter by direction"
+        >
           <button
-            className={`trades-direction-btn ${directionFilter === 'all' ? 'active' : ''}`}
-            onClick={() => setDirectionFilter('all')}
+            className={`trades-direction-btn ${directionFilter === "all" ? "active" : ""}`}
+            onClick={() => setDirectionFilter("all")}
           >
             All
           </button>
           <button
-            className={`trades-direction-btn ${directionFilter === 'long' ? 'active' : ''}`}
-            onClick={() => setDirectionFilter('long')}
+            className={`trades-direction-btn ${directionFilter === "long" ? "active" : ""}`}
+            onClick={() => setDirectionFilter("long")}
           >
             Long
           </button>
           <button
-            className={`trades-direction-btn ${directionFilter === 'short' ? 'active' : ''}`}
-            onClick={() => setDirectionFilter('short')}
+            className={`trades-direction-btn ${directionFilter === "short" ? "active" : ""}`}
+            onClick={() => setDirectionFilter("short")}
           >
             Short
           </button>
@@ -227,24 +280,34 @@ function TradesPageContent() {
 
       <div className="trades-summary">
         <span>
-          Showing <span className="trades-summary-stat">{filteredTrades.length}</span> of{' '}
-          <span className="trades-summary-stat">{trades.length}</span> trades
+          Showing{" "}
+          <span className="trades-summary-stat">{filteredTrades.length}</span>{" "}
+          of <span className="trades-summary-stat">{trades.length}</span> trades
         </span>
         <span>
-          Total PnL:{' '}
+          Total PnL:{" "}
           <span
             className="trades-summary-stat"
-            style={{ color: totalPnl >= 0 ? 'var(--profit)' : 'var(--loss)' }}
+            style={{ color: totalPnl >= 0 ? "var(--profit)" : "var(--loss)" }}
           >
-            ${totalPnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            $
+            {totalPnl.toLocaleString("en-US", {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
           </span>
         </span>
         <span>
-          Win Rate: <span className="trades-summary-stat">{winRate.toFixed(1)}%</span>
+          Win Rate:{" "}
+          <span className="trades-summary-stat">{winRate.toFixed(1)}%</span>
         </span>
       </div>
 
-      <TradeTable trades={filteredTrades} onEdit={handleEdit} onDelete={handleDeleteTrade} />
+      <TradeTable
+        trades={filteredTrades}
+        onEdit={handleEdit}
+        onDelete={handleDeleteTrade}
+      />
 
       <TradeForm
         isOpen={showForm}
@@ -268,7 +331,11 @@ function TradesPageContent() {
           <button className="btn btn-ghost btn-sm" onClick={handleUndoDelete}>
             Undo
           </button>
-          <button className="undo-toast-dismiss" onClick={dismissUndo} aria-label="Dismiss">
+          <button
+            className="undo-toast-dismiss"
+            onClick={dismissUndo}
+            aria-label="Dismiss"
+          >
             &#10005;
           </button>
         </div>

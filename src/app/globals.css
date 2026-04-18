@@ -536,6 +536,19 @@ tr:last-child td { border-bottom: none; }
    ============================================ */
 .page-container { padding: 32px; }
 .page-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; flex-wrap: wrap; gap: 16px; }
+.page-header-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+.account-switcher { position: relative; margin: 0 16px 16px; }
+.account-switcher-trigger { width: 100%; display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--surface, rgba(255,255,255,0.04)); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; color: var(--text-primary); cursor: pointer; font-size: 0.85rem; transition: background 120ms ease, border-color 120ms ease; }
+.account-switcher-trigger:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.18); }
+.account-switcher-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary); }
+.account-switcher-name { flex: 1; text-align: left; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.account-switcher-menu { position: absolute; left: 0; right: 0; top: calc(100% + 4px); background: var(--surface-elevated, #1c1f26); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 4px; margin: 0; list-style: none; z-index: 50; max-height: 280px; overflow-y: auto; box-shadow: 0 8px 24px rgba(0,0,0,0.35); }
+.account-switcher-item { width: 100%; text-align: left; padding: 8px 10px; background: transparent; border: none; border-radius: 6px; cursor: pointer; color: var(--text-primary); font-size: 0.85rem; display: flex; flex-direction: column; gap: 2px; }
+.account-switcher-item:hover { background: rgba(255,255,255,0.06); }
+.account-switcher-item.active { background: rgba(79, 140, 255, 0.14); color: var(--accent, #4f8cff); }
+.account-switcher-item-name { font-weight: 600; }
+.account-switcher-item-broker { font-size: 0.7rem; color: var(--text-secondary); }
 .page-title { font-size: 1.75rem; font-weight: 700; color: var(--text-primary); margin: 0; }
 .page-subtitle { font-size: 0.9rem; color: var(--text-secondary); margin: 6px 0 0 0; }
 .empty-state { text-align: center; padding: 60px 20px; color: var(--text-secondary); }
@@ -867,16 +880,22 @@ tr:last-child td { border-bottom: none; }
 
   /* Page shared */
   .page-container { padding: 16px; padding-top: 60px; }
+  .page-header { flex-direction: column; align-items: stretch; }
+  .page-header-actions { width: 100%; }
+  .page-header-actions .btn { flex: 1; justify-content: center; }
 
   /* Dashboard */
   .dashboard-kpi-grid { grid-template-columns: 1fr; }
   .dashboard-kpi-secondary { grid-template-columns: 1fr; }
   .dashboard-title { font-size: 1.4rem; }
   .dashboard-empty-actions { flex-direction: column; align-items: center; }
+  .dashboard-banner { flex-direction: column; align-items: stretch; gap: 10px; }
 
   /* Trades */
   .trades-filters { flex-direction: column; align-items: stretch; }
   .trades-search { min-width: unset; }
+  .trades-summary { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .trades-date-inputs { flex-wrap: wrap; }
 
   /* Analytics */
   .analytics-stats-grid { grid-template-columns: 1fr; }
@@ -917,6 +936,24 @@ tr:last-child td { border-bottom: none; }
 
   /* Report */
   .report-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* Small mobile (iPhone SE, 360-480px) */
+@media (max-width: 480px) {
+  .page-container { padding: 12px; padding-top: 56px; }
+  .dashboard-title { font-size: 1.25rem; }
+  .page-title { font-size: 1.4rem; }
+  .stat-card { padding: 14px; }
+  .stat-card-value { font-size: 1.2rem; }
+  .glass-card { padding: 14px; }
+  .trade-detail-grid { grid-template-columns: 1fr; }
+  .trade-detail-content { padding: 16px; }
+  .report-grid { grid-template-columns: 1fr; }
+  .settings-account-row { flex-direction: column; align-items: stretch; gap: 8px; }
+  .account-switcher { margin: 0 12px 12px; }
+  .insight-card { padding: 14px; }
+  .btn { padding: 10px 14px; font-size: 0.85rem; }
+  .undo-toast, .sync-error-toast { left: 12px; right: 12px; width: auto; max-width: none; }
 }
 
 /* ============================================
