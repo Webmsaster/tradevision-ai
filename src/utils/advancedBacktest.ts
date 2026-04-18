@@ -6,6 +6,7 @@ import {
   type StrategyConfig,
   type StrategyName,
 } from "@/utils/strategies";
+import { ensembleStrategy } from "@/utils/ensembleStrategy";
 import {
   computeMetrics,
   type PerformanceMetrics,
@@ -43,12 +44,16 @@ const TF_HOURS_MAP: Record<string, number> = {
   "1h": 1,
 };
 
+export type StrategyMode = "regime-switch" | "ensemble";
+
 export interface RunOptions {
   candles: Candle[];
   timeframe: string;
   strategy?: StrategyConfig;
   costs?: CostConfig;
   minBarsBeforeTrade?: number;
+  mode?: StrategyMode;
+  ensembleRequiredAgreement?: number;
 }
 
 /**
@@ -62,6 +67,8 @@ export function runAdvancedBacktest({
   strategy = DEFAULT_STRATEGY_CONFIG,
   costs = DEFAULT_COSTS,
   minBarsBeforeTrade = 50,
+  mode = "regime-switch",
+  ensembleRequiredAgreement = 4,
 }: RunOptions): BacktestReport {
   const trades: RealTrade[] = [];
   const hoursPerBar = TF_HOURS_MAP[timeframe] ?? 1;
@@ -117,7 +124,10 @@ export function runAdvancedBacktest({
     }
 
     if (!open) {
-      const { decision } = regimeSwitch(window, strategy);
+      const decision =
+        mode === "ensemble"
+          ? ensembleStrategy(window, strategy, ensembleRequiredAgreement)
+          : regimeSwitch(window, strategy).decision;
       if (
         decision.action !== "flat" &&
         decision.stopDistance !== null &&

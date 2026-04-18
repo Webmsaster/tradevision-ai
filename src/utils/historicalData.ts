@@ -59,50 +59,47 @@ export async function loadBinanceHistory({
   signal,
 }: LoadHistoryOptions): Promise<Candle[]> {
   const pageSize = 1000;
+  const tfMs = TF_MS[timeframe];
+  // Seen-set avoids duplicates across overlapping pages
+  const seen = new Set<number>();
   const candles: Candle[] = [];
   let endTime: number | undefined = undefined;
 
-  while (candles.length < targetCount) {
+  // Hard cap on iterations as a safety net
+  for (let page = 0; page < 30 && candles.length < targetCount; page++) {
     const url = new URL("https://api.binance.com/api/v3/klines");
     url.searchParams.set("symbol", symbol.toUpperCase());
     url.searchParams.set("interval", timeframe);
     url.searchParams.set("limit", String(pageSize));
-    if (endTime) url.searchParams.set("endTime", String(endTime));
+    if (endTime !== undefined) url.searchParams.set("endTime", String(endTime));
 
     const res = await fetch(url.toString(), { signal });
-    if (!res.ok) {
-      throw new Error(`Binance history fetch failed: ${res.status}`);
-    }
+    if (!res.ok) throw new Error(`Binance history fetch failed: ${res.status}`);
     const rows: RawKline[] = await res.json();
     if (!rows || rows.length === 0) break;
 
-    const page = rows.map(parseKline);
-    // API returns oldest first, so prepend
-    candles.unshift(...page);
-
-    // Deduplicate: cut off anything after endTime
-    if (endTime) {
-      while (
-        candles.length > 0 &&
-        candles[candles.length - 1].closeTime >= endTime
-      ) {
-        candles.pop();
+    const batch = rows.map(parseKline);
+    // Prepend only candles we haven't seen yet
+    const fresh: Candle[] = [];
+    for (const c of batch) {
+      if (!seen.has(c.openTime)) {
+        seen.add(c.openTime);
+        fresh.push(c);
       }
     }
+    if (fresh.length === 0) break;
+    candles.unshift(...fresh);
 
-    // Step endTime back one candle-width from the oldest openTime just pulled
-    const oldest = page[0];
-    endTime = oldest.openTime - TF_MS[timeframe];
+    // Next page: ask for candles older than the oldest we now have
+    const oldestOpen = batch[0].openTime;
+    endTime = oldestOpen - tfMs;
 
-    // If Binance returned fewer than pageSize, we've hit the start of the listing
+    // Binance returned fewer than pageSize → we hit the start of listed data
     if (rows.length < pageSize) break;
   }
 
-  // Trim to exactly targetCount (keep the most recent)
-  if (candles.length > targetCount) {
-    return candles.slice(-targetCount);
-  }
-  return candles;
+  candles.sort((a, b) => a.openTime - b.openTime);
+  return candles.length > targetCount ? candles.slice(-targetCount) : candles;
 }
 
 /**

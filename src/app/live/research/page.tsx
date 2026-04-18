@@ -14,11 +14,19 @@ import { loadBinanceHistory, historyDays } from "@/utils/historicalData";
 import {
   runAdvancedBacktest,
   type BacktestReport,
+  type StrategyMode,
 } from "@/utils/advancedBacktest";
 import {
   optimizeParameters,
   type ParameterResult,
 } from "@/utils/parameterOptimizer";
+import { runAutoMatrix, type MatrixCell } from "@/utils/autoMatrix";
+import {
+  fetchFundingHistory,
+  analyzeFunding,
+  describeFundingRegime,
+  type FundingSnapshot,
+} from "@/utils/fundingRate";
 import type { LiveTimeframe } from "@/hooks/useLiveCandles";
 
 const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const;
@@ -76,10 +84,10 @@ function verdict(r: BacktestReport): {
 export default function ResearchPage() {
   const [symbol, setSymbol] = useState<string>("BTCUSDT");
   const [timeframe, setTimeframe] = useState<LiveTimeframe>("15m");
-  const [count, setCount] = useState<number>(3000);
+  const [count, setCount] = useState<number>(6000);
+  const [mode, setMode] = useState<StrategyMode>("regime-switch");
   const [loading, setLoading] = useState(false);
   const [loadStatus, setLoadStatus] = useState<string>("");
-  const [candleCount, setCandleCount] = useState<number>(0);
   const [report, setReport] = useState<BacktestReport | null>(null);
   const [optResults, setOptResults] = useState<ParameterResult[]>([]);
   const [optimising, setOptimising] = useState(false);
@@ -90,6 +98,15 @@ export default function ResearchPage() {
   const [candles, setCandles] = useState<
     Awaited<ReturnType<typeof loadBinanceHistory>>
   >([]);
+  const [matrix, setMatrix] = useState<MatrixCell[]>([]);
+  const [matrixRunning, setMatrixRunning] = useState(false);
+  const [matrixProgress, setMatrixProgress] = useState<{
+    done: number;
+    total: number;
+    label: string;
+  } | null>(null);
+  const [funding, setFunding] = useState<FundingSnapshot | null>(null);
+  const [fundingLoading, setFundingLoading] = useState(false);
 
   async function loadAndRun() {
     setLoading(true);
@@ -103,21 +120,49 @@ export default function ResearchPage() {
         targetCount: count,
       });
       setCandles(h);
-      setCandleCount(h.length);
       setLoadStatus(
-        `Loaded ${h.length} candles — running backtest with realistic costs…`,
+        `Loaded ${h.length} candles — running backtest with realistic costs (${mode})…`,
       );
-      // Yield so the status paints
       await new Promise((r) => setTimeout(r, 50));
-      const rep = runAdvancedBacktest({ candles: h, timeframe });
+      const rep = runAdvancedBacktest({ candles: h, timeframe, mode });
       setReport(rep);
       setLoadStatus(
-        `Done — ${historyDays(h.length, timeframe).toFixed(1)} days covered.`,
+        `Done — ${historyDays(h.length, timeframe).toFixed(1)} days covered · mode: ${mode}.`,
       );
     } catch (err) {
       setLoadStatus(`Error: ${err instanceof Error ? err.message : "unknown"}`);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function runMatrix() {
+    setMatrixRunning(true);
+    setMatrix([]);
+    setMatrixProgress({ done: 0, total: 0, label: "" });
+    try {
+      const rows = await runAutoMatrix({
+        symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+        timeframes: ["5m", "15m", "1h"],
+        targetCount: count,
+        onProgress: (done, total, label) =>
+          setMatrixProgress({ done, total, label }),
+      });
+      setMatrix(rows);
+    } finally {
+      setMatrixRunning(false);
+    }
+  }
+
+  async function loadFunding() {
+    setFundingLoading(true);
+    try {
+      const events = await fetchFundingHistory(symbol, 100);
+      setFunding(analyzeFunding(events));
+    } catch {
+      setFunding(null);
+    } finally {
+      setFundingLoading(false);
     }
   }
 
@@ -157,10 +202,63 @@ export default function ResearchPage() {
       </div>
 
       <div className="live-disclaimer" role="alert">
-        <strong>This is the reality check.</strong> We load months of real
-        Binance candles, replay the strategy with Binance-Futures fees +
-        slippage + funding, and report honest risk-adjusted metrics. If the
-        verdict says „NO EDGE", respect that.
+        <strong>This is the reality check.</strong> Months of real Binance
+        candles, realistic fees + slippage + funding, honest risk-adjusted
+        metrics. If the verdict says „NO EDGE", respect that.
+      </div>
+
+      <div className="glass-card live-research-panel">
+        <h3 className="dashboard-section-title">
+          What research says actually works (and what doesn&apos;t)
+        </h3>
+        <ul className="live-research-list">
+          <li>
+            <strong>Classic EMA-crossover alone: fails.</strong> Crypto spends
+            ~60% in ranges → constant whipsaws. Only ~40% of time does an
+            EMA-cross strategy have a chance to work.
+          </li>
+          <li>
+            <strong>Multi-indicator ensemble: helps.</strong> Independent voters
+            (trend + momentum + volume + BB) reduce false signals when 4+ agree
+            — try the „Ensemble" mode below.
+          </li>
+          <li>
+            <strong>Funding-rate extremes: real crypto-specific edge.</strong>{" "}
+            &gt;+0.03%/8h = crowded longs → short-squeeze risk. Genuine retail
+            positioning signal. Load funding below.
+          </li>
+          <li>
+            <strong>
+              Long-horizon trend-following (3-12 month holds): +1%/mo documented
+              (Jegadeesh/Titman).
+            </strong>{" "}
+            This is NOT daytrading — it means the rules only work on
+            daily/weekly bars.
+          </li>
+          <li>
+            <strong>
+              Funding-rate arbitrage (spot long + perpetual short):
+              market-neutral, documented profitable for retail with $300+.
+            </strong>{" "}
+            Not a signal but a cashflow strategy.
+          </li>
+          <li>
+            <strong>
+              Pairs trading cointegrated pairs: documented profitable
+            </strong>
+            , especially PoW pairs — needs two-asset infrastructure.
+          </li>
+          <li>
+            <strong>Academic consensus (Park/Irwin 2007):</strong> single-rule
+            TA strategies are roughly break-even after costs. Ensemble +
+            regime-switching + cost-awareness is the minimum to get an edge.
+          </li>
+          <li>
+            <strong>Data-snooping risk:</strong> optimiser-picked parameters
+            often fail out-of-sample. Always walk-forward validate. One bad
+            regime kills a curve-fit.
+          </li>
+        </ul>
       </div>
 
       <div className="glass-card" style={{ padding: 20, marginBottom: 20 }}>
@@ -214,12 +312,39 @@ export default function ResearchPage() {
               ))}
             </select>
           </label>
+          <label className="live-control-group">
+            <span>Mode</span>
+            <select
+              className="input"
+              value={mode}
+              onChange={(e) => setMode(e.target.value as StrategyMode)}
+            >
+              <option value="regime-switch">Regime switch</option>
+              <option value="ensemble">Ensemble (4-of-6 vote)</option>
+            </select>
+          </label>
           <button
             className="btn btn-primary"
             onClick={loadAndRun}
             disabled={loading}
           >
             {loading ? "Loading…" : "Load & run backtest"}
+          </button>
+          <button
+            className="btn btn-secondary"
+            onClick={runMatrix}
+            disabled={matrixRunning}
+          >
+            {matrixRunning && matrixProgress
+              ? `Matrix ${matrixProgress.done}/${matrixProgress.total}`
+              : "Run full matrix (3×3×2)"}
+          </button>
+          <button
+            className="btn btn-secondary"
+            onClick={loadFunding}
+            disabled={fundingLoading}
+          >
+            {fundingLoading ? "Loading funding…" : "Check funding rate"}
           </button>
           <button
             className="btn btn-secondary"
@@ -236,7 +361,95 @@ export default function ResearchPage() {
             {loadStatus}
           </p>
         )}
+        {matrixRunning && matrixProgress && (
+          <p className="live-muted-note" style={{ marginTop: 8 }}>
+            Matrix: {matrixProgress.label} ({matrixProgress.done}/
+            {matrixProgress.total})
+          </p>
+        )}
       </div>
+
+      {funding && (
+        <div
+          className={`glass-card live-verdict live-verdict-${funding.reversalBias === "none" ? "neutral" : funding.reversalBias === "long" ? "profit" : "loss"}`}
+        >
+          <h2>Funding Rate · {symbol}</h2>
+          <p>
+            <strong>{(funding.latest.fundingRate * 100).toFixed(4)}%/8h</strong>{" "}
+            ({funding.annualisedPct.toFixed(2)}% annualised) · z-score{" "}
+            {funding.zScore.toFixed(2)} · <strong>{funding.regime}</strong>.
+            <br />
+            {describeFundingRegime(funding.regime)}
+            {funding.reversalBias !== "none" && (
+              <>
+                {" "}
+                <strong>
+                  Reversal bias: {funding.reversalBias.toUpperCase()}.
+                </strong>
+              </>
+            )}
+          </p>
+        </div>
+      )}
+
+      {matrix.length > 0 && (
+        <div className="glass-card" style={{ padding: 20, marginBottom: 20 }}>
+          <h3 className="dashboard-section-title">
+            Auto-Matrix (sorted by Sharpe)
+          </h3>
+          <p className="live-muted-note">
+            BTC/ETH/SOL × 5m/15m/1h × regime-switch + ensemble — every combo
+            backtested with fees+slippage+funding.
+          </p>
+          <div style={{ overflowX: "auto" }}>
+            <table className="live-history-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>TF</th>
+                  <th>Mode</th>
+                  <th>Trades</th>
+                  <th>Return</th>
+                  <th>WR</th>
+                  <th>Sharpe</th>
+                  <th>PF</th>
+                  <th>MaxDD</th>
+                  <th>Verdict</th>
+                </tr>
+              </thead>
+              <tbody>
+                {matrix.map((c, i) => (
+                  <tr key={i}>
+                    <td>{c.symbol}</td>
+                    <td>{c.timeframe}</td>
+                    <td>{c.mode}</td>
+                    <td>{c.trades}</td>
+                    <td className={c.totalReturnPct > 0 ? "profit" : "loss"}>
+                      {fmtPct(c.totalReturnPct)}
+                    </td>
+                    <td>{(c.winRate * 100).toFixed(0)}%</td>
+                    <td>{fmtNum(c.sharpe)}</td>
+                    <td>{fmtNum(c.profitFactor)}</td>
+                    <td>{fmtPct(c.maxDrawdownPct)}</td>
+                    <td>
+                      <span
+                        className={`matrix-verdict matrix-verdict-${c.verdict}`}
+                      >
+                        {c.verdict}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="live-muted-note" style={{ marginTop: 12 }}>
+            {matrix.filter((c) => c.verdict === "positive").length === 0
+              ? "⚠ No combination produced a positive edge after costs. The rule-set as-is does NOT work in live trading."
+              : `${matrix.filter((c) => c.verdict === "positive").length} combo(s) show positive edge — treat as candidates for paper trading, not immediate live deployment.`}
+          </p>
+        </div>
+      )}
 
       {report && v && (
         <>
