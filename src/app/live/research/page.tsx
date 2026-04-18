@@ -1931,6 +1931,92 @@ function LiveSignalsPanel({
             </>
           )}
 
+          {report.alerts && report.alerts.length > 0 && (
+            <>
+              <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
+                ★ High-Confidence Alerts (combined verdict)
+              </h3>
+              <div style={{ overflowX: "auto" }}>
+                <table className="live-history-table">
+                  <thead>
+                    <tr>
+                      <th>Symbol</th>
+                      <th>Action</th>
+                      <th>Stars</th>
+                      <th>Verdict</th>
+                      <th>Conditions</th>
+                      <th>Summary</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.alerts.map((a) => (
+                      <tr key={a.symbol}>
+                        <td>
+                          <strong>{a.symbol}</strong>
+                        </td>
+                        <td>
+                          <span
+                            className={a.action === "long" ? "profit" : "loss"}
+                          >
+                            {a.action.toUpperCase()}
+                          </span>
+                        </td>
+                        <td
+                          style={{
+                            fontSize: 18,
+                            color:
+                              a.stars === 3
+                                ? "var(--profit)"
+                                : a.stars === 2
+                                  ? "var(--text-secondary)"
+                                  : a.stars === 1
+                                    ? "var(--loss)"
+                                    : "var(--text-tertiary)",
+                          }}
+                        >
+                          {"★".repeat(a.stars)}
+                          {"☆".repeat(3 - a.stars)}
+                        </td>
+                        <td>
+                          <span
+                            className={`matrix-verdict matrix-verdict-${
+                              a.verdict === "take"
+                                ? "positive"
+                                : a.verdict === "cautious"
+                                  ? "inconclusive"
+                                  : "no-edge"
+                            }`}
+                          >
+                            {a.verdict.toUpperCase()}
+                          </span>
+                        </td>
+                        <td style={{ fontSize: 11, maxWidth: 180 }}>
+                          {[
+                            a.conditions.signalFired ? "sig✓" : "sig✗",
+                            a.conditions.regimeAllows ? "reg✓" : "reg✗",
+                            a.conditions.healthyStatus ? "hlt✓" : "hlt✗",
+                            a.conditions.positiveEdge ? "edg✓" : "edg✗",
+                          ].join(" ")}
+                        </td>
+                        <td
+                          style={{ fontSize: 12, maxWidth: 300 }}
+                          title={a.detail.join(" | ")}
+                        >
+                          {a.summary}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="live-muted-note" style={{ marginTop: 8 }}>
+                4 conditions: signal fires, regime allows, strategy HEALTHY,
+                expected-edge &ge; 3 bps. Hard-fail on funding hour or PAUSE
+                status. Hover summary for full breakdown.
+              </p>
+            </>
+          )}
+
           {report.portfolioSummary && (
             <>
               <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>

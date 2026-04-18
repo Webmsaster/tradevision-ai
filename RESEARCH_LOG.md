@@ -690,3 +690,51 @@ The regime gate is a precision filter — drops only 2.6% of trades but those 2.
 3. BTC-ETF manual-paste widget (Mazur rule: 2-day confirmation)
 4. If a signal from verified strategy fires + current regime allows → high-confidence alert
 5. Research: persistence of the Coinbase Premium edge — does it stay Bear-market-only or shift?
+
+## Iteration 19 (2026-04-18) — High-Confidence Alerts + ETF Flow Widget
+
+**High-Confidence Alert** (`src/utils/highConfidenceAlert.ts`):
+Combines 4 live conditions per active Champion signal into a single verdict:
+
+1. Signal fired (champion action ≠ flat)
+2. Regime gate allows the strategy
+3. Strategy health is HEALTHY (not WATCH or PAUSE)
+4. Expected edge ≥ 3 bps after realistic costs
+
+**Verdict mapping:**
+
+- ★★★ TAKE (all 4 met): trade it
+- ★★ CAUTIOUS (3/4): half position
+- ★ RISKY (2/4): skip unless strong conviction
+- SKIP (<2/4 or hard-fail): funding hour, PAUSE, no signal
+
+Hard-fails override the star count: funding hour and PAUSE status force SKIP regardless.
+
+Wired into `liveSignals.ts` as `alerts: AlertVerdict[]`. UI panel added
+at top of Live Signals section — stars + verdict badge + condition flags
+(sig/reg/hlt/edg) + summary tooltip with full detail.
+
+**BTC-ETF Flow Widget** (`src/utils/etfFlowSignal.ts`):
+Since Farside CORS blocks browser scraping, module takes manual user paste
+and applies Mazur & Polyzos 2024 rule:
+
+- 2 consecutive days > +$500M → long BTC next open, 24h hold
+- 2 consecutive days < -$500M → short BTC next open, 24h hold
+
+`parseEtfFlowPaste()` accepts YYYY-MM-DD lines with value suffixed M or B.
+`loadEtfFlowHistory` / `addEtfFlowEntry` persist to localStorage.
+UI widget is scaffolded in the module but not yet wired (will consume in
+iter 20 as an EtfWidget component on the research page).
+
+### Iter 19 findings
+
+1. **Alerts collapse the whole system's state into ONE cell per symbol** — the user doesn't need to read 5 tables, just the star column.
+2. **Hard-fails are UX gold** — funding hour and PAUSE status prevent the system from ever suggesting a bad trade, even if it looks good on paper.
+3. **ETF widget requires manual input** — honest constraint. CORS blocks Farside, but user pasting yesterday's and today's flows is trivial and works.
+
+### Next iteration targets
+
+1. Wire EtfWidget component into research UI
+2. Portfolio equity curve chart
+3. Regime timeline color-band chart
+4. Maybe: auto-refresh alert toast when verdict flips from SKIP → TAKE (browser Notification API)

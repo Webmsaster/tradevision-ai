@@ -36,6 +36,10 @@ import {
   type RegimeWindow,
 } from "@/utils/regimeClassifier";
 import { regimeGate, DEFAULT_REGIME_WHITELIST } from "@/utils/regimeGate";
+import {
+  evaluateAllAlerts,
+  type AlertVerdict,
+} from "@/utils/highConfidenceAlert";
 import { fetchFundingHistory } from "@/utils/fundingRate";
 
 export interface ChampionSignal {
@@ -130,6 +134,7 @@ export interface LiveSignalsReport {
   coinbasePremium?: PremiumSnapshot;
   currentRegimes?: CurrentRegime[];
   portfolioSummary?: PortfolioSummary;
+  alerts?: AlertVerdict[];
 }
 
 const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const;
@@ -569,6 +574,9 @@ export async function computeLiveSignals(
     ],
   };
 
+  // ---- Combine into high-confidence alerts ----
+  const alerts = evaluateAllAlerts(champions, health, currentRegimes);
+
   return {
     generatedAt: new Date().toISOString(),
     champion: champions,
@@ -579,5 +587,6 @@ export async function computeLiveSignals(
     coinbasePremium,
     currentRegimes,
     portfolioSummary,
+    alerts,
   };
 }
