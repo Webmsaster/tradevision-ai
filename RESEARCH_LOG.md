@@ -518,3 +518,55 @@ The regime gate is a precision filter — drops only 2.6% of trades but those 2.
 3. BTC-ETF flow manual input widget in UI
 4. Check OKX historical candles — try their v5 /api/v5/market/candles (may allow historical)
 5. Deep-dive: rolling 90d significance of COMBINED 13-strategy ensemble
+
+## Iteration 15 (2026-04-18) — 13-STRATEGY PORTFOLIO REMAINS SIGNIFICANT
+
+**Portfolio DSR with Coinbase Premium integrated:**
+
+- Sharpe **2.54** (down from 2.56 with 12 strategies — tiny dilution)
+- Daily Sharpe **3.48** on 569 days
+- DSR **0.964 ✓ significant 95%** at K=156 trials
+- Return +21.3%, ann 8.9%, vol 3.5%, **MaxDD 1.3%** (improved from 1.8%)
+- WR 55%, 1822 total trades
+
+**Coinbase-Premium-BTC weight in portfolio: 4.2%** at standalone Sharpe 9.61.
+
+**Coinbase Premium PnL by regime (BTC regime classifier):**
+
+| Regime         | n      | Mean       | Total      |
+| -------------- | ------ | ---------- | ---------- |
+| calm           | 13     | +0.08%     | +1.0%      |
+| chop           | 28     | +0.10%     | +2.8%      |
+| **trend-down** | **22** | **+0.94%** | **+20.6%** |
+
+**Coinbase Premium is the BEAR-MARKET SPECIALIST we were missing.** All other strategies favour calm/trend-up/chop. Premium short-side catches US-seller-led dumps, averaging +0.94% per trade in trend-down regimes (sum +20.6%).
+
+**OKX historical candles endpoint CONFIRMED working:**
+
+- `/api/v5/market/candles?instId=BTC-USDT&bar=1H&limit=100` returns 100 rows per call
+- code=0, data populated
+- Last 4 days fetched cleanly — paginate-backward via `after` param for longer window
+
+**Updated strategy weights (13-strategy portfolio):**
+
+- Champion-BTC 19.4%, ETH 14.9%, SOL 11.9%
+- FundingMinute-ETH 10.9%, SOL 5.3%
+- LeadLag-BTC→SOL 6.3%
+- Monday-BTC 5.0%, ETH 3.5%, SOL 2.4%
+- **CoinbasePremium-BTC 4.2%**
+- FundingCarry (BTC/ETH/SOL): 0% each (too few trades on current funding regime)
+
+### Iteration 15 findings
+
+1. **Adding a new strategy DIDN'T dilute significance** — DSR stayed at 0.964 because Coinbase Premium is genuinely uncorrelated with the Binance-derived strategies.
+2. **Coinbase Premium fills the bear-market gap** in our edge coverage — now the ensemble has a verified performer in ALL 6 regimes.
+3. **MaxDD dropped 1.8% → 1.3%** just by adding one uncorrelated edge — classic diversification benefit.
+4. **OKX historical works** — we can build Binance-OKX premium backtest in next iteration.
+
+### Next iteration targets
+
+1. OKX Premium historical backtest — fetch 5000 bars from `/api/v5/market/candles` with `after` pagination
+2. Binance-OKX Premium strategy + add to ensemble
+3. UI: regime timeline chart + portfolio DSR display
+4. BTC-ETF manual input widget
+5. Next research angle: Stablecoin-supply change signal (USDT/USDC mints as liquidity proxy)
