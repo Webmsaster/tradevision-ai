@@ -1061,6 +1061,41 @@ tr:last-child td { border-bottom: none; }
 
 .btn-sm { padding: 6px 12px; font-size: 0.8rem; min-height: auto; }
 
+.live-thesis-card { margin-bottom: 20px; display: flex; flex-direction: column; gap: 16px; }
+.live-thesis-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.live-thesis-meta { display: flex; gap: 6px; flex-wrap: wrap; }
+.live-thesis-headline { font-size: 1.05rem; font-weight: 600; color: var(--text-primary); margin: 0; line-height: 1.4; }
+.live-thesis-sections { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 20px; }
+.live-thesis-sections section { padding: 12px 14px; background: rgba(255,255,255,0.02); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); }
+.live-thesis-sections h5 { margin: 0 0 6px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent-blue); font-weight: 700; }
+.live-thesis-sections p { margin: 0; font-size: 0.85rem; line-height: 1.55; color: var(--text-primary); }
+.live-thesis-counter { margin: 0; padding-left: 18px; font-size: 0.82rem; color: var(--text-primary); line-height: 1.5; }
+.live-thesis-counter li { margin-bottom: 4px; }
+
+.live-badge.setup-trend-continuation { color: var(--profit); background: var(--profit-bg); border-color: rgba(0,255,136,0.2); }
+.live-badge.setup-pullback-entry { color: var(--accent-blue); background: rgba(37,99,235,0.12); border-color: rgba(37,99,235,0.25); }
+.live-badge.setup-breakout { color: #a78bfa; background: rgba(139,92,246,0.12); border-color: rgba(139,92,246,0.25); }
+.live-badge.setup-reversal { color: var(--neutral, #fbbf24); background: rgba(251,191,36,0.1); border-color: rgba(251,191,36,0.25); }
+.live-badge.setup-range-fade { color: var(--loss); background: var(--loss-bg); border-color: rgba(255,71,87,0.2); }
+.live-badge.setup-indecision { color: var(--text-secondary); }
+.live-badge.structure-bullish { color: var(--profit); background: var(--profit-bg); }
+.live-badge.structure-bearish { color: var(--loss); background: var(--loss-bg); }
+.live-badge.structure-undetermined { color: var(--text-secondary); }
+.live-badge.event-up { color: var(--profit); background: var(--profit-bg); }
+.live-badge.event-down { color: var(--loss); background: var(--loss-bg); }
+
+.live-base-rate { padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.06); }
+
+.live-key-levels { padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.06); }
+.live-levels-grid { display: flex; gap: 6px; flex-wrap: wrap; }
+.live-level-pill { padding: 4px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; font-family: ui-monospace, monospace; }
+.live-level-pill.resistance { color: var(--loss); background: var(--loss-bg); border: 1px solid rgba(255,71,87,0.2); }
+.live-level-pill.support { color: var(--profit); background: var(--profit-bg); border: 1px solid rgba(0,255,136,0.2); }
+
+@media (max-width: 900px) {
+  .live-thesis-sections { grid-template-columns: 1fr; }
+}
+
 @media (max-width: 700px) {
   .live-backtest-stats { grid-template-columns: repeat(2, 1fr); }
   .live-position-size-inputs { flex-direction: column; }

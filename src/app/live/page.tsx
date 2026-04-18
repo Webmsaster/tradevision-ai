@@ -26,6 +26,18 @@ import {
   MonteCarloResult,
   ConsensusResult,
 } from "@/utils/signalEngine";
+import {
+  findPivots,
+  extractKeyLevels,
+  analyzeMarketStructure,
+  classifySetup,
+  computeBaseRate,
+  bollingerBands,
+  vwap,
+} from "@/utils/marketStructure";
+import { buildThesis, atrPercentile } from "@/utils/narrative";
+import { atr as atrFn } from "@/utils/indicators";
+import { ReferenceLine } from "recharts";
 
 const SYMBOLS = [
   "BTCUSDT",
@@ -156,6 +168,57 @@ export default function LivePage() {
 
   const priceNow =
     candles.length > 0 ? candles[candles.length - 1].close : null;
+
+  // ---------- Deep analysis layer ----------
+  const analysis = useMemo(() => {
+    if (candles.length < 60 || !snapshot) return null;
+    const pivots = findPivots(candles, 5, 5);
+    const structure = analyzeMarketStructure(candles, pivots);
+    const keyLevels = extractKeyLevels(pivots, snapshot.price);
+    const setup = classifySetup(
+      gatedAction,
+      structure,
+      keyLevels,
+      snapshot.price,
+      snapshot.indicators.atr,
+    );
+    const baseRate = computeBaseRate(candles, gatedAction, setup.type);
+    const closes = candles.map((c) => c.close);
+    const bb = bollingerBands(closes, 20, 2);
+    const bbWidthPct = bb.widthPct.at(-1) ?? null;
+    const vwapPts = vwap(candles);
+    const vwapNow = vwapPts.at(-1)?.vwap ?? null;
+    const atrSeries = atrFn(candles, 14);
+    const atrPct = atrPercentile(atrSeries);
+    return {
+      pivots,
+      structure,
+      keyLevels,
+      setup,
+      baseRate,
+      bbWidthPct,
+      vwapNow,
+      atrPct,
+    };
+  }, [candles, snapshot, gatedAction]);
+
+  const thesis = useMemo(() => {
+    if (!snapshot || !analysis) return null;
+    return buildThesis({
+      symbol,
+      timeframe,
+      snapshot,
+      gatedAction,
+      consensusConfidence: consensus?.confidence ?? 0,
+      structure: analysis.structure,
+      keyLevels: analysis.keyLevels,
+      setup: analysis.setup,
+      baseRate: analysis.baseRate,
+      vwap: analysis.vwapNow,
+      bbWidthPct: analysis.bbWidthPct,
+      atrPercentile: analysis.atrPct,
+    });
+  }, [snapshot, analysis, symbol, timeframe, gatedAction, consensus]);
 
   const tracking = useSignalTracking({
     symbol,
@@ -597,6 +660,47 @@ export default function LivePage() {
                     dot={{ r: 6, fill: "#ff4757", stroke: "#ff4757" }}
                     activeDot={false}
                   />
+                  {analysis?.keyLevels.supports.map((s) => (
+                    <ReferenceLine
+                      key={`sup-${s}`}
+                      y={s}
+                      stroke="rgba(0,255,136,0.35)"
+                      strokeDasharray="4 4"
+                      label={{
+                        value: `S ${s.toFixed(0)}`,
+                        position: "right",
+                        fill: "#00ff88",
+                        fontSize: 10,
+                      }}
+                    />
+                  ))}
+                  {analysis?.keyLevels.resistances.map((r) => (
+                    <ReferenceLine
+                      key={`res-${r}`}
+                      y={r}
+                      stroke="rgba(255,71,87,0.35)"
+                      strokeDasharray="4 4"
+                      label={{
+                        value: `R ${r.toFixed(0)}`,
+                        position: "right",
+                        fill: "#ff4757",
+                        fontSize: 10,
+                      }}
+                    />
+                  ))}
+                  {analysis?.vwapNow && (
+                    <ReferenceLine
+                      y={analysis.vwapNow}
+                      stroke="rgba(139, 92, 246, 0.5)"
+                      strokeDasharray="2 6"
+                      label={{
+                        value: `VWAP`,
+                        position: "left",
+                        fill: "#a78bfa",
+                        fontSize: 10,
+                      }}
+                    />
+                  )}
                 </AreaChart>
               </ResponsiveContainer>
             ) : (
@@ -615,6 +719,116 @@ export default function LivePage() {
           </div>
         </div>
       </div>
+
+      {thesis && (
+        <div className="glass-card live-thesis-card">
+          <div className="live-thesis-header">
+            <h3 className="dashboard-section-title">Trade Thesis</h3>
+            {analysis && (
+              <div className="live-thesis-meta">
+                <span className={`live-badge setup-${analysis.setup.type}`}>
+                  {analysis.setup.type.replace("-", " ")}
+                </span>
+                <span
+                  className={`live-badge structure-${analysis.structure.state}`}
+                >
+                  Structure: {analysis.structure.state}
+                </span>
+                {analysis.structure.lastEvent !== "none" && (
+                  <span
+                    className={`live-badge event-${analysis.structure.lastEvent.includes("up") ? "up" : "down"}`}
+                  >
+                    {analysis.structure.lastEvent}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+
+          <h4 className="live-thesis-headline">{thesis.headline}</h4>
+
+          <div className="live-thesis-sections">
+            <section>
+              <h5>Context</h5>
+              <p>{thesis.context}</p>
+            </section>
+            <section>
+              <h5>Setup</h5>
+              <p>{thesis.setup}</p>
+            </section>
+            <section>
+              <h5>Execution</h5>
+              <p>{thesis.execution}</p>
+            </section>
+            <section>
+              <h5>Invalidation</h5>
+              <p>{thesis.invalidation}</p>
+            </section>
+            <section>
+              <h5>Counter-arguments</h5>
+              <ul className="live-thesis-counter">
+                {thesis.counterArguments.map((c, i) => (
+                  <li key={i}>{c}</li>
+                ))}
+              </ul>
+            </section>
+          </div>
+
+          {analysis?.baseRate && (
+            <div className="live-base-rate">
+              <h5 className="live-section-subtitle">
+                Historical Base Rate for this Setup
+              </h5>
+              <div className="live-backtest-stats">
+                <BaseStatCell
+                  label="Sample"
+                  value={`n=${analysis.baseRate.samples}`}
+                />
+                <BaseStatCell
+                  label="Win Rate"
+                  value={`${(analysis.baseRate.winRate * 100).toFixed(0)}%`}
+                  variant={analysis.baseRate.winRate >= 0.5 ? "profit" : "loss"}
+                />
+                <BaseStatCell
+                  label="95% CI"
+                  value={`${(analysis.baseRate.confidenceLower * 100).toFixed(0)}–${(analysis.baseRate.confidenceUpper * 100).toFixed(0)}%`}
+                />
+                <BaseStatCell
+                  label="Avg R"
+                  value={`${analysis.baseRate.avgR >= 0 ? "+" : ""}${analysis.baseRate.avgR.toFixed(2)}`}
+                  variant={analysis.baseRate.avgR >= 0 ? "profit" : "loss"}
+                />
+              </div>
+              {analysis.baseRate.samples < 20 && (
+                <p className="live-muted-note">
+                  ⚠ Small sample — the confidence interval is wide. Treat the
+                  win-rate estimate with caution.
+                </p>
+              )}
+            </div>
+          )}
+
+          {analysis?.keyLevels &&
+            (analysis.keyLevels.supports.length > 0 ||
+              analysis.keyLevels.resistances.length > 0) && (
+              <div className="live-key-levels">
+                <h5 className="live-section-subtitle">Key Levels</h5>
+                <div className="live-levels-grid">
+                  {analysis.keyLevels.resistances.map((r) => (
+                    <div key={`kr-${r}`} className="live-level-pill resistance">
+                      R {r.toFixed(2)}
+                    </div>
+                  ))}
+                  {analysis.keyLevels.supports.map((s) => (
+                    <div key={`ks-${s}`} className="live-level-pill support">
+                      S {s.toFixed(2)}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+        </div>
+      )}
 
       <div className="glass-card live-backtest-card">
         <div className="live-backtest-header">
@@ -819,6 +1033,23 @@ function IndicatorCell({ label, value }: { label: string; value: string }) {
 }
 
 function BacktestStat({
+  label,
+  value,
+  variant,
+}: {
+  label: string;
+  value: string;
+  variant?: "profit" | "loss";
+}) {
+  return (
+    <div className="live-indicator-cell">
+      <span className="live-indicator-label">{label}</span>
+      <span className={`live-indicator-value ${variant ?? ""}`}>{value}</span>
+    </div>
+  );
+}
+
+function BaseStatCell({
   label,
   value,
   variant,
