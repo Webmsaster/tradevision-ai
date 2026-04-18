@@ -579,6 +579,10 @@ export default function ResearchPage() {
 
       <SignalJournalPanel liveReport={liveSignals} />
 
+      <EtfFlowPanel />
+
+      <RegimeTimelinePanel />
+
       <div className="glass-card live-research-panel">
         <h3 className="dashboard-section-title">
           What research says actually works (and what doesn&apos;t)
@@ -2433,6 +2437,297 @@ function LiveSignalsPanel({
             hour close. Past performance ≠ future — paper-trade first.
           </p>
         </>
+      )}
+    </div>
+  );
+}
+
+function EtfFlowPanel() {
+  const [entries, setEntries] = useState<
+    { date: string; netFlowUsd: number }[]
+  >([]);
+  const [paste, setPaste] = useState("");
+  const [signal, setSignal] = useState<{
+    latestDate: string;
+    prevDate: string;
+    latestFlow: number;
+    prevFlow: number;
+    signal: "long" | "short" | "flat";
+    reason: string;
+    action: string;
+  } | null>(null);
+  const [refresh, setRefresh] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const mod = await import("@/utils/etfFlowSignal");
+      if (cancelled) return;
+      const all = mod.loadEtfFlowHistory();
+      setEntries(all);
+      setSignal(mod.computeEtfFlowSignal(all));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refresh]);
+
+  async function handlePaste() {
+    const mod = await import("@/utils/etfFlowSignal");
+    const parsed = mod.parseEtfFlowPaste(paste);
+    for (const e of parsed) mod.addEtfFlowEntry(e.date, e.netFlowUsd);
+    setPaste("");
+    setRefresh((r) => r + 1);
+  }
+
+  async function handleClear() {
+    if (!confirm("Clear ETF flow history?")) return;
+    const mod = await import("@/utils/etfFlowSignal");
+    mod.saveEtfFlowHistory([]);
+    setRefresh((r) => r + 1);
+  }
+
+  const tone =
+    signal?.signal === "long"
+      ? "profit"
+      : signal?.signal === "short"
+        ? "loss"
+        : "neutral";
+
+  return (
+    <div className={`glass-card live-verdict live-verdict-${tone}`}>
+      <h2>📊 BTC-ETF Flow Signal (Mazur & Polyzos 2024)</h2>
+      <p style={{ marginTop: 8 }}>
+        Paste daily US BTC-spot-ETF net flows from farside.co.uk. Format:{" "}
+        <code>YYYY-MM-DD 520.3M</code> per line. 2 consecutive days &gt; ±$500M
+        triggers a 24h directional trade.
+      </p>
+      <textarea
+        value={paste}
+        onChange={(e) => setPaste(e.target.value)}
+        placeholder={`2026-04-17  520.3M\n2026-04-18  712.1M`}
+        className="input"
+        style={{
+          width: "100%",
+          height: 80,
+          marginTop: 8,
+          fontFamily: "monospace",
+          fontSize: 12,
+        }}
+      />
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <button
+          className="btn btn-primary"
+          onClick={handlePaste}
+          disabled={!paste.trim()}
+        >
+          Add entries
+        </button>
+        <button className="btn btn-secondary" onClick={handleClear}>
+          Clear history
+        </button>
+      </div>
+      {signal && (
+        <div style={{ marginTop: 16 }}>
+          <h3 className="dashboard-section-title">
+            Current signal: {signal.signal.toUpperCase()}
+          </h3>
+          <p className="live-muted-note">{signal.reason}</p>
+          {signal.signal !== "flat" && (
+            <p style={{ marginTop: 8 }}>
+              <strong>{signal.action}</strong>
+            </p>
+          )}
+        </div>
+      )}
+      {entries.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <h3 className="dashboard-section-title">
+            Last {Math.min(14, entries.length)} days ({entries.length} total)
+          </h3>
+          <div style={{ overflowX: "auto" }}>
+            <table className="live-history-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Net Flow</th>
+                </tr>
+              </thead>
+              <tbody>
+                {entries
+                  .slice(-14)
+                  .reverse()
+                  .map((e) => (
+                    <tr key={e.date}>
+                      <td>{e.date}</td>
+                      <td
+                        className={
+                          e.netFlowUsd > 500_000_000
+                            ? "profit"
+                            : e.netFlowUsd < -500_000_000
+                              ? "loss"
+                              : ""
+                        }
+                      >
+                        ${(e.netFlowUsd / 1e6).toFixed(1)}M
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RegimeTimelinePanel() {
+  const [loading, setLoading] = useState(false);
+  const [dataBySymbol, setDataBySymbol] = useState<
+    Record<
+      string,
+      { start: number; end: number; regime: string; trend: number }[]
+    >
+  >({});
+
+  async function loadTimelines() {
+    setLoading(true);
+    try {
+      const { loadBinanceHistory } = await import("@/utils/historicalData");
+      const { fetchFundingHistory } = await import("@/utils/fundingRate");
+      const { classifyRegimes } = await import("@/utils/regimeClassifier");
+      const out: typeof dataBySymbol = {};
+      for (const sym of ["BTCUSDT", "ETHUSDT", "SOLUSDT"]) {
+        const candles = await loadBinanceHistory({
+          symbol: sym,
+          timeframe: "1h",
+          targetCount: 8760,
+        });
+        const funding = await fetchFundingHistory(sym, 1200);
+        const windows = classifyRegimes(candles, funding);
+        out[sym] = windows.map((w) => ({
+          start: w.startTime,
+          end: w.endTime,
+          regime: w.regime,
+          trend: w.trendPct,
+        }));
+      }
+      setDataBySymbol(out);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function regimeColor(regime: string): string {
+    switch (regime) {
+      case "calm":
+        return "#4f8cff33";
+      case "trend-up":
+        return "#34d39955";
+      case "trend-down":
+        return "#ef444455";
+      case "leverage-bull":
+        return "#a855f755";
+      case "leverage-bear":
+        return "#f9731655";
+      case "chop":
+      default:
+        return "#6b72801a";
+    }
+  }
+
+  return (
+    <div className="glass-card live-verdict live-verdict-neutral">
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: 8,
+        }}
+      >
+        <h2 style={{ margin: 0 }}>🗓 Regime Timeline (last 52 weeks)</h2>
+        <button
+          className="btn btn-secondary"
+          onClick={loadTimelines}
+          disabled={loading}
+        >
+          {loading ? "Loading…" : "Load / refresh"}
+        </button>
+      </div>
+      <p style={{ marginTop: 8, fontSize: 13 }}>
+        Weekly color bands. Blue=calm, green=trend-up, red=trend-down,
+        purple=leverage-bull, orange=leverage-bear, grey=chop.
+      </p>
+      {Object.keys(dataBySymbol).length === 0 && !loading && (
+        <p className="live-muted-note" style={{ marginTop: 8 }}>
+          Click „Load / refresh" to fetch historical regimes.
+        </p>
+      )}
+      {Object.entries(dataBySymbol).map(([sym, windows]) => (
+        <div key={sym} style={{ marginTop: 16 }}>
+          <h3 className="dashboard-section-title" style={{ marginBottom: 8 }}>
+            {sym}
+          </h3>
+          <div
+            style={{
+              display: "flex",
+              height: 28,
+              borderRadius: 4,
+              overflow: "hidden",
+              border: "1px solid rgba(255,255,255,0.08)",
+            }}
+          >
+            {windows.map((w, i) => (
+              <div
+                key={i}
+                title={`${new Date(w.start).toISOString().slice(0, 10)} – ${new Date(w.end).toISOString().slice(0, 10)}: ${w.regime} (trend ${(w.trend * 100).toFixed(1)}%)`}
+                style={{
+                  flex: 1,
+                  background: regimeColor(w.regime),
+                  borderRight: "1px solid rgba(0,0,0,0.1)",
+                }}
+              />
+            ))}
+          </div>
+        </div>
+      ))}
+      {Object.keys(dataBySymbol).length > 0 && (
+        <div
+          style={{
+            marginTop: 12,
+            display: "flex",
+            gap: 12,
+            flexWrap: "wrap",
+            fontSize: 12,
+          }}
+        >
+          {[
+            ["calm", "#4f8cff"],
+            ["trend-up", "#34d399"],
+            ["trend-down", "#ef4444"],
+            ["leverage-bull", "#a855f7"],
+            ["leverage-bear", "#f97316"],
+            ["chop", "#6b7280"],
+          ].map(([name, color]) => (
+            <div
+              key={name}
+              style={{ display: "flex", alignItems: "center", gap: 4 }}
+            >
+              <div
+                style={{
+                  width: 12,
+                  height: 12,
+                  background: color,
+                  borderRadius: 2,
+                }}
+              />
+              <span>{name}</span>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

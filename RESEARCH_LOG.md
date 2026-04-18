@@ -738,3 +738,39 @@ iter 20 as an EtfWidget component on the research page).
 2. Portfolio equity curve chart
 3. Regime timeline color-band chart
 4. Maybe: auto-refresh alert toast when verdict flips from SKIP → TAKE (browser Notification API)
+
+## Iteration 20 (2026-04-18) — UI: ETF widget + Regime Timeline
+
+**EtfFlowPanel** (`SignalJournalPanel`-style inline component in research page):
+
+- Paste textarea for daily US BTC-ETF flows (farside.co.uk copy-paste format)
+- "Add entries" button parses `YYYY-MM-DD <value>M/B` lines via `parseEtfFlowPaste`
+- "Clear history" wipes localStorage
+- Live signal display: `LONG/SHORT/FLAT` based on 2-day confirmation rule
+- Last-14-days table with color-coded magnitude bands
+
+**RegimeTimelinePanel** (inline component):
+
+- "Load / refresh" button fetches 8760 1h bars + 1200 funding events per symbol
+- Classifies into 52 weekly regime windows
+- Renders as horizontal color-banded timeline per symbol (BTC/ETH/SOL)
+- Tooltip on hover shows date range + regime + trend %
+- Legend with 6 regime colors (calm=blue, trend-up=green, trend-down=red, leverage-bull=purple, leverage-bear=orange, chop=grey)
+
+Wired as bottom of research page next to SignalJournalPanel. Both lazy-
+import their heavy deps (regimeClassifier, funding fetch) so the research
+page's initial load stays fast.
+
+### Iter 20 findings
+
+1. **UI consolidation is nearly complete** — user now has live actionable signal (alerts), ETF input (manual), regime visibility (timeline), signal-journal persistence, portfolio DSR display, and strategy-health badges in one place.
+2. **EtfFlowPanel is honest about the CORS limitation** — explicit "paste from farside" instruction rather than pretending auto-fetch works.
+3. **Regime timeline makes per-regime PnL insight visual** — user can SEE that SOL had 20% trend-down weeks in the last year and understand why FundingCarry-SOL didn't fire often.
+
+### Next iteration targets
+
+1. Portfolio equity curve chart (Recharts AreaChart over the ensemble)
+2. Alert notification toast when verdict flips to TAKE
+3. Deep-dive research: Bybit vs Binance spot-perp basis (different from Coinbase premium)
+4. Consider: "paper trade" mode — user enters position size, system logs to journal automatically
+5. Research: Coinbase options skew from Deribit API
