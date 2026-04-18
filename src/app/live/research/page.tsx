@@ -274,6 +274,29 @@ export default function ResearchPage() {
     prevVerdictsRef.current = next;
   }, [liveSignals]);
 
+  // Auto-close expired paper trades: on every live-signals refresh, sweep
+  // the journal for open signals whose plannedExitTime has passed and close
+  // them at the current champion price. Prevents the journal from filling
+  // up with perpetually-open positions.
+  const [autoClosed, setAutoClosed] = useState<number>(0);
+  useEffect(() => {
+    if (!liveSignals?.champion || liveSignals.champion.length === 0) return;
+    const latestPrices: Record<string, number> = {};
+    for (const ch of liveSignals.champion) {
+      const sym = ch.symbol.replace("USDT", "");
+      if (ch.currentPrice > 0) {
+        latestPrices[sym] = ch.currentPrice;
+        latestPrices[ch.symbol] = ch.currentPrice;
+      }
+    }
+    import("@/utils/signalJournal").then(({ closeExpiredSignals }) => {
+      const closed = closeExpiredSignals(latestPrices);
+      if (closed.length > 0) {
+        setAutoClosed((n) => n + closed.length);
+      }
+    });
+  }, [liveSignals]);
+
   async function handleEnableAlerts() {
     if (typeof Notification === "undefined") {
       alert("Browser notifications not supported");
@@ -3522,9 +3545,11 @@ function SignalJournalPanel({
   const [entries, setEntries] = useState<SignalEntry[]>([]);
   const [refresh, setRefresh] = useState(0);
 
+  // Reload on manual refresh trigger AND whenever live signals refresh
+  // (parent auto-closes expired paper trades on liveReport change).
   useEffect(() => {
     setEntries(loadJournal());
-  }, [refresh]);
+  }, [refresh, liveReport]);
 
   const stats: JournalStats = computeJournalStats(entries);
 
@@ -3598,6 +3623,18 @@ function SignalJournalPanel({
         you have a true live Sharpe to compare against backtests. Stored in your
         browser (localStorage).
       </p>
+      {entries.some((e) => e.exitReason === "expired") && (
+        <p
+          style={{
+            marginTop: 4,
+            fontSize: 11,
+            color: "var(--text-tertiary)",
+          }}
+        >
+          Open trades past their planned-exit time are auto-closed at current
+          price (tagged <code>expired</code>).
+        </p>
+      )}
 
       {activeChampions.length > 0 && (
         <div style={{ marginTop: 16 }}>

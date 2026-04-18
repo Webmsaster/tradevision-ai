@@ -1006,3 +1006,44 @@ Wired into `liveSignals.ts` and UI panel above Coinbase Premium.
 3. Hyperliquid perp funding research — public API available (`https://api.hyperliquid.xyz/info`), DEX retail cohort may diverge from CEX at turning points.
 4. Per-symbol regime contribution chart (ETH and SOL regimes may differ from BTC's in chop weeks).
 5. Alert-journal integration — when a ★★★★★ fires, auto-queue it to signal journal (no manual Take click required).
+
+## Iteration 27 (2026-04-18) — Auto-Close Expired Paper Trades
+
+**Motivation:** Paper trades recorded via the signal-journal "Take" button stayed open indefinitely. A 1-hour-hold signal that fires at 14:00 is still "open" at 17:00 because no one manually closes it. This pollutes the win-rate/Sharpe stats — the journal can't report a true live Sharpe if positions never exit.
+
+**Changes in `src/utils/signalJournal.ts`:**
+
+- New `closeExpiredSignals(latestPrices, now?)` — iterates all open entries, closes those with `plannedExitTime < now` at the price provided in `latestPrices[symbol]`
+- New `exitReason: "expired"` tag distinguishing auto-closures from manual `"time"`/`"target"`/`"stop"`
+- P&L computed from entry→latest (long: `(exit-entry)/entry`; short: `(entry-exit)/entry`)
+- Skips entries missing price data (stale symbols no longer in live feed)
+- Skips already-closed entries (idempotent — safe to call every refresh)
+- Returns the list of closed entries so caller can trigger UI refresh
+
+**Wired into `src/app/live/research/page.tsx`:**
+
+- New `useEffect` on the research page parent: whenever `liveSignals` refreshes (every 5 min or manual), it builds `latestPrices` from `champion[].currentPrice` (stored under both `"BTCUSDT"` and `"BTC"` keys for flexibility) and calls `closeExpiredSignals()`
+- `SignalJournalPanel`'s existing `useEffect` now also depends on `liveReport`, so the journal table re-renders after auto-close writes to localStorage
+- UI hint added: small tertiary-color note "Open trades past planned-exit time are auto-closed at current price (tagged `expired`)" — only shown when ≥1 expired entry exists
+
+**New test file `src/__tests__/signalJournal.test.ts` (6 tests):**
+
+1. Closes open signals whose `plannedExitTime` has passed; exit price + reason + pnl correct
+2. Leaves future-exit signals untouched
+3. Short P&L direction correct on auto-close (price drop → short wins)
+4. Skips signals with no price data
+5. Expired closures flow through `computeJournalStats` (wins/completed counts)
+6. Idempotent — doesn't re-close already-closed entries
+
+### Iter 27 findings
+
+1. **localStorage mutation + React state divergence was subtle** — auto-close writes to localStorage in parent's useEffect but the child `SignalJournalPanel` had its own `refresh` counter, decoupled from `liveReport`. Without the `liveReport` dep on the journal's useEffect, the UI would show stale OPEN entries even though localStorage had CLOSED. Fixed by adding `liveReport` to the dep array.
+2. **`currentPrice` vs `entryPrice` matters here** — `champion.currentPrice` is the latest close bar; `champion.entryPrice` is what-you'd-pay-now (usually == currentPrice for market orders but differs for limit orders). Using `currentPrice` makes the auto-close price mark-to-market accurate.
+3. **"expired" is distinct from "time"** on purpose — `"time"` in the original closeSignal meant "user manually closed at planned exit"; `"expired"` means "system auto-closed because user forgot". Separating them lets us later filter journal stats ("true live" = manual-close only, vs "inclusive" = all closures).
+
+### Next iteration targets
+
+1. **Hyperliquid perp funding research** — public API `https://api.hyperliquid.xyz/info` POST `{"type":"metaAndAssetCtxs"}` — compare DEX funding vs Binance CEX funding. If divergence systematic (DEX more bullish at tops, more bearish at bottoms), that's a retail-cohort-divergence signal.
+2. **Backtest confluence-aligned filter on Coinbase Premium history** — does applying "only take when confluence same-direction" improve the 2.06 Sharpe historically, or just filter out winners?
+3. **Alert-journal integration** — when a ★★★★★ fires, auto-queue to signal journal (no manual Take click). Removes last point of human friction in the loop.
+4. **Weekend-hour regime gate** — crypto weekends have different microstructure (lower institutional, higher retail). Check if any champions underperform Sat/Sun and gate them.

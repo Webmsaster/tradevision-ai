@@ -30,7 +30,7 @@ export interface SignalEntry {
   exitTime?: number;
   exitPrice?: number;
   actualPnlPct?: number;
-  exitReason?: "time" | "target" | "stop" | "abort";
+  exitReason?: "time" | "target" | "stop" | "abort" | "expired";
 
   // Optional user notes
   notes?: string;
@@ -108,6 +108,44 @@ export function closeSignal(
       : (entry.entryPrice - exitPrice) / entry.entryPrice;
   saveJournal(all);
   return entry;
+}
+
+/**
+ * Auto-close all open signals whose `plannedExitTime` has passed.
+ *
+ * For each expired open signal, records an exit at the latest price provided
+ * in `latestPrices[symbol]` (must already be fetched by the caller — this
+ * function is synchronous, no network). Signals without a live price are
+ * skipped and logged.
+ *
+ * Returns the list of signals that were auto-closed in this call so the
+ * caller can notify the UI.
+ */
+export function closeExpiredSignals(
+  latestPrices: Record<string, number>,
+  now: number = Date.now(),
+): SignalEntry[] {
+  const all = loadJournal();
+  const closed: SignalEntry[] = [];
+  let mutated = false;
+  for (const entry of all) {
+    const isOpen = entry.exitPrice === undefined;
+    if (!isOpen) continue;
+    if (entry.plannedExitTime > now) continue;
+    const price = latestPrices[entry.symbol];
+    if (!price || !isFinite(price) || price <= 0) continue;
+    entry.exitTime = now;
+    entry.exitPrice = price;
+    entry.exitReason = "expired";
+    entry.actualPnlPct =
+      entry.direction === "long"
+        ? (price - entry.entryPrice) / entry.entryPrice
+        : (entry.entryPrice - price) / entry.entryPrice;
+    closed.push(entry);
+    mutated = true;
+  }
+  if (mutated) saveJournal(all);
+  return closed;
 }
 
 export function computeJournalStats(entries: SignalEntry[]): JournalStats {
