@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Area,
   AreaChart,
@@ -234,6 +234,52 @@ export default function ResearchPage() {
     const id = setInterval(refreshLiveSignals, 5 * 60 * 1000);
     return () => clearInterval(id);
   }, [refreshLiveSignals]);
+
+  // Alert notification: fire a browser notification when any alert verdict
+  // flips INTO "take" since last refresh. Opt-in — requires user to click
+  // "Enable alerts" and grant permission.
+  const prevVerdictsRef = useRef<Record<string, string>>({});
+  useEffect(() => {
+    if (!liveSignals?.alerts) return;
+    const prev = prevVerdictsRef.current;
+    const next: Record<string, string> = {};
+    for (const a of liveSignals.alerts) {
+      next[a.symbol] = a.verdict;
+      if (
+        a.verdict === "take" &&
+        prev[a.symbol] !== "take" &&
+        typeof Notification !== "undefined" &&
+        Notification.permission === "granted"
+      ) {
+        try {
+          new Notification(`★★★ ${a.symbol} ${a.action.toUpperCase()}`, {
+            body: a.summary,
+            tag: `alert-${a.symbol}`,
+          });
+        } catch {
+          // ignore
+        }
+      }
+    }
+    prevVerdictsRef.current = next;
+  }, [liveSignals]);
+
+  async function handleEnableAlerts() {
+    if (typeof Notification === "undefined") {
+      alert("Browser notifications not supported");
+      return;
+    }
+    if (Notification.permission === "granted") {
+      alert("Notifications already enabled");
+      return;
+    }
+    const result = await Notification.requestPermission();
+    if (result === "granted") {
+      new Notification("TradeVision AI", {
+        body: "Alerts enabled — you'll get a ping when a ★★★ TAKE verdict fires.",
+      });
+    }
+  }
 
   async function loadAndRun() {
     setLoading(true);
@@ -575,9 +621,12 @@ export default function ResearchPage() {
         loading={liveSignalsLoading}
         error={liveSignalsError}
         onRefresh={refreshLiveSignals}
+        onEnableAlerts={handleEnableAlerts}
       />
 
       <SignalJournalPanel liveReport={liveSignals} />
+
+      <PortfolioEquityPanel />
 
       <EtfFlowPanel />
 
@@ -1804,11 +1853,13 @@ function LiveSignalsPanel({
   loading,
   error,
   onRefresh,
+  onEnableAlerts,
 }: {
   report: LiveSignalsReport | null;
   loading: boolean;
   error: string | null;
   onRefresh: () => void;
+  onEnableAlerts: () => void;
 }) {
   const activeChampion =
     report?.champion.filter((c) => c.action !== "flat") ?? [];
@@ -1842,13 +1893,22 @@ function LiveSignalsPanel({
             </span>
           )}
         </h2>
-        <button
-          className="btn btn-secondary"
-          onClick={onRefresh}
-          disabled={loading}
-        >
-          {loading ? "Refreshing…" : "Refresh"}
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            className="btn btn-secondary"
+            onClick={onEnableAlerts}
+            title="Enable browser notifications when a ★★★ TAKE alert fires"
+          >
+            🔔 Enable alerts
+          </button>
+          <button
+            className="btn btn-secondary"
+            onClick={onRefresh}
+            disabled={loading}
+          >
+            {loading ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
       </div>
       {error && (
         <p
@@ -2576,6 +2636,175 @@ function EtfFlowPanel() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PortfolioEquityPanel() {
+  const [loading, setLoading] = useState(false);
+  const [data, setData] = useState<
+    { date: string; equity: number; pnl: number }[]
+  >([]);
+  const [stats, setStats] = useState<{
+    sharpe: number;
+    maxDD: number;
+    ret: number;
+    days: number;
+  } | null>(null);
+
+  async function loadEquity() {
+    setLoading(true);
+    try {
+      const { loadBinanceHistory } = await import("@/utils/historicalData");
+      const { fetchFundingHistory } = await import("@/utils/fundingRate");
+      const { buildEnsembleEquity } = await import("@/utils/ensembleEquity");
+      const { MAKER_COSTS } = await import("@/utils/intradayLab");
+      const { fetchCoinbaseLongHistory } =
+        await import("@/utils/coinbaseHistory");
+      const syms = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+      const candlesByH: Record<
+        string,
+        Awaited<ReturnType<typeof loadBinanceHistory>>
+      > = {};
+      const fundingBySymbol: Record<
+        string,
+        Awaited<ReturnType<typeof fetchFundingHistory>>
+      > = {};
+      for (const sym of syms) {
+        candlesByH[sym] = await loadBinanceHistory({
+          symbol: sym,
+          timeframe: "1h",
+          targetCount: 20000,
+        });
+        fundingBySymbol[sym] = await fetchFundingHistory(sym, 3000);
+      }
+      const coinbaseBtc1h = await fetchCoinbaseLongHistory(
+        "BTC-USD",
+        3600,
+        5000,
+      );
+      const ens = await buildEnsembleEquity({
+        candlesByH,
+        fundingBySymbol,
+        makerCosts: MAKER_COSTS,
+        takerCosts: {
+          takerFee: 0.0004,
+          slippageBps: 2,
+          fundingBpPerHour: 0.1,
+        },
+        coinbaseBtc1h,
+      });
+      setData(
+        ens.equityCurve.map((p, i) => ({
+          date: p.date,
+          equity: (p.equity - 1) * 100,
+          pnl: ens.dailyReturns[i]?.pnlPct ?? 0,
+        })),
+      );
+      setStats({
+        sharpe: ens.sharpe,
+        maxDD: ens.maxDrawdownPct,
+        ret: ens.totalReturnPct,
+        days: ens.dailyReturns.length,
+      });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div
+      className={`glass-card live-verdict live-verdict-${stats && stats.sharpe > 1 ? "profit" : "neutral"}`}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: 8,
+        }}
+      >
+        <h2 style={{ margin: 0 }}>📈 Portfolio Equity Curve (13 strategies)</h2>
+        <button
+          className="btn btn-secondary"
+          onClick={loadEquity}
+          disabled={loading}
+        >
+          {loading ? "Computing…" : "Compute / refresh"}
+        </button>
+      </div>
+      <p style={{ marginTop: 8, fontSize: 13 }}>
+        Rebuilds the 13-strategy ensemble equity curve from live Binance +
+        Coinbase data using walk-forward + regime-aware execution. Expect Sharpe
+        ~2.5, DD ~1.3% on ~569 days.
+      </p>
+      {stats && (
+        <div className="live-backtest-stats" style={{ marginTop: 12 }}>
+          <Stat
+            label="Sharpe"
+            value={stats.sharpe.toFixed(2)}
+            tone={stats.sharpe > 1 ? "profit" : undefined}
+          />
+          <Stat
+            label="Return"
+            value={`${(stats.ret * 100).toFixed(1)}%`}
+            tone={stats.ret > 0 ? "profit" : "loss"}
+          />
+          <Stat
+            label="MaxDD"
+            value={`${(stats.maxDD * 100).toFixed(1)}%`}
+            tone="loss"
+          />
+          <Stat label="Days" value={String(stats.days)} />
+        </div>
+      )}
+      {data.length > 1 && (
+        <div style={{ width: "100%", height: 280, marginTop: 12 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={data}>
+              <defs>
+                <linearGradient id="portEq" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#34d399" stopOpacity={0.35} />
+                  <stop offset="100%" stopColor="#34d399" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid
+                strokeDasharray="3 3"
+                stroke="rgba(255,255,255,0.05)"
+              />
+              <XAxis
+                dataKey="date"
+                tick={{ fontSize: 10, fill: "var(--text-secondary)" }}
+                minTickGap={40}
+              />
+              <YAxis
+                tick={{ fontSize: 10, fill: "var(--text-secondary)" }}
+                tickFormatter={(v) => `${v.toFixed(0)}%`}
+                width={70}
+              />
+              <Tooltip
+                contentStyle={{
+                  background: "var(--surface-elevated, #1c1f26)",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  borderRadius: 8,
+                  fontSize: 12,
+                }}
+                formatter={(v) =>
+                  typeof v === "number" ? `${v.toFixed(2)}%` : String(v)
+                }
+              />
+              <Area
+                type="monotone"
+                dataKey="equity"
+                stroke="#34d399"
+                strokeWidth={2}
+                fill="url(#portEq)"
+              />
+            </AreaChart>
+          </ResponsiveContainer>
         </div>
       )}
     </div>

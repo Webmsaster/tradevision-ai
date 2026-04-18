@@ -774,3 +774,36 @@ page's initial load stays fast.
 3. Deep-dive research: Bybit vs Binance spot-perp basis (different from Coinbase premium)
 4. Consider: "paper trade" mode — user enters position size, system logs to journal automatically
 5. Research: Coinbase options skew from Deribit API
+
+## Iteration 21 (2026-04-18) — Equity chart + alert notifications
+
+**PortfolioEquityPanel**:
+
+- "Compute / refresh" button runs full 13-strategy `buildEnsembleEquity` on live Binance + funding + Coinbase 5000 bars
+- Displays 4 stats (Sharpe, Return, MaxDD, Days) + Recharts AreaChart of cumulative % return over ~569 days
+- Gradient fill, tooltip on hover, date on X-axis
+- Loading takes ~15-30s (rate-limited Coinbase paginator), but runs client-side without server
+
+**Alert Notification Toast**:
+
+- `handleEnableAlerts` requests browser `Notification.requestPermission()`
+- "🔔 Enable alerts" button in live-signals panel header
+- `useEffect` on `liveSignals` diffs previous verdicts per symbol vs current
+- When any symbol flips INTO "take" and permission is granted → `new Notification('★★★ BTC LONG', {body: summary})`
+- Tag-deduplicated per symbol so repeated TAKE state doesn't re-notify
+
+Both persist alert state in `prevVerdictsRef` (React ref) so notifications fire only on flip-TO-take, not while already-take.
+
+### Iter 21 findings
+
+1. **Equity chart is the headline visual** — one glance shows the 569-day performance. More convincing than any table row.
+2. **Notifications complete the feedback loop** — user doesn't need to keep the tab open. When conditions align for a ★★★ TAKE verdict, the browser pings.
+3. **13-strategy compute on live data takes ~20-30s** — acceptable as an on-demand button, would be expensive for auto-refresh. If needed, could be cached server-side via Next.js ISR.
+
+### Next iteration targets
+
+1. Bybit basis research (Asian-perp premium vs spot — different mechanism than OKX)
+2. Deribit options skew (25-delta risk reversal as direction filter)
+3. Paper-trade mode: one-click "Take alert" → record in signal journal + set exit timer
+4. Strategy contribution pie-chart (which strategies drove which share of P&L)
+5. Ensemble equity split by regime (show how portfolio did in each regime bucket)
