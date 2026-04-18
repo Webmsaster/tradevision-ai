@@ -4,7 +4,13 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Area,
   AreaChart,
+  Bar,
+  BarChart,
+  Cell,
+  Pie,
+  PieChart,
   CartesianGrid,
+  Legend,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -2907,6 +2913,25 @@ function PortfolioEquityPanel() {
     ret: number;
     days: number;
   } | null>(null);
+  const [contribution, setContribution] = useState<
+    {
+      name: string;
+      contributionPct: number;
+      absSharePct: number;
+      weight: number;
+      sharpe: number;
+      color: string;
+    }[]
+  >([]);
+  const [equityByRegime, setEquityByRegime] = useState<
+    {
+      regime: string;
+      meanPnlBps: number;
+      totalPnlPct: number;
+      days: number;
+      color: string;
+    }[]
+  >([]);
 
   async function loadEquity() {
     setLoading(true);
@@ -2963,6 +2988,110 @@ function PortfolioEquityPanel() {
         ret: ens.totalReturnPct,
         days: ens.dailyReturns.length,
       });
+
+      // Per-strategy contribution to portfolio P&L.
+      //   contribution_i = weight_i * sum(returns_i)  (portfolio-weighted total P&L)
+      // We show absSharePct of the absolute-total so negative contributors
+      // still render in pie but tagged with sign.
+      const contribs = ens.strategies.map((s) => {
+        const sumRet = s.returns.reduce((a, r) => a + r.pnlPct, 0);
+        const contribution = s.weight * sumRet; // fraction of portfolio P&L
+        return {
+          name: s.name,
+          weight: s.weight,
+          sharpe: s.sharpe,
+          contribution,
+        };
+      });
+      const totalAbsContribution = contribs.reduce(
+        (a, c) => a + Math.abs(c.contribution),
+        0,
+      );
+      const palette = [
+        "#34d399",
+        "#60a5fa",
+        "#a855f7",
+        "#f59e0b",
+        "#ef4444",
+        "#ec4899",
+        "#14b8a6",
+        "#f472b6",
+        "#facc15",
+        "#6366f1",
+        "#fb923c",
+        "#22d3ee",
+        "#84cc16",
+      ];
+      setContribution(
+        contribs
+          .map((c, i) => ({
+            name: c.name,
+            contributionPct: c.contribution * 100,
+            absSharePct:
+              totalAbsContribution > 0
+                ? (Math.abs(c.contribution) / totalAbsContribution) * 100
+                : 0,
+            weight: c.weight,
+            sharpe: c.sharpe,
+            color: palette[i % palette.length],
+          }))
+          .sort((a, b) => b.absSharePct - a.absSharePct),
+      );
+
+      // ---- Equity-by-regime: bucket daily P&L by BTC regime window ----
+      try {
+        const { classifyRegimes } = await import("@/utils/regimeClassifier");
+        const btcFunding = fundingBySymbol["BTCUSDT"] ?? [];
+        const btcWindows = classifyRegimes(candlesByH["BTCUSDT"], btcFunding);
+        // Map each daily return to its BTC regime
+        const buckets = new Map<string, { sum: number; count: number }>();
+        for (const dr of ens.dailyReturns) {
+          const t = new Date(dr.date + "T12:00:00Z").getTime();
+          const w = btcWindows.find(
+            (win) => win.startTime <= t && t <= win.endTime,
+          );
+          const key = w?.regime ?? "unclassified";
+          const b = buckets.get(key) ?? { sum: 0, count: 0 };
+          b.sum += dr.pnlPct;
+          b.count += 1;
+          buckets.set(key, b);
+        }
+        const regimeColors: Record<string, string> = {
+          calm: "#60a5fa",
+          "trend-up": "#34d399",
+          "trend-down": "#ef4444",
+          "leverage-bull": "#a855f7",
+          "leverage-bear": "#f97316",
+          chop: "#9ca3af",
+          unclassified: "#6b7280",
+        };
+        const order = [
+          "trend-up",
+          "leverage-bull",
+          "calm",
+          "chop",
+          "leverage-bear",
+          "trend-down",
+          "unclassified",
+        ];
+        setEquityByRegime(
+          [...buckets.entries()]
+            .map(([regime, b]) => ({
+              regime,
+              meanPnlBps: b.count > 0 ? (b.sum / b.count) * 10000 : 0,
+              totalPnlPct: b.sum * 100,
+              days: b.count,
+              color: regimeColors[regime] ?? "#6b7280",
+            }))
+            .sort(
+              (a, b) =>
+                ((order.indexOf(a.regime) + 999) % 999) -
+                ((order.indexOf(b.regime) + 999) % 999),
+            ),
+        );
+      } catch {
+        // regime classification optional — don't block equity panel
+      }
     } finally {
       setLoading(false);
     }
@@ -3059,6 +3188,175 @@ function PortfolioEquityPanel() {
               />
             </AreaChart>
           </ResponsiveContainer>
+        </div>
+      )}
+      {contribution.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <h3
+            style={{
+              fontSize: 14,
+              fontWeight: 600,
+              marginBottom: 8,
+              color: "var(--text-secondary)",
+            }}
+          >
+            🥧 Strategy P&amp;L Contribution (share of absolute portfolio
+            returns)
+          </h3>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "minmax(220px, 320px) 1fr",
+              gap: 16,
+              alignItems: "center",
+            }}
+          >
+            <div style={{ width: "100%", height: 260 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={contribution}
+                    dataKey="absSharePct"
+                    nameKey="name"
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={45}
+                    outerRadius={95}
+                    paddingAngle={2}
+                  >
+                    {contribution.map((e, i) => (
+                      <Cell key={i} fill={e.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    contentStyle={{
+                      background: "var(--surface-elevated, #1c1f26)",
+                      border: "1px solid rgba(255,255,255,0.1)",
+                      borderRadius: 8,
+                      fontSize: 12,
+                    }}
+                    formatter={(v, _n, p) => {
+                      const entry = p.payload as (typeof contribution)[0];
+                      return [
+                        `${(v as number).toFixed(1)}% of |total| (${entry.contributionPct >= 0 ? "+" : ""}${entry.contributionPct.toFixed(2)}pp)`,
+                        entry.name,
+                      ];
+                    }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: "4px 16px",
+                fontSize: 11,
+              }}
+            >
+              {contribution.map((c) => (
+                <div
+                  key={c.name}
+                  style={{ display: "flex", alignItems: "center", gap: 6 }}
+                >
+                  <span
+                    style={{
+                      width: 10,
+                      height: 10,
+                      borderRadius: 2,
+                      background: c.color,
+                      flexShrink: 0,
+                    }}
+                  />
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <strong>{c.name}</strong>{" "}
+                    <span
+                      style={{
+                        color:
+                          c.contributionPct >= 0
+                            ? "var(--profit)"
+                            : "var(--loss)",
+                      }}
+                    >
+                      {c.contributionPct >= 0 ? "+" : ""}
+                      {c.contributionPct.toFixed(2)}pp
+                    </span>{" "}
+                    <span style={{ color: "var(--text-tertiary)" }}>
+                      ({c.absSharePct.toFixed(0)}%, w=
+                      {(c.weight * 100).toFixed(0)}%, Sh {c.sharpe.toFixed(2)})
+                    </span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <p className="live-muted-note" style={{ marginTop: 8, fontSize: 11 }}>
+            Share = |strategy contribution| / Σ|contributions|. Contribution =
+            portfolio-weighted sum of net returns. Negative contributors (honest
+            losers) still take pie space so you see what dragged.
+          </p>
+        </div>
+      )}
+      {equityByRegime.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <h3
+            style={{
+              fontSize: 14,
+              fontWeight: 600,
+              marginBottom: 8,
+              color: "var(--text-secondary)",
+            }}
+          >
+            📊 Mean Daily P&amp;L by BTC Regime (bps)
+          </h3>
+          <div style={{ width: "100%", height: 220 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart
+                data={equityByRegime}
+                margin={{ top: 8, right: 12, left: 4, bottom: 8 }}
+              >
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  stroke="rgba(255,255,255,0.05)"
+                />
+                <XAxis
+                  dataKey="regime"
+                  tick={{ fontSize: 11, fill: "var(--text-secondary)" }}
+                />
+                <YAxis
+                  tick={{ fontSize: 10, fill: "var(--text-secondary)" }}
+                  tickFormatter={(v) => `${v.toFixed(0)}bp`}
+                  width={60}
+                />
+                <Tooltip
+                  contentStyle={{
+                    background: "var(--surface-elevated, #1c1f26)",
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    borderRadius: 8,
+                    fontSize: 12,
+                  }}
+                  formatter={(v, _n, p) => {
+                    const entry = p.payload as (typeof equityByRegime)[0];
+                    return [
+                      `${(v as number).toFixed(1)} bps/day  •  ${entry.totalPnlPct >= 0 ? "+" : ""}${entry.totalPnlPct.toFixed(1)}% total over ${entry.days}d`,
+                      entry.regime,
+                    ];
+                  }}
+                />
+                <Bar dataKey="meanPnlBps">
+                  {equityByRegime.map((e, i) => (
+                    <Cell key={i} fill={e.color} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <p className="live-muted-note" style={{ marginTop: 4, fontSize: 11 }}>
+            Shows which BTC regime delivered the portfolio&apos;s edge. Large
+            positive bars in calm/trend-up = the strategy stack earns in benign
+            regimes. Negative bar in trend-down = capital preservation (or drag)
+            during bear tape.
+          </p>
         </div>
       )}
     </div>

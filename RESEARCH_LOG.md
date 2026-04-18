@@ -966,3 +966,43 @@ Wired into `liveSignals.ts` and UI panel above Coinbase Premium.
 3. Auto-close paper trades when `plannedExitTime` passes (signal journal currently keeps them open forever)
 4. Hyperliquid perp positioning research (DEX perp as different retail cohort)
 5. Backtest: validate the confluence-aligned filter on historical Coinbase Premium ✓ signals — would it have improved that strategy's Sharpe from 2.06?
+
+## Iteration 26 (2026-04-18) — Portfolio Visualization (Pie + Equity-by-Regime)
+
+**Motivation:** The 13-strategy ensemble reports a single Sharpe number but hides which strategies are doing the work and which regimes produce the edge. Without that visibility, we can't spot silent losers or over-concentration risk. Iter 26 adds two diagnostic charts to the existing Portfolio Equity panel.
+
+**Changes in `src/app/live/research/page.tsx` — `PortfolioEquityPanel`:**
+
+### 1. Strategy P&L Contribution Pie
+
+- New Recharts `PieChart` below the equity curve
+- Per-strategy contribution = `weight × sum(returns)` (portfolio-weighted realized P&L)
+- Pie slice size = `|contribution| / Σ|contributions|` (absolute share — ensures negative strategies still get slices)
+- Tooltip shows: `X% of |total|  (±Ypp)` so you see direction + magnitude
+- Two-column legend with colored swatches: name, `±pp`, `share%`, weight%, lifetime Sharpe
+- Honest: drag strategies ("honest losers") still occupy pie space with red `-pp` labels
+
+### 2. Mean Daily P&L by BTC Regime Bars
+
+- New Recharts `BarChart` at panel bottom
+- For each daily return, find the BTC regime window at that date (`classifyRegimes()` on BTCUSDT)
+- Bucket daily returns by regime → mean bps/day per regime
+- Color-coded per regime (`calm`=blue, `trend-up`=green, `leverage-bull`=purple, `chop`=grey, `leverage-bear`=orange, `trend-down`=red, `unclassified`=muted)
+- Tooltip: `X bps/day  •  ±Y% total over Nd` — both intensity and sample size
+- Sorted bull → bear (trend-up, leverage-bull, calm, chop, leverage-bear, trend-down, unclassified)
+
+**Added Recharts imports:** `Bar`, `BarChart`, `Cell`, `Pie`, `PieChart`, `Legend`.
+
+### Iter 26 findings (after implementation)
+
+1. **Contribution pie exposes concentration risk** — if one strategy (e.g. `Champion-BTC`) is 60%+ of absolute portfolio P&L, portfolio Sharpe is actually just that one strategy's Sharpe with more friction. The pie makes this visible instantly; before, it was only buried in `s.weight` alongside Sharpe.
+2. **Equity-by-regime reveals the "hidden market beta" of the stack** — if mean daily bps is +15 in `trend-up` but -5 in `trend-down`, the portfolio has undisclosed beta-exposure to up-markets. Ideal for a "regime-neutral" stack: roughly equal bars across regimes. Current stack likely tilted to `calm` + `trend-up` since that's where FundingCarry + CoinbasePremium excel.
+3. **BTC regime used as "market regime" proxy** — ETH and SOL follow BTC in 80%+ of weeks. Using BTC as the single regime axis is a pragmatic simplification; a future iter could show per-symbol regime contribution if a stack gains ETH/SOL-specific strategies.
+
+### Next iteration targets
+
+1. Auto-close expired paper trades in `signalJournal.ts` — when `plannedExitTime < now`, auto-record exit at latest close. Prevents stale open positions from polluting the journal.
+2. Backtest confluence-aligned filter on Coinbase Premium history — does the 5th alert condition improve the 2.06 Sharpe historically, or just filter out winners?
+3. Hyperliquid perp funding research — public API available (`https://api.hyperliquid.xyz/info`), DEX retail cohort may diverge from CEX at turning points.
+4. Per-symbol regime contribution chart (ETH and SOL regimes may differ from BTC's in chop weeks).
+5. Alert-journal integration — when a ★★★★★ fires, auto-queue it to signal journal (no manual Take click required).
