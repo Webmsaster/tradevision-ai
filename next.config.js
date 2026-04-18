@@ -20,7 +20,7 @@ const nextConfig = {
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: blob:",
               "font-src 'self'",
-              "connect-src 'self' https: wss://*.supabase.co",
+              "connect-src 'self' https: wss://*.supabase.co wss://stream.binance.com wss://stream.binance.com:9443",
               "frame-ancestors 'none'",
               "base-uri 'self'",
               "form-action 'self'",
