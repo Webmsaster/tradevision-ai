@@ -36,6 +36,10 @@ import {
   type DeribitSkewSnapshot,
 } from "@/utils/deribitSkew";
 import {
+  computeSentimentConfluence,
+  type SentimentConfluence,
+} from "@/utils/sentimentConfluence";
+import {
   classifyRegimes,
   type Regime,
   type RegimeWindow,
@@ -139,6 +143,7 @@ export interface LiveSignalsReport {
   coinbasePremium?: PremiumSnapshot;
   bybitBasis?: BybitBasisSnapshot;
   deribitSkew?: DeribitSkewSnapshot;
+  sentimentConfluence?: SentimentConfluence;
   currentRegimes?: CurrentRegime[];
   portfolioSummary?: PortfolioSummary;
   alerts?: AlertVerdict[];
@@ -606,6 +611,11 @@ export async function computeLiveSignals(
     coinbasePremium,
     bybitBasis,
     deribitSkew,
+    sentimentConfluence: computeSentimentConfluence({
+      coinbasePremium,
+      bybitBasis,
+      deribitSkew,
+    }),
     currentRegimes,
     portfolioSummary,
     alerts,

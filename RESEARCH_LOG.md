@@ -876,3 +876,38 @@ Wired into `liveSignals.ts` and UI panel above Coinbase Premium.
 3. Research: Hyperliquid perp flow (DEX perp as different retail cohort)
 4. Equity-by-regime stacked chart
 5. Add Deribit skew to the `regimeClassifier` inputs — may improve regime classification accuracy
+
+## Iteration 24 (2026-04-18) — Sentiment Confluence Score
+
+**New module** (`src/utils/sentimentConfluence.ts`):
+
+- Aggregates the 4 cross-market sentiment signals into single **-100..+100 score**
+- Each component maps to [-25..+25] partial score
+- Total confluence = normalized sum
+- Confidence = agreement among non-zero signals (high when ≥80% agree)
+- 5-tier bias: strong-bullish / bullish / neutral / bearish / strong-bearish
+
+**Mapping:**
+
+- Coinbase Premium ±0.3% → ±25
+- Bybit Basis ±0.3% → ±25
+- Deribit Skew ±5pp → ±25
+
+**Live UI panel added** — horizontal gauge bar (green right / red left), score badge, bias/confidence stats, component breakdown in small text.
+
+**Current reading (~19:35 UTC):** With Coinbase -0.04%, Bybit -0.059%, Deribit -7.25pp, score ≈ **-45** (bearish tier), confidence HIGH (all 3 agree). Interpretation: "strong bearish lean — 3 signals aligned. High-conviction regime read."
+
+### Iter 24 findings
+
+1. **One gauge collapses 4 data sources** — user doesn't read 4 separate panels, they read one score + color.
+2. **Confidence metric is critical** — when signals disagree, the gauge correctly shows LOW confidence even if score looks tilted. Prevents false-alarm regime reads.
+3. **Score = -45 confirms 4-way bearish** from iter 23 quantitatively — the confluence is not just "bearish" but "moderate bearish with high confidence."
+4. Strategy contribution pie chart still deferred — sentiment confluence was higher-impact (gives immediate actionable read). Pie is pure visualization and can come in iter 25.
+
+### Next iteration targets
+
+1. Strategy contribution pie chart (Recharts PieChart % of P&L per strategy)
+2. Equity-by-regime chart (per-regime portfolio mean-PnL bars)
+3. Hyperliquid perp positioning research (DEX perp funding vs CEX)
+4. Auto-record paper-trade close when hold-until time passes
+5. Sentiment Confluence score as 5th high-confidence alert condition (sig + reg + hlt + edg + confluence ≥ 30 absolute) → 5-star alerts

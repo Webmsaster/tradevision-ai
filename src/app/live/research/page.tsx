@@ -2309,6 +2309,115 @@ function LiveSignalsPanel({
             </>
           )}
 
+          {report.sentimentConfluence && (
+            <>
+              <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
+                🎯 Sentiment Confluence (4-signal regime gauge)
+              </h3>
+              <div className="live-backtest-stats">
+                <Stat
+                  label="Score"
+                  value={`${report.sentimentConfluence.score >= 0 ? "+" : ""}${report.sentimentConfluence.score.toFixed(0)}`}
+                  tone={
+                    report.sentimentConfluence.score > 15
+                      ? "profit"
+                      : report.sentimentConfluence.score < -15
+                        ? "loss"
+                        : undefined
+                  }
+                />
+                <Stat
+                  label="Bias"
+                  value={report.sentimentConfluence.bias.toUpperCase()}
+                  tone={
+                    report.sentimentConfluence.bias.includes("bullish")
+                      ? "profit"
+                      : report.sentimentConfluence.bias.includes("bearish")
+                        ? "loss"
+                        : undefined
+                  }
+                />
+                <Stat
+                  label="Confidence"
+                  value={report.sentimentConfluence.confidence.toUpperCase()}
+                  tone={
+                    report.sentimentConfluence.confidence === "high"
+                      ? "profit"
+                      : report.sentimentConfluence.confidence === "low"
+                        ? "loss"
+                        : undefined
+                  }
+                />
+              </div>
+              <div
+                style={{
+                  marginTop: 12,
+                  height: 16,
+                  background: "rgba(255,255,255,0.06)",
+                  borderRadius: 8,
+                  position: "relative",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    position: "absolute",
+                    left:
+                      report.sentimentConfluence.score >= 0
+                        ? "50%"
+                        : `${50 - Math.abs(report.sentimentConfluence.score) / 2}%`,
+                    top: 0,
+                    bottom: 0,
+                    width: `${Math.abs(report.sentimentConfluence.score) / 2}%`,
+                    background:
+                      report.sentimentConfluence.score >= 0
+                        ? "linear-gradient(90deg, rgba(52,211,153,0.3), rgba(52,211,153,0.8))"
+                        : "linear-gradient(270deg, rgba(239,68,68,0.3), rgba(239,68,68,0.8))",
+                  }}
+                />
+                <div
+                  style={{
+                    position: "absolute",
+                    left: "50%",
+                    top: 0,
+                    bottom: 0,
+                    width: 1,
+                    background: "rgba(255,255,255,0.3)",
+                  }}
+                />
+              </div>
+              <div
+                style={{
+                  marginTop: 4,
+                  display: "flex",
+                  justifyContent: "space-between",
+                  fontSize: 11,
+                  color: "var(--text-secondary)",
+                }}
+              >
+                <span>-100 strong bear</span>
+                <span>0</span>
+                <span>+100 strong bull</span>
+              </div>
+              <p
+                className="live-muted-note"
+                style={{ marginTop: 8, fontSize: 12 }}
+              >
+                {report.sentimentConfluence.interpretation}
+                <br />
+                <small>
+                  CB:{" "}
+                  {report.sentimentConfluence.components.coinbasePremium.note}
+                  {" · "}
+                  Bybit: {report.sentimentConfluence.components.bybitBasis.note}
+                  {" · "}
+                  Deribit:{" "}
+                  {report.sentimentConfluence.components.deribitSkew.note}
+                </small>
+              </p>
+            </>
+          )}
+
           {report.deribitSkew && (
             <>
               <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
