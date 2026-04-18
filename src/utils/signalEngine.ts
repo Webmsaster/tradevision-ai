@@ -408,6 +408,10 @@ export function backtest(
     }
   }
 
+  return summariseTrades(trades);
+}
+
+function summariseTrades(trades: BacktestTrade[]): BacktestResult {
   const wins = trades.filter((t) => t.pnlR > 0).length;
   const losses = trades.filter((t) => t.pnlR < 0).length;
   const winRate = trades.length > 0 ? wins / trades.length : 0;
@@ -421,6 +425,148 @@ export function backtest(
   );
   const profitFactor =
     grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? Infinity : 0;
-
   return { trades, wins, losses, winRate, totalR, avgR, profitFactor };
+}
+
+// ---- Walk-forward validation ----
+
+export interface WalkForwardResult {
+  inSample: BacktestResult;
+  outOfSample: BacktestResult;
+  overfitWarning: boolean;
+}
+
+/**
+ * Splits candles 70/30 and runs the engine separately on each portion.
+ * Since this engine has no tunable parameters, a big IS↔OOS gap means the
+ * recent regime has shifted or the rules just don't generalise — in either
+ * case a warning that live trading is unlikely to match historical results.
+ */
+export function walkForwardBacktest(
+  candles: Candle[],
+  splitRatio = 0.7,
+  cfg: SignalConfig = DEFAULT_SIGNAL_CONFIG,
+): WalkForwardResult {
+  const splitIdx = Math.floor(candles.length * splitRatio);
+  const inSample = backtest(candles.slice(0, splitIdx), cfg);
+  const outOfSample = backtest(candles.slice(splitIdx), cfg);
+  const isPf = inSample.profitFactor === Infinity ? 10 : inSample.profitFactor;
+  const oosPf =
+    outOfSample.profitFactor === Infinity ? 10 : outOfSample.profitFactor;
+  const overfitWarning = isPf > 1.5 && oosPf < isPf * 0.5;
+  return { inSample, outOfSample, overfitWarning };
+}
+
+// ---- Monte-Carlo drawdown simulation ----
+
+export interface MonteCarloResult {
+  runs: number;
+  medianMaxDrawdownR: number;
+  p95MaxDrawdownR: number;
+  worstMaxDrawdownR: number;
+  probOfProfit: number;
+}
+
+/**
+ * Bootstraps alternate equity curves by sampling trade R-values with replacement.
+ * Reports the distribution of max drawdown — tells you what a realistic worst
+ * stretch looks like even if the sample backtest was lucky. Seeded RNG for reproducibility.
+ */
+export function monteCarloBacktest(
+  trades: BacktestTrade[],
+  runs = 1000,
+): MonteCarloResult | null {
+  if (trades.length < 5) return null;
+  const rs = trades.map((t) => t.pnlR);
+  let seed = 1337;
+  const rand = () => {
+    seed = (seed * 1664525 + 1013904223) % 0x100000000;
+    return seed / 0x100000000;
+  };
+
+  const maxDrawdowns: number[] = [];
+  let profitableRuns = 0;
+  for (let r = 0; r < runs; r++) {
+    let equity = 0;
+    let peak = 0;
+    let maxDd = 0;
+    for (let i = 0; i < rs.length; i++) {
+      const pick = rs[Math.floor(rand() * rs.length)];
+      equity += pick;
+      if (equity > peak) peak = equity;
+      const dd = peak - equity;
+      if (dd > maxDd) maxDd = dd;
+    }
+    if (equity > 0) profitableRuns++;
+    maxDrawdowns.push(maxDd);
+  }
+  maxDrawdowns.sort((a, b) => a - b);
+  return {
+    runs,
+    medianMaxDrawdownR: maxDrawdowns[Math.floor(maxDrawdowns.length / 2)],
+    p95MaxDrawdownR: maxDrawdowns[Math.floor(maxDrawdowns.length * 0.95)],
+    worstMaxDrawdownR: maxDrawdowns[maxDrawdowns.length - 1],
+    probOfProfit: profitableRuns / runs,
+  };
+}
+
+// ---- Multi-timeframe consensus ----
+
+export interface ConsensusResult {
+  action: SignalAction;
+  agreementRatio: number;
+  confidence: number;
+  detail: { label: string; action: SignalAction }[];
+}
+
+/**
+ * Runs the engine on multiple candle sets (different timeframes of the same symbol)
+ * and reports how many agree. A signal with 3/3 TFs agreeing is worth more than 2/3.
+ */
+export function multiTimeframeConsensus(
+  sets: { label: string; candles: Candle[] }[],
+  cfg: SignalConfig = DEFAULT_SIGNAL_CONFIG,
+): ConsensusResult | null {
+  const detail: { label: string; action: SignalAction }[] = [];
+  for (const s of sets) {
+    const snap = analyzeCandles(s.candles, { config: cfg });
+    detail.push({ label: s.label, action: snap?.action ?? "flat" });
+  }
+  if (detail.length === 0) return null;
+
+  const tally: Record<SignalAction, number> = { long: 0, short: 0, flat: 0 };
+  for (const d of detail) tally[d.action]++;
+  let leader: SignalAction = "flat";
+  if (tally.long > tally.short && tally.long >= tally.flat) leader = "long";
+  else if (tally.short > tally.long && tally.short >= tally.flat)
+    leader = "short";
+  const agreementRatio = tally[leader] / detail.length;
+  const confidence = leader === "flat" ? 0 : Math.round(agreementRatio * 100);
+  return { action: leader, agreementRatio, confidence, detail };
+}
+
+// ---- Position sizing (1% risk rule) ----
+
+export interface PositionSizeInput {
+  accountSize: number;
+  riskPercent: number;
+  entry: number;
+  stopLoss: number;
+}
+
+export interface PositionSizeOutput {
+  quantity: number;
+  dollarRisk: number;
+  stopDistance: number;
+}
+
+export function suggestPositionSize(
+  input: PositionSizeInput,
+): PositionSizeOutput | null {
+  const { accountSize, riskPercent, entry, stopLoss } = input;
+  if (accountSize <= 0 || riskPercent <= 0 || entry <= 0) return null;
+  const stopDistance = Math.abs(entry - stopLoss);
+  if (stopDistance <= 0) return null;
+  const dollarRisk = accountSize * (riskPercent / 100);
+  return { quantity: dollarRisk / stopDistance, dollarRisk, stopDistance };
 }

@@ -11,13 +11,20 @@ import {
   YAxis,
 } from "recharts";
 import { useLiveCandles, LiveTimeframe } from "@/hooks/useLiveCandles";
+import { useSignalTracking } from "@/hooks/useSignalTracking";
 import {
   analyzeCandles,
   SignalSnapshot,
   hasActionChanged,
   deriveHtfTrend,
   backtest,
-  BacktestResult,
+  walkForwardBacktest,
+  monteCarloBacktest,
+  multiTimeframeConsensus,
+  suggestPositionSize,
+  WalkForwardResult,
+  MonteCarloResult,
+  ConsensusResult,
 } from "@/utils/signalEngine";
 
 const SYMBOLS = [
@@ -35,6 +42,13 @@ const HTF_FOR: Record<LiveTimeframe, LiveTimeframe> = {
   "5m": "1h",
   "15m": "1h",
   "1h": "1h",
+};
+
+const CONSENSUS_TFS: Record<LiveTimeframe, LiveTimeframe[]> = {
+  "1m": ["1m", "5m", "15m"],
+  "5m": ["5m", "15m", "1h"],
+  "15m": ["15m", "1h"],
+  "1h": ["1h"],
 };
 
 function formatPrice(p: number): string {
@@ -67,20 +81,32 @@ export default function LivePage() {
   const [timeframe, setTimeframe] = useState<LiveTimeframe>("5m");
   const [signalHistory, setSignalHistory] = useState<SignalSnapshot[]>([]);
   const [notify, setNotify] = useState(false);
-  const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(
+  const [walkForward, setWalkForward] = useState<WalkForwardResult | null>(
     null,
   );
+  const [monteCarlo, setMonteCarlo] = useState<MonteCarloResult | null>(null);
+  const [accountSize, setAccountSize] = useState<number>(10_000);
+  const [riskPercent, setRiskPercent] = useState<number>(1);
   const lastEmittedRef = useRef<SignalSnapshot | null>(null);
 
   const { candles, status, error } = useLiveCandles({
     symbol,
     timeframe,
-    history: 200,
+    history: 300,
   });
   const htfTimeframe = HTF_FOR[timeframe];
-  const htf = useLiveCandles({
+  const htf = useLiveCandles({ symbol, timeframe: htfTimeframe, history: 120 });
+
+  // Pull consensus timeframes
+  const consensusTfs = CONSENSUS_TFS[timeframe];
+  const tf1Candles = useLiveCandles({
     symbol,
-    timeframe: htfTimeframe,
+    timeframe: consensusTfs[1] ?? timeframe,
+    history: 120,
+  });
+  const tf2Candles = useLiveCandles({
+    symbol,
+    timeframe: consensusTfs[2] ?? timeframe,
     history: 120,
   });
 
@@ -91,35 +117,111 @@ export default function LivePage() {
     return analyzeCandles(candles, { htfTrend });
   }, [candles, htfTrend]);
 
+  const consensus = useMemo<ConsensusResult | null>(() => {
+    const sets: { label: string; candles: typeof candles }[] = [
+      { label: timeframe, candles },
+    ];
+    if (consensusTfs[1] && tf1Candles.candles.length > 0)
+      sets.push({ label: consensusTfs[1], candles: tf1Candles.candles });
+    if (consensusTfs[2] && tf2Candles.candles.length > 0)
+      sets.push({ label: consensusTfs[2], candles: tf2Candles.candles });
+    if (sets.length < 2) return null;
+    return multiTimeframeConsensus(sets);
+  }, [
+    timeframe,
+    candles,
+    consensusTfs,
+    tf1Candles.candles,
+    tf2Candles.candles,
+  ]);
+
+  // Gated action: requires base signal + consensus agreement
+  const gatedAction = useMemo<"long" | "short" | "flat">(() => {
+    if (!snapshot) return "flat";
+    if (snapshot.action === "flat") return "flat";
+    if (!consensus) return snapshot.action;
+    if (consensus.action !== snapshot.action) return "flat";
+    if (consensus.agreementRatio < 0.66) return "flat";
+    return snapshot.action;
+  }, [snapshot, consensus]);
+
+  const confidence = useMemo(() => {
+    if (!snapshot || gatedAction === "flat") return 0;
+    const baseStrength = snapshot.strength / 10; // 0..1
+    const consensusWeight = consensus ? consensus.agreementRatio : 0.5;
+    // Confidence is the joint signal — needs strong local + broad agreement
+    const joint = baseStrength * 0.6 + consensusWeight * 0.4;
+    return Math.round(joint * 100);
+  }, [snapshot, consensus, gatedAction]);
+
+  const priceNow =
+    candles.length > 0 ? candles[candles.length - 1].close : null;
+
+  const tracking = useSignalTracking({
+    symbol,
+    timeframe,
+    snapshot:
+      gatedAction === "flat"
+        ? snapshot
+          ? { ...snapshot, action: "flat" as const }
+          : null
+        : snapshot,
+    confidence,
+    currentPrice: priceNow,
+  });
+
+  // Closed-signal stats for honest accuracy display
+  const tracked = tracking.tracked.filter((t) => t.symbol === symbol);
+  const closedTracked = tracked.filter(
+    (t) => t.status === "win" || t.status === "loss",
+  );
+  const trackedWinRate =
+    closedTracked.length > 0
+      ? closedTracked.filter((t) => t.status === "win").length /
+        closedTracked.length
+      : null;
+
   useEffect(() => {
     if (!snapshot) return;
-    if (hasActionChanged(lastEmittedRef.current, snapshot)) {
-      lastEmittedRef.current = snapshot;
+    const effective: SignalSnapshot = { ...snapshot, action: gatedAction };
+    if (hasActionChanged(lastEmittedRef.current, effective)) {
+      lastEmittedRef.current = effective;
       setSignalHistory((prev) =>
-        [snapshot, ...prev].slice(0, MAX_HISTORY_SIGNALS),
+        [effective, ...prev].slice(0, MAX_HISTORY_SIGNALS),
       );
 
       if (
         notify &&
+        !tracking.circuitBreakerActive &&
         typeof Notification !== "undefined" &&
         Notification.permission === "granted" &&
-        snapshot.action !== "flat"
+        effective.action !== "flat"
       ) {
-        const title = `${snapshot.action === "long" ? "BUY" : "SELL"} ${symbol}`;
-        const body = `${formatPrice(snapshot.price)} · strength ${snapshot.strength}/10`;
+        const title = `${effective.action === "long" ? "BUY" : "SELL"} ${symbol} · ${confidence}%`;
+        const body = `${priceNow !== null ? formatPrice(priceNow) : ""} · ${timeframe}`;
         try {
           new Notification(title, { body, tag: `live-signal-${symbol}` });
         } catch {
-          // ignore notification errors
+          /* ignore */
         }
       }
     }
-  }, [snapshot, notify, symbol]);
+  }, [
+    snapshot,
+    gatedAction,
+    notify,
+    symbol,
+    confidence,
+    priceNow,
+    timeframe,
+    tracking.circuitBreakerActive,
+  ]);
 
   useEffect(() => {
     setSignalHistory([]);
     lastEmittedRef.current = null;
-    setBacktestResult(null);
+    setWalkForward(null);
+    setMonteCarlo(null);
   }, [symbol, timeframe]);
 
   const chartData = useMemo(() => {
@@ -134,8 +236,6 @@ export default function LivePage() {
     }));
   }, [candles, signalHistory]);
 
-  const priceNow =
-    candles.length > 0 ? candles[candles.length - 1].close : null;
   const priceChange =
     candles.length > 1
       ? ((candles[candles.length - 1].close - candles[0].close) /
@@ -157,22 +257,35 @@ export default function LivePage() {
     if (res === "granted") setNotify(true);
   }
 
-  function runBacktest() {
-    if (candles.length < 50) return;
-    setBacktestResult(backtest(candles));
+  function runAnalysis() {
+    if (candles.length < 60) return;
+    const full = backtest(candles);
+    const wf = walkForwardBacktest(candles);
+    const mc = monteCarloBacktest(full.trades);
+    setWalkForward(wf);
+    setMonteCarlo(mc);
   }
 
+  const positionSize = useMemo(() => {
+    if (!snapshot?.levels || gatedAction === "flat") return null;
+    return suggestPositionSize({
+      accountSize,
+      riskPercent,
+      entry: snapshot.levels.entry,
+      stopLoss: snapshot.levels.stopLoss,
+    });
+  }, [snapshot, gatedAction, accountSize, riskPercent]);
+
   const actionLabel = snapshot
-    ? snapshot.action === "long"
+    ? gatedAction === "long"
       ? "BUY"
-      : snapshot.action === "short"
+      : gatedAction === "short"
         ? "SELL"
         : "HOLD"
     : "…";
   const actionClass = snapshot
-    ? `live-action ${snapshot.action}`
+    ? `live-action ${gatedAction}`
     : "live-action flat";
-
   const htfLabel =
     htfTrend === "long"
       ? "UP"
@@ -188,17 +301,26 @@ export default function LivePage() {
         <div>
           <h1 className="page-title">Live Signals</h1>
           <p className="page-subtitle">
-            EMA · RSI · MACD · ADX regime filter · ATR stops · HTF confirmation
+            Multi-TF consensus · ADX regime · ATR stops · walk-forward ·
+            Monte-Carlo drawdown
           </p>
         </div>
       </div>
 
       <div className="live-disclaimer" role="alert">
-        <strong>Educational only, not financial advice.</strong> These signals
-        are generated from generic technical indicators and do not account for
-        your risk tolerance, position sizing, or market context. Trading is
-        risky; you can lose money.
+        <strong>Educational only, not financial advice.</strong> „Blind
+        vertrauen" ist bei öffentlichen Signal-Bots nicht realistisch. Diese
+        Seite ergänzt nur Transparenz, Risk-Management und Statistik — du
+        triffst weiterhin jede Trade-Entscheidung selbst.
       </div>
+
+      {tracking.circuitBreakerActive && (
+        <div className="live-circuit-breaker" role="alert">
+          🚨 <strong>Circuit Breaker aktiv:</strong> 3 Verlust-Signale heute auf{" "}
+          {symbol}. Signale werden nicht als Empfehlung markiert — Kopf
+          abkühlen, morgen weiter.
+        </div>
+      )}
 
       <div className="live-controls">
         <label className="live-control-group">
@@ -245,7 +367,7 @@ export default function LivePage() {
         <div className="live-status" aria-live="polite">
           <span className={`live-status-dot live-status-${status}`} />
           <span>
-            {status === "loading" && "Loading history…"}
+            {status === "loading" && "Loading…"}
             {status === "connected" && "Live"}
             {status === "closed" && "Disconnected"}
             {status === "error" && (error || "Error")}
@@ -262,6 +384,24 @@ export default function LivePage() {
           </div>
           {snapshot && (
             <>
+              <div className="live-confidence">
+                <div className="live-confidence-header">
+                  <span>Confidence</span>
+                  <strong>{confidence}%</strong>
+                </div>
+                <div className="live-confidence-bar">
+                  <div
+                    className={`live-confidence-fill ${confidence >= 70 ? "high" : confidence >= 40 ? "mid" : "low"}`}
+                    style={{ width: `${confidence}%` }}
+                  />
+                </div>
+                {confidence < 40 && gatedAction !== "flat" && (
+                  <span className="live-confidence-warning">
+                    ⚠ Low confidence — consider skipping this trade.
+                  </span>
+                )}
+              </div>
+
               <div className="live-badges">
                 <span className={`live-badge regime-${snapshot.regime}`}>
                   {snapshot.regime === "trending"
@@ -276,21 +416,21 @@ export default function LivePage() {
                 <span className={`live-badge htf-${htfTrend ?? "unknown"}`}>
                   HTF {htfTimeframe}: {htfLabel}
                 </span>
+                {consensus && (
+                  <span className={`live-badge consensus-${consensus.action}`}>
+                    Consensus: {consensus.confidence}% (
+                    {consensus.detail
+                      .map(
+                        (d) =>
+                          `${d.label}:${d.action === "long" ? "↑" : d.action === "short" ? "↓" : "–"}`,
+                      )
+                      .join(" ")}
+                    )
+                  </span>
+                )}
               </div>
 
-              <div className="live-signal-strength">
-                <span className="live-signal-strength-label">
-                  Strength {snapshot.strength}/10
-                </span>
-                <div className="live-strength-bar">
-                  <div
-                    className={`live-strength-fill ${snapshot.action}`}
-                    style={{ width: `${(snapshot.strength / 10) * 100}%` }}
-                  />
-                </div>
-              </div>
-
-              {snapshot.levels && (
+              {snapshot.levels && gatedAction !== "flat" && (
                 <div className="live-levels">
                   <div className="live-level-row">
                     <span>Entry</span>
@@ -311,6 +451,47 @@ export default function LivePage() {
                   <div className="live-level-row">
                     <span>R:R</span>
                     <strong>1 : {snapshot.levels.riskReward.toFixed(2)}</strong>
+                  </div>
+                </div>
+              )}
+
+              {positionSize && gatedAction !== "flat" && (
+                <div className="live-position-size">
+                  <div className="live-position-size-inputs">
+                    <label>
+                      <span>Account $</span>
+                      <input
+                        type="number"
+                        className="input"
+                        min={0}
+                        value={accountSize}
+                        onChange={(e) => setAccountSize(Number(e.target.value))}
+                      />
+                    </label>
+                    <label>
+                      <span>Risk %</span>
+                      <input
+                        type="number"
+                        className="input"
+                        step={0.1}
+                        min={0.1}
+                        max={10}
+                        value={riskPercent}
+                        onChange={(e) => setRiskPercent(Number(e.target.value))}
+                      />
+                    </label>
+                  </div>
+                  <div className="live-position-size-output">
+                    Suggested size:{" "}
+                    <strong>
+                      {positionSize.quantity.toFixed(
+                        positionSize.quantity < 1 ? 4 : 2,
+                      )}
+                    </strong>
+                    <span>
+                      {" "}
+                      ($ {positionSize.dollarRisk.toFixed(2)} max loss)
+                    </span>
                   </div>
                 </div>
               )}
@@ -437,100 +618,189 @@ export default function LivePage() {
 
       <div className="glass-card live-backtest-card">
         <div className="live-backtest-header">
-          <h3 className="dashboard-section-title">Backtest Current Rules</h3>
+          <h3 className="dashboard-section-title">Reliability Analysis</h3>
           <button
             className="btn btn-secondary"
-            onClick={runBacktest}
-            disabled={candles.length < 50}
+            onClick={runAnalysis}
+            disabled={candles.length < 60}
           >
-            Run on last {candles.length} candles
+            Run walk-forward + Monte-Carlo
           </button>
         </div>
-        {backtestResult ? (
-          <div className="live-backtest-stats">
-            <BacktestStat
-              label="Trades"
-              value={String(backtestResult.trades.length)}
-            />
-            <BacktestStat
-              label="Win Rate"
-              value={`${(backtestResult.winRate * 100).toFixed(1)}%`}
-            />
-            <BacktestStat
-              label="Total R"
-              value={`${backtestResult.totalR >= 0 ? "+" : ""}${backtestResult.totalR.toFixed(2)} R`}
-              variant={backtestResult.totalR >= 0 ? "profit" : "loss"}
-            />
-            <BacktestStat
-              label="Avg R / Trade"
-              value={backtestResult.avgR.toFixed(2)}
-            />
-            <BacktestStat
-              label="Profit Factor"
-              value={
-                backtestResult.profitFactor === Infinity
-                  ? "Inf"
-                  : backtestResult.profitFactor.toFixed(2)
-              }
-              variant={
-                backtestResult.profitFactor >= 1.5
-                  ? "profit"
-                  : backtestResult.profitFactor < 1
-                    ? "loss"
-                    : undefined
-              }
-            />
-            <BacktestStat
-              label="Wins / Losses"
-              value={`${backtestResult.wins} / ${backtestResult.losses}`}
-            />
-          </div>
+        {walkForward ? (
+          <>
+            <h4 className="live-section-subtitle">
+              In-Sample vs Out-of-Sample (70/30 split)
+            </h4>
+            <div className="live-backtest-stats">
+              <BacktestStat
+                label="IS Win Rate"
+                value={`${(walkForward.inSample.winRate * 100).toFixed(1)}%`}
+              />
+              <BacktestStat
+                label="OOS Win Rate"
+                value={`${(walkForward.outOfSample.winRate * 100).toFixed(1)}%`}
+                variant={
+                  walkForward.outOfSample.winRate >=
+                  walkForward.inSample.winRate * 0.8
+                    ? "profit"
+                    : "loss"
+                }
+              />
+              <BacktestStat
+                label="IS Profit Factor"
+                value={pfLabel(walkForward.inSample.profitFactor)}
+              />
+              <BacktestStat
+                label="OOS Profit Factor"
+                value={pfLabel(walkForward.outOfSample.profitFactor)}
+                variant={
+                  walkForward.outOfSample.profitFactor >= 1 ? "profit" : "loss"
+                }
+              />
+              <BacktestStat
+                label="IS Trades"
+                value={String(walkForward.inSample.trades.length)}
+              />
+              <BacktestStat
+                label="OOS Trades"
+                value={String(walkForward.outOfSample.trades.length)}
+              />
+            </div>
+            {walkForward.overfitWarning && (
+              <p className="live-warning">
+                ⚠ <strong>Overfitting-Verdacht:</strong> In-Sample-Performance
+                ist deutlich besser als Out-of-Sample. Die Regeln generalisieren
+                aktuell nicht — vertrau den Live-Signalen mit Skepsis.
+              </p>
+            )}
+
+            {monteCarlo && (
+              <>
+                <h4 className="live-section-subtitle">
+                  Monte-Carlo ({monteCarlo.runs} runs)
+                </h4>
+                <div className="live-backtest-stats">
+                  <BacktestStat
+                    label="Prob. of Profit"
+                    value={`${(monteCarlo.probOfProfit * 100).toFixed(0)}%`}
+                    variant={
+                      monteCarlo.probOfProfit >= 0.6
+                        ? "profit"
+                        : monteCarlo.probOfProfit < 0.5
+                          ? "loss"
+                          : undefined
+                    }
+                  />
+                  <BacktestStat
+                    label="Median Max DD"
+                    value={`${monteCarlo.medianMaxDrawdownR.toFixed(2)} R`}
+                  />
+                  <BacktestStat
+                    label="P95 Max DD"
+                    value={`${monteCarlo.p95MaxDrawdownR.toFixed(2)} R`}
+                    variant="loss"
+                  />
+                  <BacktestStat
+                    label="Worst-case DD"
+                    value={`${monteCarlo.worstMaxDrawdownR.toFixed(2)} R`}
+                    variant="loss"
+                  />
+                </div>
+                <p className="live-muted-note">
+                  1R = dein Stop-Loss-Abstand. Bei $
+                  {(accountSize * (riskPercent / 100)).toFixed(0)} Risk/Trade
+                  entspricht die P95-DD einem potentiellen Drawdown von $
+                  {(
+                    accountSize *
+                    (riskPercent / 100) *
+                    monteCarlo.p95MaxDrawdownR
+                  ).toFixed(0)}
+                  .
+                </p>
+              </>
+            )}
+          </>
         ) : (
           <p style={{ color: "var(--text-secondary)", fontSize: 14 }}>
-            Click the button to simulate this engine over the loaded history. 1R
-            = distance from entry to stop-loss. No fees or slippage modelled.
+            Zeigt In-Sample vs Out-of-Sample Performance, Overfitting-Warnung
+            und Monte-Carlo Drawdown-Verteilung. Je näher OOS an IS, desto mehr
+            vertraust du den Rules.
           </p>
         )}
       </div>
 
       <div className="glass-card live-history-card">
-        <h3 className="dashboard-section-title">Signal History</h3>
-        {signalHistory.length === 0 ? (
+        <div className="live-backtest-header">
+          <h3 className="dashboard-section-title">
+            Tracked Signals ({symbol})
+          </h3>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {trackedWinRate !== null && (
+              <span className="live-muted-note" style={{ margin: 0 }}>
+                Live: {closedTracked.length} closed ·{" "}
+                {(trackedWinRate * 100).toFixed(0)}% WR · {tracking.openCount}{" "}
+                open
+              </span>
+            )}
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={tracking.clearAll}
+            >
+              Clear all
+            </button>
+          </div>
+        </div>
+        {tracked.length === 0 ? (
           <p style={{ color: "var(--text-secondary)" }}>
-            No signal changes yet. New entries appear here whenever the current
-            signal flips.
+            Noch keine getrackten Signale. Jeder Signal-Flip wird hier
+            aufgezeichnet und automatisch als WIN/LOSS markiert, sobald der
+            Preis TP oder SL erreicht.
           </p>
         ) : (
           <table className="live-history-table">
             <thead>
               <tr>
-                <th>Time</th>
+                <th>Opened</th>
+                <th>TF</th>
                 <th>Action</th>
-                <th>Price</th>
-                <th>Strength</th>
-                <th>Reasons</th>
+                <th>Entry</th>
+                <th>SL</th>
+                <th>TP</th>
+                <th>Conf</th>
+                <th>Status</th>
+                <th>R</th>
               </tr>
             </thead>
             <tbody>
-              {signalHistory.map((s) => (
-                <tr key={`${s.time}-${s.action}`}>
-                  <td>{formatTime(s.time)}</td>
-                  <td>
-                    <span className={`live-action-chip ${s.action}`}>
-                      {s.action === "long"
-                        ? "BUY"
-                        : s.action === "short"
-                          ? "SELL"
-                          : "HOLD"}
-                    </span>
-                  </td>
-                  <td>{formatPrice(s.price)}</td>
-                  <td>{s.strength}/10</td>
-                  <td className="live-history-reasons">
-                    {s.reasons.slice(0, 2).join(" · ")}
-                  </td>
-                </tr>
-              ))}
+              {[...tracked]
+                .reverse()
+                .slice(0, 25)
+                .map((t) => (
+                  <tr key={t.id}>
+                    <td>{formatTime(t.openTime)}</td>
+                    <td>{t.timeframe}</td>
+                    <td>
+                      <span className={`live-action-chip ${t.action}`}>
+                        {t.action === "long" ? "BUY" : "SELL"}
+                      </span>
+                    </td>
+                    <td>{formatPrice(t.entry)}</td>
+                    <td>{formatPrice(t.stopLoss)}</td>
+                    <td>{formatPrice(t.takeProfit)}</td>
+                    <td>{t.confidence}%</td>
+                    <td>
+                      <span className={`live-status-chip status-${t.status}`}>
+                        {t.status.toUpperCase()}
+                      </span>
+                    </td>
+                    <td>
+                      {t.pnlR !== undefined
+                        ? `${t.pnlR >= 0 ? "+" : ""}${t.pnlR.toFixed(2)}`
+                        : "—"}
+                    </td>
+                  </tr>
+                ))}
             </tbody>
           </table>
         )}
@@ -566,11 +836,11 @@ function BacktestStat({
 }
 
 function fmtInd(v: number | null): string {
-  if (v === null) return "—";
-  return formatPrice(v);
+  return v === null ? "—" : formatPrice(v);
 }
-
 function fmtNum(v: number | null, digits: number): string {
-  if (v === null) return "—";
-  return v.toFixed(digits);
+  return v === null ? "—" : v.toFixed(digits);
+}
+function pfLabel(pf: number): string {
+  return pf === Infinity ? "Inf" : pf.toFixed(2);
 }
