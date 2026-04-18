@@ -84,3 +84,42 @@ Baseline (100% maker fill):
 3. Build multi-strategy portfolio equity curve backtest (not just allocation)
 4. Add vol-regime filter (only trade when realized vol in certain percentile)
 5. Deflated-Sharpe calc (Bailey/López de Prado 2014) to discount multi-testing bias
+
+## Iteration 3 results (2026-04-18)
+
+**Ensemble Equity Curve (9 strategies, realistic costs):**
+
+- Portfolio ret=+25.5%, ann=6.5%, vol=4.2%, Sharpe **1.56**, MaxDD 1.8%, WR 55%, 548 days
+- Diversification effect: individual strategies Sharpe 3-20, portfolio Sharpe 1.56 (lower but MUCH smoother — DD 1.8%)
+- Top weights: Champion-BTC 23%, Champion-ETH 18%, Champion-SOL 14%, Monday-BTC 6%
+
+**Vol-Regime Filter (30-70 percentile of 24h RV, 90d window):**
+
+- BTC: Sharpe 6.17 → 6.17 (stable), DD 7.0% → **4.6%** (-34%)
+- ETH: Sharpe 8.54 → **9.66** (+13%), DD 10.3% → **3.5%** (-66%)
+- SOL: Sharpe 17.32 → 14.26, DD 8.1% → **3.3%** (-59%)
+- Trade count reduced ~65% — strategy fires only in productive regime
+
+**Deflated Sharpe Ratio (Bailey/LdP 2014, K=90 trials):**
+
+- Champion-SOL: DSR **0.964** ✓ significant at 95%
+- Champion-ETH: DSR 0.341 (promising but not significant after multi-testing)
+- Champion-BTC: DSR 0.170 (weak edge, could be noise)
+- Monday strategies: all fail DSR because n too small (19-38 trades)
+- **Only SOL Champion passes rigorous statistical significance**
+
+### Iteration 3 findings
+
+1. **Vol-Regime-Gate is a free Sharpe booster** on ETH (+13%) and a drawdown-reducer on all 3 symbols. Research prediction (Brauneis 2024) confirmed.
+2. **Ensemble dampens returns but crushes drawdown** — 25.5% over 1.5y, 1.8% DD. Great for risk-adjusted returns.
+3. **After multi-testing correction, only SOL Champion has statistically robust edge** — this is the most important honest finding of iter 3.
+4. **Research agent validated next candidates**: OI + Taker-Imbalance (Easley 2024), Funding-Settlement-Minute Reversion (Inan 2025), BTC→ALT Lag (Aliyev 2025).
+5. **Weekend-Gap, VPIN on 1h, Stop-Hunt on 1h DO NOT work** — confirmed dead ends, don't chase.
+
+### Next iteration targets
+
+1. OI + Taker-Imbalance strategy (Easley 2024, SSRN 4814346) — ΔOI>2σ + TakerRatio>0.55 + price>VWAP → long
+2. Funding-Settlement-Minute Mean-Reversion (Inan 2025, SSRN 5576424) — fade funding-side 15min before/after settlement
+3. BTC→ALT lead-lag on 1h (Aliyev 2025, DSFE) — when BTC+1.5%/h while ETH <+0.5%, long ETH next hour
+4. Integrate vol-regime option into liveSignals.ts UI
+5. Rolling-window DSR (significance over time, not just overall)

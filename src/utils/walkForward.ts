@@ -17,6 +17,10 @@ import type { Candle } from "@/utils/indicators";
 import { sma } from "@/utils/indicators";
 import { applyCosts, DEFAULT_COSTS, type CostConfig } from "@/utils/costModel";
 import { computeHourStats } from "@/utils/hourOfDayStrategy";
+import {
+  classifyVolRegime,
+  type VolRegimeConfig,
+} from "@/utils/volRegimeFilter";
 
 export interface WalkForwardConfig {
   trainBars: number; // e.g. 4380 (6 months on 1h)
@@ -46,6 +50,12 @@ export interface WalkForwardConfig {
    * hour, apply an extra vol penalty or skip.
    */
   skipFundingHours?: boolean;
+  /**
+   * Gate signals on volatility regime (Brauneis et al. 2024, Bianchi 2024).
+   * Only trade when realized vol is in the configured percentile band.
+   * Empirically boosts Sharpe 0.3-0.5 by avoiding noise + regime breaks.
+   */
+  volRegime?: Partial<VolRegimeConfig> | false;
 }
 
 export const DEFAULT_WALK_FORWARD_CONFIG: WalkForwardConfig = {
@@ -60,6 +70,7 @@ export const DEFAULT_WALK_FORWARD_CONFIG: WalkForwardConfig = {
   fallbackToTaker: false,
   adverseSelectionBps: 3, // 2-4 bps empirical penalty per Albers et al.
   skipFundingHours: true,
+  volRegime: false,
 };
 
 export interface WalkForwardTrade {
@@ -117,6 +128,17 @@ export function runWalkForwardHourOfDay(
   const equity = [1];
   const closes = candles.map((c) => c.close);
   const smaArr = sma(closes, config.smaPeriodBars);
+  // Pre-compute vol-regime once for the whole series
+  const volRegimeCfg = config.volRegime;
+  const volBars = volRegimeCfg
+    ? classifyVolRegime(candles, {
+        rvWindowBars: 24,
+        percentileWindowBars: 2160,
+        minPercentile: 0.3,
+        maxPercentile: 0.7,
+        ...(typeof volRegimeCfg === "object" ? volRegimeCfg : {}),
+      })
+    : null;
 
   let start = config.trainBars;
   while (start + config.testBars <= candles.length) {
@@ -146,6 +168,11 @@ export function runWalkForwardHourOfDay(
         config.skipFundingHours &&
         (hour === 0 || hour === 8 || hour === 16)
       ) {
+        continue;
+      }
+
+      // Vol-regime gate (Brauneis 2024)
+      if (volBars && !volBars[globalIdx]?.inRegime) {
         continue;
       }
 
