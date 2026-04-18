@@ -570,3 +570,44 @@ The regime gate is a precision filter — drops only 2.6% of trades but those 2.
 3. UI: regime timeline chart + portfolio DSR display
 4. BTC-ETF manual input widget
 5. Next research angle: Stablecoin-supply change signal (USDT/USDC mints as liquidity proxy)
+
+## Iteration 16 (2026-04-18) — OKX Premium: NEGATIVE RESULT (honest)
+
+**OKX historical candles fetched via `/api/v5/market/candles` with `after`-pagination: 1440 bars (~60 days).**
+
+**Premium stats (1440 bars):**
+
+- Mean **0.0004%** (essentially zero)
+- Std 0.0084%
+- Max +0.029%, Min -0.042%
+- **Never exceeds 0.05% threshold** → **0 trades fire on ANY config**
+
+| Config      | Signals | Trades |
+| ----------- | ------- | ------ |
+| 2×0.1% 12h  | 0       | 0      |
+| 2×0.05% 12h | 0       | 0      |
+| 3×0.1% 24h  | 0       | 0      |
+| 2×0.15% 24h | 0       | 0      |
+
+**HONEST CONCLUSION: OKX is NOT a viable premium signal source.** Unlike Coinbase (where US fiat rails create a non-arbitragable wall), OKX trades BTC-USDT just like Binance. Arb bots close any gap within seconds. The Asian-retail-flow signal we were hoping for doesn't exist at the spot-price level.
+
+**Why Coinbase works but OKX doesn't:**
+
+- Coinbase: BTC-USD, US regulated, slow USD transfers → **days of friction**
+- OKX: BTC-USDT, global USDT liquidity, unrestricted → **seconds of friction**
+
+**New module shipped:** `fetchOkxLongHistory` + `fetchOkxCandles` in `src/utils/okxPremium.ts` — not used in ensemble but available if Asian-flow signal opens up in future (e.g., via OKX perp funding divergence).
+
+### Iteration 16 findings
+
+1. **Not every premium signal works** — the Coinbase edge comes from US fiat friction, not from being "a different exchange". OKX arb is instant.
+2. **Honest negatives save future time** — documented this so we don't re-try OKX spot premium without a specific hypothesis for WHY it should differ.
+3. **OKX historical candles API works fine** — valuable for future OKX-specific signals (perp funding, options IV, etc.) but not for spot arb.
+
+### Next iteration targets
+
+1. **Stablecoin supply signal** (Grobys/Huynh): large USDT mints (>500M in 6h) → long BTC 24-48h. Use Etherscan free API to monitor Tether treasury address `0x5754284f345afc66a98fbB0a0Afe71e0F007B949`
+2. **Funding-Carry revival** — current low-fire rate due to calm regime; build live-alert panel
+3. **UI: regime timeline chart** (color bands per historical week)
+4. **BTC-ETF manual-paste widget** — user enters overnight ETF flow, system applies Mazur 2024 rule
+5. Explore: Bybit public API for 3-way premium triangulation (Binance-Bybit-Coinbase)
