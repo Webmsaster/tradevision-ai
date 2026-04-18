@@ -22,6 +22,7 @@ import { runMondayReversal, MAKER_COSTS } from "@/utils/intradayLab";
 import { runFundingCarryBacktest } from "@/utils/fundingCarry";
 import type { FundingEvent } from "@/utils/fundingRate";
 import { runLeadLagBacktest } from "@/utils/leadLagStrategy";
+import { runFundingMinuteBacktest } from "@/utils/fundingMinuteReversion";
 import {
   allocate,
   computeMetrics as computePortMetrics,
@@ -166,6 +167,28 @@ export async function buildEnsembleEquity(
         time: t.entryTime,
         pnlPct: t.netPnlPct,
         strategy: "LeadLag-BTC→SOL",
+      })),
+    });
+  }
+
+  // ---- Funding-Minute-Reversion: verified on SOL (iter5), marginal on ETH ----
+  for (const sym of ["SOLUSDT", "ETHUSDT"]) {
+    const candles = candlesByH[sym];
+    const funding = fundingBySymbol[sym];
+    if (!candles || !funding) continue;
+    const fm = runFundingMinuteBacktest(candles, funding, {
+      minFundingAbs: 0.0005,
+      entryBarsBefore: 1,
+      exitBarsAfter: 1,
+      stopPct: 0.01,
+      costs: makerCosts,
+    });
+    streams.push({
+      name: `FundingMinute-${sym}`,
+      returns: fm.trades.map((t) => ({
+        time: t.entryTime,
+        pnlPct: t.netPnlPct,
+        strategy: `FundingMinute-${sym}`,
       })),
     });
   }

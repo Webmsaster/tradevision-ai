@@ -205,3 +205,41 @@ SOL funding-minute reversion is a real new edge. ETH marginal. BTC doesn't work.
 3. Expose rolling DSR in the research UI (transparency)
 4. Add "strategy health monitor" — if rolling Sharpe drops, flag for review
 5. Investigate: why is ETH weak on lead-lag + funding-minute? Maybe because ETH has become a leading asset (Aliyev 2025 mentions this)
+
+## Iteration 6 results (2026-04-18)
+
+**Ensemble with 12 strategies (added funding-minute SOL+ETH):**
+
+- Portfolio Sharpe **1.65** (up from 1.58), MaxDD **1.2%** (down from 1.4%)
+- Vol 3.3%, Return 20.9% over 563 days, WR 56%
+- FundingMinute-ETH got 12% weight despite marginal standalone Sharpe (4.26) — the allocator rewards independent return streams even at modest Sharpe
+
+**Strategy Health Monitor (recent 30 trades vs lifetime):**
+
+| Strategy       | Lifetime Sharpe | Recent Sharpe | Ratio | Status      |
+| -------------- | --------------- | ------------- | ----- | ----------- |
+| ✓ Champion-SOL | 2.93            | **3.61**      | 123%  | **HEALTHY** |
+| ✗ Champion-ETH | 1.44            | 0.31          | 22%   | **PAUSE**   |
+| ✗ Champion-BTC | 1.04            | 0.27          | 26%   | **PAUSE**   |
+
+**Critical live signal**: the health monitor just told us to STOP Champion on BTC/ETH RIGHT NOW and keep SOL running. The recent regime is unfavourable to BTC/ETH hour-of-day patterns. This is exactly the actionable edge-rotation the system was built for.
+
+**New persistence infrastructure (iter 6):**
+
+- `src/utils/signalJournal.ts` — LocalStorage-backed record of live signals + actual outcomes. After ~50 real signals: ground-truth live Sharpe vs backtest.
+- `src/utils/strategyHealth.ts` — automated PAUSE / WATCH / HEALTHY classification per strategy based on rolling Sharpe ratio.
+
+### Iteration 6 findings
+
+1. **Ensemble improvement compounds** — every verified diversifier shaves DD and stabilises Sharpe. 6 iterations → Sharpe 0 → 1.65, DD shrinks to 1.2%.
+2. **Health monitor works as designed** — immediately identified BTC/ETH Champion regime-break. This is the correct autonomous response: pause weak strategies, keep strong ones.
+3. **SOL remains the robust carrier** across every strategy tested. If we had only one asset, it would be SOL.
+4. **Funding-Minute-ETH got 12% weight** even with Sharpe 4.26 — the allocator is rewarding diversification, not raw Sharpe (correct behavior per HRP).
+
+### Next iteration targets
+
+1. Wire `strategyHealth` into liveSignals — PAUSE-flagged strategies hidden from UI, HEALTHY highlighted
+2. Expose `signalJournal` in UI — "Record this signal" button + stats panel showing live performance
+3. Add the actual UI updates to the research page (vol-regime, rolling DSR, health monitor)
+4. Investigate why Monday-SOL has Sharpe 1.84 while Monday-BTC/ETH have 16-20 — may be data artifact
+5. Deep research: find 2-3 more 2025 papers on crypto edges we haven't tested yet
