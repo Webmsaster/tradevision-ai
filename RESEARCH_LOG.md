@@ -655,3 +655,38 @@ The regime gate is a precision filter — drops only 2.6% of trades but those 2.
 3. Add portfolio DSR gauge to live signals panel
 4. Add BTC-ETF manual-paste widget with Mazur 2024 rule
 5. Consider: "Edge-coverage" dashboard — current regime + which strategies are allowed + their live readings
+
+## Iteration 18 (2026-04-18) — UI CONSOLIDATION
+
+**Two new live-signal panels shipped:**
+
+**1. Verified Portfolio Edge panel:**
+
+- Portfolio Sharpe 2.54 displayed prominently
+- Deflated Sharpe **0.964 ✓ 95% passed** — the headline honest number
+- MaxDD 1.3%, Return +21.3%, WR 55%, 569 days tested
+- Strategies count 13
+- Collapsible list: 13 verified edges vs 5 dead edges (OKX, USDT, ETH lead-lag, 5m TA, Funding-Contrarian)
+
+**2. Current Market Regime + Allowed Strategies panel:**
+
+- Per symbol (BTC/ETH/SOL): current regime label (calm/trend-up/etc.)
+- Live list of allowed strategies (regime-gated whitelist from iter 10 matrix)
+- Live list of blocked strategies (strategies that historically lose in this regime)
+- Auto-refreshes every 5 min with the rest of liveSignals
+
+**Architectural change:** `computeLiveSignals()` now also classifies current regime per symbol using the same `classifyRegimes` + `regimeGate` infrastructure that powered the backtest. Live UI inherits the empirical gating without code duplication.
+
+### Iter 18 findings
+
+1. **UI now presents the honest story** — Portfolio DSR 0.964 front-and-center instead of buried in a test log.
+2. **Regime+gate is actionable** — user sees "Champion-ETH BLOCKED because current regime is trend-down" directly in UI.
+3. **Dead edges list is a feature** — shows user what we tried and DIDN'T work, prevents future misguided confidence.
+
+### Next iteration targets
+
+1. Portfolio equity curve chart in UI
+2. Regime timeline historical chart (weekly color bands)
+3. BTC-ETF manual-paste widget (Mazur rule: 2-day confirmation)
+4. If a signal from verified strategy fires + current regime allows → high-confidence alert
+5. Research: persistence of the Coinbase Premium edge — does it stay Bear-market-only or shift?

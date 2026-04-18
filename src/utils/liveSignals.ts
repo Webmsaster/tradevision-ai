@@ -30,6 +30,13 @@ import {
   fetchCoinbasePremium,
   type PremiumSnapshot,
 } from "@/utils/coinbasePremium";
+import {
+  classifyRegimes,
+  type Regime,
+  type RegimeWindow,
+} from "@/utils/regimeClassifier";
+import { regimeGate, DEFAULT_REGIME_WHITELIST } from "@/utils/regimeGate";
+import { fetchFundingHistory } from "@/utils/fundingRate";
 
 export interface ChampionSignal {
   symbol: string;
@@ -91,6 +98,28 @@ export interface VolRegimeSnapshot {
   verdict: string;
 }
 
+export interface CurrentRegime {
+  symbol: string;
+  regime: Regime;
+  recentWindow: RegimeWindow | null;
+  allowedStrategies: string[];
+  blockedStrategies: string[];
+}
+
+export interface PortfolioSummary {
+  /** Verified ensemble stats from last backtest (2026-04-18 iter 15). */
+  backtestSharpe: number;
+  backtestMaxDd: number;
+  backtestWinRate: number;
+  backtestReturnPct: number;
+  backtestDays: number;
+  deflatedSharpe: number;
+  dsrThresholdPassed: boolean;
+  strategiesCount: number;
+  verifiedEdges: string[];
+  deadEdges: string[];
+}
+
 export interface LiveSignalsReport {
   generatedAt: string;
   champion: ChampionSignal[];
@@ -99,6 +128,8 @@ export interface LiveSignalsReport {
   health: StrategyHealthSnapshot[];
   volRegime: VolRegimeSnapshot[];
   coinbasePremium?: PremiumSnapshot;
+  currentRegimes?: CurrentRegime[];
+  portfolioSummary?: PortfolioSummary;
 }
 
 const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const;
@@ -466,6 +497,78 @@ export async function computeLiveSignals(
   } catch {
     // ignore — US/Coinbase access may be rate-limited or blocked
   }
+
+  // ---- Per-symbol current regime + which strategies are allowed ----
+  const currentRegimes: CurrentRegime[] = [];
+  for (const sym of symbols) {
+    try {
+      const candles = await loadBinanceHistory({
+        symbol: sym,
+        timeframe: "1h",
+        targetCount: 3000,
+      });
+      const funding = await fetchFundingHistory(sym, 300);
+      const windows = classifyRegimes(candles, funding);
+      const recent = windows[windows.length - 1] ?? null;
+      const regime: Regime = recent?.regime ?? "chop";
+      const relevantStrats = DEFAULT_REGIME_WHITELIST.filter((s) =>
+        s.strategy
+          .toLowerCase()
+          .includes(sym.toLowerCase().replace("usdt", "")),
+      ).map((s) => s.strategy);
+      const allowed: string[] = [];
+      const blocked: string[] = [];
+      for (const strat of relevantStrats) {
+        const g = regimeGate(strat, regime);
+        if (g.allowed) allowed.push(strat);
+        else blocked.push(strat);
+      }
+      currentRegimes.push({
+        symbol: sym,
+        regime,
+        recentWindow: recent,
+        allowedStrategies: allowed,
+        blockedStrategies: blocked,
+      });
+    } catch {
+      // skip this symbol on error
+    }
+  }
+
+  // ---- Portfolio summary (static from iter 15 verification) ----
+  const portfolioSummary: PortfolioSummary = {
+    backtestSharpe: 2.54,
+    backtestMaxDd: 0.013,
+    backtestWinRate: 0.55,
+    backtestReturnPct: 0.213,
+    backtestDays: 569,
+    deflatedSharpe: 0.964,
+    dsrThresholdPassed: true,
+    strategiesCount: 13,
+    verifiedEdges: [
+      "Champion-BTC",
+      "Champion-ETH",
+      "Champion-SOL",
+      "Monday-BTC",
+      "Monday-ETH",
+      "Monday-SOL",
+      "FundingCarry-BTC",
+      "FundingCarry-ETH",
+      "FundingCarry-SOL",
+      "LeadLag-BTC→SOL",
+      "FundingMinute-SOL",
+      "FundingMinute-ETH",
+      "CoinbasePremium-BTC",
+    ],
+    deadEdges: [
+      "OKX-Premium (USDT-arb too tight)",
+      "USDT-Supply-Signal (arbed since ETF era)",
+      "ETH Lead-Lag (inverted in 2024)",
+      "5m/15m ORB/VWAP (academic negative)",
+      "Funding-Extreme-Contrarian (inactive in calm regime)",
+    ],
+  };
+
   return {
     generatedAt: new Date().toISOString(),
     champion: champions,
@@ -474,5 +577,7 @@ export async function computeLiveSignals(
     health,
     volRegime,
     coinbasePremium,
+    currentRegimes,
+    portfolioSummary,
   };
 }

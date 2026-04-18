@@ -1931,6 +1931,153 @@ function LiveSignalsPanel({
             </>
           )}
 
+          {report.portfolioSummary && (
+            <>
+              <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
+                Verified Portfolio Edge (from iter-15 backtest)
+              </h3>
+              <div className="live-backtest-stats">
+                <Stat
+                  label="Portfolio Sharpe"
+                  value={report.portfolioSummary.backtestSharpe.toFixed(2)}
+                  tone="profit"
+                />
+                <Stat
+                  label="Deflated Sharpe"
+                  value={report.portfolioSummary.deflatedSharpe.toFixed(3)}
+                  tone={
+                    report.portfolioSummary.dsrThresholdPassed
+                      ? "profit"
+                      : undefined
+                  }
+                />
+                <Stat
+                  label="Significance"
+                  value={
+                    report.portfolioSummary.dsrThresholdPassed
+                      ? "✓ 95% passed"
+                      : "✗ not passed"
+                  }
+                  tone={
+                    report.portfolioSummary.dsrThresholdPassed
+                      ? "profit"
+                      : "loss"
+                  }
+                />
+                <Stat
+                  label="MaxDD"
+                  value={`${(report.portfolioSummary.backtestMaxDd * 100).toFixed(1)}%`}
+                />
+                <Stat
+                  label="Total Return"
+                  value={`${(report.portfolioSummary.backtestReturnPct * 100).toFixed(1)}%`}
+                  tone="profit"
+                />
+                <Stat
+                  label="Win Rate"
+                  value={`${(report.portfolioSummary.backtestWinRate * 100).toFixed(0)}%`}
+                />
+                <Stat
+                  label="Days Tested"
+                  value={String(report.portfolioSummary.backtestDays)}
+                />
+                <Stat
+                  label="Strategies"
+                  value={String(report.portfolioSummary.strategiesCount)}
+                />
+              </div>
+              <p className="live-muted-note" style={{ marginTop: 8 }}>
+                Deflated Sharpe Ratio (Bailey/López de Prado 2014) adjusts for
+                multi-testing bias over 156 trials. DSR &gt; 0.95 = edge is
+                statistically significant at 95% confidence.
+              </p>
+              <details style={{ marginTop: 8 }}>
+                <summary
+                  style={{
+                    cursor: "pointer",
+                    fontSize: 13,
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  Verified edges ({report.portfolioSummary.verifiedEdges.length}
+                  ) · Dead edges ({report.portfolioSummary.deadEdges.length})
+                </summary>
+                <div style={{ marginTop: 8, fontSize: 12 }}>
+                  <strong>✓ Verified:</strong>{" "}
+                  {report.portfolioSummary.verifiedEdges.join(", ")}
+                  <br />
+                  <strong>✗ Dead (honest negatives):</strong>{" "}
+                  {report.portfolioSummary.deadEdges.join(", ")}
+                </div>
+              </details>
+            </>
+          )}
+
+          {report.currentRegimes && report.currentRegimes.length > 0 && (
+            <>
+              <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
+                Current Market Regime + Allowed Strategies
+              </h3>
+              <div style={{ overflowX: "auto" }}>
+                <table className="live-history-table">
+                  <thead>
+                    <tr>
+                      <th>Symbol</th>
+                      <th>Regime</th>
+                      <th>Allowed Now</th>
+                      <th>Blocked Now</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.currentRegimes.map((cr) => (
+                      <tr key={cr.symbol}>
+                        <td>
+                          <strong>{cr.symbol}</strong>
+                        </td>
+                        <td>
+                          <span
+                            className={`matrix-verdict matrix-verdict-${
+                              cr.regime === "trend-up" ||
+                              cr.regime === "leverage-bull"
+                                ? "positive"
+                                : cr.regime === "trend-down" ||
+                                    cr.regime === "leverage-bear"
+                                  ? "no-edge"
+                                  : "inconclusive"
+                            }`}
+                          >
+                            {cr.regime.toUpperCase()}
+                          </span>
+                        </td>
+                        <td
+                          className="profit"
+                          style={{ fontSize: 12, maxWidth: 250 }}
+                        >
+                          {cr.allowedStrategies.length > 0
+                            ? cr.allowedStrategies.join(", ")
+                            : "—"}
+                        </td>
+                        <td
+                          className="loss"
+                          style={{ fontSize: 12, maxWidth: 250 }}
+                        >
+                          {cr.blockedStrategies.length > 0
+                            ? cr.blockedStrategies.join(", ")
+                            : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="live-muted-note" style={{ marginTop: 8 }}>
+                Regime derived from 1-week rolling realized-vol + funding +
+                trend. Whitelist from iter-10 empirical PnL matrix. BLOCKED =
+                strategy historically lost money in this regime.
+              </p>
+            </>
+          )}
+
           {report.coinbasePremium && (
             <>
               <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
