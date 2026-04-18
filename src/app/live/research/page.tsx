@@ -1931,6 +1931,56 @@ function LiveSignalsPanel({
             </>
           )}
 
+          {report.coinbasePremium && (
+            <>
+              <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
+                Coinbase Premium (BTC) — US-flow sentiment
+              </h3>
+              <div className="live-backtest-stats">
+                <Stat
+                  label="Coinbase $"
+                  value={report.coinbasePremium.coinbasePriceUsd.toFixed(0)}
+                />
+                <Stat
+                  label="Binance $"
+                  value={report.coinbasePremium.binancePriceUsd.toFixed(0)}
+                />
+                <Stat
+                  label="Premium"
+                  value={`${(report.coinbasePremium.premiumPct * 100).toFixed(3)}%`}
+                  tone={
+                    report.coinbasePremium.signal === "bullish"
+                      ? "profit"
+                      : report.coinbasePremium.signal === "bearish"
+                        ? "loss"
+                        : undefined
+                  }
+                />
+                <Stat
+                  label="Signal"
+                  value={report.coinbasePremium.signal.toUpperCase()}
+                  tone={
+                    report.coinbasePremium.signal === "bullish"
+                      ? "profit"
+                      : report.coinbasePremium.signal === "bearish"
+                        ? "loss"
+                        : undefined
+                  }
+                />
+                <Stat
+                  label="Magnitude"
+                  value={report.coinbasePremium.magnitude}
+                />
+              </div>
+              <p
+                className="live-muted-note"
+                style={{ marginTop: 8, fontSize: 12 }}
+              >
+                {report.coinbasePremium.interpretation}
+              </p>
+            </>
+          )}
+
           {report.volRegime && report.volRegime.length > 0 && (
             <>
               <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>

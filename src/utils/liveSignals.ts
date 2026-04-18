@@ -26,6 +26,10 @@ import {
   type StrategyHealthReport,
 } from "@/utils/strategyHealth";
 import { classifyVolRegime, type VolRegimeBar } from "@/utils/volRegimeFilter";
+import {
+  fetchCoinbasePremium,
+  type PremiumSnapshot,
+} from "@/utils/coinbasePremium";
 
 export interface ChampionSignal {
   symbol: string;
@@ -94,6 +98,7 @@ export interface LiveSignalsReport {
   upcoming: UpcomingWindow[];
   health: StrategyHealthSnapshot[];
   volRegime: VolRegimeSnapshot[];
+  coinbasePremium?: PremiumSnapshot;
 }
 
 const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const;
@@ -455,6 +460,12 @@ export async function computeLiveSignals(
   }
 
   const upcoming = computeUpcoming(champions, 24);
+  let coinbasePremium: PremiumSnapshot | undefined;
+  try {
+    coinbasePremium = await fetchCoinbasePremium();
+  } catch {
+    // ignore — US/Coinbase access may be rate-limited or blocked
+  }
   return {
     generatedAt: new Date().toISOString(),
     champion: champions,
@@ -462,5 +473,6 @@ export async function computeLiveSignals(
     upcoming,
     health,
     volRegime,
+    coinbasePremium,
   };
 }
