@@ -1096,6 +1096,16 @@ tr:last-child td { border-bottom: none; }
   .live-thesis-sections { grid-template-columns: 1fr; }
 }
 
+.live-verdict { padding: 20px; margin-bottom: 20px; }
+.live-verdict h2 { font-size: 1.2rem; margin: 0 0 8px; letter-spacing: 0.06em; }
+.live-verdict p { margin: 0; font-size: 0.9rem; line-height: 1.55; }
+.live-verdict-profit { background: rgba(0,255,136,0.08); border: 1px solid rgba(0,255,136,0.25); }
+.live-verdict-profit h2 { color: var(--profit); }
+.live-verdict-loss { background: rgba(255,71,87,0.08); border: 1px solid rgba(255,71,87,0.25); }
+.live-verdict-loss h2 { color: var(--loss); }
+.live-verdict-neutral { background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.25); }
+.live-verdict-neutral h2 { color: var(--neutral, #fbbf24); }
+
 @media (max-width: 700px) {
   .live-backtest-stats { grid-template-columns: repeat(2, 1fr); }
   .live-position-size-inputs { flex-direction: column; }
