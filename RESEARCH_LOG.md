@@ -1047,3 +1047,42 @@ Wired into `liveSignals.ts` and UI panel above Coinbase Premium.
 2. **Backtest confluence-aligned filter on Coinbase Premium history** — does applying "only take when confluence same-direction" improve the 2.06 Sharpe historically, or just filter out winners?
 3. **Alert-journal integration** — when a ★★★★★ fires, auto-queue to signal journal (no manual Take click). Removes last point of human friction in the loop.
 4. **Weekend-hour regime gate** — crypto weekends have different microstructure (lower institutional, higher retail). Check if any champions underperform Sat/Sun and gate them.
+
+## Iteration 28 (2026-04-18) — Hyperliquid Perp Funding (DEX-vs-CEX Cohort)
+
+**Motivation:** Binance/Bybit retail is "normie retail". Hyperliquid is "degen cohort" (self-custody, on-chain, higher risk tolerance). When cohorts position differently, the DEX-CEX funding spread tells us something about crowd dynamics.
+
+**New module `src/utils/hyperliquidFunding.ts`:**
+
+- `fetchHyperliquidFunding()` — POST `https://api.hyperliquid.xyz/info` body `{type:"metaAndAssetCtxs"}`. Response is `[{universe},[ctxs]]` parallel arrays. Extracts BTC/ETH/SOL funding (HOURLY rate, converted ×8 for CEX-comparability), openInterest, premium (markPx-oraclePx), markPx, oraclePx.
+- `compareCexHl(hl, cexBySym)` — returns per-symbol `CexHlSpread` with magnitude buckets (extreme >10bp, strong >5bp, moderate >1bp, noise <1bp) and divergence tag (`hl-more-bearish` / `cex-more-bearish` / `aligned`).
+- Wired into `liveSignals.ts` — `hyperliquidFunding` + `cexHlSpread` fields added to `LiveSignalsReport`. Runs fetch alongside Coinbase/Bybit/Deribit with try/catch.
+
+**Verification test `scripts/verifyIteration28.test.ts`** — hits live HL + Binance funding, prints per-symbol spread.
+
+### Live reading (2026-04-18 19:53 UTC)
+
+| Symbol | HL funding 8h-eq | Binance funding 8h | Spread   | Magnitude | Divergence       |
+| ------ | ---------------- | ------------------ | -------- | --------- | ---------------- |
+| BTC    | -0.0065%         | -0.0046%           | -0.2 bp  | noise     | ALIGNED          |
+| ETH    | -0.0146%         | -0.0151%           | +0.04 bp | noise     | ALIGNED          |
+| SOL    | +0.0100%         | -0.0080%           | +1.8 bp  | moderate  | cex-more-bearish |
+
+### Iter 28 findings
+
+1. **BTC and ETH cross-venue funding is efficiently arbed** — spreads <0.2bp = below execution cost. HONEST NEGATIVE: no actionable BTC/ETH signal from HL-CEX funding comparison. The arb desks already close this gap.
+2. **SOL shows genuine divergence (+1.8bp)** — CEX retail is paying 0.01% longs, HL shorts are getting paid. That's a CEX-long-crowded vs DEX-hedged pattern. This is the cohort-divergence we were looking for, but only on SOL at this moment. Infrastructure is built; need >30 days to confirm it's a persistent signal vs one-off.
+3. **HL premium field (markPx vs oraclePx) is its own signal source** — currently -0.02% to -0.06% across all three (markPx below oracle spot). Indicates on-HL selling pressure. Could be used as a 5th sentiment confluence component in a future iter (today it's just logged, not scored).
+4. **HL funding is hourly, not 8h like Binance** — easy gotcha. Module handles conversion (×8).
+
+**Infrastructure built, SOL early-evidence recorded, BTC/ETH documented as arbed.** Not wired into the 5-star alert system yet — one data point isn't enough to add a 6th condition, need rolling history first.
+
+**NOTE:** Autonomous loop stopped here on user request ("ich will das du stoppst"). Next-iteration targets preserved for when the loop resumes.
+
+### Next iteration targets (deferred — resume on user command)
+
+1. HL funding rolling-history logger (capture every 5 min → localStorage, build 30-day distribution to calibrate "extreme" thresholds empirically).
+2. Backtest confluence-aligned filter on Coinbase Premium history (would iter25 5th condition improve 2.06 Sharpe historically?).
+3. Alert→journal auto-queue when ★★★★★ fires.
+4. Weekend-hour regime gate (crypto weekends have different microstructure).
+5. HL `premium` (markPx-oraclePx) as a 5th sentiment confluence component.

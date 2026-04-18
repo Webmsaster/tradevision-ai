@@ -40,6 +40,12 @@ import {
   type SentimentConfluence,
 } from "@/utils/sentimentConfluence";
 import {
+  fetchHyperliquidFunding,
+  compareCexHl,
+  type HlFundingSnapshot,
+  type CexHlSpread,
+} from "@/utils/hyperliquidFunding";
+import {
   classifyRegimes,
   type Regime,
   type RegimeWindow,
@@ -144,6 +150,8 @@ export interface LiveSignalsReport {
   bybitBasis?: BybitBasisSnapshot;
   deribitSkew?: DeribitSkewSnapshot;
   sentimentConfluence?: SentimentConfluence;
+  hyperliquidFunding?: HlFundingSnapshot;
+  cexHlSpread?: CexHlSpread[];
   currentRegimes?: CurrentRegime[];
   portfolioSummary?: PortfolioSummary;
   alerts?: AlertVerdict[];
@@ -526,6 +534,24 @@ export async function computeLiveSignals(
   } catch {
     // ignore — Deribit may be region-restricted
   }
+  let hyperliquidFunding: HlFundingSnapshot | undefined;
+  let cexHlSpread: CexHlSpread[] | undefined;
+  try {
+    hyperliquidFunding = await fetchHyperliquidFunding();
+    const cexMap: Record<string, number> = {};
+    for (const sym of symbols) {
+      try {
+        const hist = await fetchFundingHistory(sym, 5);
+        const last = hist[hist.length - 1];
+        if (last) cexMap[sym] = last.fundingRate;
+      } catch {
+        // skip missing
+      }
+    }
+    cexHlSpread = compareCexHl(hyperliquidFunding, cexMap);
+  } catch {
+    // ignore — HL may have transient issues
+  }
 
   // ---- Per-symbol current regime + which strategies are allowed ----
   const currentRegimes: CurrentRegime[] = [];
@@ -624,6 +650,8 @@ export async function computeLiveSignals(
     bybitBasis,
     deribitSkew,
     sentimentConfluence,
+    hyperliquidFunding,
+    cexHlSpread,
     currentRegimes,
     portfolioSummary,
     alerts,
