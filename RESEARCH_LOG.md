@@ -266,3 +266,50 @@ SOL funding-minute reversion is a real new edge. ETH marginal. BTC doesn't work.
 2. Sound/notification when a HEALTHY strategy fires a high-confidence signal
 3. Expand research: look for non-price-based edges (on-chain, social sentiment)
 4. Implement: SIMPLE version of walk-forward that runs client-side faster (<100ms) for responsive UI
+
+## Iteration 8 (2026-04-18)
+
+**Signal Journal UI shipped:**
+
+- `SignalJournalPanel` in `/live/research` — record button per active signal, close button with exit-price prompt, live stats panel (WR, Sharpe, total return, per-strategy breakdown)
+- Persists to `localStorage` (`tradevision-signal-journal-v1`)
+- After ~50 real entries: ground-truth live Sharpe vs backtest estimate
+
+**Fast Health Check shipped (`fastHealthCheck.ts`):**
+
+- <50ms proxy for full walk-forward health
+- Computes hour stats once, walks all candles applying trend+funding-hour filter, returns lifetime vs recent-30 Sharpe
+- Usable for tight-loop UI refresh (every 5 min across 3 symbols)
+
+**Non-price-based edge research (agent):**
+
+Confirmed implementable non-price signals 2024-2025:
+
+| #   | Signal                        | Source                          | Expected Sharpe     | Data                    |
+| --- | ----------------------------- | ------------------------------- | ------------------- | ----------------------- |
+| 1   | BTC-ETF Flow Follow-Through   | Mazur/Polyzos 2024 SSRN 5452994 | 0.8-1.2             | Farside scrape (free)   |
+| 2   | USDT Mint Event-Drift         | Grobys/Huynh 2022               | 0.6-1.0             | Whale Alert / Etherscan |
+| 3   | Funding-Extreme Contrarian    | Kharat 2025 SSRN 5290137        | 0.7-1.0 net         | Binance (have it)       |
+| 4   | 25-Delta Risk-Reversal filter | Deribit Insights                | +0.2-0.4 as overlay | Deribit public API      |
+| 5   | Exchange-Netflow Veto         | arxiv 2211.08281                | -maxDD booster      | CryptoQuant free        |
+
+**Explicitly DO NOT pursue** (agent-verified negative):
+
+- Fear & Greed as direct trigger (survivorship bias, price-derived)
+- Raw social sentiment without NLP (noise)
+- COT Reports (3d stale)
+- BNB fee-burn timing (no causal edge)
+
+### Iteration 8 findings
+
+1. Signal-journal UI closes the feedback loop between backtest predictions and user live performance.
+2. Fast health check makes the UI responsive without sacrificing the PAUSE/HEALTHY signal quality.
+3. Next tier of research edges identified — Funding-Contrarian can reuse existing data, ETF-flow needs scraper, Netflow-veto needs CryptoQuant.
+
+### Next iteration targets
+
+1. **Funding-Extreme Contrarian** (Kharat 2025): 3× consecutive funding > 0.05% + Long/Short ratio > 2.5 → short perp. Use `/futures/data/globalLongShortAccountRatio` endpoint.
+2. **BTC-ETF Flow scraper** from Farside — build cache, test 2-day confirmation signal
+3. **Exchange-Netflow Veto** — CryptoQuant free endpoint as safety filter, reduces portfolio max-DD
+4. Wire live signal-journal entries into strategy-health calc (true live feedback loop)
+5. Check: does SOL Champion health stay at "HEALTHY" over next 30 days or does it fall to WATCH/PAUSE?

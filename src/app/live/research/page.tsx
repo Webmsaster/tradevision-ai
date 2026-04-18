@@ -64,6 +64,15 @@ import {
   computeLiveSignals,
   type LiveSignalsReport,
 } from "@/utils/liveSignals";
+import {
+  loadJournal,
+  saveJournal,
+  recordSignal,
+  closeSignal,
+  computeJournalStats,
+  type SignalEntry,
+  type JournalStats,
+} from "@/utils/signalJournal";
 import type { LiveTimeframe } from "@/hooks/useLiveCandles";
 
 const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const;
@@ -567,6 +576,8 @@ export default function ResearchPage() {
         error={liveSignalsError}
         onRefresh={refreshLiveSignals}
       />
+
+      <SignalJournalPanel liveReport={liveSignals} />
 
       <div className="glass-card live-research-panel">
         <h3 className="dashboard-section-title">
@@ -2139,6 +2150,294 @@ function LiveSignalsPanel({
             hour close. Past performance ≠ future — paper-trade first.
           </p>
         </>
+      )}
+    </div>
+  );
+}
+
+function SignalJournalPanel({
+  liveReport,
+}: {
+  liveReport: LiveSignalsReport | null;
+}) {
+  const [entries, setEntries] = useState<SignalEntry[]>([]);
+  const [refresh, setRefresh] = useState(0);
+
+  useEffect(() => {
+    setEntries(loadJournal());
+  }, [refresh]);
+
+  const stats: JournalStats = computeJournalStats(entries);
+
+  function handleRecord(
+    symbol: string,
+    strategy: string,
+    direction: "long" | "short",
+    entryPrice: number,
+    targetPrice: number | null,
+    stopPrice: number | null,
+    confidence: "high" | "medium" | "low",
+    expectedEdgeBps: number,
+  ) {
+    const now = Date.now();
+    recordSignal({
+      symbol,
+      strategy,
+      direction,
+      entryTime: now,
+      entryPrice,
+      targetPrice,
+      stopPrice,
+      plannedExitTime: now + 60 * 60 * 1000, // 1h default
+      confidence,
+      expectedEdgeBps,
+    });
+    setRefresh((r) => r + 1);
+  }
+
+  function handleClose(id: string) {
+    const priceStr = prompt("Exit price?");
+    if (!priceStr) return;
+    const price = parseFloat(priceStr);
+    if (!isFinite(price)) return;
+    closeSignal(id, price, "time");
+    setRefresh((r) => r + 1);
+  }
+
+  function handleClear() {
+    if (!confirm("Clear all signal journal entries?")) return;
+    saveJournal([]);
+    setRefresh((r) => r + 1);
+  }
+
+  const openEntries = entries.filter((e) => e.actualPnlPct === undefined);
+  const closedEntries = entries.filter((e) => e.actualPnlPct !== undefined);
+
+  const activeChampions =
+    liveReport?.champion.filter((c) => c.action !== "flat") ?? [];
+
+  return (
+    <div className="glass-card live-verdict live-verdict-neutral">
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: 12,
+        }}
+      >
+        <h2 style={{ margin: 0 }}>📔 Signal Journal</h2>
+        {entries.length > 0 && (
+          <button className="btn btn-secondary" onClick={handleClear}>
+            Clear journal
+          </button>
+        )}
+      </div>
+      <p style={{ marginTop: 8 }}>
+        Persists every signal you actually take + its outcome. After ~50 entries
+        you have a true live Sharpe to compare against backtests. Stored in your
+        browser (localStorage).
+      </p>
+
+      {activeChampions.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <h3 className="dashboard-section-title">Record an active signal</h3>
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              flexWrap: "wrap",
+              marginTop: 8,
+            }}
+          >
+            {activeChampions.map((c) => (
+              <button
+                key={c.symbol}
+                className="btn btn-primary"
+                style={{ fontSize: 12 }}
+                onClick={() =>
+                  handleRecord(
+                    c.symbol,
+                    "Champion",
+                    c.action as "long" | "short",
+                    c.entryPrice,
+                    c.targetPrice,
+                    c.stopPrice,
+                    c.confidence,
+                    c.expectedEdgeBps,
+                  )
+                }
+              >
+                + {c.action.toUpperCase()} {c.symbol} @{" "}
+                {c.entryPrice.toFixed(2)}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {stats.completed > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <h3 className="dashboard-section-title">Live Performance</h3>
+          <div className="live-backtest-stats">
+            <Stat
+              label="Completed"
+              value={`${stats.completed} / ${stats.totalSignals}`}
+            />
+            <Stat
+              label="Win Rate"
+              value={`${(stats.winRate * 100).toFixed(0)}%`}
+            />
+            <Stat
+              label="Total Return"
+              value={fmtPct(stats.totalReturnPct)}
+              tone={stats.totalReturnPct > 0 ? "profit" : "loss"}
+            />
+            <Stat
+              label="Live Sharpe"
+              value={fmtNum(stats.sharpe)}
+              tone={stats.sharpe > 0 ? "profit" : "loss"}
+            />
+            <Stat
+              label="Avg Return"
+              value={`${(stats.avgReturnPct * 100).toFixed(2)}%`}
+              tone={stats.avgReturnPct > 0 ? "profit" : "loss"}
+            />
+          </div>
+          {Object.keys(stats.byStrategy).length > 0 && (
+            <div style={{ overflowX: "auto", marginTop: 12 }}>
+              <table className="live-history-table">
+                <thead>
+                  <tr>
+                    <th>Strategy</th>
+                    <th>n</th>
+                    <th>Wins</th>
+                    <th>Mean Return</th>
+                    <th>Live Sharpe</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(stats.byStrategy).map(([name, s]) => (
+                    <tr key={name}>
+                      <td>{name}</td>
+                      <td>{s.n}</td>
+                      <td>{s.wins}</td>
+                      <td className={s.meanPct > 0 ? "profit" : "loss"}>
+                        {(s.meanPct * 100).toFixed(2)}%
+                      </td>
+                      <td>{s.sharpe.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {openEntries.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <h3 className="dashboard-section-title">Open signals</h3>
+          <div style={{ overflowX: "auto" }}>
+            <table className="live-history-table">
+              <thead>
+                <tr>
+                  <th>Entry Time</th>
+                  <th>Symbol</th>
+                  <th>Strategy</th>
+                  <th>Dir</th>
+                  <th>Entry</th>
+                  <th>Target</th>
+                  <th>Stop</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {openEntries.map((e) => (
+                  <tr key={e.id}>
+                    <td>{new Date(e.entryTime).toUTCString().slice(5, 22)}</td>
+                    <td>
+                      <strong>{e.symbol}</strong>
+                    </td>
+                    <td>{e.strategy}</td>
+                    <td className={e.direction === "long" ? "profit" : "loss"}>
+                      {e.direction.toUpperCase()}
+                    </td>
+                    <td>{e.entryPrice.toFixed(2)}</td>
+                    <td>{e.targetPrice?.toFixed(2) ?? "—"}</td>
+                    <td>{e.stopPrice?.toFixed(2) ?? "—"}</td>
+                    <td>
+                      <button
+                        className="btn btn-secondary"
+                        style={{ fontSize: 11 }}
+                        onClick={() => handleClose(e.id)}
+                      >
+                        Close
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {closedEntries.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <h3 className="dashboard-section-title">
+            Last {Math.min(10, closedEntries.length)} closed signals
+          </h3>
+          <div style={{ overflowX: "auto" }}>
+            <table className="live-history-table">
+              <thead>
+                <tr>
+                  <th>Closed</th>
+                  <th>Symbol</th>
+                  <th>Strategy</th>
+                  <th>Dir</th>
+                  <th>Entry</th>
+                  <th>Exit</th>
+                  <th>PnL</th>
+                </tr>
+              </thead>
+              <tbody>
+                {closedEntries
+                  .slice()
+                  .reverse()
+                  .slice(0, 10)
+                  .map((e) => (
+                    <tr key={e.id}>
+                      <td>
+                        {e.exitTime
+                          ? new Date(e.exitTime).toUTCString().slice(5, 22)
+                          : "—"}
+                      </td>
+                      <td>
+                        <strong>{e.symbol}</strong>
+                      </td>
+                      <td>{e.strategy}</td>
+                      <td
+                        className={e.direction === "long" ? "profit" : "loss"}
+                      >
+                        {e.direction.toUpperCase()}
+                      </td>
+                      <td>{e.entryPrice.toFixed(2)}</td>
+                      <td>{e.exitPrice?.toFixed(2) ?? "—"}</td>
+                      <td
+                        className={
+                          (e.actualPnlPct ?? 0) > 0 ? "profit" : "loss"
+                        }
+                      >
+                        {fmtPct(e.actualPnlPct ?? 0)}
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
     </div>
   );
