@@ -43,17 +43,47 @@ export async function fetchFundingHistory(
   limit = 100,
   signal?: AbortSignal,
 ): Promise<FundingEvent[]> {
-  const url = new URL(BINANCE_FAPI);
-  url.searchParams.set("symbol", symbol.toUpperCase());
-  url.searchParams.set("limit", String(limit));
-  const res = await fetch(url.toString(), { signal });
-  if (!res.ok) throw new Error(`Funding history fetch failed: ${res.status}`);
-  const rows: RawFunding[] = await res.json();
-  return rows.map((r) => ({
-    symbol: r.symbol,
-    fundingTime: r.fundingTime,
-    fundingRate: parseFloat(r.fundingRate),
-  }));
+  // Binance /fundingRate pagination quirks:
+  //   - No time param → returns last ~200 rows.
+  //   - With startTime → returns up to 1000 rows starting from startTime
+  //     (oldest first). This is how we page forward through the whole
+  //     history.
+  // Strategy: start at the genesis of futures (Sep 2019), advance
+  // startTime = lastSeen + 1ms until we hit the "now" horizon.
+  const all: FundingEvent[] = [];
+  const seen = new Set<number>();
+  let startTime = 1567900800000; // 2019-09-08, before BTC perpetual launch
+  const maxPages = Math.max(5, Math.ceil(limit / 800));
+
+  for (let page = 0; page < maxPages; page++) {
+    const url = new URL(BINANCE_FAPI);
+    url.searchParams.set("symbol", symbol.toUpperCase());
+    url.searchParams.set("limit", "1000");
+    url.searchParams.set("startTime", String(startTime));
+    const res = await fetch(url.toString(), { signal });
+    if (!res.ok) throw new Error(`Funding history fetch failed: ${res.status}`);
+    const rows: RawFunding[] = await res.json();
+    if (!rows || rows.length === 0) break;
+    const fresh: FundingEvent[] = [];
+    for (const r of rows) {
+      if (!seen.has(r.fundingTime)) {
+        seen.add(r.fundingTime);
+        fresh.push({
+          symbol: r.symbol,
+          fundingTime: r.fundingTime,
+          fundingRate: parseFloat(r.fundingRate),
+        });
+      }
+    }
+    if (fresh.length === 0) break;
+    all.push(...fresh);
+    const newestInBatch = rows[rows.length - 1].fundingTime;
+    if (newestInBatch <= startTime) break;
+    startTime = newestInBatch + 1;
+  }
+
+  const sorted = all.sort((a, b) => a.fundingTime - b.fundingTime);
+  return sorted.length > limit ? sorted.slice(-limit) : sorted;
 }
 
 /**

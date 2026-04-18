@@ -7,6 +7,13 @@ export interface Candle {
   volume: number;
   closeTime: number;
   isFinal: boolean;
+  /**
+   * Aggressive buy volume (taker-buy base asset volume in the Binance
+   * kline schema). Needed for CVD / Taker-Buy-Imbalance strategies.
+   * Populated only by loaders that capture it; fall back to volume/2 if
+   * unknown.
+   */
+  takerBuyVolume?: number;
 }
 
 export function sma(values: number[], period: number): (number | null)[] {

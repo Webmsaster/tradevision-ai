@@ -14,6 +14,11 @@ import {
   liquidationFadeStrategy,
 } from "@/utils/daytradeStrategies";
 import {
+  goldenCrossStrategy,
+  donchianLongOnlyStrategy,
+  momentumStrategy,
+} from "@/utils/provenEdgeStrategies";
+import {
   computeMetrics,
   type PerformanceMetrics,
 } from "@/utils/performanceMetrics";
@@ -59,7 +64,10 @@ export type StrategyMode =
   | "trend-filter"
   | "orb"
   | "vwap-reversion"
-  | "liq-fade";
+  | "liq-fade"
+  | "golden-cross"
+  | "donchian-long"
+  | "momentum";
 
 export interface RunOptions {
   candles: Candle[];
@@ -93,6 +101,12 @@ function pickDecision(
       return vwapReversionStrategy(window, strategy);
     case "liq-fade":
       return liquidationFadeStrategy(window, strategy);
+    case "golden-cross":
+      return goldenCrossStrategy(window, strategy);
+    case "donchian-long":
+      return donchianLongOnlyStrategy(window, strategy);
+    case "momentum":
+      return momentumStrategy(window, strategy);
     case "regime-switch":
     default:
       return regimeSwitch(window, strategy).decision;

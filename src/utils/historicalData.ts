@@ -47,6 +47,8 @@ function parseKline(row: RawKline): Candle {
     volume: parseFloat(row[5]),
     closeTime: row[6],
     isFinal: true,
+    // Binance kline schema index 9 = takerBuyBaseAssetVolume
+    takerBuyVolume: parseFloat(row[9]),
   };
 }
 
