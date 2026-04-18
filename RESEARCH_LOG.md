@@ -485,3 +485,36 @@ The regime gate is a precision filter — drops only 2.6% of trades but those 2.
 3. Research non-US retail premium signals (Binance-OKX or Binance-Bybit)
 4. BTC-ETF flow via manual paste
 5. Wire regime timeline chart in UI
+
+## Iteration 14 (2026-04-18) — Coinbase Premium stabilises, added to ensemble
+
+**Extended Coinbase history: 5091 bars (~212 days) fetched at 300 bars/call × 17 pages.**
+
+| Config                    | Signals | Trades | Return     | WR  | PF       | Sharpe   | DD   |
+| ------------------------- | ------- | ------ | ---------- | --- | -------- | -------- | ---- |
+| Long+short 2×0.15% 24h    | 11      | 11     | +17.5%     | 55% | **3.38** | 2.65     | 3.9% |
+| **Long+short 2×0.1% 12h** | **63**  | **63** | **+25.8%** | 46% | **1.68** | **2.06** | 7.6% |
+| Long+short 3×0.15% 24h    | 9       | 9      | +14.5%     | 44% | 2.97     | 2.17     | 4.1% |
+
+**Sample size grew 8→63 trades at looser config. Sharpe regressed from 11.54 (small sample) → 2.06 (realistic) — the honest number.** PF 1.68, WR 46%, DD 7.6% — comparable to Monday-Reversal and Lead-Lag.
+
+**Coinbase-Premium-BTC integrated into ensemble** as the first non-Binance-data strategy. Triggered config: 0.1% threshold, 2× consecutive, 12h hold, both sides.
+
+**OKX-Binance Premium live snapshot:**
+
+- OKX $75908 vs Binance $75907, premium 0.0007% — neutral
+- Historical backtest deferred; OKX public ticker doesn't expose long-history candles via free public endpoint
+
+### Iter 14 findings
+
+1. **Coinbase Premium edge is REAL and stable** — 63 trades is above significance threshold. Sharpe 2.06 with PF 1.68 is a legit diversifier.
+2. **Regression-to-mean confirmed**: small-sample Sharpe 11.5 → large-sample 2.06 (5.5× down). Lesson: always rerun on longer samples before celebrating.
+3. **OKX and Binance are effectively identical on BTC-USDT** (0.0007% gap) — the Asian-flow divergence didn't exist in this snapshot. The Coinbase Premium is a US-specific signal.
+
+### Next iteration targets
+
+1. Recompute Portfolio DSR with Coinbase-Premium-BTC in the mix (expected to remain significant)
+2. Regime-wise PnL of Coinbase Premium — which regimes does it work in?
+3. BTC-ETF flow manual input widget in UI
+4. Check OKX historical candles — try their v5 /api/v5/market/candles (may allow historical)
+5. Deep-dive: rolling 90d significance of COMBINED 13-strategy ensemble

@@ -61,19 +61,37 @@ export async function fetchCoinbaseLongHistory(
 ): Promise<Candle[]> {
   const all: Candle[] = [];
   let end = new Date();
-  for (let page = 0; page < 20 && all.length < targetBars; page++) {
+  // Cap pages high enough to reach ~5000+ bars at 300/page.
+  const maxPages = Math.ceil(targetBars / 300) + 5;
+  for (let page = 0; page < maxPages && all.length < targetBars; page++) {
     const start = new Date(end.getTime() - 300 * granularity * 1000);
-    const batch = await fetchCoinbaseCandles({
-      product,
-      granularity,
-      start,
-      end,
-    });
+    let batch: Candle[] = [];
+    try {
+      batch = await fetchCoinbaseCandles({
+        product,
+        granularity,
+        start,
+        end,
+      });
+    } catch (err) {
+      // Rate-limited? Back off and retry once, then give up
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        batch = await fetchCoinbaseCandles({
+          product,
+          granularity,
+          start,
+          end,
+        });
+      } catch {
+        break;
+      }
+    }
     if (batch.length === 0) break;
     all.unshift(...batch);
     end = new Date(batch[0].openTime - 1);
-    // Be kind: 250ms between calls
-    await new Promise((r) => setTimeout(r, 250));
+    // Be kind: 350ms between calls for longer walks
+    await new Promise((r) => setTimeout(r, 350));
   }
   // Dedupe (Coinbase may overlap between pages)
   const seen = new Set<number>();

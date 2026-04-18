@@ -23,6 +23,7 @@ import { runFundingCarryBacktest } from "@/utils/fundingCarry";
 import type { FundingEvent } from "@/utils/fundingRate";
 import { runLeadLagBacktest } from "@/utils/leadLagStrategy";
 import { runFundingMinuteBacktest } from "@/utils/fundingMinuteReversion";
+import { runPremiumBacktest } from "@/utils/premiumBacktest";
 import {
   allocate,
   computeMetrics as computePortMetrics,
@@ -35,6 +36,8 @@ export interface EnsembleInputs {
   makerCosts: CostConfig;
   takerCosts: CostConfig;
   walkForwardCfg?: Partial<WalkForwardConfig>;
+  /** Optional pre-fetched Coinbase candles for Premium strategy */
+  coinbaseBtc1h?: Candle[];
 }
 
 export interface DatedReturn {
@@ -167,6 +170,34 @@ export async function buildEnsembleEquity(
         time: t.entryTime,
         pnlPct: t.netPnlPct,
         strategy: "LeadLag-BTC→SOL",
+      })),
+    });
+  }
+
+  // ---- Coinbase Premium: verified iter14 with 63 trades Sharpe 2.06 ----
+  if (
+    inputs.coinbaseBtc1h &&
+    inputs.coinbaseBtc1h.length > 500 &&
+    candlesByH["BTCUSDT"]
+  ) {
+    const rep = runPremiumBacktest(
+      inputs.coinbaseBtc1h,
+      candlesByH["BTCUSDT"],
+      {
+        minPremiumPct: 0.001,
+        consecutiveBars: 2,
+        holdBars: 12,
+        stopPct: 0.012,
+        longOnly: false,
+        costs: makerCosts,
+      },
+    );
+    streams.push({
+      name: "CoinbasePremium-BTC",
+      returns: rep.trades.map((t) => ({
+        time: t.entryTime,
+        pnlPct: t.netPnlPct,
+        strategy: "CoinbasePremium-BTC",
       })),
     });
   }
