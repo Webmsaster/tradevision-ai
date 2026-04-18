@@ -43,17 +43,17 @@ export async function fetchFundingHistory(
   limit = 100,
   signal?: AbortSignal,
 ): Promise<FundingEvent[]> {
-  // Binance /fundingRate pagination quirks:
-  //   - No time param → returns last ~200 rows.
-  //   - With startTime → returns up to 1000 rows starting from startTime
-  //     (oldest first). This is how we page forward through the whole
-  //     history.
-  // Strategy: start at the genesis of futures (Sep 2019), advance
-  // startTime = lastSeen + 1ms until we hit the "now" horizon.
+  // Binance /fundingRate pagination: startTime → 1000 rows oldest-first.
+  // We keep paging forward until we stop getting new data (i.e. caught up
+  // to present). Then we slice the last `limit` events so the caller gets
+  // the most recent ones.
   const all: FundingEvent[] = [];
   const seen = new Set<number>();
   let startTime = 1567900800000; // 2019-09-08, before BTC perpetual launch
-  const maxPages = Math.max(5, Math.ceil(limit / 800));
+  // Binance caps at ~200 rows per call despite limit=1000 — so to cover
+  // 7 years × 3 funding/day ≈ 7665 events we need ~40 pages. Cap at 80
+  // for safety.
+  const maxPages = 80;
 
   for (let page = 0; page < maxPages; page++) {
     const url = new URL(BINANCE_FAPI);
@@ -82,6 +82,52 @@ export async function fetchFundingHistory(
     startTime = newestInBatch + 1;
   }
 
+  const sorted = all.sort((a, b) => a.fundingTime - b.fundingTime);
+  return sorted.length > limit ? sorted.slice(-limit) : sorted;
+}
+
+/**
+ * Lightweight fetch of the most-recent N funding events (~last N×8h).
+ * No genesis-to-present walk; just lets Binance return its default
+ * window ending at "now" and trims to N. Use this when you only care
+ * about a recent window (e.g. for correlating with 30-day L/S data).
+ */
+export async function fetchRecentFunding(
+  symbol: string,
+  limit = 200,
+  signal?: AbortSignal,
+): Promise<FundingEvent[]> {
+  const all: FundingEvent[] = [];
+  const seen = new Set<number>();
+  let endTime: number | undefined;
+  // Binance caps at 200 per call — use endTime to page backwards.
+  const maxPages = Math.ceil(limit / 200) + 2;
+  for (let page = 0; page < maxPages && all.length < limit; page++) {
+    const url = new URL(BINANCE_FAPI);
+    url.searchParams.set("symbol", symbol.toUpperCase());
+    url.searchParams.set("limit", "1000");
+    if (endTime !== undefined) url.searchParams.set("endTime", String(endTime));
+    const res = await fetch(url.toString(), { signal });
+    if (!res.ok) throw new Error(`Recent funding fetch failed: ${res.status}`);
+    const rows: RawFunding[] = await res.json();
+    if (!rows || rows.length === 0) break;
+    const fresh: FundingEvent[] = [];
+    for (const r of rows) {
+      if (!seen.has(r.fundingTime)) {
+        seen.add(r.fundingTime);
+        fresh.push({
+          symbol: r.symbol,
+          fundingTime: r.fundingTime,
+          fundingRate: parseFloat(r.fundingRate),
+        });
+      }
+    }
+    if (fresh.length === 0) break;
+    all.push(...fresh);
+    const oldestInBatch = rows[0].fundingTime;
+    if (endTime !== undefined && oldestInBatch >= endTime) break;
+    endTime = oldestInBatch - 1;
+  }
   const sorted = all.sort((a, b) => a.fundingTime - b.fundingTime);
   return sorted.length > limit ? sorted.slice(-limit) : sorted;
 }

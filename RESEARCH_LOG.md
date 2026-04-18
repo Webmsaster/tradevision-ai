@@ -313,3 +313,37 @@ Confirmed implementable non-price signals 2024-2025:
 3. **Exchange-Netflow Veto** — CryptoQuant free endpoint as safety filter, reduces portfolio max-DD
 4. Wire live signal-journal entries into strategy-health calc (true live feedback loop)
 5. Check: does SOL Champion health stay at "HEALTHY" over next 30 days or does it fall to WATCH/PAUSE?
+
+## Iteration 9 (2026-04-18)
+
+**Funding-Extreme Contrarian (Kharat 2025) infrastructure built:**
+
+- `src/utils/longShortRatio.ts` — Binance `/futures/data/globalLongShortAccountRatio` fetcher (30d history)
+- `src/utils/fundingContrarian.ts` — strategy: 3× consecutive extreme funding + L/S ratio confirmation → contrarian entry
+- `src/utils/fundingRate.ts` — added `fetchRecentFunding()` helper (avoids genesis-to-present walk)
+
+**Live-data backtest: 0 trades in current regime.**
+
+| Symbol | Funding overlap range | Max funding | Min funding | L/S max  | L/S min  | 3× extreme count |
+| ------ | --------------------- | ----------- | ----------- | -------- | -------- | ---------------- |
+| BTC    | 63 events / 21d       | 0.0074%     | -0.0108%    | 2.47     | 0.58     | 0                |
+| ETH    | 63 events / 21d       | 0.0100%     | -0.0151%    | 2.43     | 0.86     | 0                |
+| SOL    | 63 events / 21d       | 0.0100%     | -0.0302%    | **3.88** | **1.49** | 0                |
+
+The current market (Feb-Apr 2026) is CALM — max funding ~0.01% vs Kharat's 0.05% threshold. The strategy would have fired during 2021 Q4, 2024 Oct, and other high-leverage regimes but is dormant now. **SOL L/S 3.88 with funding max 0.01%** = lots of long ACCOUNTS but no crowded-pressure — the setup is a "one-sided but not overheated" regime.
+
+**Pagination bug found and fixed in `fetchFundingHistory`:** was capping at 5 pages = 1000 events from 2019 → didn't reach present. maxPages now 80. New `fetchRecentFunding()` helper is cleaner for windowed use.
+
+### Iteration 9 findings
+
+1. **Strategy is regime-dependent** — current calm regime doesn't trigger Kharat setup. Need to keep the live-detection wire in place so it fires when leverage returns.
+2. **L/S historical depth is 30d only on free Binance API** — limits backtest depth. Would need Coinglass Paid for full 2021-present replay.
+3. **Funding-data-fetch pagination was broken**: limit=3000 only got first 1000 events from 2019-2020. Fixed; new `fetchRecentFunding` for sliding-window use.
+4. **SOL L/S 3.88 without funding spike** is an anomaly — maybe HFT market-makers flat-delta while retail stacks longs. Worth watching.
+
+### Next iteration targets
+
+1. **Add Funding-Extreme Contrarian as live-detection tool** even if no historical signals — UI alert when condition fires
+2. **BTC-ETF Flow** — attempt Farside scraper (likely CORS-blocked in browser, needs server-side proxy or manual paste)
+3. **Portfolio-level DSR** (Bailey/LdP 2014) on the 12-strategy ensemble — is the PORTFOLIO statistically significant after multi-testing?
+4. **Trade-the-quiet-regime**: document which of our strategies thrive in LOW-funding / LOW-vol regimes (probably Champion+Lead-Lag) vs HIGH-leverage (funding-minute, carry, contrarian)
