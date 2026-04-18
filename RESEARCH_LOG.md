@@ -243,3 +243,26 @@ SOL funding-minute reversion is a real new edge. ETH marginal. BTC doesn't work.
 3. Add the actual UI updates to the research page (vol-regime, rolling DSR, health monitor)
 4. Investigate why Monday-SOL has Sharpe 1.84 while Monday-BTC/ETH have 16-20 — may be data artifact
 5. Deep research: find 2-3 more 2025 papers on crypto edges we haven't tested yet
+
+## Iteration 7 (2026-04-18)
+
+**Live-Signals UI now includes:**
+
+- **Strategy Health table** per symbol — shows lifetime Sharpe, recent Sharpe (last 30 trades), ratio, status badge (HEALTHY/WATCH/PAUSE)
+- **Vol-Regime snapshot** per symbol — current 24h realized vol, percentile in 90d window, whether in 30-70 productive band, interpretation text
+- Both compute on every refresh (every 5 min in live mode)
+
+**Architectural impact:** the user can now see WHICH edges should be acted on RIGHT NOW, not just which ones exist in the backtest. The autonomous health insight surfaces directly in the UI — when Champion-BTC is PAUSED, the user sees it immediately.
+
+### Iteration 7 findings
+
+1. Live UI is now the edge-rotation dashboard we needed. Backtest stats are necessary but not sufficient — HEALTHY status is the actionable signal.
+2. Walk-forward for health check adds ~500ms latency per symbol on refresh. Acceptable for 5-min auto-refresh cadence.
+3. Vol-regime live classification is instant (just a rolling percentile lookup).
+
+### Next iteration targets
+
+1. Signal-journal UI: button to RECORD a signal the user actually took, stats panel showing live cumulative return
+2. Sound/notification when a HEALTHY strategy fires a high-confidence signal
+3. Expand research: look for non-price-based edges (on-chain, social sentiment)
+4. Implement: SIMPLE version of walk-forward that runs client-side faster (<100ms) for responsive UI

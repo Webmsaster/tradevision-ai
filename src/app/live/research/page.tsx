@@ -1866,6 +1866,102 @@ function LiveSignalsPanel({
             )}
           </p>
 
+          {report.health && report.health.length > 0 && (
+            <>
+              <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
+                Strategy Health (recent 30 trades vs lifetime)
+              </h3>
+              <div style={{ overflowX: "auto" }}>
+                <table className="live-history-table">
+                  <thead>
+                    <tr>
+                      <th>Strategy</th>
+                      <th>Lifetime</th>
+                      <th>Recent</th>
+                      <th>Ratio</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.health.map((h) => (
+                      <tr key={`${h.strategy}-${h.symbol}`}>
+                        <td>
+                          <strong>
+                            {h.strategy}-{h.symbol}
+                          </strong>
+                        </td>
+                        <td>{h.lifetimeSharpe.toFixed(2)}</td>
+                        <td className={h.recentSharpe > 0 ? "profit" : "loss"}>
+                          {h.recentSharpe.toFixed(2)}
+                        </td>
+                        <td>{(h.ratio * 100).toFixed(0)}%</td>
+                        <td>
+                          <span
+                            className={`matrix-verdict matrix-verdict-${
+                              h.status === "healthy"
+                                ? "positive"
+                                : h.status === "watch"
+                                  ? "inconclusive"
+                                  : "no-edge"
+                            }`}
+                          >
+                            {h.status.toUpperCase()}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="live-muted-note" style={{ marginTop: 8 }}>
+                PAUSE = strategy is degrading, skip its signals until it
+                recovers. WATCH = weakness emerging. HEALTHY = trade as normal.
+              </p>
+            </>
+          )}
+
+          {report.volRegime && report.volRegime.length > 0 && (
+            <>
+              <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
+                Volatility Regime (30-70 percentile gate)
+              </h3>
+              <div style={{ overflowX: "auto" }}>
+                <table className="live-history-table">
+                  <thead>
+                    <tr>
+                      <th>Symbol</th>
+                      <th>24h RV</th>
+                      <th>Percentile</th>
+                      <th>In Regime</th>
+                      <th>Interpretation</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.volRegime.map((v) => (
+                      <tr key={v.symbol}>
+                        <td>
+                          <strong>{v.symbol}</strong>
+                        </td>
+                        <td>{(v.realizedVol * 100).toFixed(3)}%/h</td>
+                        <td>
+                          {v.percentile !== null
+                            ? `${(v.percentile * 100).toFixed(0)}%`
+                            : "—"}
+                        </td>
+                        <td className={v.inRegime ? "profit" : "loss"}>
+                          {v.inRegime ? "✓ YES" : "✗ NO"}
+                        </td>
+                        <td style={{ fontSize: 12, maxWidth: 320 }}>
+                          {v.verdict}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
           <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
             Champion — trend-filtered hour-of-day
           </h3>

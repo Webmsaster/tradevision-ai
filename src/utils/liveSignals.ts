@@ -19,6 +19,13 @@ import type { Candle } from "@/utils/indicators";
 import { sma } from "@/utils/indicators";
 import { loadBinanceHistory } from "@/utils/historicalData";
 import { computeHourStats } from "@/utils/hourOfDayStrategy";
+import { runWalkForwardHourOfDay } from "@/utils/walkForward";
+import { MAKER_COSTS } from "@/utils/intradayLab";
+import {
+  checkStrategyHealth,
+  type StrategyHealthReport,
+} from "@/utils/strategyHealth";
+import { classifyVolRegime, type VolRegimeBar } from "@/utils/volRegimeFilter";
 
 export interface ChampionSignal {
   symbol: string;
@@ -62,11 +69,31 @@ export interface UpcomingWindow {
   conditional: string; // the regime condition that must still hold
 }
 
+export interface StrategyHealthSnapshot {
+  symbol: string;
+  strategy: string;
+  lifetimeSharpe: number;
+  recentSharpe: number;
+  ratio: number;
+  status: "healthy" | "watch" | "pause";
+  reason: string;
+}
+
+export interface VolRegimeSnapshot {
+  symbol: string;
+  realizedVol: number;
+  percentile: number | null;
+  inRegime: boolean;
+  verdict: string;
+}
+
 export interface LiveSignalsReport {
   generatedAt: string;
   champion: ChampionSignal[];
   monday: MondaySignal[];
   upcoming: UpcomingWindow[];
+  health: StrategyHealthSnapshot[];
+  volRegime: VolRegimeSnapshot[];
 }
 
 const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const;
@@ -350,6 +377,9 @@ export async function computeLiveSignals(
 ): Promise<LiveSignalsReport> {
   const champions: ChampionSignal[] = [];
   const mondays: MondaySignal[] = [];
+  const health: StrategyHealthSnapshot[] = [];
+  const volRegime: VolRegimeSnapshot[] = [];
+
   for (const sym of symbols) {
     const candles = await loadBinanceHistory({
       symbol: sym,
@@ -358,12 +388,79 @@ export async function computeLiveSignals(
     });
     champions.push(computeChampionForSymbol(sym, candles));
     mondays.push(computeMondaySignal(sym, candles));
+
+    // Strategy health: run a walk-forward on the last ~6 months to get a
+    // recent return stream, then compare to lifetime.
+    if (candles.length >= 4000) {
+      try {
+        const wf = runWalkForwardHourOfDay(candles, {
+          trainBars: 2160,
+          testBars: 168,
+          topK: 3,
+          bottomK: 3,
+          smaPeriodBars: 24,
+          longOnly: true,
+          costs: MAKER_COSTS,
+          makerFillRate: 0.6,
+          adverseSelectionBps: 3,
+          skipFundingHours: true,
+          requireSignificance: false,
+        });
+        if (wf.allTrades.length > 30) {
+          const h = checkStrategyHealth(
+            {
+              strategyName: `Champion-${sym}`,
+              allReturns: wf.allTrades.map((t) => t.netPnlPct),
+              recentWindow: 30,
+            },
+            250,
+          );
+          health.push({
+            symbol: sym,
+            strategy: "Champion",
+            lifetimeSharpe: h.lifetimeSharpe,
+            recentSharpe: h.recentSharpe,
+            ratio: h.ratio,
+            status: h.status,
+            reason: h.reason,
+          });
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // Vol regime: current position in 30-70 percentile band
+    try {
+      const vr = classifyVolRegime(candles);
+      const last: VolRegimeBar | undefined = vr[vr.length - 1];
+      if (last) {
+        volRegime.push({
+          symbol: sym,
+          realizedVol: last.realizedVol,
+          percentile: last.percentile,
+          inRegime: last.inRegime,
+          verdict: last.inRegime
+            ? "In productive vol band (30-70 percentile) — trade signals normally"
+            : last.percentile !== null && last.percentile < 0.3
+              ? "Low vol — noise regime, skip signals"
+              : last.percentile !== null && last.percentile > 0.7
+                ? "High vol — regime-break territory, skip signals"
+                : "Vol percentile unknown",
+        });
+      }
+    } catch {
+      // ignore
+    }
   }
+
   const upcoming = computeUpcoming(champions, 24);
   return {
     generatedAt: new Date().toISOString(),
     champion: champions,
     monday: mondays,
     upcoming,
+    health,
+    volRegime,
   };
 }
