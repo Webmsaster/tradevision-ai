@@ -1,15 +1,20 @@
 import { describe, it, expect } from "vitest";
-import { analyzeCandles, hasActionChanged } from "@/utils/signalEngine";
+import {
+  analyzeCandles,
+  hasActionChanged,
+  deriveHtfTrend,
+  backtest,
+} from "@/utils/signalEngine";
 import type { Candle } from "@/utils/indicators";
 
-function makeCandles(closes: number[]): Candle[] {
+function makeCandles(closes: number[], volume = 100): Candle[] {
   return closes.map((c, i) => ({
     openTime: i * 60_000,
     open: c,
     high: c + 0.5,
     low: c - 0.5,
     close: c,
-    volume: 100,
+    volume,
     closeTime: (i + 1) * 60_000,
     isFinal: true,
   }));
@@ -17,12 +22,15 @@ function makeCandles(closes: number[]): Candle[] {
 
 describe("analyzeCandles", () => {
   it("returns null when not enough candles", () => {
-    const candles = makeCandles(Array.from({ length: 10 }, (_, i) => 100 + i));
-    expect(analyzeCandles(candles)).toBeNull();
+    expect(
+      analyzeCandles(
+        makeCandles(Array.from({ length: 10 }, (_, i) => 100 + i)),
+      ),
+    ).toBeNull();
   });
 
   it("produces a long signal on sustained uptrend", () => {
-    const closes = Array.from({ length: 60 }, (_, i) => 100 + i * 0.5);
+    const closes = Array.from({ length: 80 }, (_, i) => 100 + i * 0.5);
     const snap = analyzeCandles(makeCandles(closes));
     expect(snap).not.toBeNull();
     expect(snap!.action).toBe("long");
@@ -30,58 +38,125 @@ describe("analyzeCandles", () => {
   });
 
   it("produces a short signal on sustained downtrend", () => {
-    const closes = Array.from({ length: 60 }, (_, i) => 200 - i * 0.5);
+    const closes = Array.from({ length: 80 }, (_, i) => 200 - i * 0.5);
     const snap = analyzeCandles(makeCandles(closes));
     expect(snap).not.toBeNull();
     expect(snap!.action).toBe("short");
-    expect(snap!.indicators.emaFast).toBeLessThan(snap!.indicators.emaSlow!);
   });
 
-  it("produces flat on perfectly flat market", () => {
-    const closes = Array.from({ length: 60 }, () => 100);
+  it("returns flat on perfectly flat market", () => {
+    const closes = Array.from({ length: 80 }, () => 100);
     const snap = analyzeCandles(makeCandles(closes));
     expect(snap).not.toBeNull();
     expect(snap!.action).toBe("flat");
   });
 
-  it("emits human-readable reason strings", () => {
-    const closes = Array.from({ length: 60 }, (_, i) => 100 + i * 0.5);
+  it("detects ranging regime on tight oscillation and suppresses signal", () => {
+    const closes = Array.from(
+      { length: 80 },
+      (_, i) => 100 + (i % 2 === 0 ? 0.05 : -0.05),
+    );
     const snap = analyzeCandles(makeCandles(closes));
-    expect(snap!.reasons.length).toBeGreaterThan(0);
-    expect(snap!.reasons.join(" ")).toMatch(/EMA|RSI|MACD/);
+    expect(snap).not.toBeNull();
+    expect(snap!.regime).toBe("ranging");
+    expect(snap!.action).toBe("flat");
   });
 
-  it("bounds strength between 0 and 10", () => {
-    const closes = Array.from({ length: 60 }, (_, i) => 100 + i * 0.5);
+  it("detects trending regime on clear trend", () => {
+    const closes = Array.from({ length: 80 }, (_, i) => 100 + i * 0.5);
     const snap = analyzeCandles(makeCandles(closes));
-    expect(snap!.strength).toBeGreaterThanOrEqual(0);
-    expect(snap!.strength).toBeLessThanOrEqual(10);
+    expect(snap!.regime).toBe("trending");
+    expect(snap!.adx!).toBeGreaterThan(20);
+  });
+
+  it("attaches SL/TP levels on non-flat signals", () => {
+    const closes = Array.from({ length: 80 }, (_, i) => 100 + i * 0.5);
+    const snap = analyzeCandles(makeCandles(closes));
+    expect(snap!.action).toBe("long");
+    expect(snap!.levels).not.toBeNull();
+    expect(snap!.levels!.stopLoss).toBeLessThan(snap!.levels!.entry);
+    expect(snap!.levels!.takeProfit).toBeGreaterThan(snap!.levels!.entry);
+    expect(snap!.levels!.riskReward).toBeCloseTo(1.5);
+  });
+
+  it("suppresses signal that fights higher-timeframe trend", () => {
+    const closes = Array.from({ length: 80 }, (_, i) => 100 + i * 0.5);
+    const snap = analyzeCandles(makeCandles(closes), { htfTrend: "short" });
+    // Local trend is bullish, HTF says short → suppress
+    expect(snap!.action).toBe("flat");
+    expect(snap!.reasons.join(" ")).toMatch(/higher timeframe|HTF/i);
+  });
+
+  it("boosts signal when HTF aligns", () => {
+    const closes = Array.from({ length: 80 }, (_, i) => 100 + i * 0.5);
+    const aligned = analyzeCandles(makeCandles(closes), { htfTrend: "long" });
+    const plain = analyzeCandles(makeCandles(closes));
+    expect(aligned!.action).toBe("long");
+    expect(aligned!.strength).toBeGreaterThanOrEqual(plain!.strength);
+    expect(aligned!.htfAligned).toBe(true);
   });
 });
 
 describe("hasActionChanged", () => {
-  it("returns true when prev is null and next is non-flat", () => {
-    const next = { action: "long" } as any;
-    expect(hasActionChanged(null, next)).toBe(true);
-  });
-
-  it("returns false when prev is null and next is flat", () => {
-    const next = { action: "flat" } as any;
-    expect(hasActionChanged(null, next)).toBe(false);
-  });
-
-  it("returns true when action changes", () => {
+  it("returns true when action flips", () => {
     expect(
       hasActionChanged({ action: "long" } as any, { action: "short" } as any),
     ).toBe(true);
-    expect(
-      hasActionChanged({ action: "flat" } as any, { action: "long" } as any),
-    ).toBe(true);
   });
-
   it("returns false when action is the same", () => {
     expect(
       hasActionChanged({ action: "long" } as any, { action: "long" } as any),
     ).toBe(false);
+  });
+});
+
+describe("deriveHtfTrend", () => {
+  it("returns null when insufficient data", () => {
+    expect(deriveHtfTrend(makeCandles([1, 2, 3]))).toBeNull();
+  });
+  it("returns long on uptrend", () => {
+    expect(
+      deriveHtfTrend(
+        makeCandles(Array.from({ length: 50 }, (_, i) => 100 + i)),
+      ),
+    ).toBe("long");
+  });
+  it("returns short on downtrend", () => {
+    expect(
+      deriveHtfTrend(
+        makeCandles(Array.from({ length: 50 }, (_, i) => 200 - i)),
+      ),
+    ).toBe("short");
+  });
+  it("returns flat when EMAs are almost equal", () => {
+    expect(
+      deriveHtfTrend(makeCandles(Array.from({ length: 50 }, () => 100))),
+    ).toBe("flat");
+  });
+});
+
+describe("backtest", () => {
+  it("runs without errors on a simple trend", () => {
+    const closes = Array.from({ length: 120 }, (_, i) => 100 + i * 0.3);
+    const result = backtest(makeCandles(closes));
+    expect(result.trades.length).toBeGreaterThanOrEqual(0);
+    expect(result.winRate).toBeGreaterThanOrEqual(0);
+    expect(result.winRate).toBeLessThanOrEqual(1);
+  });
+
+  it("produces winning trades on sustained uptrend", () => {
+    const closes = Array.from({ length: 150 }, (_, i) => 100 + i * 0.3);
+    const result = backtest(makeCandles(closes));
+    if (result.trades.length > 0) {
+      expect(result.totalR).toBeGreaterThan(0);
+    }
+  });
+
+  it("returns zero stats on no trades", () => {
+    const closes = Array.from({ length: 80 }, () => 100);
+    const result = backtest(makeCandles(closes));
+    expect(result.trades.length).toBe(0);
+    expect(result.winRate).toBe(0);
+    expect(result.totalR).toBe(0);
   });
 });

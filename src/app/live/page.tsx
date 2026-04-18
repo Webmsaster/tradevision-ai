@@ -15,6 +15,9 @@ import {
   analyzeCandles,
   SignalSnapshot,
   hasActionChanged,
+  deriveHtfTrend,
+  backtest,
+  BacktestResult,
 } from "@/utils/signalEngine";
 
 const SYMBOLS = [
@@ -26,6 +29,13 @@ const SYMBOLS = [
 ] as const;
 const TIMEFRAMES: LiveTimeframe[] = ["1m", "5m", "15m", "1h"];
 const MAX_HISTORY_SIGNALS = 20;
+
+const HTF_FOR: Record<LiveTimeframe, LiveTimeframe> = {
+  "1m": "15m",
+  "5m": "1h",
+  "15m": "1h",
+  "1h": "1h",
+};
 
 function formatPrice(p: number): string {
   if (p >= 100)
@@ -56,6 +66,10 @@ export default function LivePage() {
   const [symbol, setSymbol] = useState<string>("BTCUSDT");
   const [timeframe, setTimeframe] = useState<LiveTimeframe>("5m");
   const [signalHistory, setSignalHistory] = useState<SignalSnapshot[]>([]);
+  const [notify, setNotify] = useState(false);
+  const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(
+    null,
+  );
   const lastEmittedRef = useRef<SignalSnapshot | null>(null);
 
   const { candles, status, error } = useLiveCandles({
@@ -63,11 +77,19 @@ export default function LivePage() {
     timeframe,
     history: 200,
   });
+  const htfTimeframe = HTF_FOR[timeframe];
+  const htf = useLiveCandles({
+    symbol,
+    timeframe: htfTimeframe,
+    history: 120,
+  });
+
+  const htfTrend = useMemo(() => deriveHtfTrend(htf.candles), [htf.candles]);
 
   const snapshot = useMemo<SignalSnapshot | null>(() => {
     if (candles.length === 0) return null;
-    return analyzeCandles(candles);
-  }, [candles]);
+    return analyzeCandles(candles, { htfTrend });
+  }, [candles, htfTrend]);
 
   useEffect(() => {
     if (!snapshot) return;
@@ -76,23 +98,41 @@ export default function LivePage() {
       setSignalHistory((prev) =>
         [snapshot, ...prev].slice(0, MAX_HISTORY_SIGNALS),
       );
-    }
-  }, [snapshot]);
 
-  // Clear history on symbol/timeframe change
+      if (
+        notify &&
+        typeof Notification !== "undefined" &&
+        Notification.permission === "granted" &&
+        snapshot.action !== "flat"
+      ) {
+        const title = `${snapshot.action === "long" ? "BUY" : "SELL"} ${symbol}`;
+        const body = `${formatPrice(snapshot.price)} · strength ${snapshot.strength}/10`;
+        try {
+          new Notification(title, { body, tag: `live-signal-${symbol}` });
+        } catch {
+          // ignore notification errors
+        }
+      }
+    }
+  }, [snapshot, notify, symbol]);
+
   useEffect(() => {
     setSignalHistory([]);
     lastEmittedRef.current = null;
+    setBacktestResult(null);
   }, [symbol, timeframe]);
 
-  const chartData = useMemo(
-    () =>
-      candles.slice(-120).map((c) => ({
-        time: formatTime(c.closeTime),
-        price: c.close,
-      })),
-    [candles],
-  );
+  const chartData = useMemo(() => {
+    const slice = candles.slice(-120);
+    const signalByTime = new Map<number, SignalSnapshot>();
+    for (const s of signalHistory) signalByTime.set(s.time, s);
+    return slice.map((c) => ({
+      time: formatTime(c.closeTime),
+      price: c.close,
+      buy: signalByTime.get(c.closeTime)?.action === "long" ? c.close : null,
+      sell: signalByTime.get(c.closeTime)?.action === "short" ? c.close : null,
+    }));
+  }, [candles, signalHistory]);
 
   const priceNow =
     candles.length > 0 ? candles[candles.length - 1].close : null;
@@ -103,6 +143,25 @@ export default function LivePage() {
         100
       : 0;
 
+  async function handleNotifyToggle() {
+    if (notify) {
+      setNotify(false);
+      return;
+    }
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission === "granted") {
+      setNotify(true);
+      return;
+    }
+    const res = await Notification.requestPermission();
+    if (res === "granted") setNotify(true);
+  }
+
+  function runBacktest() {
+    if (candles.length < 50) return;
+    setBacktestResult(backtest(candles));
+  }
+
   const actionLabel = snapshot
     ? snapshot.action === "long"
       ? "BUY"
@@ -110,14 +169,18 @@ export default function LivePage() {
         ? "SELL"
         : "HOLD"
     : "…";
-
   const actionClass = snapshot
-    ? snapshot.action === "long"
-      ? "live-action long"
-      : snapshot.action === "short"
-        ? "live-action short"
-        : "live-action flat"
+    ? `live-action ${snapshot.action}`
     : "live-action flat";
+
+  const htfLabel =
+    htfTrend === "long"
+      ? "UP"
+      : htfTrend === "short"
+        ? "DOWN"
+        : htfTrend === "flat"
+          ? "FLAT"
+          : "…";
 
   return (
     <div className="page-container">
@@ -125,7 +188,7 @@ export default function LivePage() {
         <div>
           <h1 className="page-title">Live Signals</h1>
           <p className="page-subtitle">
-            Rule-based technical-analysis feed — EMA 9/21 + RSI + MACD
+            EMA · RSI · MACD · ADX regime filter · ATR stops · HTF confirmation
           </p>
         </div>
       </div>
@@ -170,6 +233,15 @@ export default function LivePage() {
           </div>
         </div>
 
+        <button
+          type="button"
+          className={`btn btn-ghost ${notify ? "active" : ""}`}
+          onClick={handleNotifyToggle}
+          aria-pressed={notify}
+        >
+          {notify ? "🔔 Notify on" : "🔕 Notify off"}
+        </button>
+
         <div className="live-status" aria-live="polite">
           <span className={`live-status-dot live-status-${status}`} />
           <span>
@@ -190,6 +262,22 @@ export default function LivePage() {
           </div>
           {snapshot && (
             <>
+              <div className="live-badges">
+                <span className={`live-badge regime-${snapshot.regime}`}>
+                  {snapshot.regime === "trending"
+                    ? "📈 Trending"
+                    : snapshot.regime === "ranging"
+                      ? "↔ Ranging"
+                      : "Regime?"}
+                  {snapshot.adx !== null
+                    ? ` · ADX ${snapshot.adx.toFixed(1)}`
+                    : ""}
+                </span>
+                <span className={`live-badge htf-${htfTrend ?? "unknown"}`}>
+                  HTF {htfTimeframe}: {htfLabel}
+                </span>
+              </div>
+
               <div className="live-signal-strength">
                 <span className="live-signal-strength-label">
                   Strength {snapshot.strength}/10
@@ -201,6 +289,32 @@ export default function LivePage() {
                   />
                 </div>
               </div>
+
+              {snapshot.levels && (
+                <div className="live-levels">
+                  <div className="live-level-row">
+                    <span>Entry</span>
+                    <strong>{formatPrice(snapshot.levels.entry)}</strong>
+                  </div>
+                  <div className="live-level-row">
+                    <span>Stop Loss</span>
+                    <strong className="loss">
+                      {formatPrice(snapshot.levels.stopLoss)}
+                    </strong>
+                  </div>
+                  <div className="live-level-row">
+                    <span>Take Profit</span>
+                    <strong className="profit">
+                      {formatPrice(snapshot.levels.takeProfit)}
+                    </strong>
+                  </div>
+                  <div className="live-level-row">
+                    <span>R:R</span>
+                    <strong>1 : {snapshot.levels.riskReward.toFixed(2)}</strong>
+                  </div>
+                </div>
+              )}
+
               <ul className="live-reasons">
                 {snapshot.reasons.length > 0 ? (
                   snapshot.reasons.map((reason, i) => <li key={i}>{reason}</li>)
@@ -208,6 +322,7 @@ export default function LivePage() {
                   <li>No dominant signal — market is indecisive.</li>
                 )}
               </ul>
+
               <div className="live-indicators-grid">
                 <IndicatorCell
                   label="Price"
@@ -230,8 +345,8 @@ export default function LivePage() {
                   value={fmtNum(snapshot.indicators.rsi, 1)}
                 />
                 <IndicatorCell
-                  label="MACD Hist"
-                  value={fmtNum(snapshot.indicators.macdHist, 4)}
+                  label="ATR"
+                  value={fmtNum(snapshot.indicators.atr, 2)}
                 />
               </div>
             </>
@@ -285,6 +400,22 @@ export default function LivePage() {
                     strokeWidth={2}
                     fill="url(#price-area)"
                   />
+                  <Area
+                    type="monotone"
+                    dataKey="buy"
+                    stroke="#00ff88"
+                    fill="transparent"
+                    dot={{ r: 6, fill: "#00ff88", stroke: "#00ff88" }}
+                    activeDot={false}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="sell"
+                    stroke="#ff4757"
+                    fill="transparent"
+                    dot={{ r: 6, fill: "#ff4757", stroke: "#ff4757" }}
+                    activeDot={false}
+                  />
                 </AreaChart>
               </ResponsiveContainer>
             ) : (
@@ -302,6 +433,64 @@ export default function LivePage() {
             )}
           </div>
         </div>
+      </div>
+
+      <div className="glass-card live-backtest-card">
+        <div className="live-backtest-header">
+          <h3 className="dashboard-section-title">Backtest Current Rules</h3>
+          <button
+            className="btn btn-secondary"
+            onClick={runBacktest}
+            disabled={candles.length < 50}
+          >
+            Run on last {candles.length} candles
+          </button>
+        </div>
+        {backtestResult ? (
+          <div className="live-backtest-stats">
+            <BacktestStat
+              label="Trades"
+              value={String(backtestResult.trades.length)}
+            />
+            <BacktestStat
+              label="Win Rate"
+              value={`${(backtestResult.winRate * 100).toFixed(1)}%`}
+            />
+            <BacktestStat
+              label="Total R"
+              value={`${backtestResult.totalR >= 0 ? "+" : ""}${backtestResult.totalR.toFixed(2)} R`}
+              variant={backtestResult.totalR >= 0 ? "profit" : "loss"}
+            />
+            <BacktestStat
+              label="Avg R / Trade"
+              value={backtestResult.avgR.toFixed(2)}
+            />
+            <BacktestStat
+              label="Profit Factor"
+              value={
+                backtestResult.profitFactor === Infinity
+                  ? "Inf"
+                  : backtestResult.profitFactor.toFixed(2)
+              }
+              variant={
+                backtestResult.profitFactor >= 1.5
+                  ? "profit"
+                  : backtestResult.profitFactor < 1
+                    ? "loss"
+                    : undefined
+              }
+            />
+            <BacktestStat
+              label="Wins / Losses"
+              value={`${backtestResult.wins} / ${backtestResult.losses}`}
+            />
+          </div>
+        ) : (
+          <p style={{ color: "var(--text-secondary)", fontSize: 14 }}>
+            Click the button to simulate this engine over the loaded history. 1R
+            = distance from entry to stop-loss. No fees or slippage modelled.
+          </p>
+        )}
       </div>
 
       <div className="glass-card live-history-card">
@@ -355,6 +544,23 @@ function IndicatorCell({ label, value }: { label: string; value: string }) {
     <div className="live-indicator-cell">
       <span className="live-indicator-label">{label}</span>
       <span className="live-indicator-value">{value}</span>
+    </div>
+  );
+}
+
+function BacktestStat({
+  label,
+  value,
+  variant,
+}: {
+  label: string;
+  value: string;
+  variant?: "profit" | "loss";
+}) {
+  return (
+    <div className="live-indicator-cell">
+      <span className="live-indicator-label">{label}</span>
+      <span className={`live-indicator-value ${variant ?? ""}`}>{value}</span>
     </div>
   );
 }

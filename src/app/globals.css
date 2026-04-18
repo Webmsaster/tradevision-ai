@@ -1000,6 +1000,33 @@ tr:last-child td { border-bottom: none; }
 .live-history-table th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); font-weight: 600; }
 .live-history-reasons { color: var(--text-secondary); font-size: 0.8rem; }
 
+.live-badges { display: flex; gap: 8px; flex-wrap: wrap; }
+.live-badge { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; background: rgba(255,255,255,0.05); color: var(--text-secondary); border: 1px solid rgba(255,255,255,0.08); }
+.live-badge.regime-trending { color: var(--profit); background: var(--profit-bg); border-color: rgba(0,255,136,0.2); }
+.live-badge.regime-ranging { color: var(--neutral, #fbbf24); background: rgba(251,191,36,0.08); border-color: rgba(251,191,36,0.2); }
+.live-badge.htf-long { color: var(--profit); background: var(--profit-bg); border-color: rgba(0,255,136,0.2); }
+.live-badge.htf-short { color: var(--loss); background: var(--loss-bg); border-color: rgba(255,71,87,0.2); }
+.live-badge.htf-flat, .live-badge.htf-unknown { color: var(--text-secondary); }
+
+.live-levels { display: flex; flex-direction: column; gap: 6px; padding: 12px; background: rgba(255,255,255,0.02); border-radius: 8px; border: 1px solid rgba(255,255,255,0.06); }
+.live-level-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; }
+.live-level-row span { color: var(--text-secondary); }
+.live-level-row strong { font-family: ui-monospace, monospace; font-weight: 600; color: var(--text-primary); }
+.live-level-row strong.profit { color: var(--profit); }
+.live-level-row strong.loss { color: var(--loss); }
+
+.live-backtest-card { margin-bottom: 20px; }
+.live-backtest-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.live-backtest-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.live-indicator-value.profit { color: var(--profit); }
+.live-indicator-value.loss { color: var(--loss); }
+
+.btn.active { background: var(--accent-blue); color: #fff; }
+
+@media (max-width: 700px) {
+  .live-backtest-stats { grid-template-columns: repeat(2, 1fr); }
+}
+
 .live-action-chip { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.04em; }
 .live-action-chip.long { color: var(--profit); background: var(--profit-bg); }
 .live-action-chip.short { color: var(--loss); background: var(--loss-bg); }

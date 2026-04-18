@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sma, ema, rsi, macd, atr, Candle } from "@/utils/indicators";
+import { sma, ema, rsi, macd, atr, adx, Candle } from "@/utils/indicators";
 
 describe("sma", () => {
   it("returns all nulls when period exceeds data", () => {
@@ -115,6 +115,39 @@ function candle(
     isFinal: true,
   };
 }
+
+describe("adx", () => {
+  it("returns all nulls without enough data", () => {
+    const cs: Candle[] = Array.from({ length: 10 }, (_, i) =>
+      candle(100, 101, 99, 100, i),
+    );
+    const result = adx(cs, 14);
+    expect(result.adx.every((v) => v === null)).toBe(true);
+  });
+
+  it("reports high ADX for a strong trend", () => {
+    const cs: Candle[] = Array.from({ length: 80 }, (_, i) =>
+      candle(100 + i, 100 + i + 1, 100 + i - 0.2, 100 + i + 0.9, i * 60_000),
+    );
+    const result = adx(cs, 14);
+    const last = result.adx.at(-1);
+    expect(last).not.toBeNull();
+    expect(last!).toBeGreaterThan(40);
+    expect(result.plusDi.at(-1)!).toBeGreaterThan(result.minusDi.at(-1)!);
+  });
+
+  it("reports low ADX for a ranging market", () => {
+    // Tight oscillation around 100
+    const cs: Candle[] = Array.from({ length: 80 }, (_, i) => {
+      const mid = 100 + (i % 2 === 0 ? 0.05 : -0.05);
+      return candle(mid, mid + 0.1, mid - 0.1, mid, i * 60_000);
+    });
+    const result = adx(cs, 14);
+    const last = result.adx.at(-1);
+    expect(last).not.toBeNull();
+    expect(last!).toBeLessThan(30);
+  });
+});
 
 describe("atr", () => {
   it("returns nulls when insufficient data", () => {

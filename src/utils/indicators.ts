@@ -113,6 +113,97 @@ export function macd(
   return { macd: macdLine, signal: signalLine, histogram };
 }
 
+export interface AdxOutput {
+  adx: (number | null)[];
+  plusDi: (number | null)[];
+  minusDi: (number | null)[];
+}
+
+/**
+ * Average Directional Index + directional indicators. Classic Wilder smoothing.
+ * ADX < 20 = weak/no trend (ranging), 20-40 = trending, > 40 = very strong trend.
+ */
+export function adx(candles: Candle[], period = 14): AdxOutput {
+  const n = candles.length;
+  const empty: AdxOutput = {
+    adx: new Array(n).fill(null),
+    plusDi: new Array(n).fill(null),
+    minusDi: new Array(n).fill(null),
+  };
+  if (n < period * 2 + 1) return empty;
+
+  const tr: number[] = new Array(n).fill(0);
+  const plusDm: number[] = new Array(n).fill(0);
+  const minusDm: number[] = new Array(n).fill(0);
+
+  for (let i = 1; i < n; i++) {
+    const c = candles[i];
+    const p = candles[i - 1];
+    const upMove = c.high - p.high;
+    const downMove = p.low - c.low;
+    plusDm[i] = upMove > downMove && upMove > 0 ? upMove : 0;
+    minusDm[i] = downMove > upMove && downMove > 0 ? downMove : 0;
+    tr[i] = Math.max(
+      c.high - c.low,
+      Math.abs(c.high - p.close),
+      Math.abs(c.low - p.close),
+    );
+  }
+
+  // Wilder smoothing
+  let trSum = 0;
+  let plusDmSum = 0;
+  let minusDmSum = 0;
+  for (let i = 1; i <= period; i++) {
+    trSum += tr[i];
+    plusDmSum += plusDm[i];
+    minusDmSum += minusDm[i];
+  }
+
+  const plusDiArr: (number | null)[] = new Array(n).fill(null);
+  const minusDiArr: (number | null)[] = new Array(n).fill(null);
+  const dxArr: number[] = [];
+
+  plusDiArr[period] = trSum === 0 ? 0 : (plusDmSum / trSum) * 100;
+  minusDiArr[period] = trSum === 0 ? 0 : (minusDmSum / trSum) * 100;
+  const firstDx =
+    plusDiArr[period]! + minusDiArr[period]! === 0
+      ? 0
+      : (Math.abs(plusDiArr[period]! - minusDiArr[period]!) /
+          (plusDiArr[period]! + minusDiArr[period]!)) *
+        100;
+  dxArr.push(firstDx);
+
+  for (let i = period + 1; i < n; i++) {
+    trSum = trSum - trSum / period + tr[i];
+    plusDmSum = plusDmSum - plusDmSum / period + plusDm[i];
+    minusDmSum = minusDmSum - minusDmSum / period + minusDm[i];
+    const plusDi = trSum === 0 ? 0 : (plusDmSum / trSum) * 100;
+    const minusDi = trSum === 0 ? 0 : (minusDmSum / trSum) * 100;
+    plusDiArr[i] = plusDi;
+    minusDiArr[i] = minusDi;
+    const dx =
+      plusDi + minusDi === 0
+        ? 0
+        : (Math.abs(plusDi - minusDi) / (plusDi + minusDi)) * 100;
+    dxArr.push(dx);
+  }
+
+  // dxArr[k] corresponds to candles[period + k]. First ADX seed = SMA of first `period`
+  // dx values, placed at candles[2*period - 1]. Subsequent values use Wilder smoothing.
+  const adxArr: (number | null)[] = new Array(n).fill(null);
+  if (dxArr.length >= period) {
+    let adxVal = dxArr.slice(0, period).reduce((s, v) => s + v, 0) / period;
+    adxArr[2 * period - 1] = adxVal;
+    for (let i = period; i < dxArr.length; i++) {
+      adxVal = (adxVal * (period - 1) + dxArr[i]) / period;
+      adxArr[period + i] = adxVal;
+    }
+  }
+
+  return { adx: adxArr, plusDi: plusDiArr, minusDi: minusDiArr };
+}
+
 export function atr(candles: Candle[], period = 14): (number | null)[] {
   const out: (number | null)[] = new Array(candles.length).fill(null);
   if (candles.length <= period) return out;
