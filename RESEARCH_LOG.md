@@ -123,3 +123,41 @@ Baseline (100% maker fill):
 3. BTC→ALT lead-lag on 1h (Aliyev 2025, DSFE) — when BTC+1.5%/h while ETH <+0.5%, long ETH next hour
 4. Integrate vol-regime option into liveSignals.ts UI
 5. Rolling-window DSR (significance over time, not just overall)
+
+## Iteration 4 results (2026-04-18)
+
+**OI + Taker-Imbalance (Easley 2024):**
+
+- Binance `/futures/data/openInterestHist` limited to 30d history (500 samples at 1h) — INSUFFICIENT for full backtest
+- Only 1-3 signals fire in 30d on BTC/ETH/SOL
+- Results inconclusive on small sample: BTC -1.3%, ETH +3.4% (1 trade), SOL -1.5% (1 trade)
+- Module usable for LIVE signal detection, not backtest validation
+- To validate properly: need Coinglass API ($ paid) or collect OI snapshots yourself over months
+
+**BTC → ALT Lead-Lag (Aliyev 2025):**
+
+| Symbol | BTC threshold | Alt max move | Hold | Trades | Return                  | WR      | PF       | Sharpe   | DD   |
+| ------ | ------------- | ------------ | ---- | ------ | ----------------------- | ------- | -------- | -------- | ---- |
+| SOL    | 1.0%          | 0.5%         | 3h   | **34** | **+7.9%**               | **71%** | **1.59** | **0.66** | 6.6% |
+| SOL    | 1.5%          | 0.5%         | 3h   | 11     | -1.7%                   | 64%     | 0.85     | -0.19    | 6.1% |
+| SOL    | 1.5%          | 0.5%         | 6h   | 11     | +3.2%                   | 73%     | 1.48     | 0.46     | 5.8% |
+| ETH    | any           | any          | any  | —      | NEGATIVE on all configs | —       | —        | —        | —    |
+
+**SOL Lead-Lag config (BTC>1%, alt<0.5%, 3h hold) is a real verified edge** — PF 1.59, WR 71%, 34 trades in 2.5 years. Not a home run but honest positive.
+
+**ETH Lead-Lag does NOT work** — ETH often leads BTC in 2024-2025, not the other way around. Per the research, the signal direction can invert depending on the liquidity leader at the time.
+
+### Iteration 4 findings
+
+1. **Lead-Lag works on SOL but not ETH** — liquidity hierarchy matters; ETH has become a lead rather than lag asset.
+2. **OI data ceiling at 30 days is a real constraint** on Binance Free API. To properly backtest OI-based strategies, need paid provider (Coinglass, Kaiko, or Glassnode).
+3. **Narrative-driven flow (retail chart-watching BTC and buying alts) creates the 1-3h SOL lag** — structural, not easy to arbitrage.
+4. Tight thresholds (btcT=2%) fire too rarely for stats; loose (btcT=1%) fire enough and still profitable on SOL.
+
+### Next iteration targets
+
+1. Add SOL Lead-Lag to ensemble (it's a verified independent diversifier)
+2. Rolling-window DSR (how does Champion's DSR evolve over time?)
+3. Funding-Settlement-Minute Reversion — still pending
+4. Vol-regime in liveSignals UI (visible to user)
+5. Continuous forward-testing: store Champion signal predictions + actual outcomes to compute real live Sharpe over time
