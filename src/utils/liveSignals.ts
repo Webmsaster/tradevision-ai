@@ -30,6 +30,7 @@ import {
   fetchCoinbasePremium,
   type PremiumSnapshot,
 } from "@/utils/coinbasePremium";
+import { fetchBybitBasis, type BybitBasisSnapshot } from "@/utils/bybitBasis";
 import {
   classifyRegimes,
   type Regime,
@@ -132,6 +133,7 @@ export interface LiveSignalsReport {
   health: StrategyHealthSnapshot[];
   volRegime: VolRegimeSnapshot[];
   coinbasePremium?: PremiumSnapshot;
+  bybitBasis?: BybitBasisSnapshot;
   currentRegimes?: CurrentRegime[];
   portfolioSummary?: PortfolioSummary;
   alerts?: AlertVerdict[];
@@ -502,6 +504,12 @@ export async function computeLiveSignals(
   } catch {
     // ignore — US/Coinbase access may be rate-limited or blocked
   }
+  let bybitBasis: BybitBasisSnapshot | undefined;
+  try {
+    bybitBasis = await fetchBybitBasis();
+  } catch {
+    // ignore — Bybit may be region-restricted
+  }
 
   // ---- Per-symbol current regime + which strategies are allowed ----
   const currentRegimes: CurrentRegime[] = [];
@@ -585,6 +593,7 @@ export async function computeLiveSignals(
     health,
     volRegime,
     coinbasePremium,
+    bybitBasis,
     currentRegimes,
     portfolioSummary,
     alerts,

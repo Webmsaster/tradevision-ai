@@ -807,3 +807,37 @@ Both persist alert state in `prevVerdictsRef` (React ref) so notifications fire 
 3. Paper-trade mode: one-click "Take alert" → record in signal journal + set exit timer
 4. Strategy contribution pie-chart (which strategies drove which share of P&L)
 5. Ensemble equity split by regime (show how portfolio did in each regime bucket)
+
+## Iteration 22 (2026-04-18) — Bybit basis live + Paper-trade "Take" button
+
+**Bybit Basis signal** (`src/utils/bybitBasis.ts`):
+
+- Fetches BTC spot + linear-perp `/v5/market/tickers` in parallel
+- Computes `(perp - spot) / spot` basis
+- Classifies: contango / backwardation / flat × extreme/strong/moderate/noise
+- Unlike OKX where spot+perp are same-exchange USDT and arb instantly, Bybit perp trades separately enough to show basis
+
+**Live snapshot verification:** Spot $75827, Perp $75783, **basis -0.0591% backwardation** (mild — shorts crowded). Consistent with Coinbase Premium (-0.04%) + SOL L/S 3.88. **Triangulated picture confirms short-dominant current regime.**
+
+Wired into `liveSignals.ts` and UI panel alongside Coinbase Premium.
+
+**Paper-trade "Take" button** in alerts table:
+
+- For verdict = TAKE or CAUTIOUS, renders a button in a new column
+- Click records signal in `signalJournal` (localStorage-persistent) with current entry/target/stop/confidence from the active Champion
+- Alert-confirmation popup shows recorded price
+- Closes the loop: user sees ★★★ alert → one click → journaled → comparable to live Sharpe later
+
+### Iter 22 findings
+
+1. **Three sentiment signals triangulate** — Coinbase Premium (fiat wall), Bybit Basis (perp-spot), L/S ratio (positioning). When all three point backwardation/crowded-short, that's stronger than any one alone.
+2. **Bybit WORKS where OKX didn't** — because perp-vs-spot basis has legitimate flow mechanics (funding-rate anchored, not simple arb). OKX was just spot vs Binance spot = instant arb.
+3. **Paper-trade button closes the feedback loop** — user builds a live-trade journal effortlessly, eventually accumulating the ground-truth Sharpe vs backtest estimate.
+
+### Next iteration targets
+
+1. Deribit 25-delta risk reversal (options skew as direction filter, Deribit Insights)
+2. Strategy contribution pie chart (% of portfolio P&L per strategy)
+3. Equity-by-regime chart (stack ensemble equity colored by regime)
+4. Periodic auto-record: when user confirms a paper-trade, auto-close after hold-until time passes
+5. Research: Hyperliquid or dYdX perp flow (DEX perp sentiment vs CEX)

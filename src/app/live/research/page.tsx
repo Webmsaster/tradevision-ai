@@ -2010,6 +2010,7 @@ function LiveSignalsPanel({
                       <th>Verdict</th>
                       <th>Conditions</th>
                       <th>Summary</th>
+                      <th>Take</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2067,6 +2068,39 @@ function LiveSignalsPanel({
                           title={a.detail.join(" | ")}
                         >
                           {a.summary}
+                        </td>
+                        <td>
+                          {a.verdict === "take" || a.verdict === "cautious" ? (
+                            <button
+                              className="btn btn-primary"
+                              style={{ fontSize: 11, padding: "4px 8px" }}
+                              onClick={() => {
+                                const ch = report.champion.find(
+                                  (c) => c.symbol === a.symbol,
+                                );
+                                if (!ch || ch.action === "flat") return;
+                                recordSignal({
+                                  symbol: a.symbol,
+                                  strategy: "Champion",
+                                  direction: a.action,
+                                  entryTime: Date.now(),
+                                  entryPrice: ch.entryPrice,
+                                  targetPrice: ch.targetPrice,
+                                  stopPrice: ch.stopPrice,
+                                  plannedExitTime: Date.now() + 60 * 60 * 1000,
+                                  confidence: ch.confidence,
+                                  expectedEdgeBps: ch.expectedEdgeBps,
+                                });
+                                alert(
+                                  `✓ Recorded ${a.action.toUpperCase()} ${a.symbol} @ ${ch.entryPrice.toFixed(2)} in signal journal`,
+                                );
+                              }}
+                            >
+                              Take
+                            </button>
+                          ) : (
+                            "—"
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -2224,6 +2258,53 @@ function LiveSignalsPanel({
                 Regime derived from 1-week rolling realized-vol + funding +
                 trend. Whitelist from iter-10 empirical PnL matrix. BLOCKED =
                 strategy historically lost money in this regime.
+              </p>
+            </>
+          )}
+
+          {report.bybitBasis && (
+            <>
+              <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
+                Bybit Basis (BTC spot vs perp) — positioning indicator
+              </h3>
+              <div className="live-backtest-stats">
+                <Stat
+                  label="Spot"
+                  value={report.bybitBasis.spotPriceUsdt.toFixed(0)}
+                />
+                <Stat
+                  label="Perp"
+                  value={report.bybitBasis.perpPriceUsdt.toFixed(0)}
+                />
+                <Stat
+                  label="Basis"
+                  value={`${(report.bybitBasis.basisPct * 100).toFixed(3)}%`}
+                  tone={
+                    report.bybitBasis.signal === "contango"
+                      ? "profit"
+                      : report.bybitBasis.signal === "backwardation"
+                        ? "loss"
+                        : undefined
+                  }
+                />
+                <Stat
+                  label="Signal"
+                  value={report.bybitBasis.signal.toUpperCase()}
+                  tone={
+                    report.bybitBasis.signal === "contango"
+                      ? "profit"
+                      : report.bybitBasis.signal === "backwardation"
+                        ? "loss"
+                        : undefined
+                  }
+                />
+                <Stat label="Magnitude" value={report.bybitBasis.magnitude} />
+              </div>
+              <p
+                className="live-muted-note"
+                style={{ marginTop: 8, fontSize: 12 }}
+              >
+                {report.bybitBasis.interpretation}
               </p>
             </>
           )}
