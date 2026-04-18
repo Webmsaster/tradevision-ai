@@ -611,3 +611,47 @@ The regime gate is a precision filter — drops only 2.6% of trades but those 2.
 3. **UI: regime timeline chart** (color bands per historical week)
 4. **BTC-ETF manual-paste widget** — user enters overnight ETF flow, system applies Mazur 2024 rule
 5. Explore: Bybit public API for 3-way premium triangulation (Binance-Bybit-Coinbase)
+
+## Iteration 17 (2026-04-18) — USDT Supply: HONEST NEGATIVE
+
+**Data source:** CoinGecko `/coins/tether/market_chart?days=365` — daily USDT market cap. Delta = daily net mint/burn proxy.
+
+**Sample stats (366 days):**
+
+- Mean daily delta: +$114M (USDT slowly growing)
+- Std: $226M
+- Max mint: $1073M, Max burn: -$1131M
+
+**Backtest results:**
+
+| Config                    | Signals | Trades | WR   | PF   | Sharpe    | Return | DD    |
+| ------------------------- | ------- | ------ | ---- | ---- | --------- | ------ | ----- |
+| $500M mint 24h long+short | 27      | 26     | 35%  | 0.37 | **-2.00** | -12.1% | 13.4% |
+| $300M mint 24h long-only  | 64      | 63     | 44%  | 0.63 | -1.50     | -16.5% | 19.0% |
+| +1σ mint 24h long-only    | 51      | 50     | 42%  | 0.60 | -1.48     | -15.5% | 18.0% |
+| +2σ mint 24h long+short   | 22      | 21     | 48%  | 0.68 | -0.77     | -5.1%  | 11.2% |
+| $1B mint 48h long+short   | 2       | 2      | 100% | 999  | 2.62      | +1.9%  | 0.0%  |
+
+**HONEST CONCLUSION: USDT supply signal DOES NOT replicate.** Grobys/Huynh 2022 effect appears arbed away in 2024-2025 data. Only the tiny $1B 2-trade sample "works" — and that's pure sampling noise.
+
+**Hypotheses why it failed:**
+
+1. **Pre-announcement**: Tether mints are now broadcast before chain finality — bots front-run
+2. **Chain-redistribution noise**: Daily market-cap delta includes cross-chain transfers, not just mints
+3. **Regime dependence**: Paper was trained on 2019-2021 (crypto-native liquidity flows); post-ETF era has different mechanics
+
+**Module shipped anyway:** `src/utils/stablecoinSupply.ts` — can be repurposed if we find a better threshold or combine with another confirmation signal.
+
+### Iteration 17 findings
+
+1. **USDT daily-supply signal is dead** for directional BTC trading — don't add to ensemble.
+2. **Two honest negatives in a row** (iter 16 OKX + iter 17 USDT) — reinforces that most "sounds good" edges don't replicate. The verified ensemble IS the edge.
+3. **Sample-size paradox**: $1B threshold gave Sharpe 2.62 but only 2 trades — correctly identified as noise, not celebrated.
+
+### Next iteration targets
+
+1. **Time for UI consolidation** — less new edge-hunting, more exposing the VERIFIED signals to the user
+2. Add regime timeline chart (historical colored band per week)
+3. Add portfolio DSR gauge to live signals panel
+4. Add BTC-ETF manual-paste widget with Mazur 2024 rule
+5. Consider: "Edge-coverage" dashboard — current regime + which strategies are allowed + their live readings
