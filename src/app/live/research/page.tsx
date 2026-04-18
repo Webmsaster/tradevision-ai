@@ -32,7 +32,7 @@ import type { LiveTimeframe } from "@/hooks/useLiveCandles";
 const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const;
 const TFS: LiveTimeframe[] = ["5m", "15m", "1h", "4h", "1d", "1w"];
 const COUNTS = [1000, 3000, 6000, 12000];
-const MATRIX_TFS: LiveTimeframe[] = ["1h", "4h", "1d", "1w"];
+const MATRIX_TFS: LiveTimeframe[] = ["5m", "15m", "1h", "4h", "1d"];
 
 function fmtPct(v: number): string {
   return `${v >= 0 ? "+" : ""}${(v * 100).toFixed(2)}%`;
@@ -322,9 +322,10 @@ export default function ResearchPage() {
             >
               <option value="regime-switch">Regime switch</option>
               <option value="ensemble">Ensemble (4-of-6 vote)</option>
-              <option value="trend-filter">
-                Trend filter (200-SMA, Faber)
-              </option>
+              <option value="trend-filter">Trend filter (50-SMA, Faber)</option>
+              <option value="orb">Opening Range Breakout</option>
+              <option value="vwap-reversion">VWAP Reversion 2σ</option>
+              <option value="liq-fade">Liquidation Cascade Fade</option>
             </select>
           </label>
           <button

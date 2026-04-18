@@ -75,7 +75,14 @@ export async function runAutoMatrix({
   symbols,
   timeframes,
   targetCount,
-  modes = ["regime-switch", "ensemble", "trend-filter"],
+  modes = [
+    "regime-switch",
+    "ensemble",
+    "trend-filter",
+    "orb",
+    "vwap-reversion",
+    "liq-fade",
+  ],
   onProgress,
 }: MatrixRunOptions): Promise<MatrixCell[]> {
   const out: MatrixCell[] = [];

@@ -9,6 +9,11 @@ import {
 import { ensembleStrategy } from "@/utils/ensembleStrategy";
 import { trendFilterStrategy } from "@/utils/trendFilterStrategy";
 import {
+  orbStrategy,
+  vwapReversionStrategy,
+  liquidationFadeStrategy,
+} from "@/utils/daytradeStrategies";
+import {
   computeMetrics,
   type PerformanceMetrics,
 } from "@/utils/performanceMetrics";
@@ -48,7 +53,13 @@ const TF_HOURS_MAP: Record<string, number> = {
   "1w": 24 * 7,
 };
 
-export type StrategyMode = "regime-switch" | "ensemble" | "trend-filter";
+export type StrategyMode =
+  | "regime-switch"
+  | "ensemble"
+  | "trend-filter"
+  | "orb"
+  | "vwap-reversion"
+  | "liq-fade";
 
 export interface RunOptions {
   candles: Candle[];
@@ -65,6 +76,29 @@ export interface RunOptions {
  * opens/closes positions via SL/TP triggers, applies fees+slippage+funding to
  * every trade, and returns a report with an industry-standard metrics panel.
  */
+function pickDecision(
+  mode: StrategyMode,
+  window: Candle[],
+  strategy: StrategyConfig,
+  ensembleRequiredAgreement: number,
+) {
+  switch (mode) {
+    case "ensemble":
+      return ensembleStrategy(window, strategy, ensembleRequiredAgreement);
+    case "trend-filter":
+      return trendFilterStrategy(window, strategy);
+    case "orb":
+      return orbStrategy(window, strategy);
+    case "vwap-reversion":
+      return vwapReversionStrategy(window, strategy);
+    case "liq-fade":
+      return liquidationFadeStrategy(window, strategy);
+    case "regime-switch":
+    default:
+      return regimeSwitch(window, strategy).decision;
+  }
+}
+
 export function runAdvancedBacktest({
   candles,
   timeframe,
@@ -131,12 +165,12 @@ export function runAdvancedBacktest({
       // drawdowns bounded. Without it, the static ATR stop can be 40%+ below
       // entry and the position bleeds through the full bear market.
       if (open) {
-        const signalDecision =
-          mode === "ensemble"
-            ? ensembleStrategy(window, strategy, ensembleRequiredAgreement)
-            : mode === "trend-filter"
-              ? trendFilterStrategy(window, strategy)
-              : regimeSwitch(window, strategy).decision;
+        const signalDecision = pickDecision(
+          mode,
+          window,
+          strategy,
+          ensembleRequiredAgreement,
+        );
         const shouldFlipExit =
           signalDecision.action === "flat" ||
           signalDecision.action !== open.direction;
@@ -167,12 +201,12 @@ export function runAdvancedBacktest({
     }
 
     if (!open) {
-      const decision =
-        mode === "ensemble"
-          ? ensembleStrategy(window, strategy, ensembleRequiredAgreement)
-          : mode === "trend-filter"
-            ? trendFilterStrategy(window, strategy)
-            : regimeSwitch(window, strategy).decision;
+      const decision = pickDecision(
+        mode,
+        window,
+        strategy,
+        ensembleRequiredAgreement,
+      );
       if (
         decision.action !== "flat" &&
         decision.stopDistance !== null &&
