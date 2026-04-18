@@ -19,7 +19,12 @@ export interface MatrixCell {
   sortino: number;
   profitFactor: number;
   maxDrawdownPct: number;
-  verdict: "positive" | "marginal" | "no-edge" | "inconclusive";
+  verdict:
+    | "positive"
+    | "low-freq-positive"
+    | "marginal"
+    | "no-edge"
+    | "inconclusive";
 }
 
 export interface MatrixRunOptions {
@@ -32,15 +37,31 @@ export interface MatrixRunOptions {
 
 function verdictFor(report: BacktestReport): MatrixCell["verdict"] {
   const m = report.metrics;
+  const pf = m.profitFactor === Infinity ? 999 : m.profitFactor;
+
+  // Low-frequency strategies (Faber-style): few trades, each a massive winner.
+  // Research-accepted when Sharpe and PF are very high even with small n.
+  if (
+    m.trades >= 3 &&
+    m.trades < 20 &&
+    m.totalReturnPct > 0.5 &&
+    pf > 2 &&
+    m.sharpe > 2
+  ) {
+    return "low-freq-positive";
+  }
+
   if (m.trades < 20) return "inconclusive";
+
   if (
     m.totalReturnPct > 0 &&
-    m.profitFactor > 1.3 &&
+    pf > 1.3 &&
     m.sharpe > 0.8 &&
     m.maxDrawdownPct < 0.3
-  )
+  ) {
     return "positive";
-  if (m.totalReturnPct > 0 && m.profitFactor > 1) return "marginal";
+  }
+  if (m.totalReturnPct > 0 && pf > 1) return "marginal";
   return "no-edge";
 }
 
@@ -54,7 +75,7 @@ export async function runAutoMatrix({
   symbols,
   timeframes,
   targetCount,
-  modes = ["regime-switch", "ensemble"],
+  modes = ["regime-switch", "ensemble", "trend-filter"],
   onProgress,
 }: MatrixRunOptions): Promise<MatrixCell[]> {
   const out: MatrixCell[] = [];

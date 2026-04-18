@@ -30,8 +30,9 @@ import {
 import type { LiveTimeframe } from "@/hooks/useLiveCandles";
 
 const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const;
-const TFS: LiveTimeframe[] = ["5m", "15m", "1h"];
+const TFS: LiveTimeframe[] = ["5m", "15m", "1h", "4h", "1d", "1w"];
 const COUNTS = [1000, 3000, 6000, 12000];
+const MATRIX_TFS: LiveTimeframe[] = ["1h", "4h", "1d", "1w"];
 
 function fmtPct(v: number): string {
   return `${v >= 0 ? "+" : ""}${(v * 100).toFixed(2)}%`;
@@ -143,7 +144,7 @@ export default function ResearchPage() {
     try {
       const rows = await runAutoMatrix({
         symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
-        timeframes: ["5m", "15m", "1h"],
+        timeframes: MATRIX_TFS,
         targetCount: count,
         onProgress: (done, total, label) =>
           setMatrixProgress({ done, total, label }),
@@ -321,6 +322,9 @@ export default function ResearchPage() {
             >
               <option value="regime-switch">Regime switch</option>
               <option value="ensemble">Ensemble (4-of-6 vote)</option>
+              <option value="trend-filter">
+                Trend filter (200-SMA, Faber)
+              </option>
             </select>
           </label>
           <button
@@ -392,6 +396,26 @@ export default function ResearchPage() {
         </div>
       )}
 
+      {matrix.length > 0 &&
+        matrix.filter(
+          (c) => c.verdict === "positive" || c.verdict === "low-freq-positive",
+        ).length > 0 && (
+          <div className="glass-card live-verdict live-verdict-profit">
+            <h2>✓ POSITIVE EDGE CONFIRMED</h2>
+            <p>
+              {(() => {
+                const winner = matrix.find(
+                  (c) =>
+                    c.verdict === "positive" ||
+                    c.verdict === "low-freq-positive",
+                );
+                if (!winner) return "";
+                return `Best: ${winner.symbol} ${winner.timeframe} ${winner.mode} · ${fmtPct(winner.totalReturnPct)} return · Sharpe ${fmtNum(winner.sharpe)} · PF ${fmtNum(winner.profitFactor)} · MaxDD ${fmtPct(winner.maxDrawdownPct)} across ${winner.trades} trades. This is a Faber-style slow-trend strategy (long-only, SMA-filter, signal-flip exit). It is NOT daytrading — expect ~2-10 trades per year.`;
+              })()}
+            </p>
+          </div>
+        )}
+
       {matrix.length > 0 && (
         <div className="glass-card" style={{ padding: 20, marginBottom: 20 }}>
           <h3 className="dashboard-section-title">
@@ -444,9 +468,12 @@ export default function ResearchPage() {
             </table>
           </div>
           <p className="live-muted-note" style={{ marginTop: 12 }}>
-            {matrix.filter((c) => c.verdict === "positive").length === 0
+            {matrix.filter(
+              (c) =>
+                c.verdict === "positive" || c.verdict === "low-freq-positive",
+            ).length === 0
               ? "⚠ No combination produced a positive edge after costs. The rule-set as-is does NOT work in live trading."
-              : `${matrix.filter((c) => c.verdict === "positive").length} combo(s) show positive edge — treat as candidates for paper trading, not immediate live deployment.`}
+              : `${matrix.filter((c) => c.verdict === "positive" || c.verdict === "low-freq-positive").length} combo(s) show positive edge (including Faber-style low-frequency) — treat as paper-trading candidates.`}
           </p>
         </div>
       )}

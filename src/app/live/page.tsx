@@ -53,14 +53,20 @@ const HTF_FOR: Record<LiveTimeframe, LiveTimeframe> = {
   "1m": "15m",
   "5m": "1h",
   "15m": "1h",
-  "1h": "1h",
+  "1h": "4h",
+  "4h": "1d",
+  "1d": "1w",
+  "1w": "1w",
 };
 
 const CONSENSUS_TFS: Record<LiveTimeframe, LiveTimeframe[]> = {
   "1m": ["1m", "5m", "15m"],
   "5m": ["5m", "15m", "1h"],
   "15m": ["15m", "1h"],
-  "1h": ["1h"],
+  "1h": ["1h", "4h"],
+  "4h": ["4h", "1d"],
+  "1d": ["1d", "1w"],
+  "1w": ["1w"],
 };
 
 function formatPrice(p: number): string {

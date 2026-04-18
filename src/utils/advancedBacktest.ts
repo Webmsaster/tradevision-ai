@@ -7,6 +7,7 @@ import {
   type StrategyName,
 } from "@/utils/strategies";
 import { ensembleStrategy } from "@/utils/ensembleStrategy";
+import { trendFilterStrategy } from "@/utils/trendFilterStrategy";
 import {
   computeMetrics,
   type PerformanceMetrics,
@@ -42,9 +43,12 @@ const TF_HOURS_MAP: Record<string, number> = {
   "5m": 5 / 60,
   "15m": 15 / 60,
   "1h": 1,
+  "4h": 4,
+  "1d": 24,
+  "1w": 24 * 7,
 };
 
-export type StrategyMode = "regime-switch" | "ensemble";
+export type StrategyMode = "regime-switch" | "ensemble" | "trend-filter";
 
 export interface RunOptions {
   candles: Candle[];
@@ -121,13 +125,54 @@ export function runAdvancedBacktest({
         });
         open = null;
       }
+
+      // For regime/trend-filter strategies, also exit when the strategy flips
+      // to flat (or reverses) — this is the mechanism that actually keeps
+      // drawdowns bounded. Without it, the static ATR stop can be 40%+ below
+      // entry and the position bleeds through the full bear market.
+      if (open) {
+        const signalDecision =
+          mode === "ensemble"
+            ? ensembleStrategy(window, strategy, ensembleRequiredAgreement)
+            : mode === "trend-filter"
+              ? trendFilterStrategy(window, strategy)
+              : regimeSwitch(window, strategy).decision;
+        const shouldFlipExit =
+          signalDecision.action === "flat" ||
+          signalDecision.action !== open.direction;
+        if (shouldFlipExit) {
+          const exitPrice = current.close;
+          const holdingHours = (i - open.openIndex) * hoursPerBar;
+          const cost = applyCosts({
+            entry: open.entry,
+            exit: exitPrice,
+            direction: open.direction,
+            holdingHours,
+            config: costs,
+          });
+          trades.push({
+            openTime: open.openTime,
+            closeTime: current.closeTime,
+            direction: open.direction,
+            strategy: open.strategy,
+            entry: open.entry,
+            exit: exitPrice,
+            holdingHours,
+            ...cost,
+            exitReason: "flip",
+          });
+          open = null;
+        }
+      }
     }
 
     if (!open) {
       const decision =
         mode === "ensemble"
           ? ensembleStrategy(window, strategy, ensembleRequiredAgreement)
-          : regimeSwitch(window, strategy).decision;
+          : mode === "trend-filter"
+            ? trendFilterStrategy(window, strategy)
+            : regimeSwitch(window, strategy).decision;
       if (
         decision.action !== "flat" &&
         decision.stopDistance !== null &&

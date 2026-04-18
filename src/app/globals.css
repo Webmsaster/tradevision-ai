@@ -1113,6 +1113,7 @@ tr:last-child td { border-bottom: none; }
 
 .matrix-verdict { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
 .matrix-verdict-positive { color: var(--profit); background: var(--profit-bg); }
+.matrix-verdict-low-freq-positive { color: var(--profit); background: var(--profit-bg); border: 1px solid var(--profit); }
 .matrix-verdict-marginal { color: var(--neutral, #fbbf24); background: rgba(251,191,36,0.12); }
 .matrix-verdict-no-edge { color: var(--loss); background: var(--loss-bg); }
 .matrix-verdict-inconclusive { color: var(--text-secondary); background: rgba(255,255,255,0.05); }
