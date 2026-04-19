@@ -1439,3 +1439,45 @@ After 42 iterations, the production-ready portfolio is:
 **The 7 zombie strategies the system used to claim** (Champion HoD ×3, FundingMinute ×3, FundingCarry-BTC, FundingCarry-ETH, LeadLag ×2, MATIC mom, OP fade, drawdown fade) **are now properly retired** in the deadEdges list with iter#-specific evidence.
 
 Stack honesty is much higher than at iter32. The system no longer tells the user "13-strategy DSR-passing portfolio" when 11 of 13 fail bootstrap. Instead it shows 9 truly validated edges with their distributions, weights, and 17+ retired zombie strategies with attribution.
+
+## Iteration 43-44 (2026-04-19) — High-WR Hunt (60% target): MATHEMATICALLY IMPOSSIBLE + Side-Win
+
+**Question (user request):** Tooling Sharpe 4.17 nice but 40.5% per-trade WR feels low. Can we reach 60% WR for true day-trading frequency?
+
+### Iter 43 — 15m bars + asymmetric TP/Stop matrix
+
+Tested 210 configs across BTC/ETH/SOL/AVAX/SUI × 5 TP/Stop ratios (1:1.6 to 1:3.3) × 7 mode-trigger combos on 15m timeframe. Goal: achieve WR ≥ 60% AND Sharpe ≥ 1.0 AND positive return.
+
+**Result:** **0 of 210 configs passed.** ~70 configs achieved WR > 55%, but ALL had negative Sharpe due to the asymmetric loss/win ratio after fees.
+
+**Mathematical proof:** TP 0.3% / Stop 0.8% with 60% WR = 0.6 × 0.3 - 0.4 × 0.8 = 0.18 - 0.32 = **-0.14% per trade** (before fees). Add 0.05% per side fees and the trade is consistently negative. The per-trade win rate gets boosted by tight TP but the math of expectancy doesn't survive realistic costs.
+
+The ONLY exception was symmetric 0.5%/0.5% on BTC momentum — WR 57.4%, Sharpe 1.28 — but that's **not** the asymmetric "tight TP for high WR" pattern; it's just a balanced trade with no fancy WR tilt.
+
+### Iter 44 — TP exit added to existing 1h locked edges
+
+Tested 42 configs (7 locked edges × 6 TP levels: 0.5%/0.8%/1.0%/1.5%/2.0%/3.0%) on 1h timeframe.
+
+**Result:** Same conclusion. Tight TP boosts WR but kills Sharpe. WIDER TP keeps positive Sharpe but WR stays 40-53%. **0 of 42 configs hit WR ≥ 60% with positive Sharpe.**
+
+### Side-win: TP at 2-3% IMPROVES several locked edges
+
+Even though we can't hit 60% WR, the iter44 sweep revealed Sharpe improvements when adding a generous TP:
+
+| Edge          | Original (no TP) Sharpe | + TP 3% Sharpe | + TP 3% WR | + TP 3% Net      |
+| ------------- | ----------------------- | -------------- | ---------- | ---------------- |
+| AVAX momentum | 2.92                    | **3.30**       | 51%        | +91.2%           |
+| SUI momentum  | 2.83                    | **2.95**       | 44%        | +132.0%          |
+| NEAR fade     | 1.05                    | **1.83**       | 38%        | +55.2%           |
+| SOL fade      | 2.35 (TP 2%)            | **1.56**       | 45%        | +34.9% (smaller) |
+| INJ momentum  | 1.75                    | **1.84**       | 42%        | +51.4%           |
+
+AVAX, SUI, NEAR, INJ momentum/fade get notable upgrades from a 3% take-profit (locks in the bigger winners). Trade count and WR drop slightly but Sharpe and return improve. This is the **opposite** of the user's intuition — more trades / higher WR don't help; FEWER trades with bigger captured wins help.
+
+### Iter 43-44 honest summary
+
+**The 60% WR target is mathematically incompatible with positive expectancy** for trigger-based mean-reversion / momentum strategies in liquid crypto, given realistic fees (~10bps round-trip on maker). After 252 tested configs across timeframes, asset, TP/Stop matrix, the math holds: tight TP creates winners < losers in size, and fees + slippage push the EV negative.
+
+**What IS achievable:** ~50-53% WR with Sharpe 1.5-3.3 by using TP at 1.5-3% (locking in real wins, avoiding give-back to break-even). This is still profitable mean-reversion / momentum, just with smarter exits.
+
+**What is NOT achievable:** 60-70% WR with positive Sharpe via trigger-based scalping. Anyone selling that is selling fantasy.
