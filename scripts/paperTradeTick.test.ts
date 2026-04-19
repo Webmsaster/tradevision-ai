@@ -43,6 +43,7 @@ import {
   STRATEGY_EDGE_STATS,
   type SizingMethod,
 } from "../src/utils/positionSizing";
+import { adaptiveStrategyStatsMap } from "../src/utils/adaptiveSizing";
 import {
   computeRiskState,
   evaluateEntry,
@@ -140,6 +141,17 @@ describe("Paper-Trade TICK (side-effect: updates ~/.tradevision-ai/paper-trades.
         `\nRisk state: capital $${CAPITAL}  daily ${(riskState.dailyRealisedPct * 100).toFixed(2)}%  open ${riskState.openCount}  longs ${riskState.openLongCount}  shorts ${riskState.openShortCount}`,
       );
 
+      // Iter78: adaptive stats — switches to live-measured edge when n≥30
+      const adaptive = adaptiveStrategyStatsMap(state.closedTrades);
+      for (const [k, r] of Object.entries(adaptive)) {
+        if (r.usedLive) {
+          const wrDelta = (r.stats.winRate - r.backtest.winRate) * 100;
+          console.log(
+            `  adaptive ${k}: n=${r.liveN} live WR ${(r.stats.winRate * 100).toFixed(1)}% (backtest ${(r.backtest.winRate * 100).toFixed(1)}%, ${wrDelta >= 0 ? "+" : ""}${wrDelta.toFixed(1)}pp)`,
+          );
+        }
+      }
+
       const dedupeKey = (s: string, sym: string) => `${s}|${sym}`;
       const existing = new Set(
         state.openPositions.map((p) => dedupeKey(p.strategy, p.symbol)),
@@ -160,7 +172,8 @@ describe("Paper-Trade TICK (side-effect: updates ~/.tradevision-ai/paper-trades.
       async function tryOpen(p: Proposed): Promise<void> {
         const key = dedupeKey(p.strategy, p.symbol);
         if (existing.has(key)) return;
-        const stats = STRATEGY_EDGE_STATS[p.strategy];
+        const stats =
+          adaptive[p.strategy]?.stats ?? STRATEGY_EDGE_STATS[p.strategy];
         const sizing = recommendSize({
           capital: CAPITAL,
           entry: p.entry,
