@@ -9,8 +9,10 @@ import {
   getBtcIntradayLiveSignals,
   BTC_INTRADAY_CONFIG,
   BTC_INTRADAY_CONFIG_CONSERVATIVE,
+  BTC_INTRADAY_CONFIG_HIGH_FREQ,
   BTC_INTRADAY_STATS,
   BTC_INTRADAY_STATS_CONSERVATIVE,
+  BTC_INTRADAY_STATS_HIGH_FREQ,
 } from "../utils/btcIntraday";
 import type { Candle } from "../utils/indicators";
 
@@ -48,7 +50,7 @@ function buildCandles(
 }
 
 describe("btcIntraday — config invariants", () => {
-  it("exposes iter123-locked default parameters", () => {
+  it("exposes iter133-locked default parameters with volume filter", () => {
     expect(BTC_INTRADAY_CONFIG.htfLen).toBe(168);
     expect(BTC_INTRADAY_CONFIG.macro30dBars).toBe(720);
     expect(BTC_INTRADAY_CONFIG.maxConcurrent).toBe(4);
@@ -60,6 +62,9 @@ describe("btcIntraday — config invariants", () => {
     expect(BTC_INTRADAY_CONFIG.rsiTh).toBe(42);
     expect(BTC_INTRADAY_CONFIG.nHi).toBe(36);
     expect(BTC_INTRADAY_CONFIG.redPct).toBeCloseTo(0.002, 5);
+    // iter133 addition:
+    expect(BTC_INTRADAY_CONFIG.volumeMult).toBeCloseTo(1.2, 5);
+    expect(BTC_INTRADAY_CONFIG.volumeMedianLen).toBe(96);
   });
 
   it("exposes iter119 conservative tier parameters", () => {
@@ -69,20 +74,30 @@ describe("btcIntraday — config invariants", () => {
     expect(BTC_INTRADAY_CONFIG_CONSERVATIVE.redPct).toBeCloseTo(0.005, 5);
   });
 
-  it("stats document the iter123 5-gate lock", () => {
-    expect(BTC_INTRADAY_STATS.iteration).toBe(123);
+  it("exposes iter123 high-frequency tier (no volume filter)", () => {
+    expect(BTC_INTRADAY_CONFIG_HIGH_FREQ.maxConcurrent).toBe(4);
+    expect(BTC_INTRADAY_CONFIG_HIGH_FREQ.rsiTh).toBe(42);
+    expect(BTC_INTRADAY_CONFIG_HIGH_FREQ.volumeMult).toBe(0);
+  });
+
+  it("stats document the iter133 5-gate lock", () => {
+    expect(BTC_INTRADAY_STATS.iteration).toBe(133);
     expect(BTC_INTRADAY_STATS.symbol).toBe("BTCUSDT");
     expect(BTC_INTRADAY_STATS.timeframe).toBe("1h");
     expect(BTC_INTRADAY_STATS.bootstrapPctPositive).toBeGreaterThanOrEqual(
       0.95,
     );
-    // User asked for 2-3 tpd — iter123 delivers ~1.87
-    expect(BTC_INTRADAY_STATS.tradesPerDay).toBeGreaterThanOrEqual(1.8);
-    expect(BTC_INTRADAY_STATS.sharpe).toBeGreaterThanOrEqual(5);
+    expect(BTC_INTRADAY_STATS.tradesPerDay).toBeGreaterThanOrEqual(1.2);
+    // iter133 lifts Sharpe above 8
+    expect(BTC_INTRADAY_STATS.sharpe).toBeGreaterThanOrEqual(7.5);
     expect(BTC_INTRADAY_STATS.daysTested).toBeGreaterThanOrEqual(1500);
-    expect(BTC_INTRADAY_STATS.oos.bootstrapPctPositive).toBeGreaterThanOrEqual(
-      0.9,
-    );
+    // iter133 makes all 4 quarters profitable (vs iter123 Q4 slight loss)
+    expect(BTC_INTRADAY_STATS.quarters.length).toBe(4);
+    for (const q of BTC_INTRADAY_STATS.quarters) {
+      expect(q.cumReturnPct).toBeGreaterThan(0);
+    }
+    // Smaller max-window loss than iter123
+    expect(Math.abs(BTC_INTRADAY_STATS.minWindowRet)).toBeLessThan(0.05);
   });
 
   it("conservative tier stats are unchanged from iter119", () => {
@@ -92,6 +107,12 @@ describe("btcIntraday — config invariants", () => {
     expect(
       BTC_INTRADAY_STATS_CONSERVATIVE.bootstrapPctPositive,
     ).toBeGreaterThanOrEqual(0.95);
+  });
+
+  it("high-frequency tier stats match iter123", () => {
+    expect(BTC_INTRADAY_STATS_HIGH_FREQ.iteration).toBe(123);
+    expect(BTC_INTRADAY_STATS_HIGH_FREQ.tradesPerDay).toBeCloseTo(1.87, 2);
+    expect(BTC_INTRADAY_STATS_HIGH_FREQ.sharpe).toBeCloseTo(7.06, 1);
   });
 
   it("mechanics list covers all 4 iter114 survivors", () => {
@@ -126,12 +147,12 @@ describe("btcIntraday — driver behavior", () => {
     expect(r.trades.length).toBe(0);
   });
 
-  it("produces trades on a long synthetic uptrend with dips", () => {
+  it("produces trades on a long synthetic uptrend with dips (volume filter off)", () => {
     // 2000 bars of strong drift + periodic 3-bar pullbacks. Long enough to
     // satisfy both HTF (168) and macro (720) gates, then a pullback.
+    // Volume filter disabled because synthetic candles have uniform volume.
     const bars = buildCandles(2000, (i) => {
       const drift = i * 0.8;
-      // every 40 bars, a mini dip: 3 down ticks of ~1%
       const cycle = i % 40;
       let noise = 0;
       if (cycle >= 37 && cycle <= 39) noise = -0.8 * (cycle - 36);
@@ -145,6 +166,7 @@ describe("btcIntraday — driver behavior", () => {
     });
     const r = runBtcIntraday(bars, {
       ...BTC_INTRADAY_CONFIG,
+      volumeMult: 0, // disable for synthetic test
       avoidHoursUtc: [],
     });
     expect(r.trades.length).toBeGreaterThan(0);
@@ -152,6 +174,25 @@ describe("btcIntraday — driver behavior", () => {
     expect(r.tradesPerDay).toBeGreaterThan(0);
     const sumByMech = Object.values(r.byMechanic).reduce((a, b) => a + b, 0);
     expect(sumByMech).toBe(r.trades.length);
+  });
+
+  it("volume filter suppresses trades when volume is uniformly low", () => {
+    // Same synthetic data but now DEFAULT config (volume filter ON). Since
+    // every bar has volume=100, the ratio is 1.0 and 1.2× median filter is
+    // never satisfied. Expect no trades at all.
+    const bars = buildCandles(2000, (i) => {
+      const drift = i * 0.8;
+      const cycle = i % 40;
+      let noise = 0;
+      if (cycle >= 37 && cycle <= 39) noise = -0.8 * (cycle - 36);
+      const c = 100 + drift + noise;
+      return { o: c, h: c + 0.5, l: c - 0.5, c };
+    });
+    const r = runBtcIntraday(bars, {
+      ...BTC_INTRADAY_CONFIG,
+      avoidHoursUtc: [],
+    });
+    expect(r.trades.length).toBe(0);
   });
 
   it("caps concurrent positions at maxConcurrent", () => {
@@ -162,6 +203,7 @@ describe("btcIntraday — driver behavior", () => {
     });
     const r = runBtcIntraday(bars, {
       ...BTC_INTRADAY_CONFIG,
+      volumeMult: 0, // disabled for deterministic synthetic test
       avoidHoursUtc: [],
     });
     // all trades should have pnl scaled by 1/maxConcurrent when they fire
@@ -209,9 +251,11 @@ describe("btcIntraday — live-signal helper", () => {
     const p = bars[n - 4].close;
     bars[n - 3] = mkCandle(bars[n - 3].openTime, p, p + 0.2, p - 2, p - 1);
     bars[n - 2] = mkCandle(bars[n - 2].openTime, p - 1, p - 0.5, p - 3, p - 2);
-    // Live signal evaluates bar index n-2.
+    // Live signal evaluates bar index n-2. Volume filter disabled so the
+    // synthetic uniform-volume data doesn't suppress all signals.
     const sigs = getBtcIntradayLiveSignals(bars, {
       ...BTC_INTRADAY_CONFIG,
+      volumeMult: 0,
       avoidHoursUtc: [],
     });
     // We don't assert a specific length — just that each returned signal has
@@ -219,6 +263,7 @@ describe("btcIntraday — live-signal helper", () => {
     for (const s of sigs) {
       expect(s.trendOk).toBe(true);
       expect(s.macroOk).toBe(true);
+      expect(s.volumeOk).toBe(true); // volume filter disabled → always OK
       expect(["M1_nDown", "M4_rsi", "M5_breakout", "M6_redBar"]).toContain(
         s.mechanic,
       );

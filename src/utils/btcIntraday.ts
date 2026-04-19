@@ -47,22 +47,35 @@ export interface BtcIntradayConfig {
   nHi: number;
   /** M6 trigger: (close−open)/open ≤ −redPct. */
   redPct: number;
+  /**
+   * Volume-participation filter (iter133). If > 0, require
+   *   volume[i] > volumeMult × median(volume[i−volumeMedianLen..i−1]).
+   * Lifts Sharpe from 7.06 → 8.23 and minWindowRet from −6.6% → −1.7%
+   * at the cost of tpd 1.87 → 1.26. Set to 0 to disable.
+   */
+  volumeMult?: number;
+  volumeMedianLen?: number;
   avoidHoursUtc?: number[];
   costs?: CostConfig;
 }
 
 /**
- * Iter 123-locked production config (new default).
+ * Iter 133-locked production config (new default).
  *
- * Upgraded from iter119 after user feedback "mehr Trades pro Tag 2-3":
- *   rsiTh 40 → 42  (lower bar on M4 oversold)
- *   nHi   48 → 36  (shorter M5 breakout lookback)
- *   redPct 0.5%→0.2% (smaller red-bar threshold on M6)
- *   maxConcurrent 3 → 4 (one more parallel slot)
+ * Upgrade over iter123 by adding a volume-participation filter
+ * (vol > 1.2 × median(volume, 96h)). Iter 130 showed volume confirmation
+ * filters out weak-hand false signals; iter 133 5-gate battery confirmed
+ * the upgrade on 2083 days of BTC history:
+ *   Sharpe 7.06 → 8.23 (+17%)
+ *   mean/trade 0.021% → 0.025% (+19%)
+ *   pctProf 80% → 90%
+ *   minW −6.6% → −1.7%
+ *   ALL 4 quarters positive (Q1 +35% / Q2 +12% / Q3 +18% / Q4 +6%)
+ *   OOS Sharpe 5.82 (vs iter123's 5.60), bs+ 87%
+ * Tradeoff: tpd 1.87 → 1.26 (fewer but higher-quality trades).
  *
- * Net effect: tpd 1.53 → 1.87 (+22%) at essentially unchanged Sharpe
- * (7.15 → 7.06). Bootstrap still 100% positive. OOS Sharpe 5.70 → 5.60.
- * All 5 iter119 gates re-passed on the new parameters.
+ * iter 131 tested multi-timeframe confluence — rejected (redundant with MG3).
+ * iter 129 tested multi-asset basket — rejected (SOL/LINK dilute Sharpe).
  */
 export const BTC_INTRADAY_CONFIG: BtcIntradayConfig = {
   htfLen: 168,
@@ -76,6 +89,30 @@ export const BTC_INTRADAY_CONFIG: BtcIntradayConfig = {
   rsiTh: 42,
   nHi: 36,
   redPct: 0.002,
+  volumeMult: 1.2,
+  volumeMedianLen: 96,
+  avoidHoursUtc: [0],
+  costs: MAKER_COSTS,
+};
+
+/**
+ * Iter 123 tier — same mechanics but WITHOUT volume filter. Keep for
+ * users who want maximum trade count at slightly lower Sharpe.
+ *   tpd 1.87 · Sharpe 7.06 · minW -6.6%
+ */
+export const BTC_INTRADAY_CONFIG_HIGH_FREQ: BtcIntradayConfig = {
+  htfLen: 168,
+  macro30dBars: 720,
+  maxConcurrent: 4,
+  tp1Pct: 0.008,
+  tp2Pct: 0.04,
+  stopPct: 0.01,
+  holdBars: 24,
+  rsiLen: 7,
+  rsiTh: 42,
+  nHi: 36,
+  redPct: 0.002,
+  volumeMult: 0, // disabled
   avoidHoursUtc: [0],
   costs: MAKER_COSTS,
 };
@@ -102,38 +139,65 @@ export const BTC_INTRADAY_CONFIG_CONSERVATIVE: BtcIntradayConfig = {
   costs: MAKER_COSTS,
 };
 
-/** Read-only iter123 validation stats, for disclosure in the UI. */
+/** Read-only iter133 validation stats (default config). */
 export const BTC_INTRADAY_STATS = {
-  iteration: 123,
+  iteration: 133,
   symbol: "BTCUSDT",
   timeframe: "1h",
   daysTested: 2083,
-  trades: 3886,
-  tradesPerDay: 1.87,
-  winRate: 0.58,
-  cumReturnPct: 1.251,
-  sharpe: 7.06,
-  windowsProfitablePct: 0.8,
-  minWindowRet: -0.066,
+  trades: 2635,
+  tradesPerDay: 1.26,
+  winRate: 0.578,
+  /** Arithmetic mean PnL per book-trade (1/maxConcurrent sized). */
+  meanPctPerTrade: 0.00025,
+  cumReturnPct: 0.926,
+  sharpe: 8.23,
+  windowsProfitablePct: 0.9,
+  minWindowRet: -0.017,
   bootstrapPctPositive: 1.0,
-  bootstrap5thPctRet: 0.476,
+  bootstrap5thPctRet: 0.534,
   oos: {
     fractionOfHistory: 0.4,
-    trades: 1296,
-    tradesPerDay: 1.56,
-    cumReturnPct: 0.228,
-    sharpe: 5.6,
-    bootstrapPctPositive: 0.92,
+    trades: 941,
+    tradesPerDay: 1.13,
+    cumReturnPct: 0.171,
+    sharpe: 5.82,
+    bootstrapPctPositive: 0.87,
   },
+  quarters: [
+    {
+      tradesPerDay: 1.65,
+      winRate: 0.586,
+      meanPct: 0.00035,
+      cumReturnPct: 0.349,
+    },
+    {
+      tradesPerDay: 1.0,
+      winRate: 0.566,
+      meanPct: 0.00023,
+      cumReturnPct: 0.122,
+    },
+    {
+      tradesPerDay: 1.27,
+      winRate: 0.586,
+      meanPct: 0.00025,
+      cumReturnPct: 0.178,
+    },
+    {
+      tradesPerDay: 0.92,
+      winRate: 0.57,
+      meanPct: 0.00012,
+      cumReturnPct: 0.057,
+    },
+  ],
   mechanics: ["M1_nDown", "M4_rsi", "M5_breakout", "M6_redBar"] as const,
   gates:
-    "HTF 168h SMA uptrend + macro 30-day BTC return > 0 (MG3); union of 4 long-only mechanics; up to 4 concurrent positions at 1/4 size each; scale-out tp1 0.8% / tp2 4% / stop 1% (BE after tp1); 24h max hold; hour 0 UTC avoided",
+    "HTF 168h SMA uptrend + macro 30-day BTC return > 0 (MG3) + volume > 1.2× median(96h); union of 4 long-only mechanics; up to 4 concurrent positions at 1/4 size each; scale-out tp1 0.8% / tp2 4% / stop 1% (BE after tp1); 24h max hold; hour 0 UTC avoided",
   note:
-    "Iter 123 upgrade of the iter119 baseline: looser M4/M5/M6 triggers and " +
-    "cap 3→4 lift trade density to 1.87/day (+22%) while keeping Sharpe 7.06 " +
-    "and bootstrap 100% positive. Full 5-gate battery re-passed including " +
-    "12/12 param sensitivity and OOS split. Conservative tier (iter119 params) " +
-    "stays available via BTC_INTRADAY_CONFIG_CONSERVATIVE.",
+    "Iter 133 upgrade over iter123 by adding a volume-participation filter " +
+    "(vol > 1.2× median(96h)). Lifts Sharpe 7.06 → 8.23 (+17%), mean/trade " +
+    "+19%, pctProf 80% → 90%, minW -6.6% → -1.7%, and makes ALL 4 quarters " +
+    "profitable. tpd drops 1.87 → 1.26 as weaker signals are filtered out.",
 } as const;
 
 /** Conservative tier stats (iter119). Exposed for UI tier-comparison. */
@@ -147,6 +211,19 @@ export const BTC_INTRADAY_STATS_CONSERVATIVE = {
   bootstrap5thPctRet: 0.809,
   oosSharpe: 5.7,
   oosBootstrapPctPositive: 0.94,
+} as const;
+
+/** High-frequency tier stats (iter123). Exposed for UI tier-comparison. */
+export const BTC_INTRADAY_STATS_HIGH_FREQ = {
+  iteration: 123,
+  tradesPerDay: 1.87,
+  winRate: 0.58,
+  cumReturnPct: 1.251,
+  sharpe: 7.06,
+  bootstrapPctPositive: 1.0,
+  bootstrap5thPctRet: 0.476,
+  oosSharpe: 5.6,
+  oosBootstrapPctPositive: 0.92,
 } as const;
 
 export type BtcMechanic = "M1_nDown" | "M4_rsi" | "M5_breakout" | "M6_redBar";
@@ -178,6 +255,11 @@ function smaLast(v: number[], n: number): number {
   if (v.length < n) return v[v.length - 1] ?? 0;
   const s = v.slice(-n);
   return s.reduce((a, b) => a + b, 0) / s.length;
+}
+function medianLast(v: number[], n: number): number {
+  if (v.length < n) return 0;
+  const s = [...v.slice(-n)].sort((a, b) => a - b);
+  return s[Math.floor(s.length / 2)];
 }
 function maxLast(v: number[], n: number): number {
   const s = v.slice(-n);
@@ -347,6 +429,7 @@ export function runBtcIntraday(
   }
   const closes = candles.map((c) => c.close);
   const highs = candles.map((c) => c.high);
+  const volumes = candles.map((c) => c.volume);
   const r = rsiSeries(closes, cfg.rsiLen);
 
   const trendMask: boolean[] = new Array(candles.length).fill(false);
@@ -358,6 +441,18 @@ export function runBtcIntraday(
   for (let i = cfg.macro30dBars; i < candles.length; i++) {
     const past = closes[i - cfg.macro30dBars];
     if (past > 0) macroMask[i] = (closes[i] - past) / past > 0;
+  }
+  // Volume filter (iter133). Precompute the median for speed.
+  const volumeMult = cfg.volumeMult ?? 0;
+  const volumeMedianLen = cfg.volumeMedianLen ?? 96;
+  const volumeMedian: number[] = new Array(candles.length).fill(0);
+  if (volumeMult > 0 && volumeMedianLen > 0) {
+    for (let i = volumeMedianLen; i < candles.length; i++) {
+      volumeMedian[i] = medianLast(
+        volumes.slice(i - volumeMedianLen, i),
+        volumeMedianLen,
+      );
+    }
   }
 
   const openExits: { exitBar: number; mech: BtcMechanic }[] = [];
@@ -380,6 +475,7 @@ export function runBtcIntraday(
     if (!trendMask[i] || !macroMask[i]) continue;
     const hr = new Date(candles[i].openTime).getUTCHours();
     if (avoidSet.has(hr)) continue;
+    if (volumeMult > 0 && volumes[i] <= volumeMult * volumeMedian[i]) continue;
 
     for (const m of mechs) {
       if (openExits.length >= cfg.maxConcurrent) break;
@@ -431,6 +527,7 @@ export interface BtcIntradayLiveSignal {
   mechanic: BtcMechanic;
   trendOk: boolean;
   macroOk: boolean;
+  volumeOk: boolean;
 }
 
 /**
@@ -444,6 +541,7 @@ export function getBtcIntradayLiveSignals(
   if (!candles || candles.length < cfg.htfLen + cfg.macro30dBars + 5) return [];
   const closes = candles.map((c) => c.close);
   const highs = candles.map((c) => c.high);
+  const volumes = candles.map((c) => c.volume);
   const r = rsiSeries(closes, cfg.rsiLen);
   const i = candles.length - 2; // last closed bar with room for next-bar entry
   if (i < Math.max(cfg.htfLen, cfg.macro30dBars)) return [];
@@ -453,8 +551,16 @@ export function getBtcIntradayLiveSignals(
   const macroOk = past > 0 && (closes[i] - past) / past > 0;
   const hr = new Date(candles[i].openTime).getUTCHours();
   if ((cfg.avoidHoursUtc ?? []).includes(hr)) return [];
+  const volumeMult = cfg.volumeMult ?? 0;
+  const volumeMedianLen = cfg.volumeMedianLen ?? 96;
+  const volumeOk =
+    volumeMult <= 0 ||
+    (i >= volumeMedianLen &&
+      volumes[i] >
+        volumeMult *
+          medianLast(volumes.slice(i - volumeMedianLen, i), volumeMedianLen));
   const out: BtcIntradayLiveSignal[] = [];
-  if (!trendOk || !macroOk) return out;
+  if (!trendOk || !macroOk || !volumeOk) return out;
   const mechs: BtcMechanic[] = [
     "M1_nDown",
     "M4_rsi",
@@ -469,6 +575,7 @@ export function getBtcIntradayLiveSignals(
         mechanic: m,
         trendOk,
         macroOk,
+        volumeOk,
       });
     }
   }
