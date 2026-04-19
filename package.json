@@ -11,7 +11,10 @@
     "test:watch": "node ./node_modules/vitest/vitest.mjs",
     "test:e2e": "node ./node_modules/@playwright/test/cli.js test",
     "test:e2e:ui": "node ./node_modules/@playwright/test/cli.js test --ui",
-    "prepare": "husky"
+    "prepare": "husky",
+    "paper:tick": "node ./node_modules/vitest/vitest.mjs run --config vitest.scripts.config.ts scripts/paperTradeTick.test.ts --reporter=verbose",
+    "paper:report": "node ./node_modules/vitest/vitest.mjs run --config vitest.scripts.config.ts scripts/paperTradeReport.test.ts --reporter=verbose",
+    "live:check": "node ./node_modules/vitest/vitest.mjs run --config vitest.scripts.config.ts scripts/liveCheck.test.ts --reporter=verbose"
   },
   "dependencies": {
     "@supabase/ssr": "^0.10.2",
