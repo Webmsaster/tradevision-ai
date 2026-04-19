@@ -1,9 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
   evaluateHighWrSignal,
+  evaluateHighWrPortfolio,
   runHighWrScaleOut,
   HIGH_WR_SUI_MOM_CONFIG,
   HIGH_WR_SUI_MOM_STATS,
+  HIGH_WR_PORTFOLIO_CONFIGS,
+  HIGH_WR_PORTFOLIO_STATS,
 } from "@/utils/highWrScaleOut";
 import type { Candle } from "@/utils/indicators";
 
@@ -44,9 +47,12 @@ function makeSpikeBars(): Candle[] {
 }
 
 describe("highWrScaleOut", () => {
-  it("stats constant has required iter50 shape", () => {
-    expect(HIGH_WR_SUI_MOM_STATS.iteration).toBe(50);
+  it("stats constant has required shape + ≥70% WR target met", () => {
+    // iter50 originally; iter53 refined with minTrades≥20 + multi-asset
+    expect(HIGH_WR_SUI_MOM_STATS.iteration).toBeGreaterThanOrEqual(50);
     expect(HIGH_WR_SUI_MOM_STATS.medianWinRate).toBeGreaterThanOrEqual(0.7);
+    // After iter53 the MINIMUM win rate across every tested window is ≥70% too
+    expect(HIGH_WR_SUI_MOM_STATS.minWinRate).toBeGreaterThanOrEqual(0.7);
     expect(HIGH_WR_SUI_MOM_STATS.pctWindowsProfitable).toBeGreaterThanOrEqual(
       0.8,
     );
@@ -91,5 +97,31 @@ describe("highWrScaleOut", () => {
     expect(report.trades).toBeDefined();
     expect(report.winRate).toBeGreaterThanOrEqual(0);
     expect(report.winRate).toBeLessThanOrEqual(1);
+  });
+
+  it("portfolio config has 3 symbols and ≥70% minWR target", () => {
+    expect(HIGH_WR_PORTFOLIO_CONFIGS.length).toBe(3);
+    expect(HIGH_WR_PORTFOLIO_STATS.minWinRate).toBeGreaterThanOrEqual(0.7);
+    expect(HIGH_WR_PORTFOLIO_STATS.medianWinRate).toBeGreaterThanOrEqual(0.75);
+  });
+
+  it("evaluateHighWrPortfolio returns a snapshot with per-symbol legs", () => {
+    const bars = makeFlatBars(200);
+    const snap = evaluateHighWrPortfolio({
+      SUIUSDT: bars,
+      AVAXUSDT: bars,
+      APTUSDT: bars,
+    });
+    expect(snap.legs.length).toBe(3);
+    expect(snap.stats.symbols).toEqual(["SUIUSDT", "AVAXUSDT", "APTUSDT"]);
+  });
+
+  it("portfolio skips symbols whose candles are missing", () => {
+    const snap = evaluateHighWrPortfolio({
+      SUIUSDT: makeFlatBars(200),
+      AVAXUSDT: undefined,
+      APTUSDT: makeFlatBars(200),
+    });
+    expect(snap.legs.length).toBe(2);
   });
 });

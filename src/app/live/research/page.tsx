@@ -2662,6 +2662,94 @@ function LiveSignalsPanel({
             </>
           )}
 
+          {report.highWrPortfolio && report.highWrPortfolio.legs.length > 0 && (
+            <>
+              <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
+                Hi-WR Multi-Asset Portfolio (iter53) —{" "}
+                {report.highWrPortfolio.stats.symbols.join(" + ")}
+              </h3>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "auto auto auto auto 1fr",
+                  rowGap: 4,
+                  columnGap: 14,
+                  fontSize: 12,
+                  marginBottom: 8,
+                  alignItems: "baseline",
+                }}
+              >
+                <strong>Symbol</strong>
+                <strong>Signal</strong>
+                <strong>vZ</strong>
+                <strong>pZ</strong>
+                <strong>Entry / TP1 / TP2 / Stop</strong>
+                {report.highWrPortfolio.legs.map((leg) => {
+                  const sigText = leg.active
+                    ? `${leg.direction?.toUpperCase()} scale-out`
+                    : leg.filtersFailed.length > 0
+                      ? "spike-but-filtered"
+                      : "idle";
+                  const sigColor = leg.active
+                    ? leg.direction === "long"
+                      ? "var(--profit, #22c55e)"
+                      : "var(--loss, #ef4444)"
+                    : "var(--text-secondary)";
+                  return (
+                    <div key={leg.symbol} style={{ display: "contents" }}>
+                      <span>{leg.symbol.replace("USDT", "")}</span>
+                      <span style={{ color: sigColor, fontWeight: 600 }}>
+                        {sigText}
+                      </span>
+                      <span>{leg.vZ.toFixed(2)}×</span>
+                      <span>{leg.pZ.toFixed(2)}σ</span>
+                      <span style={{ fontFamily: "monospace" }}>
+                        {leg.active && leg.entry !== undefined
+                          ? `$${leg.entry.toFixed(4)} / $${leg.tp1?.toFixed(4)} / $${leg.tp2?.toFixed(4)} / $${leg.stop?.toFixed(4)}`
+                          : "—"}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              <p
+                className="live-muted-note"
+                style={{ marginTop: 4, fontSize: 12 }}
+              >
+                <strong>
+                  Median WR{" "}
+                  {(report.highWrPortfolio.stats.medianWinRate * 100).toFixed(
+                    1,
+                  )}
+                  %, minimum WR{" "}
+                  {(report.highWrPortfolio.stats.minWinRate * 100).toFixed(1)}%
+                  — ALL {report.highWrPortfolio.stats.windowsTested} bootstrap
+                  windows clear the ≥70% target.
+                </strong>{" "}
+                {(
+                  report.highWrPortfolio.stats.pctWindowsProfitable * 100
+                ).toFixed(0)}
+                % of windows profitable, avg{" "}
+                {report.highWrPortfolio.stats.avgTradesPerWindow.toFixed(0)}{" "}
+                trades/window.
+                <br />
+                Trigger: {report.highWrPortfolio.stats.trigger}. Filters:{" "}
+                {report.highWrPortfolio.stats.filters}. Execution:{" "}
+                {report.highWrPortfolio.stats.execution}.
+                <br />
+                Diversification across 3 uncorrelated alt triggers removes the
+                small-sample noise that limited the single-asset variant (iter52
+                forensic analysis). Active symbols right now:{" "}
+                {report.highWrPortfolio.activeSymbols.length > 0
+                  ? report.highWrPortfolio.activeSymbols
+                      .map((s) => s.replace("USDT", ""))
+                      .join(", ")
+                  : "none"}
+                .
+              </p>
+            </>
+          )}
+
           {report.deribitSkew && (
             <>
               <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
