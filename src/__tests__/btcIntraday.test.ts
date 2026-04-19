@@ -8,7 +8,9 @@ import {
   runBtcIntraday,
   getBtcIntradayLiveSignals,
   BTC_INTRADAY_CONFIG,
+  BTC_INTRADAY_CONFIG_CONSERVATIVE,
   BTC_INTRADAY_STATS,
+  BTC_INTRADAY_STATS_CONSERVATIVE,
 } from "../utils/btcIntraday";
 import type { Candle } from "../utils/indicators";
 
@@ -46,33 +48,50 @@ function buildCandles(
 }
 
 describe("btcIntraday — config invariants", () => {
-  it("exposes iter119-locked parameters", () => {
+  it("exposes iter123-locked default parameters", () => {
     expect(BTC_INTRADAY_CONFIG.htfLen).toBe(168);
     expect(BTC_INTRADAY_CONFIG.macro30dBars).toBe(720);
-    expect(BTC_INTRADAY_CONFIG.maxConcurrent).toBe(3);
+    expect(BTC_INTRADAY_CONFIG.maxConcurrent).toBe(4);
     expect(BTC_INTRADAY_CONFIG.tp1Pct).toBeCloseTo(0.008, 5);
     expect(BTC_INTRADAY_CONFIG.tp2Pct).toBeCloseTo(0.04, 5);
     expect(BTC_INTRADAY_CONFIG.stopPct).toBeCloseTo(0.01, 5);
     expect(BTC_INTRADAY_CONFIG.holdBars).toBe(24);
     expect(BTC_INTRADAY_CONFIG.rsiLen).toBe(7);
-    expect(BTC_INTRADAY_CONFIG.rsiTh).toBe(40);
-    expect(BTC_INTRADAY_CONFIG.nHi).toBe(48);
-    expect(BTC_INTRADAY_CONFIG.redPct).toBeCloseTo(0.005, 5);
+    expect(BTC_INTRADAY_CONFIG.rsiTh).toBe(42);
+    expect(BTC_INTRADAY_CONFIG.nHi).toBe(36);
+    expect(BTC_INTRADAY_CONFIG.redPct).toBeCloseTo(0.002, 5);
   });
 
-  it("stats document the 5-gate lock", () => {
-    expect(BTC_INTRADAY_STATS.iteration).toBe(119);
+  it("exposes iter119 conservative tier parameters", () => {
+    expect(BTC_INTRADAY_CONFIG_CONSERVATIVE.maxConcurrent).toBe(3);
+    expect(BTC_INTRADAY_CONFIG_CONSERVATIVE.rsiTh).toBe(40);
+    expect(BTC_INTRADAY_CONFIG_CONSERVATIVE.nHi).toBe(48);
+    expect(BTC_INTRADAY_CONFIG_CONSERVATIVE.redPct).toBeCloseTo(0.005, 5);
+  });
+
+  it("stats document the iter123 5-gate lock", () => {
+    expect(BTC_INTRADAY_STATS.iteration).toBe(123);
     expect(BTC_INTRADAY_STATS.symbol).toBe("BTCUSDT");
     expect(BTC_INTRADAY_STATS.timeframe).toBe("1h");
     expect(BTC_INTRADAY_STATS.bootstrapPctPositive).toBeGreaterThanOrEqual(
       0.95,
     );
-    expect(BTC_INTRADAY_STATS.tradesPerDay).toBeGreaterThanOrEqual(1);
+    // User asked for 2-3 tpd — iter123 delivers ~1.87
+    expect(BTC_INTRADAY_STATS.tradesPerDay).toBeGreaterThanOrEqual(1.8);
     expect(BTC_INTRADAY_STATS.sharpe).toBeGreaterThanOrEqual(5);
     expect(BTC_INTRADAY_STATS.daysTested).toBeGreaterThanOrEqual(1500);
     expect(BTC_INTRADAY_STATS.oos.bootstrapPctPositive).toBeGreaterThanOrEqual(
       0.9,
     );
+  });
+
+  it("conservative tier stats are unchanged from iter119", () => {
+    expect(BTC_INTRADAY_STATS_CONSERVATIVE.iteration).toBe(119);
+    expect(BTC_INTRADAY_STATS_CONSERVATIVE.tradesPerDay).toBeCloseTo(1.53, 2);
+    expect(BTC_INTRADAY_STATS_CONSERVATIVE.sharpe).toBeCloseTo(7.15, 1);
+    expect(
+      BTC_INTRADAY_STATS_CONSERVATIVE.bootstrapPctPositive,
+    ).toBeGreaterThanOrEqual(0.95);
   });
 
   it("mechanics list covers all 4 iter114 survivors", () => {

@@ -51,8 +51,42 @@ export interface BtcIntradayConfig {
   costs?: CostConfig;
 }
 
-/** Iter 119-locked production config. */
+/**
+ * Iter 123-locked production config (new default).
+ *
+ * Upgraded from iter119 after user feedback "mehr Trades pro Tag 2-3":
+ *   rsiTh 40 → 42  (lower bar on M4 oversold)
+ *   nHi   48 → 36  (shorter M5 breakout lookback)
+ *   redPct 0.5%→0.2% (smaller red-bar threshold on M6)
+ *   maxConcurrent 3 → 4 (one more parallel slot)
+ *
+ * Net effect: tpd 1.53 → 1.87 (+22%) at essentially unchanged Sharpe
+ * (7.15 → 7.06). Bootstrap still 100% positive. OOS Sharpe 5.70 → 5.60.
+ * All 5 iter119 gates re-passed on the new parameters.
+ */
 export const BTC_INTRADAY_CONFIG: BtcIntradayConfig = {
+  htfLen: 168,
+  macro30dBars: 720,
+  maxConcurrent: 4,
+  tp1Pct: 0.008,
+  tp2Pct: 0.04,
+  stopPct: 0.01,
+  holdBars: 24,
+  rsiLen: 7,
+  rsiTh: 42,
+  nHi: 36,
+  redPct: 0.002,
+  avoidHoursUtc: [0],
+  costs: MAKER_COSTS,
+};
+
+/**
+ * Iter 119 conservative tier — kept for users who prefer the original
+ * (fewer trades, slightly higher bootstrap 5th-percentile). Use when
+ * capital is deployed more aggressively per trade and lower trade count
+ * is preferred.
+ */
+export const BTC_INTRADAY_CONFIG_CONSERVATIVE: BtcIntradayConfig = {
   htfLen: 168,
   macro30dBars: 720,
   maxConcurrent: 3,
@@ -68,37 +102,51 @@ export const BTC_INTRADAY_CONFIG: BtcIntradayConfig = {
   costs: MAKER_COSTS,
 };
 
-/** Read-only iter119 validation stats, for disclosure in the UI. */
+/** Read-only iter123 validation stats, for disclosure in the UI. */
 export const BTC_INTRADAY_STATS = {
-  iteration: 119,
+  iteration: 123,
   symbol: "BTCUSDT",
   timeframe: "1h",
   daysTested: 2083,
-  trades: 3185,
+  trades: 3886,
+  tradesPerDay: 1.87,
+  winRate: 0.58,
+  cumReturnPct: 1.251,
+  sharpe: 7.06,
+  windowsProfitablePct: 0.8,
+  minWindowRet: -0.066,
+  bootstrapPctPositive: 1.0,
+  bootstrap5thPctRet: 0.476,
+  oos: {
+    fractionOfHistory: 0.4,
+    trades: 1296,
+    tradesPerDay: 1.56,
+    cumReturnPct: 0.228,
+    sharpe: 5.6,
+    bootstrapPctPositive: 0.92,
+  },
+  mechanics: ["M1_nDown", "M4_rsi", "M5_breakout", "M6_redBar"] as const,
+  gates:
+    "HTF 168h SMA uptrend + macro 30-day BTC return > 0 (MG3); union of 4 long-only mechanics; up to 4 concurrent positions at 1/4 size each; scale-out tp1 0.8% / tp2 4% / stop 1% (BE after tp1); 24h max hold; hour 0 UTC avoided",
+  note:
+    "Iter 123 upgrade of the iter119 baseline: looser M4/M5/M6 triggers and " +
+    "cap 3→4 lift trade density to 1.87/day (+22%) while keeping Sharpe 7.06 " +
+    "and bootstrap 100% positive. Full 5-gate battery re-passed including " +
+    "12/12 param sensitivity and OOS split. Conservative tier (iter119 params) " +
+    "stays available via BTC_INTRADAY_CONFIG_CONSERVATIVE.",
+} as const;
+
+/** Conservative tier stats (iter119). Exposed for UI tier-comparison. */
+export const BTC_INTRADAY_STATS_CONSERVATIVE = {
+  iteration: 119,
   tradesPerDay: 1.53,
   winRate: 0.58,
   cumReturnPct: 1.448,
   sharpe: 7.15,
-  windowsProfitablePct: 0.8,
-  minWindowRet: -0.045,
   bootstrapPctPositive: 1.0,
   bootstrap5thPctRet: 0.809,
-  oos: {
-    fractionOfHistory: 0.4,
-    trades: 1043,
-    tradesPerDay: 1.25,
-    cumReturnPct: 0.248,
-    sharpe: 5.7,
-    bootstrapPctPositive: 0.94,
-  },
-  mechanics: ["M1_nDown", "M4_rsi", "M5_breakout", "M6_redBar"] as const,
-  gates:
-    "HTF 168h SMA uptrend + macro 30-day BTC return > 0 (MG3); union of 4 long-only mechanics; up to 3 concurrent positions at 1/3 size each; scale-out tp1 0.8% / tp2 4% / stop 1% (BE after tp1); 24h max hold; hour 0 UTC avoided",
-  note:
-    "Unlike the iter101-104 HF Daytrading ensemble that failed multi-year " +
-    "validation, this config was locked only after passing 5 gates: full " +
-    "history bootstrap, 4 quarters, cap sweep, 12 param perturbations, and " +
-    "a 60/40 OOS split.",
+  oosSharpe: 5.7,
+  oosBootstrapPctPositive: 0.94,
 } as const;
 
 export type BtcMechanic = "M1_nDown" | "M4_rsi" | "M5_breakout" | "M6_redBar";
