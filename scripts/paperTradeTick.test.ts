@@ -38,7 +38,22 @@ import {
   type PaperState,
   type PaperPosition,
 } from "../src/utils/paperTradeLogger";
+import {
+  recommendSize,
+  STRATEGY_EDGE_STATS,
+  type SizingMethod,
+} from "../src/utils/positionSizing";
+import {
+  computeRiskState,
+  evaluateEntry,
+  DEFAULT_RISK_LIMITS,
+} from "../src/utils/riskManagement";
 import type { Candle } from "../src/utils/indicators";
+
+const DEFAULT_CAPITAL = 10_000; // $10k paper capital (configurable via env)
+const CAPITAL = Number(process.env.PAPER_CAPITAL ?? DEFAULT_CAPITAL);
+const SIZING_METHOD: SizingMethod =
+  (process.env.PAPER_SIZING as SizingMethod) ?? "quarter-kelly";
 
 const STATE_DIR = join(homedir(), ".tradevision-ai");
 const STATE_FILE = join(STATE_DIR, "paper-trades.json");
@@ -96,11 +111,93 @@ describe("Paper-Trade TICK (side-effect: updates ~/.tradevision-ai/paper-trades.
       state.openPositions = stillOpen;
       state.closedTrades.push(...justClosed);
 
-      // 2. Fetch current signals
+      // 2. Fetch current signals + apply risk/sizing gate
+
+      // Compute current risk state for gating
+      const riskState = computeRiskState({
+        capital: CAPITAL,
+        closedTrades: state.closedTrades,
+        openPositions: state.openPositions,
+      });
+      console.log(
+        `\nRisk state: capital $${CAPITAL}  daily ${(riskState.dailyRealisedPct * 100).toFixed(2)}%  open ${riskState.openCount}  longs ${riskState.openLongCount}  shorts ${riskState.openShortCount}`,
+      );
+
       const dedupeKey = (s: string, sym: string) => `${s}|${sym}`;
       const existing = new Set(
         state.openPositions.map((p) => dedupeKey(p.strategy, p.symbol)),
       );
+
+      // Helper to decide + size a proposed entry
+      type Proposed = {
+        strategy: "hf-daytrading" | "hi-wr-1h" | "vol-spike-1h";
+        symbol: string;
+        direction: "long" | "short";
+        entry: number;
+        stop: number;
+        tp1?: number;
+        tp2?: number;
+        holdUntil: string;
+        legs: 1 | 2;
+      };
+      function tryOpen(p: Proposed): void {
+        const key = dedupeKey(p.strategy, p.symbol);
+        if (existing.has(key)) return;
+        const stats = STRATEGY_EDGE_STATS[p.strategy];
+        const sizing = recommendSize({
+          capital: CAPITAL,
+          entry: p.entry,
+          stop: p.stop,
+          stats,
+          method: SIZING_METHOD,
+        });
+        const decision = evaluateEntry({
+          state: riskState,
+          direction: p.direction,
+          symbol: p.symbol,
+          notional: sizing.notional,
+          limits: DEFAULT_RISK_LIMITS,
+        });
+        if (!decision.allowed) {
+          console.log(
+            `  SKIP ${p.strategy} ${p.symbol} ${p.direction} — ${decision.reasons.join("; ")}`,
+          );
+          return;
+        }
+        state.openPositions.push(
+          openPosition({
+            strategy: p.strategy,
+            symbol: p.symbol,
+            direction: p.direction,
+            entry: p.entry,
+            tp1: p.tp1,
+            tp2: p.tp2,
+            stop: p.stop,
+            holdUntil: p.holdUntil,
+            legs: p.legs,
+            now,
+          }),
+        );
+        existing.add(key);
+        // Update risk state (so next proposals in same tick see accurate count)
+        riskState.openCount++;
+        if (p.direction === "long") riskState.openLongCount++;
+        else riskState.openShortCount++;
+        riskState.bySymbol[p.symbol] = (riskState.bySymbol[p.symbol] ?? 0) + 1;
+        riskState.totalOpenNotional += sizing.notional;
+        riskState.totalExposureMult =
+          riskState.totalOpenNotional / riskState.capital;
+
+        const notesStr = sizing.notes.length
+          ? ` [${sizing.notes.join(", ")}]`
+          : "";
+        const warnStr = decision.warnings.length
+          ? ` ⚠ ${decision.warnings.join("; ")}`
+          : "";
+        console.log(
+          `  OPEN ${p.strategy} ${p.symbol} ${p.direction} entry=$${p.entry.toFixed(4)} notional=$${sizing.notional.toFixed(0)} maxLoss=$${sizing.maxLoss.toFixed(2)} (${(sizing.maxLossPct * 100).toFixed(2)}%)${notesStr}${warnStr}`,
+        );
+      }
 
       // 2a. HF daytrading
       const hfC: Record<string, Candle[] | undefined> = {};
@@ -118,27 +215,18 @@ describe("Paper-Trade TICK (side-effect: updates ~/.tradevision-ai/paper-trades.
       const hf = evaluateHfDaytradingPortfolio(hfC);
       for (const leg of hf.legs) {
         if (!leg.active || leg.entry === undefined) continue;
-        const key = dedupeKey("hf-daytrading", leg.symbol);
-        if (existing.has(key)) continue;
         const holdMs = leg.holdUntil ?? Date.now() + 6 * 60 * 60 * 1000;
-        state.openPositions.push(
-          openPosition({
-            strategy: "hf-daytrading",
-            symbol: leg.symbol,
-            direction: leg.direction!,
-            entry: leg.entry,
-            tp1: leg.tp1,
-            tp2: leg.tp2,
-            stop: leg.stop!,
-            holdUntil: new Date(holdMs).toISOString(),
-            legs: 2,
-            now,
-          }),
-        );
-        existing.add(key);
-        console.log(
-          `  OPEN hf-daytrading ${leg.symbol} ${leg.direction} entry=$${leg.entry.toFixed(4)}`,
-        );
+        tryOpen({
+          strategy: "hf-daytrading",
+          symbol: leg.symbol,
+          direction: leg.direction!,
+          entry: leg.entry,
+          stop: leg.stop!,
+          tp1: leg.tp1,
+          tp2: leg.tp2,
+          holdUntil: new Date(holdMs).toISOString(),
+          legs: 2,
+        });
       }
 
       // 2b. Hi-WR 1h
@@ -157,27 +245,18 @@ describe("Paper-Trade TICK (side-effect: updates ~/.tradevision-ai/paper-trades.
       const wr = evaluateHighWrPortfolio(wrC);
       for (const leg of wr.legs) {
         if (!leg.active || leg.entry === undefined) continue;
-        const key = dedupeKey("hi-wr-1h", leg.symbol);
-        if (existing.has(key)) continue;
         const holdMs = leg.holdUntil ?? Date.now() + 6 * 60 * 60 * 1000;
-        state.openPositions.push(
-          openPosition({
-            strategy: "hi-wr-1h",
-            symbol: leg.symbol,
-            direction: leg.direction!,
-            entry: leg.entry,
-            tp1: leg.tp1,
-            tp2: leg.tp2,
-            stop: leg.stop!,
-            holdUntil: new Date(holdMs).toISOString(),
-            legs: 2,
-            now,
-          }),
-        );
-        existing.add(key);
-        console.log(
-          `  OPEN hi-wr-1h ${leg.symbol} ${leg.direction} entry=$${leg.entry.toFixed(4)}`,
-        );
+        tryOpen({
+          strategy: "hi-wr-1h",
+          symbol: leg.symbol,
+          direction: leg.direction!,
+          entry: leg.entry,
+          stop: leg.stop!,
+          tp1: leg.tp1,
+          tp2: leg.tp2,
+          holdUntil: new Date(holdMs).toISOString(),
+          legs: 2,
+        });
       }
 
       // 2c. Vol-spike locked edges (single leg)
@@ -204,26 +283,17 @@ describe("Paper-Trade TICK (side-effect: updates ~/.tradevision-ai/paper-trades.
           cfg: edge.cfg,
         });
         if (!snap.active || snap.entry === undefined) continue;
-        const key = dedupeKey("vol-spike-1h", edge.symbol);
-        if (existing.has(key)) continue;
         const holdMs =
           snap.exitAt ?? Date.now() + edge.cfg.holdBars * 60 * 60 * 1000;
-        state.openPositions.push(
-          openPosition({
-            strategy: "vol-spike-1h",
-            symbol: edge.symbol,
-            direction: snap.direction!,
-            entry: snap.entry,
-            stop: snap.stop!,
-            holdUntil: new Date(holdMs).toISOString(),
-            legs: 1,
-            now,
-          }),
-        );
-        existing.add(key);
-        console.log(
-          `  OPEN vol-spike-1h ${edge.symbol} ${snap.direction} entry=$${snap.entry.toFixed(4)}`,
-        );
+        tryOpen({
+          strategy: "vol-spike-1h",
+          symbol: edge.symbol,
+          direction: snap.direction!,
+          entry: snap.entry,
+          stop: snap.stop!,
+          holdUntil: new Date(holdMs).toISOString(),
+          legs: 1,
+        });
       }
 
       state.lastTickAt = now;
