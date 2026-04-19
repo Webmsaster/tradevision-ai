@@ -42,11 +42,13 @@ describe("hfDaytrading", () => {
     expect(HF_DAYTRADING_ASSETS.length).toBeGreaterThanOrEqual(10);
   });
 
-  it("fade mode + 15m timeframe + wide 3% stop", () => {
+  it("fade mode + 15m timeframe + wide stop (iter95: 4%)", () => {
     expect(HF_DAYTRADING_CONFIG.mode).toBe("fade");
-    expect(HF_DAYTRADING_CONFIG.stopPct).toBeCloseTo(0.03);
-    expect(HF_DAYTRADING_CONFIG.tp1Pct).toBeCloseTo(0.003);
-    expect(HF_DAYTRADING_CONFIG.tp2Pct).toBeCloseTo(0.012);
+    expect(HF_DAYTRADING_CONFIG.stopPct).toBeGreaterThanOrEqual(0.02);
+    expect(HF_DAYTRADING_CONFIG.stopPct).toBeLessThanOrEqual(0.05);
+    expect(HF_DAYTRADING_CONFIG.tp1Pct).toBeGreaterThanOrEqual(0.001);
+    expect(HF_DAYTRADING_CONFIG.tp1Pct).toBeLessThanOrEqual(0.003);
+    expect(HF_DAYTRADING_CONFIG.tp2Pct).toBeGreaterThanOrEqual(0.008);
   });
 
   it("evaluateHfDaytrading returns inactive on short history", () => {

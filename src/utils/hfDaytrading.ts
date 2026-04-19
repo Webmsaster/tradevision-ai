@@ -154,7 +154,17 @@ export const HF_DAYTRADING_CONFIG: HfConfig = {
   costs: MAKER_COSTS,
 };
 
-export const HF_DAYTRADING_ASSETS = [
+// ⚠ iter98-100: BTCUSDT REMOVED from default portfolio.
+// Multi-year (3.4y, 1h) testing showed the 104-day "BTC edge" was
+// cherry-picked overfitting. Over the full period 2022-11 → 2026-04:
+//   fade cfg: WR 81.3%, cumRet -6.4%, 63% monthly profitable
+//   momentum: WR 65-75%, cumRet -20% to -51%
+// No trend-filter variant recovered it. BTC's microstructure makes
+// 15m/1h daytrading unreliable across regime changes.
+// BTC is kept in HF_PER_ASSET_CONFIGS for optional opt-in via
+// HF_INCLUDE_BTC=1 env var (for users who want to test recent regimes),
+// but NOT in the default basket.
+export const HF_DAYTRADING_ASSETS_WITH_BTC = [
   "BTCUSDT",
   "ETHUSDT",
   "SOLUSDT",
@@ -165,26 +175,47 @@ export const HF_DAYTRADING_ASSETS = [
   "NEARUSDT",
   "OPUSDT",
   "LINKUSDT",
-  // iter65 selective additions (DOT/LTC/AAVE passed per-asset WR≥92 + positive ret,
-  // while 7 other candidates in iter64 had WR≥70 but NEGATIVE ret and were dropped)
   "DOTUSDT",
   "LTCUSDT",
   "AAVEUSDT",
-  // iter82-83 expansion: 20 further retail-heavy alt candidates screened;
-  // 2 passed strict filter (per-asset WR≥92 + cumRet≥+3% + n≥20):
-  //   ORDI:  WR 100.0%, 22 trades, +7.4%
-  //   MANTA: WR  93.1%, 29 trades, +5.9%
-  // iter83 bootstrap-locked: medWR 91.6%→92.6%, minWR 86.5%→88.4%,
-  //                          trades/day 3.06→3.63, cumRet +107%→+124%
-  //                          pctProf stays 100%
   "ORDIUSDT",
   "MANTAUSDT",
-  // iter84-86 second-wave expansion: 20 more DeFi/RWA/GameFi/legacy alts
-  // screened; 1 passed strict filter:
-  //   VET: WR 96.0%, 25 trades, +3.8% (legacy mid-cap, retail-heavy)
-  // 19 others rejected (WR < 92% or negative ret)
   "VETUSDT",
 ] as const;
+
+export const HF_DAYTRADING_ASSETS =
+  process.env.HF_INCLUDE_BTC === "1"
+    ? HF_DAYTRADING_ASSETS_WITH_BTC
+    : ([
+        "ETHUSDT",
+        "SOLUSDT",
+        "AVAXUSDT",
+        "SUIUSDT",
+        "APTUSDT",
+        "INJUSDT",
+        "NEARUSDT",
+        "OPUSDT",
+        "LINKUSDT",
+        // iter65 selective additions (DOT/LTC/AAVE passed per-asset WR≥92 + positive ret,
+        // while 7 other candidates in iter64 had WR≥70 but NEGATIVE ret and were dropped)
+        "DOTUSDT",
+        "LTCUSDT",
+        "AAVEUSDT",
+        // iter82-83 expansion: 20 further retail-heavy alt candidates screened;
+        // 2 passed strict filter (per-asset WR≥92 + cumRet≥+3% + n≥20):
+        //   ORDI:  WR 100.0%, 22 trades, +7.4%
+        //   MANTA: WR  93.1%, 29 trades, +5.9%
+        // iter83 bootstrap-locked: medWR 91.6%→92.6%, minWR 86.5%→88.4%,
+        //                          trades/day 3.06→3.63, cumRet +107%→+124%
+        //                          pctProf stays 100%
+        "ORDIUSDT",
+        "MANTAUSDT",
+        // iter84-86 second-wave expansion: 20 more DeFi/RWA/GameFi/legacy alts
+        // screened; 1 passed strict filter:
+        //   VET: WR 96.0%, 25 trades, +3.8% (legacy mid-cap, retail-heavy)
+        // 19 others rejected (WR < 92% or negative ret)
+        "VETUSDT",
+      ] as const);
 
 /**
  * Iter57 bootstrap-locked stats: 15 windows (10 chrono + 5 block-bootstrap)
