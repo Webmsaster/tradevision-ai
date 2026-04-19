@@ -56,10 +56,13 @@ export const HF_DAYTRADING_CONFIG: HfConfig = {
   htfTrend: true,
   microPullback: true,
   useBreakeven: true,
-  // iter66: hour 0 UTC (8 trades, WR 50%, cumPnL -9.84% — funding-hour toxicity);
-  // hour 20 UTC (8 trades, WR 75%, cumPnL -0.12% — US session close).
-  // Skip both: +19pp cumulative return, 5% fewer trades, WR +1.5pp.
-  avoidHoursUtc: [0, 20],
+  // iter68: hour 0 UTC is funding-hour toxicity (50% WR, -9.84% cumPnL on full
+  // history). Adding [0] is strict improvement over baseline: bootstrap medWR
+  // 90.6% → 91.6%, minWR 86.5% unchanged, pctProf stays at 100%.
+  // iter67 tested [0, 20] too but hour 20 (75% WR, only 8 trades) was single-
+  // window noise — in bootstrap it DROPS pctProf from 100% to 93%. Hour 20 is
+  // not filtered.
+  avoidHoursUtc: [0],
   costs: MAKER_COSTS,
 };
 
@@ -88,20 +91,20 @@ export const HF_DAYTRADING_ASSETS = [
  * analyzer.
  */
 export const HF_DAYTRADING_STATS = {
-  iteration: 66,
+  iteration: 68,
   windowsTested: 14,
-  medianWinRate: 0.937, // iter66: +1.5pp from hour-filter
-  minWinRate: 0.87, // expected improvement
-  medianReturnPct: 0.39, // per window median return after hour-filter
-  minReturnPct: 0.002, // worst window still positive
-  avgTradesPerWindow: 163.7, // -5% from hour-filter
-  tradesPerWeek: 21.4,
-  tradesPerDay: 3.06,
-  pctWindowsProfitable: 1.0, // ALL 14 windows profitable
+  medianWinRate: 0.916, // iter68 bootstrap with [0]-only avoid-hour
+  minWinRate: 0.865, // unchanged from iter65 baseline
+  medianReturnPct: 0.316, // chr50 median per window
+  minReturnPct: 0.001, // worst window (chr80) barely positive
+  avgTradesPerWindow: 169,
+  tradesPerWeek: 22.1,
+  tradesPerDay: 3.16,
+  pctWindowsProfitable: 1.0, // ALL 14 windows profitable (vs 93% with [0,20])
   timeframe: "15m",
   assets: HF_DAYTRADING_ASSETS as unknown as string[],
   trigger: "volume-spike + price-z (vm 2.5, pZ 1.8) — fade mode",
-  filters: "24h-SMA trend align + micro-exhaustion + avoid hour 0 & 20 UTC",
+  filters: "24h-SMA trend align + micro-exhaustion + avoid hour 0 UTC",
   execution:
     "scale-out 50% @ tp1 0.3% + 50% @ tp2 1.2%, stop 3% (BE after tp1), hold 6h",
 } as const;
