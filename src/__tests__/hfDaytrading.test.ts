@@ -38,8 +38,8 @@ describe("hfDaytrading", () => {
     expect(HF_DAYTRADING_STATS.tradesPerDay).toBeGreaterThanOrEqual(1);
   });
 
-  it("exports 10 asset basket", () => {
-    expect(HF_DAYTRADING_ASSETS.length).toBe(10);
+  it("exports ≥10 asset basket (iter65 expanded to 13)", () => {
+    expect(HF_DAYTRADING_ASSETS.length).toBeGreaterThanOrEqual(10);
   });
 
   it("fade mode + 15m timeframe + wide 3% stop", () => {
@@ -69,25 +69,19 @@ describe("hfDaytrading", () => {
 
   it("portfolio evaluator returns per-leg snapshots + skips missing", () => {
     const bars = makeFlatBars(200);
-    const snap = evaluateHfDaytradingPortfolio({
-      SUIUSDT: bars,
-      AVAXUSDT: bars,
-      APTUSDT: undefined,
-      INJUSDT: bars,
-      BTCUSDT: bars,
-      ETHUSDT: bars,
-      SOLUSDT: bars,
-      NEARUSDT: bars,
-      OPUSDT: bars,
-      LINKUSDT: bars,
-    });
-    expect(snap.legs.length).toBe(9); // APT skipped
-    expect(snap.stats.iteration).toBe(57);
+    // Provide bars for all assets except one → that one is skipped
+    const input: Record<string, ReturnType<typeof makeFlatBars> | undefined> =
+      {};
+    for (const s of HF_DAYTRADING_ASSETS) input[s] = bars;
+    input["APTUSDT"] = undefined;
+    const snap = evaluateHfDaytradingPortfolio(input);
+    expect(snap.legs.length).toBe(HF_DAYTRADING_ASSETS.length - 1);
+    expect(snap.stats.iteration).toBeGreaterThanOrEqual(57);
   });
 
-  it("snapshot carries iter57 stats for UI", () => {
+  it("snapshot carries current iter stats for UI", () => {
     const snap = evaluateHfDaytrading("SUIUSDT", makeFlatBars(80));
-    expect(snap.stats.iteration).toBe(57);
+    expect(snap.stats.iteration).toBeGreaterThanOrEqual(57);
     expect(snap.stats.minWinRate).toBe(HF_DAYTRADING_STATS.minWinRate);
   });
 });

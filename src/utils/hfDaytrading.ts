@@ -68,6 +68,11 @@ export const HF_DAYTRADING_ASSETS = [
   "NEARUSDT",
   "OPUSDT",
   "LINKUSDT",
+  // iter65 selective additions (DOT/LTC/AAVE passed per-asset WR≥92 + positive ret,
+  // while 7 other candidates in iter64 had WR≥70 but NEGATIVE ret and were dropped)
+  "DOTUSDT",
+  "LTCUSDT",
+  "AAVEUSDT",
 ] as const;
 
 /**
@@ -77,16 +82,16 @@ export const HF_DAYTRADING_ASSETS = [
  * analyzer.
  */
 export const HF_DAYTRADING_STATS = {
-  iteration: 57,
-  windowsTested: 15,
-  medianWinRate: 0.903,
-  minWinRate: 0.85,
-  medianReturnPct: 0.295, // per window median return
-  minReturnPct: 0.003, // worst window still slightly positive
-  avgTradesPerWindow: 130.6,
-  tradesPerWeek: 17.2,
-  tradesPerDay: 2.5,
-  pctWindowsProfitable: 1.0, // ALL 15 windows profitable
+  iteration: 65,
+  windowsTested: 14,
+  medianWinRate: 0.906,
+  minWinRate: 0.865,
+  medianReturnPct: 0.317, // per window median return (chr50 34/100 pseudo-median)
+  minReturnPct: 0.001, // worst window barely positive (chr80)
+  avgTradesPerWindow: 172.1, // 13-basket trades bootstrap avg
+  tradesPerWeek: 22.5,
+  tradesPerDay: 3.22,
+  pctWindowsProfitable: 1.0, // ALL 14 windows profitable
   timeframe: "15m",
   assets: HF_DAYTRADING_ASSETS as unknown as string[],
   trigger: "volume-spike + price-z (vm 2.5, pZ 1.8) — fade mode",
