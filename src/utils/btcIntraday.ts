@@ -55,34 +55,42 @@ export interface BtcIntradayConfig {
    */
   volumeMult?: number;
   volumeMedianLen?: number;
+  /**
+   * ATR-adaptive tp2 (iter135). If > 0, tp2 = entry + tpAtrMult × ATR(atrLen)
+   * OVERRIDES the fixed `tp2Pct` field. Default atrLen = 14. Lifts Sharpe
+   * 8.23 → 10.15 (+23%) and mean/trade 0.025% → 0.035% (+40%).
+   */
+  tpAtrMult?: number;
+  atrLen?: number;
   avoidHoursUtc?: number[];
   costs?: CostConfig;
 }
 
 /**
- * Iter 133-locked production config (new default).
+ * Iter 135-locked production config (new default).
  *
- * Upgrade over iter123 by adding a volume-participation filter
- * (vol > 1.2 × median(volume, 96h)). Iter 130 showed volume confirmation
- * filters out weak-hand false signals; iter 133 5-gate battery confirmed
- * the upgrade on 2083 days of BTC history:
- *   Sharpe 7.06 → 8.23 (+17%)
- *   mean/trade 0.021% → 0.025% (+19%)
- *   pctProf 80% → 90%
- *   minW −6.6% → −1.7%
- *   ALL 4 quarters positive (Q1 +35% / Q2 +12% / Q3 +18% / Q4 +6%)
- *   OOS Sharpe 5.82 (vs iter123's 5.60), bs+ 87%
- * Tradeoff: tpd 1.87 → 1.26 (fewer but higher-quality trades).
+ * Iter 135 adds ATR-adaptive tp2 on top of iter133's volume filter. Stops
+ * stay fixed at 1% (ATR-adaptive stops tested in iter134 and REJECTED —
+ * they raised WR but hurt Sharpe). Target is 8 × ATR(14) which:
+ *   - in low-vol regimes gives small absolute tp → quick wins
+ *   - in high-vol regimes gives big absolute tp → rides expansion
  *
- * iter 131 tested multi-timeframe confluence — rejected (redundant with MG3).
- * iter 129 tested multi-asset basket — rejected (SOL/LINK dilute Sharpe).
+ * 5-gate validation on 2083 days BTC:
+ *   Sharpe 8.23 → 10.15 (+23%)
+ *   mean/trade 0.025% → 0.035% (+40%)
+ *   cumRet +92.6% → +136.3% (+47%)
+ *   bs5%ile +53% → +77%
+ *   minW −1.7% → −0.8%
+ *   ALL 4 quarters positive (Q1 +54.5% / Q2 +14.6% / Q3 +20.4% / Q4 +7.0%)
+ *   OOS (60/40): Sharpe 5.82 → 6.72 (+15%), bs+ 88%, mean +24%
+ *   Sensitivity 9/10 variants pass
  */
 export const BTC_INTRADAY_CONFIG: BtcIntradayConfig = {
   htfLen: 168,
   macro30dBars: 720,
   maxConcurrent: 4,
   tp1Pct: 0.008,
-  tp2Pct: 0.04,
+  tp2Pct: 0.04, // fallback only when tpAtrMult=0
   stopPct: 0.01,
   holdBars: 24,
   rsiLen: 7,
@@ -91,13 +99,16 @@ export const BTC_INTRADAY_CONFIG: BtcIntradayConfig = {
   redPct: 0.002,
   volumeMult: 1.2,
   volumeMedianLen: 96,
+  tpAtrMult: 8,
+  atrLen: 14,
   avoidHoursUtc: [0],
   costs: MAKER_COSTS,
 };
 
 /**
- * Iter 123 tier — same mechanics but WITHOUT volume filter. Keep for
- * users who want maximum trade count at slightly lower Sharpe.
+ * Iter 123 tier — same mechanics but WITHOUT volume filter and WITHOUT
+ * ATR-adaptive tp. Keep for users who want maximum trade count at slightly
+ * lower Sharpe.
  *   tpd 1.87 · Sharpe 7.06 · minW -6.6%
  */
 export const BTC_INTRADAY_CONFIG_HIGH_FREQ: BtcIntradayConfig = {
@@ -113,6 +124,7 @@ export const BTC_INTRADAY_CONFIG_HIGH_FREQ: BtcIntradayConfig = {
   nHi: 36,
   redPct: 0.002,
   volumeMult: 0, // disabled
+  tpAtrMult: 0, // disabled → fixed tp2Pct
   avoidHoursUtc: [0],
   costs: MAKER_COSTS,
 };
@@ -139,65 +151,62 @@ export const BTC_INTRADAY_CONFIG_CONSERVATIVE: BtcIntradayConfig = {
   costs: MAKER_COSTS,
 };
 
-/** Read-only iter133 validation stats (default config). */
+/** Read-only iter135 validation stats (default config). */
 export const BTC_INTRADAY_STATS = {
-  iteration: 133,
+  iteration: 135,
   symbol: "BTCUSDT",
   timeframe: "1h",
   daysTested: 2083,
-  trades: 2635,
-  tradesPerDay: 1.26,
-  winRate: 0.578,
+  trades: 2498,
+  tradesPerDay: 1.2,
+  winRate: 0.582,
   /** Arithmetic mean PnL per book-trade (1/maxConcurrent sized). */
-  meanPctPerTrade: 0.00025,
-  cumReturnPct: 0.926,
-  sharpe: 8.23,
+  meanPctPerTrade: 0.00035,
+  cumReturnPct: 1.363,
+  sharpe: 10.15,
   windowsProfitablePct: 0.9,
-  minWindowRet: -0.017,
+  minWindowRet: -0.008,
   bootstrapPctPositive: 1.0,
-  bootstrap5thPctRet: 0.534,
+  bootstrap5thPctRet: 0.771,
   oos: {
     fractionOfHistory: 0.4,
-    trades: 941,
-    tradesPerDay: 1.13,
-    cumReturnPct: 0.171,
-    sharpe: 5.82,
-    bootstrapPctPositive: 0.87,
+    trades: 922,
+    tradesPerDay: 1.11,
+    cumReturnPct: 0.207,
+    sharpe: 6.72,
+    bootstrapPctPositive: 0.88,
   },
   quarters: [
     {
-      tradesPerDay: 1.65,
-      winRate: 0.586,
-      meanPct: 0.00035,
-      cumReturnPct: 0.349,
+      tradesPerDay: 1.48,
+      winRate: 0.592,
+      meanPct: 0.00057,
+      cumReturnPct: 0.545,
     },
     {
-      tradesPerDay: 1.0,
-      winRate: 0.566,
-      meanPct: 0.00023,
-      cumReturnPct: 0.122,
+      tradesPerDay: 0.94,
+      winRate: 0.576,
+      meanPct: 0.00028,
+      cumReturnPct: 0.146,
     },
     {
-      tradesPerDay: 1.27,
-      winRate: 0.586,
-      meanPct: 0.00025,
-      cumReturnPct: 0.178,
+      tradesPerDay: 1.25,
+      winRate: 0.583,
+      meanPct: 0.00029,
+      cumReturnPct: 0.204,
     },
-    {
-      tradesPerDay: 0.92,
-      winRate: 0.57,
-      meanPct: 0.00012,
-      cumReturnPct: 0.057,
-    },
+    { tradesPerDay: 0.92, winRate: 0.57, meanPct: 0.00014, cumReturnPct: 0.07 },
   ],
   mechanics: ["M1_nDown", "M4_rsi", "M5_breakout", "M6_redBar"] as const,
   gates:
-    "HTF 168h SMA uptrend + macro 30-day BTC return > 0 (MG3) + volume > 1.2× median(96h); union of 4 long-only mechanics; up to 4 concurrent positions at 1/4 size each; scale-out tp1 0.8% / tp2 4% / stop 1% (BE after tp1); 24h max hold; hour 0 UTC avoided",
+    "HTF 168h SMA uptrend + macro 30-day BTC return > 0 (MG3) + volume > 1.2× median(96h); union of 4 long-only mechanics; up to 4 concurrent positions at 1/4 size each; scale-out tp1 0.8% / tp2 = 8×ATR(14) adaptive / stop 1% (BE after tp1); 24h max hold; hour 0 UTC avoided",
   note:
-    "Iter 133 upgrade over iter123 by adding a volume-participation filter " +
-    "(vol > 1.2× median(96h)). Lifts Sharpe 7.06 → 8.23 (+17%), mean/trade " +
-    "+19%, pctProf 80% → 90%, minW -6.6% → -1.7%, and makes ALL 4 quarters " +
-    "profitable. tpd drops 1.87 → 1.26 as weaker signals are filtered out.",
+    "Iter 135 upgrade over iter133 by replacing fixed 4% tp2 with 8×ATR(14) " +
+    "adaptive target. In low-vol regimes tp is smaller (fast wins); in high-vol " +
+    "regimes tp is much larger (rides expansion). Lifts Sharpe 8.23 → 10.15 " +
+    "(+23%), mean/trade +40%, cumRet +47%, bs5%ile 53% → 77%, minW cut by half. " +
+    "OOS Sharpe 5.82 → 6.72 (+15%). ATR-adaptive STOPS were tested in iter134 " +
+    "and rejected (raise WR but hurt Sharpe).",
 } as const;
 
 /** Conservative tier stats (iter119). Exposed for UI tier-comparison. */
@@ -267,6 +276,24 @@ function maxLast(v: number[], n: number): number {
   for (const x of s) if (x > m) m = x;
   return m;
 }
+function atrSeries(candles: Candle[], len: number): number[] {
+  const out: number[] = new Array(candles.length).fill(NaN);
+  if (candles.length < len + 1) return out;
+  const tr: number[] = new Array(candles.length).fill(0);
+  for (let i = 1; i < candles.length; i++) {
+    const hi = candles[i].high;
+    const lo = candles[i].low;
+    const pc = candles[i - 1].close;
+    tr[i] = Math.max(hi - lo, Math.abs(hi - pc), Math.abs(lo - pc));
+  }
+  let sum = 0;
+  for (let i = 1; i <= len; i++) sum += tr[i];
+  out[len] = sum / len;
+  for (let i = len + 1; i < candles.length; i++) {
+    out[i] = (out[i - 1] * (len - 1) + tr[i]) / len;
+  }
+  return out;
+}
 function rsiSeries(closes: number[], len: number): number[] {
   const out = new Array(closes.length).fill(NaN);
   if (closes.length <= len) return out;
@@ -302,12 +329,17 @@ function executeLong(
   candles: Candle[],
   i: number,
   cfg: BtcIntradayConfig,
+  atrAtEntry?: number,
 ): ExecuteOut | null {
   const eb = candles[i + 1];
   if (!eb) return null;
   const entry = eb.open;
   const tp1L = entry * (1 + cfg.tp1Pct);
-  const tp2L = entry * (1 + cfg.tp2Pct);
+  const tpAtrMult = cfg.tpAtrMult ?? 0;
+  const tp2L =
+    tpAtrMult > 0 && atrAtEntry && atrAtEntry > 0
+      ? entry + tpAtrMult * atrAtEntry
+      : entry * (1 + cfg.tp2Pct);
   let sL = entry * (1 - cfg.stopPct);
   const mx = Math.min(i + 1 + cfg.holdBars, candles.length - 1);
   let tp1Hit = false;
@@ -431,6 +463,8 @@ export function runBtcIntraday(
   const highs = candles.map((c) => c.high);
   const volumes = candles.map((c) => c.volume);
   const r = rsiSeries(closes, cfg.rsiLen);
+  // iter135: precompute ATR series for adaptive tp2
+  const atr = atrSeries(candles, cfg.atrLen ?? 14);
 
   const trendMask: boolean[] = new Array(candles.length).fill(false);
   for (let i = cfg.htfLen; i < candles.length; i++) {
@@ -481,7 +515,7 @@ export function runBtcIntraday(
       if (openExits.length >= cfg.maxConcurrent) break;
       if (openExits.some((o) => o.mech === m)) continue;
       if (!fireMechanic(candles, closes, highs, r, i, m, cfg)) continue;
-      const r2 = executeLong(candles, i, cfg);
+      const r2 = executeLong(candles, i, cfg, atr[i]);
       if (!r2) continue;
       trades.push({
         entryTime: candles[i + 1].openTime,

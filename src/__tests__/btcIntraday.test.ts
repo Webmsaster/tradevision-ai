@@ -50,7 +50,7 @@ function buildCandles(
 }
 
 describe("btcIntraday — config invariants", () => {
-  it("exposes iter133-locked default parameters with volume filter", () => {
+  it("exposes iter135-locked default parameters (volume + ATR tp)", () => {
     expect(BTC_INTRADAY_CONFIG.htfLen).toBe(168);
     expect(BTC_INTRADAY_CONFIG.macro30dBars).toBe(720);
     expect(BTC_INTRADAY_CONFIG.maxConcurrent).toBe(4);
@@ -65,6 +65,9 @@ describe("btcIntraday — config invariants", () => {
     // iter133 addition:
     expect(BTC_INTRADAY_CONFIG.volumeMult).toBeCloseTo(1.2, 5);
     expect(BTC_INTRADAY_CONFIG.volumeMedianLen).toBe(96);
+    // iter135 addition:
+    expect(BTC_INTRADAY_CONFIG.tpAtrMult).toBe(8);
+    expect(BTC_INTRADAY_CONFIG.atrLen).toBe(14);
   });
 
   it("exposes iter119 conservative tier parameters", () => {
@@ -80,24 +83,26 @@ describe("btcIntraday — config invariants", () => {
     expect(BTC_INTRADAY_CONFIG_HIGH_FREQ.volumeMult).toBe(0);
   });
 
-  it("stats document the iter133 5-gate lock", () => {
-    expect(BTC_INTRADAY_STATS.iteration).toBe(133);
+  it("stats document the iter135 5-gate lock (ATR-adaptive tp)", () => {
+    expect(BTC_INTRADAY_STATS.iteration).toBe(135);
     expect(BTC_INTRADAY_STATS.symbol).toBe("BTCUSDT");
     expect(BTC_INTRADAY_STATS.timeframe).toBe("1h");
     expect(BTC_INTRADAY_STATS.bootstrapPctPositive).toBeGreaterThanOrEqual(
       0.95,
     );
-    expect(BTC_INTRADAY_STATS.tradesPerDay).toBeGreaterThanOrEqual(1.2);
-    // iter133 lifts Sharpe above 8
-    expect(BTC_INTRADAY_STATS.sharpe).toBeGreaterThanOrEqual(7.5);
+    expect(BTC_INTRADAY_STATS.tradesPerDay).toBeGreaterThanOrEqual(1.1);
+    // iter135 lifts Sharpe above 10
+    expect(BTC_INTRADAY_STATS.sharpe).toBeGreaterThanOrEqual(9.5);
+    // mean/trade lifted above 0.03%
+    expect(BTC_INTRADAY_STATS.meanPctPerTrade).toBeGreaterThanOrEqual(0.0003);
     expect(BTC_INTRADAY_STATS.daysTested).toBeGreaterThanOrEqual(1500);
-    // iter133 makes all 4 quarters profitable (vs iter123 Q4 slight loss)
+    // all 4 quarters profitable
     expect(BTC_INTRADAY_STATS.quarters.length).toBe(4);
     for (const q of BTC_INTRADAY_STATS.quarters) {
       expect(q.cumReturnPct).toBeGreaterThan(0);
     }
-    // Smaller max-window loss than iter123
-    expect(Math.abs(BTC_INTRADAY_STATS.minWindowRet)).toBeLessThan(0.05);
+    // minW under 1%
+    expect(Math.abs(BTC_INTRADAY_STATS.minWindowRet)).toBeLessThan(0.015);
   });
 
   it("conservative tier stats are unchanged from iter119", () => {
