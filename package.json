@@ -14,6 +14,8 @@
     "prepare": "husky",
     "paper:tick": "node ./node_modules/vitest/vitest.mjs run --config vitest.scripts.config.ts scripts/paperTradeTick.test.ts --reporter=verbose",
     "paper:report": "node ./node_modules/vitest/vitest.mjs run --config vitest.scripts.config.ts scripts/paperTradeReport.test.ts --reporter=verbose",
+    "paper:daily-report": "node ./node_modules/vitest/vitest.mjs run --config vitest.scripts.config.ts scripts/paperTradeDailyReport.test.ts --reporter=verbose",
+    "paper:cron": "bash scripts/paperTradeCronWrapper.sh",
     "live:check": "node ./node_modules/vitest/vitest.mjs run --config vitest.scripts.config.ts scripts/liveCheck.test.ts --reporter=verbose"
   },
   "dependencies": {
