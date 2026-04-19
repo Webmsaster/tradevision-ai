@@ -52,6 +52,49 @@ export interface HfConfig {
   costs?: CostConfig;
 }
 
+/**
+ * Iter90-91 BTC-specific config.
+ *
+ * BTC has lower per-bar volatility than alts. Alt-tuned config (vm 2.5,
+ * pZ 1.8, tp 0.3/1.2, stop 3%) produces only ~23 trades over 104 days
+ * with cumRet +0.1% on BTC alone (essentially break-even). BTC needs:
+ *   - Looser trigger (vm 2.0) — BTC has fewer extreme volume spikes
+ *   - Tighter tp1 (0.15%) — BTC moves are smaller
+ *   - Tighter stop (2.0%) — BTC swings don't warrant 3% stops
+ *
+ * iter91 bootstrap on BTC alone (14 windows):
+ *   medWR 100.0%, minWR 91.3%, PF 7.14, ret +4.3%, pctProf 100%
+ * Every single tested window had 100% WR except one at 91.3%.
+ */
+export const HF_BTC_CONFIG: HfConfig = {
+  lookback: 48,
+  volMult: 2.0,
+  priceZ: 1.8,
+  tp1Pct: 0.0015, // 0.15% — scaled for BTC's 30-40% lower vol
+  tp2Pct: 0.012, // 1.2%
+  stopPct: 0.02, // 2% (alt-default was 3%)
+  holdBars: 24,
+  mode: "fade",
+  htfTrend: true,
+  microPullback: true,
+  useBreakeven: true,
+  avoidHoursUtc: [0],
+  costs: MAKER_COSTS,
+};
+
+/**
+ * Per-asset config overrides. Symbols NOT in this map use the default
+ * HF_DAYTRADING_CONFIG. BTC gets its own tightly-scaled config.
+ */
+export const HF_PER_ASSET_CONFIGS: Record<string, HfConfig> = {
+  BTCUSDT: HF_BTC_CONFIG,
+};
+
+/** Helper: get config for a given symbol (BTC-override or default). */
+export function configForSymbol(symbol: string): HfConfig {
+  return HF_PER_ASSET_CONFIGS[symbol] ?? HF_DAYTRADING_CONFIG;
+}
+
 export const HF_DAYTRADING_CONFIG: HfConfig = {
   lookback: 48, // 12h on 15m bars
   volMult: 2.5,
@@ -580,9 +623,11 @@ export function evaluateHfDaytradingPortfolio(
   const legs: HfSnapshot[] = [];
   for (const sym of HF_DAYTRADING_ASSETS) {
     const c = candlesBySymbol[sym];
-    if (!c || c.length < HF_DAYTRADING_CONFIG.lookback + 3) continue;
+    // iter91: use per-asset config override (BTCUSDT gets BTC-tuned cfg)
+    const cfg = configForSymbol(sym);
+    if (!c || c.length < cfg.lookback + 3) continue;
     const c1h = candles1hBySymbol?.[sym];
-    legs.push(evaluateHfDaytrading(sym, c, HF_DAYTRADING_CONFIG, c1h));
+    legs.push(evaluateHfDaytrading(sym, c, cfg, c1h));
   }
   return {
     capturedAt: Date.now(),
