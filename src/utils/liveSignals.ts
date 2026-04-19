@@ -56,6 +56,11 @@ import {
   type AlertVerdict,
 } from "@/utils/highConfidenceAlert";
 import { fetchFundingHistory } from "@/utils/fundingRate";
+import {
+  evaluateVolumeSpikeSignal,
+  SOL_FADE_CONFIG,
+  type VolumeSpikeSnapshot,
+} from "@/utils/volumeSpikeSignal";
 
 export interface ChampionSignal {
   symbol: string;
@@ -155,6 +160,12 @@ export interface LiveSignalsReport {
   currentRegimes?: CurrentRegime[];
   portfolioSummary?: PortfolioSummary;
   alerts?: AlertVerdict[];
+  /**
+   * Iter 32: walk-forward-validated volume-spike fade signal per symbol.
+   * Only SOL is currently published as VALIDATED (OOS Sharpe 2.45). BTC/ETH
+   * variants overfit on walk-forward — not published.
+   */
+  volumeSpikes?: VolumeSpikeSnapshot[];
 }
 
 const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const;
@@ -440,6 +451,7 @@ export async function computeLiveSignals(
   const mondays: MondaySignal[] = [];
   const health: StrategyHealthSnapshot[] = [];
   const volRegime: VolRegimeSnapshot[] = [];
+  const candlesBySymbol = new Map<string, Candle[]>();
 
   for (const sym of symbols) {
     const candles = await loadBinanceHistory({
@@ -447,6 +459,7 @@ export async function computeLiveSignals(
       timeframe: "1h",
       targetCount: 8760, // ~12 months on 1h bars — always fresh training window
     });
+    candlesBySymbol.set(sym, candles);
     champions.push(computeChampionForSymbol(sym, candles));
     mondays.push(computeMondaySignal(sym, candles));
 
@@ -639,6 +652,15 @@ export async function computeLiveSignals(
     sentimentConfluence,
   );
 
+  // ---- Iter 32: SOL Volume-Spike Fade live snapshot (validated edge) ----
+  const volumeSpikes: VolumeSpikeSnapshot[] = [];
+  const solCandles = candlesBySymbol.get("SOLUSDT");
+  if (solCandles) {
+    volumeSpikes.push(
+      evaluateVolumeSpikeSignal("SOLUSDT", solCandles, SOL_FADE_CONFIG),
+    );
+  }
+
   return {
     generatedAt: new Date().toISOString(),
     champion: champions,
@@ -655,5 +677,6 @@ export async function computeLiveSignals(
     currentRegimes,
     portfolioSummary,
     alerts,
+    volumeSpikes,
   };
 }

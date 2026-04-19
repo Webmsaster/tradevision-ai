@@ -2455,6 +2455,80 @@ function LiveSignalsPanel({
             </>
           )}
 
+          {report.volumeSpikes && report.volumeSpikes.length > 0 && (
+            <>
+              <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
+                Volume-Spike Fade (SOL) — iter32 walk-forward edge
+              </h3>
+              {report.volumeSpikes.map((vs) => {
+                const badge = vs.active
+                  ? vs.direction === "long"
+                    ? { text: "LONG FADE", tone: "profit" as const }
+                    : { text: "SHORT FADE", tone: "loss" as const }
+                  : { text: "IDLE", tone: undefined };
+                return (
+                  <div key={vs.symbol} style={{ marginBottom: 8 }}>
+                    <div className="live-backtest-stats">
+                      <Stat label="Symbol" value={vs.symbol} />
+                      <Stat
+                        label="Signal"
+                        value={badge.text}
+                        tone={badge.tone}
+                      />
+                      <Stat
+                        label="Volume z"
+                        value={`${vs.vZ.toFixed(2)}× median`}
+                      />
+                      <Stat label="Price z" value={`${vs.pZ.toFixed(2)}σ`} />
+                      <Stat
+                        label="Thresholds"
+                        value={`v${vs.threshold.volMult}× / p${vs.threshold.priceZ}σ`}
+                      />
+                      {vs.active && vs.entry !== undefined && (
+                        <>
+                          <Stat
+                            label="Entry"
+                            value={`$${vs.entry.toFixed(2)}`}
+                          />
+                          <Stat
+                            label="Stop"
+                            value={
+                              vs.stop !== undefined
+                                ? `$${vs.stop.toFixed(2)}`
+                                : "—"
+                            }
+                          />
+                          <Stat
+                            label="Exit at"
+                            value={
+                              vs.exitAt !== undefined
+                                ? new Date(vs.exitAt)
+                                    .toISOString()
+                                    .slice(11, 16) + " UTC"
+                                : "—"
+                            }
+                          />
+                        </>
+                      )}
+                    </div>
+                    <p
+                      className="live-muted-note"
+                      style={{ marginTop: 4, fontSize: 12 }}
+                    >
+                      {vs.reason}
+                      <br />
+                      <small>
+                        Validated in iter31b walk-forward (60/40 split): IS
+                        Sharpe 0.85 → OOS Sharpe 2.45, +30.7% / 95 trades / 6.8%
+                        DD. Mode=fade (retail-cohort liquidation overshoot).
+                      </small>
+                    </p>
+                  </div>
+                );
+              })}
+            </>
+          )}
+
           {report.deribitSkew && (
             <>
               <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
