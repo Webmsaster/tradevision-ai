@@ -41,6 +41,14 @@ export interface HfConfig {
   useBreakeven: boolean;
   /** Iter66: skip entries during these UTC hours (funding + low-liq). */
   avoidHoursUtc?: number[];
+  /**
+   * Iter79 — optional 1h-timeframe confluence. When true, require the 1h
+   * bar containing the 15m signal to also be aligned with its own 24h
+   * SMA. Boosts bootstrap minWR 86.5% → 90.6% at the cost of ~15% fewer
+   * trades (3.06/day → 2.59/day). Default false — users pick via
+   * HF_REQUIRE_1H_CONFLUENCE=1 env var in the paper-tick runner.
+   */
+  require1hConfluence?: boolean;
   costs?: CostConfig;
 }
 
@@ -152,12 +160,26 @@ function smaOf(vals: number[]): number {
   return vals.reduce((s, v) => s + v, 0) / vals.length;
 }
 
+/**
+ * Find the 1h candle containing a given 15m bar (by openTime membership).
+ */
+function findContaining1h(bar15m: Candle, candles1h: Candle[]): Candle | null {
+  for (let i = candles1h.length - 1; i >= 0; i--) {
+    const c = candles1h[i];
+    if (c.openTime <= bar15m.openTime && bar15m.openTime <= c.closeTime) {
+      return c;
+    }
+  }
+  return null;
+}
+
 function passesFilters(
   candles: Candle[],
   i: number,
   cfg: HfConfig,
   direction: "long" | "short",
   ret: number,
+  candles1h?: Candle[],
 ): boolean {
   if (cfg.avoidHoursUtc && cfg.avoidHoursUtc.length > 0) {
     const h = new Date(candles[i].openTime).getUTCHours();
@@ -184,12 +206,25 @@ function passesFilters(
       if (!sameDir) return false;
     }
   }
+  // Iter79: 1h timeframe confluence (opt-in) — require the containing 1h bar
+  // to be aligned with its 24-bar SMA in the same direction as the trade
+  if (cfg.require1hConfluence && candles1h && candles1h.length >= 24) {
+    const c1h = findContaining1h(candles[i], candles1h);
+    if (!c1h) return false;
+    const idx1h = candles1h.indexOf(c1h);
+    if (idx1h < 24) return false;
+    const sma1h = smaOf(candles1h.slice(idx1h - 24, idx1h).map((c) => c.close));
+    const aligned1h = c1h.close > sma1h;
+    if (direction === "long" && !aligned1h) return false;
+    if (direction === "short" && aligned1h) return false;
+  }
   return true;
 }
 
 export function runHfDaytrading(
   candles: Candle[],
   cfg: HfConfig = HF_DAYTRADING_CONFIG,
+  candles1h?: Candle[],
 ): HfReport {
   const costs = cfg.costs ?? MAKER_COSTS;
   const trades: HfTrade[] = [];
@@ -218,7 +253,7 @@ export function runHfDaytrading(
         : ret > 0
           ? "long"
           : "short";
-    if (!passesFilters(candles, i, cfg, direction, ret)) continue;
+    if (!passesFilters(candles, i, cfg, direction, ret, candles1h)) continue;
 
     const eb = candles[i + 1];
     if (!eb) break;
@@ -374,6 +409,7 @@ export function evaluateHfDaytrading(
   symbol: string,
   candles: Candle[],
   cfg: HfConfig = HF_DAYTRADING_CONFIG,
+  candles1h?: Candle[],
 ): HfSnapshot {
   const now = Date.now();
   const base = {
@@ -455,6 +491,30 @@ export function evaluateHfDaytrading(
       if (!sd2) filtersFailed.push("no exhaustion");
     }
   }
+  if (cfg.require1hConfluence) {
+    if (!candles1h || candles1h.length < 24) {
+      filtersFailed.push("1h confluence data missing");
+    } else {
+      const c1h = findContaining1h(cur, candles1h);
+      if (!c1h) {
+        filtersFailed.push("1h bar not found");
+      } else {
+        const idx1h = candles1h.indexOf(c1h);
+        if (idx1h < 24) {
+          filtersFailed.push("1h history too short");
+        } else {
+          const sma1h = smaOf(
+            candles1h.slice(idx1h - 24, idx1h).map((c) => c.close),
+          );
+          const aligned1h = c1h.close > sma1h;
+          if (direction === "long" && !aligned1h)
+            filtersFailed.push("1h trend down (want up)");
+          if (direction === "short" && aligned1h)
+            filtersFailed.push("1h trend up (want down)");
+        }
+      }
+    }
+  }
   if (filtersFailed.length > 0) {
     return {
       ...base,
@@ -499,12 +559,16 @@ export interface HfPortfolioSnapshot {
 
 export function evaluateHfDaytradingPortfolio(
   candlesBySymbol: Record<string, Candle[] | undefined>,
+  /** Optional 1h candles (one per symbol) — required only when
+   *  HF_DAYTRADING_CONFIG.require1hConfluence is true. */
+  candles1hBySymbol?: Record<string, Candle[] | undefined>,
 ): HfPortfolioSnapshot {
   const legs: HfSnapshot[] = [];
   for (const sym of HF_DAYTRADING_ASSETS) {
     const c = candlesBySymbol[sym];
     if (!c || c.length < HF_DAYTRADING_CONFIG.lookback + 3) continue;
-    legs.push(evaluateHfDaytrading(sym, c, HF_DAYTRADING_CONFIG));
+    const c1h = candles1hBySymbol?.[sym];
+    legs.push(evaluateHfDaytrading(sym, c, HF_DAYTRADING_CONFIG, c1h));
   }
   return {
     capturedAt: Date.now(),
