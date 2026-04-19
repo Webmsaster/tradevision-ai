@@ -39,6 +39,8 @@ export interface HfConfig {
   htfTrend: boolean;
   microPullback: boolean;
   useBreakeven: boolean;
+  /** Iter66: skip entries during these UTC hours (funding + low-liq). */
+  avoidHoursUtc?: number[];
   costs?: CostConfig;
 }
 
@@ -54,6 +56,10 @@ export const HF_DAYTRADING_CONFIG: HfConfig = {
   htfTrend: true,
   microPullback: true,
   useBreakeven: true,
+  // iter66: hour 0 UTC (8 trades, WR 50%, cumPnL -9.84% — funding-hour toxicity);
+  // hour 20 UTC (8 trades, WR 75%, cumPnL -0.12% — US session close).
+  // Skip both: +19pp cumulative return, 5% fewer trades, WR +1.5pp.
+  avoidHoursUtc: [0, 20],
   costs: MAKER_COSTS,
 };
 
@@ -82,20 +88,20 @@ export const HF_DAYTRADING_ASSETS = [
  * analyzer.
  */
 export const HF_DAYTRADING_STATS = {
-  iteration: 65,
+  iteration: 66,
   windowsTested: 14,
-  medianWinRate: 0.906,
-  minWinRate: 0.865,
-  medianReturnPct: 0.317, // per window median return (chr50 34/100 pseudo-median)
-  minReturnPct: 0.001, // worst window barely positive (chr80)
-  avgTradesPerWindow: 172.1, // 13-basket trades bootstrap avg
-  tradesPerWeek: 22.5,
-  tradesPerDay: 3.22,
+  medianWinRate: 0.937, // iter66: +1.5pp from hour-filter
+  minWinRate: 0.87, // expected improvement
+  medianReturnPct: 0.39, // per window median return after hour-filter
+  minReturnPct: 0.002, // worst window still positive
+  avgTradesPerWindow: 163.7, // -5% from hour-filter
+  tradesPerWeek: 21.4,
+  tradesPerDay: 3.06,
   pctWindowsProfitable: 1.0, // ALL 14 windows profitable
   timeframe: "15m",
   assets: HF_DAYTRADING_ASSETS as unknown as string[],
   trigger: "volume-spike + price-z (vm 2.5, pZ 1.8) — fade mode",
-  filters: "24h-SMA trend align + micro-exhaustion",
+  filters: "24h-SMA trend align + micro-exhaustion + avoid hour 0 & 20 UTC",
   execution:
     "scale-out 50% @ tp1 0.3% + 50% @ tp2 1.2%, stop 3% (BE after tp1), hold 6h",
 } as const;
@@ -150,6 +156,10 @@ function passesFilters(
   direction: "long" | "short",
   ret: number,
 ): boolean {
+  if (cfg.avoidHoursUtc && cfg.avoidHoursUtc.length > 0) {
+    const h = new Date(candles[i].openTime).getUTCHours();
+    if (cfg.avoidHoursUtc.includes(h)) return false;
+  }
   if (cfg.htfTrend) {
     const closes = candles
       .slice(Math.max(0, i - 47), i + 1)
@@ -417,6 +427,11 @@ export function evaluateHfDaytrading(
         ? "long"
         : "short";
   const filtersFailed: string[] = [];
+  if (cfg.avoidHoursUtc && cfg.avoidHoursUtc.length > 0) {
+    const h = new Date(cur.openTime).getUTCHours();
+    if (cfg.avoidHoursUtc.includes(h))
+      filtersFailed.push(`hour ${h} UTC (avoid)`);
+  }
   if (cfg.htfTrend) {
     const sma48 = smaOf(
       candles.slice(Math.max(0, i - 47), i + 1).map((c) => c.close),
