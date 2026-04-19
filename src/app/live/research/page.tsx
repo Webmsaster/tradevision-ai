@@ -2459,12 +2459,13 @@ function LiveSignalsPanel({
             <>
               <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
                 Validated Edges Dashboard — 7 production-locked Volume-Spike
-                strategies (iter34 bootstrap)
+                strategies (iter34 bootstrap, iter41 inv-vol sized)
               </h3>
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "auto auto auto auto auto auto auto 1fr",
+                  gridTemplateColumns:
+                    "auto auto auto auto auto auto auto auto 1fr",
                   rowGap: 6,
                   columnGap: 14,
                   fontSize: 12,
@@ -2479,6 +2480,7 @@ function LiveSignalsPanel({
                 <strong>Med Sh</strong>
                 <strong>Min Sh</strong>
                 <strong>% prof</strong>
+                <strong>Weight</strong>
                 <strong>Entry / Stop / Exit (UTC)</strong>
                 {report.volumeSpikes
                   .slice()
@@ -2519,6 +2521,11 @@ function LiveSignalsPanel({
                             ? `${(vs.edgeMeta.pctProfitable * 100).toFixed(0)}%`
                             : "—"}
                         </span>
+                        <span style={{ fontWeight: 600 }}>
+                          {vs.edgeMeta?.recommendedWeight !== undefined
+                            ? `${(vs.edgeMeta.recommendedWeight * 100).toFixed(1)}%`
+                            : "—"}
+                        </span>
                         <span style={{ fontFamily: "monospace" }}>
                           {vs.active && vs.entry !== undefined
                             ? `$${vs.entry.toFixed(2)} / $${vs.stop?.toFixed(2)} / ${
@@ -2540,8 +2547,13 @@ function LiveSignalsPanel({
               >
                 LOCK criteria (iter34): median Sharpe ≥ 1.0 AND min Sharpe ≥ 0.0
                 AND ≥80% of 10 walk-forward / block-bootstrap splits profitable.
-                Dropped: BTC/ETH momentum, MATIC mom, OP fade — see
-                RESEARCH_LOG.md iter34.
+                <br />
+                Weights: inverse-vol (iter41 sizing comparison — best portfolio
+                Sharpe 4.17, +89% return, 2.9% max DD across 416 days).
+                Equal-weight alternative: Sharpe 3.95, +104% return, 3.5% DD.
+                Avg pairwise correlation 0.12 (very high diversification).
+                Dropped: BTC/ETH momentum, MATIC mom, OP fade, Drawdown Fade —
+                see RESEARCH_LOG.md iter34/39/41.
               </p>
             </>
           )}

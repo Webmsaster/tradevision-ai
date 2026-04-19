@@ -49,6 +49,8 @@ export interface LockedEdge {
   minOosSharpe: number;
   /** % of bootstrap splits that finished profitable (iter34). */
   pctProfitable: number;
+  /** Recommended portfolio weight (inverse-vol from iter41 — best Sharpe 4.17). */
+  recommendedWeight: number;
 }
 
 /**
@@ -70,6 +72,7 @@ export const LOCKED_EDGES: LockedEdge[] = [
     medianOosSharpe: 2.92,
     minOosSharpe: 0.42,
     pctProfitable: 1.0,
+    recommendedWeight: 0.161,
   },
   {
     symbol: "SUIUSDT",
@@ -84,6 +87,7 @@ export const LOCKED_EDGES: LockedEdge[] = [
     medianOosSharpe: 2.83,
     minOosSharpe: 1.12,
     pctProfitable: 1.0,
+    recommendedWeight: 0.093,
   },
   {
     symbol: "SOLUSDT",
@@ -91,6 +95,7 @@ export const LOCKED_EDGES: LockedEdge[] = [
     medianOosSharpe: 2.35,
     minOosSharpe: 0.08,
     pctProfitable: 0.9,
+    recommendedWeight: 0.176,
   },
   {
     symbol: "AVAXUSDT_FADE",
@@ -105,6 +110,7 @@ export const LOCKED_EDGES: LockedEdge[] = [
     medianOosSharpe: 2.27,
     minOosSharpe: 0.44,
     pctProfitable: 1.0,
+    recommendedWeight: 0.205,
   },
   {
     symbol: "APTUSDT",
@@ -119,6 +125,7 @@ export const LOCKED_EDGES: LockedEdge[] = [
     medianOosSharpe: 1.99,
     minOosSharpe: 1.38,
     pctProfitable: 1.0,
+    recommendedWeight: 0.107,
   },
   {
     symbol: "INJUSDT",
@@ -133,6 +140,7 @@ export const LOCKED_EDGES: LockedEdge[] = [
     medianOosSharpe: 1.75,
     minOosSharpe: 1.05,
     pctProfitable: 1.0,
+    recommendedWeight: 0.105,
   },
   {
     symbol: "NEARUSDT",
@@ -147,6 +155,7 @@ export const LOCKED_EDGES: LockedEdge[] = [
     medianOosSharpe: 1.05,
     minOosSharpe: 0.06,
     pctProfitable: 0.9,
+    recommendedWeight: 0.152,
   },
 ];
 
@@ -182,6 +191,8 @@ export interface VolumeSpikeSnapshot {
     medianOosSharpe: number;
     minOosSharpe: number;
     pctProfitable: number;
+    /** Recommended portfolio weight (inverse-vol — iter41). */
+    recommendedWeight: number;
   };
 }
 
