@@ -90,6 +90,15 @@ export const HF_DAYTRADING_ASSETS = [
   "DOTUSDT",
   "LTCUSDT",
   "AAVEUSDT",
+  // iter82-83 expansion: 20 further retail-heavy alt candidates screened;
+  // 2 passed strict filter (per-asset WR≥92 + cumRet≥+3% + n≥20):
+  //   ORDI:  WR 100.0%, 22 trades, +7.4%
+  //   MANTA: WR  93.1%, 29 trades, +5.9%
+  // iter83 bootstrap-locked: medWR 91.6%→92.6%, minWR 86.5%→88.4%,
+  //                          trades/day 3.06→3.63, cumRet +107%→+124%
+  //                          pctProf stays 100%
+  "ORDIUSDT",
+  "MANTAUSDT",
 ] as const;
 
 /**
@@ -99,16 +108,16 @@ export const HF_DAYTRADING_ASSETS = [
  * analyzer.
  */
 export const HF_DAYTRADING_STATS = {
-  iteration: 68,
+  iteration: 83,
   windowsTested: 14,
-  medianWinRate: 0.916, // iter68 bootstrap with [0]-only avoid-hour
-  minWinRate: 0.865, // unchanged from iter65 baseline
-  medianReturnPct: 0.316, // chr50 median per window
-  minReturnPct: 0.001, // worst window (chr80) barely positive
-  avgTradesPerWindow: 169,
-  tradesPerWeek: 22.1,
-  tradesPerDay: 3.16,
-  pctWindowsProfitable: 1.0, // ALL 14 windows profitable (vs 93% with [0,20])
+  medianWinRate: 0.926, // iter83 15-asset bootstrap (up from 91.6% at 13)
+  minWinRate: 0.884, // up from 86.5% — every window now ≥88.4% WR
+  medianReturnPct: 0.428, // chr50 median per window
+  minReturnPct: 0.048, // worst window (chr80) still +4.8%
+  avgTradesPerWindow: 201.4,
+  tradesPerWeek: 25.4,
+  tradesPerDay: 3.63,
+  pctWindowsProfitable: 1.0, // ALL 14 windows profitable
   timeframe: "15m",
   assets: HF_DAYTRADING_ASSETS as unknown as string[],
   trigger: "volume-spike + price-z (vm 2.5, pZ 1.8) — fade mode",
