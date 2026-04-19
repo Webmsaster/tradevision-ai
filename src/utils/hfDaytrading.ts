@@ -83,11 +83,46 @@ export const HF_BTC_CONFIG: HfConfig = {
 };
 
 /**
+ * Iter92-93 aggressive BTC config — 7× MORE trades than HF_BTC_CONFIG but
+ * with a COST: multi-period validation (5 disjoint 20-day windows) showed
+ * only 60% of months profitable (vs 80% for HF_BTC_CONFIG).
+ *
+ * Use ONLY if you explicitly accept worse month-to-month consistency in
+ * exchange for higher daytrading frequency. Opt-in via
+ * HF_USE_BTC_AGGRESSIVE=1 env or direct config override.
+ *
+ *   trades/day: 2.19 (vs 0.30 conservative)
+ *   full-hist:  WR 92.5%, cumRet +3.4%
+ *   per-month:  medWR 95%, minWR 84%, pctProf 60% ⚠
+ *               (2 of 5 months slightly negative)
+ */
+export const HF_BTC_AGGRESSIVE_CONFIG: HfConfig = {
+  lookback: 48,
+  volMult: 1.0,
+  priceZ: 0.8,
+  tp1Pct: 0.001, // 0.10% — very tight TP1
+  tp2Pct: 0.008, // 0.80% — tight TP2
+  stopPct: 0.02,
+  holdBars: 24,
+  mode: "fade",
+  htfTrend: true,
+  microPullback: true,
+  useBreakeven: true,
+  avoidHoursUtc: [0],
+  costs: MAKER_COSTS,
+};
+
+/**
  * Per-asset config overrides. Symbols NOT in this map use the default
- * HF_DAYTRADING_CONFIG. BTC gets its own tightly-scaled config.
+ * HF_DAYTRADING_CONFIG. BTC gets HF_BTC_CONFIG by default (conservative,
+ * pctProf 80%); HF_USE_BTC_AGGRESSIVE=1 env switches to the aggressive
+ * higher-frequency variant (pctProf 60% — opt-in).
  */
 export const HF_PER_ASSET_CONFIGS: Record<string, HfConfig> = {
-  BTCUSDT: HF_BTC_CONFIG,
+  BTCUSDT:
+    process.env.HF_USE_BTC_AGGRESSIVE === "1"
+      ? HF_BTC_AGGRESSIVE_CONFIG
+      : HF_BTC_CONFIG,
 };
 
 /** Helper: get config for a given symbol (BTC-override or default). */
