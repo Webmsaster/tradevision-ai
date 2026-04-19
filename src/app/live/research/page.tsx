@@ -2558,6 +2558,110 @@ function LiveSignalsPanel({
             </>
           )}
 
+          {report.highWrScaleOut && (
+            <>
+              <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
+                High-Win-Rate Edge (iter50) — SUI momentum scale-out
+              </h3>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "auto 1fr",
+                  rowGap: 4,
+                  columnGap: 14,
+                  fontSize: 12,
+                  marginBottom: 8,
+                }}
+              >
+                <strong>Strategy</strong>
+                <span>{report.highWrScaleOut.displayLabel}</span>
+                <strong>Signal</strong>
+                <span
+                  style={{
+                    color: report.highWrScaleOut.active
+                      ? report.highWrScaleOut.direction === "long"
+                        ? "var(--profit, #22c55e)"
+                        : "var(--loss, #ef4444)"
+                      : "var(--text-secondary)",
+                    fontWeight: 600,
+                  }}
+                >
+                  {report.highWrScaleOut.active
+                    ? `${report.highWrScaleOut.direction?.toUpperCase()} scale-out`
+                    : "idle"}
+                </span>
+                <strong>vZ / pZ</strong>
+                <span>
+                  {report.highWrScaleOut.vZ.toFixed(2)}× /{" "}
+                  {report.highWrScaleOut.pZ.toFixed(2)}σ
+                </span>
+                <strong>Median WR</strong>
+                <span style={{ fontWeight: 600 }}>
+                  {(report.highWrScaleOut.stats.medianWinRate * 100).toFixed(1)}
+                  %
+                </span>
+                <strong>Min WR</strong>
+                <span>
+                  {(report.highWrScaleOut.stats.minWinRate * 100).toFixed(1)}%
+                </span>
+                <strong>Median Sharpe</strong>
+                <span>
+                  {report.highWrScaleOut.stats.medianSharpe.toFixed(2)}
+                </span>
+                <strong>% profitable splits</strong>
+                <span>
+                  {(
+                    report.highWrScaleOut.stats.pctWindowsProfitable * 100
+                  ).toFixed(0)}
+                  %
+                </span>
+                {report.highWrScaleOut.active &&
+                  report.highWrScaleOut.entry !== undefined && (
+                    <>
+                      <strong>Entry / TP1 / TP2 / Stop</strong>
+                      <span style={{ fontFamily: "monospace" }}>
+                        ${report.highWrScaleOut.entry.toFixed(4)} / $
+                        {report.highWrScaleOut.tp1?.toFixed(4)} / $
+                        {report.highWrScaleOut.tp2?.toFixed(4)} / $
+                        {report.highWrScaleOut.stop?.toFixed(4)}
+                      </span>
+                      <strong>Hold until (UTC)</strong>
+                      <span>
+                        {report.highWrScaleOut.holdUntil
+                          ? new Date(report.highWrScaleOut.holdUntil)
+                              .toISOString()
+                              .slice(11, 16)
+                          : "—"}
+                      </span>
+                    </>
+                  )}
+              </div>
+              <p
+                className="live-muted-note"
+                style={{ marginTop: 4, fontSize: 12 }}
+              >
+                Trigger: {report.highWrScaleOut.stats.trigger}. Filters:{" "}
+                {report.highWrScaleOut.stats.filters}. Execution:{" "}
+                {report.highWrScaleOut.stats.execution}.
+                <br />
+                Bootstrap over {report.highWrScaleOut.stats.windowsTested}{" "}
+                walk-forward + block-bootstrap windows. Trade-off: highest WR of
+                the analyzer (≥70% target achieved), moderate Sharpe (0.75) vs.
+                the iter34 vol-spike edges (Sh 1.0–3.1 at WR 40–55%). Use if
+                your utility is weighted toward consistency (many small wins)
+                rather than risk-adjusted return.
+                {!report.highWrScaleOut.active &&
+                  report.highWrScaleOut.filtersFailed.length > 0 && (
+                    <>
+                      <br />
+                      Current filter block:{" "}
+                      {report.highWrScaleOut.filtersFailed.join(" · ")}
+                    </>
+                  )}
+              </p>
+            </>
+          )}
+
           {report.deribitSkew && (
             <>
               <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>

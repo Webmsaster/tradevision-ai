@@ -62,6 +62,11 @@ import {
   lockedEdgeBinanceSymbol,
   type VolumeSpikeSnapshot,
 } from "@/utils/volumeSpikeSignal";
+import {
+  evaluateHighWrSignal,
+  HIGH_WR_SUI_MOM_CONFIG,
+  type HighWrSnapshot,
+} from "@/utils/highWrScaleOut";
 
 export interface ChampionSignal {
   symbol: string;
@@ -169,6 +174,13 @@ export interface LiveSignalsReport {
    * the `edgeMeta` field for UI presentation.
    */
   volumeSpikes?: VolumeSpikeSnapshot[];
+  /**
+   * Iter 50: SUI momentum high-win-rate scale-out strategy. medWR 77.4%,
+   * medSh 0.75, pctWindowsProfitable 89% over 19-window bootstrap. Separate
+   * from `volumeSpikes` because it uses a scale-out execution model with
+   * breakeven-stop + HTF/micro/avoid-hour filters on top of the base trigger.
+   */
+  highWrScaleOut?: HighWrSnapshot;
 }
 
 const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const;
@@ -615,8 +627,10 @@ export async function computeLiveSignals(
     backtestDays: 416,
     deflatedSharpe: 4.17,
     dsrThresholdPassed: true,
-    strategiesCount: 9,
+    strategiesCount: 10,
     verifiedEdges: [
+      // Iter50 high-WR scale-out (medWR 77.4%, pctProf 89%, medSh 0.75):
+      "SUI-momentum hi-WR scale-out (iter50: medWR 77%, 89% profitable splits)",
       // Iter34 bootstrap-locked Volume-Spike edges (median Sharpe ≥ 1.0,
       // min Sharpe ≥ 0.0, ≥80% of 10 splits profitable):
       "AVAX-momentum (vol-spike, median Sh 2.92)",
@@ -717,6 +731,35 @@ export async function computeLiveSignals(
     );
   }
 
+  // ---- Iter 50: High-WR scale-out (SUI momentum, medWR 77%) ----
+  let highWrScaleOut: HighWrSnapshot | undefined;
+  {
+    const sym = "SUIUSDT";
+    let suiCandles = candlesBySymbol.get(sym);
+    if (!suiCandles) {
+      try {
+        suiCandles = await loadBinanceHistory({
+          symbol: sym,
+          timeframe: "1h",
+          targetCount: 200,
+        });
+        candlesBySymbol.set(sym, suiCandles);
+      } catch {
+        suiCandles = undefined;
+      }
+    }
+    if (
+      suiCandles &&
+      suiCandles.length >= HIGH_WR_SUI_MOM_CONFIG.lookback + 3
+    ) {
+      highWrScaleOut = evaluateHighWrSignal(
+        sym,
+        suiCandles,
+        HIGH_WR_SUI_MOM_CONFIG,
+      );
+    }
+  }
+
   return {
     generatedAt: new Date().toISOString(),
     champion: champions,
@@ -734,5 +777,6 @@ export async function computeLiveSignals(
     portfolioSummary,
     alerts,
     volumeSpikes,
+    highWrScaleOut,
   };
 }
