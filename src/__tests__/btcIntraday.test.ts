@@ -105,6 +105,27 @@ describe("btcIntraday — config invariants", () => {
     expect(Math.abs(BTC_INTRADAY_STATS.minWindowRet)).toBeLessThan(0.015);
   });
 
+  it("execution sensitivity (iter136) documents maker-dependence", () => {
+    expect(
+      BTC_INTRADAY_STATS.executionSensitivity.length,
+    ).toBeGreaterThanOrEqual(5);
+    // Baseline must be best
+    const baseline = BTC_INTRADAY_STATS.executionSensitivity[0];
+    expect(baseline.sharpe).toBeGreaterThan(9);
+    // Warn that worst-case is negative
+    const worst =
+      BTC_INTRADAY_STATS.executionSensitivity[
+        BTC_INTRADAY_STATS.executionSensitivity.length - 1
+      ];
+    expect(worst.sharpe).toBeLessThan(1);
+    // TAKER 0 slippage should still be profitable
+    const takerClean = BTC_INTRADAY_STATS.executionSensitivity.find((s) =>
+      s.scenario.includes("TAKER 0.04% fee, 0 slippage"),
+    );
+    expect(takerClean).toBeDefined();
+    if (takerClean) expect(takerClean.sharpe).toBeGreaterThan(5);
+  });
+
   it("conservative tier stats are unchanged from iter119", () => {
     expect(BTC_INTRADAY_STATS_CONSERVATIVE.iteration).toBe(119);
     expect(BTC_INTRADAY_STATS_CONSERVATIVE.tradesPerDay).toBeCloseTo(1.53, 2);

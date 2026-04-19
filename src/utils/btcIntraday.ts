@@ -200,13 +200,36 @@ export const BTC_INTRADAY_STATS = {
   mechanics: ["M1_nDown", "M4_rsi", "M5_breakout", "M6_redBar"] as const,
   gates:
     "HTF 168h SMA uptrend + macro 30-day BTC return > 0 (MG3) + volume > 1.2× median(96h); union of 4 long-only mechanics; up to 4 concurrent positions at 1/4 size each; scale-out tp1 0.8% / tp2 = 8×ATR(14) adaptive / stop 1% (BE after tp1); 24h max hold; hour 0 UTC avoided",
+  /** Iter 136 stress-test: how the backtest degrades under realistic execution. */
+  executionSensitivity: [
+    {
+      scenario: "MAKER 0.02% fee, 0 slippage (baseline)",
+      sharpe: 10.15,
+      cumReturnPct: 1.363,
+    },
+    { scenario: "MAKER + 1bp slippage", sharpe: 8.7, cumReturnPct: 1.086 },
+    { scenario: "MAKER + 3bps slippage", sharpe: 5.8, cumReturnPct: 0.625 },
+    {
+      scenario: "TAKER 0.04% fee, 0 slippage",
+      sharpe: 7.25,
+      cumReturnPct: 0.841,
+    },
+    { scenario: "TAKER + 2bps slippage", sharpe: 4.34, cumReturnPct: 0.434 },
+    { scenario: "TAKER + 5bps slippage", sharpe: -0.01, cumReturnPct: -0.014 },
+    {
+      scenario: "TAKER + 5bps + 2×funding (worst case)",
+      sharpe: -0.5,
+      cumReturnPct: -0.054,
+    },
+  ],
   note:
-    "Iter 135 upgrade over iter133 by replacing fixed 4% tp2 with 8×ATR(14) " +
-    "adaptive target. In low-vol regimes tp is smaller (fast wins); in high-vol " +
-    "regimes tp is much larger (rides expansion). Lifts Sharpe 8.23 → 10.15 " +
-    "(+23%), mean/trade +40%, cumRet +47%, bs5%ile 53% → 77%, minW cut by half. " +
-    "OOS Sharpe 5.82 → 6.72 (+15%). ATR-adaptive STOPS were tested in iter134 " +
-    "and rejected (raise WR but hurt Sharpe).",
+    "Iter 135 upgrade over iter133: tp2 = 8×ATR(14) adaptive target. Lifts " +
+    "Sharpe 8.23 → 10.15 (+23%), mean/trade +40%, cumRet +47%, bs5%ile 53% → 77%, " +
+    "minW cut by half. OOS Sharpe 5.82 → 6.72 (+15%). " +
+    "CRITICAL (iter136 stress test): this edge REQUIRES MAKER FILLS. Taker " +
+    "execution (0.04% fee) still works (Sharpe 7.25) but adding 5bps slippage " +
+    "collapses the edge to zero. Plan for maker-preferred order placement; " +
+    "skip entries if the queue is deep rather than chasing with taker.",
 } as const;
 
 /** Conservative tier stats (iter119). Exposed for UI tier-comparison. */

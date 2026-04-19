@@ -2114,3 +2114,24 @@ Two directions shipped compound improvements:
 Tradeoff acknowledged: tpd dropped from 1.87 to 1.20, cumRet from +125% to +136% (actually HIGHER despite fewer trades, because mean per trade grew faster). Strategy is now MUCH more conservative about which bars to trade, which is exactly what Sharpe/DD improvements require.
 
 **Module count 16 → 17. Tooling honesty 10.3 → 10.4.**
+
+## Iteration 136 (2026-04-19) — execution stress test: MAKER-fills are essential
+
+Ran iter135 production config under 8 cost scenarios to quantify execution fragility.
+
+| Scenario                     | Sharpe    | cumRet    | Edge alive? |
+| ---------------------------- | --------- | --------- | ----------- |
+| S0 MAKER baseline            | 10.15     | +136.3%   | ✓           |
+| S1 MAKER + 1bp slippage      | 8.70      | +108.6%   | ✓           |
+| S2 MAKER + 3bps slippage     | 5.80      | +62.5%    | ✓           |
+| S3 TAKER 0.04% fee, 0 slip   | 7.25      | +84.1%    | ✓           |
+| S4 TAKER + 2bps slippage     | 4.34      | +43.4%    | ~ marginal  |
+| **S5 TAKER + 5bps slippage** | **−0.01** | **−1.4%** | ✗ KILLED    |
+| S6 TAKER + 2bps + 2× funding | 3.87      | +37.6%    | ~           |
+| S7 TAKER + 5bps + 2× funding | −0.50     | −5.4%     | ✗           |
+
+**Conclusion:** The edge requires MAKER fills. Under realistic MAKER execution (up to 3 bps slip) the edge survives with Sharpe ≥ 5.8. Under TAKER execution without slip it still holds at Sharpe 7.25. But TAKER + 5bps slip COLLAPSES the edge to zero. Per-trade edge is ~3.5 bps of the book; 5 bps slippage alone eats it.
+
+**Action:** `BTC_INTRADAY_STATS.executionSensitivity[]` now documents this; live order-placement must use maker-preferred limit orders and skip entries rather than chasing with taker.
+
+**508/508 unit tests pass, typecheck clean.** New test asserts that execution-sensitivity table is documented and baseline/worst/taker-clean values are in expected ranges.
