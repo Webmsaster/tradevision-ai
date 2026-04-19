@@ -76,6 +76,12 @@ import {
   HF_DAYTRADING_CONFIG,
   type HfPortfolioSnapshot,
 } from "@/utils/hfDaytrading";
+import {
+  getBtcIntradayLiveSignals,
+  BTC_INTRADAY_CONFIG,
+  BTC_INTRADAY_STATS,
+  type BtcIntradayLiveSignal,
+} from "@/utils/btcIntraday";
 
 export interface ChampionSignal {
   symbol: string;
@@ -206,6 +212,16 @@ export interface LiveSignalsReport {
    * WR (strict minimum) AND 100% profitable historical windows.
    */
   hfDaytrading?: HfPortfolioSnapshot;
+  /**
+   * Iter 135 BTC-only intraday ensemble (1h × 4 mechanics × volume filter ×
+   * ATR-adaptive tp). On 2083 days backtested: Sharpe 10.15, mean 0.035%/trade,
+   * all quarters positive, minW -0.8%. OOS Sharpe 6.72. REQUIRES MAKER FILLS
+   * (taker + 5bps slippage collapses the edge).
+   */
+  btcIntraday?: {
+    signals: BtcIntradayLiveSignal[];
+    stats: typeof BTC_INTRADAY_STATS;
+  };
 }
 
 const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const;
@@ -809,6 +825,31 @@ export async function computeLiveSignals(
     hfDaytrading = evaluateHfDaytradingPortfolio(hfCandlesBySym);
   }
 
+  // ---- Iter 135: BTC intraday ensemble (1h, Sharpe 10.15 backtest) ----
+  let btcIntraday:
+    | { signals: BtcIntradayLiveSignal[]; stats: typeof BTC_INTRADAY_STATS }
+    | undefined;
+  {
+    try {
+      // Need macroBars (720) + htfLen (168) + ≥ 5 lookback — pull 1500 for margin
+      const btcCandles = await loadBinanceHistory({
+        symbol: "BTCUSDT",
+        timeframe: "1h",
+        targetCount: 1500,
+      });
+      if (
+        btcCandles &&
+        btcCandles.length >=
+          BTC_INTRADAY_CONFIG.htfLen + BTC_INTRADAY_CONFIG.macro30dBars + 5
+      ) {
+        const sigs = getBtcIntradayLiveSignals(btcCandles, BTC_INTRADAY_CONFIG);
+        btcIntraday = { signals: sigs, stats: BTC_INTRADAY_STATS };
+      }
+    } catch {
+      btcIntraday = undefined;
+    }
+  }
+
   // ---- Iter 53: Multi-asset high-WR portfolio (SUI+AVAX+APT, minWR 71.8%) ----
   let highWrPortfolio: HighWrPortfolioSnapshot | undefined;
   {
@@ -852,5 +893,6 @@ export async function computeLiveSignals(
     highWrScaleOut,
     highWrPortfolio,
     hfDaytrading,
+    btcIntraday,
   };
 }
