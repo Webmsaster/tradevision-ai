@@ -48,12 +48,29 @@ import {
   evaluateEntry,
   DEFAULT_RISK_LIMITS,
 } from "../src/utils/riskManagement";
+import {
+  placeOrder,
+  safetyConfigFromEnv as orderSafetyFromEnv,
+  OrderBlockedError,
+} from "../src/utils/binanceOrders";
+import {
+  configFromEnv as binanceConfigFromEnv,
+  snapshotAccount,
+} from "../src/utils/binanceAccount";
+import {
+  reconcile,
+  formatDiffSummary,
+} from "../src/utils/positionReconciliation";
 import type { Candle } from "../src/utils/indicators";
 
 const DEFAULT_CAPITAL = 10_000; // $10k paper capital (configurable via env)
 const CAPITAL = Number(process.env.PAPER_CAPITAL ?? DEFAULT_CAPITAL);
 const SIZING_METHOD: SizingMethod =
   (process.env.PAPER_SIZING as SizingMethod) ?? "quarter-kelly";
+// Iter75: if BINANCE_LIVE=1, also place real orders on Binance (testnet by
+// default; requires BINANCE_LIVE_MODE=1 for mainnet). Dry-run unless
+// BINANCE_LIVE_EXECUTE=1. See src/utils/binanceOrders.ts for full safety.
+const BINANCE_LIVE = process.env.BINANCE_LIVE === "1";
 
 const STATE_DIR = join(homedir(), ".tradevision-ai");
 const STATE_FILE = join(STATE_DIR, "paper-trades.json");
@@ -140,7 +157,7 @@ describe("Paper-Trade TICK (side-effect: updates ~/.tradevision-ai/paper-trades.
         holdUntil: string;
         legs: 1 | 2;
       };
-      function tryOpen(p: Proposed): void {
+      async function tryOpen(p: Proposed): Promise<void> {
         const key = dedupeKey(p.strategy, p.symbol);
         if (existing.has(key)) return;
         const stats = STRATEGY_EDGE_STATS[p.strategy];
@@ -197,6 +214,33 @@ describe("Paper-Trade TICK (side-effect: updates ~/.tradevision-ai/paper-trades.
         console.log(
           `  OPEN ${p.strategy} ${p.symbol} ${p.direction} entry=$${p.entry.toFixed(4)} notional=$${sizing.notional.toFixed(0)} maxLoss=$${sizing.maxLoss.toFixed(2)} (${(sizing.maxLossPct * 100).toFixed(2)}%)${notesStr}${warnStr}`,
         );
+
+        // Iter75: optionally place real order on Binance
+        if (BINANCE_LIVE) {
+          try {
+            const qty = sizing.notional / p.entry;
+            const r = await placeOrder(
+              {
+                symbol: p.symbol,
+                side: p.direction === "long" ? "BUY" : "SELL",
+                type: "LIMIT",
+                quantity: Number(qty.toFixed(3)),
+                price: p.entry,
+                postOnly: true,
+                notionalUsd: sizing.notional,
+                clientOrderId: `tv-${p.strategy}-${Date.now()}`,
+              },
+              binanceConfigFromEnv(),
+              orderSafetyFromEnv(),
+            );
+            console.log(
+              `    ↳ BINANCE order ${r.orderId} ${r.status} @ $${r.price} qty=${r.quantity}`,
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.log(`    ↳ BINANCE order failed: ${msg}`);
+          }
+        }
       }
 
       // 2a. HF daytrading
@@ -216,7 +260,7 @@ describe("Paper-Trade TICK (side-effect: updates ~/.tradevision-ai/paper-trades.
       for (const leg of hf.legs) {
         if (!leg.active || leg.entry === undefined) continue;
         const holdMs = leg.holdUntil ?? Date.now() + 6 * 60 * 60 * 1000;
-        tryOpen({
+        await tryOpen({
           strategy: "hf-daytrading",
           symbol: leg.symbol,
           direction: leg.direction!,
@@ -246,7 +290,7 @@ describe("Paper-Trade TICK (side-effect: updates ~/.tradevision-ai/paper-trades.
       for (const leg of wr.legs) {
         if (!leg.active || leg.entry === undefined) continue;
         const holdMs = leg.holdUntil ?? Date.now() + 6 * 60 * 60 * 1000;
-        tryOpen({
+        await tryOpen({
           strategy: "hi-wr-1h",
           symbol: leg.symbol,
           direction: leg.direction!,
@@ -285,7 +329,7 @@ describe("Paper-Trade TICK (side-effect: updates ~/.tradevision-ai/paper-trades.
         if (!snap.active || snap.entry === undefined) continue;
         const holdMs =
           snap.exitAt ?? Date.now() + edge.cfg.holdBars * 60 * 60 * 1000;
-        tryOpen({
+        await tryOpen({
           strategy: "vol-spike-1h",
           symbol: edge.symbol,
           direction: snap.direction!,
@@ -294,6 +338,24 @@ describe("Paper-Trade TICK (side-effect: updates ~/.tradevision-ai/paper-trades.
           holdUntil: new Date(holdMs).toISOString(),
           legs: 1,
         });
+      }
+
+      // Iter76: reconciliation against Binance (only when BINANCE_LIVE=1)
+      if (BINANCE_LIVE) {
+        try {
+          const snap = await snapshotAccount(binanceConfigFromEnv());
+          const diff = reconcile({
+            paperOpen: state.openPositions,
+            exchangePositions: snap.openPositions,
+          });
+          console.log(
+            `\nReconciliation (${snap.isTestnet ? "testnet" : "mainnet"}, USDT=$${snap.usdtBalance.toFixed(2)}, uPnL=$${snap.totalUnrealisedPnl.toFixed(2)}):`,
+          );
+          console.log(formatDiffSummary(diff));
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.log(`\nReconciliation failed: ${msg}`);
+        }
       }
 
       state.lastTickAt = now;
