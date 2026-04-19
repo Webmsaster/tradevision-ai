@@ -10,6 +10,8 @@ export interface LoadHistoryOptions {
   timeframe: LiveTimeframe;
   targetCount: number; // e.g. 10000 candles
   signal?: AbortSignal;
+  /** Max pagination steps. Default 30 (= 30 000 candles). Raise for deep history scans. */
+  maxPages?: number;
 }
 
 const TF_MS: Record<LiveTimeframe, number> = {
@@ -62,6 +64,7 @@ export async function loadBinanceHistory({
   timeframe,
   targetCount,
   signal,
+  maxPages,
 }: LoadHistoryOptions): Promise<Candle[]> {
   const pageSize = 1000;
   const tfMs = TF_MS[timeframe];
@@ -70,8 +73,9 @@ export async function loadBinanceHistory({
   const candles: Candle[] = [];
   let endTime: number | undefined = undefined;
 
+  const cap = maxPages && maxPages > 0 ? maxPages : 30;
   // Hard cap on iterations as a safety net
-  for (let page = 0; page < 30 && candles.length < targetCount; page++) {
+  for (let page = 0; page < cap && candles.length < targetCount; page++) {
     const url = new URL("https://api.binance.com/api/v3/klines");
     url.searchParams.set("symbol", symbol.toUpperCase());
     url.searchParams.set("interval", timeframe);
