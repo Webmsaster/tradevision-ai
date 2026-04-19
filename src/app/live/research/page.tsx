@@ -2662,6 +2662,92 @@ function LiveSignalsPanel({
             </>
           )}
 
+          {report.hfDaytrading && report.hfDaytrading.legs.length > 0 && (
+            <>
+              <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
+                HF Daytrading Portfolio (iter57) — 15m × 10 Alts, fade scale-out
+              </h3>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "auto auto auto auto 1fr",
+                  rowGap: 4,
+                  columnGap: 14,
+                  fontSize: 12,
+                  marginBottom: 8,
+                  alignItems: "baseline",
+                }}
+              >
+                <strong>Symbol</strong>
+                <strong>Signal</strong>
+                <strong>vZ</strong>
+                <strong>pZ</strong>
+                <strong>Entry / TP1 / TP2 / Stop</strong>
+                {report.hfDaytrading.legs.map((leg) => {
+                  const sigText = leg.active
+                    ? `${leg.direction?.toUpperCase()} fade`
+                    : leg.filtersFailed.length > 0
+                      ? "spike-filtered"
+                      : "idle";
+                  const sigColor = leg.active
+                    ? leg.direction === "long"
+                      ? "var(--profit, #22c55e)"
+                      : "var(--loss, #ef4444)"
+                    : "var(--text-secondary)";
+                  return (
+                    <div key={leg.symbol} style={{ display: "contents" }}>
+                      <span>{leg.symbol.replace("USDT", "")}</span>
+                      <span style={{ color: sigColor, fontWeight: 600 }}>
+                        {sigText}
+                      </span>
+                      <span>{leg.vZ.toFixed(2)}×</span>
+                      <span>{leg.pZ.toFixed(2)}σ</span>
+                      <span style={{ fontFamily: "monospace" }}>
+                        {leg.active && leg.entry !== undefined
+                          ? `$${leg.entry.toFixed(4)} / $${leg.tp1?.toFixed(4)} / $${leg.tp2?.toFixed(4)} / $${leg.stop?.toFixed(4)}`
+                          : "—"}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              <p
+                className="live-muted-note"
+                style={{ marginTop: 4, fontSize: 12 }}
+              >
+                <strong>
+                  Median WR{" "}
+                  {(report.hfDaytrading.stats.medianWinRate * 100).toFixed(1)}%,
+                  minimum WR{" "}
+                  {(report.hfDaytrading.stats.minWinRate * 100).toFixed(1)}% —{" "}
+                  {(
+                    report.hfDaytrading.stats.pctWindowsProfitable * 100
+                  ).toFixed(0)}
+                  % der {report.hfDaytrading.stats.windowsTested}{" "}
+                  Bootstrap-Fenster profitabel, ~
+                  {report.hfDaytrading.stats.tradesPerDay.toFixed(1)}{" "}
+                  Trades/Tag.
+                </strong>
+                <br />
+                Trigger: {report.hfDaytrading.stats.trigger}. Filter:{" "}
+                {report.hfDaytrading.stats.filters}. Execution:{" "}
+                {report.hfDaytrading.stats.execution}.
+                <br />
+                10-Asset-Basket:{" "}
+                {report.hfDaytrading.stats.assets
+                  .map((s) => s.replace("USDT", ""))
+                  .join(", ")}
+                . Currently active:{" "}
+                {report.hfDaytrading.activeSymbols.length > 0
+                  ? report.hfDaytrading.activeSymbols
+                      .map((s) => s.replace("USDT", ""))
+                      .join(", ")
+                  : "none"}
+                .
+              </p>
+            </>
+          )}
+
           {report.highWrPortfolio && report.highWrPortfolio.legs.length > 0 && (
             <>
               <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
