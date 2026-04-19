@@ -224,17 +224,34 @@ export const HF_DAYTRADING_ASSETS =
  * analyzer.
  */
 export const HF_DAYTRADING_STATS = {
-  iteration: 95,
-  windowsTested: 5, // disjoint 20-day multi-period windows
-  medianWinRate: 0.957, // iter95: medWR per 20d window
-  minWinRate: 0.938, // worst window still 93.8% WR
-  medianReturnPct: 0.195, // typical per-window return
-  minReturnPct: 0.073, // worst window +7.3% (never negative!)
-  avgTradesPerWindow: 79.2, // 396/5
+  iteration: 104,
+  windowsTested: 5, // 104-day-scoped bootstrap
+  medianWinRate: 0.957, // 104-day: medWR per 20d window
+  minWinRate: 0.938, // 104-day: worst window still 93.8% WR
+  medianReturnPct: 0.195,
+  minReturnPct: 0.073,
+  avgTradesPerWindow: 79.2,
   tradesPerWeek: 25.9,
   tradesPerDay: 3.8,
-  pctWindowsProfitable: 1.0, // ALL 5 disjoint 20-day windows profitable
+  pctWindowsProfitable: 1.0, // ALL 5 disjoint 20-day windows profitable (104d scope)
   timeframe: "15m",
+  /**
+   * ⚠ CRITICAL HONEST WARNING (iter101-104 multi-year validation):
+   * Over 3.4 years (2022-11 → 2026-04, 1h data) on ETH/SOL/LINK/AVAX:
+   *   portfolio cumRet: -16.1% (no filter)
+   *   per-asset ETH/LINK/AVAX all NEGATIVE (-2.8% to -7.6%)
+   *   SOL only break-even (+0%)
+   * Trend-regime filters tested (5 variants) — NONE rescue the edge.
+   * The 104-day "WR 96% + 100% months profitable" is cherry-picked on
+   * recent range-bound regime. In trending / bear markets the fade-mode
+   * loses money. This is a STRUCTURAL OVERFIT, not fixable with current
+   * mechanics.
+   * DO NOT trade live money based on short-window stats. Paper-trade
+   * minimum 2-3 months and verify the edge reproduces in YOUR regime
+   * before any live capital.
+   */
+  multiYearWarning:
+    "104-day stats are regime-dependent. Multi-year test (3.4y) showed -16% portfolio ret across ETH/SOL/LINK/AVAX. Edge may not reproduce live.",
   assets: HF_DAYTRADING_ASSETS as unknown as string[],
   trigger: "volume-spike + price-z (vm 2.5, pZ 1.8) — fade mode",
   filters: "24h-SMA trend align + micro-exhaustion + avoid hour 0 UTC",
