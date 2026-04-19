@@ -252,6 +252,16 @@ export const HF_DAYTRADING_STATS = {
    */
   multiYearWarning:
     "104-day stats are regime-dependent. Multi-year test (3.4y) showed -16% portfolio ret across ETH/SOL/LINK/AVAX. Edge may not reproduce live.",
+  /**
+   * Iter105-108 (volume-spike mechanic): tested ~21k BTC configs + 3.5k
+   * multi-asset configs over 1000 days — ZERO survived. Best symmetric
+   * BTC Sharpe was -2.49 (all high-WR configs LOSE cumulatively).
+   * Iter109-113 (orthogonal mechanic): a LONG-ONLY "3-red-bar → buy dip
+   * in HTF uptrend" edge DID validate over 1000 days with bootstrap 97%
+   * positive. See @/utils/hfDipBuy for the validated replacement strategy
+   * (HF_DIP_BUY_CONFIG, HF_DIP_BUY_BASKET, runHfDipBuy).
+   */
+  replacementStrategy: "hfDipBuy (iter113 validated, 1000d bootstrap ≥97%)",
   assets: HF_DAYTRADING_ASSETS as unknown as string[],
   trigger: "volume-spike + price-z (vm 2.5, pZ 1.8) — fade mode",
   filters: "24h-SMA trend align + micro-exhaustion + avoid hour 0 UTC",
