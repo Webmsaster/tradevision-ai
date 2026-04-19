@@ -99,6 +99,11 @@ export const HF_DAYTRADING_ASSETS = [
   //                          pctProf stays 100%
   "ORDIUSDT",
   "MANTAUSDT",
+  // iter84-86 second-wave expansion: 20 more DeFi/RWA/GameFi/legacy alts
+  // screened; 1 passed strict filter:
+  //   VET: WR 96.0%, 25 trades, +3.8% (legacy mid-cap, retail-heavy)
+  // 19 others rejected (WR < 92% or negative ret)
+  "VETUSDT",
 ] as const;
 
 /**
@@ -108,15 +113,15 @@ export const HF_DAYTRADING_ASSETS = [
  * analyzer.
  */
 export const HF_DAYTRADING_STATS = {
-  iteration: 83,
+  iteration: 86,
   windowsTested: 14,
-  medianWinRate: 0.926, // iter83 15-asset bootstrap (up from 91.6% at 13)
-  minWinRate: 0.884, // up from 86.5% — every window now ≥88.4% WR
-  medianReturnPct: 0.428, // chr50 median per window
-  minReturnPct: 0.048, // worst window (chr80) still +4.8%
-  avgTradesPerWindow: 201.4,
-  tradesPerWeek: 25.4,
-  tradesPerDay: 3.63,
+  medianWinRate: 0.928, // iter86 16-asset bootstrap (92.6 → 92.8)
+  minWinRate: 0.896, // up from 88.4% — every window now ≥89.6% WR
+  medianReturnPct: 0.445, // chr50 median per window
+  minReturnPct: 0.064, // worst window (chr80) still +6.4%
+  avgTradesPerWindow: 217.5,
+  tradesPerWeek: 27.1,
+  tradesPerDay: 3.87,
   pctWindowsProfitable: 1.0, // ALL 14 windows profitable
   timeframe: "15m",
   assets: HF_DAYTRADING_ASSETS as unknown as string[],
