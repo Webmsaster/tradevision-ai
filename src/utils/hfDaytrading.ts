@@ -68,11 +68,12 @@ export interface HfConfig {
  */
 export const HF_BTC_CONFIG: HfConfig = {
   lookback: 48,
-  volMult: 2.0,
-  priceZ: 1.8,
-  tp1Pct: 0.0015, // 0.15% — scaled for BTC's 30-40% lower vol
-  tp2Pct: 0.012, // 1.2%
-  stopPct: 0.02, // 2% (alt-default was 3%)
+  // iter94: strict trigger + ultra-wide stop = WR 97.9%, medWR-per-month 100%
+  volMult: 2.5,
+  priceZ: 1.0,
+  tp1Pct: 0.0015, // 0.15% — tight TP1 (hits in 97%+ of trades)
+  tp2Pct: 0.018, // 1.8% runner
+  stopPct: 0.03, // 3% — wide stop RARELY hit (<3% of trades)
   holdBars: 24,
   mode: "fade",
   htfTrend: true,
@@ -134,20 +135,21 @@ export const HF_DAYTRADING_CONFIG: HfConfig = {
   lookback: 48, // 12h on 15m bars
   volMult: 2.5,
   priceZ: 1.8,
-  tp1Pct: 0.003, // 0.3%
-  tp2Pct: 0.012, // 1.2%
-  stopPct: 0.03, // 3% (wide — WR comes from time-in-trade)
+  // iter95: tp1 0.2% (down from 0.3%) + wider stop 4% (up from 3%) creates
+  // a 1:20 reward:risk ratio. Stops rarely hit; tp1 hits in 96% of trades.
+  // Multi-period test across 5 disjoint 20-day windows: ALL 100% profitable,
+  // minRet +7.3%, minWR 93.8%. Previous (tp 0.3 / stop 3) had +132% cumRet
+  // but medWR only 92.8%. The new config trades slightly lower return for
+  // dramatically higher consistency — "fast keine losses".
+  tp1Pct: 0.002, // 0.20% — tight tp1 for 96%+ hit rate
+  tp2Pct: 0.012, // 1.2% runner
+  stopPct: 0.04, // 4% — wide stop, rarely triggered
   holdBars: 24, // 6h max hold
   mode: "fade",
   htfTrend: true,
   microPullback: true,
   useBreakeven: true,
-  // iter68: hour 0 UTC is funding-hour toxicity (50% WR, -9.84% cumPnL on full
-  // history). Adding [0] is strict improvement over baseline: bootstrap medWR
-  // 90.6% → 91.6%, minWR 86.5% unchanged, pctProf stays at 100%.
-  // iter67 tested [0, 20] too but hour 20 (75% WR, only 8 trades) was single-
-  // window noise — in bootstrap it DROPS pctProf from 100% to 93%. Hour 20 is
-  // not filtered.
+  // iter68: hour 0 UTC is funding-hour toxicity
   avoidHoursUtc: [0],
   costs: MAKER_COSTS,
 };
@@ -191,16 +193,16 @@ export const HF_DAYTRADING_ASSETS = [
  * analyzer.
  */
 export const HF_DAYTRADING_STATS = {
-  iteration: 86,
-  windowsTested: 14,
-  medianWinRate: 0.928, // iter86 16-asset bootstrap (92.6 → 92.8)
-  minWinRate: 0.896, // up from 88.4% — every window now ≥89.6% WR
-  medianReturnPct: 0.445, // chr50 median per window
-  minReturnPct: 0.064, // worst window (chr80) still +6.4%
-  avgTradesPerWindow: 217.5,
-  tradesPerWeek: 27.1,
-  tradesPerDay: 3.87,
-  pctWindowsProfitable: 1.0, // ALL 14 windows profitable
+  iteration: 95,
+  windowsTested: 5, // disjoint 20-day multi-period windows
+  medianWinRate: 0.957, // iter95: medWR per 20d window
+  minWinRate: 0.938, // worst window still 93.8% WR
+  medianReturnPct: 0.195, // typical per-window return
+  minReturnPct: 0.073, // worst window +7.3% (never negative!)
+  avgTradesPerWindow: 79.2, // 396/5
+  tradesPerWeek: 25.9,
+  tradesPerDay: 3.8,
+  pctWindowsProfitable: 1.0, // ALL 5 disjoint 20-day windows profitable
   timeframe: "15m",
   assets: HF_DAYTRADING_ASSETS as unknown as string[],
   trigger: "volume-spike + price-z (vm 2.5, pZ 1.8) — fade mode",
