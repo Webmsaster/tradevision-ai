@@ -2662,6 +2662,98 @@ function LiveSignalsPanel({
             </>
           )}
 
+          {report.hfDaytrading &&
+            report.hfDaytrading.legs.some((l) => l.active) && (
+              <>
+                <h3
+                  className="dashboard-section-title"
+                  style={{ marginTop: 16 }}
+                >
+                  Sizing + Risk (iter59-61) — suggested position size per active
+                  signal
+                </h3>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "auto auto auto auto 1fr",
+                    rowGap: 4,
+                    columnGap: 14,
+                    fontSize: 12,
+                    marginBottom: 8,
+                    alignItems: "baseline",
+                  }}
+                >
+                  <strong>Signal</strong>
+                  <strong>Notional (¼-Kelly, $10k capital)</strong>
+                  <strong>Max Loss</strong>
+                  <strong>Max Loss %</strong>
+                  <strong>Notes</strong>
+                  {report.hfDaytrading.legs
+                    .filter((l) => l.active && l.entry && l.stop)
+                    .map((leg) => {
+                      // Kelly with hf-daytrading stats (WR 85%, avgWin 0.6%, avgLoss 3%)
+                      // b = 0.6/3 = 0.2, f = (0.85 × 0.2 - 0.15) / 0.2 = 0.1
+                      // quarter-Kelly = 0.025 → notional = 10000 × 0.025 / stopDist
+                      const capital = 10000;
+                      const stopDist =
+                        Math.abs(leg.entry! - leg.stop!) / leg.entry!;
+                      const kellyQuarter = 0.025;
+                      let notional = (capital * kellyQuarter) / stopDist;
+                      const cap = capital * 0.25;
+                      const capped = notional > cap;
+                      if (capped) notional = cap;
+                      const maxLoss = notional * stopDist;
+                      const maxLossPct = maxLoss / capital;
+                      return (
+                        <div
+                          key={`size-${leg.symbol}`}
+                          style={{ display: "contents" }}
+                        >
+                          <span>
+                            {leg.symbol.replace("USDT", "")}{" "}
+                            {leg.direction?.toUpperCase()}
+                          </span>
+                          <span style={{ fontFamily: "monospace" }}>
+                            ${notional.toFixed(0)}
+                          </span>
+                          <span style={{ fontFamily: "monospace" }}>
+                            ${maxLoss.toFixed(2)}
+                          </span>
+                          <span
+                            style={{
+                              fontFamily: "monospace",
+                              color:
+                                maxLossPct > 0.015
+                                  ? "var(--loss, #ef4444)"
+                                  : undefined,
+                            }}
+                          >
+                            {(maxLossPct * 100).toFixed(2)}%
+                          </span>
+                          <span style={{ color: "var(--text-secondary)" }}>
+                            {capped ? "capped at 25% notional" : "within caps"}
+                          </span>
+                        </div>
+                      );
+                    })}
+                </div>
+                <p
+                  className="live-muted-note"
+                  style={{ marginTop: 4, fontSize: 12 }}
+                >
+                  Sizing: quarter-Kelly with{" "}
+                  <code>STRATEGY_EDGE_STATS[&quot;hf-daytrading&quot;]</code>{" "}
+                  (WR 85%, avgWin 0.6%, avgLoss 3%) → f* = 0.1, quarter = 0.025.
+                  Notional is hard-capped at 25% of capital per position. Risk
+                  gates (set in paper-trade tick): daily-loss-cap 3%, max
+                  concurrent 5, max same-direction 3, max total exposure 1.0×
+                  capital. Scale notional linearly with your real capital; set{" "}
+                  <code>PAPER_CAPITAL=&lt;amount&gt;</code> in the tick
+                  environment.
+                </p>
+              </>
+            )}
+
           {report.hfDaytrading && report.hfDaytrading.legs.length > 0 && (
             <>
               <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
