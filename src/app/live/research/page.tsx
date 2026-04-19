@@ -2458,74 +2458,91 @@ function LiveSignalsPanel({
           {report.volumeSpikes && report.volumeSpikes.length > 0 && (
             <>
               <h3 className="dashboard-section-title" style={{ marginTop: 16 }}>
-                Volume-Spike Fade (SOL) — iter32 walk-forward edge
+                Validated Edges Dashboard — 7 production-locked Volume-Spike
+                strategies (iter34 bootstrap)
               </h3>
-              {report.volumeSpikes.map((vs) => {
-                const badge = vs.active
-                  ? vs.direction === "long"
-                    ? { text: "LONG FADE", tone: "profit" as const }
-                    : { text: "SHORT FADE", tone: "loss" as const }
-                  : { text: "IDLE", tone: undefined };
-                return (
-                  <div key={vs.symbol} style={{ marginBottom: 8 }}>
-                    <div className="live-backtest-stats">
-                      <Stat label="Symbol" value={vs.symbol} />
-                      <Stat
-                        label="Signal"
-                        value={badge.text}
-                        tone={badge.tone}
-                      />
-                      <Stat
-                        label="Volume z"
-                        value={`${vs.vZ.toFixed(2)}× median`}
-                      />
-                      <Stat label="Price z" value={`${vs.pZ.toFixed(2)}σ`} />
-                      <Stat
-                        label="Thresholds"
-                        value={`v${vs.threshold.volMult}× / p${vs.threshold.priceZ}σ`}
-                      />
-                      {vs.active && vs.entry !== undefined && (
-                        <>
-                          <Stat
-                            label="Entry"
-                            value={`$${vs.entry.toFixed(2)}`}
-                          />
-                          <Stat
-                            label="Stop"
-                            value={
-                              vs.stop !== undefined
-                                ? `$${vs.stop.toFixed(2)}`
-                                : "—"
-                            }
-                          />
-                          <Stat
-                            label="Exit at"
-                            value={
-                              vs.exitAt !== undefined
-                                ? new Date(vs.exitAt)
-                                    .toISOString()
-                                    .slice(11, 16) + " UTC"
-                                : "—"
-                            }
-                          />
-                        </>
-                      )}
-                    </div>
-                    <p
-                      className="live-muted-note"
-                      style={{ marginTop: 4, fontSize: 12 }}
-                    >
-                      {vs.reason}
-                      <br />
-                      <small>
-                        Validated in iter31b walk-forward (60/40 split): IS
-                        Sharpe 0.85 → OOS Sharpe 2.45, +30.7% / 95 trades / 6.8%
-                        DD. Mode=fade (retail-cohort liquidation overshoot).
-                      </small>
-                    </p>
-                  </div>
-                );
-              })}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "auto auto auto auto auto auto auto 1fr",
+                  rowGap: 6,
+                  columnGap: 14,
+                  fontSize: 12,
+                  alignItems: "baseline",
+                  marginBottom: 8,
+                }}
+              >
+                <strong>Strategy</strong>
+                <strong>Signal</strong>
+                <strong>vZ</strong>
+                <strong>pZ</strong>
+                <strong>Med Sh</strong>
+                <strong>Min Sh</strong>
+                <strong>% prof</strong>
+                <strong>Entry / Stop / Exit (UTC)</strong>
+                {report.volumeSpikes
+                  .slice()
+                  .sort(
+                    (a, b) =>
+                      (b.edgeMeta?.medianOosSharpe ?? 0) -
+                      (a.edgeMeta?.medianOosSharpe ?? 0),
+                  )
+                  .map((vs) => {
+                    const sigText = vs.active
+                      ? `${vs.direction?.toUpperCase()} ${vs.mode.toUpperCase()}`
+                      : "idle";
+                    const sigColor = vs.active
+                      ? vs.direction === "long"
+                        ? "var(--profit, #22c55e)"
+                        : "var(--loss, #ef4444)"
+                      : "var(--text-secondary)";
+                    return (
+                      <div key={vs.symbol} style={{ display: "contents" }}>
+                        <span>{vs.displayLabel}</span>
+                        <span style={{ color: sigColor, fontWeight: 600 }}>
+                          {sigText}
+                        </span>
+                        <span>{vs.vZ.toFixed(2)}×</span>
+                        <span>{vs.pZ.toFixed(2)}σ</span>
+                        <span>
+                          {vs.edgeMeta
+                            ? vs.edgeMeta.medianOosSharpe.toFixed(2)
+                            : "—"}
+                        </span>
+                        <span>
+                          {vs.edgeMeta
+                            ? vs.edgeMeta.minOosSharpe.toFixed(2)
+                            : "—"}
+                        </span>
+                        <span>
+                          {vs.edgeMeta
+                            ? `${(vs.edgeMeta.pctProfitable * 100).toFixed(0)}%`
+                            : "—"}
+                        </span>
+                        <span style={{ fontFamily: "monospace" }}>
+                          {vs.active && vs.entry !== undefined
+                            ? `$${vs.entry.toFixed(2)} / $${vs.stop?.toFixed(2)} / ${
+                                vs.exitAt
+                                  ? new Date(vs.exitAt)
+                                      .toISOString()
+                                      .slice(11, 16)
+                                  : "—"
+                              }`
+                            : "—"}
+                        </span>
+                      </div>
+                    );
+                  })}
+              </div>
+              <p
+                className="live-muted-note"
+                style={{ marginTop: 4, fontSize: 12 }}
+              >
+                LOCK criteria (iter34): median Sharpe ≥ 1.0 AND min Sharpe ≥ 0.0
+                AND ≥80% of 10 walk-forward / block-bootstrap splits profitable.
+                Dropped: BTC/ETH momentum, MATIC mom, OP fade — see
+                RESEARCH_LOG.md iter34.
+              </p>
             </>
           )}
 

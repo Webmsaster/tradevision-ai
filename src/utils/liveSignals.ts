@@ -58,7 +58,8 @@ import {
 import { fetchFundingHistory } from "@/utils/fundingRate";
 import {
   evaluateVolumeSpikeSignal,
-  SOL_FADE_CONFIG,
+  LOCKED_EDGES,
+  lockedEdgeBinanceSymbol,
   type VolumeSpikeSnapshot,
 } from "@/utils/volumeSpikeSignal";
 
@@ -161,9 +162,11 @@ export interface LiveSignalsReport {
   portfolioSummary?: PortfolioSummary;
   alerts?: AlertVerdict[];
   /**
-   * Iter 32: walk-forward-validated volume-spike fade signal per symbol.
-   * Only SOL is currently published as VALIDATED (OOS Sharpe 2.45). BTC/ETH
-   * variants overfit on walk-forward — not published.
+   * Iter 35: 7 production-locked Volume-Spike edges (iter34 bootstrap-validated).
+   * Each entry's `symbol` corresponds to a LOCKED_EDGES key (e.g. "AVAXUSDT_FADE"
+   * for the fade-mode parameter set on AVAX, distinct from "AVAXUSDT" momentum).
+   * Includes lifetime-stat metadata (medianOosSharpe etc.) on each snapshot via
+   * the `edgeMeta` field for UI presentation.
    */
   volumeSpikes?: VolumeSpikeSnapshot[];
 }
@@ -652,12 +655,51 @@ export async function computeLiveSignals(
     sentimentConfluence,
   );
 
-  // ---- Iter 32: SOL Volume-Spike Fade live snapshot (validated edge) ----
+  // ---- Iter 35: 7 production-locked Volume-Spike edges ----
+  // For each LOCKED edge, ensure we have candles for the underlying symbol.
+  // Fetches missing alts (AVAX/SUI/APT/INJ/NEAR) on demand. SOL is always
+  // already in candlesBySymbol via the SYMBOLS loop.
   const volumeSpikes: VolumeSpikeSnapshot[] = [];
-  const solCandles = candlesBySymbol.get("SOLUSDT");
-  if (solCandles) {
+  for (const edge of LOCKED_EDGES) {
+    const binanceSym = lockedEdgeBinanceSymbol(edge.symbol);
+    let candles = candlesBySymbol.get(binanceSym);
+    if (!candles) {
+      try {
+        candles = await loadBinanceHistory({
+          symbol: binanceSym,
+          timeframe: "1h",
+          targetCount: 200, // only need the most recent ~lookback+spare for live trigger
+        });
+        candlesBySymbol.set(binanceSym, candles);
+      } catch (err) {
+        volumeSpikes.push({
+          symbol: edge.symbol,
+          displayLabel: edge.symbol,
+          mode: edge.cfg.mode,
+          capturedAt: Date.now(),
+          active: false,
+          vZ: 0,
+          pZ: 0,
+          threshold: { volMult: edge.cfg.volMult, priceZ: edge.cfg.priceZ },
+          reason: `Fetch failed: ${(err as Error).message}`,
+          edgeMeta: {
+            medianOosSharpe: edge.medianOosSharpe,
+            minOosSharpe: edge.minOosSharpe,
+            pctProfitable: edge.pctProfitable,
+          },
+        });
+        continue;
+      }
+    }
     volumeSpikes.push(
-      evaluateVolumeSpikeSignal("SOLUSDT", solCandles, SOL_FADE_CONFIG),
+      evaluateVolumeSpikeSignal(edge.symbol, candles, {
+        cfg: edge.cfg,
+        edgeMeta: {
+          medianOosSharpe: edge.medianOosSharpe,
+          minOosSharpe: edge.minOosSharpe,
+          pctProfitable: edge.pctProfitable,
+        },
+      }),
     );
   }
 

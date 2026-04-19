@@ -40,8 +40,133 @@ export const SOL_FADE_CONFIG: VolumeSpikeSignalConfig = {
   mode: "fade",
 };
 
-export interface VolumeSpikeSnapshot {
+export interface LockedEdge {
   symbol: string;
+  cfg: VolumeSpikeSignalConfig;
+  /** Bootstrap median Sharpe across 10 chronological + block-bootstrap splits (iter34). */
+  medianOosSharpe: number;
+  /** Worst Sharpe across the same 10 splits (iter34). */
+  minOosSharpe: number;
+  /** % of bootstrap splits that finished profitable (iter34). */
+  pctProfitable: number;
+}
+
+/**
+ * Iter 34 production-locked edges. Each passed:
+ *   median Sharpe ≥ 1.0 AND min Sharpe ≥ 0.0 AND ≥80% of splits profitable
+ * across 10 walk-forward / block-bootstrap windows.
+ */
+export const LOCKED_EDGES: LockedEdge[] = [
+  {
+    symbol: "AVAXUSDT",
+    cfg: {
+      lookback: 48,
+      volMult: 5,
+      priceZ: 2.5,
+      holdBars: 6,
+      stopPct: 0.012,
+      mode: "momentum",
+    },
+    medianOosSharpe: 2.92,
+    minOosSharpe: 0.42,
+    pctProfitable: 1.0,
+  },
+  {
+    symbol: "SUIUSDT",
+    cfg: {
+      lookback: 48,
+      volMult: 3,
+      priceZ: 2.0,
+      holdBars: 6,
+      stopPct: 0.012,
+      mode: "momentum",
+    },
+    medianOosSharpe: 2.83,
+    minOosSharpe: 1.12,
+    pctProfitable: 1.0,
+  },
+  {
+    symbol: "SOLUSDT",
+    cfg: { ...SOL_FADE_CONFIG },
+    medianOosSharpe: 2.35,
+    minOosSharpe: 0.08,
+    pctProfitable: 0.9,
+  },
+  {
+    symbol: "AVAXUSDT_FADE",
+    cfg: {
+      lookback: 48,
+      volMult: 5,
+      priceZ: 2.0,
+      holdBars: 4,
+      stopPct: 0.01,
+      mode: "fade",
+    },
+    medianOosSharpe: 2.27,
+    minOosSharpe: 0.44,
+    pctProfitable: 1.0,
+  },
+  {
+    symbol: "APTUSDT",
+    cfg: {
+      lookback: 48,
+      volMult: 3,
+      priceZ: 2.0,
+      holdBars: 4,
+      stopPct: 0.01,
+      mode: "momentum",
+    },
+    medianOosSharpe: 1.99,
+    minOosSharpe: 1.38,
+    pctProfitable: 1.0,
+  },
+  {
+    symbol: "INJUSDT",
+    cfg: {
+      lookback: 48,
+      volMult: 4,
+      priceZ: 2.0,
+      holdBars: 6,
+      stopPct: 0.012,
+      mode: "momentum",
+    },
+    medianOosSharpe: 1.75,
+    minOosSharpe: 1.05,
+    pctProfitable: 1.0,
+  },
+  {
+    symbol: "NEARUSDT",
+    cfg: {
+      lookback: 48,
+      volMult: 3,
+      priceZ: 2.0,
+      holdBars: 4,
+      stopPct: 0.01,
+      mode: "fade",
+    },
+    medianOosSharpe: 1.05,
+    minOosSharpe: 0.06,
+    pctProfitable: 0.9,
+  },
+];
+
+/**
+ * Resolve a "real" Binance symbol from a LOCKED_EDGES key. We sometimes use
+ * synthetic suffixes like "AVAXUSDT_FADE" to register two strategies on the
+ * same coin (different parameter sets / modes). The fetch always uses the
+ * stripped symbol.
+ */
+export function lockedEdgeBinanceSymbol(key: string): string {
+  return key.replace(/_FADE$|_MOM$/, "");
+}
+
+export interface VolumeSpikeSnapshot {
+  /** Either a real Binance symbol (e.g. "SOLUSDT") or a synthetic locked-edge
+   *  key (e.g. "AVAXUSDT_FADE"). UI should display via `displayLabel`. */
+  symbol: string;
+  /** UI label (e.g. "AVAX (fade)"). */
+  displayLabel: string;
+  mode: "fade" | "momentum";
   capturedAt: number;
   active: boolean;
   direction?: "long" | "short";
@@ -52,6 +177,12 @@ export interface VolumeSpikeSnapshot {
   stop?: number;
   exitAt?: number;
   reason: string;
+  /** Lifetime stats from iter34 bootstrap (only set when called via LOCKED_EDGES). */
+  edgeMeta?: {
+    medianOosSharpe: number;
+    minOosSharpe: number;
+    pctProfitable: number;
+  };
 }
 
 function median(arr: number[]): number {
@@ -74,20 +205,48 @@ function stdReturns(closes: number[]): number {
   return Math.sqrt(v);
 }
 
+function buildLabel(symbol: string, mode: "fade" | "momentum"): string {
+  const base = lockedEdgeBinanceSymbol(symbol).replace(/USDT$/, "");
+  return `${base} (${mode})`;
+}
+
+export interface EvaluateOptions {
+  cfg?: VolumeSpikeSignalConfig;
+  edgeMeta?: VolumeSpikeSnapshot["edgeMeta"];
+  /** Override displayLabel (defaults to "<base> (<mode>)"). */
+  displayLabel?: string;
+}
+
 export function evaluateVolumeSpikeSignal(
   symbol: string,
   candles: Candle[],
-  cfg: VolumeSpikeSignalConfig = SOL_FADE_CONFIG,
+  optionsOrCfg: EvaluateOptions | VolumeSpikeSignalConfig = SOL_FADE_CONFIG,
 ): VolumeSpikeSnapshot {
+  // Allow legacy 3-arg call with raw cfg.
+  const opts: EvaluateOptions =
+    "cfg" in optionsOrCfg ||
+    "edgeMeta" in optionsOrCfg ||
+    "displayLabel" in optionsOrCfg
+      ? (optionsOrCfg as EvaluateOptions)
+      : { cfg: optionsOrCfg as VolumeSpikeSignalConfig };
+  const cfg = opts.cfg ?? SOL_FADE_CONFIG;
+  const displayLabel = opts.displayLabel ?? buildLabel(symbol, cfg.mode);
+  const edgeMeta = opts.edgeMeta;
   const now = Date.now();
+  const base = {
+    symbol,
+    displayLabel,
+    mode: cfg.mode,
+    capturedAt: now,
+    threshold: { volMult: cfg.volMult, priceZ: cfg.priceZ },
+    edgeMeta,
+  };
   if (candles.length < cfg.lookback + 2) {
     return {
-      symbol,
-      capturedAt: now,
+      ...base,
       active: false,
       vZ: 0,
       pZ: 0,
-      threshold: { volMult: cfg.volMult, priceZ: cfg.priceZ },
       reason: `Insufficient history (need ${cfg.lookback + 2}, have ${candles.length})`,
     };
   }
@@ -97,12 +256,10 @@ export function evaluateVolumeSpikeSignal(
   const prev = candles[i - 1];
   if (prev.close <= 0) {
     return {
-      symbol,
-      capturedAt: now,
+      ...base,
       active: false,
       vZ: 0,
       pZ: 0,
-      threshold: { volMult: cfg.volMult, priceZ: cfg.priceZ },
       reason: "Previous close invalid",
     };
   }
@@ -119,12 +276,10 @@ export function evaluateVolumeSpikeSignal(
 
   if (!volPass || !pricePass) {
     return {
-      symbol,
-      capturedAt: now,
+      ...base,
       active: false,
       vZ,
       pZ,
-      threshold: { volMult: cfg.volMult, priceZ: cfg.priceZ },
       reason: `No spike (vZ=${vZ.toFixed(2)}/${cfg.volMult}, pZ=${pZ.toFixed(2)}/${cfg.priceZ})`,
     };
   }
@@ -145,16 +300,14 @@ export function evaluateVolumeSpikeSignal(
   const exitAt = cur.closeTime + cfg.holdBars * 60 * 60 * 1000;
 
   return {
-    symbol,
-    capturedAt: now,
+    ...base,
     active: true,
     direction,
     vZ,
     pZ,
-    threshold: { volMult: cfg.volMult, priceZ: cfg.priceZ },
     entry,
     stop,
     exitAt,
-    reason: `Volume ${vZ.toFixed(1)}× median + price ${pZ.toFixed(1)}σ ${ret > 0 ? "UP" : "DOWN"} → fade ${direction.toUpperCase()}`,
+    reason: `Volume ${vZ.toFixed(1)}× median + price ${pZ.toFixed(1)}σ ${ret > 0 ? "UP" : "DOWN"} → ${cfg.mode} ${direction.toUpperCase()}`,
   };
 }
