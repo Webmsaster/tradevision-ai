@@ -7,12 +7,15 @@ import { describe, it, expect } from "vitest";
 import {
   runBtcIntraday,
   getBtcIntradayLiveSignals,
+  mapFundingToBars,
   BTC_INTRADAY_CONFIG,
   BTC_INTRADAY_CONFIG_CONSERVATIVE,
   BTC_INTRADAY_CONFIG_HIGH_FREQ,
+  BTC_INTRADAY_CONFIG_STRICT,
   BTC_INTRADAY_STATS,
   BTC_INTRADAY_STATS_CONSERVATIVE,
   BTC_INTRADAY_STATS_HIGH_FREQ,
+  BTC_INTRADAY_STATS_STRICT,
 } from "../utils/btcIntraday";
 import type { Candle } from "../utils/indicators";
 
@@ -83,6 +86,26 @@ describe("btcIntraday — config invariants", () => {
     expect(BTC_INTRADAY_CONFIG_HIGH_FREQ.volumeMult).toBe(0);
   });
 
+  it("exposes iter142 STRICT tier (funding + TBR filters)", () => {
+    expect(BTC_INTRADAY_CONFIG_STRICT.volumeMult).toBeCloseTo(1.2, 5);
+    expect(BTC_INTRADAY_CONFIG_STRICT.tpAtrMult).toBe(8);
+    expect(BTC_INTRADAY_CONFIG_STRICT.fundingRateThreshold).toBeCloseTo(
+      0.0001,
+      5,
+    );
+    expect(BTC_INTRADAY_CONFIG_STRICT.tbrMin).toBeCloseTo(0.48, 5);
+  });
+
+  it("STRICT stats document iter142 Sharpe 14.32", () => {
+    expect(BTC_INTRADAY_STATS_STRICT.iteration).toBe(142);
+    expect(BTC_INTRADAY_STATS_STRICT.sharpe).toBeGreaterThanOrEqual(13);
+    expect(BTC_INTRADAY_STATS_STRICT.pctWindowsProfitable).toBe(1.0);
+    // Every 10%-window is profitable: minW must be > 0
+    expect(BTC_INTRADAY_STATS_STRICT.minWindowRet).toBeGreaterThan(0);
+    // OOS Sharpe is lower but still strong
+    expect(BTC_INTRADAY_STATS_STRICT.oosSharpe).toBeGreaterThanOrEqual(6);
+  });
+
   it("stats document the iter135 5-gate lock (ATR-adaptive tp)", () => {
     expect(BTC_INTRADAY_STATS.iteration).toBe(135);
     expect(BTC_INTRADAY_STATS.symbol).toBe("BTCUSDT");
@@ -146,6 +169,54 @@ describe("btcIntraday — config invariants", () => {
     expect(BTC_INTRADAY_STATS.mechanics).toContain("M4_rsi");
     expect(BTC_INTRADAY_STATS.mechanics).toContain("M5_breakout");
     expect(BTC_INTRADAY_STATS.mechanics).toContain("M6_redBar");
+  });
+});
+
+describe("btcIntraday — mapFundingToBars", () => {
+  it("returns empty array when given empty funding history", () => {
+    const bars: Candle[] = [];
+    const result = mapFundingToBars(bars, []);
+    expect(result).toEqual([]);
+  });
+
+  it("leaves NaN for bars before first funding event", () => {
+    const bars: Candle[] = [1, 2, 3].map((i) => ({
+      openTime: i * 1000,
+      closeTime: i * 1000 + 999,
+      open: 100,
+      high: 101,
+      low: 99,
+      close: 100,
+      volume: 1,
+      isFinal: true,
+    }));
+    const funding = [{ fundingTime: 2500, fundingRate: 0.0002 }];
+    const r = mapFundingToBars(bars, funding);
+    expect(isNaN(r[0])).toBe(true);
+    expect(isNaN(r[1])).toBe(true);
+    expect(r[2]).toBeCloseTo(0.0002, 6);
+  });
+
+  it("maps each bar to the most-recent funding event", () => {
+    const bars: Candle[] = [100, 200, 300, 400].map((t) => ({
+      openTime: t,
+      closeTime: t + 99,
+      open: 1,
+      high: 1,
+      low: 1,
+      close: 1,
+      volume: 1,
+      isFinal: true,
+    }));
+    const funding = [
+      { fundingTime: 150, fundingRate: 0.0001 },
+      { fundingTime: 350, fundingRate: 0.0003 },
+    ];
+    const r = mapFundingToBars(bars, funding);
+    expect(isNaN(r[0])).toBe(true); // before first event
+    expect(r[1]).toBeCloseTo(0.0001, 6); // after first
+    expect(r[2]).toBeCloseTo(0.0001, 6); // still first
+    expect(r[3]).toBeCloseTo(0.0003, 6); // after second
   });
 });
 

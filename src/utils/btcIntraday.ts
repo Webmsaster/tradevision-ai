@@ -62,6 +62,19 @@ export interface BtcIntradayConfig {
    */
   tpAtrMult?: number;
   atrLen?: number;
+  /**
+   * Funding-rate skip threshold (iter142). If > 0, skip entries when the
+   * most-recent funding-rate event exceeds this value (crowded longs).
+   * Typical setting: 0.0001 (+0.01% per 8h). Requires `fundingRatesPerBar`
+   * to be passed to `runBtcIntraday`; otherwise ignored gracefully.
+   */
+  fundingRateThreshold?: number;
+  /**
+   * Taker-buy volume ratio lower bound (iter142). Skip entries if
+   * takerBuyVolume/volume < tbrMin. Typical: 0.48 (balanced bar). Lifts
+   * Sharpe to 14.32 when combined with fundingRateThreshold = 0.0001.
+   */
+  tbrMin?: number;
   avoidHoursUtc?: number[];
   costs?: CostConfig;
 }
@@ -101,6 +114,39 @@ export const BTC_INTRADAY_CONFIG: BtcIntradayConfig = {
   volumeMedianLen: 96,
   tpAtrMult: 8,
   atrLen: 14,
+  avoidHoursUtc: [0],
+  costs: MAKER_COSTS,
+};
+
+/**
+ * Iter 142 STRICT tier — iter135 + funding filter + taker-buy ratio ≥ 0.48.
+ * Requires funding rates loaded & mapped at call site. Trades per day drops
+ * 1.20 → 0.58 but bar-Sharpe lifts 10.15 → 14.32, mean/trade +43%, pctProf
+ * 90% → 100%, minW −0.8% → +1.6% (every 10-window profitable in-sample).
+ * OOS Sharpe 6.70 (vs iter135's 5.82, +15%) with bs+ 84%.
+ *
+ * Strictest tier: fewer trades, highest quality-per-trade. Best for users
+ * who want the highest risk-adjusted return and are OK with ~1 trade every
+ * 2 days.
+ */
+export const BTC_INTRADAY_CONFIG_STRICT: BtcIntradayConfig = {
+  htfLen: 168,
+  macro30dBars: 720,
+  maxConcurrent: 4,
+  tp1Pct: 0.008,
+  tp2Pct: 0.04,
+  stopPct: 0.01,
+  holdBars: 24,
+  rsiLen: 7,
+  rsiTh: 42,
+  nHi: 36,
+  redPct: 0.002,
+  volumeMult: 1.2,
+  volumeMedianLen: 96,
+  tpAtrMult: 8,
+  atrLen: 14,
+  fundingRateThreshold: 0.0001,
+  tbrMin: 0.48,
   avoidHoursUtc: [0],
   costs: MAKER_COSTS,
 };
@@ -243,6 +289,28 @@ export const BTC_INTRADAY_STATS_CONSERVATIVE = {
   bootstrap5thPctRet: 0.809,
   oosSharpe: 5.7,
   oosBootstrapPctPositive: 0.94,
+} as const;
+
+/** Strict tier stats (iter142). Highest in-sample Sharpe, lowest tpd. */
+export const BTC_INTRADAY_STATS_STRICT = {
+  iteration: 142,
+  tradesPerDay: 0.58,
+  winRate: 0.597,
+  meanPctPerTrade: 0.0005,
+  cumReturnPct: 0.811,
+  sharpe: 14.32,
+  pctWindowsProfitable: 1.0,
+  minWindowRet: 0.016,
+  bootstrapPctPositive: 1.0,
+  bootstrap5thPctRet: 0.437,
+  oosSharpe: 6.7,
+  oosBootstrapPctPositive: 0.84,
+  gates: "Requires funding rate history + takerBuyVolume in candles",
+  note:
+    "Strictest tier — funding > 0.0001 skip + taker-buy ratio ≥ 0.48. Lifts " +
+    "in-sample Sharpe 10.15 → 14.32 and makes EVERY 10-window profitable " +
+    "(minW +1.6%). tpd drops 1.20 → 0.58 because half of entry bars are " +
+    "filtered out. OOS Sharpe 6.70 is 15% higher than iter135 default.",
 } as const;
 
 /** High-frequency tier stats (iter123). Exposed for UI tier-comparison. */
@@ -466,9 +534,32 @@ function fireMechanic(
 
 // ────── public runner ──────
 
+/**
+ * Map funding events (from `fetchFundingHistory`) to per-bar rates. Each bar
+ * gets the funding rate of the most-recent event up to that bar's openTime.
+ * Bars before the first funding event get NaN (filter is skipped for them).
+ */
+export function mapFundingToBars(
+  candles: Candle[],
+  funding: { fundingTime: number; fundingRate: number }[],
+): number[] {
+  const out: number[] = new Array(candles.length).fill(NaN);
+  if (!funding || funding.length === 0) return out;
+  const sorted = [...funding].sort((a, b) => a.fundingTime - b.fundingTime);
+  let j = 0;
+  for (let i = 0; i < candles.length; i++) {
+    const t = candles[i].openTime;
+    while (j + 1 < sorted.length && sorted[j + 1].fundingTime <= t) j++;
+    if (sorted[j].fundingTime <= t) out[i] = sorted[j].fundingRate;
+  }
+  return out;
+}
+
 export function runBtcIntraday(
   candles: Candle[],
   cfg: BtcIntradayConfig = BTC_INTRADAY_CONFIG,
+  /** Optional per-bar funding rates; required if cfg.fundingRateThreshold > 0. */
+  fundingRatesPerBar?: number[],
 ): BtcIntradayReport {
   const empty: BtcIntradayReport = {
     trades: [],
@@ -533,6 +624,23 @@ export function runBtcIntraday(
     const hr = new Date(candles[i].openTime).getUTCHours();
     if (avoidSet.has(hr)) continue;
     if (volumeMult > 0 && volumes[i] <= volumeMult * volumeMedian[i]) continue;
+
+    // iter142: funding-rate skip (only if rates were passed in)
+    const fundingThreshold = cfg.fundingRateThreshold ?? 0;
+    if (
+      fundingThreshold > 0 &&
+      fundingRatesPerBar &&
+      isFinite(fundingRatesPerBar[i]) &&
+      fundingRatesPerBar[i] > fundingThreshold
+    )
+      continue;
+
+    // iter142: taker-buy ratio minimum
+    const tbrMin = cfg.tbrMin ?? 0;
+    if (tbrMin > 0 && volumes[i] > 0) {
+      const takerBuy = candles[i].takerBuyVolume;
+      if (takerBuy !== undefined && takerBuy / volumes[i] < tbrMin) continue;
+    }
 
     for (const m of mechs) {
       if (openExits.length >= cfg.maxConcurrent) break;
