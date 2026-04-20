@@ -5,7 +5,9 @@ import { describe, it, expect } from "vitest";
 import {
   runBtcSwing,
   BTC_SWING_CONFIG,
+  BTC_SWING_MAX_CONFIG,
   BTC_SWING_STATS,
+  BTC_SWING_MAX_STATS,
 } from "../utils/btcSwing";
 import type { Candle } from "../utils/indicators";
 
@@ -85,6 +87,29 @@ describe("btcSwing — config invariants", () => {
     expect(BTC_SWING_STATS.mechanics).toContain("M4_rsi");
     expect(BTC_SWING_STATS.mechanics).toContain("M5_breakout");
     expect(BTC_SWING_STATS.mechanics).toContain("M6_redBar");
+  });
+
+  it("exposes iter144 MAX tier (mean ≥ 5% per trade)", () => {
+    expect(BTC_SWING_MAX_CONFIG.tpPct).toBeCloseTo(0.6, 5);
+    expect(BTC_SWING_MAX_CONFIG.stopPct).toBeCloseTo(0.05, 5);
+    expect(BTC_SWING_MAX_CONFIG.holdBars).toBe(40);
+  });
+
+  it("MAX stats document mean ≥ 5% and 5-gate lock", () => {
+    expect(BTC_SWING_MAX_STATS.iteration).toBe(144);
+    // User's target: 5% per trade
+    expect(BTC_SWING_MAX_STATS.meanPctPerTrade).toBeGreaterThanOrEqual(0.05);
+    // Multi-year history
+    expect(BTC_SWING_MAX_STATS.daysTested).toBeGreaterThanOrEqual(2000);
+    // 100% bootstrap positive
+    expect(BTC_SWING_MAX_STATS.bootstrapPctPositive).toBe(1.0);
+    // OOS mean stays above 3%
+    expect(BTC_SWING_MAX_STATS.oos.meanPctPerTrade).toBeGreaterThanOrEqual(
+      0.03,
+    );
+    expect(BTC_SWING_MAX_STATS.oos.sharpe).toBeGreaterThanOrEqual(4);
+    // Honestly low WR (expected for 8:1 R:R)
+    expect(BTC_SWING_MAX_STATS.winRate).toBeLessThan(0.4);
   });
 });
 

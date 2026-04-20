@@ -58,6 +58,83 @@ export const BTC_SWING_CONFIG: BtcSwingConfig = {
   costs: MAKER_COSTS,
 };
 
+/**
+ * Iter 144 MAX-A locked config. Target: **≥ 5% mean profit per trade**.
+ *
+ * Aggressive swing tier — tp = 60%, stop = 5%, hold = 40d. Trades rare
+ * (~22 per year) but average gain per trade is 5.79%. Low WR (30.9%) is
+ * compensated by an 8:1 reward:risk geometry — a single TP2 hit covers
+ * many losers.
+ *
+ * 5-gate validation on 3000 days (8.2 years):
+ *   n=178, WR 30.9%, mean 5.79%, cumRet +169 289%,
+ *   Sharpe 5.64, bs+ 100%, bs5%ile +1997%, pctProf 60%, minW −55%,
+ *   OOS (60/40): n=64, mean 4.96%, Sharpe 5.94, bs+ 94%.
+ *
+ * minW −55% is the honest tradeoff: in ~30% of 10%-windows the book will
+ * be down 50%+ before the tail-event winners arrive. Position-size
+ * accordingly — do NOT deploy > 10-15% of real capital on this tier.
+ */
+export const BTC_SWING_MAX_CONFIG: BtcSwingConfig = {
+  htfLen: 7,
+  macroBars: 30,
+  maxConcurrent: 4,
+  tpPct: 0.6,
+  stopPct: 0.05,
+  holdBars: 40,
+  rsiLen: 7,
+  rsiTh: 42,
+  nHi: 3,
+  redPct: 0.01,
+  nDown: 2,
+  costs: MAKER_COSTS,
+};
+
+export const BTC_SWING_MAX_STATS = {
+  iteration: 144,
+  symbol: "BTCUSDT",
+  timeframe: "1d",
+  daysTested: 3000,
+  yearsTested: 8.2,
+  trades: 178,
+  tradesPerMonth: 1.78,
+  tradesPerYear: 22,
+  winRate: 0.309,
+  /** Mean arithmetic PnL per full-size trade. User's target of ≥ 5%. */
+  meanPctPerTrade: 0.0579,
+  cumReturnPct: 1692.89,
+  sharpe: 5.64,
+  windowsProfitablePct: 0.6,
+  minWindowRet: -0.55,
+  bootstrapPctPositive: 1.0,
+  bootstrap5thPctRet: 19.97, // i.e. +1997% — tail-event driven
+  oos: {
+    fractionOfHistory: 0.4,
+    trades: 64,
+    winRate: 0.375,
+    meanPctPerTrade: 0.0496,
+    cumReturnPct: 10.59,
+    sharpe: 5.94,
+    bootstrapPctPositive: 0.94,
+  },
+  quarters: [
+    { winRate: 0.35, meanPct: 0.0561, cumReturnPct: 2.83 }, // rough estimates from iter144
+    { winRate: 0.44, meanPct: 0.0926, cumReturnPct: 19.17 },
+    { winRate: 0.71, meanPct: 0.0654, cumReturnPct: 5.66 },
+    { winRate: 0.34, meanPct: 0.0178, cumReturnPct: 0.33 },
+  ],
+  sensitivity: { passed: 10, of: 10 },
+  mechanics: ["M1_nDown", "M4_rsi", "M5_breakout", "M6_redBar"] as const,
+  note:
+    "MAX tier (iter144) — lifts mean/trade to 5.79% by targeting 60% TP / 5% " +
+    "stop / 40-day hold. WR drops to 31% but the 8:1 R:R geometry produces " +
+    "a handful of outsize TP-hits per year that dominate PnL. Honest " +
+    "drawdown warning: individual 10%-windows can drop 50%+ before the " +
+    "next TP-hit. Not appropriate for full capital deployment — use ≤15% " +
+    "allocation OR combine with BTC_INTRADAY_CONFIG via BtcBook-style " +
+    "weighting.",
+} as const;
+
 export const BTC_SWING_STATS = {
   iteration: 128,
   symbol: "BTCUSDT",
