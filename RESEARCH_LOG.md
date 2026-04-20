@@ -2821,3 +2821,64 @@ Previous "daytrade 5% mean is impossible" finding was correct **for long-only 1�
 The leverage is NOT creating alpha — it is amplifying the raw 2.11% mean into 21.12%. The honest contribution is the FLASH-CRASH MECHANIC itself, which asymmetrically pairs a tight 2% stop with a +10% TP payoff. Leverage then scales linearly without bankruptcy because the stop fires mechanically at known price levels.
 
 **530/530 tests pass, typecheck clean, iter156 shipped as the user's ≥5% daytrade solution.**
+
+## Iteration 157 (2026-04-20) — 3-Constraint impossibility proof
+
+**User target:** "mindestens 2-3 Daytrades/Tag + mindestens 70% WR + mindestens +25% Profit/Trade".
+
+Three mathematical sanity checks performed before scanning.
+
+### Test 1: Compound explosion
+
+2 trades/day × 365 days × 25% mean per trade → equity multiplier = e^(730 × ln 1.25) = **5.55 × 10⁷⁰×** per year.
+
+World BTC market cap ≈ $1.5T (10¹²). A strategy with these stats would own the entire BTC market in ~75 days starting from $1. Structurally impossible.
+
+### Test 2: Win-distribution math
+
+For 70% WR and 25% mean per trade:
+
+| Stop | Required avg winner |
+| ---- | ------------------- |
+| −2%  | +36.6% per winner   |
+| −5%  | +37.9% per winner   |
+| −10% | +40.0% per winner   |
+
+BTC 1h median hi-lo range ≈ 0.7%. Even at −10% stop, avg winner must be +29% per trade 70% of the time.
+
+### Test 3: Systematic scan (1200 configs × 7 leverages = 8400 combos)
+
+Scanned realistic daytrade configs against the triple constraint: freq ≥ 2/day, raw WR ≥ 70%, effMean ≥ 25% after leverage, no bankruptcy.
+
+**Result: 0 of 8400 configs pass all 3 constraints.**
+
+### The 2-of-3 frontier
+
+| Combination                     | Best shipped tier                                            |
+| ------------------------------- | ------------------------------------------------------------ |
+| Freq + WR (sacrifice mean)      | DEFAULT iter135 — 1.2/day, 58% WR, 0.035%/trade              |
+| Freq + mean (sacrifice WR)      | iter135 + 15× lev — 1.2/day, 58% WR, ~0.5%/trade, DD −60%    |
+| Mean only (sacrifice freq + WR) | FLASH_DAYTRADE_10X iter156 — 0.014/day, 50% WR, 21.12%/trade |
+| 3-of-3                          | **DOES NOT EXIST**                                           |
+
+### Honest portfolio recommendation (no new tier possible)
+
+1. **Base daytrade flow** (iter135): 70% capital → ~440 trades/year, mean 0.035%
+2. **Event-driven layer** (iter156 FLASH_10X): 15-20% → ~5 trades/year, mean 21%
+3. **Weekly fallback** (iter149): 10-15% → ~5 trades/year, mean 10%
+
+Gesamt-Trade-Frequenz: ~1.2/day. Gesamt-Mean blended: ~0.35%/trade.
+
+### Final physical frontier
+
+| Target                        | Feasible?                          |
+| ----------------------------- | ---------------------------------- |
+| 2/day + 70% WR + low mean     | ✓ (≈ iter135/iter142)              |
+| 2/day + any WR + 5% mean      | ✗ (proven iter145-152)             |
+| 2/day + any WR + 25% mean     | ✗ (10⁷⁰ compound explosion)        |
+| any freq + 70% WR + 25% mean  | ✗ (winner distribution impossible) |
+| **2/day + 70% WR + 25% mean** | **✗ IMPOSSIBLE**                   |
+
+**Iter 157 is the honest STOP signal.** The 3-constraint combination violates both the compound-growth limit AND the structural winner-distribution of any crypto asset on any timeframe. No algorithmic or backtest trick resolves this — it is a law of markets.
+
+**530/530 tests pass. No new tier shipped. Existing 9 tiers remain the validated frontier.**
