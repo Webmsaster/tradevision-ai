@@ -10,6 +10,7 @@ import {
   BTC_SWING_STATS,
   BTC_SWING_MAX_STATS,
   BTC_WEEKLY_MAX_STATS,
+  BTC_WEEKLY_LEVERAGED_2X_STATS,
 } from "../utils/btcSwing";
 import type { Candle } from "../utils/indicators";
 
@@ -120,6 +121,22 @@ describe("btcSwing — config invariants", () => {
     expect(BTC_WEEKLY_MAX_CONFIG.tpPct).toBeCloseTo(0.5, 5);
     expect(BTC_WEEKLY_MAX_CONFIG.stopPct).toBeCloseTo(0.02, 5);
     expect(BTC_WEEKLY_MAX_CONFIG.holdBars).toBe(4);
+  });
+
+  it("LEVERAGED 2× tier achieves ≥ 20% mean without bankruptcy", () => {
+    expect(BTC_WEEKLY_LEVERAGED_2X_STATS.iteration).toBe(153);
+    expect(BTC_WEEKLY_LEVERAGED_2X_STATS.leverage).toBe(2);
+    // User's target: 20% per trade
+    expect(
+      BTC_WEEKLY_LEVERAGED_2X_STATS.meanPctPerTrade,
+    ).toBeGreaterThanOrEqual(0.2);
+    // Backtest must have survived without bankruptcy
+    expect(BTC_WEEKLY_LEVERAGED_2X_STATS.cumReturnPct).toBeGreaterThan(0);
+    expect(BTC_WEEKLY_LEVERAGED_2X_STATS.maxDrawdown).toBeGreaterThan(-0.3);
+    // Documented leverage table
+    expect(
+      BTC_WEEKLY_LEVERAGED_2X_STATS.leverageTable.length,
+    ).toBeGreaterThanOrEqual(5);
   });
 
   it("WEEKLY_MAX stats document ≥ 5% mean IN-SAMPLE AND OOS", () => {

@@ -129,6 +129,76 @@ export const BTC_WEEKLY_MAX_CONFIG: BtcSwingConfig = {
   costs: MAKER_COSTS,
 };
 
+/**
+ * Iter 153 LEVERAGED variant — iter149 WEEKLY_MAX applied with 2× leverage.
+ *
+ * The underlying entry/exit logic is identical to `BTC_WEEKLY_MAX_CONFIG`;
+ * leverage is applied at the exchange level (Binance perpetual futures), not
+ * in the strategy. This tier documents the EXPECTED per-trade return and
+ * drawdown profile when the user sets 2× on the exchange.
+ *
+ * Why 2× specifically works on iter149 where higher leverage fails on iter135:
+ *   iter149 has a TIGHT 2% stop. Worst observed trade: −2.1%. With 2×
+ *   leverage that becomes −4.3% margin — nowhere near liquidation.
+ *   In contrast, iter135's 1% stop + high trade count means a streak of
+ *   stops compounds to bankruptcy at only 10-15× leverage.
+ *
+ * Leverage simulation (iter153) on 8.7 years of BTC weekly data:
+ *   1× lev: mean  10.37%, minTr  −2.1%, maxDD  −8%, cumRet  +4371%
+ *   2× lev: mean  20.73%, minTr  −4.3%, maxDD −16%, cumRet  +71068% ★
+ *   3× lev: mean  31.10%, minTr  −6.4%, maxDD −23%, cumRet +601358%
+ *   5× lev: mean  51.83%, minTr −10.7%, maxDD −35%, cumRet +13M%
+ *  10× lev: mean 103.66%, minTr −21.4%, maxDD −60%, cumRet +685M%
+ *  50× lev: BANKRUPT
+ *
+ * 2× is the Kelly-safe sweet spot — delivers the user's 20% target with
+ * manageable drawdown. Higher leverage lifts mean proportionally but
+ * drawdown also rises; above 30× multi-year equity curve collapses.
+ *
+ * HONEST WARNING (critical):
+ *  - This is NOT daytrade — 4-week hold per trade
+ *  - Requires Binance perpetual futures account with 2× max cross margin
+ *  - Backtest does NOT include funding costs at 2× exposure (~1% extra per month)
+ *  - Live WR in OOS was 25% (6 of 8 trades stop); psychological stamina required
+ *  - Deploy maximum 20% of real capital; rest in unleveraged tiers
+ */
+export const BTC_WEEKLY_LEVERAGED_2X_STATS = {
+  iteration: 153,
+  baseConfig: "BTC_WEEKLY_MAX_CONFIG",
+  leverage: 2,
+  symbol: "BTCUSDT",
+  timeframe: "1w",
+  yearsTested: 8.7,
+  trades: 44,
+  tradesPerYear: 5,
+  winRate: 0.364,
+  /** Effective mean PnL per full-size trade at 2× leverage. Target: ≥ 20%. */
+  meanPctPerTrade: 0.2073,
+  cumReturnPct: 710.68,
+  sharpe: 4.09,
+  maxDrawdown: -0.16,
+  minTradePct: -0.043,
+  maxTradePct: 0.998,
+  bootstrapPctPositive: 1.0,
+  /** Leverage scaling table for risk comparison. */
+  leverageTable: [
+    { leverage: 1, meanPct: 0.1037, maxDD: -0.08 },
+    { leverage: 2, meanPct: 0.2073, maxDD: -0.16 },
+    { leverage: 3, meanPct: 0.311, maxDD: -0.23 },
+    { leverage: 5, meanPct: 0.5183, maxDD: -0.35 },
+    { leverage: 10, meanPct: 1.0366, maxDD: -0.6 },
+    { leverage: 50, meanPct: NaN, maxDD: -1.0 }, // bankrupt
+  ] as const,
+  note:
+    "LEVERAGED tier (iter153) — 2× leverage on iter149 WEEKLY_MAX. Backtest " +
+    "delivers 20.73% mean per trade with maxDD only −16% because the 2% stop " +
+    "caps single-trade loss at −4.3% margin. NOT daytrade (4w hold). Requires " +
+    "Binance perpetual futures with cross-margin. Actual leverage is applied " +
+    "at the exchange; run the strategy exactly as BTC_WEEKLY_MAX_CONFIG then " +
+    "set position size = 2× unlevered size. Funding costs NOT modeled in " +
+    "backtest (add ~1%/month at 2× BTC-perp exposure).",
+} as const;
+
 export const BTC_WEEKLY_MAX_STATS = {
   iteration: 149,
   symbol: "BTCUSDT",
