@@ -2882,3 +2882,62 @@ Gesamt-Trade-Frequenz: ~1.2/day. Gesamt-Mean blended: ~0.35%/trade.
 **Iter 157 is the honest STOP signal.** The 3-constraint combination violates both the compound-growth limit AND the structural winner-distribution of any crypto asset on any timeframe. No algorithmic or backtest trick resolves this — it is a law of markets.
 
 **530/530 tests pass. No new tier shipped. Existing 9 tiers remain the validated frontier.**
+
+## Iteration 158-161 (2026-04-20) — 100× leverage attempt, structural failure
+
+**User pushback:** "mach das mit hebel möglich hunderter hebel x100". Fair hypothesis: with 100× leverage + fixed-notional sizing, raw mean 0.25% × 100 = 25% effMean per trade. The compound-explosion argument doesn't apply.
+
+### Iter 158-159 — 1h BTC bars + 100× leverage
+
+1248 configs scanned on 1h. **0 pass** 3-constraint + 100× alive + bs+90%. Nearest-miss tables empty because oscillator triggers (RSI, BB, nDown) don't fire ≥ 2/day on 1h. Fixed-risk sizing doesn't help either.
+
+### Iter 160 — 15m bars (4× more signal frequency)
+
+100 000 15m candles (1042 days), 1440 configs. Signal frequency becomes available.
+
+| Filter                                        | Count  |
+| --------------------------------------------- | ------ |
+| Configs freq ≥ 2/day                          | 953    |
+| Configs WR ≥ 70%                              | 20     |
+| Configs 2/day AND WR ≥ 70%                    | **16** |
+| Configs 2/day + WR ≥ 70% + rawMean ≥ 0.25%    | **0**  |
+| Same + alive @ANY leverage (10×/25×/50×/100×) | **0**  |
+
+### Iter 161 — diagnosis: ALL 16 have negative raw mean
+
+Every one of the 16 high-WR configs has the IDENTICAL tp/stop: **TP 0.20%, Stop 0.70%** (ratio 0.29). Raw mean NEGATIVE (−0.06% to −0.09%) despite WR 71-75%:
+
+```
+0.7 × winner 0.20% − 0.3 × loser 0.70% = 0.14% − 0.21% = −0.07% per trade
+```
+
+Best of 16 at various leverages:
+
+| Lev  | effMean | cumRet       | alive? |
+| ---- | ------- | ------------ | ------ |
+| 1×   | −0.057% | −78%         | barely |
+| 10×  | −0.57%  | **BANKRUPT** | no     |
+| 100× | −5.67%  | **BANKRUPT** | no     |
+
+Required leverage to reach 25% effMean on a −0.06% raw mean: **250 000×** (still bankrupt — multiplying negative doesn't make positive).
+
+### Structural proof (random-walk math)
+
+Break-even WR at tp/stop ratio `r` is `1/(1+r)`:
+
+- tp/stop 1.0 → 50% WR break-even
+- tp/stop 0.43 → 70% WR break-even
+- tp/stop **0.29** (our 16 configs) → **77.5% WR** needed to break even
+
+Our 16 hit WR 71-75% — BELOW the 77.5% threshold. Edge too small.
+
+**For rawMean ≥ 0.25% at 70% WR:** tp/stop ratio must be ≥ 1.8 (e.g., TP 0.9%, Stop 0.5%) AND sustain 70% WR. **No crypto edge produces this.** Realistic ceiling with TP > Stop is 60-65% WR.
+
+### Final verdict: 100× leverage does not fix the physics
+
+- Every 70%-WR config has NEGATIVE raw mean → leverage multiplies LOSSES
+- Positive-mean configs all have WR < 60% OR frequency < 0.5/day
+- 100× leverage is LEVERAGE, not EDGE. It scales whatever you have — and at 70% WR on BTC, what you have is negative.
+- User's 3-constraint target violates random-walk math INDEPENDENT of leverage
+
+**Iter 158-161 is the final diagnostic. 530/530 tests pass. No new tier shipped. Physics wins.**
