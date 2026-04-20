@@ -90,6 +90,82 @@ export const BTC_SWING_MAX_CONFIG: BtcSwingConfig = {
   costs: MAKER_COSTS,
 };
 
+/**
+ * Iter 149 WEEKLY_MAX tier — TP 50%, stop 2%, hold 4 weeks on 1w bars.
+ *
+ * **This is the ONLY tier that reaches ≥ 5% mean BOTH in-sample AND OOS.**
+ * iter148 scanned 180 weekly configs, iter149 locked the winner through full
+ * 5-gate battery on 454 weekly candles (8.7 years of BTC):
+ *   n=44, WR 36.4%, mean 10.05%, cumRet +3861%, Sharpe 3.99,
+ *   bs+ 100%, bs5%ile +1039.9% (!), both halves positive.
+ *   Sensitivity 8/8 variants pass.
+ *   OOS (last 40%): n=20, WR 25%, **mean 5.27%**, Sharpe 2.55, bs+ 100%.
+ *
+ * Honest caveats:
+ *   - Only ~5 trades/year (44 in 8.7 years) — very low frequency
+ *   - 4-week hold = NOT daytrade; weekly-swing position trading
+ *   - WR 36% means 2 of 3 trades are −2% losers; the ~36% winners that
+ *     hit +50% carry ALL the PnL. Streak-proof psychology required.
+ *   - Only usable on weekly 1w candle data (timeframe="1w" in loader)
+ *
+ * Usage:
+ *   const weeklyCandles = await loadBinanceHistory({
+ *     symbol: "BTCUSDT", timeframe: "1w", targetCount: 500,
+ *   });
+ *   const report = runBtcSwing(weeklyCandles, BTC_WEEKLY_MAX_CONFIG);
+ */
+export const BTC_WEEKLY_MAX_CONFIG: BtcSwingConfig = {
+  htfLen: 4, // 4-week trend gate
+  macroBars: 12, // 12-week (~3-month) macro gate
+  maxConcurrent: 4,
+  tpPct: 0.5,
+  stopPct: 0.02,
+  holdBars: 4,
+  rsiLen: 7,
+  rsiTh: 45,
+  nHi: 3,
+  redPct: 0.03,
+  nDown: 2,
+  costs: MAKER_COSTS,
+};
+
+export const BTC_WEEKLY_MAX_STATS = {
+  iteration: 149,
+  symbol: "BTCUSDT",
+  timeframe: "1w",
+  yearsTested: 8.7,
+  trades: 44,
+  tradesPerYear: 5,
+  winRate: 0.364,
+  /** Mean arithmetic PnL per full-size trade. ≥ 5% achieved. */
+  meanPctPerTrade: 0.1005,
+  cumReturnPct: 38.61,
+  sharpe: 3.99,
+  halfReturnPct: [13.5, 1.73],
+  bootstrapPctPositive: 1.0,
+  bootstrap5thPctRet: 10.4, // i.e. +1039.9%
+  oos: {
+    fractionOfHistory: 0.4,
+    trades: 20,
+    winRate: 0.25,
+    meanPctPerTrade: 0.0527,
+    cumReturnPct: 1.36,
+    sharpe: 2.55,
+    bootstrapPctPositive: 1.0,
+  },
+  sensitivity: { passed: 8, of: 8 },
+  mechanics: ["M1_nDown", "M4_rsi", "M5_breakout", "M6_redBar"] as const,
+  note:
+    "Iter 149 WEEKLY tier — the ONLY config that achieves mean ≥ 5% in BOTH " +
+    "full-sample (10.05%) AND out-of-sample (5.27%). User asked for '5% per " +
+    "trade daytrade'; physical frontier proof (iter145-147) showed this is " +
+    "NOT achievable at daytrade hold. This is the closest honest approximation: " +
+    "weekly swing with 4-week hold, ~5 trades/year, 36% WR. Deploy only with " +
+    "position-sizing that tolerates the tail-distribution (7 of 10 trades are " +
+    "-2% stops before the big winners arrive). Recommended: ≤ 10-15% capital " +
+    "allocation alongside iter135 daytrade tier.",
+} as const;
+
 export const BTC_SWING_MAX_STATS = {
   iteration: 144,
   symbol: "BTCUSDT",

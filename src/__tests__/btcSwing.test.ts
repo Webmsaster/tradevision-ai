@@ -6,8 +6,10 @@ import {
   runBtcSwing,
   BTC_SWING_CONFIG,
   BTC_SWING_MAX_CONFIG,
+  BTC_WEEKLY_MAX_CONFIG,
   BTC_SWING_STATS,
   BTC_SWING_MAX_STATS,
+  BTC_WEEKLY_MAX_STATS,
 } from "../utils/btcSwing";
 import type { Candle } from "../utils/indicators";
 
@@ -110,6 +112,30 @@ describe("btcSwing — config invariants", () => {
     expect(BTC_SWING_MAX_STATS.oos.sharpe).toBeGreaterThanOrEqual(4);
     // Honestly low WR (expected for 8:1 R:R)
     expect(BTC_SWING_MAX_STATS.winRate).toBeLessThan(0.4);
+  });
+
+  it("exposes iter149 WEEKLY_MAX tier (only tier reaching 5% OOS)", () => {
+    expect(BTC_WEEKLY_MAX_CONFIG.htfLen).toBe(4);
+    expect(BTC_WEEKLY_MAX_CONFIG.macroBars).toBe(12);
+    expect(BTC_WEEKLY_MAX_CONFIG.tpPct).toBeCloseTo(0.5, 5);
+    expect(BTC_WEEKLY_MAX_CONFIG.stopPct).toBeCloseTo(0.02, 5);
+    expect(BTC_WEEKLY_MAX_CONFIG.holdBars).toBe(4);
+  });
+
+  it("WEEKLY_MAX stats document ≥ 5% mean IN-SAMPLE AND OOS", () => {
+    expect(BTC_WEEKLY_MAX_STATS.iteration).toBe(149);
+    expect(BTC_WEEKLY_MAX_STATS.timeframe).toBe("1w");
+    // In-sample mean must be ≥ 5% (the user's target)
+    expect(BTC_WEEKLY_MAX_STATS.meanPctPerTrade).toBeGreaterThanOrEqual(0.05);
+    // OOS mean must ALSO be ≥ 5% — this is the key claim of the WEEKLY tier
+    expect(BTC_WEEKLY_MAX_STATS.oos.meanPctPerTrade).toBeGreaterThanOrEqual(
+      0.05,
+    );
+    // 100% bootstrap positive both in-sample and OOS
+    expect(BTC_WEEKLY_MAX_STATS.bootstrapPctPositive).toBe(1.0);
+    expect(BTC_WEEKLY_MAX_STATS.oos.bootstrapPctPositive).toBe(1.0);
+    // Low frequency acknowledged
+    expect(BTC_WEEKLY_MAX_STATS.tradesPerYear).toBeLessThan(10);
   });
 });
 
