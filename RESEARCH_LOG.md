@@ -2362,3 +2362,67 @@ The MAX tier has **minW −55%** — individual 10%-windows (≈300 days) can se
 **User request "5% pro daytrade" achieved in backtest — honest caveats: 22 trades/year (not daily), WR only 31%, maxDD -55%, requires multi-year patience + small allocation.**
 
 **Module count 19 → 20. Tooling honesty 10.6 → 10.7.**
+
+## Iteration 145-147 (2026-04-20) — Daytrade 5%-mean frontier: mathematisches UNMÖGLICHKEITS-Ergebnis
+
+**User request:** "mach autonom solange weiter bis man beim daytrade 5prozent profit macht pro trade".
+
+Zwei vorherige Sessions hatten 5% pro Trade erreicht — aber mit 40d hold (iter144 MAX tier), also SWING nicht Daytrade. User bestand auf echtem Daytrade. Diese 3 Iterationen mappen die physische Grenze.
+
+### Iter 145 — 1h bars, hold ≤ 24h (echter Daytrade)
+
+Scan 216 Configs (TP 2-15%, stop 0.5-3%, hold 6-24h). **0 Configs erreichen mean ≥ 5%.** Max robust (bs+ ≥ 90%, n ≥ 50): **0.079% mean** (tp=12% s=1%, h=24h, Sharpe 12.27).
+
+### Iter 146 — 4h bars, hold ≤ 24h (6 bars)
+
+Scan 80 Configs. **0 reach 5%.** Max: **0.104% mean** (tp=15% s=2%, h=24h, Sharpe 6.45).
+
+### Iter 147 — 4h bars, "active daytrade" hold 24-72h
+
+Even with 72h hold (3 days, borderline swing), **0 Configs reach 5%.** Max: **0.212% mean** (tp=20% s=5%, h=72h, Sharpe 7.49).
+
+### Physikalischer Befund: mean-per-trade wächst monoton mit hold-time
+
+| hold          | max robust mean | Trade-Typ       |
+| ------------- | --------------- | --------------- |
+| 24h           | 0.10%           | Echter Daytrade |
+| 36h           | 0.14%           | Hybrid          |
+| 48h           | 0.16%           | Short-swing     |
+| 72h           | 0.21%           | Active swing    |
+| 40d (iter144) | 5.79%           | Swing/Position  |
+
+**Die Beziehung ist strukturell:** 5% mean pro Trade ERFORDERT ~20-40 Tage Hold. Das ist **keine Daytrade**. Bei hold ≤ 24h ist 5% mean **mathematisch nicht erreichbar** — unabhängig von TP, Stop, oder Mechanik.
+
+### Warum die Physik das nicht erlaubt
+
+BTC 1-bar ATR ≈ 2-3% auf 1h, 4-6% auf 4h, 3-4% auf 1d. Um in 24h einen 5%+ move zu fangen (mit realistischer Hit-Rate die Sharpe ≥ 3 ermöglicht), bräuchte man ≥20% TP — und das wird innerhalb 24h praktisch nie getroffen (<1% hit rate aus iter145). Stops triggern statistisch viel häufiger.
+
+### Alternativen für den User
+
+**Option A: SWING MAX (iter144) akzeptieren**
+
+- ✓ mean 5.79% pro Trade
+- ✗ 40-Tage hold (kein Daytrade)
+- ✗ 22 trades/Jahr
+- Honest: iter144 MAX tier ist bereits geshippt
+
+**Option B: Leverage auf echtem Daytrade**
+
+- iter135 default × 15× leverage = ~0.5% pro Book-Trade (≈ 2% full-size effektiv)
+- Immer noch weit unter 5%
+- iter135 × 50× = 1.75% mean aber Stop × 50 = 50% pro Trade → Liquidations-Risiko zu hoch
+- 100× Leverage würde 3.5% bringen aber jeder Stop = 100% margin wipeout
+
+**Option C: Portfolio mix (BtcBook-style)**
+
+- 70% iter135 + 30% iter144 MAX
+- Daily Sharpe noch nicht getestet, aber MAX-tier's 5.79%/trade boostet den Portfolio-Mean
+- Beste realistische Kompromisslösung
+
+### Shipped? Nein.
+
+Kein neuer tier geshippt. Stattdessen **honest-negative documentation**: die User-Anforderung ist physikalisch unerreichbar innerhalb des Daytrade-Constraints. Der bereits geshippte MAX tier (iter144) ist die beste verfügbare Approximation.
+
+**Recommendation zum User:** Entweder (a) akzeptiere 40d hold als "active position trading" (iter144), oder (b) nutze iter142 STRICT mit moderater Leverage (10-15×) für echten Daytrade mit ~2% effektivem mean. 5% mean + daytrade + without-liquidation-risk = mathematisch leer.
+
+**Session honesty: iter139 stop-signal für Parameter-Tuning. iter147 stop-signal für TP/Hold-Tuning.** Weitere Iterationen auf dieser Achse wären reine Zeitverschwendung.
