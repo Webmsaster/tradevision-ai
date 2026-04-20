@@ -2196,3 +2196,23 @@ Starting from iter123 baseline. Over 10 iterations, 4 rejected directions, 4 shi
 - **`BTC_BOOK_CONFIG` (iter138)** — combined portfolio (daily Sharpe 3.02)
 
 **Module count 17 → 18. Tooling honesty 10.4 → 10.5** (explicit portfolio disclosure + live-signal plumbing).
+
+## Iteration 139 (2026-04-20) — Hour-of-day filter: REJECTED (overfit test)
+
+Analyzed per-UTC-hour performance of iter135 with hour-0 avoidance removed. Bad hours (mean < 0 OR Sharpe < 0 across 50+ trades): **{0, 2, 4, 7, 11}**.
+
+Best hours (for context): hour 8 (n=102, WR 68.6%, mean 0.132%, Shp 31.53), hour 20 (WR 66.7%, Shp 26.49), hour 21 (WR 67.2%, Shp 22.09).
+
+**Filter test:** avoid {0, 2, 4, 7, 11} → Sharpe **9.00** (−11% vs iter135's 10.15), ret +100% (vs +136%), trades 2498 → 2329. **Sharpe FELL** despite filtering the "losing" hours.
+
+**Verdict: OVERFIT.** The "bad hours" are identified from 50-120 trades each — sample sizes too small for the per-hour mean to be statistically distinguishable from zero. Filtering them is curve-fitting to in-sample noise. The current shipping config (avoid only hour 0, which had a legitimate sample-wide WR depression in iter114) is the honest optimum.
+
+This is a strong stop signal: further param optimization beyond iter135 will likely degrade OOS quality. The ensemble has been squeezed to its honest-signal ceiling:
+
+- 4 mechanics validated (iter114 scan)
+- Macro gate MG3 (iter118)
+- 4 concurrent positions (iter117)
+- Volume filter (iter133)
+- ATR-adaptive tp2 (iter135)
+
+Stopping param tuning here. Additional Sharpe will have to come from fundamentally new signal sources (funding, options skew, on-chain) — not from filter tweaks.
