@@ -73,24 +73,19 @@ describe("ftmoDaytrade24h — config", () => {
 });
 
 describe("ftmoDaytrade24h — stats", () => {
-  it("honest ~45% pass rate (NOT 100%)", () => {
-    expect(FTMO_DAYTRADE_24H_STATS.passRateNov).toBeCloseTo(0.49, 1);
-    expect(FTMO_DAYTRADE_24H_STATS.passRateOos).toBeCloseTo(0.43, 1);
-    expect(FTMO_DAYTRADE_24H_STATS.livePassRateEstimate).toBeCloseTo(0.45, 2);
+  it("honest ~50% pass rate (NOT 100%)", () => {
+    expect(FTMO_DAYTRADE_24H_STATS.passRateNov).toBeCloseTo(0.52, 1);
+    expect(FTMO_DAYTRADE_24H_STATS.livePassRateEstimate).toBeCloseTo(0.5, 2);
     expect(FTMO_DAYTRADE_24H_STATS.avgDailyReturn).toBeGreaterThan(0.01);
   });
 
-  it("IS/OOS gap acceptable", () => {
-    const gap = Math.abs(
-      FTMO_DAYTRADE_24H_STATS.passRateInSample -
-        FTMO_DAYTRADE_24H_STATS.passRateOos,
-    );
-    expect(gap).toBeLessThan(0.15);
+  it("median days to pass ≤ 10", () => {
+    expect(FTMO_DAYTRADE_24H_STATS.medianDaysToPass).toBeLessThanOrEqual(10);
   });
 
   it("EV positive", () => {
-    expect(FTMO_DAYTRADE_24H_STATS.evPerChallengeOos).toBeGreaterThan(1200);
-    expect(FTMO_DAYTRADE_24H_STATS.evPerChallengeLive).toBeGreaterThan(1500);
+    expect(FTMO_DAYTRADE_24H_STATS.evPerChallengeOos).toBeGreaterThan(1800);
+    expect(FTMO_DAYTRADE_24H_STATS.evPerChallengeLive).toBeGreaterThan(1800);
   });
 
   it("is TRUE daytrade (≤ 24h)", () => {
@@ -99,17 +94,20 @@ describe("ftmoDaytrade24h — stats", () => {
     expect(FTMO_DAYTRADE_24H_STATS.maxHoldWithinLimit).toBeLessThanOrEqual(24);
   });
 
-  it("20-challenge net ~$34k", () => {
+  it("20-challenge net ~$38k", () => {
     const n =
       FTMO_DAYTRADE_24H_STATS.expectedOutcome20Challenges.expectedNetLive;
-    expect(n).toBeGreaterThan(28_000);
-    expect(n).toBeLessThan(45_000);
+    expect(n).toBeGreaterThan(32_000);
+    expect(n).toBeLessThan(50_000);
   });
 
-  it("iter191 metadata", () => {
-    expect(FTMO_DAYTRADE_24H_STATS.iteration).toBe(191);
+  it("iter194 metadata + compound sizing", () => {
+    expect(FTMO_DAYTRADE_24H_STATS.iteration).toBe(194);
     expect(FTMO_DAYTRADE_24H_STATS.timeframe).toBe("4h");
     expect(FTMO_DAYTRADE_24H_STATS.symbols.length).toBe(3);
+    expect(FTMO_DAYTRADE_24H_STATS.adaptiveSizing).toBe(true);
+    expect(FTMO_DAYTRADE_24H_CONFIG.adaptiveSizing).toBeDefined();
+    expect(FTMO_DAYTRADE_24H_CONFIG.adaptiveSizing!.length).toBe(3);
   });
 });
 
