@@ -47,13 +47,13 @@ describe("ftmoDaytrade24h — config", () => {
     }
   });
 
-  it("3-bar trigger + asymmetric 20:1 TP/Stop", () => {
-    expect(FTMO_DAYTRADE_24H_CONFIG.triggerBars).toBe(3);
-    expect(FTMO_DAYTRADE_24H_CONFIG.tpPct).toBeCloseTo(0.1, 5);
+  it("2-bar trigger + asymmetric 16:1 TP/Stop", () => {
+    expect(FTMO_DAYTRADE_24H_CONFIG.triggerBars).toBe(2);
+    expect(FTMO_DAYTRADE_24H_CONFIG.tpPct).toBeCloseTo(0.08, 5);
     expect(FTMO_DAYTRADE_24H_CONFIG.stopPct).toBeCloseTo(0.005, 5);
     expect(
       FTMO_DAYTRADE_24H_CONFIG.tpPct / FTMO_DAYTRADE_24H_CONFIG.stopPct,
-    ).toBeCloseTo(20, 1);
+    ).toBeCloseTo(16, 1);
   });
 
   it("realistic per-asset costs", () => {
@@ -73,10 +73,11 @@ describe("ftmoDaytrade24h — config", () => {
 });
 
 describe("ftmoDaytrade24h — stats", () => {
-  it("honest ~40-45% pass rate (NOT 100%)", () => {
-    expect(FTMO_DAYTRADE_24H_STATS.passRateMonteCarlo).toBeCloseTo(0.45, 1);
-    expect(FTMO_DAYTRADE_24H_STATS.passRateOos).toBeCloseTo(0.39, 1);
-    expect(FTMO_DAYTRADE_24H_STATS.livePassRateEstimate).toBeCloseTo(0.4, 2);
+  it("honest ~45% pass rate (NOT 100%)", () => {
+    expect(FTMO_DAYTRADE_24H_STATS.passRateNov).toBeCloseTo(0.49, 1);
+    expect(FTMO_DAYTRADE_24H_STATS.passRateOos).toBeCloseTo(0.43, 1);
+    expect(FTMO_DAYTRADE_24H_STATS.livePassRateEstimate).toBeCloseTo(0.45, 2);
+    expect(FTMO_DAYTRADE_24H_STATS.avgDailyReturn).toBeGreaterThan(0.01);
   });
 
   it("IS/OOS gap acceptable", () => {
@@ -88,8 +89,8 @@ describe("ftmoDaytrade24h — stats", () => {
   });
 
   it("EV positive", () => {
-    expect(FTMO_DAYTRADE_24H_STATS.evPerChallengeOos).toBeGreaterThan(1000);
-    expect(FTMO_DAYTRADE_24H_STATS.evPerChallengeLive).toBeGreaterThan(1200);
+    expect(FTMO_DAYTRADE_24H_STATS.evPerChallengeOos).toBeGreaterThan(1200);
+    expect(FTMO_DAYTRADE_24H_STATS.evPerChallengeLive).toBeGreaterThan(1500);
   });
 
   it("is TRUE daytrade (≤ 24h)", () => {
@@ -98,15 +99,15 @@ describe("ftmoDaytrade24h — stats", () => {
     expect(FTMO_DAYTRADE_24H_STATS.maxHoldWithinLimit).toBeLessThanOrEqual(24);
   });
 
-  it("20-challenge net ~$31k", () => {
+  it("20-challenge net ~$34k", () => {
     const n =
       FTMO_DAYTRADE_24H_STATS.expectedOutcome20Challenges.expectedNetLive;
-    expect(n).toBeGreaterThan(25_000);
-    expect(n).toBeLessThan(40_000);
+    expect(n).toBeGreaterThan(28_000);
+    expect(n).toBeLessThan(45_000);
   });
 
-  it("iter190 metadata", () => {
-    expect(FTMO_DAYTRADE_24H_STATS.iteration).toBe(190);
+  it("iter191 metadata", () => {
+    expect(FTMO_DAYTRADE_24H_STATS.iteration).toBe(191);
     expect(FTMO_DAYTRADE_24H_STATS.timeframe).toBe("4h");
     expect(FTMO_DAYTRADE_24H_STATS.symbols.length).toBe(3);
   });

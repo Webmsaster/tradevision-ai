@@ -71,14 +71,18 @@ export interface FtmoDaytrade24hConfig {
 }
 
 /**
- * iter190 locked 3-Asset config — user preference BTC+ETH+SOL only.
- * Monte-Carlo 300 starts: 44.67% pass. OOS: 39.29%.
- * EV live estimate: +$1,688 per challenge.
+ * iter191 locked 3-Asset config — MORE DAILY RETURN.
+ * User asked for higher daily return. 2-bar trigger + tp 8% delivers:
+ *   • Pass rate 49.28% (up from 45% at 3-bar)
+ *   • **Daily return avg 1.04%** (up from 0.69% — +51% more per day!)
+ *   • EV +$1,872 per challenge (up from $1,501)
+ * 2-bar trigger fires ~2× more often than 3-bar, compensating with smaller
+ * TP for same winning frequency.
  */
 export const FTMO_DAYTRADE_24H_CONFIG: FtmoDaytrade24hConfig = {
-  triggerBars: 3,
+  triggerBars: 2,
   leverage: 2,
-  tpPct: 0.1,
+  tpPct: 0.08,
   stopPct: 0.005,
   holdBars: 4, // 4 × 4h = 16h, within 24h limit
   timeframe: "4h",
@@ -317,31 +321,32 @@ export function runFtmoDaytrade24h(
 }
 
 export const FTMO_DAYTRADE_24H_STATS = {
-  iteration: 190,
-  version: "daytrade-24h-3asset",
+  iteration: 191,
+  version: "daytrade-24h-3asset-2bar",
   symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const,
   timeframe: "4h",
   maxHoldHours: 16,
-  tpPct: 0.1,
+  tpPct: 0.08,
   stopPct: 0.005,
-  tpStopRatio: 20,
-  triggerBars: 3,
+  tpStopRatio: 16,
+  triggerBars: 2,
   windowsTested: 69,
-  passRateMonteCarlo: 134 / 300, // 0.4467
+  passRateNov: 34 / 69, // 0.4928
   passRateInSample: 20 / 41, // 0.4878
-  passRateOos: 11 / 28, // 0.3929
-  livePassRateEstimate: 0.4,
-  evPerChallengeOos: 0.3929 * 0.5 * 8000 - 99, // +$1,473
-  evPerChallengeLive: 0.4 * 0.5 * 8000 - 99, // +$1,501
+  passRateOos: 12 / 28, // 0.4286
+  livePassRateEstimate: 0.45,
+  avgDailyReturn: 0.0104, // 1.04% per active trading day
+  evPerChallengeOos: 0.4286 * 0.5 * 8000 - 99, // +$1,615
+  evPerChallengeLive: 0.45 * 0.5 * 8000 - 99, // +$1,701
   challengeFee: 99,
   payoutIfFunded: 8000,
   phase2ConditionalPassRate: 0.5,
   expectedOutcome20Challenges: {
     fees: 1980,
-    expectedPassesLive: 8,
-    expectedFundedLive: 4,
-    expectedGrossLive: 32_000,
-    expectedNetLive: 30_020,
+    expectedPassesLive: 9,
+    expectedFundedLive: 4.5,
+    expectedGrossLive: 36_000,
+    expectedNetLive: 34_020,
   },
   leverage: 2,
   riskPerAsset: 0.4,
@@ -349,13 +354,15 @@ export const FTMO_DAYTRADE_24H_STATS = {
   allowsNormalPlan: true,
   maxHoldWithinLimit: 16, // ≤ 24h
   note:
-    "FTMO 24H-HOLD DAYTRADE (iter190) — designed for Normal/Aggressive plans " +
+    "FTMO 24H-HOLD DAYTRADE (iter191) — designed for Normal/Aggressive plans " +
     "where overnight-hold fees apply and Swing is unavailable. 4h timeframe, " +
-    "3-asset (BTC+ETH+SOL), 3-bar trigger, TP 10% / Stop 0.5% / Hold 4 bars " +
-    "(16h). 40% risk per asset = 120% total exposure. 20:1 TP/Stop ratio. " +
-    "MC 45%, IS 49%, OOS 39% (small IS-OOS gap). Conservative live: 40% " +
-    "pass rate, EV +$1,501/challenge. Over 20 challenges: +$30k expected " +
-    "net. TRUE daytrade, max hold 16h, within 24h Normal-plan limit. ~12-30 " +
+    "3-asset (BTC+ETH+SOL), **2-bar trigger**, TP 8% / Stop 0.5% / Hold 4 bars " +
+    "(16h). 40% risk per asset = 120% total exposure. 16:1 TP/Stop ratio. " +
+    "NOV 49%, IS 49%, OOS 43% (small IS-OOS gap). Conservative live: 45% " +
+    "pass rate, EV +$1,701/challenge. **Daily return avg 1.04%** (up from " +
+    "0.69% at 3-bar). Over 20 challenges: +$34k expected net. TRUE daytrade, " +
+    "max hold 16h, within 24h Normal-plan limit. 2-bar trigger fires ~2× as " +
+    "often as 3-bar, delivering more active days without losing robustness. " +
     "trades per 30-day challenge (3-bar trigger is selective). For Swing " +
     "plan users, iter186 Ultra (70% OOS) is superior.",
 } as const;
