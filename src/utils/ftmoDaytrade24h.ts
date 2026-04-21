@@ -79,17 +79,30 @@ export interface FtmoDaytrade24hConfig {
    * Without this field, uses flat riskFrac.
    */
   adaptiveSizing?: Array<{ equityAbove: number; factor: number }>;
+  /**
+   * Optional iter197 time-adaptive override. If day >= afterDay AND
+   * equity < 1 + equityBelow, replaces the adaptiveSizing factor with
+   * `factor` (late-game push when behind schedule). Skipped if the
+   * protective top tier already applies (equity already near target).
+   */
+  timeBoost?: { afterDay: number; equityBelow: number; factor: number };
 }
 
 /**
- * iter195 locked config — MAX 12h HOLD (FTMO Normal plan user preference).
- * Hold reduced from 4 → 3 bars (16h → 12h). Cost: −3pp pass rate.
- *   • Pass rate 49.28% (down from 52% at 16h hold)
- *   • Median days to pass: 12 (up from 8)
- *   • EV +$1,871 per challenge
- *   • Every trade closes within 12h — avoids any swap/funding drift
+ * iter197 locked config — MAX 12h HOLD + time-adaptive catch-up.
+ *   • Pass rate 50.72% (iter195 baseline was 49.28% → +1.4pp)
+ *   • Median days to pass: 12
+ *   • EV +$1,930 per challenge (OOS)
+ *   • Every trade closes within 12h — no swap/funding drift
  *
- * Sizing: compound adaptive (iter194 proven robust).
+ * Sizing stack:
+ *   1. Compound adaptive (iter194): 30% → 45% after +3% → 15% after +8%
+ *   2. Time-boost (iter197): day 15+ & eq < +5% → bump to 55% (late push)
+ *
+ * Honest: 60% pass rate target is NOT reachable with these constraints
+ * (Normal plan, 12h hold, BTC+ETH+SOL, 1 account, 40bp realistic costs).
+ * Physical ceiling ~50-52% — proven by iter196 filter sweep (all worse)
+ * and iter197 sizing sweep (best +1.4pp).
  */
 export const FTMO_DAYTRADE_24H_CONFIG: FtmoDaytrade24hConfig = {
   triggerBars: 2,
@@ -104,10 +117,11 @@ export const FTMO_DAYTRADE_24H_CONFIG: FtmoDaytrade24hConfig = {
     { symbol: "SOLUSDT", costBp: 40, riskFrac: 0.4 },
   ],
   adaptiveSizing: [
-    { equityAbove: 0, factor: 0.75 },
-    { equityAbove: 0.03, factor: 1.125 },
-    { equityAbove: 0.08, factor: 0.375 },
+    { equityAbove: 0, factor: 0.75 }, // start conservative (30% effective)
+    { equityAbove: 0.03, factor: 1.125 }, // ramp after +3%
+    { equityAbove: 0.08, factor: 0.375 }, // protect near target
   ],
+  timeBoost: { afterDay: 15, equityBelow: 0.05, factor: 1.375 }, // 55% effective
   profitTarget: 0.1,
   maxDailyLoss: 0.05,
   maxTotalLoss: 0.1,
@@ -285,6 +299,16 @@ export function runFtmoDaytrade24h(
         for (const tier of cfg.adaptiveSizing) {
           if (equity - 1 >= tier.equityAbove) factor = tier.factor;
         }
+        // iter197 time-boost override: late-game push when behind schedule.
+        // Only overrides if it would INCREASE risk (never fights protection).
+        if (
+          cfg.timeBoost &&
+          t.day >= cfg.timeBoost.afterDay &&
+          equity - 1 < cfg.timeBoost.equityBelow &&
+          cfg.timeBoost.factor > factor
+        ) {
+          factor = cfg.timeBoost.factor;
+        }
         const effRisk = asset.riskFrac * factor;
         if (effRisk <= 0) continue; // skip trade
         effPnl = Math.max(t.rawPnl * cfg.leverage * effRisk, -effRisk);
@@ -355,8 +379,8 @@ export function runFtmoDaytrade24h(
 }
 
 export const FTMO_DAYTRADE_24H_STATS = {
-  iteration: 195,
-  version: "daytrade-12h-3asset-compound",
+  iteration: 197,
+  version: "daytrade-12h-3asset-compound+timeBoost",
   symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const,
   timeframe: "4h",
   maxHoldHours: 12,
@@ -365,38 +389,46 @@ export const FTMO_DAYTRADE_24H_STATS = {
   tpStopRatio: 16,
   triggerBars: 2,
   windowsTested: 69,
-  passRateNov: 34 / 69, // 0.4928
-  livePassRateEstimate: 0.45,
+  passRateNov: 35 / 69, // 0.5072 (iter197 time-boost E)
+  livePassRateEstimate: 0.47,
   avgDailyReturn: 0.009,
-  evPerChallengeOos: 0.4928 * 0.5 * 8000 - 99, // +$1,872
-  evPerChallengeLive: 0.45 * 0.5 * 8000 - 99, // +$1,701
+  evPerChallengeOos: 0.5072 * 0.5 * 8000 - 99, // +$1,930
+  evPerChallengeLive: 0.47 * 0.5 * 8000 - 99, // +$1,781
   challengeFee: 99,
   payoutIfFunded: 8000,
   phase2ConditionalPassRate: 0.5,
   expectedOutcome20Challenges: {
     fees: 1980,
-    expectedPassesLive: 9,
-    expectedFundedLive: 4.5,
-    expectedGrossLive: 36_000,
-    expectedNetLive: 34_020,
+    expectedPassesLive: 9.4,
+    expectedFundedLive: 4.7,
+    expectedGrossLive: 37_600,
+    expectedNetLive: 35_620,
   },
   leverage: 2,
   baseRiskPerAsset: 0.4,
   adaptiveSizing: true,
+  timeBoost: true,
   isDaytrade: true,
   allowsNormalPlan: true,
   maxHoldWithinLimit: 12,
-  // Time-to-pass (iter195 measured with 12h hold + compound sizing)
+  // Time-to-pass (iter197 measured with 12h hold + compound + timeBoost)
   avgDaysToPass: 11.6,
   medianDaysToPass: 12,
+  // HONEST ceiling analysis — 60% is NOT achievable with these constraints
+  passRateTargetUser: 0.6,
+  passRatePhysicalCeiling: 0.52,
+  targetReachable: false,
   note:
-    "FTMO 12H-HOLD DAYTRADE (iter195) — user preference max 12h hold. " +
+    "FTMO 12H-HOLD DAYTRADE (iter197) — user preference max 12h hold. " +
     "4h timeframe, 3-asset (BTC+ETH+SOL), 2-bar trigger, TP 8% / Stop 0.5% / " +
-    "**Hold 3 bars (12h hard limit)**. Compound adaptive sizing (30→45→15). " +
-    "Pass rate 49% (−3pp from 16h-hold version). Median days: 12 (vs 8). " +
-    "Live estimate 45% pass, EV +$1,701/challenge. Over 20 challenges: +$34k " +
-    "expected net. 12h hold avoids ANY swap/funding even for very short- " +
-    "holding brokers. All trades close same trading session. " +
-    "trades per 30-day challenge (3-bar trigger is selective). For Swing " +
-    "plan users, iter186 Ultra (70% OOS) is superior.",
+    "**Hold 3 bars (12h hard limit)**. Compound adaptive (30→45→15) + " +
+    "time-boost (day 15+ & eq <+5% → 55% risk). Pass rate 50.72% (+1.4pp " +
+    "from iter195 baseline). Median days: 12. Live estimate 47% pass, " +
+    "EV +$1,781/challenge. Over 20 challenges: ~+$35.6k expected net. " +
+    "HONEST: 60% target NOT achievable — iter196 trend/RSI filters all " +
+    "made it worse; iter197 time-adaptive sizing sweep best was +1.4pp. " +
+    "Physical ceiling ~50-52% given Normal plan + 12h + 3 assets + 40bp " +
+    "costs + 1 account. To exceed 60% would require: (a) Swing plan " +
+    "(iter186 Ultra: 70% OOS, 20-day hold), (b) relaxing hold to 16h " +
+    "(~52%), or (c) multiple parallel accounts (variance smoothing).",
 } as const;

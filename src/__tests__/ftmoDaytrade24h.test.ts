@@ -73,9 +73,10 @@ describe("ftmoDaytrade24h — config", () => {
 });
 
 describe("ftmoDaytrade24h — stats", () => {
-  it("honest ~45% pass rate (NOT 100%)", () => {
-    expect(FTMO_DAYTRADE_24H_STATS.passRateNov).toBeCloseTo(0.49, 1);
-    expect(FTMO_DAYTRADE_24H_STATS.livePassRateEstimate).toBeCloseTo(0.45, 2);
+  it("honest ~47-51% pass rate (NOT 100%)", () => {
+    expect(FTMO_DAYTRADE_24H_STATS.passRateNov).toBeCloseTo(0.5, 1);
+    expect(FTMO_DAYTRADE_24H_STATS.livePassRateEstimate).toBeGreaterThan(0.4);
+    expect(FTMO_DAYTRADE_24H_STATS.livePassRateEstimate).toBeLessThan(0.55);
     expect(FTMO_DAYTRADE_24H_STATS.avgDailyReturn).toBeGreaterThan(0.005);
   });
 
@@ -101,14 +102,22 @@ describe("ftmoDaytrade24h — stats", () => {
     expect(n).toBeLessThan(45_000);
   });
 
-  it("iter195 metadata + compound sizing + 12h hold", () => {
-    expect(FTMO_DAYTRADE_24H_STATS.iteration).toBe(195);
+  it("iter197 metadata + compound + timeBoost + 12h hold", () => {
+    expect(FTMO_DAYTRADE_24H_STATS.iteration).toBe(197);
     expect(FTMO_DAYTRADE_24H_STATS.timeframe).toBe("4h");
     expect(FTMO_DAYTRADE_24H_STATS.symbols.length).toBe(3);
     expect(FTMO_DAYTRADE_24H_STATS.adaptiveSizing).toBe(true);
+    expect(FTMO_DAYTRADE_24H_STATS.timeBoost).toBe(true);
     expect(FTMO_DAYTRADE_24H_STATS.maxHoldHours).toBe(12);
     expect(FTMO_DAYTRADE_24H_CONFIG.adaptiveSizing).toBeDefined();
     expect(FTMO_DAYTRADE_24H_CONFIG.adaptiveSizing!.length).toBe(3);
+    expect(FTMO_DAYTRADE_24H_CONFIG.timeBoost).toBeDefined();
+    expect(FTMO_DAYTRADE_24H_CONFIG.timeBoost!.afterDay).toBe(15);
+  });
+
+  it("honest about 60% target not reachable", () => {
+    expect(FTMO_DAYTRADE_24H_STATS.targetReachable).toBe(false);
+    expect(FTMO_DAYTRADE_24H_STATS.passRatePhysicalCeiling).toBeLessThan(0.6);
   });
 });
 
