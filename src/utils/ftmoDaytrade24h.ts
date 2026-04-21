@@ -353,6 +353,9 @@ export const FTMO_DAYTRADE_24H_STATS = {
   isDaytrade: true,
   allowsNormalPlan: true,
   maxHoldWithinLimit: 16, // ≤ 24h
+  // Time-to-pass (iter192 measured on 69 non-overlap windows)
+  avgDaysToPass: 9.2,
+  medianDaysToPass: 7,
   note:
     "FTMO 24H-HOLD DAYTRADE (iter191) — designed for Normal/Aggressive plans " +
     "where overnight-hold fees apply and Swing is unavailable. 4h timeframe, " +
