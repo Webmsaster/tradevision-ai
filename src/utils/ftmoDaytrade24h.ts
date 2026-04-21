@@ -82,21 +82,21 @@ export interface FtmoDaytrade24hConfig {
 }
 
 /**
- * iter194 locked config — MAX PASS + MAX SPEED.
- * Adaptive compound sizing beats flat risk on both axes:
- *   • Pass rate 52.17% (up from 49.28% at flat 40%)
- *   • Median days to pass 8 (vs 7 flat-40%, +1 day — acceptable)
- *   • EV +$1,988 per challenge (up from $1,872)
+ * iter195 locked config — MAX 12h HOLD (FTMO Normal plan user preference).
+ * Hold reduced from 4 → 3 bars (16h → 12h). Cost: −3pp pass rate.
+ *   • Pass rate 49.28% (down from 52% at 16h hold)
+ *   • Median days to pass: 12 (up from 8)
+ *   • EV +$1,871 per challenge
+ *   • Every trade closes within 12h — avoids any swap/funding drift
  *
- * Sizing: start conservative (30%), ramp up after +3% to catch winners fast,
- * then protect gains at 15% after +8%. Base riskFrac 40%, multipliers applied.
+ * Sizing: compound adaptive (iter194 proven robust).
  */
 export const FTMO_DAYTRADE_24H_CONFIG: FtmoDaytrade24hConfig = {
   triggerBars: 2,
   leverage: 2,
   tpPct: 0.08,
   stopPct: 0.005,
-  holdBars: 4, // 4 × 4h = 16h, within 24h limit
+  holdBars: 3, // 3 × 4h = 12h hard limit
   timeframe: "4h",
   assets: [
     { symbol: "BTCUSDT", costBp: 40, riskFrac: 0.4 },
@@ -104,9 +104,9 @@ export const FTMO_DAYTRADE_24H_CONFIG: FtmoDaytrade24hConfig = {
     { symbol: "SOLUSDT", costBp: 40, riskFrac: 0.4 },
   ],
   adaptiveSizing: [
-    { equityAbove: 0, factor: 0.75 }, // start: 30% risk (75% of 40%)
-    { equityAbove: 0.03, factor: 1.125 }, // +3% → 45% risk (ride wave)
-    { equityAbove: 0.08, factor: 0.375 }, // +8% → 15% risk (protect gains)
+    { equityAbove: 0, factor: 0.75 },
+    { equityAbove: 0.03, factor: 1.125 },
+    { equityAbove: 0.08, factor: 0.375 },
   ],
   profitTarget: 0.1,
   maxDailyLoss: 0.05,
@@ -355,49 +355,48 @@ export function runFtmoDaytrade24h(
 }
 
 export const FTMO_DAYTRADE_24H_STATS = {
-  iteration: 194,
-  version: "daytrade-24h-3asset-compound",
+  iteration: 195,
+  version: "daytrade-12h-3asset-compound",
   symbols: ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const,
   timeframe: "4h",
-  maxHoldHours: 16,
+  maxHoldHours: 12,
   tpPct: 0.08,
   stopPct: 0.005,
   tpStopRatio: 16,
   triggerBars: 2,
   windowsTested: 69,
-  passRateNov: 36 / 69, // 0.5217 — NEW MAX
-  livePassRateEstimate: 0.5,
-  avgDailyReturn: 0.0104,
-  evPerChallengeOos: 0.5217 * 0.5 * 8000 - 99, // +$1,988
-  evPerChallengeLive: 0.5 * 0.5 * 8000 - 99, // +$1,901
+  passRateNov: 34 / 69, // 0.4928
+  livePassRateEstimate: 0.45,
+  avgDailyReturn: 0.009,
+  evPerChallengeOos: 0.4928 * 0.5 * 8000 - 99, // +$1,872
+  evPerChallengeLive: 0.45 * 0.5 * 8000 - 99, // +$1,701
   challengeFee: 99,
   payoutIfFunded: 8000,
   phase2ConditionalPassRate: 0.5,
   expectedOutcome20Challenges: {
     fees: 1980,
-    expectedPassesLive: 10,
-    expectedFundedLive: 5,
-    expectedGrossLive: 40_000,
-    expectedNetLive: 38_020,
+    expectedPassesLive: 9,
+    expectedFundedLive: 4.5,
+    expectedGrossLive: 36_000,
+    expectedNetLive: 34_020,
   },
   leverage: 2,
   baseRiskPerAsset: 0.4,
   adaptiveSizing: true,
   isDaytrade: true,
   allowsNormalPlan: true,
-  maxHoldWithinLimit: 16,
-  // Time-to-pass (iter194 measured with compound sizing)
-  avgDaysToPass: 10.4,
-  medianDaysToPass: 8,
+  maxHoldWithinLimit: 12,
+  // Time-to-pass (iter195 measured with 12h hold + compound sizing)
+  avgDaysToPass: 11.6,
+  medianDaysToPass: 12,
   note:
-    "FTMO 24H-HOLD DAYTRADE (iter194) — designed for Normal/Aggressive plans. " +
+    "FTMO 12H-HOLD DAYTRADE (iter195) — user preference max 12h hold. " +
     "4h timeframe, 3-asset (BTC+ETH+SOL), 2-bar trigger, TP 8% / Stop 0.5% / " +
-    "Hold 4 bars (16h). **Compound adaptive sizing**: base 40% risk, scaled " +
-    "0.75× initially (=30%), 1.125× after +3% equity (=45%), 0.375× after " +
-    "+8% equity (=15% protect). Pass rate 52.17% (up from 49% flat). Median " +
-    "days to pass: 8 (vs 7 flat — 1 day slower but +3pp pass rate worth it). " +
-    "Live estimate: 50% pass rate, EV +$1,901/challenge. Over 20 challenges: " +
-    "+$38k expected net. TRUE daytrade max 16h hold, Normal-plan conform. " +
+    "**Hold 3 bars (12h hard limit)**. Compound adaptive sizing (30→45→15). " +
+    "Pass rate 49% (−3pp from 16h-hold version). Median days: 12 (vs 8). " +
+    "Live estimate 45% pass, EV +$1,701/challenge. Over 20 challenges: +$34k " +
+    "expected net. 12h hold avoids ANY swap/funding even for very short- " +
+    "holding brokers. All trades close same trading session. " +
     "trades per 30-day challenge (3-bar trigger is selective). For Swing " +
     "plan users, iter186 Ultra (70% OOS) is superior.",
 } as const;

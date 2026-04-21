@@ -29,10 +29,10 @@ function mkCandle(
 }
 
 describe("ftmoDaytrade24h — config", () => {
-  it("4h timeframe, 16h max hold ≤ 24h", () => {
+  it("4h timeframe, 12h max hold (user preference)", () => {
     expect(FTMO_DAYTRADE_24H_CONFIG.timeframe).toBe("4h");
-    expect(FTMO_DAYTRADE_24H_CONFIG.holdBars).toBe(4);
-    expect(FTMO_DAYTRADE_24H_CONFIG.holdBars * 4).toBeLessThanOrEqual(24);
+    expect(FTMO_DAYTRADE_24H_CONFIG.holdBars).toBe(3);
+    expect(FTMO_DAYTRADE_24H_CONFIG.holdBars * 4).toBeLessThanOrEqual(12);
   });
 
   it("3 assets (BTC+ETH+SOL) at 40% risk each", () => {
@@ -73,39 +73,40 @@ describe("ftmoDaytrade24h — config", () => {
 });
 
 describe("ftmoDaytrade24h — stats", () => {
-  it("honest ~50% pass rate (NOT 100%)", () => {
-    expect(FTMO_DAYTRADE_24H_STATS.passRateNov).toBeCloseTo(0.52, 1);
-    expect(FTMO_DAYTRADE_24H_STATS.livePassRateEstimate).toBeCloseTo(0.5, 2);
-    expect(FTMO_DAYTRADE_24H_STATS.avgDailyReturn).toBeGreaterThan(0.01);
+  it("honest ~45% pass rate (NOT 100%)", () => {
+    expect(FTMO_DAYTRADE_24H_STATS.passRateNov).toBeCloseTo(0.49, 1);
+    expect(FTMO_DAYTRADE_24H_STATS.livePassRateEstimate).toBeCloseTo(0.45, 2);
+    expect(FTMO_DAYTRADE_24H_STATS.avgDailyReturn).toBeGreaterThan(0.005);
   });
 
-  it("median days to pass ≤ 10", () => {
-    expect(FTMO_DAYTRADE_24H_STATS.medianDaysToPass).toBeLessThanOrEqual(10);
+  it("median days to pass ≤ 15", () => {
+    expect(FTMO_DAYTRADE_24H_STATS.medianDaysToPass).toBeLessThanOrEqual(15);
   });
 
   it("EV positive", () => {
-    expect(FTMO_DAYTRADE_24H_STATS.evPerChallengeOos).toBeGreaterThan(1800);
-    expect(FTMO_DAYTRADE_24H_STATS.evPerChallengeLive).toBeGreaterThan(1800);
+    expect(FTMO_DAYTRADE_24H_STATS.evPerChallengeOos).toBeGreaterThan(1500);
+    expect(FTMO_DAYTRADE_24H_STATS.evPerChallengeLive).toBeGreaterThan(1500);
   });
 
-  it("is TRUE daytrade (≤ 24h)", () => {
+  it("is TRUE daytrade (≤ 12h user preference)", () => {
     expect(FTMO_DAYTRADE_24H_STATS.isDaytrade).toBe(true);
     expect(FTMO_DAYTRADE_24H_STATS.allowsNormalPlan).toBe(true);
-    expect(FTMO_DAYTRADE_24H_STATS.maxHoldWithinLimit).toBeLessThanOrEqual(24);
+    expect(FTMO_DAYTRADE_24H_STATS.maxHoldWithinLimit).toBeLessThanOrEqual(12);
   });
 
-  it("20-challenge net ~$38k", () => {
+  it("20-challenge net ~$34k", () => {
     const n =
       FTMO_DAYTRADE_24H_STATS.expectedOutcome20Challenges.expectedNetLive;
-    expect(n).toBeGreaterThan(32_000);
-    expect(n).toBeLessThan(50_000);
+    expect(n).toBeGreaterThan(28_000);
+    expect(n).toBeLessThan(45_000);
   });
 
-  it("iter194 metadata + compound sizing", () => {
-    expect(FTMO_DAYTRADE_24H_STATS.iteration).toBe(194);
+  it("iter195 metadata + compound sizing + 12h hold", () => {
+    expect(FTMO_DAYTRADE_24H_STATS.iteration).toBe(195);
     expect(FTMO_DAYTRADE_24H_STATS.timeframe).toBe("4h");
     expect(FTMO_DAYTRADE_24H_STATS.symbols.length).toBe(3);
     expect(FTMO_DAYTRADE_24H_STATS.adaptiveSizing).toBe(true);
+    expect(FTMO_DAYTRADE_24H_STATS.maxHoldHours).toBe(12);
     expect(FTMO_DAYTRADE_24H_CONFIG.adaptiveSizing).toBeDefined();
     expect(FTMO_DAYTRADE_24H_CONFIG.adaptiveSizing!.length).toBe(3);
   });
@@ -118,7 +119,7 @@ describe("ftmoDaytrade24h — runner", () => {
     expect(r.reason).toBe("insufficient_days");
   });
 
-  it("max hold stays ≤ 16h (4 bars × 4h)", () => {
+  it("max hold stays ≤ 12h (3 bars × 4h)", () => {
     const t0 = 1_700_000_000_000;
     const barMs = 4 * 3600_000;
     // 3 consecutive red bars then flat → time exit at bar 4
@@ -139,7 +140,7 @@ describe("ftmoDaytrade24h — runner", () => {
       ETHUSDT: mkPat(),
       SOLUSDT: mkPat(),
     });
-    expect(r.maxHoldHoursObserved).toBeLessThanOrEqual(16);
+    expect(r.maxHoldHoursObserved).toBeLessThanOrEqual(12);
   });
 
   it("TP hit pattern triggers large win", () => {
