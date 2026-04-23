@@ -3,6 +3,9 @@
 /**
  * FTMO Bot Live Monitor — reads state from /api/ftmo-state and displays:
  * - Equity / day / status banner
+ * - FTMO rule progress bars
+ * - Equity curve chart
+ * - Live signal preview (what iter231 would decide RIGHT NOW)
  * - Open positions
  * - Recent signals (from signal-log.jsonl)
  * - Recent executions (from executor-log.jsonl)
@@ -10,6 +13,32 @@
  * Auto-refreshes every 15s.
  */
 import { useEffect, useState } from "react";
+
+interface PreviewResult {
+  regime: "BULL" | "BEAR_CHOP";
+  activeBotConfig: string;
+  signals: Array<{
+    assetSymbol: string;
+    direction: string;
+    entryPrice: number;
+    stopPct: number;
+    tpPct: number;
+    riskFrac: number;
+    sizingFactor: number;
+    reasons: string[];
+  }>;
+  skipped: Array<{ asset: string; reason: string }>;
+  notes: string[];
+  btc: {
+    close: number;
+    ema10: number;
+    ema15: number;
+    uptrend: boolean;
+    mom24h: number;
+  };
+  lastBarClose: number | null;
+  nextCheckAt: number;
+}
 
 interface FtmoState {
   account: {
@@ -106,6 +135,8 @@ function fmtUsd(v: number | undefined): string {
 
 export default function FtmoMonitorPage() {
   const [state, setState] = useState<FtmoState | null>(null);
+  const [preview, setPreview] = useState<PreviewResult | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
@@ -124,11 +155,29 @@ export default function FtmoMonitorPage() {
         if (!cancelled) setError((e as Error).message);
       }
     }
+    async function fetchPreview() {
+      if (cancelled) return;
+      setPreviewLoading(true);
+      try {
+        const resp = await fetch("/api/ftmo-preview", { cache: "no-store" });
+        if (resp.ok) {
+          const data = (await resp.json()) as PreviewResult;
+          if (!cancelled) setPreview(data);
+        }
+      } catch {
+        // ignore preview errors
+      } finally {
+        if (!cancelled) setPreviewLoading(false);
+      }
+    }
     fetchState();
-    const timer = setInterval(fetchState, 15_000);
+    fetchPreview();
+    const stateTimer = setInterval(fetchState, 15_000);
+    const previewTimer = setInterval(fetchPreview, 60_000); // 1min (server caches 30s)
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      clearInterval(stateTimer);
+      clearInterval(previewTimer);
     };
   }, [refreshTick]);
 
@@ -240,6 +289,9 @@ export default function FtmoMonitorPage() {
           </div>
         </section>
       )}
+
+      {/* Live signal preview */}
+      <SignalPreviewCard preview={preview} loading={previewLoading} />
 
       {/* Equity chart */}
       {state.equityHistory && state.equityHistory.length > 1 && (
@@ -459,6 +511,114 @@ function Card({
       <div className={`text-2xl font-bold ${colorClass}`}>{value}</div>
       <div className="text-xs text-txt/60 mt-1">{sub}</div>
     </div>
+  );
+}
+
+function SignalPreviewCard({
+  preview,
+  loading,
+}: {
+  preview: PreviewResult | null;
+  loading: boolean;
+}) {
+  if (!preview) {
+    return (
+      <section>
+        <h2 className="text-xl font-semibold mb-2">🔮 Live Signal Preview</h2>
+        <div className="bg-surface rounded p-4 text-txt/60 text-sm">
+          {loading ? "Checking live market data…" : "No preview available yet."}
+        </div>
+      </section>
+    );
+  }
+
+  const secondsToCheck = Math.max(
+    0,
+    Math.round((preview.nextCheckAt - Date.now()) / 1000),
+  );
+  const mmss = `${Math.floor(secondsToCheck / 60)}:${String(secondsToCheck % 60).padStart(2, "0")}`;
+  const hasSignal = preview.signals.length > 0;
+
+  return (
+    <section>
+      <h2 className="text-xl font-semibold mb-2">
+        🔮 Live Signal Preview
+        <span className="text-sm font-normal text-txt/60 ml-3">
+          Regime:{" "}
+          <span
+            className={preview.regime === "BULL" ? "text-profit" : "text-txt"}
+          >
+            {preview.regime}
+          </span>
+          {" · "}Bot: {preview.activeBotConfig}
+          {" · "}Next check in {mmss}
+        </span>
+      </h2>
+      <div className="bg-surface rounded p-4 space-y-3">
+        <div className="text-xs text-txt/70 font-mono">
+          BTC: ${preview.btc.close.toFixed(0)} · EMA10 $
+          {preview.btc.ema10.toFixed(0)} · EMA15 ${preview.btc.ema15.toFixed(0)}{" "}
+          · 24h {(preview.btc.mom24h * 100).toFixed(2)}%
+        </div>
+
+        {hasSignal ? (
+          <div className="space-y-2">
+            <div className="text-profit font-semibold">
+              🚨 {preview.signals.length} LIVE SIGNAL
+              {preview.signals.length > 1 ? "S" : ""}
+            </div>
+            {preview.signals.map((s, i) => (
+              <div
+                key={i}
+                className="border border-profit/30 bg-profit/5 rounded p-2 text-sm"
+              >
+                <div className="font-mono">
+                  <span className="font-bold">{s.assetSymbol}</span> ·{" "}
+                  {s.direction.toUpperCase()} @ ${s.entryPrice.toFixed(4)}
+                </div>
+                <div className="text-xs text-txt/70">
+                  Stop {(s.stopPct * 100).toFixed(1)}% · TP{" "}
+                  {(s.tpPct * 100).toFixed(1)}% · Risk{" "}
+                  {(s.riskFrac * 100).toFixed(2)}% · factor{" "}
+                  {s.sizingFactor.toFixed(2)}×
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-txt/70 text-sm">⏸ No signal right now</div>
+        )}
+
+        {preview.skipped.length > 0 && (
+          <details className="text-xs">
+            <summary className="cursor-pointer text-txt/60 hover:text-txt">
+              Why no signal for {preview.skipped.length} asset(s)?
+            </summary>
+            <div className="mt-2 space-y-1 pl-3">
+              {preview.skipped.map((s, i) => (
+                <div key={i} className="font-mono">
+                  <span className="text-txt/50">•</span>{" "}
+                  <span className="font-bold">{s.asset}</span>: {s.reason}
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+
+        {preview.notes.length > 0 && (
+          <details className="text-xs">
+            <summary className="cursor-pointer text-txt/60 hover:text-txt">
+              Detector notes ({preview.notes.length})
+            </summary>
+            <div className="mt-2 space-y-1 pl-3 font-mono text-txt/70">
+              {preview.notes.map((n, i) => (
+                <div key={i}>• {n}</div>
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
+    </section>
   );
 }
 
