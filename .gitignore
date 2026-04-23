@@ -57,3 +57,7 @@ signal-alerts.log
 
 # Exploratory iteration sweeps (archived under scripts/exploratory/)
 scripts/exploratory/
+
+# Python
+__pycache__/
+*.pyc

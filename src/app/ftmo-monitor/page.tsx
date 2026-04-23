@@ -1,0 +1,382 @@
+"use client";
+
+/**
+ * FTMO Bot Live Monitor — reads state from /api/ftmo-state and displays:
+ * - Equity / day / status banner
+ * - Open positions
+ * - Recent signals (from signal-log.jsonl)
+ * - Recent executions (from executor-log.jsonl)
+ *
+ * Auto-refreshes every 15s.
+ */
+import { useEffect, useState } from "react";
+
+interface FtmoState {
+  account: {
+    equity?: number;
+    day?: number;
+    raw_equity_usd?: number;
+    raw_balance_usd?: number;
+    equityAtDayStart?: number;
+    updated_at?: string;
+    recentPnls?: number[];
+  };
+  status: { ts?: string; nextCheckInSec?: number };
+  pending: {
+    signals: Array<{
+      assetSymbol: string;
+      entryPrice: number;
+      direction: string;
+      maxHoldHours: number;
+    }>;
+  };
+  executed: {
+    executions: Array<{
+      signal: { assetSymbol: string };
+      result: string;
+      ts: string;
+      ticket?: number;
+      lot?: number;
+      actual_entry?: number;
+      reason?: string;
+      error?: string;
+    }>;
+  };
+  openPos: {
+    positions: Array<{
+      ticket: number;
+      signalAsset: string;
+      lot: number;
+      entry_price: number;
+      opened_at: string;
+      max_hold_until: number;
+    }>;
+  };
+  dailyReset: { date?: string; equity_at_day_start_usd?: number };
+  controls: { paused: boolean; killRequested: boolean };
+  lastCheck: { signalCount?: number; timestamp?: number };
+  signalLog: Array<{
+    ts: string;
+    event: string;
+    signalCount?: number;
+    newSignalsQueued?: number;
+  }>;
+  executorLog: Array<{ ts: string; event: string; [k: string]: unknown }>;
+  stateDir: string;
+  generatedAt: string;
+}
+
+function timeAgo(iso: string | undefined): string {
+  if (!iso) return "?";
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s ago`;
+  if (ms < 3600_000) return `${Math.round(ms / 60000)}m ago`;
+  return `${Math.round(ms / 3600_000)}h ago`;
+}
+
+function fmtPct(v: number | undefined): string {
+  if (v === undefined) return "?";
+  const pct = (v - 1) * 100;
+  return (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%";
+}
+
+function fmtUsd(v: number | undefined): string {
+  if (v === undefined) return "?";
+  return "$" + v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+export default function FtmoMonitorPage() {
+  const [state, setState] = useState<FtmoState | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchState() {
+      try {
+        const resp = await fetch("/api/ftmo-state", { cache: "no-store" });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = (await resp.json()) as FtmoState;
+        if (!cancelled) {
+          setState(data);
+          setError(null);
+        }
+      } catch (e) {
+        if (!cancelled) setError((e as Error).message);
+      }
+    }
+    fetchState();
+    const timer = setInterval(fetchState, 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [refreshTick]);
+
+  if (error && !state) {
+    return (
+      <div className="p-8 text-txt">
+        <h1 className="text-2xl font-bold mb-4">FTMO Monitor</h1>
+        <div className="bg-loss/20 border border-loss p-4 rounded">
+          Error: {error}
+        </div>
+      </div>
+    );
+  }
+  if (!state) {
+    return (
+      <div className="p-8 text-txt">
+        <h1 className="text-2xl font-bold mb-4">FTMO Monitor</h1>
+        <div>Loading…</div>
+      </div>
+    );
+  }
+
+  const equity = state.account.equity;
+  const equityPct = equity !== undefined ? (equity - 1) * 100 : 0;
+  const isGreen = equityPct >= 0;
+  const dailyStart = state.account.equityAtDayStart ?? 1;
+  const dailyPct =
+    equity !== undefined ? ((equity - dailyStart) / dailyStart) * 100 : 0;
+
+  const serviceOnline =
+    state.status.ts &&
+    Date.now() - new Date(state.status.ts).getTime() < 120_000;
+
+  return (
+    <div className="p-6 max-w-6xl mx-auto text-txt space-y-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-3xl font-bold">🤖 FTMO Bot Monitor</h1>
+        <button
+          onClick={() => setRefreshTick((t) => t + 1)}
+          className="px-3 py-1.5 bg-surface hover:bg-surface/70 border border-surface rounded text-sm"
+        >
+          ↻ Refresh
+        </button>
+      </div>
+
+      {/* Status banner */}
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+        <Card
+          label="Equity"
+          value={fmtPct(equity)}
+          sub={fmtUsd(state.account.raw_equity_usd)}
+          tone={isGreen ? "profit" : "loss"}
+        />
+        <Card
+          label="Today"
+          value={(dailyPct >= 0 ? "+" : "") + dailyPct.toFixed(2) + "%"}
+          sub={state.dailyReset.date ?? "?"}
+          tone={dailyPct >= 0 ? "profit" : "loss"}
+        />
+        <Card
+          label="Day"
+          value={`${(state.account.day ?? 0) + 1} / 30`}
+          sub={`last check ${timeAgo(state.lastCheck.timestamp ? new Date(state.lastCheck.timestamp).toISOString() : undefined)}`}
+        />
+        <Card
+          label="Status"
+          value={
+            state.controls.paused
+              ? "⏸ PAUSED"
+              : serviceOnline
+                ? "▶️ LIVE"
+                : "⚠️ STALE"
+          }
+          sub={`heartbeat ${timeAgo(state.status.ts)}`}
+          tone={
+            state.controls.paused
+              ? "neutral"
+              : serviceOnline
+                ? "profit"
+                : "loss"
+          }
+        />
+      </div>
+
+      {/* Open positions */}
+      <section>
+        <h2 className="text-xl font-semibold mb-2">
+          📈 Open Positions ({state.openPos.positions.length})
+        </h2>
+        {state.openPos.positions.length === 0 ? (
+          <div className="text-txt/60 text-sm">No open positions.</div>
+        ) : (
+          <div className="bg-surface rounded overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="text-left bg-surface/50">
+                <tr>
+                  <th className="p-2">Asset</th>
+                  <th className="p-2">Ticket</th>
+                  <th className="p-2">Lot</th>
+                  <th className="p-2">Entry</th>
+                  <th className="p-2">Opened</th>
+                  <th className="p-2">Hold-left</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.openPos.positions.map((p) => {
+                  const holdLeft = Math.max(
+                    0,
+                    Math.round((p.max_hold_until - Date.now()) / 60000),
+                  );
+                  return (
+                    <tr key={p.ticket} className="border-t border-surface/30">
+                      <td className="p-2 font-mono">{p.signalAsset}</td>
+                      <td className="p-2 font-mono">{p.ticket}</td>
+                      <td className="p-2">{p.lot}</td>
+                      <td className="p-2">${p.entry_price.toFixed(4)}</td>
+                      <td className="p-2 text-txt/70">
+                        {timeAgo(p.opened_at)}
+                      </td>
+                      <td className="p-2 text-txt/70">{holdLeft}m</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {/* Pending signals */}
+      {state.pending.signals.length > 0 && (
+        <section>
+          <h2 className="text-xl font-semibold mb-2">
+            ⏳ Pending Signals (awaiting executor)
+          </h2>
+          <div className="bg-surface rounded p-3 text-sm font-mono">
+            {state.pending.signals.map((s, i) => (
+              <div key={i}>
+                {s.assetSymbol} {s.direction.toUpperCase()} @ $
+                {s.entryPrice.toFixed(4)} · max hold {s.maxHoldHours}h
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Recent executions */}
+      <section>
+        <h2 className="text-xl font-semibold mb-2">
+          📝 Recent Executions ({state.executed.executions.length})
+        </h2>
+        <div className="bg-surface rounded overflow-hidden text-sm">
+          <table className="w-full">
+            <thead className="text-left bg-surface/50">
+              <tr>
+                <th className="p-2">When</th>
+                <th className="p-2">Asset</th>
+                <th className="p-2">Result</th>
+                <th className="p-2">Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...state.executed.executions]
+                .slice(-15)
+                .reverse()
+                .map((ex, i) => (
+                  <tr key={i} className="border-t border-surface/30">
+                    <td className="p-2 text-txt/70">{timeAgo(ex.ts)}</td>
+                    <td className="p-2 font-mono">{ex.signal.assetSymbol}</td>
+                    <td className="p-2">
+                      <span
+                        className={
+                          ex.result === "placed"
+                            ? "text-profit"
+                            : ex.result === "blocked"
+                              ? "text-yellow-400"
+                              : "text-loss"
+                        }
+                      >
+                        {ex.result}
+                      </span>
+                    </td>
+                    <td className="p-2 text-txt/70 font-mono text-xs">
+                      {ex.result === "placed"
+                        ? `#${ex.ticket} lot=${ex.lot} @ $${ex.actual_entry?.toFixed(4)}`
+                        : ex.result === "blocked"
+                          ? ex.reason
+                          : ex.error}
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* Recent events */}
+      <section>
+        <h2 className="text-xl font-semibold mb-2">📜 Recent Events</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <LogPanel
+            title="Signal service"
+            entries={state.signalLog.slice(-15).reverse()}
+          />
+          <LogPanel
+            title="Executor"
+            entries={state.executorLog.slice(-15).reverse()}
+          />
+        </div>
+      </section>
+
+      <div className="text-xs text-txt/50 pt-4">
+        state dir: <code>{state.stateDir}</code> · generated{" "}
+        {timeAgo(state.generatedAt)} · auto-refresh every 15s
+      </div>
+    </div>
+  );
+}
+
+function Card({
+  label,
+  value,
+  sub,
+  tone,
+}: {
+  label: string;
+  value: string;
+  sub: string;
+  tone?: "profit" | "loss" | "neutral";
+}) {
+  const colorClass =
+    tone === "profit"
+      ? "text-profit"
+      : tone === "loss"
+        ? "text-loss"
+        : "text-txt";
+  return (
+    <div className="bg-surface rounded p-4">
+      <div className="text-xs text-txt/60 uppercase tracking-wide">{label}</div>
+      <div className={`text-2xl font-bold ${colorClass}`}>{value}</div>
+      <div className="text-xs text-txt/60 mt-1">{sub}</div>
+    </div>
+  );
+}
+
+function LogPanel({
+  title,
+  entries,
+}: {
+  title: string;
+  entries: Array<{ ts: string; event: string; [k: string]: unknown }>;
+}) {
+  return (
+    <div className="bg-surface rounded overflow-hidden">
+      <div className="text-sm font-semibold p-2 bg-surface/50">{title}</div>
+      <div className="max-h-80 overflow-y-auto text-xs font-mono">
+        {entries.length === 0 ? (
+          <div className="p-2 text-txt/50">No events yet.</div>
+        ) : (
+          entries.map((e, i) => (
+            <div key={i} className="border-t border-surface/30 p-2">
+              <div className="text-txt/50">{timeAgo(e.ts)}</div>
+              <div>{e.event}</div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
