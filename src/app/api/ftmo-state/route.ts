@@ -8,6 +8,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { NextResponse } from "next/server";
 
+function isEnabled() {
+  return (
+    process.env.FTMO_MONITOR_ENABLED === "1" ||
+    process.env.FTMO_MONITOR_ENABLED === "true"
+  );
+}
+
 function getStateDir() {
   return process.env.FTMO_STATE_DIR ?? join(process.cwd(), "ftmo-state");
 }
@@ -108,6 +115,11 @@ function computeDrawdown(equityHistory: EquitySample[]) {
 }
 
 export async function GET() {
+  // Gate: only expose when explicitly enabled (prevents leaks in production)
+  if (!isEnabled()) {
+    return new NextResponse("Not Found", { status: 404 });
+  }
+
   const account = readJson<{
     equity?: number;
     raw_equity_usd?: number;

@@ -92,8 +92,14 @@ FTMO_STATE_DIR=C:\tradevision-ai\ftmo-state
 ```powershell
 cd C:\tradevision-ai
 $env:FTMO_STATE_DIR="C:\tradevision-ai\ftmo-state"
+$env:FTMO_MONITOR_ENABLED="1"  # enable /ftmo-monitor dashboard locally
 node ./node_modules/tsx/dist/cli.mjs scripts/ftmoLiveService.ts
 ```
+
+**SECURITY NOTE:** `/ftmo-monitor` and `/api/ftmo-state` return **404** unless
+`FTMO_MONITOR_ENABLED=1` is set. This prevents your personal trading data
+(equity, positions, P&L) from leaking if the Next.js app is deployed publicly
+(Vercel etc.). Only set the env var on your local/VPS box where the bot runs.
 
 Läuft endlos, checkt alle 4h um 00:00:30, 04:00:30 usw. UTC.
 

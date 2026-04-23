@@ -31,11 +31,13 @@ beforeAll(() => {
     JSON.stringify({ paused: true }),
   );
   process.env.FTMO_STATE_DIR = testStateDir;
+  process.env.FTMO_MONITOR_ENABLED = "1";
 });
 
 afterAll(() => {
   fs.rmSync(testStateDir, { recursive: true, force: true });
   delete process.env.FTMO_STATE_DIR;
+  delete process.env.FTMO_MONITOR_ENABLED;
 });
 
 describe("/api/ftmo-state route", () => {
@@ -70,5 +72,17 @@ describe("/api/ftmo-state route", () => {
 
     fs.rmSync(emptyDir, { recursive: true, force: true });
     process.env.FTMO_STATE_DIR = testStateDir;
+  });
+
+  it("returns 404 when FTMO_MONITOR_ENABLED is unset (production safety)", async () => {
+    delete process.env.FTMO_MONITOR_ENABLED;
+
+    const { GET } = await import("@/app/api/ftmo-state/route");
+    const resp = await GET();
+
+    expect(resp.status).toBe(404);
+
+    // Re-enable for subsequent tests
+    process.env.FTMO_MONITOR_ENABLED = "1";
   });
 });
