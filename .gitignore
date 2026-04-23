@@ -51,7 +51,7 @@ lh-*.json
 .lighthouseci/
 
 # FTMO bot runtime artifacts
-ftmo-state/
+/ftmo-state/
 paper-trade-log.json
 signal-alerts.log
 
