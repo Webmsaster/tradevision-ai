@@ -1,0 +1,128 @@
+/**
+ * FTMO Signal Alert — the live signal checker you run on each 4h bar close.
+ *
+ * Usage:
+ *   node ./node_modules/vitest/vitest.mjs run \
+ *        --config vitest.scripts.config.ts \
+ *        scripts/ftmoSignalAlert.test.ts --reporter=verbose
+ *
+ * Crontab example (every 4h at 5 min past the hour, to catch the closed bar):
+ *   5 0,4,8,12,16,20 * * * cd /path/to/project && \
+ *     node ./node_modules/vitest/vitest.mjs run \
+ *          --config vitest.scripts.config.ts \
+ *          scripts/ftmoSignalAlert.test.ts > /tmp/ftmo-alert.log 2>&1
+ *
+ * Optional env vars for push notifications:
+ *   TELEGRAM_BOT_TOKEN  — get from @BotFather
+ *   TELEGRAM_CHAT_ID    — your chat ID (message @userinfobot)
+ *
+ * If both set, alerts are pushed to Telegram. Otherwise only logged to stdout
+ * and appended to `signal-alerts.log`.
+ */
+import { describe, it, expect } from "vitest";
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { loadBinanceHistory } from "../src/utils/historicalData";
+import {
+  loadForexFactoryNews,
+  filterNewsEvents,
+} from "../src/utils/forexFactoryNews";
+import { detectLiveSignal, renderAlert } from "../src/utils/ftmoSignalDetector";
+
+const LOG_PATH = "signal-alerts.log";
+const STATE_PATH = "signal-alerts.state.json";
+
+interface SignalState {
+  lastAlertedBarCloseTime: number;
+}
+
+function loadState(): SignalState {
+  if (!existsSync(STATE_PATH)) return { lastAlertedBarCloseTime: 0 };
+  return JSON.parse(readFileSync(STATE_PATH, "utf8"));
+}
+function saveState(s: SignalState) {
+  writeFileSync(STATE_PATH, JSON.stringify(s, null, 2));
+}
+
+async function sendTelegram(msg: string): Promise<boolean> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chatId) return false;
+  try {
+    const res = await fetch(
+      `https://api.telegram.org/bot${token}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: msg,
+          parse_mode: "HTML",
+        }),
+      },
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+describe("ftmo signal alert", { timeout: 60_000 }, () => {
+  it("checks for live signal + optional telegram push", async () => {
+    const btc = await loadBinanceHistory({
+      symbol: "BTCUSDT",
+      timeframe: "4h",
+      targetCount: 100,
+      maxPages: 2,
+    });
+    const eth = await loadBinanceHistory({
+      symbol: "ETHUSDT",
+      timeframe: "4h",
+      targetCount: 100,
+      maxPages: 2,
+    });
+
+    let news: Awaited<ReturnType<typeof loadForexFactoryNews>> = [];
+    try {
+      news = filterNewsEvents(await loadForexFactoryNews(), {
+        impacts: ["High"],
+        currencies: ["USD", "EUR", "GBP"],
+      });
+    } catch {
+      // FF can rate-limit; proceed without news filter
+    }
+
+    const alert = detectLiveSignal(eth, btc, news);
+    const rendered = renderAlert(alert);
+    console.log(rendered);
+
+    // Log every run
+    appendFileSync(LOG_PATH, `\n${"=".repeat(60)}\n${rendered}\n`, "utf8");
+
+    // Telegram push only on NEW signal (not duplicate)
+    if (alert.hasSignal) {
+      const state = loadState();
+      if (alert.signalBarClose > state.lastAlertedBarCloseTime) {
+        const pushed = await sendTelegram(rendered);
+        if (pushed) {
+          console.log("\n📲 Pushed to Telegram");
+        } else {
+          console.log(
+            "\n📲 (Telegram not configured; set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID env)",
+          );
+        }
+        saveState({ lastAlertedBarCloseTime: alert.signalBarClose });
+      } else {
+        console.log(
+          `\n⏭ Signal for this bar already alerted (${new Date(alert.signalBarClose).toISOString()})`,
+        );
+      }
+    }
+
+    expect(true).toBe(true);
+  });
+});
