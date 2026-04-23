@@ -49,3 +49,11 @@ next-env.d.ts
 # lighthouse reports
 lh-*.json
 .lighthouseci/
+
+# FTMO bot runtime artifacts
+ftmo-state/
+paper-trade-log.json
+signal-alerts.log
+
+# Exploratory iteration sweeps (archived under scripts/exploratory/)
+scripts/exploratory/

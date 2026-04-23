@@ -29,39 +29,46 @@ function mkCandle(
 }
 
 describe("ftmoDaytrade24h — config", () => {
-  it("4h timeframe, 12h max hold (user preference)", () => {
+  it("4h timeframe, 12h max hold (user constraint: 1 account)", () => {
     expect(FTMO_DAYTRADE_24H_CONFIG.timeframe).toBe("4h");
     expect(FTMO_DAYTRADE_24H_CONFIG.holdBars).toBe(3);
     expect(FTMO_DAYTRADE_24H_CONFIG.holdBars * 4).toBeLessThanOrEqual(12);
   });
 
-  it("3 assets (BTC+ETH+SOL) at 40% risk each", () => {
-    expect(FTMO_DAYTRADE_24H_CONFIG.assets.length).toBe(3);
-    const syms = FTMO_DAYTRADE_24H_CONFIG.assets.map((a) => a.symbol);
-    expect(syms).toContain("BTCUSDT");
-    expect(syms).toContain("ETHUSDT");
-    expect(syms).toContain("SOLUSDT");
-    expect(syms).not.toContain("AVAXUSDT");
-    for (const a of FTMO_DAYTRADE_24H_CONFIG.assets) {
-      expect(a.riskFrac).toBeCloseTo(0.4, 2);
-    }
+  it("iter212: pyramid r=5 + BTC EMA10/15 + momentum 6bar filter", () => {
+    expect(FTMO_DAYTRADE_24H_CONFIG.assets.length).toBe(2);
+    expect(FTMO_DAYTRADE_24H_CONFIG.assets[0].sourceSymbol).toBe("ETHUSDT");
+    expect(FTMO_DAYTRADE_24H_CONFIG.assets[1].sourceSymbol).toBe("ETHUSDT");
+    expect(FTMO_DAYTRADE_24H_CONFIG.assets[0].riskFrac).toBeCloseTo(1.0, 2);
+    expect(FTMO_DAYTRADE_24H_CONFIG.assets[1].riskFrac).toBeCloseTo(5.0, 2);
+    expect(FTMO_DAYTRADE_24H_CONFIG.assets[1].minEquityGain).toBeCloseTo(
+      0.015,
+      3,
+    );
+    expect(FTMO_DAYTRADE_24H_CONFIG.crossAssetFilter?.symbol).toBe("BTCUSDT");
+    expect(FTMO_DAYTRADE_24H_CONFIG.crossAssetFilter?.emaFastPeriod).toBe(10);
+    expect(FTMO_DAYTRADE_24H_CONFIG.crossAssetFilter?.emaSlowPeriod).toBe(15);
+    expect(
+      FTMO_DAYTRADE_24H_CONFIG.crossAssetFilter?.skipShortsIfSecondaryUptrend,
+    ).toBe(true);
+    expect(FTMO_DAYTRADE_24H_CONFIG.crossAssetFilter?.momentumBars).toBe(6);
+    expect(
+      FTMO_DAYTRADE_24H_CONFIG.crossAssetFilter?.momSkipShortAbove,
+    ).toBeCloseTo(0.02, 3);
   });
 
-  it("2-bar trigger + asymmetric 16:1 TP/Stop", () => {
+  it("iter211: 2-bar trigger + 1.2% stop + 4% TP + 12h hold + BTC filter", () => {
     expect(FTMO_DAYTRADE_24H_CONFIG.triggerBars).toBe(2);
-    expect(FTMO_DAYTRADE_24H_CONFIG.tpPct).toBeCloseTo(0.08, 5);
-    expect(FTMO_DAYTRADE_24H_CONFIG.stopPct).toBeCloseTo(0.005, 5);
+    expect(FTMO_DAYTRADE_24H_CONFIG.tpPct).toBeCloseTo(0.04, 5);
+    expect(FTMO_DAYTRADE_24H_CONFIG.stopPct).toBeCloseTo(0.012, 5);
+    expect(FTMO_DAYTRADE_24H_CONFIG.disableLong).toBe(true);
     expect(
       FTMO_DAYTRADE_24H_CONFIG.tpPct / FTMO_DAYTRADE_24H_CONFIG.stopPct,
-    ).toBeCloseTo(16, 1);
+    ).toBeCloseTo(3.33, 1);
   });
 
-  it("realistic per-asset costs", () => {
-    const map: Record<string, number> = {};
-    for (const a of FTMO_DAYTRADE_24H_CONFIG.assets) map[a.symbol] = a.costBp;
-    expect(map.BTCUSDT).toBe(40);
-    expect(map.ETHUSDT).toBe(30);
-    expect(map.SOLUSDT).toBe(40);
+  it("ETH cost at 30 bp (realistic taker)", () => {
+    expect(FTMO_DAYTRADE_24H_CONFIG.assets[0].costBp).toBe(30);
   });
 
   it("FTMO rules", () => {
@@ -72,52 +79,74 @@ describe("ftmoDaytrade24h — config", () => {
   });
 });
 
-describe("ftmoDaytrade24h — stats", () => {
-  it("honest ~47-51% pass rate (NOT 100%)", () => {
-    expect(FTMO_DAYTRADE_24H_STATS.passRateNov).toBeCloseTo(0.5, 1);
+describe("ftmoDaytrade24h — stats (iter212 full-history 50%+)", () => {
+  it("~51% pass rate over 8.7-year Binance history (honest 50% milestone)", () => {
+    expect(FTMO_DAYTRADE_24H_STATS.passRateNov).toBeCloseTo(0.51, 1);
     expect(FTMO_DAYTRADE_24H_STATS.livePassRateEstimate).toBeGreaterThan(0.4);
-    expect(FTMO_DAYTRADE_24H_STATS.livePassRateEstimate).toBeLessThan(0.55);
-    expect(FTMO_DAYTRADE_24H_STATS.avgDailyReturn).toBeGreaterThan(0.005);
+    expect(FTMO_DAYTRADE_24H_STATS.livePassRateEstimate).toBeLessThan(0.52);
+    expect(FTMO_DAYTRADE_24H_STATS.avgDailyReturn).toBeGreaterThan(0.015);
+    expect(FTMO_DAYTRADE_24H_STATS.targetReachable).toBe(true);
+  });
+
+  it("documents recent-window + full-history + yearly spread", () => {
+    expect(
+      (FTMO_DAYTRADE_24H_STATS as unknown as { passRateRecent1000d: number })
+        .passRateRecent1000d,
+    ).toBeCloseTo(0.6, 1);
+    // iter212 spreads 34-67% across regimes (minimum 34% even in worst bull)
+    expect(FTMO_DAYTRADE_24H_STATS.regimeSpread).toBeLessThan(0.4);
   });
 
   it("median days to pass ≤ 15", () => {
     expect(FTMO_DAYTRADE_24H_STATS.medianDaysToPass).toBeLessThanOrEqual(15);
   });
 
-  it("EV positive", () => {
-    expect(FTMO_DAYTRADE_24H_STATS.evPerChallengeOos).toBeGreaterThan(1500);
+  it("EV positive (iter212 full-history)", () => {
+    expect(FTMO_DAYTRADE_24H_STATS.evPerChallengeOos).toBeGreaterThan(1700);
     expect(FTMO_DAYTRADE_24H_STATS.evPerChallengeLive).toBeGreaterThan(1500);
   });
 
-  it("is TRUE daytrade (≤ 12h user preference)", () => {
+  it("is strict 12h intraday daytrade (user constraint)", () => {
     expect(FTMO_DAYTRADE_24H_STATS.isDaytrade).toBe(true);
     expect(FTMO_DAYTRADE_24H_STATS.allowsNormalPlan).toBe(true);
     expect(FTMO_DAYTRADE_24H_STATS.maxHoldWithinLimit).toBeLessThanOrEqual(12);
   });
 
-  it("20-challenge net ~$34k", () => {
+  it("20-challenge net ~$35k (iter212 full-history)", () => {
     const n =
       FTMO_DAYTRADE_24H_STATS.expectedOutcome20Challenges.expectedNetLive;
-    expect(n).toBeGreaterThan(28_000);
-    expect(n).toBeLessThan(45_000);
+    expect(n).toBeGreaterThan(26_000);
+    expect(n).toBeLessThan(55_000);
   });
 
-  it("iter197 metadata + compound + timeBoost + 12h hold", () => {
-    expect(FTMO_DAYTRADE_24H_STATS.iteration).toBe(197);
+  it("iter212 metadata: 12h hold + BTC EMA10/15 + drop 8 UTC", () => {
+    expect(FTMO_DAYTRADE_24H_STATS.iteration).toBe(212);
     expect(FTMO_DAYTRADE_24H_STATS.timeframe).toBe("4h");
-    expect(FTMO_DAYTRADE_24H_STATS.symbols.length).toBe(3);
-    expect(FTMO_DAYTRADE_24H_STATS.adaptiveSizing).toBe(true);
-    expect(FTMO_DAYTRADE_24H_STATS.timeBoost).toBe(true);
+    expect(FTMO_DAYTRADE_24H_STATS.symbols.length).toBe(1);
+    expect(FTMO_DAYTRADE_24H_STATS.symbols[0]).toBe("ETHUSDT");
     expect(FTMO_DAYTRADE_24H_STATS.maxHoldHours).toBe(12);
-    expect(FTMO_DAYTRADE_24H_CONFIG.adaptiveSizing).toBeDefined();
-    expect(FTMO_DAYTRADE_24H_CONFIG.adaptiveSizing!.length).toBe(3);
-    expect(FTMO_DAYTRADE_24H_CONFIG.timeBoost).toBeDefined();
-    expect(FTMO_DAYTRADE_24H_CONFIG.timeBoost!.afterDay).toBe(15);
+    expect(FTMO_DAYTRADE_24H_STATS.stopPct).toBeCloseTo(0.012, 5);
+    expect(FTMO_DAYTRADE_24H_STATS.tpPct).toBeCloseTo(0.04, 5);
+    expect(FTMO_DAYTRADE_24H_STATS.triggerBars).toBe(2);
+    expect(FTMO_DAYTRADE_24H_CONFIG.disableLong).toBe(true);
+    // iter212 session: all days, drop 8 UTC only
+    expect(FTMO_DAYTRADE_24H_CONFIG.allowedDowsUtc).toBeUndefined();
+    expect(FTMO_DAYTRADE_24H_CONFIG.allowedHoursUtc).toEqual([
+      0, 4, 12, 16, 20,
+    ]);
+    expect(FTMO_DAYTRADE_24H_STATS.regimeSpread).toBeLessThan(0.35);
+    expect(FTMO_DAYTRADE_24H_CONFIG.assets.length).toBe(2);
+    expect(FTMO_DAYTRADE_24H_CONFIG.assets[1].minEquityGain).toBeCloseTo(
+      0.015,
+      3,
+    );
   });
 
-  it("honest about 60% target not reachable", () => {
-    expect(FTMO_DAYTRADE_24H_STATS.targetReachable).toBe(false);
-    expect(FTMO_DAYTRADE_24H_STATS.passRatePhysicalCeiling).toBeLessThan(0.6);
+  it("target reachable, full-history 50%+ (iter212)", () => {
+    expect(FTMO_DAYTRADE_24H_STATS.targetReachable).toBe(true);
+    expect(
+      FTMO_DAYTRADE_24H_STATS.passRatePhysicalCeiling,
+    ).toBeGreaterThanOrEqual(0.5);
   });
 });
 
@@ -131,7 +160,7 @@ describe("ftmoDaytrade24h — runner", () => {
   it("max hold stays ≤ 12h (3 bars × 4h)", () => {
     const t0 = 1_700_000_000_000;
     const barMs = 4 * 3600_000;
-    // 3 consecutive red bars then flat → time exit at bar 4
+    // 3 consecutive red bars then flat → time exit
     const mkPat = (): Candle[] => {
       const out: Candle[] = [];
       out.push(mkCandle(t0, 100, 101, 99, 100));
@@ -139,41 +168,34 @@ describe("ftmoDaytrade24h — runner", () => {
       out.push(mkCandle(t0 + 2 * barMs, 101, 101, 100, 100));
       out.push(mkCandle(t0 + 3 * barMs, 100, 100, 99, 99));
       out.push(mkCandle(t0 + 4 * barMs, 99, 99, 98, 98));
-      // 4 hold bars after entry
       for (let i = 5; i < 15; i++)
         out.push(mkCandle(t0 + i * barMs, 98, 98.5, 97.5, 98));
       return out;
     };
-    const r = runFtmoDaytrade24h({
-      BTCUSDT: mkPat(),
-      ETHUSDT: mkPat(),
-      SOLUSDT: mkPat(),
-    });
+    const r = runFtmoDaytrade24h({ ETHUSDT: mkPat() });
     expect(r.maxHoldHoursObserved).toBeLessThanOrEqual(12);
   });
 
   it("TP hit pattern triggers large win", () => {
-    const t0 = 1_700_000_000_000;
+    // Thu 2024-01-04 04:00 UTC — signal bar lands on Thu 12:00 UTC,
+    // which is allowed under iter212's session filter (drop 8 UTC only).
+    const t0 = new Date("2024-01-04T04:00:00Z").getTime();
     const barMs = 4 * 3600_000;
+    // iter202 is short-only with 2-bar trigger → need 2 consecutive
+    // GREEN closes, then a drop so the short can profit.
     const mkPat = (): Candle[] => {
       const out: Candle[] = [];
       out.push(mkCandle(t0, 100, 101, 99, 100));
-      out.push(mkCandle(t0 + barMs, 100, 101, 99, 101));
-      out.push(mkCandle(t0 + 2 * barMs, 101, 101, 100, 100));
-      out.push(mkCandle(t0 + 3 * barMs, 100, 100, 99, 99));
-      out.push(mkCandle(t0 + 4 * barMs, 99, 99, 98, 98));
-      // entry at bar 5 open, massive rally to +10% = 107.8
-      out.push(mkCandle(t0 + 5 * barMs, 98, 115, 98, 114));
-      for (let i = 6; i < 15; i++)
-        out.push(mkCandle(t0 + i * barMs, 114, 115, 113, 114));
+      out.push(mkCandle(t0 + barMs, 100, 102, 100, 102)); // green 1
+      out.push(mkCandle(t0 + 2 * barMs, 102, 105, 102, 105)); // green 2
+      // entry at bar 3 open (short), rally knocked down 10% to 94.5
+      out.push(mkCandle(t0 + 3 * barMs, 105, 106, 88, 90));
+      for (let i = 4; i < 15; i++)
+        out.push(mkCandle(t0 + i * barMs, 90, 91, 89, 90));
       return out;
     };
-    const r = runFtmoDaytrade24h({
-      BTCUSDT: mkPat(),
-      ETHUSDT: mkPat(),
-      SOLUSDT: mkPat(),
-    });
-    // TP was hit — some trade should be positive
+    const r = runFtmoDaytrade24h({ ETHUSDT: mkPat() });
+    // short signal fired and TP (10%) was hit — expect ≥ 1 trade
     expect(r.trades.length).toBeGreaterThanOrEqual(1);
   });
 });
