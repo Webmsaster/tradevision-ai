@@ -28,6 +28,11 @@ import {
 import type { Candle } from "../src/utils/indicators";
 import { tgSend, htmlEscape } from "../src/utils/telegramNotify";
 import { startTelegramBot, readControls } from "../src/utils/telegramBot";
+import {
+  loadForexFactoryNews,
+  filterNewsEvents,
+  type NewsEvent,
+} from "../src/utils/forexFactoryNews";
 
 const STATE_DIR =
   process.env.FTMO_STATE_DIR ?? path.join(process.cwd(), "ftmo-state");
@@ -36,6 +41,12 @@ const EXECUTED_PATH = path.join(STATE_DIR, "executed-signals.json");
 const ACCOUNT_PATH = path.join(STATE_DIR, "account.json");
 const LOG_PATH = path.join(STATE_DIR, "signal-log.jsonl");
 const LAST_CHECK_PATH = path.join(STATE_DIR, "last-check.json");
+const NEWS_PATH = path.join(STATE_DIR, "news-events.json");
+
+/** News events list cached for the session (refreshed once per hour). */
+let cachedNews: NewsEvent[] = [];
+let newsLastFetched = 0;
+const NEWS_REFRESH_MS = 60 * 60_000;
 
 function ensureStateDir() {
   if (!fs.existsSync(STATE_DIR)) fs.mkdirSync(STATE_DIR, { recursive: true });
@@ -96,6 +107,31 @@ function msUntilNext4hBoundary(): number {
   return next.getTime() - now;
 }
 
+async function refreshNewsIfStale() {
+  if (Date.now() - newsLastFetched < NEWS_REFRESH_MS && cachedNews.length > 0) {
+    return;
+  }
+  try {
+    const all = await loadForexFactoryNews();
+    // Only high-impact USD/crypto-affecting events for blackout + auto-close.
+    cachedNews = filterNewsEvents(all, {
+      impacts: ["High"],
+      currencies: ["USD"],
+    });
+    newsLastFetched = Date.now();
+    // Write to state dir so Python executor can read for auto-close
+    writeJSON(NEWS_PATH, {
+      events: cachedNews,
+      fetchedAt: new Date().toISOString(),
+    });
+    console.log(
+      `[ftmo-live] news refreshed: ${cachedNews.length} high-impact USD events`,
+    );
+  } catch (e) {
+    console.error(`[ftmo-live] news fetch failed:`, e);
+  }
+}
+
 async function runOneCheck(): Promise<DetectionResult> {
   console.log(`\n[ftmo-live] ${new Date().toISOString()} — running check`);
   ensureStateDir();
@@ -120,7 +156,8 @@ async function runOneCheck(): Promise<DetectionResult> {
   });
 
   const account = readJSON<AccountState>(ACCOUNT_PATH, defaultAccount());
-  const result = detectLiveSignalsV231(eth, btc, sol, account, []);
+  await refreshNewsIfStale();
+  const result = detectLiveSignalsV231(eth, btc, sol, account, cachedNews);
 
   console.log(renderDetection(result));
 

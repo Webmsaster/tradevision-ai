@@ -14,9 +14,14 @@
  */
 import type { Candle } from "@/utils/indicators";
 import { ema } from "@/utils/indicators";
-import { FTMO_DAYTRADE_24H_CONFIG_V231 } from "@/utils/ftmoDaytrade24h";
+import {
+  FTMO_DAYTRADE_24H_CONFIG_V231,
+  FTMO_DAYTRADE_24H_CONFIG_BULL,
+} from "@/utils/ftmoDaytrade24h";
 import type { NewsEvent } from "@/utils/forexFactoryNews";
 import { isNewsBlackout } from "@/utils/forexFactoryNews";
+
+export type Regime = "BULL" | "BEAR_CHOP";
 
 export interface AccountState {
   /** Current equity as fraction of starting capital (1.0 = break even, 1.05 = +5%). */
@@ -30,9 +35,10 @@ export interface AccountState {
 }
 
 export interface LiveSignal {
-  assetSymbol: "ETH-MR" | "ETH-PYR" | "BTC-MR" | "SOL-MR";
+  assetSymbol: string; // iter231: ETH-MR/ETH-PYR/BTC-MR/SOL-MR; BULL: ETH-BULL/ETH-BULL-PYRAMID
   sourceSymbol: "ETHUSDT" | "BTCUSDT" | "SOLUSDT";
-  direction: "short";
+  direction: "short" | "long";
+  regime: Regime;
   entryPrice: number; // market-bar close; exec price will be next-bar open
   stopPrice: number;
   tpPrice: number;
@@ -50,6 +56,8 @@ export interface LiveSignal {
 
 export interface DetectionResult {
   timestamp: number;
+  regime: Regime;
+  activeBotConfig: "iter231" | "iter213-bull";
   signals: LiveSignal[];
   skipped: Array<{ asset: string; reason: string }>;
   notes: string[];
@@ -159,16 +167,7 @@ export function detectLiveSignalsV231(
   account: AccountState,
   newsEvents: NewsEvent[] = [],
 ): DetectionResult {
-  const result: DetectionResult = {
-    timestamp: Date.now(),
-    signals: [],
-    skipped: [],
-    notes: [],
-    account,
-    btc: { close: 0, ema10: 0, ema15: 0, uptrend: false, mom24h: 0 },
-  };
-
-  // BTC regime for cross-asset filter
+  // BTC regime for cross-asset filter + regime-switching
   const btcCloses = btcCandles.map((c) => c.close);
   const btcEma10Arr = ema(btcCloses, 10);
   const btcEma15Arr = ema(btcCloses, 15);
@@ -182,14 +181,40 @@ export function detectLiveSignalsV231(
         btcCandles[lastIdx - 6].close
       : 0;
   const btcUptrend = btcClose > btcEma10 && btcEma10 > btcEma15;
-  result.btc = {
-    close: btcClose,
-    ema10: btcEma10,
-    ema15: btcEma15,
-    uptrend: btcUptrend,
-    mom24h: btcMom24h,
+  const btcBullMom = btcMom24h > 0.02;
+  const regime: Regime = btcUptrend && btcBullMom ? "BULL" : "BEAR_CHOP";
+
+  const result: DetectionResult = {
+    timestamp: Date.now(),
+    regime,
+    activeBotConfig: regime === "BULL" ? "iter213-bull" : "iter231",
+    signals: [],
+    skipped: [],
+    notes: [
+      `Regime: ${regime} → active bot: ${regime === "BULL" ? "iter213-bull (LONG)" : "iter231 (SHORT)"}`,
+    ],
+    account,
+    btc: {
+      close: btcClose,
+      ema10: btcEma10,
+      ema15: btcEma15,
+      uptrend: btcUptrend,
+      mom24h: btcMom24h,
+    },
   };
 
+  // In BULL regime we delegate to BULL-bot logic (see below).
+  if (regime === "BULL") {
+    return detectBullSignals(
+      ethCandles,
+      btcCandles,
+      account,
+      newsEvents,
+      result,
+    );
+  }
+
+  // BEAR/CHOP regime: use iter231 short-only mean-reversion (original logic).
   const blockedByBtcFilter = btcUptrend || btcMom24h > 0.02;
   if (blockedByBtcFilter) {
     result.notes.push(
@@ -303,6 +328,7 @@ export function detectLiveSignalsV231(
       assetSymbol: a.asset,
       sourceSymbol: a.source,
       direction: "short",
+      regime: "BEAR_CHOP",
       entryPrice,
       stopPrice,
       tpPrice,
@@ -317,6 +343,96 @@ export function detectLiveSignalsV231(
         `${a.triggerBars}-green pattern on ${a.source}`,
         `equity gate OK (need +${(a.minEqGain * 100).toFixed(1)}%)`,
         `sizing: baseRisk=${a.baseRisk}× × factor=${factor.toFixed(3)} × lev=${CFG.leverage} = ${effectiveRiskFrac.toFixed(4)}`,
+      ],
+    });
+  }
+
+  return result;
+}
+
+/**
+ * BULL regime detector — uses iter213 config.
+ * Signal: 2 consecutive GREEN closes on ETH → LONG (momentum continuation).
+ * Gated by: BTC NOT in downtrend, 24h mom > -2%, session filter, news.
+ */
+function detectBullSignals(
+  ethCandles: Candle[],
+  btcCandles: Candle[],
+  account: AccountState,
+  newsEvents: NewsEvent[],
+  result: DetectionResult,
+): DetectionResult {
+  const BULL = FTMO_DAYTRADE_24H_CONFIG_BULL;
+  const { factor, notes: sizingNotes } = computeSizingFactor(account);
+  result.notes.push(...sizingNotes);
+
+  const ethLastIdx = ethCandles.length - 1;
+  const b0 = ethCandles[ethLastIdx - 1];
+  const b1 = ethCandles[ethLastIdx];
+  const last2Green =
+    b1.close > b0.close && b0.close > ethCandles[ethLastIdx - 2]?.close;
+  if (!last2Green) {
+    result.notes.push("No 2-green sequence → no BULL signal");
+    return result;
+  }
+
+  const entryOpenTime = b1.openTime + 4 * 3600_000;
+  if (isNewsBlackout(entryOpenTime, newsEvents, 2)) {
+    result.notes.push("News blackout");
+    return result;
+  }
+
+  const tpPct = BULL.tpPct;
+  const stopPct = BULL.stopPct;
+  const entryPrice = b1.close;
+  const stopPrice = entryPrice * (1 - stopPct); // long: stop below
+  const tpPrice = entryPrice * (1 + tpPct); // long: TP above
+  const maxHoldHours = BULL.holdBars * 4;
+  const baseAsset = BULL.assets[0];
+  const effectiveRiskFrac = baseAsset.riskFrac * factor * BULL.leverage;
+
+  result.signals.push({
+    assetSymbol: "ETH-BULL",
+    sourceSymbol: "ETHUSDT",
+    direction: "long",
+    regime: "BULL",
+    entryPrice,
+    stopPrice,
+    tpPrice,
+    stopPct,
+    tpPct,
+    riskFrac: effectiveRiskFrac,
+    sizingFactor: factor,
+    maxHoldHours,
+    maxHoldUntil: entryOpenTime + maxHoldHours * 3600_000,
+    signalBarClose: b1.closeTime,
+    reasons: [
+      "BULL regime: 2-green momentum continuation",
+      `sizing: baseRisk=${baseAsset.riskFrac}× × factor=${factor.toFixed(3)} × lev=${BULL.leverage} = ${effectiveRiskFrac.toFixed(4)}`,
+    ],
+  });
+
+  // Bull pyramid (ETH-BULL-PYRAMID) when equity ahead by 1.5%+
+  if (account.equity - 1 >= 0.015) {
+    const pyr = BULL.assets[1];
+    result.signals.push({
+      assetSymbol: "ETH-BULL-PYRAMID",
+      sourceSymbol: "ETHUSDT",
+      direction: "long",
+      regime: "BULL",
+      entryPrice,
+      stopPrice,
+      tpPrice,
+      stopPct,
+      tpPct,
+      riskFrac: pyr.riskFrac * factor * BULL.leverage,
+      sizingFactor: factor,
+      maxHoldHours,
+      maxHoldUntil: entryOpenTime + maxHoldHours * 3600_000,
+      signalBarClose: b1.closeTime,
+      reasons: [
+        "BULL pyramid fires at +1.5% equity",
+        `sizing: baseRisk=${pyr.riskFrac}× × factor=${factor.toFixed(3)} × lev=${BULL.leverage}`,
       ],
     });
   }

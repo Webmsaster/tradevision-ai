@@ -68,6 +68,9 @@ CB_LOSS_STREAK = int(os.environ.get("FTMO_CB_LOSS_STREAK", "3"))
 CB_DAILY_DD_WARN_PCT = float(os.environ.get("FTMO_CB_DAILY_DD_WARN", "0.03"))
 # Equity history sample interval
 EQUITY_HISTORY_INTERVAL_SEC = 300  # 5 minutes
+# FTMO Consistency Rule — warn when largest single trade approaches 45% of total profit
+CONSISTENCY_WARN_RATIO = float(os.environ.get("FTMO_CONSISTENCY_WARN_RATIO", "0.35"))
+CONSISTENCY_HARD_RATIO = float(os.environ.get("FTMO_CONSISTENCY_HARD_RATIO", "0.42"))
 
 SYMBOL_MAP = {
     "ETHUSDT": os.environ.get("FTMO_ETH_SYMBOL", "ETHUSD"),
@@ -83,6 +86,10 @@ EXECUTOR_LOG_PATH = STATE_DIR / "executor-log.jsonl"
 DAILY_STATE_PATH = STATE_DIR / "daily-reset.json"
 CONTROLS_PATH = STATE_DIR / "bot-controls.json"
 EQUITY_HISTORY_PATH = STATE_DIR / "equity-history.jsonl"
+NEWS_PATH = STATE_DIR / "news-events.json"
+
+# News auto-close: flatten positions N minutes before high-impact events
+NEWS_CLOSE_MINUTES_BEFORE = int(os.environ.get("FTMO_NEWS_CLOSE_MINUTES", "30"))
 
 
 # =============================================================================
@@ -255,10 +262,20 @@ def compute_lot_size(symbol_info: Any, risk_frac: float, stop_pct: float, accoun
     return float(lot)
 
 
-def place_short_market(
-    binance_symbol: str, risk_frac: float, stop_pct: float, tp_pct: float,
-    account_equity: float, comment: str,
+def place_market_order(
+    binance_symbol: str,
+    direction: str,
+    risk_frac: float,
+    stop_pct: float,
+    tp_pct: float,
+    account_equity: float,
+    comment: str,
 ) -> OrderResult:
+    """
+    Place a LONG or SHORT market order.
+    direction="short": sell at bid, SL above, TP below.
+    direction="long": buy at ask, SL below, TP above.
+    """
     ftmo_symbol = SYMBOL_MAP.get(binance_symbol)
     if not ftmo_symbol:
         return OrderResult(False, None, f"unknown symbol {binance_symbol}", None, None)
@@ -272,15 +289,24 @@ def place_short_market(
     if lot <= 0:
         return OrderResult(False, None, "lot computation returned 0", None, None)
 
-    entry_price = info.bid
-    stop_price = entry_price * (1 + stop_pct)
-    tp_price = entry_price * (1 - tp_pct)
+    if direction == "short":
+        entry_price = info.bid
+        stop_price = entry_price * (1 + stop_pct)
+        tp_price = entry_price * (1 - tp_pct)
+        order_type = mt5.ORDER_TYPE_SELL
+    elif direction == "long":
+        entry_price = info.ask
+        stop_price = entry_price * (1 - stop_pct)
+        tp_price = entry_price * (1 + tp_pct)
+        order_type = mt5.ORDER_TYPE_BUY
+    else:
+        return OrderResult(False, None, f"unknown direction {direction}", lot, None)
 
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": ftmo_symbol,
         "volume": lot,
-        "type": mt5.ORDER_TYPE_SELL,
+        "type": order_type,
         "price": entry_price,
         "sl": stop_price,
         "tp": tp_price,
@@ -296,6 +322,14 @@ def place_short_market(
     if result.retcode != mt5.TRADE_RETCODE_DONE:
         return OrderResult(False, None, f"retcode={result.retcode} {getattr(result, 'comment', '')}", lot, entry_price)
     return OrderResult(True, result.order, None, lot, result.price)
+
+
+# Backward compat alias
+def place_short_market(
+    binance_symbol: str, risk_frac: float, stop_pct: float, tp_pct: float,
+    account_equity: float, comment: str,
+) -> OrderResult:
+    return place_market_order(binance_symbol, "short", risk_frac, stop_pct, tp_pct, account_equity, comment)
 
 
 def close_position(ticket: int) -> bool:
@@ -357,13 +391,17 @@ def process_pending_signals() -> None:
             })
             continue
 
-        result = place_short_market(
+        direction = sig.get("direction", "short")
+        regime = sig.get("regime", "BEAR_CHOP")
+        tag = "iter213-bull" if regime == "BULL" else "iter231"
+        result = place_market_order(
             binance_symbol=sig["sourceSymbol"],
+            direction=direction,
             risk_frac=sig["riskFrac"],
             stop_pct=sig["stopPct"],
             tp_pct=sig["tpPct"],
             account_equity=account_equity,
-            comment=f"iter231 {sig['assetSymbol']}",
+            comment=f"{tag} {sig['assetSymbol']}",
         )
         if result.ok:
             log_event("order_placed", asset=sig["assetSymbol"], ticket=result.ticket, lot=result.lot, entry=result.entry_price)
@@ -545,6 +583,106 @@ def check_circuit_breaker() -> Optional[str]:
     return None
 
 
+_last_consistency_warn = [""]  # date of last warning per ticket-category
+
+
+_news_closes_announced: set[int] = set()  # timestamps already warned about
+
+
+def check_news_auto_close() -> None:
+    """
+    Read news-events.json (written by Node service). If any high-impact
+    event is within NEWS_CLOSE_MINUTES_BEFORE minutes, close all bot
+    positions and pause new entries briefly.
+    """
+    data = read_json(NEWS_PATH, {"events": []})
+    events = data.get("events", [])
+    if not events:
+        return
+
+    now_ms = int(time.time() * 1000)
+    threshold_ms = NEWS_CLOSE_MINUTES_BEFORE * 60 * 1000
+    incoming = [
+        e for e in events
+        if 0 <= (int(e.get("timestamp", 0)) - now_ms) <= threshold_ms
+        and e.get("impact") == "High"
+    ]
+    if not incoming:
+        return
+
+    # Close all bot positions
+    positions = mt5.positions_get() or []
+    bot_positions = [p for p in positions if p.magic == 231]
+    if bot_positions:
+        for e in incoming:
+            if e["timestamp"] in _news_closes_announced:
+                continue
+            _news_closes_announced.add(e["timestamp"])
+            mins_to = max(0, (e["timestamp"] - now_ms) // 60000)
+            log_event(
+                "news_auto_close_trigger",
+                title=e.get("title", "?"),
+                currency=e.get("currency", "?"),
+                minutes_to=mins_to,
+                closing=len(bot_positions),
+            )
+            tg_send(
+                f"📰 <b>News Auto-Close</b>\n"
+                f"Event: <b>{html_escape(e.get('title', '?'))}</b> ({e.get('currency', '?')})\n"
+                f"In {mins_to} min — flattening {len(bot_positions)} position(s) now.",
+            )
+        for pos in bot_positions:
+            close_position(pos.ticket)
+
+
+def check_consistency_rule() -> None:
+    """
+    FTMO Consistency Rule: no single trade may account for > 45% of total profit
+    (varies: 30-50% depending on plan; FTMO Standard = 45%).
+    We warn at 35% and alert hard at 42%.
+
+    Scans last 60d of closed deals with magic=231, identifies largest winner,
+    compares to total profit. If ratio exceeds warn threshold, sends Telegram.
+    """
+    deals = mt5.history_deals_get(datetime.fromtimestamp(time.time() - 60 * 86400), datetime.now())
+    if not deals:
+        return
+    closes = [d for d in deals if d.magic == 231 and d.entry == mt5.DEAL_ENTRY_OUT]
+    wins = [d for d in closes if d.profit > 0]
+    if not wins:
+        return
+
+    total_profit = sum(d.profit for d in closes)
+    if total_profit <= 0:
+        return  # No net profit yet, rule not applicable
+
+    largest = max(wins, key=lambda d: d.profit)
+    ratio = largest.profit / total_profit
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    warn_key = f"{today}-{'HARD' if ratio >= CONSISTENCY_HARD_RATIO else 'WARN' if ratio >= CONSISTENCY_WARN_RATIO else 'OK'}"
+
+    if ratio >= CONSISTENCY_HARD_RATIO and _last_consistency_warn[0] != warn_key:
+        _last_consistency_warn[0] = warn_key
+        log_event("consistency_rule_hard", ratio=ratio, largest=largest.profit, total=total_profit)
+        tg_send(
+            f"🚨 <b>CONSISTENCY RULE AT RISK</b>\n"
+            f"Largest trade: ${largest.profit:,.2f} ({ratio:.1%} of total profit)\n"
+            f"FTMO threshold: 45% — you are at {ratio:.1%}.\n"
+            f"Challenge may be <b>invalidated</b> if this grows.\n"
+            f"Consider: take smaller next wins, or let losses reduce the largest's share.",
+        )
+    elif ratio >= CONSISTENCY_WARN_RATIO and _last_consistency_warn[0] != warn_key:
+        _last_consistency_warn[0] = warn_key
+        log_event("consistency_rule_warn", ratio=ratio, largest=largest.profit, total=total_profit)
+        tg_send(
+            f"⚠️ <b>Consistency Rule Warning</b>\n"
+            f"Largest trade: ${largest.profit:,.2f} ({ratio:.1%} of total profit)\n"
+            f"FTMO invalidates if this exceeds 45%. Current: {ratio:.1%}.\n"
+            f"Buffer: {(0.45 - ratio):.1%}",
+        )
+
+
 def check_daily_dd_warning(current_equity_usd: float, day_start_usd: float) -> None:
     """Send one Telegram warning per day if daily DD passes CB_DAILY_DD_WARN_PCT."""
     if day_start_usd <= 0:
@@ -598,6 +736,12 @@ def main_loop() -> None:
 
                 # Circuit breaker (may trip → set paused)
                 check_circuit_breaker()
+
+                # FTMO Consistency Rule (warn when single trade approaching 45%)
+                check_consistency_rule()
+
+                # News auto-close (flatten positions before high-impact events)
+                check_news_auto_close()
 
                 if is_paused():
                     # Paused: skip placing new orders but still manage open positions
