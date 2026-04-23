@@ -62,6 +62,25 @@ interface FtmoState {
     newSignalsQueued?: number;
   }>;
   executorLog: Array<{ ts: string; event: string; [k: string]: unknown }>;
+  equityHistory?: Array<{ ts: string; equity_usd: number; equity_pct: number }>;
+  stats?: {
+    total: number;
+    wins: number;
+    losses: number;
+    winRate: number;
+    avgWin: number;
+    avgLoss: number;
+    profitFactor: number;
+  };
+  drawdown?: { currentDd: number; maxDd: number; peak: number };
+  ruleProgress?: {
+    dailyLossUsed: number;
+    totalLossUsed: number;
+    profitTargetProgress: number;
+    dailyLossPct: number;
+    totalLossPct: number;
+    totalGainPct: number;
+  };
   stateDir: string;
   generatedAt: string;
 }
@@ -193,6 +212,94 @@ export default function FtmoMonitorPage() {
           }
         />
       </div>
+
+      {/* FTMO Rule Progress */}
+      {state.ruleProgress && (
+        <section>
+          <h2 className="text-xl font-semibold mb-2">🎯 FTMO Rules</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <RuleBar
+              label="Profit Target (+10%)"
+              pct={state.ruleProgress.profitTargetProgress}
+              displayValue={`${(state.ruleProgress.totalGainPct * 100).toFixed(2)}%`}
+              tone="profit"
+              inverse
+            />
+            <RuleBar
+              label="Daily Loss (-5%)"
+              pct={state.ruleProgress.dailyLossUsed}
+              displayValue={`${(state.ruleProgress.dailyLossPct * 100).toFixed(2)}%`}
+              tone="daily"
+            />
+            <RuleBar
+              label="Total Loss (-10%)"
+              pct={state.ruleProgress.totalLossUsed}
+              displayValue={`${(state.ruleProgress.totalLossPct * 100).toFixed(2)}%`}
+              tone="total"
+            />
+          </div>
+        </section>
+      )}
+
+      {/* Equity chart */}
+      {state.equityHistory && state.equityHistory.length > 1 && (
+        <section>
+          <h2 className="text-xl font-semibold mb-2">📈 Equity Curve</h2>
+          <EquityChart history={state.equityHistory} />
+          {state.drawdown && (
+            <div className="text-xs text-txt/60 mt-2">
+              Current DD:{" "}
+              <span
+                className={
+                  state.drawdown.currentDd < -0.02 ? "text-loss" : "text-txt"
+                }
+              >
+                {(state.drawdown.currentDd * 100).toFixed(2)}%
+              </span>
+              {" · "}Max DD:{" "}
+              <span className="text-loss">
+                {(state.drawdown.maxDd * 100).toFixed(2)}%
+              </span>
+              {" · "}Peak: ${state.drawdown.peak.toLocaleString()}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Trade statistics */}
+      {state.stats && state.stats.total > 0 && (
+        <section>
+          <h2 className="text-xl font-semibold mb-2">
+            📊 Trade Statistics ({state.stats.total} closed)
+          </h2>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <Card
+              label="Win Rate"
+              value={`${(state.stats.winRate * 100).toFixed(1)}%`}
+              sub={`${state.stats.wins}W / ${state.stats.losses}L`}
+              tone={state.stats.winRate > 0.5 ? "profit" : "loss"}
+            />
+            <Card
+              label="Profit Factor"
+              value={state.stats.profitFactor.toFixed(2)}
+              sub={state.stats.profitFactor > 1 ? "profitable" : "losing"}
+              tone={state.stats.profitFactor > 1 ? "profit" : "loss"}
+            />
+            <Card
+              label="Avg Win"
+              value={`$${state.stats.avgWin.toFixed(2)}`}
+              sub="per winning trade"
+              tone="profit"
+            />
+            <Card
+              label="Avg Loss"
+              value={`$${state.stats.avgLoss.toFixed(2)}`}
+              sub="per losing trade"
+              tone="loss"
+            />
+          </div>
+        </section>
+      )}
 
       {/* Open positions */}
       <section>
@@ -351,6 +458,116 @@ function Card({
       <div className="text-xs text-txt/60 uppercase tracking-wide">{label}</div>
       <div className={`text-2xl font-bold ${colorClass}`}>{value}</div>
       <div className="text-xs text-txt/60 mt-1">{sub}</div>
+    </div>
+  );
+}
+
+function RuleBar({
+  label,
+  pct,
+  displayValue,
+  tone,
+  inverse,
+}: {
+  label: string;
+  pct: number; // 0..1 (1 = at limit)
+  displayValue: string;
+  tone: "profit" | "daily" | "total";
+  inverse?: boolean; // if true, filled bar = good (profit target)
+}) {
+  const clamped = Math.max(0, Math.min(1, pct));
+  // Color: green when safe (low), yellow at 60%, red at 85%+
+  const barColor = inverse
+    ? clamped > 0.85
+      ? "bg-profit"
+      : clamped > 0.5
+        ? "bg-yellow-500"
+        : "bg-surface/70"
+    : clamped > 0.85
+      ? "bg-loss"
+      : clamped > 0.5
+        ? "bg-yellow-500"
+        : "bg-profit";
+  return (
+    <div className="bg-surface rounded p-4">
+      <div className="text-xs text-txt/60 uppercase tracking-wide mb-1">
+        {label}
+      </div>
+      <div className="text-xl font-bold mb-2">{displayValue}</div>
+      <div className="h-2 bg-surface/50 rounded overflow-hidden">
+        <div
+          className={`h-full ${barColor} transition-all duration-500`}
+          style={{ width: `${(clamped * 100).toFixed(1)}%` }}
+        />
+      </div>
+      <div className="text-xs text-txt/60 mt-1">
+        {inverse
+          ? `${(clamped * 100).toFixed(0)}% to target`
+          : `${(clamped * 100).toFixed(0)}% of limit used`}
+      </div>
+    </div>
+  );
+}
+
+function EquityChart({
+  history,
+}: {
+  history: Array<{ ts: string; equity_usd: number }>;
+}) {
+  if (history.length < 2) return null;
+  const values = history.map((s) => s.equity_usd);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const w = 1000;
+  const h = 160;
+  const points = history
+    .map((s, i) => {
+      const x = (i / (history.length - 1)) * w;
+      const y = h - ((s.equity_usd - min) / range) * (h - 10) - 5;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  const first = history[0].equity_usd;
+  const last = history[history.length - 1].equity_usd;
+  const isUp = last >= first;
+  const stroke = isUp ? "#10b981" : "#ef4444";
+  const fill = isUp ? "rgba(16, 185, 129, 0.15)" : "rgba(239, 68, 68, 0.15)";
+  const firstX = 0;
+  const lastX = w;
+  const areaPoints = `${firstX},${h} ${points} ${lastX},${h}`;
+  return (
+    <div className="bg-surface rounded p-4">
+      <svg
+        viewBox={`0 0 ${w} ${h}`}
+        className="w-full"
+        preserveAspectRatio="none"
+      >
+        <polygon points={areaPoints} fill={fill} />
+        <polyline
+          points={points}
+          fill="none"
+          stroke={stroke}
+          strokeWidth="2"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+      <div className="flex justify-between text-xs text-txt/60 mt-2">
+        <span>
+          {new Date(history[0].ts).toISOString().slice(0, 16).replace("T", " ")}
+          Z
+        </span>
+        <span>
+          ${min.toLocaleString()} – ${max.toLocaleString()}
+        </span>
+        <span>
+          {new Date(history[history.length - 1].ts)
+            .toISOString()
+            .slice(0, 16)
+            .replace("T", " ")}
+          Z
+        </span>
+      </div>
     </div>
   );
 }

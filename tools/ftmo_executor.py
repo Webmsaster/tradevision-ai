@@ -62,6 +62,13 @@ MAX_DAILY_LOSS_PCT = 0.05
 MAX_TOTAL_LOSS_PCT = 0.10
 CHALLENGE_START_DATE = os.environ.get("FTMO_START_DATE")
 
+# Circuit breaker — pause trading after N consecutive losses
+CB_LOSS_STREAK = int(os.environ.get("FTMO_CB_LOSS_STREAK", "3"))
+# Daily DD warning threshold (alert only, not pause)
+CB_DAILY_DD_WARN_PCT = float(os.environ.get("FTMO_CB_DAILY_DD_WARN", "0.03"))
+# Equity history sample interval
+EQUITY_HISTORY_INTERVAL_SEC = 300  # 5 minutes
+
 SYMBOL_MAP = {
     "ETHUSDT": os.environ.get("FTMO_ETH_SYMBOL", "ETHUSD"),
     "BTCUSDT": os.environ.get("FTMO_BTC_SYMBOL", "BTCUSD"),
@@ -75,6 +82,7 @@ OPEN_POS_PATH = STATE_DIR / "open-positions.json"
 EXECUTOR_LOG_PATH = STATE_DIR / "executor-log.jsonl"
 DAILY_STATE_PATH = STATE_DIR / "daily-reset.json"
 CONTROLS_PATH = STATE_DIR / "bot-controls.json"
+EQUITY_HISTORY_PATH = STATE_DIR / "equity-history.jsonl"
 
 
 # =============================================================================
@@ -470,6 +478,91 @@ def is_paused() -> bool:
     return bool(controls.get("paused"))
 
 
+_last_equity_snapshot = [0.0]  # wrapped in list for closure mutation
+_last_cb_check_streak = [0]
+_last_dd_warn_sent = [""]  # date of last dd warn sent, to avoid spam
+
+
+def sample_equity_history(current_equity_usd: float) -> None:
+    """Append equity snapshot to equity-history.jsonl every EQUITY_HISTORY_INTERVAL_SEC."""
+    now = time.time()
+    if now - _last_equity_snapshot[0] < EQUITY_HISTORY_INTERVAL_SEC:
+        return
+    _last_equity_snapshot[0] = now
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "equity_usd": current_equity_usd,
+        "equity_pct": (current_equity_usd - CHALLENGE_START_BALANCE) / CHALLENGE_START_BALANCE,
+    }
+    with open(EQUITY_HISTORY_PATH, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def check_circuit_breaker() -> Optional[str]:
+    """
+    Check recent closed trades (last 20 in 30d window) for consecutive losses.
+    Returns a block-reason string if the CB trips, else None.
+    Also sends daily-DD warning via Telegram once per day if threshold exceeded.
+    """
+    deals = mt5.history_deals_get(datetime.fromtimestamp(time.time() - 30 * 86400), datetime.now())
+    if not deals:
+        return None
+
+    closes = [d for d in deals if d.magic == 231 and d.entry == mt5.DEAL_ENTRY_OUT]
+    closes.sort(key=lambda d: d.time)
+
+    # Count consecutive losses from most recent
+    streak = 0
+    for d in reversed(closes[-CB_LOSS_STREAK * 2:]):
+        if d.profit < 0:
+            streak += 1
+        else:
+            break
+
+    if streak > _last_cb_check_streak[0]:
+        # Streak grew
+        if streak >= CB_LOSS_STREAK:
+            # Trip the breaker: set paused flag
+            controls = read_json(CONTROLS_PATH, {})
+            if not controls.get("paused"):
+                controls["paused"] = True
+                controls["lastCommand"] = {
+                    "from": "circuit-breaker",
+                    "cmd": "/pause",
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                }
+                write_json(CONTROLS_PATH, controls)
+                log_event("circuit_breaker_tripped", streak=streak)
+                tg_send(
+                    f"🚨 <b>CIRCUIT BREAKER TRIPPED</b>\n"
+                    f"{streak} consecutive losses detected.\n"
+                    f"Bot auto-PAUSED. Review and send /resume when ready.",
+                )
+                _last_cb_check_streak[0] = streak
+                return f"circuit_breaker: {streak} consecutive losses"
+    _last_cb_check_streak[0] = streak
+    return None
+
+
+def check_daily_dd_warning(current_equity_usd: float, day_start_usd: float) -> None:
+    """Send one Telegram warning per day if daily DD passes CB_DAILY_DD_WARN_PCT."""
+    if day_start_usd <= 0:
+        return
+    daily_pct = (current_equity_usd - day_start_usd) / day_start_usd
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if daily_pct <= -CB_DAILY_DD_WARN_PCT and _last_dd_warn_sent[0] != today:
+        _last_dd_warn_sent[0] = today
+        dd_usd = current_equity_usd - day_start_usd
+        log_event("daily_dd_warning", daily_pct=daily_pct)
+        tg_send(
+            f"⚠️ <b>Daily Drawdown Warning</b>\n"
+            f"Today: <b>{daily_pct:.2%}</b> (${dd_usd:+,.2f})\n"
+            f"Daily-loss cap: -{MAX_DAILY_LOSS_PCT:.0%}. Buffer left: {(daily_pct + MAX_DAILY_LOSS_PCT):.2%}\n"
+            f"Consider /pause if this gets worse.",
+        )
+
+
 def main_loop() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -495,6 +588,17 @@ def main_loop() -> None:
                     continue
                 handle_kill_request()
                 sync_account_state()
+
+                # Sample equity history for dashboard charts
+                acct = mt5_get_equity()
+                if acct["equity"] is not None:
+                    sample_equity_history(acct["equity"])
+                    day_start_usd = read_json(DAILY_STATE_PATH, {}).get("equity_at_day_start_usd", acct["equity"])
+                    check_daily_dd_warning(acct["equity"], day_start_usd)
+
+                # Circuit breaker (may trip → set paused)
+                check_circuit_breaker()
+
                 if is_paused():
                     # Paused: skip placing new orders but still manage open positions
                     manage_open_positions()
