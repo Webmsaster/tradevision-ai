@@ -75,11 +75,11 @@ All 17 pattern detectors run in the browser with no API calls. Logic is in `src/
 - **Unit tests** (`src/__tests__/`): Vitest + jsdom, tests for calculations, AI analysis, CSV parser, storage
 - **E2E tests** (`e2e/`): Playwright against dev server — navigation, trade CRUD, CSV import, calculator, login flow
 - E2E helpers in `e2e/helpers.ts` (`loadSampleData`, `createTestTrade`, `gotoAndWaitForApp`)
-- **Strategy/FTMO tests** (`scripts/ftmo*.test.ts` and `scripts/exploratory/`): Heavy backtests run via vitest. Use `FTMO_DAYTRADE_24H_CONFIG_V236` (iter236) as the production champion — V236 is the live-deployable config (ETH+BTC+SOL, 65.8% pass / 3d engine median on 5.71y FTMO-real costs). V237 adds ARB but is research-only because ARB is not available on FTMO MT5. Engine field `pauseAtTargetReached: true` is mandatory for any new FTMO backtest, and `minTradingDays: 5` (FTMO rule, not engine default 4) must be explicit.
+- **Strategy/FTMO tests** (`scripts/ftmo*.test.ts` and `scripts/exploratory/`): Heavy backtests run via vitest. Use `FTMO_DAYTRADE_24H_CONFIG_V252` (iter252) as the production champion — 90.8% pass / 4d FTMO-real median on 5.71y ETH+BTC+SOL with realistic FTMO costs. Engine fields `pauseAtTargetReached: true` and `atrStop` are mandatory for any new FTMO backtest, and `minTradingDays: 4` (real FTMO 2-Step rule, both Step 1 and Step 2).
 
 ### FTMO Bot (`tools/`)
 
-Production-ready full-auto trading bot for FTMO Demo/Live with the iter236 strategy (`pauseAtTargetReached` + ETH+BTC+SOL).
+Production-ready full-auto trading bot for FTMO Demo/Live with the iter252 strategy (`pauseAtTargetReached` + `atrStop` + ETH+BTC+SOL, mD=4).
 
 - `ftmo_executor.py` — Python MT5 executor (Windows side)
 - `mock_mt5.py` — Mock for unit tests on Linux
