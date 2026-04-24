@@ -1972,6 +1972,22 @@ export const FTMO_DAYTRADE_24H_CONFIG_V255: FtmoDaytrade24hConfig = {
   timeBoost: { afterDay: 4, equityBelow: 0.08, factor: 3 },
 };
 
+/**
+ * iter256 — V255 + holdBars 120 → 150.
+ *
+ * Even longer hold lets slow MR cycles complete. Found via BEAT-V255 sweep.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V255 (hb=120): 637/685 = 92.99% / 5d / DL 6 / TL 42
+ *   - V256 (hb=150): 640/685 = 93.43% / 5d / DL 6 / TL 39
+ *
+ * +3 windows, +0.44pp pass, -3 TL (-7%). Median + p75 unchanged.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V256: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V255,
+  holdBars: 150,
+};
+
 export const FTMO_DAYTRADE_24H_CONFIG_V237_2D: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V234,
   pauseAtTargetReached: true,
