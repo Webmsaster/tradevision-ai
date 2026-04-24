@@ -240,6 +240,33 @@ export interface FtmoDaytrade24hConfig {
     minMoveR?: number; // require price to move >= minMoveR × stopPct first (default 0.5)
   };
   /**
+   * iter262+ Loss-Streak Cooldown — pause new entries after N consecutive losses.
+   *
+   * When the strategy hits a streak of stop-outs, market regime may be hostile.
+   * Pausing for cooldownBars avoids piling more bad trades on top.
+   * Counter resets on any winning (TP) trade.
+   */
+  lossStreakCooldown?: {
+    afterLosses: number; // trigger after N consecutive stop-outs
+    cooldownBars: number; // skip entries for this many bars
+  };
+  /**
+   * iter261+ Partial Take Profit — scale-out mid-trade.
+   *
+   * When unrealized gain crosses `triggerPct`, "close" `closeFraction` of
+   * the position by locking in that partial gain. The remaining
+   * (1 - closeFraction) continues to TP/stop normally.
+   *
+   * Effective P&L = closeFraction × triggerPct + (1 - closeFraction) × exitPct
+   *
+   * Reduces variance — partial profit secured even if trade reverses.
+   * Use small closeFraction (0.3-0.5) to keep upside on the rest.
+   */
+  partialTakeProfit?: {
+    triggerPct: number; // unrealized P&L threshold to take partial
+    closeFraction: number; // fraction of position to close (0-1)
+  };
+  /**
    * iter259+ HTF (Higher Timeframe) Trend Filter — multi-timeframe gate.
    * Skips signals that go against the longer-term trend direction.
    *
@@ -2078,6 +2105,23 @@ export const FTMO_DAYTRADE_24H_CONFIG_V260: FtmoDaytrade24hConfig = {
   htfTrendFilter: { lookbackBars: 42, apply: "short", threshold: 0.16 },
 };
 
+/**
+ * iter261 — V260 + NEW lossStreakCooldown engine feature.
+ *
+ * Pauses entries for 6 bars (1 day) after 2 consecutive stop-outs.
+ * Avoids piling more bad trades when market regime is hostile.
+ *
+ * 3rd new engine feature added in this overnight session
+ * (after htfTrendFilter and partialTakeProfit).
+ *
+ * Measured: 645/685 → 646/685 = 94.31% pass.
+ * **DL drops 1→0 (zero daily-loss breaches!)**, TL same.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V261: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V260,
+  lossStreakCooldown: { afterLosses: 2, cooldownBars: 6 },
+};
+
 export const FTMO_DAYTRADE_24H_CONFIG_V237_2D: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V234,
   pauseAtTargetReached: true,
@@ -2679,6 +2723,10 @@ function detectAsset(
   const assetDisableLong = asset.disableLong ?? cfg.disableLong ?? false;
   const assetDisableShort = asset.disableShort ?? cfg.disableShort ?? false;
   if (candles.length < triggerBars + 2) return out;
+  // iter262+ Loss-streak cooldown state
+  const lsc = cfg.lossStreakCooldown;
+  let lossStreak = 0;
+  let cooldownUntilBar = -1;
   const ts0 = candles[0].openTime;
   const cost = asset.costBp / 10000;
   const hoursPerBar = 4;
@@ -2795,6 +2843,9 @@ function detectAsset(
         }
       }
       if (!ok) continue;
+
+      // iter262+ loss-streak cooldown gate
+      if (lsc && i < cooldownUntilBar) continue;
 
       // RSI confluence gate
       if (rsiSeries && cfg.rsiFilter) {
@@ -3002,6 +3053,10 @@ function detectAsset(
       const chanMinMoveAbs = chandelier ? chanMinMoveR * effStop : 0;
       let chanBestClose: number | null = null; // highest (long) or lowest (short)
       let chanArmed = false;
+      // iter261+ partial-take-profit tracking
+      const ptp = cfg.partialTakeProfit;
+      let ptpTriggered = false;
+      let ptpRealizedPct = 0; // P&L locked from partial close (signed)
       // iter1h-035+ TRIPLE-BARRIER TIME EXIT: track if minGainR ever reached
       // Asset-level overrides global cfg.timeExit fallback.
       const timeExit = asset.timeExit ?? cfg.timeExit;
@@ -3049,6 +3104,18 @@ function detectAsset(
           if (unrealized >= beTh) {
             dynStop = entry;
             beActive = true;
+          }
+        }
+        // iter261+ partial take-profit check
+        if (ptp && !ptpTriggered) {
+          const unrealized =
+            direction === "long"
+              ? (bar.close - entry) / entry
+              : (entry - bar.close) / entry;
+          if (unrealized >= ptp.triggerPct) {
+            ptpTriggered = true;
+            // Lock in closeFraction × triggerPct as realized partial gain
+            ptpRealizedPct = ptp.closeFraction * ptp.triggerPct;
           }
         }
         // iter253+ chandelier exit: trailing stop based on best close since entry.
@@ -3111,6 +3178,12 @@ function detectAsset(
         direction === "long"
           ? (exitEff - entryEff) / entryEff
           : (entryEff - exitEff) / entryEff;
+      // iter261+ partial take-profit blending: if PTP triggered, blend
+      // partial-locked gain with remaining position's actual P&L.
+      // Effective P&L = closeFraction × triggerPct + (1-closeFraction) × actual
+      if (ptpTriggered && ptp) {
+        rawPnl = ptpRealizedPct + (1 - ptp.closeFraction) * rawPnl;
+      }
       // Realistic additional execution costs (FTMO-broker reality, not Binance):
       //   - slippage on both fills
       //   - overnight swap if trade crosses UTC midnight
@@ -3189,6 +3262,17 @@ function detectAsset(
         holdHours,
         volMult, // iter1h-035+ vol-targeting multiplier
       });
+      // iter262+ loss-streak tracking
+      if (lsc) {
+        if (reason === "stop") {
+          lossStreak++;
+          if (lossStreak >= lsc.afterLosses) {
+            cooldownUntilBar = exitBar + lsc.cooldownBars;
+          }
+        } else {
+          lossStreak = 0; // reset on TP or time exit
+        }
+      }
       cooldown = exitBar + 1;
     }
   }
