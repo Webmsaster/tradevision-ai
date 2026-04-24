@@ -1988,6 +1988,23 @@ export const FTMO_DAYTRADE_24H_CONFIG_V256: FtmoDaytrade24hConfig = {
   holdBars: 150,
 };
 
+/**
+ * iter257 — V256 + atrStop UPGRADE (p18 m12 → p14 m15).
+ *
+ * Tighter ATR period (14 vs 18) + wider mult (15 vs 12).
+ * 14 variants all clustered at 641/685 — true saturation point of atrStop.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V256 (atrStop p18 m12): 640/685 = 93.43% / 5d / DL 6 / TL 39
+ *   - V257 (atrStop p14 m15): 641/685 = 93.58% / 5d / DL 3 / TL 40
+ *
+ * +1 window, +0.15pp pass, **DL HALVED (6→3)**, TL +1.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V257: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V256,
+  atrStop: { period: 14, stopMult: 15 },
+};
+
 export const FTMO_DAYTRADE_24H_CONFIG_V237_2D: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V234,
   pauseAtTargetReached: true,
