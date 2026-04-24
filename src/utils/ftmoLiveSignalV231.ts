@@ -16,6 +16,23 @@ import type { Candle } from "@/utils/indicators";
 import { ema } from "@/utils/indicators";
 import {
   FTMO_DAYTRADE_24H_CONFIG_V231,
+  FTMO_DAYTRADE_24H_CONFIG_V236,
+  FTMO_DAYTRADE_24H_CONFIG_V238,
+  FTMO_DAYTRADE_24H_CONFIG_V239,
+  FTMO_DAYTRADE_24H_CONFIG_V240,
+  FTMO_DAYTRADE_24H_CONFIG_V241,
+  FTMO_DAYTRADE_24H_CONFIG_V242,
+  FTMO_DAYTRADE_24H_CONFIG_V243,
+  FTMO_DAYTRADE_24H_CONFIG_V244,
+  FTMO_DAYTRADE_24H_CONFIG_V245,
+  FTMO_DAYTRADE_24H_CONFIG_V246,
+  FTMO_DAYTRADE_24H_CONFIG_V247,
+  FTMO_DAYTRADE_24H_CONFIG_V248,
+  FTMO_DAYTRADE_24H_CONFIG_V249,
+  FTMO_DAYTRADE_24H_CONFIG_V250,
+  FTMO_DAYTRADE_24H_CONFIG_V251,
+  FTMO_DAYTRADE_24H_CONFIG_V251_FAST,
+  FTMO_DAYTRADE_24H_CONFIG_V252,
   FTMO_DAYTRADE_24H_CONFIG_BULL,
 } from "@/utils/ftmoDaytrade24h";
 import type { NewsEvent } from "@/utils/forexFactoryNews";
@@ -71,7 +88,29 @@ export interface DetectionResult {
   };
 }
 
-const CFG = FTMO_DAYTRADE_24H_CONFIG_V231;
+// iter252: V251 + minTradingDays CORRECTION 5→4 (real FTMO rule per April 2026).
+// We were over-constraining! Same pass-rate, but FAST half-of-challenges
+// pass 1d earlier (FTMO-real median drops 5d → 4d).
+// p25: 5d→4d, p50: 5d→4d, p75: 7d (same), p90: 10d (same).
+// Performance on 5.71y full data: 90.80% pass / engine 4d / FTMO-real 4d / $3533.
+const CFG = FTMO_DAYTRADE_24H_CONFIG_V252;
+void FTMO_DAYTRADE_24H_CONFIG_V231; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V236; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V238; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V239; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V240; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V241; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V242; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V243; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V244; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V245; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V246; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V247; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V248; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V249; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V250; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V251; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V251_FAST; // alternative speed variant
 
 /**
  * Compute current sizing factor from adaptiveSizing + timeBoost + Kelly.

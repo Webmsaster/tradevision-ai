@@ -62,6 +62,14 @@ MAX_DAILY_LOSS_PCT = 0.05
 MAX_TOTAL_LOSS_PCT = 0.10
 CHALLENGE_START_DATE = os.environ.get("FTMO_START_DATE")
 
+# iter236+: Profit target & pause-after-target behavior
+PROFIT_TARGET_PCT = float(os.environ.get("FTMO_PROFIT_TARGET", "0.10"))  # FTMO Standard 10%
+MIN_TRADING_DAYS = int(os.environ.get("FTMO_MIN_TRADING_DAYS", "4"))      # FTMO 2-Step (Step 1 & 2) requires 4 trading days minimum
+PAUSE_AT_TARGET = os.environ.get("FTMO_PAUSE_AT_TARGET", "1").lower() in ("1", "true", "yes")
+# Ping trade asset (tiny no-risk trade to clock minTradingDays after target hit)
+PING_SYMBOL_BINANCE = os.environ.get("FTMO_PING_SYMBOL", "ETHUSDT")
+PING_LOT_SIZE = float(os.environ.get("FTMO_PING_LOT", "0.01"))  # tiny lot
+
 # Circuit breaker — pause trading after N consecutive losses
 CB_LOSS_STREAK = int(os.environ.get("FTMO_CB_LOSS_STREAK", "3"))
 # Daily DD warning threshold (alert only, not pause)
@@ -82,6 +90,7 @@ PENDING_PATH = STATE_DIR / "pending-signals.json"
 EXECUTED_PATH = STATE_DIR / "executed-signals.json"
 ACCOUNT_PATH = STATE_DIR / "account.json"
 OPEN_POS_PATH = STATE_DIR / "open-positions.json"
+PAUSE_STATE_PATH = STATE_DIR / "pause-state.json"  # iter236+ pause-after-target tracking
 EXECUTOR_LOG_PATH = STATE_DIR / "executor-log.jsonl"
 DAILY_STATE_PATH = STATE_DIR / "daily-reset.json"
 CONTROLS_PATH = STATE_DIR / "bot-controls.json"
@@ -366,6 +375,117 @@ def close_position(ticket: int) -> bool:
 # =============================================================================
 # Main loop
 # =============================================================================
+# =============================================================================
+# iter236+ Pause-After-Target logic
+# =============================================================================
+def get_pause_state() -> dict:
+    """Returns {target_hit: bool, target_hit_date: str, ping_dates: list[str], passed: bool}"""
+    return read_json(PAUSE_STATE_PATH, {
+        "target_hit": False,
+        "target_hit_date": None,
+        "ping_dates": [],
+        "passed": False,
+    })
+
+
+def write_pause_state(state: dict) -> None:
+    PAUSE_STATE_PATH.write_text(json.dumps(state, indent=2))
+
+
+def check_target_and_pause(current_equity: float) -> bool:
+    """
+    Returns True if pause is active (target hit, waiting for minTradingDays).
+    On first detection of target hit: send Telegram, set state.
+    """
+    if not PAUSE_AT_TARGET:
+        return False
+    state = get_pause_state()
+    if state["passed"]:
+        return True  # already passed, keep skipping
+    target_equity = CHALLENGE_START_BALANCE * (1 + PROFIT_TARGET_PCT)
+    if current_equity >= target_equity and not state["target_hit"]:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        state["target_hit"] = True
+        state["target_hit_date"] = today
+        write_pause_state(state)
+        log_event("target_hit", equity=current_equity, target=target_equity)
+        tg_send(
+            f"🎯 <b>+10% TARGET HIT!</b>\n"
+            f"Equity: <b>${current_equity:,.2f}</b> (start ${CHALLENGE_START_BALANCE:,.0f})\n"
+            f"🛑 <b>BOT PAUSED</b> — no more risk trades.\n"
+            f"⏳ Waiting for {MIN_TRADING_DAYS} trading-day minimum.\n"
+            f"Daily ping trades will be placed to clock the rule."
+        )
+    return state["target_hit"]
+
+
+def maybe_place_ping_trade() -> None:
+    """If in pause + ping not placed today, place tiny long+close to count trading day."""
+    state = get_pause_state()
+    if not state["target_hit"] or state["passed"]:
+        return
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if today in state["ping_dates"]:
+        return  # already pinged today
+
+    if MOCK_MODE:
+        log_event("ping_trade_mock", date=today)
+        state["ping_dates"].append(today)
+    else:
+        sym = SYMBOL_MAP.get(PING_SYMBOL_BINANCE, "ETHUSD")
+        try:
+            info = mt5.symbol_info(sym)
+            if info is None:
+                log_event("ping_trade_failed", reason=f"symbol {sym} not found")
+                return
+            tick = mt5.symbol_info_tick(sym)
+            if tick is None:
+                log_event("ping_trade_failed", reason="no tick data")
+                return
+            request_buy = {
+                "action": mt5.TRADE_ACTION_DEAL, "symbol": sym, "volume": PING_LOT_SIZE,
+                "type": mt5.ORDER_TYPE_BUY, "price": tick.ask,
+                "deviation": 20, "magic": 232, "comment": "iter236-ping",
+            }
+            result = mt5.order_send(request_buy)
+            if result is None or getattr(result, "retcode", None) != mt5.TRADE_RETCODE_DONE:
+                log_event("ping_trade_failed", retcode=getattr(result, "retcode", None))
+                return
+            # Close immediately
+            positions = mt5.positions_get(symbol=sym) or []
+            for pos in positions:
+                if getattr(pos, "magic", 0) == 232:
+                    tick2 = mt5.symbol_info_tick(sym)
+                    if tick2 is None:
+                        continue
+                    close_request = {
+                        "action": mt5.TRADE_ACTION_DEAL, "symbol": sym, "volume": pos.volume,
+                        "type": mt5.ORDER_TYPE_SELL, "position": pos.ticket,
+                        "price": tick2.bid, "deviation": 20, "magic": 232,
+                        "comment": "iter236-ping-close",
+                    }
+                    mt5.order_send(close_request)
+            log_event("ping_trade_placed", date=today, symbol=sym, lot=PING_LOT_SIZE)
+            state["ping_dates"].append(today)
+        except Exception as e:
+            log_event("ping_trade_exception", error=str(e))
+            return
+    write_pause_state(state)
+
+    # Check if challenge passed
+    if len(state["ping_dates"]) + 1 >= MIN_TRADING_DAYS:  # +1 for the target-hit day
+        if not state["passed"]:
+            state["passed"] = True
+            write_pause_state(state)
+            tg_send(
+                f"🏆 <b>CHALLENGE PASSED!</b> 🎉\n"
+                f"Target hit: {state['target_hit_date']}\n"
+                f"Total trading days: {len(state['ping_dates']) + 1}\n"
+                f"Bot will continue placing ping trades until you reset state."
+            )
+            log_event("challenge_passed", trading_days=len(state["ping_dates"]) + 1)
+
+
 def process_pending_signals() -> None:
     data = read_json(PENDING_PATH, {"signals": []})
     pending = data.get("signals", [])
@@ -378,6 +498,23 @@ def process_pending_signals() -> None:
     acct = mt5_get_equity()
     account_equity = acct["equity"] or CHALLENGE_START_BALANCE
     day_start_usd = handle_daily_reset(account_equity)
+
+    # iter236+: if target reached, skip all new signal trades. The pause logic
+    # writes state and Telegram-alerts on first detection. Ping trades are
+    # placed separately in main_loop via maybe_place_ping_trade().
+    if check_target_and_pause(account_equity):
+        log_event("signals_skipped_post_target", count=len(pending))
+        # Mark all pending as "skipped_post_target" so they don't re-trigger
+        executed = read_json(EXECUTED_PATH, {"executions": []})
+        for sig in pending:
+            executed["executions"].append({
+                "signal": sig, "result": "skipped_post_target",
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+        EXECUTED_PATH.write_text(json.dumps(executed, indent=2))
+        # Clear pending queue
+        PENDING_PATH.write_text(json.dumps({"signals": []}, indent=2))
+        return
 
     remaining: list[dict] = []
     for sig in pending:
@@ -749,6 +886,9 @@ def main_loop() -> None:
                 else:
                     process_pending_signals()
                     manage_open_positions()
+
+                # iter236+: place daily ping trade if target was hit (for FTMO 5-day rule)
+                maybe_place_ping_trade()
             except Exception as e:
                 log_event("loop_error", error=str(e))
                 tg_send(f"⚠️ <b>Executor Loop Error</b>\n<code>{html_escape(str(e))}</code>")

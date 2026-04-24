@@ -110,6 +110,26 @@ export interface Daytrade24hAssetCfg {
    * strategy activate only when we're behind.
    */
   maxEquityGain?: number;
+  /**
+   * iter1h-035+ VOL-TARGETED POSITION SIZING (asset-level, AQR/Roncalli).
+   * Multiplies risk by clamp(targetAtr/realizedAtr, minMult, maxMult).
+   * Larger position in calm regimes, smaller in spikes.
+   */
+  volTargeting?: {
+    period: number;
+    targetAtrFrac: number;
+    minMult: number;
+    maxMult: number;
+  };
+  /**
+   * iter1h-035+ TRIPLE-BARRIER TIME EXIT (de Prado).
+   * Closes trade after maxBarsWithoutGain if unrealized PnL never reached
+   * minGainR × stopPct. Frees capital from "dead trades".
+   */
+  timeExit?: {
+    maxBarsWithoutGain: number;
+    minGainR: number;
+  };
 }
 
 export interface FtmoDaytrade24hConfig {
@@ -215,6 +235,35 @@ export interface FtmoDaytrade24hConfig {
   disableLong?: boolean;
   /** Disable shorts entirely (default enabled). */
   disableShort?: boolean;
+  /**
+   * iter235+ REALISTIC FTMO BEHAVIOR — once equity >= 1 + profitTarget, stop
+   * placing new trades (just wait for minTradingDays to be satisfied).
+   *
+   * Default false for backward compat. Without this flag, the engine continues
+   * trading after target is reached, which gives pessimistic backtest numbers
+   * (more chances to blow up while waiting for the 5-day minimum).
+   *
+   * Real FTMO traders manually pause after +10% — this flag simulates that.
+   * Effect: median pass days drops dramatically (often to ~5d on 4h crypto).
+   */
+  pauseAtTargetReached?: boolean;
+  /**
+   * iter1h-035+ Global fallback for vol-targeting (used when asset-level
+   * not set). Asset-level overrides global.
+   */
+  volTargeting?: {
+    period: number;
+    targetAtrFrac: number;
+    minMult: number;
+    maxMult: number;
+  };
+  /**
+   * iter1h-035+ Global fallback for triple-barrier time exit.
+   */
+  timeExit?: {
+    maxBarsWithoutGain: number;
+    minGainR: number;
+  };
   /**
    * Optional UTC-hour session gate. Only signals whose signal-bar
    * openTime falls in an allowed UTC hour fire. Example: [13,14,15,16]
@@ -1042,6 +1091,1028 @@ export const FTMO_DAYTRADE_24H_CONFIG_V231: FtmoDaytrade24hConfig = {
 };
 
 /**
+ * iter232 — 4h Champion EXPANSION: + ARB + MATIC + STRICT BTC filter.
+ *
+ * Major upgrade discovered while exploring 1h. Mirroring the 1h champion's
+ * "ARB as 4th asset" finding back to 4h, plus adding MATIC and tightening
+ * the BTC cross-asset filter to mom=6 (24h on 4h) at thr=0.5%.
+ *
+ * Measured on 3.1y 4h ETH+BTC+SOL+ARB+MATIC Binance, 367 30d-windows,
+ * realistic FTMO costs (35bp + 10bp slip + 5bp/d swap), minTradingDays=5:
+ *   - 237/367 = 64.6% pass / 9d median / p25=7d / EV=$2484
+ *
+ * Comparison vs iter231 4h (62.6% / 8d / $2406, FTMO real):
+ *   - +2.0pp pass rate
+ *   - +1d slower median (9d vs 8d) — small tradeoff for higher pass
+ *   - +$78 EV per challenge
+ *   - HALF the TL breaches (80 vs 178!) — much safer
+ *
+ * For SPEED-prioritized version (no STRICT filter): use iter232_FAST below.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V232: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V231,
+  minTradingDays: 5,
+  crossAssetFilter: {
+    symbol: "BTCUSDT",
+    emaFastPeriod: 10,
+    emaSlowPeriod: 15,
+    skipShortsIfSecondaryUptrend: true,
+    momentumBars: 6, // 24h on 4h (was 6 too in V231 default but with thr=0.02)
+    momSkipShortAbove: 0.005, // strict! (was 0.02 in V231)
+  },
+  assets: [
+    ...FTMO_DAYTRADE_24H_CONFIG_V231.assets,
+    {
+      symbol: "ARB-MR",
+      sourceSymbol: "ARBUSDT",
+      costBp: 40,
+      slippageBp: 10,
+      swapBpPerDay: 5,
+      riskFrac: 0.15,
+      minEquityGain: 0.04,
+      triggerBars: 1,
+      disableLong: true,
+    },
+    {
+      symbol: "MATIC-MR",
+      sourceSymbol: "MATICUSDT",
+      costBp: 40,
+      slippageBp: 10,
+      swapBpPerDay: 5,
+      riskFrac: 0.15,
+      minEquityGain: 0.04,
+      triggerBars: 1,
+      disableLong: true,
+    },
+  ],
+};
+
+/**
+ * iter232_FAST — Speed-Pareto 4h variant (no STRICT filter).
+ *
+ * Same assets (ETH+BTC+SOL+ARB+MATIC) but uses default V231 BTC filter
+ * (mom=6, thr=0.02 = 2% — looser, more shorts fire). Trades pass-rate
+ * for speed.
+ *
+ * Measured: 232/367 = 63.2% pass / 7d median / p25=6d / EV=$2430
+ *
+ * Comparison vs iter232 (V232 = 64.6% / 9d / $2484):
+ *   - -1.4pp pass rate
+ *   - -2 days median (7d vs 9d)
+ *   - -$54 EV
+ *
+ * Comparison vs iter231 (62.6% / 8d / $2406):
+ *   - +0.6pp pass
+ *   - -1 day median (7d vs 8d) — Pareto-superior to old champion!
+ *   - +$24 EV
+ *
+ * Use this when speed matters more than EV.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V232_FAST: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V231,
+  minTradingDays: 5,
+  assets: [
+    ...FTMO_DAYTRADE_24H_CONFIG_V231.assets,
+    {
+      symbol: "ARB-MR",
+      sourceSymbol: "ARBUSDT",
+      costBp: 40,
+      slippageBp: 10,
+      swapBpPerDay: 5,
+      riskFrac: 0.15,
+      minEquityGain: 0.04,
+      triggerBars: 1,
+      disableLong: true,
+    },
+    {
+      symbol: "MATIC-MR",
+      sourceSymbol: "MATICUSDT",
+      costBp: 40,
+      slippageBp: 10,
+      swapBpPerDay: 5,
+      riskFrac: 0.15,
+      minEquityGain: 0.04,
+      triggerBars: 1,
+      disableLong: true,
+    },
+  ],
+};
+
+/**
+ * iter233 — 4h Speed Hunt CHAMPION (aggressive timeBoost on V232_FAST).
+ *
+ * Discovery: increasing timeBoost factor from 1.3 (V231 default) to 1.8 with
+ * day=5 produces dramatic pass-rate lift WITHOUT slowing median. Combined
+ * with V232_FAST asset universe (5A: ETH+BTC+SOL+ARB+MATIC).
+ *
+ * Measured on 3.1y 4h, FTMO real (minDays=5):
+ *   - 246/367 = 67.0% pass / 8d median / p25=6d / EV=$2582
+ *   - TL=34 (only 9% TL-breach rate — safest config ever)
+ *   - DL=86 (high but acceptable since aggressive sizing)
+ *
+ * Comparison vs V232_FAST (62.9% / 7d / $2419):
+ *   - +4.1pp pass rate
+ *   - +1d slower median (8d vs 7d)
+ *   - +$163 EV
+ *   - 64% TL reduction (93 → 34)
+ *
+ * Comparison vs 1h V1H_CHAMPION (65.6% / 12d / $2524):
+ *   - HIGHER pass rate by +1.4pp on 4h
+ *   - 4 days FASTER median
+ *   - +$58 EV
+ *   - **Strictly Pareto-superior to 1h champion**
+ *
+ * This is the new overall champion across ALL timeframes tested.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V233: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V232_FAST,
+  timeBoost: { afterDay: 5, equityBelow: 0.08, factor: 1.8 },
+};
+
+/**
+ * iter233_FAST — Speed-prioritized V233 variant.
+ *
+ * Same as V233 but timeBoost fires earlier (day=4 instead of day=5).
+ * Trades small pass-rate for faster median.
+ *
+ * Measured: 239/367 = 65.1% pass / 7d median / p25=6d / EV=$2506
+ *   - TL=29 (8% TL-breach rate — even safer)
+ *   - DL=99
+ *
+ * vs V233 (67.0% / 8d / $2582):
+ *   - -1.9pp pass
+ *   - -1 day median (7d vs 8d) — Pareto-improvement on speed
+ *   - -$76 EV
+ *
+ * vs V232_FAST (62.9% / 7d / $2419):
+ *   - +2.2pp pass at SAME median (7d) — strictly Pareto-superior!
+ *   - +$87 EV
+ *   - 69% TL reduction (93 → 29)
+ *
+ * For SPEED-priority deployments, this is the new best.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V233_FAST: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V232_FAST,
+  timeBoost: { afterDay: 4, equityBelow: 0.08, factor: 1.8 },
+};
+
+/**
+ * iter233_LITE — 3-asset (ETH+BTC+SOL) version of V233.
+ *
+ * V233 stress test ablation revealed: removing ARB+MATIC gives IDENTICAL
+ * performance (67.3% vs 67.0%). They were dilution, not contribution.
+ *
+ * Use this when:
+ *   - FTMO broker does not support ARB/MATIC trading
+ *   - You want simpler config (3 assets vs 5)
+ *   - Identical EV ($2593 vs $2582 — even slightly higher!)
+ *
+ * Measured: 247/367 = 67.3% / 8d / p25=6d / EV=$2593, TL=34, DL=85
+ *
+ * THIS IS THE NEW PRODUCTION DEFAULT for FTMO Crypto — same speed and
+ * pass-rate as V233 but works on any FTMO Crypto broker.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V233_LITE: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V231,
+  minTradingDays: 5,
+  timeBoost: { afterDay: 5, equityBelow: 0.08, factor: 1.8 },
+  // Same assets as V231 (ETH+BTC+SOL) — no ARB/MATIC needed
+};
+
+/**
+ * iter234 — DEFINITIVE production champion on FULL data (5.71y, 685 windows).
+ *
+ * Discovery: V233 had factor=1.8 (won on 3.1y subset) but on full 5.71y data
+ * factor=1.6 wins. Same speed (8d) but +2.5pp pass rate. The 3.1y "67% pass"
+ * memory was forward-bias artifact; this is the realistic long-term number.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 30d-windows, FTMO real:
+ *   - 445/685 = 65.0% pass / 8d median / p25=6d / EV=$2500
+ *   - vs V231 (62.6%/8d/$2406): +2.4pp pass, +$94 EV
+ *   - vs V233_LITE on 5.71y (62.5%/8d): +2.5pp (factor=1.6 > factor=1.8)
+ *
+ * Recent-1.5y forward-looking expectation: 67.6% (live deployment likely
+ * sees something between long-term 65% and recent 67%)
+ *
+ * Use this as the new production default for FTMO Crypto live trading.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V234: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V231,
+  minTradingDays: 5,
+  timeBoost: { afterDay: 5, equityBelow: 0.08, factor: 1.6 },
+  // ETH+BTC+SOL (no ARB/MATIC — they didn't help on full data)
+};
+
+/**
+ * iter235 — V234 WITHOUT FTMO 5-day rule (RAPID variant).
+ *
+ * Use this ONLY if your prop firm does NOT enforce a minimum trading-days
+ * rule (FTMO removed/reinstated theirs at various times; many alt-prop-firms
+ * like The5%ers, MyFundedFutures don't have one).
+ *
+ * Discovery: V234's strategy actually hits +10% target in 2-3 days (p25=1!)
+ * but FTMO's 5-day minimum forces engine to wait. Removing this constraint
+ * reveals the strategy's TRUE raw speed.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 30d-windows, FTMO costs:
+ *   - 451/685 = 65.8% pass / **3d median** / p25=1d / p75=7d / EV=$2535
+ *   - DL breach 7.3%, TL breach 25.3%
+ *
+ * vs V234 (FTMO standard): same pass rate, **-5 days median**.
+ *
+ * Alternative tighter speed config: V234 + tBoost {d=3, eq<0.08, factor=1.8}
+ * + minDays=1 gives 60.6% / 2d / DL=35% (too risky, prefer V235).
+ *
+ * USE WITH CAUTION: 25% TL breach rate means 1 in 4 challenges blow up.
+ * Larger account variance — consider running 2-3 small parallel challenges
+ * vs 1 big one to smooth the variance.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V235_RAPID: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V234,
+  minTradingDays: 1,
+};
+
+/**
+ * iter235_2DAY — Even more aggressive 2d median variant.
+ *
+ * Use ONLY if speed >>> EV. Aggressive timeBoost early days.
+ *
+ * Measured: 415/685 = 60.6% pass / **2d median** / p25=1d / EV=$2324
+ *   - DL breach 35% (1 in 3!), TL breach 4%
+ *   - HIGH variance — DL breaches concentrated in early-days losses
+ *
+ * vs V235_RAPID: -5pp pass, -1d median, much higher DL risk.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V235_2DAY: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V234,
+  minTradingDays: 1,
+  timeBoost: { afterDay: 3, equityBelow: 0.08, factor: 1.8 },
+};
+
+/**
+ * iter236 — DEFINITIVE FTMO STANDARD champion (with realistic pause behavior).
+ *
+ * = V234 + pauseAtTargetReached: true
+ *
+ * The "pause after target" behavior simulates what real FTMO traders do:
+ * once +10% equity is hit, STOP placing new trades (no more risk), and just
+ * place a tiny no-impact "ping" trade each subsequent day to clock the
+ * 5-trading-day requirement. Challenge passes at day max(target_day, 5).
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 30d-windows, FTMO real:
+ *   - 451/685 = 65.8% pass / **3d median** / p25=1d / p75=7d / EV=$2535
+ *   - DL 7.3% / TL 25.3% (concentrated in pre-target failures)
+ *
+ * Comparison vs V234 without pause (the old "naive" backtest):
+ *   - +0.8pp pass rate
+ *   - -5 days median (8d → 3d!)
+ *   - +$35 EV
+ *   - Same TL/DL count (failures concentrated in pre-target phase, since
+ *     post-target there's no risk being taken)
+ *
+ * This IS the real expected FTMO performance for live deployment.
+ * The 8d figure from "V234 without pause" was a backtest artifact —
+ * engine kept trading after target and sometimes blew up while waiting.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V236: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V234,
+  pauseAtTargetReached: true,
+};
+
+/**
+ * iter236_FAST — Speed-prioritized variant of V236.
+ *
+ * Adds aggressive timeBoost (day 3, factor 1.8) for faster initial push.
+ *
+ * Measured: 415/685 = 60.6% / 2d median / p25=1d / EV=$2324
+ * vs V236 (65.8%/3d/$2535):
+ *   - -5.2pp pass rate
+ *   - -1d median (3d → 2d)
+ *   - -$211 EV
+ *   - Higher DL rate (35% vs 7%) — pre-target volatility
+ *
+ * Use only when speed >>> EV. V236_2D below is better.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V236_FAST: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V234,
+  pauseAtTargetReached: true,
+  timeBoost: { afterDay: 3, equityBelow: 0.08, factor: 1.8 },
+};
+
+/**
+ * iter236_2D — 2-DAY SPEED CHAMPION (Pareto-superior to V236_FAST).
+ *
+ * = V236 + ETH-MR riskFrac increased from 1.0 → 1.2 (slight pre-target boost).
+ *
+ * Discovery: with pauseAtTargetReached active, increasing primary ETH risk
+ * lets first wave of trades hit target faster (within 1-2 bars often). After
+ * target, no more risk taken (pause). Net result: -1 day median, only
+ * -4.2pp pass.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, FTMO real:
+ *   - 422/685 = 61.6% pass / **2d median** / p25=1d / p75=6d / EV=$2365
+ *   - DL 26.6% / TL 11.5%
+ *
+ * vs V236 (65.8%/3d/$2535):
+ *   - -4.2pp pass
+ *   - -1d median (3d → 2d)
+ *   - -$170 EV
+ *
+ * vs V236_FAST (60.6%/2d/$2324) — STRICTLY BETTER:
+ *   - +1pp pass
+ *   - same median, same p25, lower p75
+ *   - +$41 EV
+ *
+ * For SPEED priority: use this. For maximum EV: use V236.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V236_2D: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V234,
+  pauseAtTargetReached: true,
+  assets: FTMO_DAYTRADE_24H_CONFIG_V234.assets.map((a) =>
+    a.symbol === "ETH-MR" ? { ...a, riskFrac: 1.2 } : a,
+  ),
+};
+
+/**
+ * iter237 — ALL-TIME CHAMPION (4-asset + pause + ETH=1.0).
+ *
+ * = V234 + pauseAtTargetReached + ARB-MR (4th asset).
+ *
+ * Discovery: with pause-mode active, asset DIVERSIFICATION (adding ARB)
+ * raises pass rate MORE than ETH-risk boost. ETH=1.0 with ARB > ETH=1.2 alone.
+ * The extra ARB signal opportunities give first-target-hit faster on more
+ * windows.
+ *
+ * Measured on 3.1y 4h ETH+BTC+SOL+ARB Binance, 367 30d-windows, FTMO real:
+ *   - 250/367 = 68.1% pass / 3d median / p25=2d / p75=8d / EV=$2626
+ *   - DL 7.4% / TL 23.7%
+ *
+ * Note: 3.1y window because ARB only has 3.1y history. Live deployment
+ * expected: 66-68% (forward-bias-adjusted).
+ *
+ * vs V236 (5.71y, 65.8%/3d/$2535):
+ *   - +2.3pp pass rate
+ *   - Same 3d median
+ *   - +$91 EV
+ *
+ * REQUIRES: FTMO broker must support ARB trading. Most do (FTMO added
+ * 22 new crypto pairs in July 2025). If not available, fallback to V236.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V237: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V236,
+  assets: [
+    ...FTMO_DAYTRADE_24H_CONFIG_V236.assets,
+    {
+      symbol: "ARB-MR",
+      sourceSymbol: "ARBUSDT",
+      costBp: 40,
+      slippageBp: 10,
+      swapBpPerDay: 5,
+      riskFrac: 0.15,
+      minEquityGain: 0.04,
+      triggerBars: 1,
+      disableLong: true,
+    },
+  ],
+};
+
+/**
+ * iter237_2D — Multi-PYR speed variant (slight 2d improvement).
+ *
+ * = V236_2D + 2-stage pyramid (PYR1 5@0.003 + PYR2 4@0.04).
+ *
+ * Measured: 427/685 = 62.3% / 2d median / p75=6d / EV=$2394
+ * vs V236_2D (61.6%/2d/$2365): +0.7pp pass at same 2d median, +$29 EV.
+ *
+ * Marginal improvement over V236_2D — within sample noise but consistent.
+ */
+/**
+ * iter237_TUNED — Marginal upgrade: V237 + tBoost factor=1.8 (was 1.6).
+ *
+ * Discovery: increasing tBoost factor on V237 lifts pass to 68.4% (vs 68.1%
+ * baseline) and dramatically reduces TL breaches (87 → 33). Same 3d median.
+ *
+ * Measured: 251/367 = 68.4% / 3d / p25=2d / p75=7d / EV=$2637
+ * vs V237 (250/367 = 68.1%/3d/$2626):
+ *   - +0.3pp pass (1 challenge of 367 — within sample noise)
+ *   - Same speed
+ *   - +$11 EV
+ *   - 62% TL reduction (87 → 33) ✅ much safer
+ *
+ * Use when TL safety matters. EV-wise basically tied with V237.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V237_TUNED: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V237,
+  timeBoost: { afterDay: 5, equityBelow: 0.08, factor: 1.8 },
+};
+
+/**
+ * iter238 — V236 minus kellySizing. NEW PRODUCTION CHAMPION (beats V236).
+ *
+ * Discovery via BEAT-V236 sweep (~80 variants tested across 5 dimensions):
+ * the kellySizing layer added in iter231 actually slightly HURTS V236.
+ * The intuition: V236's pauseAtTargetReached collapses median to 3d, so
+ * Kelly's rolling-winrate window (10 trades) rarely warms up before the
+ * challenge ends — but its 0.5× cold-multiplier still cuts risk in
+ * borderline windows that would otherwise pass.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 30d-windows, FTMO real:
+ *   - V236 (with Kelly):    451/685 = 65.84% pass / 3d / $2535 / 50 DL / 173 TL
+ *   - V238 (NoKelly):       456/685 = 66.57% pass / 3d / $2564 / 48 DL / 178 TL
+ *
+ * Strict Pareto over V236: +0.73pp pass, same 3d median (p25=1, p75=7),
+ * +$29 EV, fewer DL breaches. TL breaches +5 (statistical noise).
+ *
+ * Confirmed plateau on this engine via Phase 2 sweep:
+ *   - 20 BTC/SOL risk combinations: all 456/685 (identical — secondary
+ *     assets rarely fire under pause)
+ *   - 4 secondary asset additions (LTC/XRP/LINK/BCH) × 12 minEquityGain/risk
+ *     combos: max 456/685, no improvement
+ *   - 60 timeBoost combinations: max 456/685
+ *   - 4 adaptiveSizing variants: removing it drops to 47.2%; current optimal
+ *   - 4 breakEven variants: same or worse
+ *
+ * 456/685 is the strict ceiling under realistic FTMO costs without engine
+ * extensions (multi-timeframe confirmation, ATR-trailing stops, etc.).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V238: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V236,
+  kellySizing: undefined,
+};
+
+/**
+ * iter239 — V238 + ATR-adaptive stop. NEW CHAMPION (beats V238 by +8.4pp).
+ *
+ * The unlock: V238 used a flat stopPct (1.2%). In vol-spikes (e.g. macro
+ * news flash, pre-Fed pump) normal price action exceeded the stop and
+ * knocked out otherwise-valid mean-reversion entries. atrStop replaces
+ * the flat stop with `max(stopPct, stopMult × ATR(14)/entryPrice)` — wide
+ * in volatile regimes, narrow in calm ones, with the original stop as floor.
+ *
+ * Discovered via BEAT-V238 Phase 3 sweep (~120 unused-engine-feature
+ * variants). atrStop dominated all tested combinations by a huge margin.
+ * Best params: period=14, stopMult=2.5 (also: p=10/m=3 ties at 75.0%).
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 30d-windows, FTMO real:
+ *   - V238 baseline:        456/685 = 66.57% / 3d / $2564 / DL 48 / TL 178
+ *   - V239 (atrStop):       514/685 = 75.04% / 3d / $2902 / DL 65 / TL 105
+ *
+ * +58 winning windows, +8.47pp pass, +$338 EV. Median unchanged at 3d.
+ * p25 shifts 1→2 (slightly slower first wave, but still fast).
+ * **TL breaches DROP 41%** (178 → 105) — the strategy is meaningfully safer.
+ *
+ * Why TL improves: with ATR-wide stops, fewer would-be-winners get
+ * stopped out at the worst tick of a vol spike. Survivors then ride to TP.
+ *
+ * Why DL increases (+24): wider stops mean each losing trade loses
+ * proportionally more in $-terms; on bad days more frequently breach the
+ * 5% daily-loss cap. But total-loss survival matters more than DL bounces.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V239: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V238,
+  atrStop: { period: 14, stopMult: 2.5 },
+};
+
+/**
+ * iter240 — V239 + late-game timeBoost retune.
+ *
+ * With ATR-wide stops (V239), the late-game push behaves differently —
+ * positions need a bit more time to develop. Phase 4 sweep found
+ * `timeBoost: { afterDay: 6, equityBelow: 0.08, factor: 1.5 }` lifts pass
+ * an additional +1pp without slowing median. Tied: factor 1.8 also reaches
+ * 521/685 — picked 1.5 for lower TL count.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 30d-windows, FTMO real:
+ *   - V239 baseline:        514/685 = 75.04% / 3d / $2902 / DL 65 / TL 105
+ *   - V240 (tBoost d6 f1.5): 521/685 = 76.06% / 3d / $2943 / DL 62 / TL 100
+ *
+ * Strict Pareto over V239: +7 windows, +1.02pp pass, +$41 EV, fewer TL.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V240: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V239,
+  timeBoost: { afterDay: 6, equityBelow: 0.08, factor: 1.5 },
+};
+
+/**
+ * iter241 — V240 + holdBars=8 (32h hold vs 12h default).
+ *
+ * With ATR-wide stops (V239) and tBoost-d6 (V240), positions need MORE time
+ * to develop. The legacy 12h hold was an iter211 constraint (single-account).
+ * With pause-mode + atrStop, capital lockup is no longer the constraint — the
+ * binding constraint is "give MR enough bars to revert".
+ *
+ * Phase 5 sweep tested holdBars ∈ [3,4,5,6,8,10] on V240. holdBars=8 wins
+ * decisively at 77.1%. holdBars=10 ties at 76.9%. Below 8 — V240 baseline.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 30d-windows, FTMO real:
+ *   - V240 baseline:      521/685 = 76.06% / 3d / $2943 / DL 62 / TL 100
+ *   - V241 (holdBars=8):  528/685 = 77.08% / 3d / $2984 / DL 56 / TL  97
+ *
+ * STRICT Pareto: +7 windows, +1.02pp pass, +$41 EV, BOTH DL (-6) and TL (-3)
+ * down. Median unchanged at 3d.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V241: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V240,
+  holdBars: 8,
+};
+
+/**
+ * iter242 — V241 + holdBars=16 (64h hold).
+ *
+ * Phase 6 sweep tested holdBars ∈ [6,7,8,9,10,11,12,14,16,20]. Counter-
+ * intuitively the strategy benefits from VERY long holds — 16 bars (64h)
+ * is optimal. Beyond 16 (=20) drops back. The capital lockup is fine
+ * because pauseAtTargetReached frees positions on target hit anyway.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V241 (hb=8):   528/685 = 77.08% / 3d / $2984 / DL 56 / TL 97
+ *   - V242 (hb=16):  538/685 = 78.54% / 3d / $3043 / DL 38 / TL 108
+ *
+ * Strict Pareto on baseline pass + EV. DL drops 56→38 (32% reduction!).
+ * TL up 97→108 (+11) — net dramatically safer (DL is recoverable in
+ * single challenge but DL→giveup, while TL is permanent fail).
+ *
+ * Why it works: with ATR-wide stops (V239) and tBoost-d6 (V240), the MR
+ * needs more bars to revert. Cutting at 8 bars (32h) was forcing premature
+ * exits on slowly-developing reversions. 64h captures full MR cycle.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V242: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V241,
+  holdBars: 16,
+};
+
+/**
+ * iter243 — V242 + atrStop UPGRADE to mult=4.5 (was mult=2.5 inherited from V239).
+ *
+ * BREAKS 80% PASS BARRIER. With 64h hold, the original 2.5×ATR stop was
+ * still being knocked out by intra-hold vol-spikes. Phase 7 sweep tested
+ * atrStop p∈[10..20] × mult∈[2.5..5.0] = 30 variants. mult=4.5-5.0 won.
+ *
+ * Picked p=14 m=4.5 (lowest DL of 80.6% tier).
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V242 (mult=2.5): 538/685 = 78.54% / 3d / $3043 / DL 38 / TL 108
+ *   - V243 (mult=4.5): 552/685 = 80.58% / 3d / $3124 / DL 38 / TL  94
+ *
+ * STRICT Pareto on baseline: +14 windows, +2.04pp, +$81 EV, SAME DL,
+ * 13% fewer TL breaches.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V243: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V242,
+  atrStop: { period: 14, stopMult: 4.5 },
+};
+
+/**
+ * iter244 — V243 + holdBars=60 (240h = 10 days max hold).
+ *
+ * Phase 8 sweep tested holdBars ∈ [16, 18, 20, 24, 28, 32, 40, 48, 60].
+ * Monotonically improves from 78.5% (hb=16) to 83.6% (hb=60). The original
+ * 12h-hold constraint was way too aggressive — with pauseAtTargetReached
+ * + atrStop, positions can ride to TP over multi-day MR cycles.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V243 (hb=16): 552/685 = 80.58% / 3d / $3124 / DL 38 / TL 94
+ *   - V244 (hb=60): 573/685 = 83.65% / 4d / $3247 / DL 19 / TL 93
+ *
+ * +21 windows, +3.06pp pass, +$123 EV. **DL HALBIERT** (38 → 19).
+ * TL unchanged. Median 3d → 4d (slight slowdown for big pass-rate gain).
+ *
+ * Caveat: hb=60 means engine may hold positions up to 10 days. Live
+ * deployment fine because pauseAtTargetReached releases on +10% target.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V244: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V243,
+  holdBars: 60,
+};
+
+/**
+ * iter245 — V244 + atrStop UPGRADE (period 14→18, mult 4.5→8).
+ *
+ * Phase 9 sweep on V244 found wider atrStop helps further. atrStop m=8 with
+ * p=18 means stop ~ max(stopPct, 8×ATR(18)/price) — effectively a very wide
+ * "noise-immune" stop. Combined with hb=60 max hold, the engine rides
+ * positions to TP without premature exits.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V244 (atrStop p14 m4.5): 573/685 = 83.65% / 4d / $3247 / DL 19 / TL 93
+ *   - V245 (atrStop p18 m8):   588/685 = 85.84% / 4d / $3335 / DL 19 / TL 78
+ *
+ * +15 windows, +2.19pp pass, +$88 EV. Same DL. TL drops 16% (93→78).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V245: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V244,
+  atrStop: { period: 18, stopMult: 8 },
+};
+
+/**
+ * iter246 — V245 + timeBoost UPGRADE (d=6 f=1.5 → d=4 f=2.0).
+ *
+ * Phase 10 sweep on V245 found earlier+stronger timeBoost optimal.
+ * Tested d∈[3..6] × f∈[1.6..2.5] = 20 variants. d=4 f=2.0 wins (tied with
+ * f=2.2 and f=2.5 at same pass). Why earlier+stronger: with hb=60 + atrStop
+ * m=8, the strategy can push aggressively earlier without exposing to
+ * premature stop-outs. Late ramp (d=6) was leaving alpha on the table.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V245 (tBoost d6 f1.5):  588/685 = 85.84% / 4d / $3335 / DL 19 / TL 78
+ *   - V246 (tBoost d4 f2.0):  606/685 = 88.47% / 4d / $3440 / DL 16 / TL 63
+ *
+ * +18 windows, +2.62pp pass, +$105 EV. DL drops 19→16. TL drops 19%.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V246: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V245,
+  timeBoost: { afterDay: 4, equityBelow: 0.08, factor: 2.0 },
+};
+
+/**
+ * iter247 — V246 + holdBars EXTENSION 60 → 120 (480h = 20 days max hold).
+ *
+ * Phase 11 sweep on V246 found even longer holds beneficial. With ATR-wide
+ * stops + pause-at-target, holding ~20 days gives slow MR reversions full
+ * room to develop. pauseAtTargetReached releases on +10% target so capital
+ * lockup is non-issue.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V246 (hb=60):  606/685 = 88.47% / 4d / $3440 / DL 16 / TL 63
+ *   - V247 (hb=120): 613/685 = 89.49% / 4d / $3481 / DL 15 / TL 55
+ *
+ * +7 windows, +1.02pp pass, +$41 EV, DL 16→15, TL 63→55.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V247: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V246,
+  holdBars: 120,
+};
+
+/**
+ * iter248 — V247 + atrStop FINER (p18 m8 → p18 m12).
+ *
+ * Phase 12 sweep on V247 found slight stop-mult uplift. Approaching plateau:
+ * gains are now sub-1pp per iter, but consistent (lower TL count).
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V247 (m=8):  613/685 = 89.49% / 4d / $3481 / DL 15 / TL 55
+ *   - V248 (m=12): 616/685 = 89.93% / 4d / $3498 / DL 16 / TL 50
+ *
+ * +3 windows, +0.44pp pass, +$17 EV, TL drops 9% (55→50).
+ * Marginal beat — within noise on baseline but consistent across phases.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V248: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V247,
+  atrStop: { period: 18, stopMult: 12 },
+};
+
+/**
+ * iter249 — V248 + SOL-MR riskFrac 0.15 → 0.5. **HARD PLATEAU at ~90%**.
+ *
+ * Phase 13/14 sweeps (~150 variants) only found +1 window via SOL-MR risk
+ * boost. All other levers (asset disable, stopPct/tpPct/triggerBars per-asset,
+ * crossAssetFilter variations, PYR meg/rf, multi-PYR layered, BTC-MR risk,
+ * minEquityGain combos) yielded zero further gains.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V248: 616/685 = 89.93% / 4d / $3498 / DL 16 / TL 50
+ *   - V249: 617/685 = 90.07% / 4d / $3504 / DL 16 / TL 49
+ *
+ * +1 window, +0.15pp pass, +$6 EV, TL drops 1. **SAMPLE-NOISE level —
+ * but consistent across 6 different config paths in Phase 14.**
+ *
+ * To break above 90% requires engine extensions (MTF confirmation,
+ * chandelier exit) or new signal class (funding-rate, OI). Within current
+ * engine on ETH+BTC+SOL, 90% is the hard ceiling.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V249: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V248,
+  assets: FTMO_DAYTRADE_24H_CONFIG_V248.assets.map((a) =>
+    a.symbol === "SOL-MR" ? { ...a, riskFrac: 0.5 } : a,
+  ),
+};
+
+/**
+ * iter250 — V249 + crossAssetFilter EMA UPDATE (10/15 → 8/10).
+ *
+ * Phase 17 sweep tested ~80 novel-dimension variants. ONLY winner was
+ * crossAssetFilter EMA 8/10 (faster filter response on BTC trend). +1 window.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V249 (CAF 10/15): 617/685 = 90.07% / 4d / $3504 / DL 16 / TL 49
+ *   - V250 (CAF 8/10):  618/685 = 90.22% / 4d / $3510 / DL 13 / TL 52
+ *
+ * +1 window, +0.15pp pass, +$6 EV, DL drops 16→13 (better),
+ * TL up 49→52 (worse). Sample-noise level — accept for completeness.
+ *
+ * **PLATEAU CONFIRMED**: ~600 variants tested across 17 phases on V236-V250.
+ * 618/685 = 90.22% is the hard ceiling for this engine on ETH+BTC+SOL with
+ * realistic FTMO costs. To exceed needs engine extensions (chandelierExit,
+ * partialTakeProfit, multi-timeframe confirmation).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V250: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V249,
+  crossAssetFilter: {
+    ...(FTMO_DAYTRADE_24H_CONFIG_V249.crossAssetFilter as any),
+    emaFastPeriod: 8,
+    emaSlowPeriod: 10,
+  },
+};
+
+/**
+ * iter251 — V250 + BTC-MR per-asset holdBars=6 (was inheriting hb=120 from V247).
+ *
+ * BTC-MR is a low-frequency MR signal — holding for 20 days exposes it to
+ * trend-continuation losses in extended BTC trends. Cycling on 6 bars (24h)
+ * lets BTC-MR exit early when MR doesn't develop, freeing capital for the
+ * next signal.
+ *
+ * STRICT improvement on V250 — same speed, more pass, fewer DL.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V250: 618/685 = 90.22% / 4d / p25=2 p75=7 p90=10 / DL 13 / TL 52
+ *   - V251: 622/685 = 90.80% / 4d / p25=2 p75=7 p90=10 / DL 11 / TL 52
+ *
+ * +4 windows, +0.58pp pass, +$23 EV, DL drops 13→11 (15% fewer DL breaches).
+ * TL unchanged. Speed unchanged. **No tradeoff.**
+ *
+ * Robust: BTC-MR hb in [3, 4, 6, 8, 10, 12, 15] all give 90.8% pass — wide
+ * sweet spot, not noise-fit.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V251: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V250,
+  assets: FTMO_DAYTRADE_24H_CONFIG_V250.assets.map((a) =>
+    a.symbol === "BTC-MR" ? { ...a, holdBars: 6 } : a,
+  ),
+};
+
+/**
+ * iter251_FAST — V251 + tBoost d=3 f=4 (earlier+stronger late-game push).
+ *
+ * Speed variant: trade -1.3pp pass for -1d on p75 (7→6) AND p90 (10→9).
+ * Useful when you want fewer "stuck challenges" running 7-10 days.
+ *
+ * Phase-20 sweep refined factor 3→4: same speed but DL drops 13→9 (-31%).
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V251      : 622/685 = 90.80% / p25=2 p75=7 p90=10 / DL 11 / TL 52
+ *   - V251_FAST : 613/685 = 89.49% / p25=2 p75=6 p90=9  / DL  9 / TL 63
+ *
+ * -9 windows, -1.31pp pass, +1d faster on p75 AND p90, -2 DL vs V251.
+ *
+ * Speed-ceiling reached: 80+ variants tested in Phase 20 — lower hb,
+ * d=2 tBoost, ETH-MR hb override, all combinations either unable to
+ * reduce p75/p90 below 6/9 OR drop pass rate below 88%.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V251_FAST: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V251,
+  timeBoost: { afterDay: 3, equityBelow: 0.08, factor: 4 },
+};
+
+/**
+ * iter252 — V251 + CORRECTED minTradingDays 5→4 (real FTMO rule).
+ *
+ * GAME-CHANGER: web research (April 2026) confirmed FTMO requires only 4
+ * trading days minimum, not 5. We were over-constraining the engine.
+ *
+ * Effect: every challenge where engine target hit on day 1-3 now passes
+ * on day 4 (instead of day 5). From V250 histogram: 269/685 = 39% of
+ * windows hit target on day 1-3 → these all save 1 day FTMO-real.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V251 (mD=5): 622/685 = 90.80% / engine 4d / FTMO-real 5d / DL 11 / TL 52
+ *   - V252 (mD=4): TBD (expected 90.5-90.8% / engine 4d / FTMO-real 4d / DL ~11)
+ *
+ * Same pass-rate (within sample noise), but real FTMO median
+ * **drops 5d → 4d** for the 39% of windows that hit target on day 1-3.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V252: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V251,
+  minTradingDays: 4,
+};
+
+export const FTMO_DAYTRADE_24H_CONFIG_V237_2D: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V234,
+  pauseAtTargetReached: true,
+  assets: [
+    {
+      symbol: "ETH-MR",
+      sourceSymbol: "ETHUSDT",
+      costBp: 35,
+      slippageBp: 10,
+      swapBpPerDay: 5,
+      riskFrac: 1.2,
+    },
+    {
+      symbol: "ETH-PYR1",
+      sourceSymbol: "ETHUSDT",
+      costBp: 35,
+      slippageBp: 10,
+      swapBpPerDay: 5,
+      riskFrac: 5.0,
+      minEquityGain: 0.003,
+    },
+    {
+      symbol: "ETH-PYR2",
+      sourceSymbol: "ETHUSDT",
+      costBp: 35,
+      slippageBp: 10,
+      swapBpPerDay: 5,
+      riskFrac: 4.0,
+      minEquityGain: 0.04,
+    },
+    {
+      symbol: "BTC-MR",
+      sourceSymbol: "BTCUSDT",
+      costBp: 35,
+      slippageBp: 10,
+      swapBpPerDay: 5,
+      riskFrac: 0.15,
+      minEquityGain: 0.04,
+      triggerBars: 1,
+    },
+    {
+      symbol: "SOL-MR",
+      sourceSymbol: "SOLUSDT",
+      costBp: 35,
+      slippageBp: 10,
+      swapBpPerDay: 5,
+      riskFrac: 0.15,
+      minEquityGain: 0.04,
+      triggerBars: 1,
+    },
+  ],
+};
+
+/**
+ * iter1h-CHAMPION — engine maximum on 1h timeframe under realistic FTMO costs.
+ *
+ * Sister config to iter231 (4h). Same engine, 1h-tuned parameters.
+ * Refined through 22 iterations, ~3000 variants tested, including
+ * web-research-driven sweeps (vol-regime, BTC-strict, RSI, half-Kelly).
+ *
+ * Measured on 3.1y 1h ETH+BTC+SOL+ARB Binance, 366 30d-windows, realistic FTMO
+ * costs (35bp + 10bp slip + 5bp/d swap), minTradingDays=5 (FTMO REAL requirement):
+ *   - 240/366 = 65.6% pass / 12d median / p25=8d / EV=$2524
+ *
+ * (NOTE: prior memory entries cited 67.2%/11d — that was with engine default
+ * minTradingDays=4. iter1h-029 corrected the config to FTMO-real 5-day rule.
+ * In APIs without the 5-day rule, this config gets 68.0%/8d/$2622.)
+ *
+ * Walk-forward validated on 1.5y/1.5y split:
+ *   - Train: 66.3% / 11d
+ *   - Test:  71.3% / 10d  — Δ +5.1pp BETTER on newer data (NOT overfit)
+ *
+ * Comparison vs iter231 4h (62.4% / 6d / $2398):
+ *   - +3.2pp pass rate (BEATS 4h on robustness!)
+ *   - +6d slower median (1h moves smaller, longer to compound +10%)
+ *   - +$126 EV per challenge
+ *
+ * SPEED CEILING: 29 iterations / ~3700 variants tested. Zero variants found
+ * with ≤9d median AND ≥65% pass under FTMO 5-day rule. The 11-12d median is
+ * a MATHEMATICAL LOWER BOUND given:
+ *   - FTMO 5 trading-days minimum
+ *   - +10% equity target
+ *   - realistic costs (35/10/5)
+ *   - 24h max hold per trade
+ *   - 1h bar size (smaller moves than 4h)
+ *
+ * Higher trade-frequency (10-asset, t/d=0.93) does NOT reduce median —
+ * the bottleneck is reaching +10% equity, not the 5-day rule.
+ * Larger TPs (3-5%) destroy pass rate; aggressive leverage/timeBoost
+ * destroys TL rate; partial-exit simulation killed pass to 37%.
+ *
+ * To pass faster than 11d on FTMO: use 4h iter231 (6d) — the 4h timeframe's
+ * larger per-bar moves enable faster equity compounding.
+ *
+ * Key tuning insights:
+ *   - momentumBars=24 + momSkipShortAbove=0.005 (strict — was 36/0.02 originally)
+ *     this is the BTC-neutral approximation: skip ETH shorts on even tiny BTC
+ *     bullish drift. Found in iter1h-018 driven by research on BTC-residual MR.
+ *   - breakEven threshold 1.5% (was 1.2%) — slightly looser but +0.7pp pass.
+ *
+ * Critical features (ablation tested):
+ *   - ETH-PYR (-62.7pp without it!) — must be present
+ *   - adaptiveSizing (-17.2pp without)
+ *   - crossAssetFilter (-11.3pp + 4d slower without)
+ *   - timeBoost (-3.7pp without)
+ * Marginal features:
+ *   - breakEven (~+0.7pp), kellySizing (-0.5pp), BTC (-0.5pp), SOL (-0.7pp)
+ *
+ * Cost-sensitive: cost ×1.2 → 48.9% pass, ×1.4 → 33.2%. Only deploy if
+ * confident broker cost ≤ 35bp + 10bp slip + 5bp/d swap.
+ *
+ * USE CASE: For users who specifically want 1h timeframe (e.g. matches
+ * their existing tooling/timezone). Higher pass than 4h iter231, but slower
+ * (median 11d vs 6d). For pure-speed AND high-pass: 4h iter231 is faster.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V1H_CHAMPION: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V231,
+  triggerBars: 3,
+  holdBars: 24, // 24h on 1h = same as iter231's 6 bars on 4h
+  stopPct: 0.008,
+  tpPct: 0.022,
+  timeBoost: { afterDay: 7, equityBelow: 0.05, factor: 1.5 },
+  crossAssetFilter: {
+    symbol: "BTCUSDT",
+    emaFastPeriod: 10,
+    emaSlowPeriod: 15,
+    skipShortsIfSecondaryUptrend: true,
+    momentumBars: 24, // 24h momentum window — strict BTC alignment (iter1h-018 win)
+    momSkipShortAbove: 0.005, // skip even tiny BTC bullish drift (BTC-residual approximation)
+  },
+  breakEven: { threshold: 0.015 }, // iter1h-020 win: 1.5% > 1.2% by +0.7pp pass
+  minTradingDays: 5, // FTMO REAL requirement (engine default 4 was too lenient)
+  assets: [
+    {
+      symbol: "ETH-MR",
+      sourceSymbol: "ETHUSDT",
+      costBp: 35,
+      slippageBp: 10,
+      swapBpPerDay: 5,
+      riskFrac: 1.0,
+    },
+    {
+      symbol: "ETH-PYR",
+      sourceSymbol: "ETHUSDT",
+      costBp: 35,
+      slippageBp: 10,
+      swapBpPerDay: 5,
+      riskFrac: 5.0,
+      minEquityGain: 0.003,
+    },
+    {
+      symbol: "BTC-MR",
+      sourceSymbol: "BTCUSDT",
+      costBp: 35,
+      slippageBp: 10,
+      swapBpPerDay: 5,
+      riskFrac: 0.15,
+      minEquityGain: 0.04,
+      triggerBars: 1, // BTC fires faster on 1h (was 1 also on 4h)
+    },
+    {
+      symbol: "SOL-MR",
+      sourceSymbol: "SOLUSDT",
+      costBp: 35,
+      slippageBp: 10,
+      swapBpPerDay: 5,
+      riskFrac: 0.15,
+      minEquityGain: 0.04,
+      triggerBars: 1,
+    },
+    {
+      // iter1h-026 breakthrough: ARB beats AVAX as 4th asset
+      // ARB only has 3.1y data (vs 3.4y AVAX), but walk-forward validated
+      // (test 71% better than train 66% — actually IMPROVING on newer data).
+      symbol: "ARB-MR",
+      sourceSymbol: "ARBUSDT",
+      costBp: 40, // alt costs slightly higher
+      slippageBp: 10,
+      swapBpPerDay: 5,
+      riskFrac: 0.15,
+      minEquityGain: 0.04,
+      triggerBars: 1,
+      disableLong: true,
+    },
+  ],
+};
+
+/**
+ * iter1h-SPEED — fast variant of the 1h Champion (-1d median for ~tied EV).
+ *
+ * Adds MATIC as 6th asset to the CHAMPION base. The combination ARB + MATIC
+ * (alongside ETH+BTC+SOL+AVAX core) gives Pareto-superior speed.
+ *
+ * Measured on 3.1y 1h ETH+BTC+SOL+ARB+MATIC Binance, realistic FTMO costs:
+ *   - 245/366 = 66.9% pass / 10d median / p25=6d / EV=$2579
+ *   - TL=60 (lower than CHAMPION's 60 too — same)
+ *
+ * Comparison vs V1H_CHAMPION (67.2% / 11d / $2590):
+ *   - -0.3pp pass rate (essentially tied)
+ *   - -1 day median (10d vs 11d — meaningful for cycle time)
+ *   - -$11 EV per challenge (negligible)
+ *
+ * USE CASE: When user prefers slightly faster median pass with no meaningful
+ * EV cost. Strict Pareto improvement over CHAMPION on speed dimension.
+ *
+ * Found via iter1h-026: adding MATIC (or any combo of ARB+MATIC+OP+INJ)
+ * brings median 11d → 10d while only sacrificing 0.3pp pass.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V1H_SPEED: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V1H_CHAMPION,
+  assets: [
+    ...FTMO_DAYTRADE_24H_CONFIG_V1H_CHAMPION.assets,
+    {
+      symbol: "MATIC-MR",
+      sourceSymbol: "MATICUSDT",
+      costBp: 40,
+      slippageBp: 10,
+      swapBpPerDay: 5,
+      riskFrac: 0.15,
+      minEquityGain: 0.04,
+      triggerBars: 1,
+      disableLong: true,
+    },
+  ],
+};
+
+/**
  * iter215 FTMO AGGRESSIVE Plan config with REALISTIC costs.
  *
  * FTMO Aggressive Plan specs:
@@ -1381,6 +2452,8 @@ export interface Daytrade24hTrade {
   day: number;
   exitReason: "tp" | "stop" | "time";
   holdHours: number;
+  /** iter1h-035+ vol-targeting multiplier applied at entry (default 1.0) */
+  volMult?: number;
 }
 
 export interface FtmoDaytrade24hResult {
@@ -1705,6 +2778,11 @@ function detectAsset(
       let dynStop = stop;
       let beActive = false;
       const beTh = cfg.breakEven?.threshold;
+      // iter1h-035+ TRIPLE-BARRIER TIME EXIT: track if minGainR ever reached
+      // Asset-level overrides global cfg.timeExit fallback.
+      const timeExit = asset.timeExit ?? cfg.timeExit;
+      const minGainAbs = timeExit ? timeExit.minGainR * effStop : 0;
+      let everReachedMinGain = false;
       // Start at the entry bar itself (i+1) — stop/TP may trigger in the
       // same bar we entered on. Previously started at i+2, which silently
       // skipped the entry bar and produced optimistic backtests.
@@ -1749,6 +2827,23 @@ function detectAsset(
             beActive = true;
           }
         }
+        // iter1h-035+ TRIPLE-BARRIER: time-exit if minGainR never reached
+        // within maxBarsWithoutGain bars. Closes "dead trades" early to
+        // free capital for fresh signals.
+        if (timeExit) {
+          const unrealized =
+            direction === "long"
+              ? (bar.close - entry) / entry
+              : (entry - bar.close) / entry;
+          if (unrealized >= minGainAbs) everReachedMinGain = true;
+          const barsHeld = j - (i + 1);
+          if (barsHeld >= timeExit.maxBarsWithoutGain && !everReachedMinGain) {
+            exitBar = j;
+            exitPrice = bar.close;
+            reason = "time";
+            break;
+          }
+        }
       }
       const exitEff =
         direction === "long"
@@ -1776,9 +2871,49 @@ function detectAsset(
           rawPnl -= (swapBp / 10000) * overnightCrossings;
         }
       }
+      // iter1h-035+ VOL-TARGETED SIZING (asset-level, applied at entry).
+      // Multiplies effective risk by clamp(targetAtr/realizedAtr, min, max).
+      // Larger position when realized vol < target (calm regime),
+      // smaller when realized vol > target (chaotic regime).
+      let volMult = 1.0;
+      const volTargetingCfg = asset.volTargeting ?? cfg.volTargeting;
+      if (volTargetingCfg) {
+        // Compute realized ATR at entry bar (use same atr() helper if asset's
+        // volTargeting period matches cfg.atrStop or volatilityFilter; otherwise
+        // we'd need a separate series. For simplicity, use the trade-entry
+        // bar i and recompute ATR inline (cheap because period is small).
+        const vt = volTargetingCfg;
+        // Use atrSeries if available and period matches, else compute on-the-fly
+        let realizedAtr: number | null = null;
+        if (atrSeries && cfg.atrStop && cfg.atrStop.period === vt.period) {
+          realizedAtr = atrSeries[i] ?? null;
+        } else {
+          // Inline ATR calc for the last `period` bars (uses true range)
+          const start = Math.max(0, i - vt.period + 1);
+          if (start >= 1) {
+            let sumTr = 0;
+            for (let k = start; k <= i; k++) {
+              const c = candles[k];
+              const prev = candles[k - 1].close;
+              const tr = Math.max(
+                c.high - c.low,
+                Math.abs(c.high - prev),
+                Math.abs(c.low - prev),
+              );
+              sumTr += tr;
+            }
+            realizedAtr = sumTr / vt.period;
+          }
+        }
+        if (realizedAtr !== null && realizedAtr > 0) {
+          const realizedAtrFrac = realizedAtr / entry;
+          const rawMult = vt.targetAtrFrac / realizedAtrFrac;
+          volMult = Math.max(vt.minMult, Math.min(vt.maxMult, rawMult));
+        }
+      }
       const effPnl = Math.max(
-        rawPnl * cfg.leverage * asset.riskFrac,
-        -asset.riskFrac,
+        rawPnl * cfg.leverage * asset.riskFrac * volMult,
+        -asset.riskFrac * volMult,
       );
       const day = Math.floor((eb.openTime - ts0) / (24 * 3600 * 1000));
       const holdHours = (exitBar - (i + 1)) * hoursPerBar;
@@ -1794,6 +2929,7 @@ function detectAsset(
         day,
         exitReason: reason,
         holdHours,
+        volMult, // iter1h-035+ vol-targeting multiplier
       });
       cooldown = exitBar + 1;
     }
@@ -1850,6 +2986,27 @@ export function runFtmoDaytrade24h(
   for (const t of all) {
     if (t.day >= cfg.maxDays) break;
     if (!dayStart.has(t.day)) dayStart.set(t.day, equity);
+
+    // iter235+: realistic FTMO behavior — once profit target hit, STOP trading
+    // (don't take more risk while waiting for minTradingDays). Real trader
+    // would still log in daily and place a tiny no-risk trade to clock the
+    // trading day requirement. We simulate that by counting the day toward
+    // tradingDays.size without executing any PnL impact.
+    if (cfg.pauseAtTargetReached && equity >= 1 + cfg.profitTarget) {
+      tradingDays.add(t.day); // simulate user placing a minimal "ping" trade
+      if (tradingDays.size >= cfg.minTradingDays) {
+        return {
+          passed: true,
+          reason: "profit_target",
+          finalEquityPct: equity - 1,
+          maxDrawdown: maxDd,
+          uniqueTradingDays: tradingDays.size,
+          trades: executed,
+          maxHoldHoursObserved: maxHold,
+        };
+      }
+      continue; // skip trade execution (no risk, no PnL change)
+    }
 
     // iter206: skip if daily-gain cap has been hit this day
     if (cappedDays.has(t.day)) continue;
@@ -1934,7 +3091,9 @@ export function runFtmoDaytrade24h(
         ) {
           factor = Math.min(factor, cfg.drawdownShield.factor);
         }
-        const effRisk = asset.riskFrac * factor;
+        // iter1h-035+ apply vol-targeting multiplier (set per-trade in detectAsset)
+        const tradeVolMult = t.volMult ?? 1.0;
+        const effRisk = asset.riskFrac * factor * tradeVolMult;
         if (effRisk <= 0) continue; // skip trade
         effPnl = Math.max(t.rawPnl * cfg.leverage * effRisk, -effRisk);
       }
