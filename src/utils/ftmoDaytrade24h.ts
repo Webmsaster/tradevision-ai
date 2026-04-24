@@ -2005,6 +2005,26 @@ export const FTMO_DAYTRADE_24H_CONFIG_V257: FtmoDaytrade24hConfig = {
   atrStop: { period: 14, stopMult: 15 },
 };
 
+/**
+ * iter258 — V257 + SOL-MR riskFrac 0.5 → 1.0.
+ *
+ * Higher SOL-MR risk pays off: more aggressive late-game push when
+ * conditions are right. BEAT-V257-LAST sweep showed BTC=0.1-0.3 SOL=1.0
+ * all give 643 with DL drops dramatically.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V257 (SOL rf=0.5): 641/685 = 93.58% / 5d / DL 3 / TL 40
+ *   - V258 (SOL rf=1.0): 643/685 = 93.87% / 5d / DL 1 / TL 40
+ *
+ * +2 windows, +0.29pp pass, **DL drops 3→1 (66% reduction)**.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V258: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V257,
+  assets: FTMO_DAYTRADE_24H_CONFIG_V257.assets.map((a) =>
+    a.symbol === "SOL-MR" ? { ...a, riskFrac: 1.0 } : a,
+  ),
+};
+
 export const FTMO_DAYTRADE_24H_CONFIG_V237_2D: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V234,
   pauseAtTargetReached: true,

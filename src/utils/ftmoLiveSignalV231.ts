@@ -38,6 +38,7 @@ import {
   FTMO_DAYTRADE_24H_CONFIG_V255,
   FTMO_DAYTRADE_24H_CONFIG_V256,
   FTMO_DAYTRADE_24H_CONFIG_V257,
+  FTMO_DAYTRADE_24H_CONFIG_V258,
   FTMO_DAYTRADE_24H_CONFIG_BULL,
 } from "@/utils/ftmoDaytrade24h";
 import type { NewsEvent } from "@/utils/forexFactoryNews";
@@ -93,9 +94,9 @@ export interface DetectionResult {
   };
 }
 
-// iter257: V256 + atrStop p18 m12 → p14 m15. DL halved (6→3).
-// Performance on 5.71y full data: 93.58% pass / engine 5d / FTMO-real 5d.
-const CFG = FTMO_DAYTRADE_24H_CONFIG_V257;
+// iter258: V257 + SOL-MR rf 0.5→1.0. DL drops 3→1 (66%).
+// Performance on 5.71y full data: 93.87% pass / engine 5d / FTMO-real 5d.
+const CFG = FTMO_DAYTRADE_24H_CONFIG_V258;
 void FTMO_DAYTRADE_24H_CONFIG_V231; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V236; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V238; // rollback reference
@@ -118,6 +119,7 @@ void FTMO_DAYTRADE_24H_CONFIG_V253; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V254; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V255; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V256; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V257; // rollback reference
 
 /**
  * Compute current sizing factor from adaptiveSizing + timeBoost + Kelly.
