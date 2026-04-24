@@ -33,6 +33,9 @@ import {
   FTMO_DAYTRADE_24H_CONFIG_V251,
   FTMO_DAYTRADE_24H_CONFIG_V251_FAST,
   FTMO_DAYTRADE_24H_CONFIG_V252,
+  FTMO_DAYTRADE_24H_CONFIG_V253,
+  FTMO_DAYTRADE_24H_CONFIG_V254,
+  FTMO_DAYTRADE_24H_CONFIG_V255,
   FTMO_DAYTRADE_24H_CONFIG_BULL,
 } from "@/utils/ftmoDaytrade24h";
 import type { NewsEvent } from "@/utils/forexFactoryNews";
@@ -88,12 +91,9 @@ export interface DetectionResult {
   };
 }
 
-// iter252: V251 + minTradingDays CORRECTION 5→4 (real FTMO rule per April 2026).
-// We were over-constraining! Same pass-rate, but FAST half-of-challenges
-// pass 1d earlier (FTMO-real median drops 5d → 4d).
-// p25: 5d→4d, p50: 5d→4d, p75: 7d (same), p90: 10d (same).
-// Performance on 5.71y full data: 90.80% pass / engine 4d / FTMO-real 4d / $3533.
-const CFG = FTMO_DAYTRADE_24H_CONFIG_V252;
+// iter255: V254 + tBoost f=2→3. Marginal +1 from BEAT-V254 sweep.
+// Performance on 5.71y full data: 92.99% pass / engine 5d / FTMO-real 5d.
+const CFG = FTMO_DAYTRADE_24H_CONFIG_V255;
 void FTMO_DAYTRADE_24H_CONFIG_V231; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V236; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V238; // rollback reference
@@ -111,6 +111,9 @@ void FTMO_DAYTRADE_24H_CONFIG_V249; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V250; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V251; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V251_FAST; // alternative speed variant
+void FTMO_DAYTRADE_24H_CONFIG_V252; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V253; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V254; // rollback reference
 
 /**
  * Compute current sizing factor from adaptiveSizing + timeBoost + Kelly.

@@ -1905,6 +1905,73 @@ export const FTMO_DAYTRADE_24H_CONFIG_V252: FtmoDaytrade24hConfig = {
   minTradingDays: 4,
 };
 
+/**
+ * iter253 — V252 + crossAssetFilter EMA 8/10 → 8/15 mom=0.01.
+ *
+ * Wider slow EMA (15 vs 10) tightens BTC-trend filter — slightly fewer
+ * shorts fire in mild uptrends. Plus tighter momSkip threshold (0.01 vs 0.005).
+ *
+ * Found via FINAL DEEP SEARCH overnight sweep — beats V252 plateau by +1pp
+ * at cost of +1d engine median (4d → 5d). On FTMO 4d-floor this is
+ * essentially neutral for fast challenges (max(5d, 4d) = 5d) — still passes
+ * in 5 days FTMO-real.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V252: 622/685 = 90.80% / engine 4d / FTMO-real 4d / DL 11 / TL 52
+ *   - V253: 629/685 = 91.82% / engine 5d / FTMO-real 5d / DL 11 / TL 45
+ *
+ * +7 windows, +1.02pp pass, -7 TL breaches (-13%). DL unchanged.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V253: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V252,
+  crossAssetFilter: {
+    ...(FTMO_DAYTRADE_24H_CONFIG_V252.crossAssetFilter as any),
+    emaFastPeriod: 8,
+    emaSlowPeriod: 15,
+    momSkipShortAbove: 0.01,
+  },
+};
+
+/**
+ * iter254 — V253 + CAF tighter (8/15 mom=0.01 → 7/15 mom=0.005).
+ *
+ * Found via BEAT-V253 sweep (~150 variants). Faster fast-EMA (7 vs 8) plus
+ * tighter momentum threshold (0.005 vs 0.01) — even more selective short
+ * filter, fires only on truly bearish BTC drift.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V253 (8/15 mom=0.01):  629/685 = 91.82% / 5d / DL 11 / TL 45
+ *   - V254 (7/15 mom=0.005): 636/685 = 92.85% / 5d / DL  6 / TL 43
+ *
+ * +7 windows, +1.03pp pass, **DL halved (11→6)**, TL slightly better (-2).
+ * Median unchanged at 5d. p75 +1d (7→8) acceptable for the DL improvement.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V254: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V253,
+  crossAssetFilter: {
+    ...(FTMO_DAYTRADE_24H_CONFIG_V253.crossAssetFilter as any),
+    emaFastPeriod: 7,
+    emaSlowPeriod: 15,
+    momSkipShortAbove: 0.005,
+  },
+};
+
+/**
+ * iter255 — V254 + tBoost factor 2.0 → 3.0.
+ *
+ * Marginal +1 window via stronger late-game push. From BEAT-V254 sweep.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V254 (tB f=2.0): 636/685 = 92.85% / 5d / DL 6 / TL 43
+ *   - V255 (tB f=3.0): 637/685 = 92.99% / 5d / DL 6 / TL 42
+ *
+ * +1 window, +0.15pp pass, -1 TL. Sample-noise level but consistent.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V255: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V254,
+  timeBoost: { afterDay: 4, equityBelow: 0.08, factor: 3 },
+};
+
 export const FTMO_DAYTRADE_24H_CONFIG_V237_2D: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V234,
   pauseAtTargetReached: true,
