@@ -221,6 +221,25 @@ export interface FtmoDaytrade24hConfig {
     stopMult: number;
   };
   /**
+   * iter253+ CHANDELIER EXIT — trailing stop based on highest_close (or
+   * lowest_close for shorts) since entry, minus K × ATR. Locks in profit
+   * when price moves favorably. Only activates AFTER price has moved at least
+   * `minMoveR` × stopPct in the favorable direction (avoids exiting on
+   * normal noise right after entry).
+   *
+   * For LONGS: stop_chandelier = highest_close_since_entry - K × ATR
+   * For SHORTS: stop_chandelier = lowest_close_since_entry + K × ATR
+   *
+   * Effective stop = max(original_stop, chandelier_stop) for longs,
+   *                = min(original_stop, chandelier_stop) for shorts.
+   * (Tightening only — never widens beyond initial stop.)
+   */
+  chandelierExit?: {
+    period: number; // ATR period
+    mult: number; // K multiplier on ATR
+    minMoveR?: number; // require price to move >= minMoveR × stopPct first (default 0.5)
+  };
+  /**
    * Optional EMA trend filter. Longs only fire when price (close at
    * signal bar i) is `above` the EMA, shorts only when price is below.
    * `allow` controls which side(s) the gate is applied to. This turns
@@ -2504,6 +2523,14 @@ function detectAsset(
     ? atr(candles, cfg.atrStop.period)
     : null;
 
+  // iter253+ Pre-compute ATR for chandelier exit (may use different period than atrStop).
+  const chandelier = cfg.chandelierExit;
+  const chanAtrSeries: (number | null)[] | null = chandelier
+    ? chandelier.period === cfg.atrStop?.period && atrSeries
+      ? atrSeries
+      : atr(candles, chandelier.period)
+    : null;
+
   // Pre-compute EMA for trend filter if configured.
   const emaSeries: (number | null)[] | null = cfg.trendFilter
     ? ema(
@@ -2778,6 +2805,11 @@ function detectAsset(
       let dynStop = stop;
       let beActive = false;
       const beTh = cfg.breakEven?.threshold;
+      // iter253+ chandelier exit tracking: best-favorable close + min-move gate
+      const chanMinMoveR = chandelier?.minMoveR ?? 0.5;
+      const chanMinMoveAbs = chandelier ? chanMinMoveR * effStop : 0;
+      let chanBestClose: number | null = null; // highest (long) or lowest (short)
+      let chanArmed = false;
       // iter1h-035+ TRIPLE-BARRIER TIME EXIT: track if minGainR ever reached
       // Asset-level overrides global cfg.timeExit fallback.
       const timeExit = asset.timeExit ?? cfg.timeExit;
@@ -2825,6 +2857,40 @@ function detectAsset(
           if (unrealized >= beTh) {
             dynStop = entry;
             beActive = true;
+          }
+        }
+        // iter253+ chandelier exit: trailing stop based on best close since entry.
+        // For long: highest_close - K × ATR. For short: lowest_close + K × ATR.
+        // Only arms after price moves >= minMoveR × stopPct in favorable direction.
+        if (chandelier && chanAtrSeries) {
+          const a = chanAtrSeries[j];
+          if (a !== null && a !== undefined) {
+            const unrealized =
+              direction === "long"
+                ? (bar.close - entry) / entry
+                : (entry - bar.close) / entry;
+            if (unrealized >= chanMinMoveAbs) {
+              chanArmed = true;
+              if (direction === "long") {
+                if (chanBestClose === null || bar.close > chanBestClose)
+                  chanBestClose = bar.close;
+              } else {
+                if (chanBestClose === null || bar.close < chanBestClose)
+                  chanBestClose = bar.close;
+              }
+            }
+            if (chanArmed && chanBestClose !== null) {
+              const trailStop =
+                direction === "long"
+                  ? chanBestClose - chandelier.mult * a
+                  : chanBestClose + chandelier.mult * a;
+              // Only tighten — never loosen
+              if (direction === "long") {
+                if (trailStop > dynStop) dynStop = trailStop;
+              } else {
+                if (trailStop < dynStop) dynStop = trailStop;
+              }
+            }
           }
         }
         // iter1h-035+ TRIPLE-BARRIER: time-exit if minGainR never reached
