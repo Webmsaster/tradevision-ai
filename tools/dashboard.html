@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>FTMO V252 Bot Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
+  body { background: #0d1117; color: #e6edf3; padding: 24px; min-height: 100vh; }
+  .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #30363d; }
+  h1 { font-size: 24px; font-weight: 700; color: #f0f6fc; }
+  .last-update { font-size: 12px; color: #7d8590; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 20px; }
+  .card-label { font-size: 11px; text-transform: uppercase; color: #7d8590; letter-spacing: 0.5px; margin-bottom: 8px; }
+  .card-value { font-size: 28px; font-weight: 700; color: #f0f6fc; }
+  .card-sub { font-size: 13px; color: #7d8590; margin-top: 6px; }
+  .green { color: #3fb950; } .red { color: #f85149; } .yellow { color: #d29922; } .blue { color: #58a6ff; }
+  .progress { height: 6px; background: #30363d; border-radius: 3px; margin-top: 12px; overflow: hidden; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, #3fb950, #58a6ff); transition: width 0.5s; }
+  .section { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 24px; margin-bottom: 16px; }
+  .section h2 { font-size: 16px; margin-bottom: 16px; color: #f0f6fc; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 8px 12px; color: #7d8590; font-weight: 600; border-bottom: 1px solid #30363d; font-size: 11px; text-transform: uppercase; }
+  td { padding: 10px 12px; border-bottom: 1px solid #21262d; }
+  tr:last-child td { border-bottom: none; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+  .badge-green { background: rgba(63, 185, 80, 0.15); color: #3fb950; }
+  .badge-red { background: rgba(248, 81, 73, 0.15); color: #f85149; }
+  .badge-yellow { background: rgba(210, 153, 34, 0.15); color: #d29922; }
+  .badge-blue { background: rgba(88, 166, 255, 0.15); color: #58a6ff; }
+  .empty { text-align: center; color: #7d8590; padding: 40px 0; font-size: 14px; }
+  .equity-chart { height: 200px; background: #0d1117; border-radius: 8px; margin-top: 12px; padding: 16px; position: relative; }
+  .pulse { display: inline-block; width: 8px; height: 8px; background: #3fb950; border-radius: 50%; margin-right: 8px; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1><span class="pulse"></span>FTMO V252 Live Dashboard</h1>
+    <div class="last-update">Last Update: <span id="last-update">—</span> · Auto-refresh every 30s</div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="card-label">Account Equity</div>
+      <div class="card-value" id="equity-value">$—</div>
+      <div class="card-sub" id="equity-pct">—</div>
+      <div class="progress"><div class="progress-fill" id="equity-progress" style="width:0%"></div></div>
+    </div>
+    <div class="card">
+      <div class="card-label">Day Progress</div>
+      <div class="card-value" id="day-value">— / 30</div>
+      <div class="card-sub" id="day-sub">—</div>
+      <div class="progress"><div class="progress-fill" id="day-progress" style="width:0%"></div></div>
+    </div>
+    <div class="card">
+      <div class="card-label">Today's P&L</div>
+      <div class="card-value" id="daily-pnl">—</div>
+      <div class="card-sub" id="daily-pnl-sub">—</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Status</div>
+      <div class="card-value" id="status-badge">—</div>
+      <div class="card-sub" id="status-sub">—</div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="card-label">Recent Trades</div>
+      <div class="card-value" id="trades-count">—</div>
+      <div class="card-sub">Avg per challenge: 2.9 (backtest)</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Open Positions</div>
+      <div class="card-value" id="open-count">—</div>
+      <div class="card-sub" id="open-sub">—</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Backtest Expected Pass Day</div>
+      <div class="card-value blue">5d</div>
+      <div class="card-sub">FTMO-real (50% Median)</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Backtest Pass Rate</div>
+      <div class="card-value blue">90.8%</div>
+      <div class="card-sub">V252 on 5.71y data</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>📊 Pending Signals</h2>
+    <div id="pending-signals"><div class="empty">No pending signals</div></div>
+  </div>
+
+  <div class="section">
+    <h2>📋 Recent Executed Trades</h2>
+    <div id="executed-trades"><div class="empty">No trades yet</div></div>
+  </div>
+
+  <div class="section">
+    <h2>🔍 Last Signal Check</h2>
+    <div id="last-check"><div class="empty">Waiting for first check...</div></div>
+  </div>
+
+<script>
+const STATE_DIR = "../ftmo-state"; // relative to dashboard.html location
+
+async function readJSON(file) {
+  try {
+    const res = await fetch(`${STATE_DIR}/${file}?t=${Date.now()}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (e) { return null; }
+}
+
+function fmtMoney(pct, base=100000) {
+  return "$" + ((1 + pct) * base).toLocaleString("en-US", { maximumFractionDigits: 0 });
+}
+function fmtPct(p, sign=true) {
+  const s = (p * 100).toFixed(2);
+  return (sign && p >= 0 ? "+" : "") + s + "%";
+}
+
+async function refresh() {
+  const account = await readJSON("account.json");
+  const pending = await readJSON("pending-signals.json");
+  const executed = await readJSON("executed-signals.json");
+  const lastCheck = await readJSON("last-check.json");
+
+  document.getElementById("last-update").textContent = new Date().toLocaleTimeString();
+
+  if (account) {
+    const eq = account.equity || 1.0;
+    const eqPct = eq - 1;
+    document.getElementById("equity-value").textContent = fmtMoney(eqPct);
+    const eqEl = document.getElementById("equity-pct");
+    eqEl.textContent = fmtPct(eqPct);
+    eqEl.className = "card-sub " + (eqPct >= 0 ? "green" : "red");
+
+    const targetProg = Math.max(0, Math.min(100, (eqPct / 0.10) * 100));
+    document.getElementById("equity-progress").style.width = targetProg + "%";
+
+    document.getElementById("day-value").textContent = `${account.day || 0} / 30`;
+    const dayProg = ((account.day || 0) / 30) * 100;
+    document.getElementById("day-progress").style.width = dayProg + "%";
+    document.getElementById("day-sub").textContent = `${30 - (account.day || 0)} days remaining`;
+
+    const dayStartPct = (account.equityAtDayStart || 1) - 1;
+    const dailyPnl = eqPct - dayStartPct;
+    const dpEl = document.getElementById("daily-pnl");
+    dpEl.textContent = fmtPct(dailyPnl);
+    dpEl.className = "card-value " + (dailyPnl >= 0 ? "green" : "red");
+    document.getElementById("daily-pnl-sub").textContent = "DL Cap: -5%";
+
+    let status = "⏳ Active", statusClass = "blue";
+    if (eqPct >= 0.10) { status = "🏆 PASSED"; statusClass = "green"; }
+    else if (eqPct <= -0.10) { status = "❌ TOTAL LOSS"; statusClass = "red"; }
+    else if (dailyPnl <= -0.04) { status = "⚠ DL Warning"; statusClass = "yellow"; }
+    const sb = document.getElementById("status-badge");
+    sb.textContent = status; sb.className = "card-value " + statusClass;
+    document.getElementById("status-sub").textContent = `Recent trades: ${(account.recentPnls || []).length}`;
+    document.getElementById("trades-count").textContent = (account.recentPnls || []).length;
+  }
+
+  if (pending && pending.signals && pending.signals.length > 0) {
+    const html = `<table><thead><tr>
+      <th>Asset</th><th>Direction</th><th>Entry</th><th>Stop</th><th>TP</th><th>Risk</th>
+    </tr></thead><tbody>` +
+      pending.signals.map(s => `<tr>
+        <td><b>${s.assetSymbol}</b></td>
+        <td><span class="badge badge-${s.direction === 'long' ? 'green' : 'red'}">${s.direction.toUpperCase()}</span></td>
+        <td>$${s.entryPrice.toFixed(2)}</td>
+        <td>$${s.stopPrice.toFixed(2)}</td>
+        <td>$${s.tpPrice.toFixed(2)}</td>
+        <td>${(s.riskFrac * 100).toFixed(2)}%</td>
+      </tr>`).join("") + "</tbody></table>";
+    document.getElementById("pending-signals").innerHTML = html;
+    document.getElementById("open-count").textContent = pending.signals.length;
+    document.getElementById("open-sub").textContent = pending.signals[0].assetSymbol + " active";
+  } else {
+    document.getElementById("open-count").textContent = "0";
+    document.getElementById("open-sub").textContent = "Waiting for signal";
+  }
+
+  if (executed && executed.trades && executed.trades.length > 0) {
+    const recent = executed.trades.slice(-10).reverse();
+    const html = `<table><thead><tr>
+      <th>Asset</th><th>Direction</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Time</th>
+    </tr></thead><tbody>` +
+      recent.map(t => `<tr>
+        <td><b>${t.assetSymbol}</b></td>
+        <td><span class="badge badge-${t.direction === 'long' ? 'green' : 'red'}">${t.direction.toUpperCase()}</span></td>
+        <td>$${(t.entryPrice || 0).toFixed(2)}</td>
+        <td>${t.exitPrice ? '$' + t.exitPrice.toFixed(2) : '<span class="badge badge-yellow">open</span>'}</td>
+        <td class="${(t.pnlPct || 0) >= 0 ? 'green' : 'red'}">${fmtPct(t.pnlPct || 0)}</td>
+        <td class="card-sub">${new Date(t.timestamp || Date.now()).toLocaleString()}</td>
+      </tr>`).join("") + "</tbody></table>";
+    document.getElementById("executed-trades").innerHTML = html;
+  }
+
+  if (lastCheck) {
+    const html = `
+      <table><tbody>
+      <tr><td><b>Last check</b></td><td>${new Date(lastCheck.timestamp).toLocaleString()}</td></tr>
+      <tr><td><b>Signals detected</b></td><td>${lastCheck.signalCount || 0}</td></tr>
+      <tr><td><b>Skipped</b></td><td>${lastCheck.skipped || 0}</td></tr>
+      <tr><td><b>BTC Price</b></td><td>$${(lastCheck.btc?.price || 0).toLocaleString()}</td></tr>
+      <tr><td><b>BTC Regime</b></td><td><span class="badge badge-${lastCheck.btc?.regime === 'BULL' ? 'green' : 'yellow'}">${lastCheck.btc?.regime || '-'}</span></td></tr>
+      </tbody></table>`;
+    document.getElementById("last-check").innerHTML = html;
+  }
+}
+
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>

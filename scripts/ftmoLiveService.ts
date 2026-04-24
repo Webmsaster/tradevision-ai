@@ -42,11 +42,40 @@ const ACCOUNT_PATH = path.join(STATE_DIR, "account.json");
 const LOG_PATH = path.join(STATE_DIR, "signal-log.jsonl");
 const LAST_CHECK_PATH = path.join(STATE_DIR, "last-check.json");
 const NEWS_PATH = path.join(STATE_DIR, "news-events.json");
+const ALERTS_STATE_PATH = path.join(STATE_DIR, "alerts-state.json");
 
 /** News events list cached for the session (refreshed once per hour). */
 let cachedNews: NewsEvent[] = [];
 let newsLastFetched = 0;
 const NEWS_REFRESH_MS = 60 * 60_000;
+
+/** Smart-alerts thresholds. */
+const ALERT_EQUITY_DROP_PCT = 0.02; // 2% drop in 1h triggers alert
+const ALERT_DL_WARN_RATIO = 0.8; // 80% of daily-loss cap = warning
+const ALERT_TL_WARN_RATIO = 0.8; // 80% of total-loss cap = warning
+const ALERT_STUCK_DAYS = 15; // challenge stuck >15d = warning
+const DAILY_SUMMARY_HOUR_UTC = 22; // 22:00 UTC daily summary
+
+interface AlertsState {
+  lastEquitySnapshot: { ts: number; equity: number } | null;
+  lastDailySummary: string | null; // YYYY-MM-DD of last daily summary sent
+  lastDLWarning: number | null; // ms timestamp of last DL warning
+  lastTLWarning: number | null;
+  lastStuckWarning: number | null;
+}
+
+function loadAlertsState(): AlertsState {
+  return readJSON<AlertsState>(ALERTS_STATE_PATH, {
+    lastEquitySnapshot: null,
+    lastDailySummary: null,
+    lastDLWarning: null,
+    lastTLWarning: null,
+    lastStuckWarning: null,
+  });
+}
+function saveAlertsState(s: AlertsState) {
+  writeJSON(ALERTS_STATE_PATH, s);
+}
 
 function ensureStateDir() {
   if (!fs.existsSync(STATE_DIR)) fs.mkdirSync(STATE_DIR, { recursive: true });
@@ -233,7 +262,112 @@ async function runOneCheck(): Promise<DetectionResult> {
     skipped: result.skipped,
   });
 
+  // Smart alerts (equity drop, DL/TL warnings, stuck challenge, daily summary)
+  await runSmartAlerts(account);
+
   return result;
+}
+
+/**
+ * Smart alerts: equity drop / DL warning / TL warning / stuck challenge / daily summary.
+ * Called after each runOneCheck. Stateful via alerts-state.json.
+ */
+async function runSmartAlerts(account: AccountState) {
+  const state = loadAlertsState();
+  const now = Date.now();
+  const equityPct = (account.equity - 1) * 100;
+  const dayStartEquityPct = (account.equityAtDayStart - 1) * 100;
+  const dailyPct = equityPct - dayStartEquityPct;
+
+  // 1) Equity-drop alert (>2% drop within 1h)
+  if (
+    state.lastEquitySnapshot &&
+    now - state.lastEquitySnapshot.ts <= 3600_000
+  ) {
+    const drop = state.lastEquitySnapshot.equity - account.equity;
+    if (drop >= ALERT_EQUITY_DROP_PCT) {
+      await tgSend(
+        `📉 <b>EQUITY DROP ALERT</b>\n` +
+          `Equity dropped ${(drop * 100).toFixed(2)}% within 1h\n` +
+          `From ${(state.lastEquitySnapshot.equity * 100).toFixed(2)}% → ${(account.equity * 100).toFixed(2)}%\n` +
+          `Day ${account.day} of challenge`,
+      );
+    }
+  }
+  state.lastEquitySnapshot = { ts: now, equity: account.equity };
+
+  // 2) Daily-loss warning (approaching 5% intraday loss cap)
+  if (dailyPct < 0) {
+    const dlRatio = Math.abs(dailyPct) / 5; // 5% is the FTMO cap
+    if (dlRatio >= ALERT_DL_WARN_RATIO) {
+      const lastWarnAge = state.lastDLWarning
+        ? now - state.lastDLWarning
+        : Infinity;
+      if (lastWarnAge > 4 * 3600_000) {
+        // throttle: at most 1 alert per 4h
+        await tgSend(
+          `⚠️ <b>DAILY LOSS WARNING</b>\n` +
+            `Daily loss: ${dailyPct.toFixed(2)}% (${(dlRatio * 100).toFixed(0)}% of 5% cap)\n` +
+            `Equity: ${(account.equity * 100).toFixed(2)}%\n` +
+            `Day ${account.day}`,
+        );
+        state.lastDLWarning = now;
+      }
+    }
+  }
+
+  // 3) Total-loss warning (approaching 10% drawdown)
+  if (equityPct < 0) {
+    const tlRatio = Math.abs(equityPct) / 10;
+    if (tlRatio >= ALERT_TL_WARN_RATIO) {
+      const lastWarnAge = state.lastTLWarning
+        ? now - state.lastTLWarning
+        : Infinity;
+      if (lastWarnAge > 4 * 3600_000) {
+        await tgSend(
+          `🚨 <b>TOTAL LOSS WARNING</b>\n` +
+            `Equity: ${equityPct.toFixed(2)}% (${(tlRatio * 100).toFixed(0)}% of 10% cap)\n` +
+            `Bot might pause itself if this continues.\n` +
+            `Day ${account.day}`,
+        );
+        state.lastTLWarning = now;
+      }
+    }
+  }
+
+  // 4) Stuck challenge (>15 days without target hit)
+  if (account.day >= ALERT_STUCK_DAYS) {
+    const lastWarnAge = state.lastStuckWarning
+      ? now - state.lastStuckWarning
+      : Infinity;
+    if (lastWarnAge > 24 * 3600_000) {
+      // at most 1 stuck alert per day
+      await tgSend(
+        `⏰ <b>STUCK CHALLENGE WARNING</b>\n` +
+          `Day ${account.day} reached without passing.\n` +
+          `Current equity: ${equityPct.toFixed(2)}% (target +10%)\n` +
+          `Backtest p90 = 10d, this is unusual.`,
+      );
+      state.lastStuckWarning = now;
+    }
+  }
+
+  // 5) Daily P&L summary at 22:00 UTC
+  const today = new Date().toISOString().slice(0, 10);
+  const utcHour = new Date().getUTCHours();
+  if (utcHour === DAILY_SUMMARY_HOUR_UTC && state.lastDailySummary !== today) {
+    const pnlIcon = dailyPct >= 0 ? "🟢" : "🔴";
+    await tgSend(
+      `${pnlIcon} <b>Daily Summary</b> (${today})\n` +
+        `Equity: ${equityPct.toFixed(2)}% (target +10%)\n` +
+        `Today's P&L: ${dailyPct >= 0 ? "+" : ""}${dailyPct.toFixed(2)}%\n` +
+        `Day ${account.day} of 30 (${30 - account.day} remaining)\n` +
+        `Status: ${equityPct >= 10 ? "🏆 PASSED" : equityPct < -10 ? "❌ TOTAL LOSS" : "⏳ Active"}`,
+    );
+    state.lastDailySummary = today;
+  }
+
+  saveAlertsState(state);
 }
 
 async function main() {
