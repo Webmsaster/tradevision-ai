@@ -240,6 +240,29 @@ export interface FtmoDaytrade24hConfig {
     minMoveR?: number; // require price to move >= minMoveR × stopPct first (default 0.5)
   };
   /**
+   * iter259+ HTF (Higher Timeframe) Trend Filter — multi-timeframe gate.
+   * Skips signals that go against the longer-term trend direction.
+   *
+   * Logic (applied to signal bar i):
+   *   change = (close[i] - close[i - lookbackBars]) / close[i - lookbackBars]
+   *   For SHORTS: skip if change > +threshold (don't short in uptrend)
+   *   For LONGS:  skip if change < -threshold (don't long in downtrend)
+   *
+   * Different from `trendFilter` (EMA-based, same TF) and `crossAssetFilter`
+   * (different asset). This is OWN-ASSET multi-timeframe momentum check.
+   *
+   * Example: lookbackBars=30 on 4h = look back 5 days. threshold=0.03 = skip
+   * shorts if asset rose >3% over last 5 days.
+   */
+  htfTrendFilter?: {
+    /** Lookback in bars for trend direction check. */
+    lookbackBars: number;
+    /** Apply to which sides? */
+    apply: "long" | "short" | "both";
+    /** Skip if abs change exceeds this in unfavorable direction (default 0). */
+    threshold?: number;
+  };
+  /**
    * Optional EMA trend filter. Longs only fire when price (close at
    * signal bar i) is `above` the EMA, shorts only when price is below.
    * `allow` controls which side(s) the gate is applied to. This turns
@@ -2025,6 +2048,27 @@ export const FTMO_DAYTRADE_24H_CONFIG_V258: FtmoDaytrade24hConfig = {
   ),
 };
 
+/**
+ * iter259 — V258 + NEW htfTrendFilter Multi-Timeframe gate.
+ *
+ * Skips shorts when ETH rose >15% over last 42 bars (7 days). Avoids
+ * shorting into strong uptrends — even if BTC filter passed.
+ *
+ * NEW ENGINE FEATURE — `htfTrendFilter`. Differs from existing trendFilter
+ * (EMA-based, same bar) and crossAssetFilter (different asset). This is
+ * own-asset multi-TF momentum check.
+ *
+ * Measured on FULL 5.71y 4h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V258:                  643/685 = 93.87% / 5d / DL 1 / TL 40
+ *   - V259 (HTF lb42 thr15): 644/685 = 94.01% / 5d / DL 1 / TL 38
+ *
+ * +1 window, +0.15pp pass, -2 TL. Crosses 94% threshold!
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V259: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V258,
+  htfTrendFilter: { lookbackBars: 42, apply: "short", threshold: 0.15 },
+};
+
 export const FTMO_DAYTRADE_24H_CONFIG_V237_2D: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V234,
   pauseAtTargetReached: true,
@@ -2766,6 +2810,25 @@ function detectAsset(
           cfg.trendFilter.apply === "short" || cfg.trendFilter.apply === "both";
         if (direction === "long" && gateLongs && price <= e) continue;
         if (direction === "short" && gateShorts && price >= e) continue;
+      }
+
+      // iter259+ HTF Trend Filter — multi-timeframe momentum gate.
+      // Skip signals against strong own-asset trend over lookbackBars.
+      if (cfg.htfTrendFilter) {
+        const lb = cfg.htfTrendFilter.lookbackBars;
+        if (i >= lb) {
+          const change =
+            (candles[i].close - candles[i - lb].close) / candles[i - lb].close;
+          const thr = cfg.htfTrendFilter.threshold ?? 0;
+          const gateLongs =
+            cfg.htfTrendFilter.apply === "long" ||
+            cfg.htfTrendFilter.apply === "both";
+          const gateShorts =
+            cfg.htfTrendFilter.apply === "short" ||
+            cfg.htfTrendFilter.apply === "both";
+          if (direction === "short" && gateShorts && change > thr) continue;
+          if (direction === "long" && gateLongs && change < -thr) continue;
+        }
       }
 
       // Session / day-of-week gates — evaluated on the SIGNAL bar (i),
