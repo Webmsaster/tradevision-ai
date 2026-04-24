@@ -2069,6 +2069,15 @@ export const FTMO_DAYTRADE_24H_CONFIG_V259: FtmoDaytrade24hConfig = {
   htfTrendFilter: { lookbackBars: 42, apply: "short", threshold: 0.15 },
 };
 
+/**
+ * iter260 — V259 + HTF threshold 0.15 → 0.16. Marginal +1 window.
+ * Measured: 645/685 = 94.16% (vs V259 644/685 = 94.01%).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V260: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V259,
+  htfTrendFilter: { lookbackBars: 42, apply: "short", threshold: 0.16 },
+};
+
 export const FTMO_DAYTRADE_24H_CONFIG_V237_2D: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V234,
   pauseAtTargetReached: true,

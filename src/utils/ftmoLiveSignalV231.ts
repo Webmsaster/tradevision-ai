@@ -40,6 +40,7 @@ import {
   FTMO_DAYTRADE_24H_CONFIG_V257,
   FTMO_DAYTRADE_24H_CONFIG_V258,
   FTMO_DAYTRADE_24H_CONFIG_V259,
+  FTMO_DAYTRADE_24H_CONFIG_V260,
   FTMO_DAYTRADE_24H_CONFIG_BULL,
 } from "@/utils/ftmoDaytrade24h";
 import type { NewsEvent } from "@/utils/forexFactoryNews";
@@ -95,10 +96,9 @@ export interface DetectionResult {
   };
 }
 
-// iter259: V258 + NEW htfTrendFilter (Multi-TF momentum gate).
-// Skips shorts when ETH rose >15% over last 7d. Crosses 94% threshold.
-// Performance on 5.71y full data: 94.01% pass / engine 5d / FTMO-real 5d.
-const CFG = FTMO_DAYTRADE_24H_CONFIG_V259;
+// iter260: V259 + HTF threshold 0.15→0.16. Marginal +1.
+// Performance on 5.71y full data: 94.16% pass / engine 5d / FTMO-real 5d.
+const CFG = FTMO_DAYTRADE_24H_CONFIG_V260;
 void FTMO_DAYTRADE_24H_CONFIG_V231; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V236; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V238; // rollback reference
@@ -123,6 +123,7 @@ void FTMO_DAYTRADE_24H_CONFIG_V255; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V256; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V257; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V258; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V259; // rollback reference
 
 /**
  * Compute current sizing factor from adaptiveSizing + timeBoost + Kelly.
