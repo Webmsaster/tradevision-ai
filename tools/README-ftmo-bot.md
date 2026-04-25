@@ -206,6 +206,96 @@ Der Executor erkennt UTC-Tageswechsel und speichert bei jedem 00:00 UTC automati
 
 Daily-Loss-Gate (5%) funktioniert damit ohne manuellen Eingriff.
 
+## Parallel-Deployment: 4h + 2h auf demselben VPS
+
+Auf einem Contabo VPS kannst du beide Strategien gleichzeitig laufen lassen
+(z.B. 4h V261 + 2h V261_2H_OPT v5 zum Vergleich).
+
+### Was du brauchst
+
+- 2 FTMO Accounts (z.B. 1 Funded + 1 Demo zum Testen, oder 2 Demos)
+- 2 separate MT5-Installationen (eine pro Account)
+- ~1.2 GB RAM total — passt auf jeden Contabo VPS
+
+### MT5 doppelt installieren
+
+Beim 2. MT5-Installer den Zielordner ändern, z.B.:
+
+```
+C:\Program Files\MetaTrader 5\          ← Account 1 (4h)
+C:\Program Files\MetaTrader 5 Account2\ ← Account 2 (2h)
+```
+
+In jedem Terminal den jeweiligen FTMO-Login einloggen.
+
+### 4 Terminals (jeweils Daueraktiv)
+
+**Terminal A1 — 4h Signal Service**
+
+```powershell
+cd C:\tradevision-ai
+$env:FTMO_TF = "4h"
+$env:FTMO_START_BALANCE = "100000"
+npx tsx scripts/ftmoLiveService.ts
+```
+
+→ State: `C:\tradevision-ai\ftmo-state-4h\`
+
+**Terminal A2 — 4h MT5 Executor**
+
+```powershell
+cd C:\tradevision-ai
+$env:FTMO_STATE_DIR = "C:\tradevision-ai\ftmo-state-4h"
+$env:MT5_PATH = "C:\Program Files\MetaTrader 5\terminal64.exe"
+python tools/ftmo_executor.py
+```
+
+**Terminal B1 — 2h Signal Service**
+
+```powershell
+cd C:\tradevision-ai
+$env:FTMO_TF = "2h"
+$env:FTMO_START_BALANCE = "100000"
+npx tsx scripts/ftmoLiveService.ts
+```
+
+→ State: `C:\tradevision-ai\ftmo-state-2h\`
+
+**Terminal B2 — 2h MT5 Executor**
+
+```powershell
+cd C:\tradevision-ai
+$env:FTMO_STATE_DIR = "C:\tradevision-ai\ftmo-state-2h"
+$env:MT5_PATH = "C:\Program Files\MetaTrader 5 Account2\terminal64.exe"
+python tools/ftmo_executor.py
+```
+
+### Telegram-Unterscheidung
+
+Beide Services nutzen denselben Bot. Du erkennst sie an der ONLINE-Message:
+
+```
+🤖 FTMO Signal Service ONLINE (4h)   ← Account 1
+🤖 FTMO Signal Service ONLINE (2h)   ← Account 2
+```
+
+### Performance-Erwartung
+
+| Variante              | Pass-Rate  | Median FTMO-real | Risiko           |
+| --------------------- | ---------- | ---------------- | ---------------- |
+| 4h V261               | 94.31%     | 5d               | DL 0 / TL 38     |
+| **2h V261_2H_OPT v5** | **94.60%** | **4d**           | **DL 0 / TL 37** |
+
+V5 (2h) ist der strikte Champion — schneller UND höhere Pass-Rate.
+4h läuft parallel als Kontroll-Track-Record.
+
+### FTMO-Hinweis
+
+Auf 2 Funded Accounts ist **kein Hedging** zwischen den Konten erlaubt.
+Beide Bots sind short-only Mean-Reversion (gleiche Richtung), also
+keine Hedging-Verletzung — aber bei Account-Verifikation immer prüfen,
+welche Regeln dein konkreter Plan hat.
+
 ## MT5 Auto-Reconnect (automatisch)
 
 Wenn MT5-Verbindung abbricht:

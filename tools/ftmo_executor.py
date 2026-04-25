@@ -135,14 +135,20 @@ def write_json(path: Path, obj: Any) -> None:
 # MT5 connection — with reconnect
 # =============================================================================
 def mt5_init_with_retry() -> bool:
-    """Try to initialize. On success returns True. Caller handles retry."""
-    if mt5.initialize():
+    """Try to initialize. On success returns True. Caller handles retry.
+
+    Honors MT5_PATH env var so multiple parallel MT5 installations can be
+    targeted (e.g. one terminal per FTMO account on the same VPS).
+    """
+    mt5_path = os.environ.get("MT5_PATH", "").strip()
+    ok = mt5.initialize(path=mt5_path) if mt5_path else mt5.initialize()  # type: ignore[call-arg]
+    if ok:
         info = mt5.account_info()
         if info is not None:
-            log_event("mt5_connected", login=info.login, server=info.server, balance=info.balance, equity=info.equity)
+            log_event("mt5_connected", login=info.login, server=info.server, balance=info.balance, equity=info.equity, path=mt5_path or "default")
             return True
     err = mt5.last_error() if hasattr(mt5, "last_error") else ("?", "?")
-    log_event("mt5_init_failed", error=str(err))
+    log_event("mt5_init_failed", error=str(err), path=mt5_path or "default")
     return False
 
 
