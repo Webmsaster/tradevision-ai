@@ -579,8 +579,11 @@ export function renderDetection(r: DetectionResult): string {
   const ts =
     new Date(r.timestamp).toISOString().slice(0, 16).replace("T", " ") + " UTC";
   lines.push(`━━━━━ iter231 Signal Check @ ${ts} ━━━━━`);
+  const fastP = CFG.crossAssetFilter?.emaFastPeriod ?? 10;
+  const slowP = CFG.crossAssetFilter?.emaSlowPeriod ?? 15;
+  const momBars = CFG.crossAssetFilter?.momentumBars ?? 6;
   lines.push(
-    `BTC: $${r.btc.close.toFixed(0)}  EMA10: $${r.btc.ema10.toFixed(0)}  EMA15: $${r.btc.ema15.toFixed(0)}  24h: ${(r.btc.mom24h * 100).toFixed(2)}%`,
+    `BTC: $${r.btc.close.toFixed(0)}  EMA${fastP}: $${r.btc.ema10.toFixed(0)}  EMA${slowP}: $${r.btc.ema15.toFixed(0)}  ${momBars}-bar mom: ${(r.btc.mom24h * 100).toFixed(2)}%`,
   );
   lines.push(
     `Account: equity=${((r.account.equity - 1) * 100).toFixed(2)}%  day=${r.account.day + 1}/30  recent trades: ${r.account.recentPnls.length}`,
