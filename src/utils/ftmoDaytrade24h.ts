@@ -2128,6 +2128,36 @@ export const FTMO_DAYTRADE_24H_CONFIG_V261_2H: FtmoDaytrade24hConfig = {
 };
 
 /**
+ * iter261_2H_OPT — Optimized 2h Speed Champion (stack of 3 winners).
+ *
+ * Found via 2h-stack sweep:
+ *   - atrStop period=14 mult=20 (wider stops on 2h vol)
+ *   - crossAssetFilter EMA 14/17 mom=0.01 (stricter BTC trend)
+ *   - lossStreakCooldown after=2 cd=48 (4d cooldown after 2 losses)
+ *
+ * Performance on 5.71y 2h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V261_2H_OPT: 640/685 = 93.43% / engine 2d / FTMO-real 4d / DL 2 / TL 43
+ *
+ * Comparison:
+ *   - 4h V261:        94.31% / 5d FTMO / DL 0 / TL 38 (pass-rate champion)
+ *   - 2h V261_2H_OPT: 93.43% / 4d FTMO / DL 2 / TL 43 (speed champion)
+ *
+ * Only -0.88pp pass-rate but 1 day faster FTMO-real.
+ * Per-day efficiency: 23.4 funded/day vs 4h's 18.9 funded/day (+24%).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V261_2H,
+  atrStop: { period: 14, stopMult: 20 },
+  crossAssetFilter: {
+    ...(FTMO_DAYTRADE_24H_CONFIG_V261_2H.crossAssetFilter as any),
+    emaFastPeriod: 14,
+    emaSlowPeriod: 17,
+    momSkipShortAbove: 0.01,
+  },
+  lossStreakCooldown: { afterLosses: 2, cooldownBars: 48 },
+};
+
+/**
  * iter261 — V260 + NEW lossStreakCooldown engine feature.
  *
  * Pauses entries for 6 bars (1 day) after 2 consecutive stop-outs.
