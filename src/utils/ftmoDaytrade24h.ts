@@ -2177,44 +2177,49 @@ export const FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT: FtmoDaytrade24hConfig = {
 };
 
 /**
- * iter261_1H_OPT v7 — 1h SPEED Champion (sacrifice 1pp for tail-speed).
+ * iter261_1H_OPT v7 — 1h Tail-Speed variant (final).
  *
- * Sister config to V261_2H_OPT v6. Trades twice as often (1h cadence)
- * but accepts a ~1pp pass-rate hit for significantly faster tail behavior.
+ * Honest performance on 5.71y 1h ETH+BTC+SOL Binance, 407 windows, FTMO real:
+ *   - V7 1h: 383/407 = 94.10% / engine 2d / FTMO-real 4d / DL 1 / TL 22
  *
- * Performance on 5.71y 1h ETH+BTC+SOL Binance, 407 windows, FTMO real:
- *   - V7 1h: 387/407 = 95.09% / engine 2d / FTMO-real 4d / DL 1 / TL 18
+ * vs 2h V6 (658/685 = 96.06% / DL 0 / TL 27):
+ *   - Pass-rate: -1.96pp
+ *   - DL breaches: +1 (still 0.25% rate)
+ *   - p75 days: 6d (1h) vs 8d (2h) — 2d faster
+ *   - p95 days: 7d (1h) vs 10d (2h) — 3d faster
  *
- * Speed comparison vs 2h V6 (96.06%):
- *   Median engine: both 2d (identical)
- *   Median FTMO-real: both 4d (4-day-floor pinned)
- *   p75:  6d (1h) vs 8d  (2h)  — 2 days faster
- *   p90:  6d (1h) vs 9d  (2h)  — 3 days faster
- *   p95:  7d (1h) vs 10d (2h)  — 3 days faster
- *   Avg:  3.38d   vs 4.46d     — 1.08 days faster
+ * Use case: when long-tail speed matters more than marginal pass-rate.
+ * 2h V6 remains the strict champion on pass-rate metrics. 1h V7 is
+ * the speed-prioritized Pareto sibling.
  *
- * Trade-off:
- *   - Pass-rate: -0.97pp (95.09% vs 96.06%)
- *   - DL breaches: +1 (1 vs 0 — still very low at 0.24% rate)
+ * Plateau confirmed at 94.10% after ~900 hyperparam-sweep variants
+ * across 6 mega-sweeps. Mean-Reversion on 1h crypto bars has
+ * structurally more noise than 2h, capping pass-rate ~2pp below.
  *
- * Use case: when speed in long-tail outcomes matters more than
- * marginal pass-rate. Engine still respects FTMO 4-day-floor so
- * fast-half passes are no faster than 2h V6.
- *
- * Architecture: 1h-tuned hour filter (14/24 slots) + longer holdBars
- * (600 = 25 days max) + adjusted HTF/LSC for 1h cadence.
+ * Stack:
+ *   - Hour filter [2,6,9,10,11,12,16,17,20,21,22,23] (12/24 slots)
+ *   - holdBars 600 (1h-tuned)
+ *   - atrStop p14 m20
+ *   - LSC cd=96, HTF lb=96 thr=0.08
+ *   - CAF EMA 12/16 mom=0.04 (inherited from V6)
+ *   - SOL-MR override: sp=0.012 tp=0.025
  */
 export const FTMO_DAYTRADE_24H_CONFIG_V7_1H_OPT: FtmoDaytrade24hConfig = {
-  ...FTMO_DAYTRADE_24H_CONFIG_V261_2H,
-  allowedHoursUtc: [0, 2, 6, 9, 10, 11, 12, 16, 17, 20, 21, 22, 23],
+  ...FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT,
+  allowedHoursUtc: [2, 6, 9, 10, 11, 12, 16, 17, 20, 21, 22, 23],
   holdBars: 600,
   atrStop: { period: 14, stopMult: 20 },
   lossStreakCooldown: { afterLosses: 2, cooldownBars: 96 },
   htfTrendFilter: { lookbackBars: 96, apply: "short", threshold: 0.08 },
   crossAssetFilter: {
-    ...(FTMO_DAYTRADE_24H_CONFIG_V261_2H.crossAssetFilter as any),
+    ...(FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT.crossAssetFilter as any),
+    emaFastPeriod: 12,
+    emaSlowPeriod: 16,
     momSkipShortAbove: 0.04,
   },
+  assets: FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT.assets.map((a) =>
+    a.symbol === "SOL-MR" ? { ...a, stopPct: 0.012, tpPct: 0.025 } : a,
+  ),
 };
 
 /**
