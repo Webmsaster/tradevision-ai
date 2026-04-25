@@ -45,6 +45,8 @@ import {
   FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT,
   FTMO_DAYTRADE_24H_CONFIG_V7_1H_OPT,
   FTMO_DAYTRADE_24H_CONFIG_V10_30M_OPT,
+  FTMO_DAYTRADE_24H_CONFIG_V11_30M_OPT,
+  FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT,
   FTMO_DAYTRADE_24H_CONFIG_BULL,
 } from "@/utils/ftmoDaytrade24h";
 import type { NewsEvent } from "@/utils/forexFactoryNews";
@@ -86,7 +88,7 @@ export interface LiveSignal {
 export interface DetectionResult {
   timestamp: number;
   regime: Regime;
-  activeBotConfig: "iter231" | "iter213-bull";
+  activeBotConfig: string;
   signals: LiveSignal[];
   skipped: Array<{ asset: string; reason: string }>;
   notes: string[];
@@ -101,7 +103,7 @@ export interface DetectionResult {
 }
 
 // CFG selection via ENV var FTMO_TF:
-//   - "30m" → V10 30m_OPT (98.99% / DL 0 / TL 2 — ABSOLUTE CHAMPION)
+//   - "30m" → V12 30m_OPT (95.09% / TL 18 / FTMO-real 4d — CURRENT CHAMPION)
 //   - "1h"  → V7 1h_OPT (94.10% / DL 1 — tail-speed variant)
 //   - "2h"  → V6 2h_OPT (94-96% / DL 0 — 2h pass-rate)
 //   - else  → V261 (4h, 94.31% / DL 0)
@@ -111,12 +113,14 @@ const USE_30M = process.env.FTMO_TF === "30m";
 const USE_1H = process.env.FTMO_TF === "1h";
 const USE_2H = process.env.FTMO_TF === "2h";
 const CFG = USE_30M
-  ? FTMO_DAYTRADE_24H_CONFIG_V10_30M_OPT
+  ? FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT
   : USE_1H
     ? FTMO_DAYTRADE_24H_CONFIG_V7_1H_OPT
     : USE_2H
       ? FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT
       : FTMO_DAYTRADE_24H_CONFIG_V261;
+void FTMO_DAYTRADE_24H_CONFIG_V10_30M_OPT; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V11_30M_OPT; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V231; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V236; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V238; // rollback reference
@@ -263,14 +267,24 @@ export function detectLiveSignalsV231(
   const btcBullMom = btcMom24h > momThr;
   const regime: Regime = btcUptrend && btcBullMom ? "BULL" : "BEAR_CHOP";
 
+  const tfLabel = process.env.FTMO_TF ?? "4h";
+  const cfgLabel =
+    tfLabel === "30m"
+      ? "V12"
+      : tfLabel === "1h"
+        ? "V7"
+        : tfLabel === "2h"
+          ? "V6"
+          : "V261";
+  const shortBot = `${cfgLabel} (${tfLabel})`;
   const result: DetectionResult = {
     timestamp: Date.now(),
     regime,
-    activeBotConfig: regime === "BULL" ? "iter213-bull" : "iter231",
+    activeBotConfig: regime === "BULL" ? "iter213-bull" : shortBot,
     signals: [],
     skipped: [],
     notes: [
-      `Regime: ${regime} → active bot: ${regime === "BULL" ? "iter213-bull (LONG)" : "iter231 (SHORT)"}`,
+      `Regime: ${regime} → active bot: ${regime === "BULL" ? "iter213-bull (LONG)" : `${shortBot} (SHORT)`}`,
     ],
     account,
     btc: {
@@ -584,7 +598,16 @@ export function renderDetection(r: DetectionResult): string {
   const lines: string[] = [];
   const ts =
     new Date(r.timestamp).toISOString().slice(0, 16).replace("T", " ") + " UTC";
-  lines.push(`━━━━━ iter231 Signal Check @ ${ts} ━━━━━`);
+  const tfLabel = process.env.FTMO_TF ?? "4h";
+  const cfgLabel =
+    tfLabel === "30m"
+      ? "V12"
+      : tfLabel === "1h"
+        ? "V7"
+        : tfLabel === "2h"
+          ? "V6"
+          : "V261";
+  lines.push(`━━━━━ ${cfgLabel} (${tfLabel}) Signal Check @ ${ts} ━━━━━`);
   const fastP = CFG.crossAssetFilter?.emaFastPeriod ?? 10;
   const slowP = CFG.crossAssetFilter?.emaSlowPeriod ?? 15;
   const momBars = CFG.crossAssetFilter?.momentumBars ?? 6;

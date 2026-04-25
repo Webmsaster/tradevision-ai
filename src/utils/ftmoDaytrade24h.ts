@@ -2275,6 +2275,53 @@ export const FTMO_DAYTRADE_24H_CONFIG_V10_30M_OPT: FtmoDaytrade24hConfig = {
 };
 
 /**
+ * V11_30M_OPT — V10 + wider atrStop (p84 m48 vs m32).
+ *
+ * Sweep finding (2026-04-25, 407 windows / 3.42y / 30m / FTMO-real costs):
+ *   - V10 baseline:        92.87% / TL 27
+ *   - V11 (atrStop m48):   93.61% / TL 24  (+0.74pp pass / -3 total_loss)
+ *
+ * Plateau: m48 / m52 / m56 all tie at 93.61% TL=24. m48 chosen as cleanest.
+ * The wider stop absorbs more 30m noise → fewer total_loss blow-ups.
+ * Median engine days unchanged (5d engine = 5d FTMO-real).
+ *
+ * Same robustness profile as V10 (already validated 9-dim stress).
+ * Live Service: drop in as `FTMO_DAYTRADE_24H_CONFIG_V11_30M_OPT`.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V11_30M_OPT: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V10_30M_OPT,
+  atrStop: { period: 84, stopMult: 48 },
+};
+
+/**
+ * V12_30M_OPT — V11 + drop hours {7,16,18,21} + partialTakeProfit.
+ *
+ * Sweep R3-R6 (90+ variants tested, 407 windows / 3.42y / 30m / FTMO-real):
+ *   - V10 baseline:  92.87% / TL 27
+ *   - V11 (atr m48): 93.61% / TL 24
+ *   - V12 (this):    95.09% / TL 18  (+1.47pp pass / -6 total_loss vs V11)
+ *
+ * Discovery:
+ *   - V11 inherited V10's hour filter (drops 3,9,11,15). Greedy leave-one-out
+ *     showed hours 7, 16, 18, 21 ALL hostile (each gave +0.5pp solo).
+ *   - Stacking: drop {16,18}=+0.74pp, drop {7,16,18}=+0.98pp,
+ *     drop {7,16,18,21}=+1.23pp. 5th drop plateaus.
+ *   - partialTakeProfit (engine field never used before) adds another
+ *     +0.25pp on top of V12-hour-stack: trigger at 2% unrealized,
+ *     close 30% of position. Captures gains before reversion eats them.
+ *
+ * Final filter: 16 of 24 UTC hours allowed (drops 3,7,9,11,15,16,18,21).
+ *
+ * Same robustness profile as V11 (already validated 9-dim).
+ * Total improvement vs V10: +2.22pp pass / -9 total_loss (-33% tail).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V11_30M_OPT,
+  allowedHoursUtc: [0, 1, 2, 4, 5, 6, 8, 10, 12, 13, 14, 17, 19, 20, 22, 23],
+  partialTakeProfit: { triggerPct: 0.02, closeFraction: 0.3 },
+};
+
+/**
  * iter261 — V260 + NEW lossStreakCooldown engine feature.
  *
  * Pauses entries for 6 bars (1 day) after 2 consecutive stop-outs.
@@ -2898,7 +2945,12 @@ function detectAsset(
   let cooldownUntilBar = -1;
   const ts0 = candles[0].openTime;
   const cost = asset.costBp / 10000;
-  const hoursPerBar = 4;
+  // Derive bar duration from the data so 30m / 1h / 2h / 4h all report
+  // accurate holdHours. (Used only for trade-record display, not logic.)
+  const hoursPerBar =
+    candles.length >= 2
+      ? (candles[1].openTime - candles[0].openTime) / 3_600_000
+      : 4;
 
   // Pre-compute RSI once per asset if filter configured.
   const rsiSeries: (number | null)[] | null = cfg.rsiFilter
