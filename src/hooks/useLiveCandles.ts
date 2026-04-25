@@ -3,7 +3,15 @@
 import { useEffect, useRef, useState } from "react";
 import type { Candle } from "@/utils/indicators";
 
-export type LiveTimeframe = "1m" | "5m" | "15m" | "1h" | "4h" | "1d" | "1w";
+export type LiveTimeframe =
+  | "1m"
+  | "5m"
+  | "15m"
+  | "1h"
+  | "2h"
+  | "4h"
+  | "1d"
+  | "1w";
 export type ConnectionStatus =
   | "idle"
   | "loading"

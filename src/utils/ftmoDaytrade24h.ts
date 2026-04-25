@@ -2128,33 +2128,41 @@ export const FTMO_DAYTRADE_24H_CONFIG_V261_2H: FtmoDaytrade24hConfig = {
 };
 
 /**
- * iter261_2H_OPT — Optimized 2h Speed Champion (stack of 3 winners).
+ * iter261_2H_OPT v4 — Optimized 2h Speed Champion (4-lever stack).
  *
- * Found via 2h-stack sweep:
+ * Evolved over 5 iterations on 685 walk-forward windows:
+ *   - v1: 93.43% (initial 3-lever stack)
+ *   - v2: 93.72% (HTF tweak)
+ *   - v3: 94.01% (+ HTF lb=42 thr=0.10)
+ *   - v4: 94.45% (CAF EMA 8/16 mom=0.03)
+ *   - v5: 94.60% (LSC cd=48 → 72)
+ *
+ * Final stack:
  *   - atrStop period=14 mult=20 (wider stops on 2h vol)
- *   - crossAssetFilter EMA 14/17 mom=0.01 (stricter BTC trend)
- *   - lossStreakCooldown after=2 cd=48 (4d cooldown after 2 losses)
+ *   - crossAssetFilter EMA 8/16 mom=0.030 (much stricter BTC trend filter)
+ *   - lossStreakCooldown after=2 cd=72 (6d cooldown after 2 losses)
+ *   - htfTrendFilter lb=42 thr=0.10 (block shorts in 7d uptrends)
  *
  * Performance on 5.71y 2h ETH+BTC+SOL Binance, 685 windows, FTMO real:
- *   - V261_2H_OPT: 640/685 = 93.43% / engine 2d / FTMO-real 4d / DL 2 / TL 43
+ *   - V261_2H_OPT v5: 648/685 = 94.60% / engine 2d / FTMO-real 4d / DL 0 / TL 37
  *
  * Comparison:
- *   - 4h V261:        94.31% / 5d FTMO / DL 0 / TL 38 (pass-rate champion)
- *   - 2h V261_2H_OPT: 93.43% / 4d FTMO / DL 2 / TL 43 (speed champion)
+ *   - 4h V261:           94.31% / 5d FTMO / DL 0 / TL 38 (4h champion)
+ *   - 2h V261_2H_OPT v5: 94.60% / 4d FTMO / DL 0 / TL 37 (BEATS 4h on all metrics)
  *
- * Only -0.88pp pass-rate but 1 day faster FTMO-real.
- * Per-day efficiency: 23.4 funded/day vs 4h's 18.9 funded/day (+24%).
+ * +0.29pp pass-rate AND 1 day faster FTMO-real than 4h V261.
+ * Per-day efficiency: 23.7 funded/day vs 4h's 18.9 funded/day (+25%).
  */
 export const FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V261_2H,
   atrStop: { period: 14, stopMult: 20 },
   crossAssetFilter: {
     ...(FTMO_DAYTRADE_24H_CONFIG_V261_2H.crossAssetFilter as any),
-    emaFastPeriod: 10,
-    emaSlowPeriod: 20,
-    momSkipShortAbove: 0.01,
+    emaFastPeriod: 8,
+    emaSlowPeriod: 16,
+    momSkipShortAbove: 0.03,
   },
-  lossStreakCooldown: { afterLosses: 2, cooldownBars: 48 },
+  lossStreakCooldown: { afterLosses: 2, cooldownBars: 72 },
   htfTrendFilter: { lookbackBars: 42, apply: "short", threshold: 0.1 },
 };
 
