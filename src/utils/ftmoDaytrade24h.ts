@@ -2155,6 +2155,7 @@ export const FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT: FtmoDaytrade24hConfig = {
     momSkipShortAbove: 0.01,
   },
   lossStreakCooldown: { afterLosses: 2, cooldownBars: 48 },
+  htfTrendFilter: { lookbackBars: 42, apply: "short", threshold: 0.1 },
 };
 
 /**
