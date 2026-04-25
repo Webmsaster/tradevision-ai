@@ -235,15 +235,86 @@ def handle_daily_reset(current_equity_usd: float) -> float:
             prev_pnl = current_equity_usd - prev_start
             prev_pct = prev_pnl / prev_start if prev_start else 0
             log_event("daily_reset", prev_date=last_date, new_date=today_utc, prev_day_pnl=prev_pnl)
-            tg_send(
-                f"📅 <b>Daily Reset {today_utc}</b>\n"
-                f"Yesterday ({last_date}): <b>{prev_pct:+.2%}</b> (${prev_pnl:+,.2f})\n"
-                f"Today starts at equity: <b>${current_equity_usd:,.2f}</b>"
-            )
+            tg_send(_build_daily_summary(today_utc, last_date, prev_pct, prev_pnl, current_equity_usd))
         else:
             log_event("daily_state_first_write", date=today_utc, equity=current_equity_usd)
         return current_equity_usd
     return float(state.get("equity_at_day_start_usd", current_equity_usd))
+
+
+def _build_daily_summary(today_utc: str, last_date: str, prev_pct: float, prev_pnl: float, current_equity_usd: float) -> str:
+    """Build a rich daily-summary Telegram message with stats + ASCII chart."""
+    equity_pct = (current_equity_usd - CHALLENGE_START_BALANCE) / CHALLENGE_START_BALANCE
+    target_progress = max(0.0, equity_pct / PROFIT_TARGET_PCT)
+    dl_used = abs(min(0.0, (current_equity_usd - CHALLENGE_START_BALANCE) / CHALLENGE_START_BALANCE)) / 0.05
+    tl_floor_usd = CHALLENGE_START_BALANCE * 0.90
+    tl_remaining = (current_equity_usd - tl_floor_usd) / CHALLENGE_START_BALANCE
+
+    # Yesterday's trade stats from MT5 history
+    win_rate, avg_trade, best, worst, n_trades = _get_yesterday_trade_stats(last_date)
+
+    # ASCII bar for equity progress
+    bar_len = 20
+    filled = max(0, min(bar_len, int(target_progress * bar_len)))
+    bar = "█" * filled + "░" * (bar_len - filled)
+    pct_str = f"{equity_pct * 100:+.2f}%"
+
+    # Days-to-pass estimate (based on yesterday's velocity)
+    velocity = prev_pct  # fraction per day
+    days_to_pass_str = ""
+    if velocity > 0 and equity_pct < PROFIT_TARGET_PCT:
+        remaining = PROFIT_TARGET_PCT - equity_pct
+        days_est = remaining / velocity
+        days_to_pass_str = f"\n📈 At yesterday's velocity: ~{days_est:.1f}d to target"
+
+    msg = (
+        f"📅 <b>Daily Reset {today_utc}</b>\n\n"
+        f"<b>Yesterday ({last_date}):</b> <b>{prev_pct:+.2%}</b> (${prev_pnl:+,.2f})\n"
+    )
+    if n_trades > 0:
+        msg += (
+            f"  Trades: {n_trades}  WR: {win_rate*100:.0f}%  Avg: ${avg_trade:+,.2f}\n"
+            f"  Best: ${best:+,.2f}  Worst: ${worst:+,.2f}\n"
+        )
+    else:
+        msg += f"  No closed trades yesterday\n"
+    msg += (
+        f"\n<b>Target Progress: {pct_str} / +10%</b>\n"
+        f"<code>{bar}</code> {target_progress*100:.0f}%\n"
+        f"\n<b>Risk Used:</b>\n"
+        f"  DL: {dl_used*100:.0f}% of -5% cap\n"
+        f"  TL buffer: {tl_remaining*100:+.2f}% to -10% cap\n"
+        f"\nToday starts: <b>${current_equity_usd:,.2f}</b>"
+        f"{days_to_pass_str}"
+    )
+    return msg
+
+
+def _get_yesterday_trade_stats(date_str: str) -> tuple[float, float, float, float, int]:
+    """
+    Returns (win_rate, avg_trade_usd, best_usd, worst_usd, n_trades) for the
+    given UTC date. Pulls from MT5 history. Returns (0,0,0,0,0) if no data.
+    """
+    try:
+        # date_str is "YYYY-MM-DD"
+        y, m, d = (int(x) for x in date_str.split("-"))
+        day_start = datetime(y, m, d, 0, 0, 0, tzinfo=timezone.utc)
+        day_end = datetime(y, m, d, 23, 59, 59, tzinfo=timezone.utc)
+        deals = mt5.history_deals_get(day_start, day_end) or []
+        closes = [d for d in deals if getattr(d, "magic", 0) == 231 and getattr(d, "entry", 0) == mt5.DEAL_ENTRY_OUT]
+        if not closes:
+            return (0.0, 0.0, 0.0, 0.0, 0)
+        profits = [d.profit for d in closes]
+        wins = sum(1 for p in profits if p > 0)
+        return (
+            wins / len(profits),
+            sum(profits) / len(profits),
+            max(profits),
+            min(profits),
+            len(profits),
+        )
+    except Exception:
+        return (0.0, 0.0, 0.0, 0.0, 0)
 
 
 # =============================================================================
@@ -259,6 +330,13 @@ class OrderResult:
 
 
 def compute_lot_size(symbol_info: Any, risk_frac: float, stop_pct: float, account_equity: float) -> float:
+    """
+    Compute lot size for a target risk. Always rounds DOWN (floor) to never
+    exceed the requested risk. Returns 0.0 if the requested risk is below
+    the broker's volume_min — caller must skip the trade rather than
+    silently inflate risk by trading at volume_min.
+    """
+    import math
     risk_usd = account_equity * risk_frac
     tick_size = symbol_info.trade_tick_size or symbol_info.point
     tick_value = symbol_info.trade_tick_value or 1.0
@@ -269,9 +347,15 @@ def compute_lot_size(symbol_info: Any, risk_frac: float, stop_pct: float, accoun
     loss_per_lot = (stop_distance_price / tick_size) * tick_value
     if loss_per_lot <= 0:
         return 0.0
-    lot = risk_usd / loss_per_lot
+    lot_raw = risk_usd / loss_per_lot
     step = symbol_info.volume_step or 0.01
-    lot = max(symbol_info.volume_min or 0.01, round(lot / step) * step)
+    # Floor (round DOWN) to never exceed requested risk
+    lot = math.floor(lot_raw / step) * step
+    vol_min = symbol_info.volume_min or 0.01
+    if lot < vol_min:
+        # Requested risk is too small for broker minimum — refuse rather
+        # than silently inflate to volume_min (would breach FTMO sizing).
+        return 0.0
     if symbol_info.volume_max:
         lot = min(lot, symbol_info.volume_max)
     return float(lot)

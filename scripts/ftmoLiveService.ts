@@ -204,18 +204,35 @@ async function runOneCheck(): Promise<DetectionResult> {
   const pending = readJSON<{ signals: LiveSignal[] }>(PENDING_PATH, {
     signals: [],
   });
+  // Python executor schema: { executions: [{ signal: {...}, result, ts }] }
+  // Older/forward-compat schema: { signals: [{ assetSymbol, signalBarClose }] }
+  // Read both shapes so dedup works regardless of who wrote the file.
   const executed = readJSON<{
-    signals: Array<{
+    executions?: Array<{
+      signal?: { assetSymbol?: string; signalBarClose?: number };
+    }>;
+    signals?: Array<{
       signalAsset?: string;
       assetSymbol?: string;
       signalBarClose?: number;
     }>;
-  }>(EXECUTED_PATH, { signals: [] });
+  }>(EXECUTED_PATH, { executions: [] });
+  const executedKeys: string[] = [];
+  for (const e of executed.executions ?? []) {
+    if (e.signal && e.signal.signalBarClose !== undefined) {
+      executedKeys.push(`${e.signal.assetSymbol}@${e.signal.signalBarClose}`);
+    }
+  }
+  for (const s of executed.signals ?? []) {
+    if (s.signalBarClose !== undefined) {
+      executedKeys.push(
+        `${s.signalAsset ?? s.assetSymbol}@${s.signalBarClose}`,
+      );
+    }
+  }
   const existingKeys = new Set([
     ...pending.signals.map((s) => `${s.assetSymbol}@${s.signalBarClose}`),
-    ...executed.signals
-      .filter((s) => s.signalBarClose !== undefined)
-      .map((s) => `${s.signalAsset ?? s.assetSymbol}@${s.signalBarClose}`),
+    ...executedKeys,
   ]);
   const newSignals = result.signals.filter(
     (s) => !existingKeys.has(`${s.assetSymbol}@${s.signalBarClose}`),
