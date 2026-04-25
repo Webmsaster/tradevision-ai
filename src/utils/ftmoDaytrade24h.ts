@@ -2177,6 +2177,47 @@ export const FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT: FtmoDaytrade24hConfig = {
 };
 
 /**
+ * iter261_1H_OPT v7 — 1h SPEED Champion (sacrifice 1pp for tail-speed).
+ *
+ * Sister config to V261_2H_OPT v6. Trades twice as often (1h cadence)
+ * but accepts a ~1pp pass-rate hit for significantly faster tail behavior.
+ *
+ * Performance on 5.71y 1h ETH+BTC+SOL Binance, 407 windows, FTMO real:
+ *   - V7 1h: 387/407 = 95.09% / engine 2d / FTMO-real 4d / DL 1 / TL 18
+ *
+ * Speed comparison vs 2h V6 (96.06%):
+ *   Median engine: both 2d (identical)
+ *   Median FTMO-real: both 4d (4-day-floor pinned)
+ *   p75:  6d (1h) vs 8d  (2h)  — 2 days faster
+ *   p90:  6d (1h) vs 9d  (2h)  — 3 days faster
+ *   p95:  7d (1h) vs 10d (2h)  — 3 days faster
+ *   Avg:  3.38d   vs 4.46d     — 1.08 days faster
+ *
+ * Trade-off:
+ *   - Pass-rate: -0.97pp (95.09% vs 96.06%)
+ *   - DL breaches: +1 (1 vs 0 — still very low at 0.24% rate)
+ *
+ * Use case: when speed in long-tail outcomes matters more than
+ * marginal pass-rate. Engine still respects FTMO 4-day-floor so
+ * fast-half passes are no faster than 2h V6.
+ *
+ * Architecture: 1h-tuned hour filter (14/24 slots) + longer holdBars
+ * (600 = 25 days max) + adjusted HTF/LSC for 1h cadence.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V7_1H_OPT: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V261_2H,
+  allowedHoursUtc: [0, 2, 6, 9, 10, 11, 12, 16, 17, 20, 21, 22, 23],
+  holdBars: 600,
+  atrStop: { period: 14, stopMult: 20 },
+  lossStreakCooldown: { afterLosses: 2, cooldownBars: 96 },
+  htfTrendFilter: { lookbackBars: 96, apply: "short", threshold: 0.08 },
+  crossAssetFilter: {
+    ...(FTMO_DAYTRADE_24H_CONFIG_V261_2H.crossAssetFilter as any),
+    momSkipShortAbove: 0.04,
+  },
+};
+
+/**
  * iter261 — V260 + NEW lossStreakCooldown engine feature.
  *
  * Pauses entries for 6 bars (1 day) after 2 consecutive stop-outs.

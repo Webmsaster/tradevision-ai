@@ -43,6 +43,7 @@ import {
   FTMO_DAYTRADE_24H_CONFIG_V260,
   FTMO_DAYTRADE_24H_CONFIG_V261,
   FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT,
+  FTMO_DAYTRADE_24H_CONFIG_V7_1H_OPT,
   FTMO_DAYTRADE_24H_CONFIG_BULL,
 } from "@/utils/ftmoDaytrade24h";
 import type { NewsEvent } from "@/utils/forexFactoryNews";
@@ -99,14 +100,18 @@ export interface DetectionResult {
 }
 
 // CFG selection via ENV var FTMO_TF:
-//   - "2h" → V261_2H_OPT v5 (94.60% / 4d FTMO-real / DL 0 / TL 37 — strict champion)
-//   - else → V261 (4h, 94.31% / 5d FTMO-real / DL 0 / TL 38)
-// Both run on the same engine — only the polling cadence + Binance candle
+//   - "1h" → V7 1h_OPT (95.09% / 4d FTMO-real / tail-speed champion)
+//   - "2h" → V261_2H_OPT v6 (96.06% / 4d FTMO-real / DL 0 — pass-rate champion)
+//   - else → V261 (4h, 94.31% / 5d FTMO-real / DL 0)
+// All three share the same engine — only polling cadence + Binance candle
 // timeframe + per-asset config differ.
+const USE_1H = process.env.FTMO_TF === "1h";
 const USE_2H = process.env.FTMO_TF === "2h";
-const CFG = USE_2H
-  ? FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT
-  : FTMO_DAYTRADE_24H_CONFIG_V261;
+const CFG = USE_1H
+  ? FTMO_DAYTRADE_24H_CONFIG_V7_1H_OPT
+  : USE_2H
+    ? FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT
+    : FTMO_DAYTRADE_24H_CONFIG_V261;
 void FTMO_DAYTRADE_24H_CONFIG_V231; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V236; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V238; // rollback reference
@@ -285,16 +290,17 @@ export function detectLiveSignalsV231(
   }
 
   // Session filter. Entry = next bar's open.
-  // 4h: bar close hour + 4 = entry hour, allowed [0,4,8,12,16,20]
-  // 2h: bar close hour + 2 = entry hour, allowed every 2h slot
-  const tfHours = USE_2H ? 2 : 4;
+  // 1h: every hour. 2h: every 2h. 4h: standard slots.
+  const tfHours = USE_1H ? 1 : USE_2H ? 2 : 4;
   const ethLastIdx = ethCandles.length - 1;
   const b1 = ethCandles[ethLastIdx];
   const entryOpenTime = b1.openTime + tfHours * 3600_000;
   const entryHour = new Date(entryOpenTime).getUTCHours();
-  const defaultHours = USE_2H
-    ? [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]
-    : [0, 4, 8, 12, 16, 20];
+  const defaultHours = USE_1H
+    ? Array.from({ length: 24 }, (_, i) => i)
+    : USE_2H
+      ? [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]
+      : [0, 4, 8, 12, 16, 20];
   const allowedHours = CFG.allowedHoursUtc ?? defaultHours;
   const hourBlocked = !allowedHours.includes(entryHour);
   if (hourBlocked) {

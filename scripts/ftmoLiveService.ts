@@ -34,8 +34,13 @@ import {
   type NewsEvent,
 } from "../src/utils/forexFactoryNews";
 
-const TF: "2h" | "4h" = process.env.FTMO_TF === "2h" ? "2h" : "4h";
-const TF_HOURS = TF === "2h" ? 2 : 4;
+const TF: "1h" | "2h" | "4h" =
+  process.env.FTMO_TF === "1h"
+    ? "1h"
+    : process.env.FTMO_TF === "2h"
+      ? "2h"
+      : "4h";
+const TF_HOURS = TF === "1h" ? 1 : TF === "2h" ? 2 : 4;
 const STATE_DIR =
   process.env.FTMO_STATE_DIR ?? path.join(process.cwd(), `ftmo-state-${TF}`);
 const PENDING_PATH = path.join(STATE_DIR, "pending-signals.json");
