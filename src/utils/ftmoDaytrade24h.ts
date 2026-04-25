@@ -2322,6 +2322,72 @@ export const FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT: FtmoDaytrade24hConfig = {
 };
 
 /**
+ * V13_15M_OPT — 15m timeframe, derived from V12 with full 2× scaling
+ * + LSC cd=600 + drop hours {17, 23}.
+ *
+ * Sweeps R1-R3 (90+ variants tested, 199 windows / 1.71y / 15m / FTMO-real):
+ *   - V12 (30m, 407 windows): 95.09% / TL 18
+ *   - V13-baseline-fully-scaled-2x: 93.97% / TL 11
+ *   - V13 R1 + LSC cd=600: 96.48% / TL 6 (+2.51pp)
+ *   - V13 R2 + drop hour 23: 97.49% / TL 4 (+1.01pp)
+ *   - V13 R3 + drop hour 17: 98.49% / TL 3 (+1.01pp) ← THIS
+ *
+ * Key 15m discoveries vs 30m V12:
+ *   - All bar-counts scaled 2×: holdBars 1200→2400, atrStop p84→168
+ *   - LSC cooldownBars 200→600 (3× longer, not 2×!) — 15m noise needs more
+ *     extended pause after losses; 700+ overshoots and hurts pass-rate
+ *   - htfTrendFilter lookbackBars 200→400, chandelierExit period 28→56
+ *   - allowedHoursUtc: V12 had 16/24, V13 drops 2 more (17, 23)
+ *
+ * IMPORTANT: 15m Binance history is shorter (1.71y vs 30m's 3.42y).
+ * V13's 98.49% on 199 windows is statistically less robust than V12's
+ * 95.09% on 407 windows. Run mega-stress before live-deploy.
+ *
+ * Live Service: drop in as `FTMO_DAYTRADE_24H_CONFIG_V13_15M_OPT`,
+ * set FTMO_TF=15m (live-signal selector update needed).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V13_15M_OPT: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT,
+  holdBars: 2400,
+  atrStop: { period: 168, stopMult: 48 },
+  lossStreakCooldown: { afterLosses: 2, cooldownBars: 600 },
+  htfTrendFilter: { lookbackBars: 400, apply: "short", threshold: 0.08 },
+  chandelierExit: { period: 56, mult: 3, minMoveR: 0.5 },
+  allowedHoursUtc: [0, 1, 2, 4, 5, 6, 8, 10, 12, 13, 14, 19, 20, 22],
+};
+
+/**
+ * V16_15M_OPT — 15m SPEED CHAMPION (ETA-optimized).
+ *
+ * Walk-forward sweeps R4-R8 (110+ variants on 5.71y / train+test 2.85y each):
+ *   - V12 (30m, prod):  95.09% / med 4d / p75 6d / p90 7d / TL 4.4% → ETA 6.23d
+ *   - V13 (initial):    91.82% / med 4d / p75 8d / p90 8d / TL 7.9% → ETA 6.00d
+ *   - V14 (LSC=300):    93.49% / med 4d / p75 5d / p90 5d / TL 5.9% → ETA 5.69d
+ *   - V15 (drop {22}):  94.08% / med 4d / p75 5d / p90 5d / TL 5.6% → ETA 5.54d
+ *   - V16 (this):       94.38% / med 4d / p75 5d / p90 6d / TL 5.6% → ETA 5.46d ← winner
+ *
+ * vs V12 (30m): ETA -0.77d (12% faster), Pass -0.71pp (slightly lower), TL +1.2pp
+ *
+ * Key changes from V13:
+ *   - lossStreakCooldown.cooldownBars 600 → 300 (faster restart after losses)
+ *   - timeBoost{afterDay:2, equityBelow:0.05, factor:2.0} ADDED (engine ramps 2× risk if behind by day 2)
+ *   - allowedHoursUtc additionally drops 8 + 22 (R7+R8 found these adversarial)
+ *
+ * Walk-forward Train/Test delta near zero on best variants → robust, not overfit.
+ *
+ * Use case: when you want fastest expected total time (ETA) over many
+ * challenges, and accept slightly higher catastrophic-loss tail.
+ * Live Service: drop in as `FTMO_DAYTRADE_24H_CONFIG_V16_15M_OPT`,
+ * set FTMO_TF=15m.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V16_15M_OPT: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V13_15M_OPT,
+  lossStreakCooldown: { afterLosses: 2, cooldownBars: 300 },
+  timeBoost: { afterDay: 2, equityBelow: 0.05, factor: 2.0 },
+  allowedHoursUtc: [0, 1, 2, 4, 5, 6, 10, 12, 13, 14, 19, 20],
+};
+
+/**
  * iter261 — V260 + NEW lossStreakCooldown engine feature.
  *
  * Pauses entries for 6 bars (1 day) after 2 consecutive stop-outs.

@@ -47,6 +47,8 @@ import {
   FTMO_DAYTRADE_24H_CONFIG_V10_30M_OPT,
   FTMO_DAYTRADE_24H_CONFIG_V11_30M_OPT,
   FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT,
+  FTMO_DAYTRADE_24H_CONFIG_V13_15M_OPT,
+  FTMO_DAYTRADE_24H_CONFIG_V16_15M_OPT,
   FTMO_DAYTRADE_24H_CONFIG_BULL,
 } from "@/utils/ftmoDaytrade24h";
 import type { NewsEvent } from "@/utils/forexFactoryNews";
@@ -103,24 +105,29 @@ export interface DetectionResult {
 }
 
 // CFG selection via ENV var FTMO_TF:
-//   - "30m" → V12 30m_OPT (95.09% / TL 18 / FTMO-real 4d — CURRENT CHAMPION)
+//   - "15m" → V16 15M_OPT (94.38% / TL 5.6% / ETA 5.46d — SPEED CHAMPION)
+//   - "30m" → V12 30M_OPT (95.09% / TL 4.4% / ETA 6.23d — PASS-RATE CHAMPION)
 //   - "1h"  → V7 1h_OPT (94.10% / DL 1 — tail-speed variant)
 //   - "2h"  → V6 2h_OPT (94-96% / DL 0 — 2h pass-rate)
 //   - else  → V261 (4h, 94.31% / DL 0)
-// All four share the same engine — only polling cadence + Binance candle
+// All five share the same engine — only polling cadence + Binance candle
 // timeframe + per-asset config differ.
+const USE_15M = process.env.FTMO_TF === "15m";
 const USE_30M = process.env.FTMO_TF === "30m";
 const USE_1H = process.env.FTMO_TF === "1h";
 const USE_2H = process.env.FTMO_TF === "2h";
-const CFG = USE_30M
-  ? FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT
-  : USE_1H
-    ? FTMO_DAYTRADE_24H_CONFIG_V7_1H_OPT
-    : USE_2H
-      ? FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT
-      : FTMO_DAYTRADE_24H_CONFIG_V261;
+const CFG = USE_15M
+  ? FTMO_DAYTRADE_24H_CONFIG_V16_15M_OPT
+  : USE_30M
+    ? FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT
+    : USE_1H
+      ? FTMO_DAYTRADE_24H_CONFIG_V7_1H_OPT
+      : USE_2H
+        ? FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT
+        : FTMO_DAYTRADE_24H_CONFIG_V261;
 void FTMO_DAYTRADE_24H_CONFIG_V10_30M_OPT; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V11_30M_OPT; // rollback reference
+void FTMO_DAYTRADE_24H_CONFIG_V13_15M_OPT; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V231; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V236; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V238; // rollback reference
@@ -269,13 +276,15 @@ export function detectLiveSignalsV231(
 
   const tfLabel = process.env.FTMO_TF ?? "4h";
   const cfgLabel =
-    tfLabel === "30m"
-      ? "V12"
-      : tfLabel === "1h"
-        ? "V7"
-        : tfLabel === "2h"
-          ? "V6"
-          : "V261";
+    tfLabel === "15m"
+      ? "V16"
+      : tfLabel === "30m"
+        ? "V12"
+        : tfLabel === "1h"
+          ? "V7"
+          : tfLabel === "2h"
+            ? "V6"
+            : "V261";
   const shortBot = `${cfgLabel} (${tfLabel})`;
   const result: DetectionResult = {
     timestamp: Date.now(),
@@ -600,13 +609,15 @@ export function renderDetection(r: DetectionResult): string {
     new Date(r.timestamp).toISOString().slice(0, 16).replace("T", " ") + " UTC";
   const tfLabel = process.env.FTMO_TF ?? "4h";
   const cfgLabel =
-    tfLabel === "30m"
-      ? "V12"
-      : tfLabel === "1h"
-        ? "V7"
-        : tfLabel === "2h"
-          ? "V6"
-          : "V261";
+    tfLabel === "15m"
+      ? "V16"
+      : tfLabel === "30m"
+        ? "V12"
+        : tfLabel === "1h"
+          ? "V7"
+          : tfLabel === "2h"
+            ? "V6"
+            : "V261";
   lines.push(`━━━━━ ${cfgLabel} (${tfLabel}) Signal Check @ ${ts} ━━━━━`);
   const fastP = CFG.crossAssetFilter?.emaFastPeriod ?? 10;
   const slowP = CFG.crossAssetFilter?.emaSlowPeriod ?? 15;
