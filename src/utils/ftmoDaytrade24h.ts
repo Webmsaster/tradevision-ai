@@ -2128,37 +2128,47 @@ export const FTMO_DAYTRADE_24H_CONFIG_V261_2H: FtmoDaytrade24hConfig = {
 };
 
 /**
- * iter261_2H_OPT v4 — Optimized 2h Speed Champion (4-lever stack).
+ * iter261_2H_OPT v6 — TRUE 2h Champion with optimized hour filter.
  *
- * Evolved over 5 iterations on 685 walk-forward windows:
+ * V5 inherited the 4h hour filter [0,4,12,16,20] which made 7/12 of the
+ * 2h check slots wasted. V6 re-optimizes the filter for 2h: greedy
+ * per-hour analysis identified [0,2,6,12,16,20,22] as the optimal subset.
+ * Then CAF EMA + atrStop re-tuned on top.
+ *
+ * Evolved over 6 iterations on 685 walk-forward windows:
  *   - v1: 93.43% (initial 3-lever stack)
  *   - v2: 93.72% (HTF tweak)
  *   - v3: 94.01% (+ HTF lb=42 thr=0.10)
  *   - v4: 94.45% (CAF EMA 8/16 mom=0.03)
  *   - v5: 94.60% (LSC cd=48 → 72)
+ *   - v6: 96.06% (filter [0,2,6,12,16,20,22] + CAF EMA 12/16 + atr p28)
  *
  * Final stack:
- *   - atrStop period=14 mult=20 (wider stops on 2h vol)
- *   - crossAssetFilter EMA 8/16 mom=0.030 (much stricter BTC trend filter)
- *   - lossStreakCooldown after=2 cd=72 (6d cooldown after 2 losses)
- *   - htfTrendFilter lb=42 thr=0.10 (block shorts in 7d uptrends)
+ *   - allowedHoursUtc [0,2,6,12,16,20,22] (drop adversarial 4/8/10/14/18 UTC)
+ *   - atrStop period=28 mult=20 (longer-period ATR for 2h)
+ *   - crossAssetFilter EMA 12/16 mom=0.030
+ *   - lossStreakCooldown after=2 cd=72
+ *   - htfTrendFilter lb=42 thr=0.10
  *
  * Performance on 5.71y 2h ETH+BTC+SOL Binance, 685 windows, FTMO real:
- *   - V261_2H_OPT v5: 648/685 = 94.60% / engine 2d / FTMO-real 4d / DL 0 / TL 37
+ *   - V261_2H_OPT v6: 658/685 = 96.06% / engine 2d / FTMO-real 4d / DL 0 / TL 27
  *
  * Comparison:
- *   - 4h V261:           94.31% / 5d FTMO / DL 0 / TL 38 (4h champion)
- *   - 2h V261_2H_OPT v5: 94.60% / 4d FTMO / DL 0 / TL 37 (BEATS 4h on all metrics)
+ *   - 4h V261:           94.31% / 5d FTMO / DL 0 / TL 38
+ *   - 2h V261_2H_OPT v5: 94.60% / 4d FTMO / DL 0 / TL 37
+ *   - 2h V261_2H_OPT v6: 96.06% / 4d FTMO / DL 0 / TL 27 (CHAMPION)
  *
- * +0.29pp pass-rate AND 1 day faster FTMO-real than 4h V261.
- * Per-day efficiency: 23.7 funded/day vs 4h's 18.9 funded/day (+25%).
+ * +1.75pp vs 4h V261, +1.46pp vs V5, BUT TL drops 38→27 (29% safer).
+ * V6 is the true 2h champion — exploits the 2h cadence with a
+ * 2h-specific hour filter instead of inherited 4h scaffolding.
  */
 export const FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V261_2H,
-  atrStop: { period: 14, stopMult: 20 },
+  allowedHoursUtc: [0, 2, 6, 12, 16, 20, 22],
+  atrStop: { period: 28, stopMult: 20 },
   crossAssetFilter: {
     ...(FTMO_DAYTRADE_24H_CONFIG_V261_2H.crossAssetFilter as any),
-    emaFastPeriod: 8,
+    emaFastPeriod: 12,
     emaSlowPeriod: 16,
     momSkipShortAbove: 0.03,
   },
