@@ -47,6 +47,7 @@ import {
   FTMO_DAYTRADE_24H_CONFIG_V10_30M_OPT,
   FTMO_DAYTRADE_24H_CONFIG_V11_30M_OPT,
   FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT,
+  FTMO_DAYTRADE_24H_CONFIG_V12_TURBO_30M_OPT,
   FTMO_DAYTRADE_24H_CONFIG_V13_15M_OPT,
   FTMO_DAYTRADE_24H_CONFIG_V16_15M_OPT,
   FTMO_DAYTRADE_24H_CONFIG_BULL,
@@ -105,26 +106,30 @@ export interface DetectionResult {
 }
 
 // CFG selection via ENV var FTMO_TF:
-//   - "15m" → V16 15M_OPT (94.38% / TL 5.6% / ETA 5.46d — SPEED CHAMPION)
-//   - "30m" → V12 30M_OPT (95.09% / TL 4.4% / ETA 6.23d — PASS-RATE CHAMPION)
-//   - "1h"  → V7 1h_OPT (94.10% / DL 1 — tail-speed variant)
-//   - "2h"  → V6 2h_OPT (94-96% / DL 0 — 2h pass-rate)
-//   - else  → V261 (4h, 94.31% / DL 0)
-// All five share the same engine — only polling cadence + Binance candle
+//   - "15m"       → V16 15M_OPT (94.38% / TL 5.6% / ETA 5.46d — SPEED CHAMPION)
+//   - "30m"       → V12 30M_OPT (95.09% / TL 4.4% / ETA 5.27d — PASS-RATE CHAMPION)
+//   - "30m-turbo" → V12_TURBO 30M_OPT (93.28% / TL 6.7% / p90=4d — TAIL-CRUSH variant)
+//   - "1h"        → V7 1h_OPT (94.10% / DL 1 — tail-speed variant)
+//   - "2h"        → V6 2h_OPT (94-96% / DL 0 — 2h pass-rate)
+//   - else        → V261 (4h, 94.31% / DL 0)
+// All share the same engine — only polling cadence + Binance candle
 // timeframe + per-asset config differ.
 const USE_15M = process.env.FTMO_TF === "15m";
+const USE_30M_TURBO = process.env.FTMO_TF === "30m-turbo";
 const USE_30M = process.env.FTMO_TF === "30m";
 const USE_1H = process.env.FTMO_TF === "1h";
 const USE_2H = process.env.FTMO_TF === "2h";
 const CFG = USE_15M
   ? FTMO_DAYTRADE_24H_CONFIG_V16_15M_OPT
-  : USE_30M
-    ? FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT
-    : USE_1H
-      ? FTMO_DAYTRADE_24H_CONFIG_V7_1H_OPT
-      : USE_2H
-        ? FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT
-        : FTMO_DAYTRADE_24H_CONFIG_V261;
+  : USE_30M_TURBO
+    ? FTMO_DAYTRADE_24H_CONFIG_V12_TURBO_30M_OPT
+    : USE_30M
+      ? FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT
+      : USE_1H
+        ? FTMO_DAYTRADE_24H_CONFIG_V7_1H_OPT
+        : USE_2H
+          ? FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT
+          : FTMO_DAYTRADE_24H_CONFIG_V261;
 void FTMO_DAYTRADE_24H_CONFIG_V10_30M_OPT; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V11_30M_OPT; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V13_15M_OPT; // rollback reference
@@ -278,13 +283,15 @@ export function detectLiveSignalsV231(
   const cfgLabel =
     tfLabel === "15m"
       ? "V16"
-      : tfLabel === "30m"
-        ? "V12"
-        : tfLabel === "1h"
-          ? "V7"
-          : tfLabel === "2h"
-            ? "V6"
-            : "V261";
+      : tfLabel === "30m-turbo"
+        ? "V12-TURBO"
+        : tfLabel === "30m"
+          ? "V12"
+          : tfLabel === "1h"
+            ? "V7"
+            : tfLabel === "2h"
+              ? "V6"
+              : "V261";
   const shortBot = `${cfgLabel} (${tfLabel})`;
   const result: DetectionResult = {
     timestamp: Date.now(),
@@ -611,13 +618,15 @@ export function renderDetection(r: DetectionResult): string {
   const cfgLabel =
     tfLabel === "15m"
       ? "V16"
-      : tfLabel === "30m"
-        ? "V12"
-        : tfLabel === "1h"
-          ? "V7"
-          : tfLabel === "2h"
-            ? "V6"
-            : "V261";
+      : tfLabel === "30m-turbo"
+        ? "V12-TURBO"
+        : tfLabel === "30m"
+          ? "V12"
+          : tfLabel === "1h"
+            ? "V7"
+            : tfLabel === "2h"
+              ? "V6"
+              : "V261";
   lines.push(`━━━━━ ${cfgLabel} (${tfLabel}) Signal Check @ ${ts} ━━━━━`);
   const fastP = CFG.crossAssetFilter?.emaFastPeriod ?? 10;
   const slowP = CFG.crossAssetFilter?.emaSlowPeriod ?? 15;

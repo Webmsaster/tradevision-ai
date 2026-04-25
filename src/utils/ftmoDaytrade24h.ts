@@ -2322,6 +2322,42 @@ export const FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT: FtmoDaytrade24hConfig = {
 };
 
 /**
+ * V12_TURBO_30M_OPT — V12 + speed-focused stack.
+ *
+ * V12: 94.01% / TL 6.0% / med 4d / p75 5d / p90 6d / ETA 5.56d
+ * V12_TURBO: 93.28% / TL 6.7% / med 4d / p75 4d / p90 4d / ETA 5.75d
+ *
+ * Same engine median (1d), but the SLOW TAIL is crushed:
+ *   - p75: 5d → 4d (FTMO floor)
+ *   - p90: 6d → 4d (FTMO floor) ← key win
+ *   - 90% of passes now hit FTMO 4d minimum — no slow tail
+ *
+ * Changes from V12:
+ *   - timeBoost{afterDay:2, equityBelow:0.05, factor:2.0} (engine ramps risk early)
+ *   - lossStreakCooldown.cooldownBars 200 → 100 (faster restart)
+ *   - BTC-MR / SOL-MR minEquityGain 0.04 → 0.02 (earlier secondary asset activation)
+ *
+ * Trade-off vs V12: -0.73pp pass-rate / +0.7pp TL tail / +0.19d aggregate ETA.
+ *
+ * Use case: when you want predictable 4-day passes (e.g. multiple challenges
+ * back-to-back, time-budgeted) and accept marginally higher blow-up risk.
+ *
+ * Live: drop in as `FTMO_DAYTRADE_24H_CONFIG_V12_TURBO_30M_OPT`,
+ * select via FTMO_TF=30m-turbo (live-signal selector update needed).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V12_TURBO_30M_OPT: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT,
+    timeBoost: { afterDay: 2, equityBelow: 0.05, factor: 2.0 },
+    lossStreakCooldown: { afterLosses: 2, cooldownBars: 100 },
+    assets: FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT.assets.map((a) =>
+      a.symbol === "BTC-MR" || a.symbol === "SOL-MR"
+        ? { ...a, minEquityGain: 0.02 }
+        : a,
+    ),
+  };
+
+/**
  * V13_15M_OPT — 15m timeframe, derived from V12 with full 2× scaling
  * + LSC cd=600 + drop hours {17, 23}.
  *
