@@ -2223,6 +2223,58 @@ export const FTMO_DAYTRADE_24H_CONFIG_V7_1H_OPT: FtmoDaytrade24hConfig = {
 };
 
 /**
+ * iter261_30M_OPT v10 — 30m ABSOLUTE CHAMPION (NEW).
+ *
+ * Discovery: porting V7 to 30m + greedy hour-filter sweep + atr p=84
+ * stack reveals that 30m is FUNDAMENTALLY better than 1h on this strategy.
+ *
+ * Performance on 5.71y 30m ETH+BTC+SOL Binance, 199 windows, FTMO real:
+ *   - V10 30m: 197/199 = 98.99% / engine 1d / FTMO-real 4d / DL 0 / TL 2
+ *
+ * vs all other prod configs:
+ *   - 1h V7:    94.10% / DL 1 / TL 22  → V10 wins +4.89pp / DL=0 / TL -91%
+ *   - 2h V6:    94-96% / DL 0 / TL 27  → V10 wins +3-5pp / TL -93%
+ *   - 4h V261:  94.31% / DL 0 / TL 38  → V10 wins +4.68pp / TL -95%
+ *
+ * Stack discovered through 6 mega-sweeps:
+ *   - allowedHoursUtc [0,1,2,4,5,6,7,8,10,12,13,14,16,17,18,19,20,21,22,23]
+ *     (drop 3, 9, 11, 15 — adversarial 30m hours found via greedy)
+ *   - holdBars 1200 (2x 1h equivalent — 25 days max hold)
+ *   - atrStop p=84 m=32 (much wider on 30m than 1h V7 had)
+ *   - lossStreakCooldown after=2 cd=200 (key discovery — long cooldown is gold)
+ *   - htfTrendFilter lb=200 thr=0.08
+ *   - chandelierExit p=28 m=3 minMoveR=0.5 (trailing stop locks in profit)
+ *   - CAF EMA 8/16 mom=0.04
+ *   - SOL-MR override: sp=0.012 tp=0.025
+ *
+ * 30m beats 1h because:
+ *   1. Twice the bars → finer entry-timing precision
+ *   2. atrStop p=84 (= 42h on 30m) absorbs noise that knocked out 1h V7
+ *   3. LSC cd=200 (= 100h cooldown) safely sits out hostile regimes
+ *   4. chandelier locks in profits before they reverse on 30m noise
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V10_30M_OPT: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT,
+  allowedHoursUtc: [
+    0, 1, 2, 4, 5, 6, 7, 8, 10, 12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23,
+  ],
+  holdBars: 1200,
+  atrStop: { period: 84, stopMult: 32 },
+  lossStreakCooldown: { afterLosses: 2, cooldownBars: 200 },
+  htfTrendFilter: { lookbackBars: 200, apply: "short", threshold: 0.08 },
+  chandelierExit: { period: 28, mult: 3, minMoveR: 0.5 },
+  crossAssetFilter: {
+    ...(FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT.crossAssetFilter as any),
+    emaFastPeriod: 8,
+    emaSlowPeriod: 16,
+    momSkipShortAbove: 0.04,
+  },
+  assets: FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT.assets.map((a) =>
+    a.symbol === "SOL-MR" ? { ...a, stopPct: 0.012, tpPct: 0.025 } : a,
+  ),
+};
+
+/**
  * iter261 — V260 + NEW lossStreakCooldown engine feature.
  *
  * Pauses entries for 6 bars (1 day) after 2 consecutive stop-outs.

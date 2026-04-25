@@ -34,13 +34,15 @@ import {
   type NewsEvent,
 } from "../src/utils/forexFactoryNews";
 
-const TF: "1h" | "2h" | "4h" =
-  process.env.FTMO_TF === "1h"
-    ? "1h"
-    : process.env.FTMO_TF === "2h"
-      ? "2h"
-      : "4h";
-const TF_HOURS = TF === "1h" ? 1 : TF === "2h" ? 2 : 4;
+const TF: "30m" | "1h" | "2h" | "4h" =
+  process.env.FTMO_TF === "30m"
+    ? "30m"
+    : process.env.FTMO_TF === "1h"
+      ? "1h"
+      : process.env.FTMO_TF === "2h"
+        ? "2h"
+        : "4h";
+const TF_HOURS = TF === "30m" ? 0.5 : TF === "1h" ? 1 : TF === "2h" ? 2 : 4;
 const STATE_DIR =
   process.env.FTMO_STATE_DIR ?? path.join(process.cwd(), `ftmo-state-${TF}`);
 const PENDING_PATH = path.join(STATE_DIR, "pending-signals.json");
@@ -123,10 +125,29 @@ function defaultAccount(): AccountState {
   };
 }
 
-/** Msec until next TF UTC boundary. 4h: 00/04/08/12/16/20. 2h: every 2h. */
+/** Msec until next TF UTC boundary. 30m: HH:00/HH:30. 1h: HH:00. 2h/4h: standard. */
 function msUntilNextTfBoundary(): number {
   const now = Date.now();
   const d = new Date(now);
+  if (TF_HOURS < 1) {
+    // 30m: snap to next half-hour boundary in minutes
+    const stepMin = Math.round(TF_HOURS * 60); // 30
+    const totalMin =
+      d.getUTCHours() * 60 + d.getUTCMinutes() + d.getUTCSeconds() / 60;
+    const nextMin = Math.ceil((totalMin + 0.001) / stepMin) * stepMin;
+    const next = new Date(
+      Date.UTC(
+        d.getUTCFullYear(),
+        d.getUTCMonth(),
+        d.getUTCDate(),
+        Math.floor(nextMin / 60),
+        nextMin % 60,
+        30,
+        0,
+      ),
+    );
+    return next.getTime() - now;
+  }
   const h = d.getUTCHours();
   const nextHour = Math.ceil((h + 0.001) / TF_HOURS) * TF_HOURS;
   const next = new Date(
@@ -137,7 +158,7 @@ function msUntilNextTfBoundary(): number {
       nextHour,
       0,
       30,
-      0, // +30s buffer for Binance to close the bar
+      0,
     ),
   );
   return next.getTime() - now;
