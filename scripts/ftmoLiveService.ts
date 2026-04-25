@@ -197,13 +197,26 @@ async function runOneCheck(): Promise<DetectionResult> {
 
   console.log(renderDetection(result));
 
-  // Append new signals to pending queue (dedupe by signalBarClose + asset)
+  // Append new signals to pending queue.
+  // Dedup against BOTH pending AND executed signals — otherwise a service
+  // restart between signal queue and executor pickup could re-queue the
+  // same setup → 2x risk on a single bar.
   const pending = readJSON<{ signals: LiveSignal[] }>(PENDING_PATH, {
     signals: [],
   });
-  const existingKeys = new Set(
-    pending.signals.map((s) => `${s.assetSymbol}@${s.signalBarClose}`),
-  );
+  const executed = readJSON<{
+    signals: Array<{
+      signalAsset?: string;
+      assetSymbol?: string;
+      signalBarClose?: number;
+    }>;
+  }>(EXECUTED_PATH, { signals: [] });
+  const existingKeys = new Set([
+    ...pending.signals.map((s) => `${s.assetSymbol}@${s.signalBarClose}`),
+    ...executed.signals
+      .filter((s) => s.signalBarClose !== undefined)
+      .map((s) => `${s.signalAsset ?? s.assetSymbol}@${s.signalBarClose}`),
+  ]);
   const newSignals = result.signals.filter(
     (s) => !existingKeys.has(`${s.assetSymbol}@${s.signalBarClose}`),
   );
