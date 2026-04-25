@@ -13,7 +13,7 @@
  * recent PnLs for Kelly) so we can compute the exact risk multiplier.
  */
 import type { Candle } from "@/utils/indicators";
-import { ema } from "@/utils/indicators";
+import { ema, atr } from "@/utils/indicators";
 import {
   FTMO_DAYTRADE_24H_CONFIG_V231,
   FTMO_DAYTRADE_24H_CONFIG_V236,
@@ -233,21 +233,29 @@ export function detectLiveSignalsV231(
   account: AccountState,
   newsEvents: NewsEvent[] = [],
 ): DetectionResult {
-  // BTC regime for cross-asset filter + regime-switching
+  // BTC regime for cross-asset filter + regime-switching.
+  // Read EMA periods + momentum threshold from CFG.crossAssetFilter
+  // (was hardcoded 10/15/0.02 — broke for V6/V7 with EMA 12/16 mom 0.04).
+  const caf = CFG.crossAssetFilter;
+  const fastP = caf?.emaFastPeriod ?? 10;
+  const slowP = caf?.emaSlowPeriod ?? 15;
+  const momBars = caf?.momentumBars ?? 6;
+  const momThr = caf?.momSkipShortAbove ?? 0.02;
+
   const btcCloses = btcCandles.map((c) => c.close);
-  const btcEma10Arr = ema(btcCloses, 10);
-  const btcEma15Arr = ema(btcCloses, 15);
+  const btcEmaFastArr = ema(btcCloses, fastP);
+  const btcEmaSlowArr = ema(btcCloses, slowP);
   const lastIdx = btcCandles.length - 1;
   const btcClose = btcCandles[lastIdx].close;
-  const btcEma10 = btcEma10Arr[lastIdx] ?? btcClose;
-  const btcEma15 = btcEma15Arr[lastIdx] ?? btcClose;
+  const btcEma10 = btcEmaFastArr[lastIdx] ?? btcClose; // kept name for backwards-compat
+  const btcEma15 = btcEmaSlowArr[lastIdx] ?? btcClose;
   const btcMom24h =
-    lastIdx >= 6
-      ? (btcClose - btcCandles[lastIdx - 6].close) /
-        btcCandles[lastIdx - 6].close
+    lastIdx >= momBars
+      ? (btcClose - btcCandles[lastIdx - momBars].close) /
+        btcCandles[lastIdx - momBars].close
       : 0;
   const btcUptrend = btcClose > btcEma10 && btcEma10 > btcEma15;
-  const btcBullMom = btcMom24h > 0.02;
+  const btcBullMom = btcMom24h > momThr;
   const regime: Regime = btcUptrend && btcBullMom ? "BULL" : "BEAR_CHOP";
 
   const result: DetectionResult = {
@@ -281,7 +289,7 @@ export function detectLiveSignalsV231(
   }
 
   // BEAR/CHOP regime: use iter231 short-only mean-reversion (original logic).
-  const blockedByBtcFilter = btcUptrend || btcMom24h > 0.02;
+  const blockedByBtcFilter = btcUptrend || btcMom24h > momThr;
   if (blockedByBtcFilter) {
     result.notes.push(
       `BTC cross-asset filter BLOCKS all signals: uptrend=${btcUptrend}, mom24h=${(btcMom24h * 100).toFixed(2)}%`,
@@ -315,47 +323,89 @@ export function detectLiveSignalsV231(
     result.notes.push(`News blackout: within 2min of high-impact event`);
   }
 
-  const sharedBlock = blockedByBtcFilter || hourBlocked || newsBlocked;
+  // HTF trend filter: block shorts if asset has run up >threshold in lookback window.
+  // Engine matches this exact logic — was missing from live detector.
+  let htfBlocked = false;
+  let htfNote = "";
+  if (CFG.htfTrendFilter && CFG.htfTrendFilter.apply !== "long") {
+    const lb = CFG.htfTrendFilter.lookbackBars;
+    const thr = CFG.htfTrendFilter.threshold ?? 0.1;
+    const ethLast = ethCandles[ethCandles.length - 1].close;
+    if (ethCandles.length > lb) {
+      const ethBack = ethCandles[ethCandles.length - 1 - lb].close;
+      const change = (ethLast - ethBack) / ethBack;
+      if (change > thr) {
+        htfBlocked = true;
+        htfNote = `HTF trend filter blocks shorts: ETH +${(change * 100).toFixed(2)}% over ${lb} bars (>${(thr * 100).toFixed(2)}%)`;
+        result.notes.push(htfNote);
+      }
+    }
+  }
+
+  // Loss-streak cooldown: pause entries after N consecutive losers.
+  // Reads from account.recentPnls (most recent last). Engine matches.
+  let lscBlocked = false;
+  if (CFG.lossStreakCooldown) {
+    const { afterLosses, cooldownBars } = CFG.lossStreakCooldown;
+    let streak = 0;
+    for (let i = account.recentPnls.length - 1; i >= 0; i--) {
+      if (account.recentPnls[i] < 0) streak++;
+      else break;
+    }
+    if (streak >= afterLosses) {
+      // Approximate bar age of streak start: each trade ~1 bar.
+      // For live we just block until next bar after cooldown — best-effort.
+      const cdHours = cooldownBars * tfHours;
+      lscBlocked = true;
+      result.notes.push(
+        `Loss-streak cooldown: ${streak} losses in a row → pause ~${cdHours}h (cd=${cooldownBars} bars)`,
+      );
+    }
+  }
+
+  const sharedBlock =
+    blockedByBtcFilter ||
+    hourBlocked ||
+    newsBlocked ||
+    htfBlocked ||
+    lscBlocked;
 
   // Compute sizing factor once
   const { factor, notes: sizingNotes } = computeSizingFactor(account);
   result.notes.push(...sizingNotes);
 
-  // Per-asset signal check
-  const assets = [
-    {
-      asset: "ETH-MR" as const,
-      source: "ETHUSDT" as const,
-      candles: ethCandles,
-      triggerBars: 2,
-      minEqGain: 0,
-      baseRisk: 1.0,
-    },
-    {
-      asset: "ETH-PYR" as const,
-      source: "ETHUSDT" as const,
-      candles: ethCandles,
-      triggerBars: 2,
-      minEqGain: 0.003,
-      baseRisk: 5.0,
-    },
-    {
-      asset: "BTC-MR" as const,
-      source: "BTCUSDT" as const,
-      candles: btcCandles,
-      triggerBars: 1,
-      minEqGain: 0.04,
-      baseRisk: 0.15,
-    },
-    {
-      asset: "SOL-MR" as const,
-      source: "SOLUSDT" as const,
-      candles: solCandles,
-      triggerBars: 1,
-      minEqGain: 0.04,
-      baseRisk: 0.15,
-    },
-  ];
+  // Per-asset signal check.
+  // Reads triggerBars / riskFrac / minEquityGain from CFG.assets (was hardcoded).
+  // Falls back to CFG-level defaults if asset omits them.
+  const sourceForSym: Record<string, "ETHUSDT" | "BTCUSDT" | "SOLUSDT"> = {
+    ETHUSDT: "ETHUSDT",
+    BTCUSDT: "BTCUSDT",
+    SOLUSDT: "SOLUSDT",
+  };
+  const candlesForSrc: Record<string, Candle[]> = {
+    ETHUSDT: ethCandles,
+    BTCUSDT: btcCandles,
+    SOLUSDT: solCandles,
+  };
+  const assets = (CFG.assets ?? []).flatMap((a) => {
+    const src = a.sourceSymbol ?? a.symbol;
+    if (!sourceForSym[src]) return []; // skip assets not in our 3-asset live setup
+    const candles = candlesForSrc[src];
+    if (!candles) return [];
+    return [
+      {
+        asset: a.symbol,
+        source: sourceForSym[src],
+        candles,
+        triggerBars: a.triggerBars ?? CFG.triggerBars,
+        minEqGain: a.minEquityGain ?? 0,
+        baseRisk: a.riskFrac,
+        stopPctOverride: a.stopPct,
+        tpPctOverride: a.tpPct,
+        holdBarsOverride: a.holdBars,
+      },
+    ];
+  });
 
   for (const a of assets) {
     // Check equity gate (delayed assets)
@@ -384,14 +434,24 @@ export function detectLiveSignalsV231(
       continue;
     }
 
-    // Build signal
+    // Build signal — honor per-asset stop/tp/hold overrides + atrStop floor.
     const last = a.candles[a.candles.length - 1];
     const entryPrice = last.close;
-    const stopPct = CFG.stopPct;
-    const tpPct = CFG.tpPct;
+    let stopPct = a.stopPctOverride ?? CFG.stopPct;
+    const tpPct = a.tpPctOverride ?? CFG.tpPct;
+    // ATR-adaptive stop: take max(stopPct, atr*mult/entry) to widen on vol.
+    if (CFG.atrStop) {
+      const atrSeries = atr(a.candles, CFG.atrStop.period);
+      const atrVal = atrSeries[atrSeries.length - 1];
+      if (atrVal !== null && atrVal !== undefined) {
+        const atrFrac = (CFG.atrStop.stopMult * atrVal) / entryPrice;
+        stopPct = Math.max(stopPct, atrFrac);
+      }
+    }
     const stopPrice = entryPrice * (1 + stopPct); // short: stop above entry
     const tpPrice = entryPrice * (1 - tpPct); // short: TP below entry
-    const maxHoldHours = CFG.holdBars * tfHours;
+    const holdBarsEff = a.holdBarsOverride ?? CFG.holdBars;
+    const maxHoldHours = holdBarsEff * tfHours;
 
     // Effective risk = baseRisk × sizingFactor × leverage (leverage baked into position sizing)
     const effectiveRiskFrac = a.baseRisk * factor * CFG.leverage;
@@ -435,6 +495,7 @@ function detectBullSignals(
   result: DetectionResult,
 ): DetectionResult {
   const BULL = FTMO_DAYTRADE_24H_CONFIG_BULL;
+  const tfHours = USE_1H ? 1 : USE_2H ? 2 : 4;
   const { factor, notes: sizingNotes } = computeSizingFactor(account);
   result.notes.push(...sizingNotes);
 
@@ -448,7 +509,7 @@ function detectBullSignals(
     return result;
   }
 
-  const entryOpenTime = b1.openTime + 4 * 3600_000;
+  const entryOpenTime = b1.openTime + tfHours * 3600_000;
   if (isNewsBlackout(entryOpenTime, newsEvents, 2)) {
     result.notes.push("News blackout");
     return result;
@@ -459,7 +520,7 @@ function detectBullSignals(
   const entryPrice = b1.close;
   const stopPrice = entryPrice * (1 - stopPct); // long: stop below
   const tpPrice = entryPrice * (1 + tpPct); // long: TP above
-  const maxHoldHours = BULL.holdBars * 4;
+  const maxHoldHours = BULL.holdBars * tfHours;
   const baseAsset = BULL.assets[0];
   const effectiveRiskFrac = baseAsset.riskFrac * factor * BULL.leverage;
 
