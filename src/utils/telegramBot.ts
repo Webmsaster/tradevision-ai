@@ -135,6 +135,15 @@ async function handleCommand(
     case "/config":
       await tgSend(await renderConfig(ctx), cfg);
       break;
+    case "/trades":
+      await tgSend(renderTrades(ctx), cfg);
+      break;
+    case "/stats":
+      await tgSend(renderStats(ctx), cfg);
+      break;
+    case "/preview":
+      await tgSend(renderPreview(ctx), cfg);
+      break;
     default:
       await tgSend(
         `❓ Unknown command: <code>${htmlEscape(cmd)}</code>\nSend /help for options.`,
@@ -150,6 +159,9 @@ function helpText() {
     "<code>/status</code> — current equity, day, service health",
     "<code>/positions</code> — list open positions",
     "<code>/pnl</code> — today's + recent P&L summary",
+    "<code>/trades</code> — last 10 closed trades",
+    "<code>/stats</code> — win-rate, avg trade, days to pass",
+    "<code>/preview</code> — what would next check do?",
     "<code>/pause</code> — skip new signals (open positions continue)",
     "<code>/resume</code> — re-enable new signals",
     "<code>/kill</code> — close all open positions + pause",
@@ -310,6 +322,146 @@ function readJson<T>(p: string, fallback: T): T {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+interface ExecutedEntry {
+  signal?: {
+    assetSymbol?: string;
+    signalBarClose?: number;
+    entryPrice?: number;
+    direction?: string;
+  };
+  result?: string;
+  ticket?: number;
+  actual_entry?: number;
+  lot?: number;
+  ts?: string;
+  error?: string;
+  reason?: string;
+}
+
+function readExecuted(stateDir: string): ExecutedEntry[] {
+  const data = readJson<{ executions?: ExecutedEntry[] }>(
+    path.join(stateDir, "executed-signals.json"),
+    {},
+  );
+  return data.executions ?? [];
+}
+
+function readAccount(stateDir: string) {
+  return readJson<{
+    equity?: number;
+    day?: number;
+    raw_equity_usd?: number;
+    recentPnls?: number[];
+    equityAtDayStart?: number;
+  }>(path.join(stateDir, "account.json"), {});
+}
+
+function renderTrades(ctx: TelegramCommandHandlerCtx): string {
+  const executed = readExecuted(ctx.stateDir);
+  const placed = executed
+    .filter((e) => e.result === "placed")
+    .slice(-10)
+    .reverse();
+  if (placed.length === 0) return "📋 <b>No trades yet</b>";
+  const lines = ["📋 <b>Last 10 trades</b>", ""];
+  for (const e of placed) {
+    const ts = e.ts
+      ? new Date(e.ts).toISOString().slice(5, 16).replace("T", " ")
+      : "?";
+    const sym = e.signal?.assetSymbol ?? "?";
+    const px = e.actual_entry?.toFixed(2) ?? "?";
+    const lot = e.lot?.toFixed(3) ?? "?";
+    lines.push(
+      `<code>${ts}</code> ${sym} @ $${px} × ${lot} lot (#${e.ticket ?? "?"})`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function renderStats(ctx: TelegramCommandHandlerCtx): string {
+  const acc = readAccount(ctx.stateDir);
+  const recent = acc.recentPnls ?? [];
+  const eq = acc.equity ?? 1.0;
+  const day = acc.day ?? 0;
+  if (recent.length === 0)
+    return (
+      "📊 <b>No closed trades yet</b>\nDay " +
+      day +
+      " of 30 · equity " +
+      ((eq - 1) * 100).toFixed(2) +
+      "%"
+    );
+  const wins = recent.filter((p) => p > 0).length;
+  const winRate = wins / recent.length;
+  const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
+  const best = Math.max(...recent);
+  const worst = Math.min(...recent);
+  const sumWins = recent.filter((p) => p > 0).reduce((a, b) => a + b, 0);
+  const sumLoss = Math.abs(
+    recent.filter((p) => p < 0).reduce((a, b) => a + b, 0),
+  );
+  const pf = sumLoss > 0 ? (sumWins / sumLoss).toFixed(2) : "∞";
+  // Rough days-to-pass estimate from current velocity
+  const eqGain = eq - 1;
+  const remaining = 0.1 - eqGain;
+  const velocity = day > 0 ? eqGain / day : 0;
+  const daysToPass =
+    velocity > 0 && remaining > 0
+      ? (remaining / velocity).toFixed(1) + "d"
+      : "—";
+  return [
+    "📊 <b>Bot Statistics</b>",
+    "",
+    `<b>Trades:</b> ${recent.length} (last 20)`,
+    `<b>Win-rate:</b> ${(winRate * 100).toFixed(0)}% (${wins}/${recent.length})`,
+    `<b>Avg trade:</b> ${(avg * 100).toFixed(3)}%`,
+    `<b>Best:</b> ${(best * 100).toFixed(2)}%  Worst: ${(worst * 100).toFixed(2)}%`,
+    `<b>Profit Factor:</b> ${pf}`,
+    "",
+    `<b>Equity:</b> ${(eqGain * 100).toFixed(2)}% (target +10%)`,
+    `<b>Day:</b> ${day} of 30`,
+    `<b>Velocity:</b> ${(velocity * 100).toFixed(2)}%/day`,
+    `<b>ETA to target:</b> ${daysToPass}`,
+  ].join("\n");
+}
+
+function renderPreview(ctx: TelegramCommandHandlerCtx): string {
+  const last = readJson<{
+    timestamp?: number;
+    regime?: string;
+    signalCount?: number;
+    notes?: string[];
+    skipped?: Array<{ asset: string; reason: string }>;
+    btc?: { close: number; ema10: number; ema15: number; mom24h: number };
+  }>(path.join(ctx.stateDir, "last-check.json"), {});
+  if (!last.timestamp) return "🔍 <b>No check performed yet</b>";
+  const age = Date.now() - last.timestamp;
+  const ageMin = Math.round(age / 60000);
+  const lines = [`🔍 <b>Last Check</b> (${ageMin}m ago)`, ""];
+  if (last.regime) lines.push(`Regime: <b>${last.regime}</b>`);
+  if (last.btc) {
+    const trend =
+      last.btc.close > last.btc.ema10 && last.btc.ema10 > last.btc.ema15
+        ? "↑"
+        : "↓";
+    lines.push(
+      `BTC: $${last.btc.close.toFixed(0)} ${trend} 24h: ${(last.btc.mom24h * 100).toFixed(2)}%`,
+    );
+  }
+  lines.push(`Signals found: <b>${last.signalCount ?? 0}</b>`);
+  if (last.skipped && last.skipped.length > 0) {
+    lines.push("\n<b>Skipped:</b>");
+    for (const s of last.skipped.slice(0, 6)) {
+      lines.push(`  ${s.asset}: ${s.reason}`);
+    }
+  }
+  if (last.notes && last.notes.length > 0) {
+    lines.push("\n<b>Notes:</b>");
+    for (const n of last.notes.slice(0, 5)) lines.push(`  ${n}`);
+  }
+  return lines.join("\n");
 }
 
 // ---- Types ----
