@@ -2150,8 +2150,8 @@ export const FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT: FtmoDaytrade24hConfig = {
   atrStop: { period: 14, stopMult: 20 },
   crossAssetFilter: {
     ...(FTMO_DAYTRADE_24H_CONFIG_V261_2H.crossAssetFilter as any),
-    emaFastPeriod: 14,
-    emaSlowPeriod: 17,
+    emaFastPeriod: 10,
+    emaSlowPeriod: 20,
     momSkipShortAbove: 0.01,
   },
   lossStreakCooldown: { afterLosses: 2, cooldownBars: 48 },
