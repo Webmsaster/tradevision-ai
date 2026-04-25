@@ -296,6 +296,71 @@ Beide Bots sind short-only Mean-Reversion (gleiche Richtung), also
 keine Hedging-Verletzung — aber bei Account-Verifikation immer prüfen,
 welche Regeln dein konkreter Plan hat.
 
+## PM2 Auto-Restart (empfohlen für Production)
+
+PM2 hält beide Services (Node Signal + Python Executor) am Leben durch:
+
+- Auto-restart bei Crash (max 50 retries, 5-10s delay)
+- Restart-on-boot (Windows Service via `pm2-windows-startup`)
+- Memory-Limit-Restart (500M / 300M)
+- Persistente Logs in `ftmo-state-{tf}/pm2-*.log`
+
+### Setup auf Windows VPS
+
+```powershell
+# 1. PM2 + Windows-Startup Helper installieren (einmalig, global)
+npm install -g pm2 pm2-windows-startup
+
+# 2. Bot-Verzeichnis
+cd C:\tradevision-ai
+
+# 3. ENV-Variablen für Telegram in Session setzen (oder direkt in ecosystem.config.js editieren)
+$env:TELEGRAM_BOT_TOKEN = "8784347792:AAGOuLww-yTQIYs_ZsE1EbvnoZuBpXaGMtU"
+$env:TELEGRAM_CHAT_ID = "8794162768"
+
+# 4. Beide Services starten (default: 1h Variante = V7_1H_OPT)
+pm2 start tools/ecosystem.config.js
+
+# 5. Konfiguration speichern
+pm2 save
+
+# 6. Auto-Start beim VPS-Boot aktivieren
+pm2-startup install
+
+# 7. Verify
+pm2 list
+```
+
+### Timeframe ändern (1h ↔ 2h ↔ 4h)
+
+```powershell
+# Edit ecosystem.config.js → ändere TF = "1h" auf "2h" oder "4h"
+# Dann:
+pm2 reload tools/ecosystem.config.js
+pm2 save
+```
+
+### Daily Operations
+
+```powershell
+pm2 list                  # Status check
+pm2 logs ftmo-signal      # Live Signal-Service Logs
+pm2 logs ftmo-executor    # Live Executor Logs
+pm2 monit                 # Interactive monitor (CPU/RAM)
+pm2 restart all           # Force restart beider Services
+pm2 stop all              # Stop ohne Auto-Restart
+pm2 delete all            # Komplett aus PM2 entfernen
+```
+
+### Troubleshooting
+
+- **Service startet nicht / "errored":** `pm2 logs ftmo-signal --err` zeigt Fehler. Bei MT5-Connection-Issues prüfe ob MT5-Terminal offen ist.
+- **Reboot test:** `Restart-Computer` → nach 2 min `pm2 list` sollte beide Services zeigen
+- **Logs zu groß:** PM2 rotiert nicht automatisch. Bei Bedarf: `pm2 install pm2-logrotate`
+
+Das macht `tools/ftmo_executor.py`'s eigenes MT5-Reconnect (alle 10s) noch
+robuster — falls der ganze Python-Prozess crasht, holt PM2 ihn zurück.
+
 ## MT5 Auto-Reconnect (automatisch)
 
 Wenn MT5-Verbindung abbricht:

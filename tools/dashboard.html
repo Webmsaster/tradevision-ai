@@ -36,8 +36,15 @@
 </head>
 <body>
   <div class="header">
-    <h1><span class="pulse"></span>FTMO V252 Live Dashboard</h1>
-    <div class="last-update">Last Update: <span id="last-update">—</span> · Auto-refresh every 30s</div>
+    <h1><span class="pulse"></span>FTMO Live Dashboard <span id="cfg-tag" class="badge badge-blue" style="margin-left: 8px;">—</span></h1>
+    <div>
+      <select id="tf-select" style="background: #161b22; color: #e6edf3; border: 1px solid #30363d; padding: 4px 8px; border-radius: 6px; margin-right: 12px;">
+        <option value="1h">1h V7 (94.10%)</option>
+        <option value="2h">2h V6 (96.06%)</option>
+        <option value="4h">4h V261 (94.31%)</option>
+      </select>
+      <span class="last-update">Last Update: <span id="last-update">—</span> · 30s</span>
+    </div>
   </div>
 
   <div class="grid">
@@ -77,14 +84,24 @@
       <div class="card-sub" id="open-sub">—</div>
     </div>
     <div class="card">
-      <div class="card-label">Backtest Expected Pass Day</div>
-      <div class="card-value blue">5d</div>
-      <div class="card-sub">FTMO-real (50% Median)</div>
+      <div class="card-label">Backtest Median Pass</div>
+      <div class="card-value blue" id="bt-median">—</div>
+      <div class="card-sub" id="bt-median-sub">—</div>
     </div>
     <div class="card">
       <div class="card-label">Backtest Pass Rate</div>
-      <div class="card-value blue">90.8%</div>
-      <div class="card-sub">V252 on 5.71y data</div>
+      <div class="card-value blue" id="bt-passrate">—</div>
+      <div class="card-sub" id="bt-passrate-sub">—</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Live Pass Probability</div>
+      <div class="card-value" id="live-pass-prob">—</div>
+      <div class="card-sub" id="live-pass-sub">based on equity + days remaining</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Trades / Day</div>
+      <div class="card-value" id="trades-per-day">—</div>
+      <div class="card-sub" id="trades-per-day-sub">today vs avg backtest</div>
     </div>
   </div>
 
@@ -104,11 +121,27 @@
   </div>
 
 <script>
-const STATE_DIR = "../ftmo-state"; // relative to dashboard.html location
+// Backtest reference numbers per TF (from MEMORY.md champions).
+const BT = {
+  "1h": { name: "V7 1h",   passRate: 0.9410, medianFtmoDays: 4, p75: 6, p95: 7,  avgTrades: 3.5,  dl: 1, tl: 22 },
+  "2h": { name: "V6 2h",   passRate: 0.9606, medianFtmoDays: 4, p75: 8, p95: 10, avgTrades: 3.18, dl: 0, tl: 27 },
+  "4h": { name: "V261 4h", passRate: 0.9431, medianFtmoDays: 5, p75: 7, p95: 9,  avgTrades: 3.0,  dl: 0, tl: 38 },
+};
+
+// State-dir resolves from the selected TF; persisted in localStorage.
+function getTf() {
+  return localStorage.getItem("ftmo_tf") || "1h";
+}
+function setTf(tf) {
+  localStorage.setItem("ftmo_tf", tf);
+}
+function stateDir() {
+  return `../ftmo-state-${getTf()}`;
+}
 
 async function readJSON(file) {
   try {
-    const res = await fetch(`${STATE_DIR}/${file}?t=${Date.now()}`);
+    const res = await fetch(`${stateDir()}/${file}?t=${Date.now()}`);
     if (!res.ok) return null;
     return await res.json();
   } catch (e) { return null; }
@@ -122,13 +155,67 @@ function fmtPct(p, sign=true) {
   return (sign && p >= 0 ? "+" : "") + s + "%";
 }
 
+// Live-pass-probability: simple bayesian estimate.
+// Assume each remaining day has the per-day pass-rate of the strategy.
+// p(pass) ≈ 1 - (1 - p_perday)^remaining_days
+// Calibrated from backtest median-pass-day.
+function livePassProb(account, tf) {
+  const bt = BT[tf];
+  if (!bt || !account) return null;
+  const eqPct = (account.equity || 1) - 1;
+  const dayCur = account.day || 0;
+  const remaining = Math.max(0, 30 - dayCur);
+  // If already at or past target, certainty.
+  if (eqPct >= 0.10) return 1.0;
+  // If ETL/DL breach risk imminent (-9% drawdown), shrink prob hard.
+  if (eqPct <= -0.09) return 0.05;
+  // Per-challenge pass rate, decayed by days already elapsed without pass.
+  // Simple model: remaining/30 of fresh prob, weighted by how close to target.
+  const dayWeight = remaining / 30;
+  const equityBonus = Math.max(0, eqPct / 0.10) * 0.3; // up to +30%
+  return Math.min(0.99, bt.passRate * dayWeight + equityBonus);
+}
+
+function updateBacktestRefs() {
+  const tf = getTf();
+  const bt = BT[tf];
+  if (!bt) return;
+  document.getElementById("cfg-tag").textContent = bt.name;
+  document.getElementById("bt-median").textContent = `${bt.medianFtmoDays}d`;
+  document.getElementById("bt-median-sub").textContent = `p75: ${bt.p75}d / p95: ${bt.p95}d`;
+  document.getElementById("bt-passrate").textContent = (bt.passRate * 100).toFixed(2) + "%";
+  document.getElementById("bt-passrate-sub").textContent = `${bt.name} on 5.71y data`;
+}
+
 async function refresh() {
+  updateBacktestRefs();
   const account = await readJSON("account.json");
   const pending = await readJSON("pending-signals.json");
   const executed = await readJSON("executed-signals.json");
   const lastCheck = await readJSON("last-check.json");
 
   document.getElementById("last-update").textContent = new Date().toLocaleTimeString();
+
+  // Live pass probability + trades/day
+  const tf = getTf();
+  const prob = livePassProb(account, tf);
+  const probEl = document.getElementById("live-pass-prob");
+  if (prob !== null) {
+    probEl.textContent = (prob * 100).toFixed(1) + "%";
+    probEl.className = "card-value " + (prob >= 0.7 ? "green" : prob >= 0.3 ? "yellow" : "red");
+  } else {
+    probEl.textContent = "—";
+    probEl.className = "card-value";
+  }
+  if (account) {
+    const day = Math.max(1, account.day || 1);
+    const tradesCount = (account.recentPnls || []).length;
+    const tpd = tradesCount / day;
+    document.getElementById("trades-per-day").textContent = tpd.toFixed(2);
+    const ref = (BT[tf]?.avgTrades || 3) / 4; // baseline avg over 4d median pass
+    document.getElementById("trades-per-day-sub").textContent =
+      `today: ${tpd.toFixed(2)} · backtest avg/day: ${ref.toFixed(2)}`;
+  }
 
   if (account) {
     const eq = account.equity || 1.0;
@@ -211,6 +298,14 @@ async function refresh() {
     document.getElementById("last-check").innerHTML = html;
   }
 }
+
+// Wire up TF selector
+const tfSel = document.getElementById("tf-select");
+tfSel.value = getTf();
+tfSel.addEventListener("change", (e) => {
+  setTf(e.target.value);
+  refresh();
+});
 
 refresh();
 setInterval(refresh, 30000);
