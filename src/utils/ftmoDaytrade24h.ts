@@ -2106,6 +2106,28 @@ export const FTMO_DAYTRADE_24H_CONFIG_V260: FtmoDaytrade24hConfig = {
 };
 
 /**
+ * iter261_2H — V261 tuned for 2h timeframe.
+ *
+ * Found via 2h-optimization sweep (~150 variants on 2h Binance data).
+ * Best Pareto: tb=1, hb=300.
+ *
+ * Performance on 5.71y 2h ETH+BTC+SOL Binance, 685 windows, FTMO real:
+ *   - V261_2H: 616/685 = 89.93% / engine 2d / FTMO-real 4d / DL 3 / TL 66
+ *
+ * Use case: parallel demo accounts where speed > pass-rate.
+ * Typical FTMO challenge passes in 4 days vs 4h V261's 5 days.
+ *
+ * IMPORTANT: User-side service must poll 2h instead of 4h. The TS signal
+ * service `ftmoLiveService.ts` is 4h-hardcoded — needs separate variant.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V261_2H: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V260,
+  lossStreakCooldown: { afterLosses: 2, cooldownBars: 6 },
+  triggerBars: 1,
+  holdBars: 300,
+};
+
+/**
  * iter261 — V260 + NEW lossStreakCooldown engine feature.
  *
  * Pauses entries for 6 bars (1 day) after 2 consecutive stop-outs.
