@@ -34,8 +34,10 @@ import {
   type NewsEvent,
 } from "../src/utils/forexFactoryNews";
 
+const TF: "2h" | "4h" = process.env.FTMO_TF === "2h" ? "2h" : "4h";
+const TF_HOURS = TF === "2h" ? 2 : 4;
 const STATE_DIR =
-  process.env.FTMO_STATE_DIR ?? path.join(process.cwd(), "ftmo-state");
+  process.env.FTMO_STATE_DIR ?? path.join(process.cwd(), `ftmo-state-${TF}`);
 const PENDING_PATH = path.join(STATE_DIR, "pending-signals.json");
 const EXECUTED_PATH = path.join(STATE_DIR, "executed-signals.json");
 const ACCOUNT_PATH = path.join(STATE_DIR, "account.json");
@@ -116,12 +118,12 @@ function defaultAccount(): AccountState {
   };
 }
 
-/** Msec until next 4h UTC boundary (00/04/08/12/16/20). */
-function msUntilNext4hBoundary(): number {
+/** Msec until next TF UTC boundary. 4h: 00/04/08/12/16/20. 2h: every 2h. */
+function msUntilNextTfBoundary(): number {
   const now = Date.now();
   const d = new Date(now);
   const h = d.getUTCHours();
-  const nextHour = Math.ceil((h + 0.001) / 4) * 4; // strict next
+  const nextHour = Math.ceil((h + 0.001) / TF_HOURS) * TF_HOURS;
   const next = new Date(
     Date.UTC(
       d.getUTCFullYear(),
@@ -167,19 +169,19 @@ async function runOneCheck(): Promise<DetectionResult> {
 
   const eth = await loadBinanceHistory({
     symbol: "ETHUSDT",
-    timeframe: "4h",
+    timeframe: TF,
     targetCount: 500,
     maxPages: 2,
   });
   const btc = await loadBinanceHistory({
     symbol: "BTCUSDT",
-    timeframe: "4h",
+    timeframe: TF,
     targetCount: 500,
     maxPages: 2,
   });
   const sol = await loadBinanceHistory({
     symbol: "SOLUSDT",
-    timeframe: "4h",
+    timeframe: TF,
     targetCount: 500,
     maxPages: 2,
   });
@@ -376,7 +378,7 @@ async function main() {
   ensureStateDir();
 
   await tgSend(
-    `🤖 <b>FTMO Signal Service ONLINE</b>\nState dir: <code>${htmlEscape(STATE_DIR)}</code>\nNext check at next 4h UTC boundary.`,
+    `🤖 <b>FTMO Signal Service ONLINE (${TF})</b>\nState dir: <code>${htmlEscape(STATE_DIR)}</code>\nNext check at next ${TF} UTC boundary.`,
   );
 
   // Start Telegram command receiver in background
@@ -401,9 +403,9 @@ async function main() {
     appendLog({ event: "error", phase: "initial", message: String(e) });
   }
 
-  // Schedule at each 4h UTC boundary (+30s buffer)
+  // Schedule at each TF UTC boundary (+30s buffer)
   const loop = async () => {
-    const wait = msUntilNext4hBoundary();
+    const wait = msUntilNextTfBoundary();
     const nextAt = new Date(Date.now() + wait).toISOString();
     console.log(
       `[ftmo-live] next check at ${nextAt} (in ${(wait / 60000).toFixed(1)} min)`,
@@ -424,7 +426,7 @@ async function main() {
   setInterval(() => {
     const status = {
       ts: new Date().toISOString(),
-      nextCheckInSec: Math.round(msUntilNext4hBoundary() / 1000),
+      nextCheckInSec: Math.round(msUntilNextTfBoundary() / 1000),
     };
     writeJSON(path.join(STATE_DIR, "service-status.json"), status);
   }, 60_000);

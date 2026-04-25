@@ -42,6 +42,7 @@ import {
   FTMO_DAYTRADE_24H_CONFIG_V259,
   FTMO_DAYTRADE_24H_CONFIG_V260,
   FTMO_DAYTRADE_24H_CONFIG_V261,
+  FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT,
   FTMO_DAYTRADE_24H_CONFIG_BULL,
 } from "@/utils/ftmoDaytrade24h";
 import type { NewsEvent } from "@/utils/forexFactoryNews";
@@ -97,10 +98,15 @@ export interface DetectionResult {
   };
 }
 
-// iter261: V260 + NEW lossStreakCooldown (after 2 losses, pause 6 bars).
-// DL drops 1→0 (zero daily breaches!), pass crosses 94.31%.
-// Performance on 5.71y full data: 94.31% pass / engine 5d / FTMO-real 5d.
-const CFG = FTMO_DAYTRADE_24H_CONFIG_V261;
+// CFG selection via ENV var FTMO_TF:
+//   - "2h" → V261_2H_OPT v5 (94.60% / 4d FTMO-real / DL 0 / TL 37 — strict champion)
+//   - else → V261 (4h, 94.31% / 5d FTMO-real / DL 0 / TL 38)
+// Both run on the same engine — only the polling cadence + Binance candle
+// timeframe + per-asset config differ.
+const USE_2H = process.env.FTMO_TF === "2h";
+const CFG = USE_2H
+  ? FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT
+  : FTMO_DAYTRADE_24H_CONFIG_V261;
 void FTMO_DAYTRADE_24H_CONFIG_V231; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V236; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V238; // rollback reference
@@ -278,13 +284,18 @@ export function detectLiveSignalsV231(
     // No short signals allowed when BTC is bullish
   }
 
-  // Session filter (iter212 base: allowedHoursUtc = [0, 4, 12, 16, 20])
-  // Entry = next bar's open. So signal-bar close hour + 4 is entry hour.
+  // Session filter. Entry = next bar's open.
+  // 4h: bar close hour + 4 = entry hour, allowed [0,4,8,12,16,20]
+  // 2h: bar close hour + 2 = entry hour, allowed every 2h slot
+  const tfHours = USE_2H ? 2 : 4;
   const ethLastIdx = ethCandles.length - 1;
   const b1 = ethCandles[ethLastIdx];
-  const entryOpenTime = b1.openTime + 4 * 3600_000;
+  const entryOpenTime = b1.openTime + tfHours * 3600_000;
   const entryHour = new Date(entryOpenTime).getUTCHours();
-  const allowedHours = CFG.allowedHoursUtc ?? [0, 4, 8, 12, 16, 20];
+  const defaultHours = USE_2H
+    ? [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]
+    : [0, 4, 8, 12, 16, 20];
+  const allowedHours = CFG.allowedHoursUtc ?? defaultHours;
   const hourBlocked = !allowedHours.includes(entryHour);
   if (hourBlocked) {
     result.notes.push(
@@ -374,7 +385,7 @@ export function detectLiveSignalsV231(
     const tpPct = CFG.tpPct;
     const stopPrice = entryPrice * (1 + stopPct); // short: stop above entry
     const tpPrice = entryPrice * (1 - tpPct); // short: TP below entry
-    const maxHoldHours = CFG.holdBars * 4;
+    const maxHoldHours = CFG.holdBars * tfHours;
 
     // Effective risk = baseRisk × sizingFactor × leverage (leverage baked into position sizing)
     const effectiveRiskFrac = a.baseRisk * factor * CFG.leverage;
