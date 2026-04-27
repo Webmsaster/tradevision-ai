@@ -22,6 +22,7 @@ Run mock (no MT5 needed, simulates on Binance prices):
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import time
@@ -63,12 +64,28 @@ MAX_TOTAL_LOSS_PCT = 0.10
 CHALLENGE_START_DATE = os.environ.get("FTMO_START_DATE")
 
 # iter236+: Profit target & pause-after-target behavior
-PROFIT_TARGET_PCT = float(os.environ.get("FTMO_PROFIT_TARGET", "0.10"))  # FTMO Standard 10%
+# FIX 2026-04-27: FTMO Step 1 = 8% target (not 10%). Step 2 = 5% / 60d.
+# Default to Step 1 conditions. Override via FTMO_PROFIT_TARGET env var if doing Step 2.
+PROFIT_TARGET_PCT = float(os.environ.get("FTMO_PROFIT_TARGET", "0.08"))  # FTMO Step 1 = 8%
 MIN_TRADING_DAYS = int(os.environ.get("FTMO_MIN_TRADING_DAYS", "4"))      # FTMO 2-Step (Step 1 & 2) requires 4 trading days minimum
 PAUSE_AT_TARGET = os.environ.get("FTMO_PAUSE_AT_TARGET", "1").lower() in ("1", "true", "yes")
 # Ping trade asset (tiny no-risk trade to clock minTradingDays after target hit)
 PING_SYMBOL_BINANCE = os.environ.get("FTMO_PING_SYMBOL", "ETHUSDT")
 PING_LOT_SIZE = float(os.environ.get("FTMO_PING_LOT", "0.01"))  # tiny lot
+
+# Hard-cap on risk_frac sent by signal source. Refuses orders above this.
+# FTMO daily-loss = 5%, total-loss = 10%. Capping per-trade at 5% means at
+# worst a single bad fill costs 5% — still inside DL after one stop-out.
+# A hot signal can still arrive at 200% (legacy backtest formula) — this
+# is the executor's last line of defence against the "no money" cascade.
+RISK_FRAC_HARD_CAP = float(os.environ.get("FTMO_RISK_HARD_CAP", "0.07"))
+
+# Auto-pause after N consecutive failed orders (e.g. "no money" cascade).
+# Resets to 0 on the first successful order. Setting to 0 disables.
+ORDER_FAIL_AUTO_PAUSE = int(os.environ.get("FTMO_ORDER_FAIL_PAUSE", "3"))
+
+# Dry-run mode: log planned orders but never call mt5.order_send.
+DRY_RUN = os.environ.get("FTMO_DRY_RUN", "").lower() in ("1", "true", "yes")
 
 # Circuit breaker — pause trading after N consecutive losses
 CB_LOSS_STREAK = int(os.environ.get("FTMO_CB_LOSS_STREAK", "3"))
@@ -336,7 +353,6 @@ def compute_lot_size(symbol_info: Any, risk_frac: float, stop_pct: float, accoun
     the broker's volume_min — caller must skip the trade rather than
     silently inflate risk by trading at volume_min.
     """
-    import math
     risk_usd = account_equity * risk_frac
     tick_size = symbol_info.trade_tick_size or symbol_info.point
     tick_value = symbol_info.trade_tick_value or 1.0
@@ -384,6 +400,14 @@ def place_market_order(
     if info is None or info.bid == 0 or info.ask == 0:
         return OrderResult(False, None, f"symbol_info not ready for {ftmo_symbol}", None, None)
 
+    # Hard-cap risk_frac before sizing — defends against legacy 200% formula.
+    if risk_frac > RISK_FRAC_HARD_CAP:
+        print(
+            f"[executor] WARN: incoming risk_frac={risk_frac:.4f} exceeds hard cap "
+            f"{RISK_FRAC_HARD_CAP:.4f} — clamping for {ftmo_symbol}"
+        )
+        risk_frac = RISK_FRAC_HARD_CAP
+
     lot = compute_lot_size(info, risk_frac, stop_pct, account_equity)
     if lot <= 0:
         return OrderResult(False, None, "lot computation returned 0", None, None)
@@ -400,6 +424,13 @@ def place_market_order(
         order_type = mt5.ORDER_TYPE_BUY
     else:
         return OrderResult(False, None, f"unknown direction {direction}", lot, None)
+
+    # Margin pre-check — ask MT5 to validate the order. If margin would
+    # exceed free_margin, halve the lot until it fits or hit volume_min.
+    # This stops the "retcode=10019 No money" cascade dead.
+    lot = _fit_lot_to_margin(ftmo_symbol, order_type, lot, entry_price, stop_price, tp_price, info)
+    if lot <= 0:
+        return OrderResult(False, None, "no lot size fits free margin", None, entry_price)
 
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
@@ -421,6 +452,61 @@ def place_market_order(
     if result.retcode != mt5.TRADE_RETCODE_DONE:
         return OrderResult(False, None, f"retcode={result.retcode} {getattr(result, 'comment', '')}", lot, entry_price)
     return OrderResult(True, result.order, None, lot, result.price)
+
+
+def _fit_lot_to_margin(
+    ftmo_symbol: str,
+    order_type: int,
+    lot: float,
+    entry_price: float,
+    stop_price: float,
+    tp_price: float,
+    info: Any,
+) -> float:
+    """
+    Run mt5.order_check() and halve lot until margin fits, or return 0.0.
+
+    Mock-mode skips the check (mock has no order_check implementation).
+    """
+    if MOCK_MODE:
+        return lot
+
+    check_fn = getattr(mt5, "order_check", None)
+    if check_fn is None:
+        return lot  # very old MT5 build — fall through and let order_send fail
+
+    vol_min = info.volume_min or 0.01
+    step = info.volume_step or 0.01
+    cur_lot = lot
+    for _ in range(8):  # at most 8 halvings before giving up
+        req = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": ftmo_symbol,
+            "volume": cur_lot,
+            "type": order_type,
+            "price": entry_price,
+            "sl": stop_price,
+            "tp": tp_price,
+            "deviation": 20,
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        check = check_fn(req)
+        if check is None:
+            return cur_lot  # API hiccup — let order_send try
+        if check.retcode == 0 or check.retcode == mt5.TRADE_RETCODE_DONE:
+            return cur_lot
+        # 10019 = "No money", 10014 = "Invalid volume", 10016 = "Invalid stops"
+        if check.retcode != 10019:
+            return cur_lot  # not a margin issue — let order_send surface it
+        new_lot = max(vol_min, math.floor((cur_lot / 2) / step) * step)
+        if new_lot >= cur_lot:
+            return 0.0  # already at min, still no money
+        print(
+            f"[executor] margin tight on {ftmo_symbol}: lot {cur_lot:.4f} → {new_lot:.4f}"
+        )
+        cur_lot = new_lot
+    return 0.0
 
 
 # Backward compat alias
@@ -621,6 +707,21 @@ def process_pending_signals() -> None:
         direction = sig.get("direction", "short")
         regime = sig.get("regime", "BEAR_CHOP")
         tag = "iter213-bull" if regime == "BULL" else "iter231"
+
+        if DRY_RUN:
+            log_event("dry_run_order", asset=sig["assetSymbol"], risk=sig["riskFrac"], stop=sig["stopPct"])
+            tg_send(
+                f"🧪 <b>DRY RUN — would place order</b>\n"
+                f"{sig['assetSymbol']} {direction.upper()}\n"
+                f"Risk: {sig['riskFrac']*100:.3f}% · Stop: {sig['stopPct']*100:.2f}%\n"
+                f"Entry≈${sig.get('entryPrice', 0):.4f}"
+            )
+            executed["executions"].append({
+                "signal": sig, "result": "dry_run",
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+            continue
+
         result = place_market_order(
             binance_symbol=sig["sourceSymbol"],
             direction=direction,
@@ -631,10 +732,11 @@ def process_pending_signals() -> None:
             comment=f"{tag} {sig['assetSymbol']}",
         )
         if result.ok:
+            _reset_order_fail_counter()
             log_event("order_placed", asset=sig["assetSymbol"], ticket=result.ticket, lot=result.lot, entry=result.entry_price)
             tg_send(
                 f"✅ <b>ORDER PLACED</b>\n"
-                f"{sig['assetSymbol']} SHORT\n"
+                f"{sig['assetSymbol']} {direction.upper()}\n"
                 f"Ticket: <code>{result.ticket}</code>\n"
                 f"Lot: {result.lot} @ ${result.entry_price:.4f}\n"
                 f"Risk: {sig['riskFrac']*100:.3f}% of equity"
@@ -643,13 +745,18 @@ def process_pending_signals() -> None:
                 "ticket": result.ticket,
                 "signalAsset": sig["assetSymbol"],
                 "sourceSymbol": sig["sourceSymbol"],
-                "direction": "short",
+                "direction": direction,
                 "lot": result.lot,
                 "entry_price": result.entry_price,
                 "stop_price": sig["stopPrice"],
                 "tp_price": sig["tpPrice"],
                 "max_hold_until": sig["maxHoldUntil"],
                 "opened_at": datetime.now(timezone.utc).isoformat(),
+                # Trailing-stop state. None = trailing not configured.
+                # Activated=False until price reaches entry × (1 + activatePct) [long]
+                # or entry × (1 - activatePct) [short]. Once activated, SL trails by trailPct.
+                "trailing_stop": sig.get("trailingStop"),
+                "trailing_activated": False,
             })
             executed["executions"].append({
                 "signal": sig, "result": "placed", "ticket": result.ticket,
@@ -657,16 +764,99 @@ def process_pending_signals() -> None:
                 "ts": datetime.now(timezone.utc).isoformat(),
             })
         else:
+            _bump_order_fail_counter(result.error or "unknown")
             log_event("order_failed", asset=sig["assetSymbol"], error=result.error)
             tg_send(f"❌ <b>ORDER FAILED</b>\n{sig['assetSymbol']}\nError: {html_escape(result.error or 'unknown')}")
             executed["executions"].append({
                 "signal": sig, "result": "failed", "error": result.error,
                 "ts": datetime.now(timezone.utc).isoformat(),
             })
+            # If auto-pause kicked in, stop processing more pending signals
+            if is_paused():
+                remaining.extend(pending[pending.index(sig) + 1:])
+                break
 
     write_json(PENDING_PATH, {"signals": remaining})
     write_json(EXECUTED_PATH, executed)
     write_json(OPEN_POS_PATH, open_positions)
+
+
+def _modify_position_sl(ticket: int, new_sl: float) -> bool:
+    """Modify SL of an open position via MT5 SLTP request."""
+    live = mt5.positions_get(ticket=ticket)
+    if not live:
+        return False
+    pos = live[0]
+    request = {
+        "action": mt5.TRADE_ACTION_SLTP,
+        "symbol": pos.symbol,
+        "position": ticket,
+        "sl": float(new_sl),
+        "tp": float(pos.tp),
+        "magic": 231,
+    }
+    result = mt5.order_send(request)
+    if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+        log_event("sl_modify_failed", ticket=ticket, retcode=getattr(result, "retcode", None), error=getattr(result, "comment", ""))
+        return False
+    return True
+
+
+def _apply_trailing_stop(pos: dict) -> dict:
+    """
+    Update SL based on trailing-stop config.
+    Returns the (possibly mutated) position dict.
+
+    Logic:
+      Long: once price >= entry × (1 + activatePct), trail SL = max(current_sl, price × (1 - trailPct))
+      Short: once price <= entry × (1 - activatePct), trail SL = min(current_sl, price × (1 + trailPct))
+    """
+    trail_cfg = pos.get("trailing_stop")
+    if not trail_cfg:
+        return pos
+    activate_pct = float(trail_cfg.get("activatePct", 0))
+    trail_pct = float(trail_cfg.get("trailPct", 0))
+    if activate_pct <= 0 or trail_pct <= 0:
+        return pos
+
+    live = mt5.positions_get(ticket=pos["ticket"])
+    if not live:
+        return pos
+    p = live[0]
+    direction = pos.get("direction", "long")
+    entry = float(pos.get("entry_price", p.price_open))
+    current_price = float(p.price_current)
+    current_sl = float(p.sl) if p.sl else None
+
+    activated = pos.get("trailing_activated", False)
+
+    if direction == "long":
+        if not activated:
+            if current_price >= entry * (1 + activate_pct):
+                pos["trailing_activated"] = True
+                activated = True
+                log_event("trailing_activated", ticket=pos["ticket"], price=current_price, entry=entry)
+        if activated:
+            new_sl = current_price * (1 - trail_pct)
+            # Only ratchet up — never lower SL
+            if current_sl is None or new_sl > current_sl:
+                if _modify_position_sl(pos["ticket"], new_sl):
+                    log_event("trailing_sl_updated", ticket=pos["ticket"], old_sl=current_sl, new_sl=new_sl, price=current_price)
+                    pos["stop_price"] = new_sl
+    elif direction == "short":
+        if not activated:
+            if current_price <= entry * (1 - activate_pct):
+                pos["trailing_activated"] = True
+                activated = True
+                log_event("trailing_activated", ticket=pos["ticket"], price=current_price, entry=entry)
+        if activated:
+            new_sl = current_price * (1 + trail_pct)
+            # Only ratchet down for shorts — never raise SL
+            if current_sl is None or new_sl < current_sl:
+                if _modify_position_sl(pos["ticket"], new_sl):
+                    log_event("trailing_sl_updated", ticket=pos["ticket"], old_sl=current_sl, new_sl=new_sl, price=current_price)
+                    pos["stop_price"] = new_sl
+    return pos
 
 
 def manage_open_positions() -> None:
@@ -684,6 +874,8 @@ def manage_open_positions() -> None:
             if close_position(pos["ticket"]):
                 tg_send(f"⏱ <b>Hold Expired — Closed</b>\n{pos['signalAsset']} ticket <code>{pos['ticket']}</code>")
             continue
+        # Apply trailing-stop updates if configured
+        pos = _apply_trailing_stop(pos)
         still_open.append(pos)
     write_json(OPEN_POS_PATH, {"positions": still_open})
 
@@ -741,6 +933,42 @@ def handle_kill_request() -> bool:
 def is_paused() -> bool:
     controls = read_json(CONTROLS_PATH, {})
     return bool(controls.get("paused"))
+
+
+def _bump_order_fail_counter(error: str) -> None:
+    """Increment consecutive-failure counter; auto-pause on threshold."""
+    if ORDER_FAIL_AUTO_PAUSE <= 0:
+        return
+    controls = read_json(CONTROLS_PATH, {})
+    streak = int(controls.get("orderFailStreak", 0)) + 1
+    controls["orderFailStreak"] = streak
+    controls["lastOrderFailError"] = (error or "")[:200]
+    if streak >= ORDER_FAIL_AUTO_PAUSE and not controls.get("paused"):
+        controls["paused"] = True
+        controls["lastCommand"] = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "cmd": "/auto-pause",
+            "reason": f"{streak} consecutive order failures",
+        }
+        write_json(CONTROLS_PATH, controls)
+        tg_send(
+            f"🛑 <b>BOT AUTO-PAUSED</b>\n"
+            f"{streak} consecutive order failures.\n"
+            f"Last error: <code>{html_escape((error or 'unknown')[:120])}</code>\n"
+            f"Use /resume after fixing the cause."
+        )
+    else:
+        write_json(CONTROLS_PATH, controls)
+
+
+def _reset_order_fail_counter() -> None:
+    """Reset consecutive-failure counter after a successful order."""
+    if ORDER_FAIL_AUTO_PAUSE <= 0:
+        return
+    controls = read_json(CONTROLS_PATH, {})
+    if int(controls.get("orderFailStreak", 0)) > 0:
+        controls["orderFailStreak"] = 0
+        write_json(CONTROLS_PATH, controls)
 
 
 _last_equity_snapshot = [0.0]  # wrapped in list for closure mutation

@@ -48,6 +48,50 @@ import {
   FTMO_DAYTRADE_24H_CONFIG_V11_30M_OPT,
   FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT,
   FTMO_DAYTRADE_24H_CONFIG_V12_TURBO_30M_OPT,
+  FTMO_DAYTRADE_24H_CONFIG_LIVE_30M_V1,
+  FTMO_DAYTRADE_24H_CONFIG_LIVE_15M_V1,
+  FTMO_DAYTRADE_24H_CONFIG_LIVE_5M_V1,
+  FTMO_DAYTRADE_24H_CONFIG_LIVE_1H_V1,
+  FTMO_DAYTRADE_24H_CONFIG_LIVE_2H_V1,
+  FTMO_DAYTRADE_24H_CONFIG_LIVE_4H_V1,
+  FTMO_DAYTRADE_24H_CONFIG_LIVE_15M_V2,
+  FTMO_DAYTRADE_24H_CONFIG_LIVE_30M_V2,
+  FTMO_DAYTRADE_24H_CONFIG_LIVE_1H_V2,
+  FTMO_DAYTRADE_24H_CONFIG_LIVE_2H_V2,
+  FTMO_DAYTRADE_24H_CONFIG_LIVE_4H_V2,
+  FTMO_DAYTRADE_24H_CONFIG_LIVE_5M_V2,
+  FTMO_DAYTRADE_24H_CONFIG_LIVE_5M_V3,
+  FTMO_DAYTRADE_24H_CONFIG_LIVE_15M_V3,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_4H_V2,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V1,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V2,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V3,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V4,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V6,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V7,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V8,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V9,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V10,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V11,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V12,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V13_RISKY,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V14,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V15_RECENT,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ROBUST,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_RECENT,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PARETO,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_FUND,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ULTRA,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ELITE,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_APEX,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITAN,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_LEGEND,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITAN_REAL,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_NOVA,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRIME,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRIMEX,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_HIGH,
   FTMO_DAYTRADE_24H_CONFIG_V13_15M_OPT,
   FTMO_DAYTRADE_24H_CONFIG_V16_15M_OPT,
   FTMO_DAYTRADE_24H_CONFIG_BULL,
@@ -56,6 +100,31 @@ import type { NewsEvent } from "@/utils/forexFactoryNews";
 import { isNewsBlackout } from "@/utils/forexFactoryNews";
 
 export type Regime = "BULL" | "BEAR_CHOP";
+
+/**
+ * Hard-cap on risk-per-trade as fraction of equity, sent to MT5 executor.
+ *
+ * Why: backtest riskFrac is an "exposure fraction" multiplied by leverage in
+ * the PnL formula, NOT the realised max-loss-per-trade. Sending raw backtest
+ * riskFrac (e.g. ETH-MR baseRisk=1.0 × leverage=2 = 2.0 = 200%) to MT5 makes
+ * compute_lot_size build a position so big that it breaches FTMO margin
+ * limits → "no money" rejection.
+ *
+ * 2026-04-26 update: tightened originally to 2% / 3% (ultra-safe), but those
+ * caps made the 30d FTMO challenge mathematically unprofitable for crypto
+ * mean-reversion (~+0.2% expected per trade × 50 trades = barely +10%).
+ * Loosened to 4% / 5% — still well below FTMO daily-loss (5%) so a single
+ * stop costs at most 4%, and 5 stops in a row hit total-loss (-10%). 2.5
+ * consecutive stops survivable. Pass-rate becomes mathematically achievable.
+ */
+const LIVE_MAX_RISK_FRAC = 0.04;
+
+/**
+ * Hard-cap on stopPct after ATR-adaptive widening.
+ *
+ * 2026-04-26 update: 3% → 5%. Same trade-off as above.
+ */
+const LIVE_MAX_STOP_PCT = 0.05;
 
 export interface AccountState {
   /** Current equity as fraction of starting capital (1.0 = break even, 1.05 = +5%). */
@@ -70,7 +139,7 @@ export interface AccountState {
 
 export interface LiveSignal {
   assetSymbol: string; // iter231: ETH-MR/ETH-PYR/BTC-MR/SOL-MR; BULL: ETH-BULL/ETH-BULL-PYRAMID
-  sourceSymbol: "ETHUSDT" | "BTCUSDT" | "SOLUSDT";
+  sourceSymbol: string;
   direction: "short" | "long";
   regime: Regime;
   entryPrice: number; // market-bar close; exec price will be next-bar open
@@ -86,6 +155,11 @@ export interface LiveSignal {
   maxHoldUntil: number;
   signalBarClose: number;
   reasons: string[];
+  /** Trailing-stop config (Python executor will activate at activatePct profit). */
+  trailingStop?: {
+    activatePct: number;
+    trailPct: number;
+  };
 }
 
 export interface DetectionResult {
@@ -106,30 +180,160 @@ export interface DetectionResult {
 }
 
 // CFG selection via ENV var FTMO_TF:
-//   - "15m"       → V16 15M_OPT (94.38% / TL 5.6% / ETA 5.46d — SPEED CHAMPION)
-//   - "30m"       → V12 30M_OPT (95.09% / TL 4.4% / ETA 5.27d — PASS-RATE CHAMPION)
-//   - "30m-turbo" → V12_TURBO 30M_OPT (93.28% / TL 6.7% / p90=4d — TAIL-CRUSH variant)
-//   - "1h"        → V7 1h_OPT (94.10% / DL 1 — tail-speed variant)
-//   - "2h"        → V6 2h_OPT (94-96% / DL 0 — 2h pass-rate)
-//   - else        → V261 (4h, 94.31% / DL 0)
-// All share the same engine — only polling cadence + Binance candle
-// timeframe + per-asset config differ.
+// LIVE-CAP-VALIDATED (production-ready, with stopPct ≤ 3% + riskFrac ≤ 2%):
+//   - "15m-live"  → LIVE_15M_V1 (82.41% / med 1d / p90 6d / EV $3197) ← CHAMPION
+//   - "30m-live"  → LIVE_30M_V1 (71.74% / med 1d / p90 12d / EV $2771)
+//   - "1h-live"   → LIVE_1H_V1  (74.89% / med 1d / p90 12d / EV $2897)
+//   - "2h-live"   → LIVE_2H_V1  (71.68% / med 1d / p90 8d  / EV $2768) ← best tail
+//   - "4h-live"   → LIVE_4H_V1  (61.17% / med 3d / p90 10d / EV $2348)
+// LEGACY (no-cap configs — DIE at 0% under live caps, do NOT use live):
+//   - "15m"       → V16 (no-cap 94.38%)
+//   - "30m"       → V12 (no-cap 95.09%)
+//   - "30m-turbo" → V12_TURBO (no-cap 93.28%)
+//   - "1h"        → V7 (no-cap 94.10%)
+//   - "2h"        → V6 (no-cap 94-96%)
+//   - else        → V261 4h (no-cap 94.31%)
+const USE_2H_TREND_V5_PRIMEX = process.env.FTMO_TF === "2h-trend-v5-primex";
+const USE_2H_TREND_V5_PRIME = process.env.FTMO_TF === "2h-trend-v5-prime";
+const USE_2H_TREND_V5_NOVA = process.env.FTMO_TF === "2h-trend-v5-nova";
+const USE_2H_TREND_V5_TITAN_REAL =
+  process.env.FTMO_TF === "2h-trend-v5-titan-real";
+const USE_2H_TREND_V5_LEGEND = process.env.FTMO_TF === "2h-trend-v5-legend";
+const USE_2H_TREND_V5_TITAN = process.env.FTMO_TF === "2h-trend-v5-titan";
+const USE_2H_TREND_V5_APEX = process.env.FTMO_TF === "2h-trend-v5-apex";
+const USE_2H_TREND_V5_ELITE = process.env.FTMO_TF === "2h-trend-v5-elite";
+const USE_2H_TREND_V5_HIGH = process.env.FTMO_TF === "2h-trend-v5-high";
+const USE_2H_TREND_V5_ULTRA = process.env.FTMO_TF === "2h-trend-v5-ultra";
+const USE_2H_TREND_V5_FUND = process.env.FTMO_TF === "2h-trend-v5-fund";
+const USE_2H_TREND_V5_PARETO = process.env.FTMO_TF === "2h-trend-v5-pareto";
+const USE_2H_TREND_V5_RECENT = process.env.FTMO_TF === "2h-trend-v5-recent";
+const USE_2H_TREND_V5_ROBUST = process.env.FTMO_TF === "2h-trend-v5-robust";
+const USE_2H_TREND_V15 = process.env.FTMO_TF === "2h-trend-v15";
+const USE_2H_TREND_V14 = process.env.FTMO_TF === "2h-trend-v14";
+const USE_2H_TREND_V13 = process.env.FTMO_TF === "2h-trend-v13";
+const USE_2H_TREND_V12 = process.env.FTMO_TF === "2h-trend-v12";
+const USE_2H_TREND_V11 = process.env.FTMO_TF === "2h-trend-v11";
+const USE_2H_TREND_V10 = process.env.FTMO_TF === "2h-trend-v10";
+const USE_2H_TREND_V9 = process.env.FTMO_TF === "2h-trend-v9";
+const USE_2H_TREND_V8 = process.env.FTMO_TF === "2h-trend-v8";
+const USE_2H_TREND_V7 = process.env.FTMO_TF === "2h-trend-v7";
+const USE_2H_TREND_V6 = process.env.FTMO_TF === "2h-trend-v6";
+const USE_2H_TREND_V5 = process.env.FTMO_TF === "2h-trend-v5";
+const USE_2H_TREND_V4 = process.env.FTMO_TF === "2h-trend-v4";
+const USE_2H_TREND_V3 = process.env.FTMO_TF === "2h-trend-v3";
+const USE_2H_TREND_V2 = process.env.FTMO_TF === "2h-trend-v2";
+const USE_2H_TREND = process.env.FTMO_TF === "2h-trend";
+const USE_4H_TREND = process.env.FTMO_TF === "4h-trend";
+const USE_5M_LIVE = process.env.FTMO_TF === "5m-live";
+// "*-live" defaults to V2 (current best), "*-live-v1" pins legacy V1.
+const USE_15M_LIVE_V1 = process.env.FTMO_TF === "15m-live-v1";
+const USE_30M_LIVE_V1 = process.env.FTMO_TF === "30m-live-v1";
+const USE_1H_LIVE_V1 = process.env.FTMO_TF === "1h-live-v1";
+const USE_2H_LIVE_V1 = process.env.FTMO_TF === "2h-live-v1";
+const USE_4H_LIVE_V1 = process.env.FTMO_TF === "4h-live-v1";
+const USE_15M_LIVE = process.env.FTMO_TF === "15m-live";
+const USE_30M_LIVE = process.env.FTMO_TF === "30m-live";
+const USE_1H_LIVE = process.env.FTMO_TF === "1h-live";
+const USE_2H_LIVE = process.env.FTMO_TF === "2h-live";
+const USE_4H_LIVE = process.env.FTMO_TF === "4h-live";
 const USE_15M = process.env.FTMO_TF === "15m";
 const USE_30M_TURBO = process.env.FTMO_TF === "30m-turbo";
 const USE_30M = process.env.FTMO_TF === "30m";
 const USE_1H = process.env.FTMO_TF === "1h";
 const USE_2H = process.env.FTMO_TF === "2h";
-const CFG = USE_15M
-  ? FTMO_DAYTRADE_24H_CONFIG_V16_15M_OPT
-  : USE_30M_TURBO
-    ? FTMO_DAYTRADE_24H_CONFIG_V12_TURBO_30M_OPT
-    : USE_30M
-      ? FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT
-      : USE_1H
-        ? FTMO_DAYTRADE_24H_CONFIG_V7_1H_OPT
-        : USE_2H
-          ? FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT
-          : FTMO_DAYTRADE_24H_CONFIG_V261;
+const CFG = USE_2H_TREND_V5_PRIMEX
+  ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRIMEX
+  : USE_2H_TREND_V5_PRIME
+    ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRIME
+    : USE_2H_TREND_V5_NOVA
+      ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_NOVA
+      : USE_2H_TREND_V5_TITAN_REAL
+        ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITAN_REAL
+        : USE_2H_TREND_V5_LEGEND
+          ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_LEGEND
+          : USE_2H_TREND_V5_TITAN
+            ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITAN
+            : USE_2H_TREND_V5_APEX
+              ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_APEX
+              : USE_2H_TREND_V5_ELITE
+                ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ELITE
+                : USE_2H_TREND_V5_HIGH
+                  ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_HIGH
+                  : USE_2H_TREND_V5_ULTRA
+                    ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ULTRA
+                    : USE_2H_TREND_V5_FUND
+                      ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_FUND
+                      : USE_2H_TREND_V5_PARETO
+                        ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PARETO
+                        : USE_2H_TREND_V5_RECENT
+                          ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_RECENT
+                          : USE_2H_TREND_V5_ROBUST
+                            ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ROBUST
+                            : USE_2H_TREND_V15
+                              ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V15_RECENT
+                              : USE_2H_TREND_V14
+                                ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V14
+                                : USE_2H_TREND_V13
+                                  ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V13_RISKY
+                                  : USE_2H_TREND_V12
+                                    ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V12
+                                    : USE_2H_TREND_V11
+                                      ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V11
+                                      : USE_2H_TREND_V10
+                                        ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V10
+                                        : USE_2H_TREND_V9
+                                          ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V9
+                                          : USE_2H_TREND_V8
+                                            ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V8
+                                            : USE_2H_TREND_V7
+                                              ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V7
+                                              : USE_2H_TREND_V6
+                                                ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V6
+                                                : USE_2H_TREND_V5
+                                                  ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5
+                                                  : USE_2H_TREND_V4
+                                                    ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V4
+                                                    : USE_2H_TREND_V3
+                                                      ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V3
+                                                      : USE_2H_TREND_V2
+                                                        ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V2
+                                                        : USE_2H_TREND
+                                                          ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V1
+                                                          : USE_4H_TREND
+                                                            ? FTMO_DAYTRADE_24H_CONFIG_TREND_4H_V2
+                                                            : USE_5M_LIVE
+                                                              ? FTMO_DAYTRADE_24H_CONFIG_LIVE_5M_V3
+                                                              : USE_15M_LIVE
+                                                                ? FTMO_DAYTRADE_24H_CONFIG_LIVE_15M_V3
+                                                                : USE_30M_LIVE
+                                                                  ? FTMO_DAYTRADE_24H_CONFIG_LIVE_30M_V2
+                                                                  : USE_1H_LIVE
+                                                                    ? FTMO_DAYTRADE_24H_CONFIG_LIVE_1H_V2
+                                                                    : USE_2H_LIVE
+                                                                      ? FTMO_DAYTRADE_24H_CONFIG_LIVE_2H_V2
+                                                                      : USE_4H_LIVE
+                                                                        ? FTMO_DAYTRADE_24H_CONFIG_LIVE_4H_V2
+                                                                        : USE_15M_LIVE_V1
+                                                                          ? FTMO_DAYTRADE_24H_CONFIG_LIVE_15M_V1
+                                                                          : USE_30M_LIVE_V1
+                                                                            ? FTMO_DAYTRADE_24H_CONFIG_LIVE_30M_V1
+                                                                            : USE_1H_LIVE_V1
+                                                                              ? FTMO_DAYTRADE_24H_CONFIG_LIVE_1H_V1
+                                                                              : USE_2H_LIVE_V1
+                                                                                ? FTMO_DAYTRADE_24H_CONFIG_LIVE_2H_V1
+                                                                                : USE_4H_LIVE_V1
+                                                                                  ? FTMO_DAYTRADE_24H_CONFIG_LIVE_4H_V1
+                                                                                  : USE_15M
+                                                                                    ? FTMO_DAYTRADE_24H_CONFIG_V16_15M_OPT
+                                                                                    : USE_30M_TURBO
+                                                                                      ? FTMO_DAYTRADE_24H_CONFIG_V12_TURBO_30M_OPT
+                                                                                      : USE_30M
+                                                                                        ? FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT
+                                                                                        : USE_1H
+                                                                                          ? FTMO_DAYTRADE_24H_CONFIG_V7_1H_OPT
+                                                                                          : USE_2H
+                                                                                            ? FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT
+                                                                                            : FTMO_DAYTRADE_24H_CONFIG_V261;
 void FTMO_DAYTRADE_24H_CONFIG_V10_30M_OPT; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V11_30M_OPT; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V13_15M_OPT; // rollback reference
@@ -228,21 +432,39 @@ function computeSizingFactor(account: AccountState): {
  * Check if a 4h bar shows the N-red or N-green close sequence
  * (mean-reversion: N green closes → short signal).
  */
+/**
+ * Detect N consecutive close pattern.
+ *
+ * For trend-following longs (invert=true): N consecutive GREEN closes → long.
+ * For mean-reversion (invert=false, MR mode): also checks GREEN by default
+ *   because the engine's MR-mode triggers SHORT on N greens. The CALLER
+ *   determines direction = invert ? "long" : "short" based on this same
+ *   green-pattern (see line 702-703).
+ *
+ * For both directions in same call, pass `direction` argument.
+ */
 function hasSignalPattern(
   candles: Candle[],
   triggerBars: number,
   invert: boolean,
+  direction: "long" | "short" = "short",
 ): boolean {
   const last = candles.length - 1;
   if (last < triggerBars) return false;
+  // In MR mode (invert=false): longs need N reds, shorts need N greens
+  // In trend mode (invert=true): longs need N greens, shorts need N reds
+  // Compute "needsGreen" from direction + invert truth-table:
+  //   direction=long, invert=true   → greens
+  //   direction=long, invert=false  → reds
+  //   direction=short, invert=true  → reds
+  //   direction=short, invert=false → greens
+  const needsGreen = (direction === "long") === invert;
   for (let k = 0; k < triggerBars; k++) {
-    // Mean-reversion short: need each close <= prev (not a green sequence) inverts to "needs green"
-    // We want N consecutive GREEN closes for a short signal (mean-revert the run-up).
     const cur = candles[last - k];
     const prev = candles[last - k - 1];
     if (!cur || !prev) return false;
     const isGreen = cur.close > prev.close;
-    if (!isGreen) return false;
+    if (needsGreen ? !isGreen : isGreen) return false;
   }
   return true;
 }
@@ -253,7 +475,21 @@ export function detectLiveSignalsV231(
   solCandles: Candle[],
   account: AccountState,
   newsEvents: NewsEvent[] = [],
+  extraCandles?: Record<string, Candle[]>,
 ): DetectionResult {
+  // Guard against empty candle arrays — prevents -1 index crashes.
+  if (btcCandles.length === 0 || ethCandles.length === 0) {
+    return {
+      timestamp: Date.now(),
+      regime: "BEAR_CHOP",
+      activeBotConfig: "n/a",
+      signals: [],
+      skipped: [],
+      notes: ["Empty candle arrays — skipping detection cycle"],
+      account,
+      btc: { close: 0, ema10: 0, ema15: 0, uptrend: false, mom24h: 0 },
+    };
+  }
   // BTC regime for cross-asset filter + regime-switching.
   // Read EMA periods + momentum threshold from CFG.crossAssetFilter
   // (was hardcoded 10/15/0.02 — broke for V6/V7 with EMA 12/16 mom 0.04).
@@ -281,18 +517,45 @@ export function detectLiveSignalsV231(
 
   const tfLabel = process.env.FTMO_TF ?? "4h";
   const cfgLabel =
-    tfLabel === "15m"
-      ? "V16"
-      : tfLabel === "30m-turbo"
-        ? "V12-TURBO"
-        : tfLabel === "30m"
-          ? "V12"
-          : tfLabel === "1h"
-            ? "V7"
-            : tfLabel === "2h"
-              ? "V6"
-              : "V261";
+    tfLabel === "2h-trend-v4"
+      ? "TREND_2H_V4"
+      : tfLabel === "2h-trend-v3"
+        ? "TREND_2H_V3"
+        : tfLabel === "2h-trend"
+          ? "TREND_2H_V1"
+          : tfLabel === "2h-trend-v2"
+            ? "TREND_2H_V2"
+            : tfLabel === "4h-trend"
+              ? "TREND_4H_V2"
+              : tfLabel === "5m-live"
+                ? "LIVE_5M_V1"
+                : tfLabel === "15m-live"
+                  ? "LIVE_15M_V1"
+                  : tfLabel === "30m-live"
+                    ? "LIVE_30M_V1"
+                    : tfLabel === "1h-live"
+                      ? "LIVE_1H_V1"
+                      : tfLabel === "2h-live"
+                        ? "LIVE_2H_V1"
+                        : tfLabel === "4h-live"
+                          ? "LIVE_4H_V1"
+                          : tfLabel === "15m"
+                            ? "V16"
+                            : tfLabel === "30m-turbo"
+                              ? "V12-TURBO"
+                              : tfLabel === "30m"
+                                ? "V12"
+                                : tfLabel === "1h"
+                                  ? "V7"
+                                  : tfLabel === "2h"
+                                    ? "V6"
+                                    : "V261";
   const shortBot = `${cfgLabel} (${tfLabel})`;
+  // Detect if active CFG is trend-long (any asset has invertDirection=true and disableShort=true)
+  const cfgIsTrendLong = (CFG.assets ?? []).some(
+    (a) => a.invertDirection && a.disableShort,
+  );
+  const dirLabel = cfgIsTrendLong ? "LONG" : "SHORT";
   const result: DetectionResult = {
     timestamp: Date.now(),
     regime,
@@ -300,7 +563,7 @@ export function detectLiveSignalsV231(
     signals: [],
     skipped: [],
     notes: [
-      `Regime: ${regime} → active bot: ${regime === "BULL" ? "iter213-bull (LONG)" : `${shortBot} (SHORT)`}`,
+      `Regime: ${regime} → active bot: ${regime === "BULL" ? "iter213-bull (LONG)" : `${shortBot} (${dirLabel})`}`,
     ],
     account,
     btc: {
@@ -327,22 +590,48 @@ export function detectLiveSignalsV231(
   const blockedByBtcFilter = btcUptrend || btcMom24h > momThr;
   if (blockedByBtcFilter) {
     result.notes.push(
-      `BTC cross-asset filter BLOCKS all signals: uptrend=${btcUptrend}, mom24h=${(btcMom24h * 100).toFixed(2)}%`,
+      `BTC bullish (uptrend=${btcUptrend}, mom24h=${(btcMom24h * 100).toFixed(2)}%) — short signals blocked, longs OK`,
     );
-    // No short signals allowed when BTC is bullish
   }
 
   // Session filter. Entry = next bar's open.
   // 30m: bar-close hour, 1h: bar-close, 2h/4h: standard.
-  const tfHours = USE_30M ? 0.5 : USE_1H ? 1 : USE_2H ? 2 : 4;
+  const tfHours = USE_5M_LIVE
+    ? 5 / 60
+    : USE_15M_LIVE || USE_15M
+      ? 0.25
+      : USE_30M_LIVE || USE_30M || USE_30M_TURBO
+        ? 0.5
+        : USE_1H_LIVE || USE_1H
+          ? 1
+          : USE_2H_LIVE ||
+              USE_2H ||
+              USE_2H_TREND ||
+              USE_2H_TREND_V2 ||
+              USE_2H_TREND_V3 ||
+              USE_2H_TREND_V4
+            ? 2
+            : 4; // 4h default also handles USE_4H_TREND
   const ethLastIdx = ethCandles.length - 1;
   const b1 = ethCandles[ethLastIdx];
   const entryOpenTime = b1.openTime + tfHours * 3600_000;
   const entryHour = new Date(entryOpenTime).getUTCHours();
   const defaultHours =
-    USE_30M || USE_1H
+    USE_5M_LIVE ||
+    USE_15M_LIVE ||
+    USE_15M ||
+    USE_30M_LIVE ||
+    USE_30M_TURBO ||
+    USE_30M ||
+    USE_1H_LIVE ||
+    USE_1H
       ? Array.from({ length: 24 }, (_, i) => i)
-      : USE_2H
+      : USE_2H_LIVE ||
+          USE_2H ||
+          USE_2H_TREND ||
+          USE_2H_TREND_V2 ||
+          USE_2H_TREND_V3 ||
+          USE_2H_TREND_V4
         ? [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]
         : [0, 4, 8, 12, 16, 20];
   const allowedHours = CFG.allowedHoursUtc ?? defaultHours;
@@ -399,12 +688,11 @@ export function detectLiveSignalsV231(
     }
   }
 
-  const sharedBlock =
-    blockedByBtcFilter ||
-    hourBlocked ||
-    newsBlocked ||
-    htfBlocked ||
-    lscBlocked;
+  // sharedBlock now excludes blockedByBtcFilter — that filter is short-only
+  // (skipShortsIfSecondaryUptrend). For Trend-Long configs (invertDirection),
+  // BTC uptrend is GOOD, not bad. The per-asset block below will only apply
+  // BTC filter to short-direction assets.
+  const sharedBlock = hourBlocked || newsBlocked || htfBlocked || lscBlocked;
 
   // Compute sizing factor once
   const { factor, notes: sizingNotes } = computeSizingFactor(account);
@@ -412,26 +700,23 @@ export function detectLiveSignalsV231(
 
   // Per-asset signal check.
   // Reads triggerBars / riskFrac / minEquityGain from CFG.assets (was hardcoded).
-  // Falls back to CFG-level defaults if asset omits them.
-  const sourceForSym: Record<string, "ETHUSDT" | "BTCUSDT" | "SOLUSDT"> = {
-    ETHUSDT: "ETHUSDT",
-    BTCUSDT: "BTCUSDT",
-    SOLUSDT: "SOLUSDT",
-  };
+  // Extra-asset candles (BNB, ADA, AVAX, BCH, DOGE, etc.) are loaded by
+  // ftmoLiveService.ts when CFG.assets references them; here we honor any
+  // sourceSymbol that has candles in the extraCandles map.
   const candlesForSrc: Record<string, Candle[]> = {
     ETHUSDT: ethCandles,
     BTCUSDT: btcCandles,
     SOLUSDT: solCandles,
+    ...(extraCandles ?? {}),
   };
   const assets = (CFG.assets ?? []).flatMap((a) => {
     const src = a.sourceSymbol ?? a.symbol;
-    if (!sourceForSym[src]) return []; // skip assets not in our 3-asset live setup
     const candles = candlesForSrc[src];
-    if (!candles) return [];
+    if (!candles || candles.length < 50) return []; // need at least 50 bars
     return [
       {
         asset: a.symbol,
-        source: sourceForSym[src],
+        source: src,
         candles,
         triggerBars: a.triggerBars ?? CFG.triggerBars,
         minEqGain: a.minEquityGain ?? 0,
@@ -439,6 +724,9 @@ export function detectLiveSignalsV231(
         stopPctOverride: a.stopPct,
         tpPctOverride: a.tpPct,
         holdBarsOverride: a.holdBars,
+        invertDirection: a.invertDirection,
+        disableShort: a.disableShort,
+        disableLong: a.disableLong,
       },
     ];
   });
@@ -455,17 +743,62 @@ export function detectLiveSignalsV231(
     if (sharedBlock) {
       result.skipped.push({
         asset: a.asset,
-        reason: "blocked by BTC filter / session / news",
+        reason: "blocked by session / news / HTF / LSC",
       });
       continue;
     }
 
-    // Signal pattern check
-    const hasPattern = hasSignalPattern(a.candles, a.triggerBars, false);
+    // Determine trade direction from asset config FIRST.
+    // Default (MR mode): N consecutive greens → SHORT, N reds → LONG
+    // invertDirection (Trend mode): N consecutive greens → LONG, N reds → SHORT
+    const invert = a.invertDirection ?? CFG.invertDirection ?? false;
+    const disableShortHere = a.disableShort ?? CFG.disableShort ?? false;
+    const disableLongHere = a.disableLong ?? CFG.disableLong ?? false;
+    // Pick the only allowed direction (or default per invert mode if both allowed)
+    const direction: "short" | "long" = invert
+      ? disableLongHere
+        ? "short"
+        : "long"
+      : disableShortHere
+        ? "long"
+        : "short";
+
+    // Signal pattern check — invert+direction selects greens-vs-reds correctly
+    const hasPattern = hasSignalPattern(
+      a.candles,
+      a.triggerBars,
+      invert,
+      direction,
+    );
     if (!hasPattern) {
+      const seqType = (direction === "long") === invert ? "green" : "red";
       result.skipped.push({
         asset: a.asset,
-        reason: `no ${a.triggerBars}-green sequence`,
+        reason: `no ${a.triggerBars}-${seqType} sequence`,
+      });
+      continue;
+    }
+
+    // Per-asset BTC cross-asset filter — only blocks SHORT signals.
+    // Trend-Long signals actually want BTC uptrend.
+    if (direction === "short" && blockedByBtcFilter) {
+      result.skipped.push({
+        asset: a.asset,
+        reason: `BTC uptrend blocks short signal`,
+      });
+      continue;
+    }
+    if (direction === "short" && a.disableShort) {
+      result.skipped.push({
+        asset: a.asset,
+        reason: "shorts disabled for asset",
+      });
+      continue;
+    }
+    if (direction === "long" && a.disableLong) {
+      result.skipped.push({
+        asset: a.asset,
+        reason: "longs disabled for asset",
       });
       continue;
     }
@@ -484,19 +817,35 @@ export function detectLiveSignalsV231(
         stopPct = Math.max(stopPct, atrFrac);
       }
     }
-    const stopPrice = entryPrice * (1 + stopPct); // short: stop above entry
-    const tpPrice = entryPrice * (1 - tpPct); // short: TP below entry
+    // Live safety cap: skip trade if ATR demands a stop wider than FTMO can survive.
+    if (stopPct > LIVE_MAX_STOP_PCT) {
+      result.skipped.push({
+        asset: a.asset,
+        reason: `stopPct ${(stopPct * 100).toFixed(2)}% > live cap ${(LIVE_MAX_STOP_PCT * 100).toFixed(1)}% (ATR too wide for FTMO)`,
+      });
+      continue;
+    }
+    // Direction-aware stop/TP price.
+    const stopPrice =
+      direction === "short"
+        ? entryPrice * (1 + stopPct)
+        : entryPrice * (1 - stopPct);
+    const tpPrice =
+      direction === "short"
+        ? entryPrice * (1 - tpPct)
+        : entryPrice * (1 + tpPct);
     const holdBarsEff = a.holdBarsOverride ?? CFG.holdBars;
     const maxHoldHours = holdBarsEff * tfHours;
 
-    // Effective risk = baseRisk × sizingFactor × leverage (leverage baked into position sizing)
-    const effectiveRiskFrac = a.baseRisk * factor * CFG.leverage;
+    // Live risk = baseRisk × sizingFactor, capped at LIVE_MAX_RISK_FRAC.
+    const rawRiskFrac = a.baseRisk * factor;
+    const effectiveRiskFrac = Math.min(rawRiskFrac, LIVE_MAX_RISK_FRAC);
 
     result.signals.push({
       assetSymbol: a.asset,
       sourceSymbol: a.source,
-      direction: "short",
-      regime: "BEAR_CHOP",
+      direction,
+      regime: invert ? "BULL" : "BEAR_CHOP",
       entryPrice,
       stopPrice,
       tpPrice,
@@ -508,10 +857,19 @@ export function detectLiveSignalsV231(
       maxHoldUntil: entryOpenTime + maxHoldHours * 3600_000,
       signalBarClose: last.closeTime,
       reasons: [
-        `${a.triggerBars}-green pattern on ${a.source}`,
+        `${a.triggerBars}-${invert ? "green→LONG" : "green→SHORT"} pattern on ${a.source}`,
         `equity gate OK (need +${(a.minEqGain * 100).toFixed(1)}%)`,
-        `sizing: baseRisk=${a.baseRisk}× × factor=${factor.toFixed(3)} × lev=${CFG.leverage} = ${effectiveRiskFrac.toFixed(4)}`,
+        `sizing: baseRisk=${a.baseRisk} × factor=${factor.toFixed(3)} = ${rawRiskFrac.toFixed(4)} → live cap ${effectiveRiskFrac.toFixed(4)}`,
       ],
+      // Pass trailing-stop config from CFG so Python executor can manage SL updates.
+      ...(CFG.trailingStop
+        ? {
+            trailingStop: {
+              activatePct: CFG.trailingStop.activatePct,
+              trailPct: CFG.trailingStop.trailPct,
+            },
+          }
+        : {}),
     });
   }
 
@@ -558,7 +916,17 @@ function detectBullSignals(
   const tpPrice = entryPrice * (1 + tpPct); // long: TP above
   const maxHoldHours = BULL.holdBars * tfHours;
   const baseAsset = BULL.assets[0];
-  const effectiveRiskFrac = baseAsset.riskFrac * factor * BULL.leverage;
+  // Live risk = baseRisk × factor, capped at LIVE_MAX_RISK_FRAC (no leverage multiplier).
+  const rawRiskFrac = baseAsset.riskFrac * factor;
+  const effectiveRiskFrac = Math.min(rawRiskFrac, LIVE_MAX_RISK_FRAC);
+
+  // Long-stop safety cap.
+  if (stopPct > LIVE_MAX_STOP_PCT) {
+    result.notes.push(
+      `BULL stopPct ${(stopPct * 100).toFixed(2)}% > live cap ${(LIVE_MAX_STOP_PCT * 100).toFixed(1)}% → skip`,
+    );
+    return result;
+  }
 
   result.signals.push({
     assetSymbol: "ETH-BULL",
@@ -577,13 +945,15 @@ function detectBullSignals(
     signalBarClose: b1.closeTime,
     reasons: [
       "BULL regime: 2-green momentum continuation",
-      `sizing: baseRisk=${baseAsset.riskFrac}× × factor=${factor.toFixed(3)} × lev=${BULL.leverage} = ${effectiveRiskFrac.toFixed(4)}`,
+      `sizing: baseRisk=${baseAsset.riskFrac} × factor=${factor.toFixed(3)} = ${rawRiskFrac.toFixed(4)} → live cap ${effectiveRiskFrac.toFixed(4)}`,
     ],
   });
 
   // Bull pyramid (ETH-BULL-PYRAMID) when equity ahead by 1.5%+
   if (account.equity - 1 >= 0.015) {
     const pyr = BULL.assets[1];
+    const pyrRawRisk = pyr.riskFrac * factor;
+    const pyrEffRisk = Math.min(pyrRawRisk, LIVE_MAX_RISK_FRAC);
     result.signals.push({
       assetSymbol: "ETH-BULL-PYRAMID",
       sourceSymbol: "ETHUSDT",
@@ -594,14 +964,14 @@ function detectBullSignals(
       tpPrice,
       stopPct,
       tpPct,
-      riskFrac: pyr.riskFrac * factor * BULL.leverage,
+      riskFrac: pyrEffRisk,
       sizingFactor: factor,
       maxHoldHours,
       maxHoldUntil: entryOpenTime + maxHoldHours * 3600_000,
       signalBarClose: b1.closeTime,
       reasons: [
         "BULL pyramid fires at +1.5% equity",
-        `sizing: baseRisk=${pyr.riskFrac}× × factor=${factor.toFixed(3)} × lev=${BULL.leverage}`,
+        `sizing: baseRisk=${pyr.riskFrac} × factor=${factor.toFixed(3)} = ${pyrRawRisk.toFixed(4)} → live cap ${pyrEffRisk.toFixed(4)}`,
       ],
     });
   }
@@ -616,17 +986,39 @@ export function renderDetection(r: DetectionResult): string {
     new Date(r.timestamp).toISOString().slice(0, 16).replace("T", " ") + " UTC";
   const tfLabel = process.env.FTMO_TF ?? "4h";
   const cfgLabel =
-    tfLabel === "15m"
-      ? "V16"
-      : tfLabel === "30m-turbo"
-        ? "V12-TURBO"
-        : tfLabel === "30m"
-          ? "V12"
-          : tfLabel === "1h"
-            ? "V7"
-            : tfLabel === "2h"
-              ? "V6"
-              : "V261";
+    tfLabel === "2h-trend-v4"
+      ? "TREND_2H_V4"
+      : tfLabel === "2h-trend-v3"
+        ? "TREND_2H_V3"
+        : tfLabel === "2h-trend"
+          ? "TREND_2H_V1"
+          : tfLabel === "2h-trend-v2"
+            ? "TREND_2H_V2"
+            : tfLabel === "4h-trend"
+              ? "TREND_4H_V2"
+              : tfLabel === "5m-live"
+                ? "LIVE_5M_V1"
+                : tfLabel === "15m-live"
+                  ? "LIVE_15M_V1"
+                  : tfLabel === "30m-live"
+                    ? "LIVE_30M_V1"
+                    : tfLabel === "1h-live"
+                      ? "LIVE_1H_V1"
+                      : tfLabel === "2h-live"
+                        ? "LIVE_2H_V1"
+                        : tfLabel === "4h-live"
+                          ? "LIVE_4H_V1"
+                          : tfLabel === "15m"
+                            ? "V16"
+                            : tfLabel === "30m-turbo"
+                              ? "V12-TURBO"
+                              : tfLabel === "30m"
+                                ? "V12"
+                                : tfLabel === "1h"
+                                  ? "V7"
+                                  : tfLabel === "2h"
+                                    ? "V6"
+                                    : "V261";
   lines.push(`━━━━━ ${cfgLabel} (${tfLabel}) Signal Check @ ${ts} ━━━━━`);
   const fastP = CFG.crossAssetFilter?.emaFastPeriod ?? 10;
   const slowP = CFG.crossAssetFilter?.emaSlowPeriod ?? 15;

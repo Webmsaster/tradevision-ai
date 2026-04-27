@@ -23,6 +23,7 @@ from datetime import datetime
 
 # MT5 constants (partial — only what executor uses)
 TRADE_ACTION_DEAL = 1
+TRADE_ACTION_SLTP = 2  # Modify SL/TP on existing position
 ORDER_TYPE_BUY = 0
 ORDER_TYPE_SELL = 1
 POSITION_TYPE_BUY = 0

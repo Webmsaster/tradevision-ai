@@ -34,15 +34,38 @@ import {
   type NewsEvent,
 } from "../src/utils/forexFactoryNews";
 
-const TF: "30m" | "1h" | "2h" | "4h" =
-  process.env.FTMO_TF === "30m"
-    ? "30m"
-    : process.env.FTMO_TF === "1h"
-      ? "1h"
-      : process.env.FTMO_TF === "2h"
-        ? "2h"
-        : "4h";
-const TF_HOURS = TF === "30m" ? 0.5 : TF === "1h" ? 1 : TF === "2h" ? 2 : 4;
+const TF: "5m" | "15m" | "30m" | "1h" | "2h" | "4h" =
+  process.env.FTMO_TF === "5m-live"
+    ? "5m"
+    : process.env.FTMO_TF === "15m" || process.env.FTMO_TF === "15m-live"
+      ? "15m"
+      : process.env.FTMO_TF === "30m" ||
+          process.env.FTMO_TF === "30m-live" ||
+          process.env.FTMO_TF === "30m-turbo"
+        ? "30m"
+        : process.env.FTMO_TF === "1h" || process.env.FTMO_TF === "1h-live"
+          ? "1h"
+          : process.env.FTMO_TF === "2h" ||
+              process.env.FTMO_TF === "2h-live" ||
+              process.env.FTMO_TF === "2h-live-v1" ||
+              (process.env.FTMO_TF ?? "").startsWith("2h-trend")
+            ? "2h"
+            : process.env.FTMO_TF === "4h-live" ||
+                process.env.FTMO_TF === "4h-trend"
+              ? "4h"
+              : "4h";
+const TF_HOURS =
+  TF === "5m"
+    ? 5 / 60
+    : TF === "15m"
+      ? 0.25
+      : TF === "30m"
+        ? 0.5
+        : TF === "1h"
+          ? 1
+          : TF === "2h"
+            ? 2
+            : 4;
 const STATE_DIR =
   process.env.FTMO_STATE_DIR ?? path.join(process.cwd(), `ftmo-state-${TF}`);
 const PENDING_PATH = path.join(STATE_DIR, "pending-signals.json");
@@ -64,6 +87,16 @@ const ALERT_DL_WARN_RATIO = 0.8; // 80% of daily-loss cap = warning
 const ALERT_TL_WARN_RATIO = 0.8; // 80% of total-loss cap = warning
 const ALERT_STUCK_DAYS = 15; // challenge stuck >15d = warning
 const DAILY_SUMMARY_HOUR_UTC = 22; // 22:00 UTC daily summary
+const RISK_HEARTBEAT_INTERVAL_MS = 4 * 3600_000; // 4h between risk-stats sends
+const RISK_HEARTBEAT_LOOKBACK_MS = 24 * 3600_000; // aggregate over last 24h
+
+/** A signal observed in the rolling 24h window — drives risk heartbeat stats. */
+interface RecentSignalSample {
+  ts: number;
+  asset: string;
+  riskFrac: number;
+  stopPct: number;
+}
 
 interface AlertsState {
   lastEquitySnapshot: { ts: number; equity: number } | null;
@@ -71,6 +104,8 @@ interface AlertsState {
   lastDLWarning: number | null; // ms timestamp of last DL warning
   lastTLWarning: number | null;
   lastStuckWarning: number | null;
+  lastRiskHeartbeat: number | null; // ms ts of last risk-stats send
+  recentSignals: RecentSignalSample[]; // rolling 24h sample log
 }
 
 function loadAlertsState(): AlertsState {
@@ -80,6 +115,8 @@ function loadAlertsState(): AlertsState {
     lastDLWarning: null,
     lastTLWarning: null,
     lastStuckWarning: null,
+    lastRiskHeartbeat: null,
+    recentSignals: [],
   });
 }
 function saveAlertsState(s: AlertsState) {
@@ -101,7 +138,11 @@ function readJSON<T>(p: string, fallback: T): T {
 }
 
 function writeJSON(p: string, obj: unknown) {
-  fs.writeFileSync(p, JSON.stringify(obj, null, 2));
+  // Atomic write: write to temp file, then rename. Prevents corruption if
+  // process is killed mid-write (Python executor reads these files concurrently).
+  const tmp = `${p}.tmp.${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
+  fs.renameSync(tmp, p);
 }
 
 function appendLog(entry: object) {
@@ -212,9 +253,38 @@ async function runOneCheck(): Promise<DetectionResult> {
     maxPages: 2,
   });
 
+  // Load extra-asset candles for multi-asset configs (TREND_2H_V1/V2 use
+  // 8 assets including BNB, ADA, AVAX, BCH, DOGE).
+  const extraSymbols = process.env.FTMO_EXTRA_SYMBOLS
+    ? process.env.FTMO_EXTRA_SYMBOLS.split(",")
+    : ["BNBUSDT", "ADAUSDT", "AVAXUSDT", "BCHUSDT", "DOGEUSDT"];
+  const extraCandles: Record<
+    string,
+    import("../src/utils/indicators").Candle[]
+  > = {};
+  for (const sym of extraSymbols) {
+    try {
+      extraCandles[sym] = await loadBinanceHistory({
+        symbol: sym,
+        timeframe: TF,
+        targetCount: 500,
+        maxPages: 2,
+      });
+    } catch (e) {
+      console.error(`[ftmo-live] extra symbol ${sym} load failed:`, e);
+    }
+  }
+
   const account = readJSON<AccountState>(ACCOUNT_PATH, defaultAccount());
   await refreshNewsIfStale();
-  const result = detectLiveSignalsV231(eth, btc, sol, account, cachedNews);
+  const result = detectLiveSignalsV231(
+    eth,
+    btc,
+    sol,
+    account,
+    cachedNews,
+    extraCandles,
+  );
 
   console.log(renderDetection(result));
 
@@ -320,10 +390,32 @@ async function runOneCheck(): Promise<DetectionResult> {
     skipped: result.skipped,
   });
 
-  // Smart alerts (equity drop, DL/TL warnings, stuck challenge, daily summary)
+  // Sample emitted signals into rolling 24h log for the risk heartbeat.
+  if (result.signals.length > 0) {
+    recordRecentSignals(result.signals);
+  }
+
+  // Smart alerts (equity drop, DL/TL warnings, stuck challenge, daily summary, risk heartbeat)
   await runSmartAlerts(account);
 
   return result;
+}
+
+function recordRecentSignals(signals: LiveSignal[]) {
+  const state = loadAlertsState();
+  const now = Date.now();
+  const cutoff = now - RISK_HEARTBEAT_LOOKBACK_MS;
+  const kept = (state.recentSignals ?? []).filter((s) => s.ts >= cutoff);
+  for (const sig of signals) {
+    kept.push({
+      ts: now,
+      asset: sig.assetSymbol,
+      riskFrac: sig.riskFrac,
+      stopPct: sig.stopPct,
+    });
+  }
+  state.recentSignals = kept;
+  saveAlertsState(state);
 }
 
 /**
@@ -408,6 +500,33 @@ async function runSmartAlerts(account: AccountState) {
       );
       state.lastStuckWarning = now;
     }
+  }
+
+  // 4b) Risk-stats heartbeat — every 4h, summarise riskFrac/stopPct of
+  // signals emitted in the last 24h. Catches a regression like the
+  // historical 200%-riskFrac bug at the soonest 4h window.
+  const lastHb = state.lastRiskHeartbeat ?? 0;
+  if (now - lastHb >= RISK_HEARTBEAT_INTERVAL_MS) {
+    const cutoff = now - RISK_HEARTBEAT_LOOKBACK_MS;
+    const samples = (state.recentSignals ?? []).filter((s) => s.ts >= cutoff);
+    if (samples.length > 0) {
+      const riskMax = Math.max(...samples.map((s) => s.riskFrac));
+      const riskAvg =
+        samples.reduce((a, s) => a + s.riskFrac, 0) / samples.length;
+      const stopMax = Math.max(...samples.map((s) => s.stopPct));
+      const stopAvg =
+        samples.reduce((a, s) => a + s.stopPct, 0) / samples.length;
+      const assets = [...new Set(samples.map((s) => s.asset))];
+      const flag = riskMax > 0.05 || stopMax > 0.05 ? "🚨 OUT-OF-BAND " : "📊 ";
+      await tgSend(
+        `${flag}<b>Risk Heartbeat (24h)</b>\n` +
+          `Signals: ${samples.length} (${assets.join(", ")})\n` +
+          `Risk:  avg ${(riskAvg * 100).toFixed(2)}% · max ${(riskMax * 100).toFixed(2)}%\n` +
+          `Stop:  avg ${(stopAvg * 100).toFixed(2)}% · max ${(stopMax * 100).toFixed(2)}%\n` +
+          `Live caps: 2% risk · 3% stop`,
+      );
+    }
+    state.lastRiskHeartbeat = now;
   }
 
   // 5) Daily P&L summary at 22:00 UTC
