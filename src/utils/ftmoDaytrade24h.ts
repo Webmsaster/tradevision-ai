@@ -5508,6 +5508,59 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5: FtmoDaytrade24hConfig = {
 };
 
 /**
+ * TREND_2H_V5_STEP2 — Step-2 variant of V5 (winner of ftmoStep2Tuning sweep).
+ *
+ * FTMO Step-2 rules:
+ *   profitTarget = 0.05 (5% statt 8%)
+ *   maxDays = 60 (60 Tage statt 30)
+ *   maxDailyLoss = 0.05  (unchanged)
+ *   maxTotalLoss = 0.10  (unchanged)
+ *   minTradingDays = 4   (unchanged)
+ *
+ * Sweep result (5.60y / 331 windows / 60d × 6d step / FTMO-real 40bp+12bp slip
+ * across 9 cryptos: ETH/BTC/BNB/ADA/DOGE/AVAX/LTC/BCH/LINK):
+ *   STEP2_BASE      155/331 = 46.83% / med 1d / p90 1d / TL 0.9% / EV $2242
+ *   STEP2_LH300     156/331 = 47.13% / med 1d / p90 1d / TL 0.9% / EV $2257  ← winner
+ *   STEP2_LH500     156/331 = 47.13% (tie)
+ *   STEP2_LH720     156/331 = 47.13% (tie)
+ *   STEP2_4H        137/331 = 41.39% (worse — 4h timeframe loses on Step-2)
+ *   STEP2_LR050/075 155/331 = 46.83% (no win)
+ *
+ * Winning lever: extend holdBars 240 → 300 (small uptick, ties with LH500/720
+ * but LH300 is the smallest increment → cleanest config). Ridiculously low TL
+ * rate (0.9%) thanks to atrStop + Step-2's 5% profitTarget making the math
+ * very forgiving compared to Step-1's 8%.
+ *
+ * Engine fields kept (all required by user-instructed Step-2 lineup):
+ *   - pauseAtTargetReached: true   (V5 inheritance, mandatory)
+ *   - atrStop {p:14, m:2.5}        (V239-engine breakthrough kept on Step-2)
+ *   - asset costBp 30→40, slipBp 8→12   (FTMO real costs)
+ *
+ * Live Service: `FTMO_TF=2h-trend-v5-step2`.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_STEP2: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5,
+    // Step-2 rules
+    profitTarget: 0.05,
+    maxDays: 60,
+    maxDailyLoss: 0.05,
+    maxTotalLoss: 0.1,
+    minTradingDays: 4,
+    pauseAtTargetReached: true,
+    // V239-engine breakthrough kept
+    atrStop: { period: 14, stopMult: 2.5 },
+    // Winner: holdBars extended 240 → 300 (root + per-asset)
+    holdBars: 300,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5.assets.map((a) => ({
+      ...a,
+      costBp: 40,
+      slippageBp: 12,
+      holdBars: 300,
+    })),
+  };
+
+/**
  * TREND_2H_V6 — V5 + hour-drop {22}.
  * 5.59y / 671w: 297/671 = 44.26% / 1d / p90 2d / EV $1671
  */
