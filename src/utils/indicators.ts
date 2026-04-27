@@ -211,6 +211,39 @@ export function adx(candles: Candle[], period = 14): AdxOutput {
   return { adx: adxArr, plusDi: plusDiArr, minusDi: minusDiArr };
 }
 
+/**
+ * Choppiness Index — measures market trend vs sideways state.
+ * CI = 100 × log10(SUM(TrueRange, period) / (MaxHigh(period) - MinLow(period))) / log10(period)
+ * Values: 0-100. >61.8 = choppy/sideways, <38.2 = trending.
+ */
+export function choppiness(candles: Candle[], period = 14): (number | null)[] {
+  const out: (number | null)[] = new Array(candles.length).fill(null);
+  if (candles.length <= period) return out;
+  const tr: number[] = candles.map((c, i) => {
+    if (i === 0) return c.high - c.low;
+    const prevClose = candles[i - 1].close;
+    return Math.max(
+      c.high - c.low,
+      Math.abs(c.high - prevClose),
+      Math.abs(c.low - prevClose),
+    );
+  });
+  const log10p = Math.log10(period);
+  for (let i = period; i < candles.length; i++) {
+    let sumTr = 0,
+      maxH = -Infinity,
+      minL = Infinity;
+    for (let j = i - period + 1; j <= i; j++) {
+      sumTr += tr[j];
+      if (candles[j].high > maxH) maxH = candles[j].high;
+      if (candles[j].low < minL) minL = candles[j].low;
+    }
+    const range = maxH - minL;
+    if (range > 0) out[i] = (100 * Math.log10(sumTr / range)) / log10p;
+  }
+  return out;
+}
+
 export function atr(candles: Candle[], period = 14): (number | null)[] {
   const out: (number | null)[] = new Array(candles.length).fill(null);
   if (candles.length <= period) return out;
