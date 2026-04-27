@@ -103,11 +103,11 @@ SYMBOL_MAP = {
     "SOLUSDT": os.environ.get("FTMO_SOL_SYMBOL", "SOLUSD"),
     "BCHUSDT": os.environ.get("FTMO_BCH_SYMBOL", "BCHUSD"),
     "LTCUSDT": os.environ.get("FTMO_LTC_SYMBOL", "LTCUSD"),
-    "LINKUSDT": os.environ.get("FTMO_LINK_SYMBOL", "LINKUSD"),
+    "LINKUSDT": os.environ.get("FTMO_LINK_SYMBOL", "LNKUSD"),
     "BNBUSDT": os.environ.get("FTMO_BNB_SYMBOL", "BNBUSD"),
     "ADAUSDT": os.environ.get("FTMO_ADA_SYMBOL", "ADAUSD"),
     "DOGEUSDT": os.environ.get("FTMO_DOGE_SYMBOL", "DOGEUSD"),
-    "AVAXUSDT": os.environ.get("FTMO_AVAX_SYMBOL", "AVAXUSD"),
+    "AVAXUSDT": os.environ.get("FTMO_AVAX_SYMBOL", "AVAUSD"),
 }
 
 PENDING_PATH = STATE_DIR / "pending-signals.json"
