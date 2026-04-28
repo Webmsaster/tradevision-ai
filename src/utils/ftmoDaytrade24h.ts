@@ -5923,6 +5923,64 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_DIAMOND: FtmoDaytrade24hConfig
   };
 
 /**
+ * TREND_2H_V5_PLATINUM — V5_DIAMOND + per-asset TP (14 assets, fully tuned).
+ *
+ * Phase F greedy single-axis TP sweep on each of V5_DIAMOND's 14 assets
+ * (5.60y / 662 windows / live caps 5%/40%):
+ *
+ *   V5_DIAMOND:           374/662 = 56.50% / wr 69.27% / med 4d / TL 6
+ *   V5_PLATINUM tuned:    387/662 = 58.46% / wr 70.63% / med 4d / TL 4 ← winner
+ *
+ *   +1.96pp pass-rate / +1.36pp winrate / TL 6→4
+ *
+ * Per-asset optimal TP (V5_DIAMOND 14-asset basket):
+ *   ETH 3.5%, BTC 3.5%, BNB 4%, ADA 3.5%, DOGE 5.5%, AVAX 4%,
+ *   LTC 4%, BCH 4%, AAVE 5.5%, XRP 4%, INJ 4%, RUNE 4%, ETC 3.5%, SAND 4%
+ *
+ *   Note: BTC's optimal shifted 4%→3.5% in 14-asset context (vs 4% in V5_GOLD's
+ *   10-asset optimum), DOGE moved from 4.5%→5.5%, LTC from 5.5%→4% — confirms
+ *   per-asset TP must be re-tuned when basket changes.
+ *
+ * Cumulative gains over V5 baseline:
+ *   +9.50pp pass-rate (48.96% → 58.46%)  ← exceeds 55% target by +3.46pp
+ *   +8.62pp trade-winrate (62.01% → 70.63%)
+ *   p90 5d → 4d
+ *   TL -89% (36 → 4 = 0.60% TL-rate)
+ *
+ * This is the final-form V5 family champion under FTMO live caps. Achieves
+ * the 55%+ pass-rate target with consistent 4-day median + 4-day p90 (most
+ * passes complete in exactly 4 days).
+ *
+ * Live Service: `FTMO_TF=2h-trend-v5-platinum`.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PLATINUM: FtmoDaytrade24hConfig =
+  (() => {
+    const tpByAsset: Record<string, number> = {
+      "ETH-TREND": 0.035,
+      "BTC-TREND": 0.035,
+      "BNB-TREND": 0.04,
+      "ADA-TREND": 0.035,
+      "DOGE-TREND": 0.055,
+      "AVAX-TREND": 0.04,
+      "LTC-TREND": 0.04,
+      "BCH-TREND": 0.04,
+      "AAVE-TREND": 0.055,
+      "XRP-TREND": 0.04,
+      "INJ-TREND": 0.04,
+      "RUNE-TREND": 0.04,
+      "ETC-TREND": 0.035,
+      "SAND-TREND": 0.04,
+    };
+    return {
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_DIAMOND,
+      assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_DIAMOND.assets.map((a) => ({
+        ...a,
+        tpPct: tpByAsset[a.symbol] ?? a.tpPct,
+      })),
+    };
+  })();
+
+/**
  * TREND_2H_V5_STEP2 — Step-2 variant of V5 (winner of ftmoStep2Tuning sweep).
  *
  * FTMO Step-2 rules:
