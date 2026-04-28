@@ -120,6 +120,12 @@ class Position:
     comment: str
     time: int  # unix seconds
     max_hold_until: int  # ms (mock-only, not in real MT5)
+    # BUGFIX 2026-04-28 (Round 37 Bug 1): real mt5 returns positions with
+    # price_current; without this every _apply_trailing_stop /
+    # _apply_partial_tp / _apply_chandelier_stop / _apply_break_even /
+    # _apply_time_exit raised AttributeError in mock mode → silently
+    # skipped all position management in CI tests.
+    price_current: float = 0.0
 
 
 @dataclass
@@ -215,13 +221,26 @@ def positions_get(ticket: int | None = None, symbol: str | None = None, magic: i
     _check_position_exits()
     if ticket is not None:
         p = _STATE["positions"].get(ticket)
-        return (p,) if p else ()
+        if p is None:
+            return ()
+        _refresh_price_current(p)
+        return (p,)
     out = list(_STATE["positions"].values())
     if symbol is not None:
         out = [p for p in out if getattr(p, "symbol", None) == symbol]
     if magic is not None:
         out = [p for p in out if getattr(p, "magic", None) == magic]
+    for p in out:
+        _refresh_price_current(p)
     return tuple(out)
+
+
+def _refresh_price_current(p: Position) -> None:
+    """Populate price_current with the latest mid-quote so callers can read
+    `pos.price_current` like the real mt5 module returns."""
+    px = _get_price(p.symbol)
+    if px > 0:
+        p.price_current = px
 
 
 def history_deals_get(from_dt: datetime, to_dt: datetime) -> tuple:

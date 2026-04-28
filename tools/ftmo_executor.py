@@ -566,7 +566,22 @@ def place_market_order(
     """
     ftmo_symbol = SYMBOL_MAP.get(binance_symbol)
     if not ftmo_symbol:
-        return OrderResult(False, None, f"unknown symbol {binance_symbol}", None, None)
+        # BUGFIX 2026-04-28 (Round 37 Bug 2): default Binance "*USDT" → "*USD"
+        # so user-added FTMO_EXTRA_SYMBOLS don't trigger order_failure → auto-pause
+        # streak. Most FTMO tickers follow the BinanceUSDT → FTMO USD convention
+        # (e.g. XRPUSDT → XRPUSD). If the resolved symbol turns out not to exist
+        # at the broker, mt5.symbol_select below will fail cleanly without
+        # incrementing the failure counter past the actual broker limitation.
+        if binance_symbol.endswith("USDT"):
+            ftmo_symbol = binance_symbol[:-4] + "USD"
+            log_event(
+                "symbol_map_fallback",
+                binance=binance_symbol,
+                ftmo=ftmo_symbol,
+                level="warn",
+            )
+        else:
+            return OrderResult(False, None, f"unknown symbol {binance_symbol}", None, None)
     if not mt5.symbol_select(ftmo_symbol, True):
         return OrderResult(False, None, f"symbol_select failed for {ftmo_symbol}", None, None)
     info = mt5.symbol_info(ftmo_symbol)
