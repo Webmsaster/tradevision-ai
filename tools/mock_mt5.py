@@ -18,7 +18,7 @@ import json
 import time
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 # MT5 constants (partial — only what executor uses)
@@ -192,12 +192,36 @@ def symbol_info(symbol: str) -> SymbolInfo | None:
     )
 
 
-def positions_get(ticket: int | None = None) -> tuple:
+# BUGFIX 2026-04-28: parity with real mt5 module — Pyright now sees both
+# `symbol_info_tick` and the `symbol=` kwarg on `positions_get`.
+@dataclass
+class SymbolTick:
+    bid: float
+    ask: float
+    last: float
+    volume: int = 0
+    time: int = 0
+
+
+def symbol_info_tick(symbol: str) -> SymbolTick | None:
+    info = symbol_info(symbol)
+    if info is None:
+        return None
+    mid = (info.bid + info.ask) / 2
+    return SymbolTick(bid=info.bid, ask=info.ask, last=mid, time=int(datetime.now(timezone.utc).timestamp()))
+
+
+def positions_get(ticket: int | None = None, symbol: str | None = None, magic: int | None = None) -> tuple:
     _check_position_exits()
     if ticket is not None:
         p = _STATE["positions"].get(ticket)
         return (p,) if p else ()
-    return tuple(_STATE["positions"].values())
+    out = list(_STATE["positions"].values())
+    if symbol is not None:
+        out = [p for p in out if getattr(p, "symbol", None) == symbol]
+    if magic is not None:
+        out = [p for p in out if getattr(p, "magic", None) == magic]
+    return tuple(out)
 
 
 def history_deals_get(from_dt: datetime, to_dt: datetime) -> tuple:

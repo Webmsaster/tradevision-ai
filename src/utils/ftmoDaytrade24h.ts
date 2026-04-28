@@ -4441,15 +4441,12 @@ export function runFtmoDaytrade24h(
       break;
     }
     // V4 trend: cap concurrent open positions
+    // BUGFIX 2026-04-28 (Round 9 Finding 7): removed dead loop above; the
+    // partial backwards-scan was overwritten by the full scan immediately
+    // after, making the first loop pure dead code (and incorrect since
+    // executed is now sorted by exit-time, not entry-time).
     if (cfg.maxConcurrentTrades !== undefined) {
-      let openCount = 0;
-      for (let k = executed.length - 1; k >= 0; k--) {
-        if (executed[k].exitTime > t.entryTime) openCount++;
-        else break; // executed sorted by entryTime; older won't overlap
-      }
-      // Loop above only catches recent overlaps; do a full scan since
-      // exit-time ordering can differ from entry-time ordering.
-      openCount = executed.filter((e) => e.exitTime > t.entryTime).length;
+      const openCount = executed.filter((e) => e.exitTime > t.entryTime).length;
       if (openCount >= cfg.maxConcurrentTrades) continue;
     }
     // V5: cross-asset correlation overheat filter

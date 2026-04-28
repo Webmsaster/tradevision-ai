@@ -29,7 +29,36 @@ export interface TelegramCommandHandlerCtx {
 }
 
 const POLL_TIMEOUT_SEC = 25;
-let lastUpdateId = 0;
+
+// BUGFIX 2026-04-28 (Round 27): lastUpdateId persisted per-stateDir to survive
+// restarts. Was a module-global, which on PM2 restart re-pulled the
+// last 24h of updates and re-fired stale /pause / /kill commands.
+function lastUpdateIdPath(stateDir: string): string {
+  return path.join(stateDir, "telegram-update-id.json");
+}
+
+function readLastUpdateId(stateDir: string): number {
+  try {
+    const p = lastUpdateIdPath(stateDir);
+    if (!fs.existsSync(p)) return 0;
+    const obj = JSON.parse(fs.readFileSync(p, "utf-8")) as { id?: number };
+    return Number.isFinite(obj.id) ? Number(obj.id) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeLastUpdateId(stateDir: string, id: number): void {
+  try {
+    fs.mkdirSync(stateDir, { recursive: true });
+    const p = lastUpdateIdPath(stateDir);
+    const tmp = `${p}.tmp.${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify({ id }));
+    fs.renameSync(tmp, p);
+  } catch (e) {
+    console.error(`[tg-bot] failed to persist lastUpdateId:`, e);
+  }
+}
 
 export async function startTelegramBot(ctx: TelegramCommandHandlerCtx) {
   const cfg = readTelegramConfig();
@@ -52,6 +81,7 @@ export async function startTelegramBot(ctx: TelegramCommandHandlerCtx) {
 async function pollLoop(cfg: TelegramConfig, ctx: TelegramCommandHandlerCtx) {
   // BUGFIX 2026-04-28 (Round 18): exp-backoff on consecutive errors.
   let consecutiveErrors = 0;
+  let lastUpdateId = readLastUpdateId(ctx.stateDir);
   while (true) {
     try {
       const url = `https://api.telegram.org/bot${cfg.token}/getUpdates?timeout=${POLL_TIMEOUT_SEC}&offset=${lastUpdateId + 1}`;
@@ -87,8 +117,12 @@ async function pollLoop(cfg: TelegramConfig, ctx: TelegramCommandHandlerCtx) {
         await sleep(5000);
         continue;
       }
+      let updatedId = false;
       for (const upd of body.result) {
-        lastUpdateId = Math.max(lastUpdateId, upd.update_id);
+        if (upd.update_id > lastUpdateId) {
+          lastUpdateId = upd.update_id;
+          updatedId = true;
+        }
         // BUGFIX 2026-04-28 (Round 18): also handle edited_message.
         const msg = upd.message ?? (upd as any).edited_message;
         if (msg?.text) {
@@ -99,6 +133,9 @@ async function pollLoop(cfg: TelegramConfig, ctx: TelegramCommandHandlerCtx) {
           }
         }
       }
+      // BUGFIX 2026-04-28 (Round 27): persist update-id between batches so
+      // restarts don't re-process old commands.
+      if (updatedId) writeLastUpdateId(ctx.stateDir, lastUpdateId);
     } catch (e) {
       // Don't dump full error (may include URL/token).
       const msg = e instanceof Error ? e.message : String(e);

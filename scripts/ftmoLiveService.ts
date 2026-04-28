@@ -149,7 +149,38 @@ function writeJSON(p: string, obj: unknown) {
   fs.renameSync(tmp, p);
 }
 
+// BUGFIX 2026-04-28 (Round 12 Bug 3): rotate signal-log.jsonl when it
+// grows past 10MB. Keeps last 5 archives (signal-log.jsonl.1..5). Without
+// this the file grew unbounded — multi-month deployments hit GB-scale and
+// log-tailing tools choked.
+const LOG_ROTATE_BYTES = 10 * 1024 * 1024;
+const LOG_KEEP = 5;
+
+function rotateLogIfNeeded(): void {
+  try {
+    if (!fs.existsSync(LOG_PATH)) return;
+    const size = fs.statSync(LOG_PATH).size;
+    if (size < LOG_ROTATE_BYTES) return;
+    // Shift archives: .4 → .5, .3 → .4, …, .jsonl → .1
+    for (let i = LOG_KEEP - 1; i >= 1; i--) {
+      const src = `${LOG_PATH}.${i}`;
+      const dst = `${LOG_PATH}.${i + 1}`;
+      if (fs.existsSync(src)) {
+        try {
+          fs.renameSync(src, dst);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    fs.renameSync(LOG_PATH, `${LOG_PATH}.1`);
+  } catch (e) {
+    console.error(`[svc] log rotate failed:`, e);
+  }
+}
+
 function appendLog(entry: object) {
+  rotateLogIfNeeded();
   fs.appendFileSync(
     LOG_PATH,
     JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n",
@@ -577,11 +608,34 @@ async function main() {
     `🤖 <b>FTMO Signal Service ONLINE (${TF})</b>\nState dir: <code>${htmlEscape(STATE_DIR)}</code>\nNext check at next ${TF} UTC boundary.`,
   );
 
-  // Start Telegram command receiver in background
-  startTelegramBot({
-    stateDir: STATE_DIR,
-    challengeStartBalance: Number(process.env.FTMO_START_BALANCE ?? "100000"),
-  }).catch((e) => console.error("[ftmo-live] telegram bot error:", e));
+  // BUGFIX 2026-04-28 (Round 10 Bug 5): supervisor restarts the bot if its
+  // poll loop crashes. Without this an unhandled rejection in startTelegramBot
+  // (e.g. unparseable response, transient network failure) silently killed
+  // the command receiver while the rest of the service kept running.
+  const telegramSupervisor = async () => {
+    let restarts = 0;
+    while (true) {
+      try {
+        await startTelegramBot({
+          stateDir: STATE_DIR,
+          challengeStartBalance: Number(
+            process.env.FTMO_START_BALANCE ?? "100000",
+          ),
+        });
+        // Normal exit (e.g. config missing) — don't restart.
+        return;
+      } catch (e) {
+        restarts++;
+        console.error(`[ftmo-live] telegram bot crashed (#${restarts}):`, e);
+        // Exp backoff capped at 5 min.
+        const backoff = Math.min(5 * 60_000, 5_000 * Math.pow(2, restarts - 1));
+        await new Promise((r) => setTimeout(r, backoff));
+      }
+    }
+  };
+  telegramSupervisor().catch((e) =>
+    console.error("[ftmo-live] telegram supervisor fatal:", e),
+  );
 
   const oneShot = process.argv.includes("--once");
 
@@ -591,13 +645,54 @@ async function main() {
     return;
   }
 
+  // BUGFIX 2026-04-28 (Round 10 Bug 9): track consecutive Binance failures
+  // and alert via Telegram if they persist. Without this the service
+  // silently spins on a permanent network outage / rate limit.
+  let consecutiveFailures = 0;
+  let lastFailureAlert = 0;
+  const FAILURE_ALERT_THRESHOLD = 3; // first alert after 3 in a row
+  const FAILURE_ALERT_INTERVAL_MS = 60 * 60 * 1000; // re-alert hourly
+
+  const trackedRunOneCheck = async (phase: string) => {
+    try {
+      await runOneCheck();
+      if (consecutiveFailures >= FAILURE_ALERT_THRESHOLD) {
+        // Recovery: send "back online" once.
+        await tgSend(
+          `✅ <b>Binance check recovered</b> (after ${consecutiveFailures} consecutive failures)`,
+        ).catch(() => {});
+      }
+      consecutiveFailures = 0;
+    } catch (e) {
+      consecutiveFailures++;
+      console.error(
+        `[ftmo-live] ${phase} check failed (${consecutiveFailures} in a row):`,
+        e,
+      );
+      appendLog({
+        event: "error",
+        phase,
+        message: String(e),
+        consecutiveFailures,
+      });
+      const now = Date.now();
+      const shouldAlert =
+        consecutiveFailures >= FAILURE_ALERT_THRESHOLD &&
+        now - lastFailureAlert > FAILURE_ALERT_INTERVAL_MS;
+      if (shouldAlert) {
+        lastFailureAlert = now;
+        await tgSend(
+          `🔴 <b>Binance check failing</b>\n` +
+            `${consecutiveFailures} consecutive failures.\n` +
+            `Last error: <code>${htmlEscape(String(e).slice(0, 200))}</code>\n` +
+            `Service will keep retrying at every TF boundary.`,
+        ).catch(() => {});
+      }
+    }
+  };
+
   // Initial check
-  try {
-    await runOneCheck();
-  } catch (e) {
-    console.error("[ftmo-live] initial check failed:", e);
-    appendLog({ event: "error", phase: "initial", message: String(e) });
-  }
+  await trackedRunOneCheck("initial");
 
   // Schedule at each TF UTC boundary (+30s buffer)
   const loop = async () => {
@@ -607,12 +702,7 @@ async function main() {
       `[ftmo-live] next check at ${nextAt} (in ${(wait / 60000).toFixed(1)} min)`,
     );
     setTimeout(async () => {
-      try {
-        await runOneCheck();
-      } catch (e) {
-        console.error("[ftmo-live] scheduled check failed:", e);
-        appendLog({ event: "error", phase: "scheduled", message: String(e) });
-      }
+      await trackedRunOneCheck("scheduled");
       loop();
     }, wait);
   };

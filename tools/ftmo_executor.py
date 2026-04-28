@@ -335,7 +335,27 @@ def handle_daily_reset(current_equity_usd: float) -> float:
         else:
             log_event("daily_state_first_write", date=today_prague, equity=current_equity_usd)
         return current_equity_usd
-    return float(state.get("equity_at_day_start_usd", current_equity_usd))
+    # BUGFIX 2026-04-28 (Round 23 H4): if state matches today but the equity
+    # field is missing or non-numeric, log + alert. Returning current_equity
+    # silently would mask any intra-day drawdown that already happened —
+    # post-drawdown, the equity_at_day_start must NOT slide upward.
+    raw = state.get("equity_at_day_start_usd")
+    if not isinstance(raw, (int, float)) or raw <= 0:
+        log_event(
+            "daily_state_corrupt",
+            date=last_date,
+            raw_equity_at_day_start=raw,
+            current_equity=current_equity_usd,
+            recovery="using_current_equity_as_fallback_BUT_DL_MAY_BE_UNDERSTATED",
+        )
+        tg_send(
+            "⚠️ <b>Daily-state corrupt</b>\n"
+            f"<code>equity_at_day_start_usd</code> missing/invalid for {last_date}.\n"
+            f"Falling back to current equity ${current_equity_usd:,.2f}. "
+            "Daily-loss check may be understated until next Prague midnight."
+        )
+        return float(current_equity_usd)
+    return float(raw)
 
 
 def _build_daily_summary(today_utc: str, last_date: str, prev_pct: float, prev_pnl: float, current_equity_usd: float) -> str:
@@ -1077,7 +1097,7 @@ def _close_partial_lot(ticket: int, close_lot: float, reason: str) -> bool:
     }
     result = mt5.order_send(request)
     ok = result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
-    if ok:
+    if ok and result is not None:
         log_event("partial_close", ticket=ticket, lot=close_lot, reason=reason, price=result.price)
     else:
         log_event("partial_close_failed", ticket=ticket, lot=close_lot, retcode=getattr(result, "retcode", None))
@@ -1885,7 +1905,8 @@ if __name__ == "__main__":
     # so we trigger the same KeyboardInterrupt cleanup path. Without this,
     # MT5 connection terminates mid-order_send → orphan trades without SL/TP.
     import signal as _signal
-    def _on_sigterm(*_args):
+    def _on_sigterm(*_args):  # type: ignore[reportUnusedVariable]
+        # signal-handler signature requires *args; we ignore them.
         raise KeyboardInterrupt()
     try:
         _signal.signal(_signal.SIGTERM, _on_sigterm)
