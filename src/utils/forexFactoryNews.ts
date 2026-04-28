@@ -49,7 +49,7 @@ export async function loadForexFactoryNews(
   const raw = (await res.json()) as FFEntry[];
   const out: NewsEvent[] = [];
   for (const e of raw) {
-    const ts = new Date(e.date).getTime();
+    const ts = parseFFDate(e.date);
     if (!Number.isFinite(ts)) continue;
     const impact = normalizeImpact(e.impact);
     if (!impact) continue;
@@ -61,6 +61,31 @@ export async function loadForexFactoryNews(
     });
   }
   return out;
+}
+
+/**
+ * Parse a ForexFactory date string. The feed normally returns full ISO
+ * with offset (e.g. "2024-04-29T08:30:00-04:00") which is unambiguous.
+ *
+ * BUGFIX 2026-04-28 (Round 36 Bug 4): if the feed ever drops the offset
+ * (older formats, regression on FF's side), `new Date()` would interpret
+ * the string in the Node process's LOCAL timezone — on a Windows VPS
+ * not set to UTC, every news event shifts by hours and the news
+ * blackout fires at the wrong time. Refuse such ambiguous strings
+ * rather than silently misalign — caller will skip + log.
+ */
+function parseFFDate(s: string): number {
+  if (!s || typeof s !== "string") return NaN;
+  // Accept ISO with explicit zone (Z or ±HH:MM) only.
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(s.trim());
+  if (!hasZone) {
+    console.warn(
+      `[forexFactoryNews] timezone-naive date "${s}" — refusing to parse (would shift on non-UTC hosts)`,
+    );
+    return NaN;
+  }
+  const t = new Date(s).getTime();
+  return Number.isFinite(t) ? t : NaN;
 }
 
 function normalizeImpact(raw: string): NewsEvent["impact"] | null {

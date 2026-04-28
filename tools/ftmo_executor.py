@@ -469,8 +469,11 @@ def compute_lot_size(symbol_info: Any, risk_frac: float, stop_pct: float, accoun
         return 0.0
     lot_raw = risk_usd / loss_per_lot
     step = symbol_info.volume_step or 0.01
-    # Floor (round DOWN) to never exceed requested risk
-    lot = math.floor(lot_raw / step) * step
+    # Floor (round DOWN) to never exceed requested risk.
+    # BUGFIX 2026-04-28 (Round 36 Bug 9): round to 8 decimals BEFORE floor.
+    # Without this, FP residue (lot_raw/step = 6.9999999998 instead of 7)
+    # made math.floor() drop a step → ~14% under-sizing of risk.
+    lot = math.floor(round(lot_raw / step, 8)) * step
     vol_min = symbol_info.volume_min or 0.01
     if lot < vol_min:
         # Requested risk is too small for broker minimum — refuse rather
@@ -866,6 +869,11 @@ def process_pending_signals() -> None:
         # If executor crashes between mt5.order_send and write_json(EXECUTED_PATH),
         # the marker file lets us detect duplicates on boot.
         order_marker = _write_pending_order_marker(sig)
+        # BUGFIX 2026-04-28 (Round 36 Bug 3): embed marker ID in comment so
+        # reconcile can match exactly instead of substring-matching the
+        # asset symbol (which false-positives against unrelated prior trades).
+        marker_id = _signal_marker_id(sig)
+        # Comment is capped at 31 chars by MT5; tag/asset are short so this fits.
         result = place_market_order(
             binance_symbol=sig["sourceSymbol"],
             direction=direction,
@@ -873,7 +881,7 @@ def process_pending_signals() -> None:
             stop_pct=sig["stopPct"],
             tp_pct=sig["tpPct"],
             account_equity=account_equity,
-            comment=f"{tag} {sig['assetSymbol']}",
+            comment=f"{tag} {sig['assetSymbol']} {marker_id}",
         )
         # Marker stays until executed-signals is written successfully (cleanup at end).
         if result.ok:
@@ -1379,15 +1387,32 @@ def reconcile_pending_order_markers() -> None:
         comments = {p.comment for p in positions}
     except Exception:
         comments = set()
+    # BUGFIX 2026-04-28 (Round 36 Bug 3): also check recent history (closed orders
+    # within last 60 minutes) — a successful order_send may have completed and
+    # already SL/TP'd before the reconcile runs. Without this we'd re-queue
+    # signals that already filled-and-exited → duplicate trade on next pickup.
+    try:
+        recent_deals = mt5.history_deals_get(
+            datetime.fromtimestamp(time.time() - 60 * 60),
+            datetime.now(),
+        ) or []
+        for d in recent_deals:
+            if getattr(d, "magic", 0) == 231:
+                comments.add(getattr(d, "comment", ""))
+    except Exception:
+        pass
     requeued = []
     cleaned = 0
     for marker in markers:
         try:
             data = read_json(marker, {})
             sig = data.get("signal", {})
-            asset = sig.get("assetSymbol", "")
-            # If MT5 has a position with matching asset comment → assume it's our order
-            if any(asset in c for c in comments):
+            mid = data.get("id") or _signal_marker_id(sig)
+            # BUGFIX 2026-04-28 (Round 36 Bug 3): exact marker-ID match. Was
+            # substring `asset in comment`, which false-matched any prior
+            # trade containing the same asset string.
+            placed = any(mid in c for c in comments)
+            if placed:
                 marker.unlink(missing_ok=True)
                 cleaned += 1
             else:
@@ -1409,16 +1434,34 @@ def _emergency_close_all_positions(reason: str) -> None:
     """BUGFIX 2026-04-28 (Round 23 C2): force-close all open positions when
     daily-loss approaches breach. Was previously only blocking new signals
     while existing positions could still drag equity past -5%.
+
+    BUGFIX 2026-04-28 (Round 36 Bug 1): keep tickets whose close FAILED in
+    OPEN_POS_PATH so the next loop retries — wiping unconditionally meant
+    a single requote/timeout left an orphan position at MT5 with no
+    further trail/time-exit/close attempt → equity could still breach.
     """
     open_positions = read_json(OPEN_POS_PATH, {"positions": []})
     closed = 0
+    failed_positions: list[dict] = []
     for pos in open_positions.get("positions", []):
         if close_position(pos["ticket"]):
             closed += 1
+        else:
+            failed_positions.append(pos)
     if closed > 0:
-        log_event("emergency_close", reason=reason, count=closed)
+        log_event("emergency_close", reason=reason, closed=closed, failed=len(failed_positions))
         tg_send(f"🚨 <b>Emergency Close {closed} positions</b>\nReason: {html_escape(reason)}")
-    write_json(OPEN_POS_PATH, {"positions": []})
+    if failed_positions:
+        log_event("emergency_close_partial", reason=reason, failed=len(failed_positions),
+                  tickets=[p["ticket"] for p in failed_positions])
+        tg_send(
+            f"⚠️ <b>Emergency Close PARTIAL</b>\n"
+            f"Failed to close {len(failed_positions)} position(s): "
+            f"<code>{', '.join(str(p['ticket']) for p in failed_positions)}</code>\n"
+            f"Will retry on next loop. Reason: {html_escape(reason)}"
+        )
+    # Only retain still-failed tickets so manage_open_positions can retry.
+    write_json(OPEN_POS_PATH, {"positions": failed_positions})
 
 
 def manage_open_positions() -> None:

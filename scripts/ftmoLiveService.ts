@@ -286,45 +286,52 @@ async function runOneCheck(): Promise<DetectionResult> {
   console.log(`\n[ftmo-live] ${new Date().toISOString()} — running check`);
   ensureStateDir();
 
-  const eth = await loadBinanceHistory({
-    symbol: "ETHUSDT",
-    timeframe: TF,
-    targetCount: 500,
-    maxPages: 2,
-  });
-  const btc = await loadBinanceHistory({
-    symbol: "BTCUSDT",
-    timeframe: TF,
-    targetCount: 500,
-    maxPages: 2,
-  });
-  const sol = await loadBinanceHistory({
-    symbol: "SOLUSDT",
-    timeframe: TF,
-    targetCount: 500,
-    maxPages: 2,
-  });
+  // BUGFIX 2026-04-28 (Round 36 Bug 6): parallel + per-symbol fault-tolerant.
+  // Was 8 sequential awaits — single 503 mid-cycle aborted the whole tick.
+  // Now ETH+BTC are required (throw if missing); all others best-effort.
+  const fetchOne = (
+    sym: string,
+  ): Promise<import("../src/utils/indicators").Candle[]> =>
+    loadBinanceHistory({
+      symbol: sym,
+      timeframe: TF,
+      targetCount: 500,
+      maxPages: 2,
+    });
 
-  // Load extra-asset candles for multi-asset configs (TREND_2H_V1/V2 use
-  // 8 assets including BNB, ADA, AVAX, BCH, DOGE).
   const extraSymbols = process.env.FTMO_EXTRA_SYMBOLS
     ? process.env.FTMO_EXTRA_SYMBOLS.split(",")
     : ["BNBUSDT", "ADAUSDT", "AVAXUSDT", "BCHUSDT", "DOGEUSDT"];
+
+  const allSymbols = ["ETHUSDT", "BTCUSDT", "SOLUSDT", ...extraSymbols];
+  const settled = await Promise.allSettled(allSymbols.map(fetchOne));
+  const candleMap: Record<string, import("../src/utils/indicators").Candle[]> =
+    {};
+  for (let i = 0; i < allSymbols.length; i++) {
+    const r = settled[i];
+    if (r.status === "fulfilled") {
+      candleMap[allSymbols[i]] = r.value;
+    } else {
+      console.error(
+        `[ftmo-live] symbol ${allSymbols[i]} load failed:`,
+        r.reason,
+      );
+    }
+  }
+  const eth = candleMap["ETHUSDT"];
+  const btc = candleMap["BTCUSDT"];
+  if (!eth || !btc) {
+    throw new Error(
+      `Binance fetch failed for required symbols: eth=${!!eth} btc=${!!btc}`,
+    );
+  }
+  const sol = candleMap["SOLUSDT"] ?? [];
   const extraCandles: Record<
     string,
     import("../src/utils/indicators").Candle[]
   > = {};
   for (const sym of extraSymbols) {
-    try {
-      extraCandles[sym] = await loadBinanceHistory({
-        symbol: sym,
-        timeframe: TF,
-        targetCount: 500,
-        maxPages: 2,
-      });
-    } catch (e) {
-      console.error(`[ftmo-live] extra symbol ${sym} load failed:`, e);
-    }
+    if (candleMap[sym]) extraCandles[sym] = candleMap[sym];
   }
 
   const account = readJSON<AccountState>(ACCOUNT_PATH, defaultAccount());
