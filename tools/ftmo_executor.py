@@ -93,6 +93,10 @@ CB_LOSS_STREAK = int(os.environ.get("FTMO_CB_LOSS_STREAK", "3"))
 CB_DAILY_DD_WARN_PCT = float(os.environ.get("FTMO_CB_DAILY_DD_WARN", "0.03"))
 # Equity history sample interval
 EQUITY_HISTORY_INTERVAL_SEC = 300  # 5 minutes
+
+# Rate-limit duplicate loop-error Telegram alerts (avoid spam during restart loops).
+# Maps error message prefix → last sent timestamp.
+_loop_error_last_sent: dict[str, float] = {}
 # FTMO Consistency Rule — warn when largest single trade approaches 45% of total profit
 CONSISTENCY_WARN_RATIO = float(os.environ.get("FTMO_CONSISTENCY_WARN_RATIO", "0.35"))
 CONSISTENCY_HARD_RATIO = float(os.environ.get("FTMO_CONSISTENCY_HARD_RATIO", "0.42"))
@@ -1216,7 +1220,13 @@ def main_loop() -> None:
                 maybe_place_ping_trade()
             except Exception as e:
                 log_event("loop_error", error=str(e))
-                tg_send(f"⚠️ <b>Executor Loop Error</b>\n<code>{html_escape(str(e))}</code>")
+                # Rate-limit Telegram alerts: only send once per 30min per unique error message
+                err_key = str(e)[:120]
+                now_ts = time.time()
+                last_sent = _loop_error_last_sent.get(err_key, 0)
+                if now_ts - last_sent > 1800:
+                    tg_send(f"⚠️ <b>Executor Loop Error</b>\n<code>{html_escape(str(e))}</code>")
+                    _loop_error_last_sent[err_key] = now_ts
             time.sleep(POLL_INTERVAL_SEC)
     except KeyboardInterrupt:
         log_event("executor_stopped", reason="keyboard_interrupt")
