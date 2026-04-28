@@ -3640,15 +3640,27 @@ export function detectAsset(
         }
       }
 
-      // Session / day-of-week gates — evaluated on the SIGNAL bar (i),
-      // which is the bar whose close triggered the setup. Entry itself
-      // is on the next bar's open (i+1).
+      // Session / day-of-week gates — evaluated on the ENTRY bar (i+1),
+      // which is when the trade actually opens. Live signal uses entryOpenTime
+      // (next bar's open hour); backtest must match for live-backtest parity.
+      // BUGFIX 2026-04-28: was using signal-bar (i) hour, drift vs live.
+      const entryBar = i + 1;
       if (cfg.allowedHoursUtc && cfg.allowedHoursUtc.length > 0) {
-        const h = new Date(candles[i].openTime).getUTCHours();
+        const refTime =
+          entryBar < candles.length
+            ? candles[entryBar].openTime
+            : candles[i].openTime +
+              (candles[i].closeTime - candles[i].openTime);
+        const h = new Date(refTime).getUTCHours();
         if (!cfg.allowedHoursUtc.includes(h)) continue;
       }
       if (cfg.allowedDowsUtc && cfg.allowedDowsUtc.length > 0) {
-        const d = new Date(candles[i].openTime).getUTCDay();
+        const refTime =
+          entryBar < candles.length
+            ? candles[entryBar].openTime
+            : candles[i].openTime +
+              (candles[i].closeTime - candles[i].openTime);
+        const d = new Date(refTime).getUTCDay();
         if (!cfg.allowedDowsUtc.includes(d)) continue;
       }
 
@@ -4173,7 +4185,13 @@ export function detectAsset(
         rawPnl * cfg.leverage * effRiskFrac * safeVolMult,
         -effRiskFrac * safeVolMult,
       );
-      const day = Math.floor((eb.openTime - ts0) / (24 * 3600 * 1000));
+      // BUGFIX 2026-04-28: was UTC day boundary; FTMO daily-loss anchor is
+      // Prague midnight (UTC+1 winter / UTC+2 summer). Use UTC+1 fixed offset
+      // (ignores DST → max 1h drift, acceptable for backtest accuracy).
+      const PRAGUE_OFFSET_MS = 1 * 3600 * 1000;
+      const day =
+        Math.floor((eb.openTime + PRAGUE_OFFSET_MS) / (24 * 3600 * 1000)) -
+        Math.floor((ts0 + PRAGUE_OFFSET_MS) / (24 * 3600 * 1000));
       const holdHours = (exitBar - (i + 1)) * hoursPerBar;
       out.push({
         symbol: asset.symbol,

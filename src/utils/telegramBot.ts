@@ -304,10 +304,13 @@ export function readControls(stateDir: string): BotControls {
 function setControls(stateDir: string, update: Partial<BotControls>) {
   const current = readControls(stateDir);
   const next = { ...current, ...update };
-  fs.writeFileSync(
-    path.join(stateDir, CONTROLS_FILE),
-    JSON.stringify(next, null, 2),
-  );
+  // BUGFIX 2026-04-28: was non-atomic. Python executor polls every 5s and could
+  // read truncated file mid-write → fallback {paused:false} → executor processes
+  // signals during a /pause window. Now atomic via temp + rename.
+  const target = path.join(stateDir, CONTROLS_FILE);
+  const tmp = target + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(next, null, 2));
+  fs.renameSync(tmp, target);
 }
 
 // ---- IO ----

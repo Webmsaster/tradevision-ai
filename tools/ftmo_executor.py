@@ -598,7 +598,8 @@ def get_pause_state() -> dict:
 
 
 def write_pause_state(state: dict) -> None:
-    PAUSE_STATE_PATH.write_text(json.dumps(state, indent=2))
+    # BUGFIX 2026-04-28: was non-atomic. Now uses atomic write helper.
+    write_json(PAUSE_STATE_PATH, state)
 
 
 def check_target_and_pause(current_equity: float) -> bool:
@@ -720,9 +721,10 @@ def process_pending_signals() -> None:
                 "signal": sig, "result": "skipped_post_target",
                 "ts": datetime.now(timezone.utc).isoformat(),
             })
-        EXECUTED_PATH.write_text(json.dumps(executed, indent=2))
+        # BUGFIX 2026-04-28: atomic writes (was non-atomic, corrupt-on-crash risk).
+        write_json(EXECUTED_PATH, executed)
         # Clear pending queue
-        PENDING_PATH.write_text(json.dumps({"signals": []}, indent=2))
+        write_json(PENDING_PATH, {"signals": []})
         return
 
     remaining: list[dict] = []
@@ -800,8 +802,19 @@ def process_pending_signals() -> None:
             _bump_order_fail_counter(result.error or "unknown")
             log_event("order_failed", asset=sig["assetSymbol"], error=result.error)
             tg_send(f"❌ <b>ORDER FAILED</b>\n{sig['assetSymbol']}\nError: {html_escape(result.error or 'unknown')}")
+            # BUGFIX 2026-04-28: retry transient errors instead of silently dropping.
+            err_str = (result.error or "").lower()
+            retryable_keywords = ["timeout", "no money", "requote", "off quotes", "trade disabled", "10027"]
+            is_retryable = any(k in err_str for k in retryable_keywords)
+            retry_count = sig.get("_retryCount", 0)
+            if is_retryable and retry_count < 5:
+                # Re-queue with retry counter
+                retried_sig = {**sig, "_retryCount": retry_count + 1}
+                remaining.append(retried_sig)
+                log_event("retrying_signal", asset=sig["assetSymbol"], retry=retry_count + 1)
             executed["executions"].append({
                 "signal": sig, "result": "failed", "error": result.error,
+                "retried": is_retryable and retry_count < 5,
                 "ts": datetime.now(timezone.utc).isoformat(),
             })
             # If auto-pause kicked in, stop processing more pending signals
@@ -809,6 +822,20 @@ def process_pending_signals() -> None:
                 remaining.extend(pending[pending.index(sig) + 1:])
                 break
 
+    # BUGFIX 2026-04-28: re-read PENDING_PATH before write to merge signals
+    # that arrived during this iteration (signal-service may have written new
+    # signals while executor was placing orders → would silently overwrite).
+    try:
+        latest_pending = read_json(PENDING_PATH, {"signals": []})
+        latest_signals = latest_pending.get("signals", [])
+        # Find signals not in our original 'pending' list (= newly arrived)
+        original_keys = {(s.get("ts"), s.get("assetSymbol")) for s in pending}
+        new_signals = [s for s in latest_signals if (s.get("ts"), s.get("assetSymbol")) not in original_keys]
+        if new_signals:
+            log_event("merged_late_signals", count=len(new_signals))
+            remaining.extend(new_signals)
+    except Exception as e:
+        log_event("merge_check_failed", error=str(e))
     write_json(PENDING_PATH, {"signals": remaining})
     write_json(EXECUTED_PATH, executed)
     write_json(OPEN_POS_PATH, open_positions)

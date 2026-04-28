@@ -880,7 +880,10 @@ export function detectLiveSignalsV231(
         ? entryPrice * (1 - tpPct)
         : entryPrice * (1 + tpPct);
     const holdBarsEff = a.holdBarsOverride ?? CFG.holdBars;
-    const maxHoldHours = holdBarsEff * tfHours;
+    // BUGFIX 2026-04-28: backtest exit loop runs holdBars+1 bars (`mx = i+1+holdBars`
+    // inclusive). Live had `holdBars*tfHours` wall-time → closed 1 bar early.
+    // Add +1 bar to match backtest semantics.
+    const maxHoldHours = (holdBarsEff + 1) * tfHours;
 
     // Live risk = baseRisk × sizingFactor, capped at LIVE_MAX_RISK_FRAC.
     const rawRiskFrac = a.baseRisk * factor;
@@ -959,7 +962,7 @@ function detectBullSignals(
   const entryPrice = b1.close;
   const stopPrice = entryPrice * (1 - stopPct); // long: stop below
   const tpPrice = entryPrice * (1 + tpPct); // long: TP above
-  const maxHoldHours = BULL.holdBars * tfHours;
+  const maxHoldHours = (BULL.holdBars + 1) * tfHours; // bugfix 2026-04-28: backtest parity
   const baseAsset = BULL.assets[0];
   // Live risk = baseRisk × factor, capped at LIVE_MAX_RISK_FRAC (no leverage multiplier).
   const rawRiskFrac = baseAsset.riskFrac * factor;
