@@ -3926,8 +3926,14 @@ export function detectAsset(
       let beActive = false;
       const beTh = cfg.breakEven?.threshold;
       // iter253+ chandelier exit tracking: best-favorable close + min-move gate
+      // BUGFIX 2026-04-28 (Round 35 Finding 2): scale by configured stopPct
+      // (not effStop which is inflated by atrStop multiplier in V10/V11/V12).
+      // Old behavior: V10's atrStop m32 inflates effStop to 12-25% → chandelier
+      // never armed because price rarely moves >5-12% in trade lifetime.
+      // Fix: use base stopPct as reference R-unit, so minMoveR=0.5 means
+      // "0.5× of the BASE stop distance" which is achievable.
       const chanMinMoveR = chandelier?.minMoveR ?? 0.5;
-      const chanMinMoveAbs = chandelier ? chanMinMoveR * effStop : 0;
+      const chanMinMoveAbs = chandelier ? chanMinMoveR * stopPct : 0;
       let chanBestClose: number | null = null; // highest (long) or lowest (short)
       let chanArmed = false;
       // iter261+ partial-take-profit tracking
@@ -3954,6 +3960,24 @@ export function detectAsset(
       // skipped the entry bar and produced optimistic backtests.
       for (let j = i + 1; j <= mx; j++) {
         const bar = candles[j];
+        // BUGFIX 2026-04-28 (Round 35 Finding 1): check PTP via bar.high/low
+        // BEFORE stop/tp on same bar. Realistic intra-bar order: price moves
+        // up first (long), trigger PTP, then back down to stop. Without this
+        // fix, same-bar stop+PTP loses full position when 30% should be locked.
+        if (ptp && !ptpTriggered) {
+          const triggerPrice =
+            direction === "long"
+              ? entry * (1 + ptp.triggerPct)
+              : entry * (1 - ptp.triggerPct);
+          const ptpHit =
+            direction === "long"
+              ? bar.high >= triggerPrice
+              : bar.low <= triggerPrice;
+          if (ptpHit) {
+            ptpTriggered = true;
+            ptpRealizedPct = ptp.closeFraction * ptp.triggerPct;
+          }
+        }
         if (direction === "long") {
           if (bar.low <= dynStop) {
             exitBar = j;
@@ -4324,7 +4348,15 @@ export function runFtmoDaytrade24h(
       ),
     );
   }
-  all.sort((a, b) => a.day - b.day || a.entryTime - b.entryTime);
+  // BUGFIX 2026-04-28 (Round 14 Bug 5): sort by EXIT time, not entry time.
+  // Sort-by-entry created lookahead bias for adaptive sizing / timeBoost when
+  // multiple trades overlap (long holds): trade B opening during A's open
+  // window saw equity that included A's not-yet-realized PnL. Sort by exit
+  // ensures equity reflects realized PnL only.
+  all.sort(
+    (a, b) =>
+      a.day - b.day || a.exitTime - b.exitTime || a.entryTime - b.entryTime,
+  );
 
   let equity = 1.0;
   let peak = 1.0;
@@ -4373,8 +4405,18 @@ export function runFtmoDaytrade24h(
     // would still log in daily and place a tiny no-risk trade to clock the
     // trading day requirement. We simulate that by counting the day toward
     // tradingDays.size without executing any PnL impact.
+    // BUGFIX 2026-04-28 (Round 14 Bug 8): real trader clocks EVERY calendar
+    // day after target-hit (not just days where Engine has a signal-record).
+    // Iterate forward from target-hit-day to satisfy minTradingDays via
+    // virtual ping-trades on quiet days too.
     if (cfg.pauseAtTargetReached && equity >= 1 + cfg.profitTarget) {
-      tradingDays.add(t.day); // simulate user placing a minimal "ping" trade
+      // Add this day + all subsequent days up to maxDays as "ping" days
+      // until minTradingDays threshold is met.
+      let pingDay = t.day;
+      while (tradingDays.size < cfg.minTradingDays && pingDay < cfg.maxDays) {
+        tradingDays.add(pingDay);
+        pingDay++;
+      }
       if (tradingDays.size >= cfg.minTradingDays) {
         return {
           passed: true,

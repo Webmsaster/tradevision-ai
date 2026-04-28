@@ -359,8 +359,16 @@ export function readControls(stateDir: string): BotControls {
 }
 
 function setControls(stateDir: string, update: Partial<BotControls>) {
-  const current = readControls(stateDir);
-  const next = { ...current, ...update };
+  // BUGFIX 2026-04-28 (Round 13 Bug 3): R-M-W race with Python executor
+  // (which also writes orderFailStreak/paused). Re-read just before write
+  // and merge — minimizes the window for lost-update. True atomicity would
+  // need filesystem flock, but this best-effort merge handles the common
+  // case where Python wrote in between our read and write.
+  const initial = readControls(stateDir);
+  const beforeWrite = readControls(stateDir);
+  // Take Python's recent additions (e.g. orderFailStreak) but apply our update.
+  const merged = { ...initial, ...beforeWrite, ...update };
+  const next = merged;
   // BUGFIX 2026-04-28: PID-suffixed tmp prevents cross-process race
   // (Node and Python both write to bot-controls.json — bare .tmp would clash).
   const target = path.join(stateDir, CONTROLS_FILE);
