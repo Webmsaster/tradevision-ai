@@ -129,6 +129,29 @@ NEWS_PATH = STATE_DIR / "news-events.json"
 NEWS_CLOSE_MINUTES_BEFORE = int(os.environ.get("FTMO_NEWS_CLOSE_MINUTES", "30"))
 
 
+# BUGFIX 2026-04-28 (Round 31): validate config sanity at startup. Prevents
+# nonsense env values (FTMO_RISK_HARD_CAP=70 = 7000% would otherwise pass).
+def _validate_config() -> None:
+    errs = []
+    if not 0.001 <= RISK_FRAC_HARD_CAP <= 0.5:
+        errs.append(f"FTMO_RISK_HARD_CAP={RISK_FRAC_HARD_CAP} out of [0.001, 0.5]")
+    if not 0.01 <= PROFIT_TARGET_PCT <= 0.20:
+        errs.append(f"FTMO_PROFIT_TARGET={PROFIT_TARGET_PCT} out of [0.01, 0.20]")
+    if not 1 <= MIN_TRADING_DAYS <= 30:
+        errs.append(f"FTMO_MIN_TRADING_DAYS={MIN_TRADING_DAYS} out of [1, 30]")
+    if not 1000 <= CHALLENGE_START_BALANCE <= 5_000_000:
+        errs.append(f"FTMO_START_BALANCE={CHALLENGE_START_BALANCE} out of [1000, 5M]")
+    if not 1 <= NEWS_CLOSE_MINUTES_BEFORE <= 240:
+        errs.append(f"FTMO_NEWS_CLOSE_MINUTES={NEWS_CLOSE_MINUTES_BEFORE} out of [1, 240]")
+    if errs:
+        msg = "Invalid config — refusing to start:\n" + "\n".join("  - " + e for e in errs)
+        print(f"[executor] FATAL: {msg}", file=sys.stderr)
+        sys.exit(1)
+
+
+_validate_config()
+
+
 # =============================================================================
 # IO helpers
 # =============================================================================
@@ -143,13 +166,20 @@ def _rotate_jsonl_if_needed(path: Path, max_mb: int = 50) -> None:
         pass  # don't crash on rotation issues
 
 
-def log_event(event: str, **kwargs: Any) -> None:
+def log_event(event: str, level: str = "info", **kwargs: Any) -> None:
+    """BUGFIX 2026-04-28 (Round 30): added severity level. Default 'info' for
+    backwards compat; pass level='warn' or 'error' for parseable filtering."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     _rotate_jsonl_if_needed(EXECUTOR_LOG_PATH)
-    entry = {"ts": datetime.now(timezone.utc).isoformat(), "event": event, **kwargs}
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "level": level,
+        "event": event,
+        **kwargs,
+    }
     with open(EXECUTOR_LOG_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
-    print(f"[executor] {event}: {kwargs}")
+    print(f"[executor] [{level}] {event}: {kwargs}")
 
 
 def read_json(path: Path, fallback: Any) -> Any:
@@ -1109,7 +1139,7 @@ def _apply_partial_tp_levels(pos: dict) -> dict:
         if _close_partial_lot(pos["ticket"], close_lot, f"ptpL{idx}"):
             done[idx] = True
             log_event("partial_tp_level_fired", ticket=pos["ticket"],
-                      level=idx, trigger=trigger, fraction=frac,
+                      tier=idx, trigger=trigger, fraction=frac,
                       unrealized=unrealized, closed_lot=close_lot)
     pos["partial_tp_levels_done"] = done
     return pos

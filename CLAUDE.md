@@ -75,11 +75,15 @@ All 17 pattern detectors run in the browser with no API calls. Logic is in `src/
 - **Unit tests** (`src/__tests__/`): Vitest + jsdom, tests for calculations, AI analysis, CSV parser, storage
 - **E2E tests** (`e2e/`): Playwright against dev server — navigation, trade CRUD, CSV import, calculator, login flow
 - E2E helpers in `e2e/helpers.ts` (`loadSampleData`, `createTestTrade`, `gotoAndWaitForApp`)
-- **Strategy/FTMO tests** (`scripts/ftmo*.test.ts` and `scripts/exploratory/`): Heavy backtests run via vitest. Use `FTMO_DAYTRADE_24H_CONFIG_V252` (iter252) as the production champion — 90.8% pass / 4d FTMO-real median on 5.71y ETH+BTC+SOL with realistic FTMO costs. Engine fields `pauseAtTargetReached: true` and `atrStop` are mandatory for any new FTMO backtest, and `minTradingDays: 4` (real FTMO 2-Step rule, both Step 1 and Step 2).
+- **Strategy/FTMO tests** (`scripts/ftmo*.test.ts` and `scripts/exploratory/`): Heavy backtests run via vitest.
+  - **Active live config: `FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5`** (selected via `FTMO_TF=2h-trend-v5` env). 9 cryptos on 2h, 47% pass-rate (mathematically verified plateau via 35 audit rounds + 200000+ GA evaluations).
+  - **Step 2 config: `FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_STEP2`** (selected via `FTMO_TF=2h-trend-v5-step2`). Tuned for 5% target / 60d.
+  - Top backtest configs (post-bugfix re-validated 2026-04-28): V12_30M_OPT 97.99% (1.71y), V12_TURBO 96.48%, V261_2H_OPT 95.98% (5.6y), V261 4h 94.17%. V12 family is fully live-deployable as of round 11 fix (PTP/chandelier/breakEven/timeExit implemented in Python executor).
+  - Engine fields `pauseAtTargetReached: true` + `atrStop` + `liveCaps {maxStopPct: 0.05, maxRiskFrac: 0.4}` are mandatory for FTMO-realistic backtests. `minTradingDays: 4` (real FTMO 2-Step rule).
 
 ### FTMO Bot (`tools/`)
 
-Production-ready full-auto trading bot for FTMO Demo/Live with the iter252 strategy (`pauseAtTargetReached` + `atrStop` + ETH+BTC+SOL, mD=4).
+Production-ready full-auto trading bot for FTMO Demo/Live. Default live config = V5 (2h-trend-v5). After 35 audit rounds: SIGTERM cleanup, per-FTMO_TF state-dirs, atomic cross-process writes, signal-staleness check, daily-loss active-close, Telegram secure (token-leak hardened, 401/404 exit, 429 backoff), all V12 engine features (PTP, chandelier, breakEven, timeExit) implemented in live executor.
 
 - `ftmo_executor.py` — Python MT5 executor (Windows side)
 - `mock_mt5.py` — Mock for unit tests on Linux
