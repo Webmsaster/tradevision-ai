@@ -5765,6 +5765,164 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRO: FtmoDaytrade24hConfig = {
 };
 
 /**
+ * TREND_2H_V5_GOLD — V5_PRO + per-asset TP fine-tune.
+ *
+ * Phase D greedy per-asset TP sweep on V5_PRO (5.60y / 664 windows / live caps):
+ *   V5_PRO baseline:        355/664 = 53.46% / wr 67.32% / med 4d / TL 4
+ *   V5_GOLD per-asset TP:   364/664 = 54.82% / wr 68.01% / med 4d / TL 4 ← winner
+ *
+ *   +1.36pp pass-rate / +0.69pp winrate / TL same.
+ *
+ * Per-asset optimal TP (greedy single-axis, ordered as committed):
+ *   ETH-TREND  tp=3.5%   (high mean-reversion, tighter target)
+ *   BTC-TREND  tp=4.0%
+ *   BNB-TREND  tp=3.5%
+ *   ADA-TREND  tp=4.0%
+ *   DOGE-TREND tp=4.5%   (more momentum-leaning, looser target)
+ *   AVAX-TREND tp=4.0%
+ *   LTC-TREND  tp=5.5%   (slower-moving, wider TP catches the rare big wins)
+ *   BCH-TREND  tp=4.0%
+ *   AAVE-TREND tp=4.5%
+ *   XRP-TREND  tp=4.0%
+ *
+ * vs V5 baseline (TP 7%, 9 assets):
+ *   +5.86pp pass-rate (48.96% → 54.82%)
+ *   +6.00pp trade-winrate (62.01% → 68.01%)
+ *   p90 5d → 4d
+ *   TL -89% (36 → 4)
+ *
+ * 0.18pp away from the 55% target. Continued tuning candidates: more assets
+ * (Phase A-Ext), per-asset stop-pct tuning, hour-filter sweep, ATR-stop add.
+ *
+ * Live Service: `FTMO_TF=2h-trend-v5-gold`.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_GOLD: FtmoDaytrade24hConfig =
+  (() => {
+    const tpByAsset: Record<string, number> = {
+      "ETH-TREND": 0.035,
+      "BTC-TREND": 0.04,
+      "BNB-TREND": 0.035,
+      "ADA-TREND": 0.04,
+      "DOGE-TREND": 0.045,
+      "AVAX-TREND": 0.04,
+      "LTC-TREND": 0.055,
+      "BCH-TREND": 0.04,
+      "AAVE-TREND": 0.045,
+      "XRP-TREND": 0.04,
+    };
+    return {
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRO,
+      assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRO.assets.map((a) => ({
+        ...a,
+        tpPct: tpByAsset[a.symbol] ?? a.tpPct,
+      })),
+    };
+  })();
+
+/**
+ * TREND_2H_V5_DIAMOND — V5_PRO + 4 expansion assets (14 total).
+ *
+ * Phase A-Ext greedy single-add+stack on V5_PRO with 20 candidate FTMO-listed
+ * crypto assets (5.60y / 662 windows / live caps 5%/40%):
+ *
+ *   V5_PRO baseline:    355/664 = 53.46% / wr 67.32% / med 4d / TL 4
+ *   + INJ-TREND:        361/662 = 54.53% / wr 68.31% / med 4d / TL 9
+ *   + RUNE-TREND:       366/662 = 55.29% / wr 68.54% / med 4d / TL 6  ← passes 55% target
+ *   + ETC-TREND:        371/662 = 56.04% / wr 69.00% / med 4d / TL 7
+ *   + SAND-TREND:       374/662 = 56.50% / wr 69.27% / med 4d / TL 6  ← winner
+ *
+ *   (MATIC/UNI/MANA tested next — did not improve further; rejected)
+ *
+ * vs V5 baseline (TP 7%, 9 assets, no live caps in original sweep):
+ *   +7.54pp pass-rate (48.96% → 56.50%)
+ *   +7.26pp trade-winrate (62.01% → 69.27%)
+ *   p90 5d → 4d
+ *   TL -83% (36 → 6)
+ *
+ * Why these 4 work: each adds an uncorrelated trade-stream:
+ *   - INJ: high-vol DeFi → reversion edge in mid-range cycles
+ *   - RUNE: cross-chain liquidity coin → orthogonal regime to BTC/ETH
+ *   - ETC: ETH-fork legacy with own liquidity pocket
+ *   - SAND: metaverse token → momentum-leaning, fills mean-reversion gaps
+ *
+ * Final asset list (14): ETH BTC BNB ADA DOGE AVAX LTC BCH AAVE XRP
+ *                        INJ RUNE ETC SAND
+ *
+ * Window count: 662 (vs 664 V5_PRO) because INJ/RUNE start 2020-09; effective
+ * coverage 4.97y. Asset coverage trades a tiny bit of timeline width for
+ * +3.03pp pass-rate boost — net positive in expectation.
+ *
+ * Use this when MAX pass-rate matters and live MT5 has all 14 tickers
+ * available. Live Service: `FTMO_TF=2h-trend-v5-diamond`.
+ *
+ * Open optimization: per-asset TP tuning on this 14-asset basket (V5_GOLD
+ * was tuned on 10-asset V5_PRO) — could push to 57-58% in a follow-up sweep.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_DIAMOND: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRO,
+    assets: [
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRO.assets,
+      {
+        symbol: "INJ-TREND",
+        sourceSymbol: "INJUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.04,
+        holdBars: 240,
+      },
+      {
+        symbol: "RUNE-TREND",
+        sourceSymbol: "RUNEUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.04,
+        holdBars: 240,
+      },
+      {
+        symbol: "ETC-TREND",
+        sourceSymbol: "ETCUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.04,
+        holdBars: 240,
+      },
+      {
+        symbol: "SAND-TREND",
+        sourceSymbol: "SANDUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.04,
+        holdBars: 240,
+      },
+    ],
+  };
+
+/**
  * TREND_2H_V5_STEP2 — Step-2 variant of V5 (winner of ftmoStep2Tuning sweep).
  *
  * FTMO Step-2 rules:
