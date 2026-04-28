@@ -742,7 +742,21 @@ def process_pending_signals() -> None:
         return
 
     remaining: list[dict] = []
+    # BUGFIX 2026-04-28: signal staleness check — drop signals older than 5min
+    # to prevent trading on stale data after crash/restart/long pause.
+    MAX_SIGNAL_AGE_MS = 5 * 60_000
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     for sig in pending:
+        sig_ts = sig.get("signalBarClose") or sig.get("ts_ms")
+        if sig_ts and (now_ms - sig_ts) > MAX_SIGNAL_AGE_MS:
+            age_min = (now_ms - sig_ts) / 60000
+            log_event("signal_stale_drop", asset=sig["assetSymbol"], age_min=round(age_min, 1))
+            tg_send(f"⏰ <b>Signal stale, dropped</b>\n{sig['assetSymbol']}\nage={age_min:.1f}min")
+            executed["executions"].append({
+                "signal": sig, "result": "stale_drop", "age_min": round(age_min, 1),
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+            continue
         blocker = check_ftmo_rules(account_equity, day_start_usd)
         if blocker:
             log_event("rule_block", asset=sig["assetSymbol"], reason=blocker)

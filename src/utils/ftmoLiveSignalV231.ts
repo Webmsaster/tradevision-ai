@@ -341,7 +341,72 @@ const CFG = USE_2H_TREND_V5_ENSEMBLE
                                                                                               ? FTMO_DAYTRADE_24H_CONFIG_V7_1H_OPT
                                                                                               : USE_2H
                                                                                                 ? FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT
-                                                                                                : FTMO_DAYTRADE_24H_CONFIG_V261;
+                                                                                                : FTMO_DAYTRADE_24H_CONFIG_V261; // ← default fallback if no flag matches
+
+// BUGFIX 2026-04-28: warn loudly if FTMO_TF is set but didn't match any flag.
+// Trailing whitespace, typos (v6 vs V6), or unknown variants previously
+// silently fell through to V261 4h config — wrong strategy + wrong asset universe.
+if (process.env.FTMO_TF && process.env.FTMO_TF.trim() !== process.env.FTMO_TF) {
+  console.error(
+    `[ftmo-live] WARNING: FTMO_TF=\"${process.env.FTMO_TF}\" has trailing whitespace — strip it!`,
+  );
+}
+if (
+  process.env.FTMO_TF &&
+  ![
+    USE_5M_LIVE,
+    USE_15M_LIVE_V1,
+    USE_15M_LIVE,
+    USE_30M_LIVE_V1,
+    USE_30M_LIVE,
+    USE_30M_TURBO,
+    USE_1H_LIVE_V1,
+    USE_1H_LIVE,
+    USE_2H_LIVE_V1,
+    USE_2H_LIVE,
+    USE_4H_LIVE,
+    USE_15M,
+    USE_30M,
+    USE_1H,
+    USE_2H,
+    USE_2H_TREND,
+    USE_2H_TREND_V2,
+    USE_2H_TREND_V3,
+    USE_2H_TREND_V4,
+    USE_2H_TREND_V5,
+    USE_2H_TREND_V5_NOVA,
+    USE_2H_TREND_V5_PRIME,
+    USE_2H_TREND_V5_PRIMEX,
+    USE_2H_TREND_V5_TITAN,
+    USE_2H_TREND_V5_TITAN_REAL,
+    USE_2H_TREND_V5_LEGEND,
+    USE_2H_TREND_V5_APEX,
+    USE_2H_TREND_V5_ELITE,
+    USE_2H_TREND_V5_HIGH,
+    USE_2H_TREND_V5_ULTRA,
+    USE_2H_TREND_V5_FUND,
+    USE_2H_TREND_V5_PARETO,
+    USE_2H_TREND_V5_RECENT,
+    USE_2H_TREND_V5_ROBUST,
+    USE_2H_TREND_V5_STEP2,
+    USE_2H_TREND_V5_ENSEMBLE,
+    USE_2H_TREND_V6,
+    USE_2H_TREND_V7,
+    USE_2H_TREND_V8,
+    USE_2H_TREND_V9,
+    USE_2H_TREND_V10,
+    USE_2H_TREND_V11,
+    USE_2H_TREND_V12,
+    USE_2H_TREND_V13,
+    USE_2H_TREND_V14,
+    USE_2H_TREND_V15,
+    USE_4H_TREND,
+  ].some((f) => f)
+) {
+  console.error(
+    `[ftmo-live] WARNING: FTMO_TF=\"${process.env.FTMO_TF}\" did not match any known config — falling back to V261 4h. Check spelling!`,
+  );
+}
 void FTMO_DAYTRADE_24H_CONFIG_V10_30M_OPT; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V11_30M_OPT; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V13_15M_OPT; // rollback reference

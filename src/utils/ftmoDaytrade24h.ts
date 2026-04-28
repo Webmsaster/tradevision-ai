@@ -2620,6 +2620,8 @@ export const FTMO_DAYTRADE_24H_CONFIG_V13_15M_OPT: FtmoDaytrade24hConfig = {
   htfTrendFilter: { lookbackBars: 400, apply: "short", threshold: 0.08 },
   chandelierExit: { period: 56, mult: 3, minMoveR: 0.5 },
   allowedHoursUtc: [0, 1, 2, 4, 5, 6, 8, 10, 12, 13, 14, 19, 20, 22],
+  // BUGFIX 2026-04-28: V12 had no liveCaps → backtest-vs-live divergence.
+  liveCaps: { maxStopPct: 0.05, maxRiskFrac: 0.4 },
 };
 
 /**
@@ -2651,6 +2653,7 @@ export const FTMO_DAYTRADE_24H_CONFIG_V16_15M_OPT: FtmoDaytrade24hConfig = {
   lossStreakCooldown: { afterLosses: 2, cooldownBars: 300 },
   timeBoost: { afterDay: 2, equityBelow: 0.05, factor: 2.0 },
   allowedHoursUtc: [0, 1, 2, 4, 5, 6, 10, 12, 13, 14, 19, 20],
+  // BUGFIX 2026-04-28: V13 → liveCaps inherited via spread.
 };
 
 /**
