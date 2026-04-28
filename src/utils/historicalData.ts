@@ -42,6 +42,10 @@ type RawKline = [
 ];
 
 function parseKline(row: RawKline): Candle {
+  // BUGFIX 2026-04-28: was hardcoded isFinal=true → live polling within seconds
+  // of a bar close could include the still-forming next bar (closeTime > now)
+  // → phantom signals on incomplete data. Now: closed only if closeTime <= now.
+  const closeTime = row[6];
   return {
     openTime: row[0],
     open: parseFloat(row[1]),
@@ -49,8 +53,8 @@ function parseKline(row: RawKline): Candle {
     low: parseFloat(row[3]),
     close: parseFloat(row[4]),
     volume: parseFloat(row[5]),
-    closeTime: row[6],
-    isFinal: true,
+    closeTime,
+    isFinal: closeTime < Date.now(),
     // Binance kline schema index 9 = takerBuyBaseAssetVolume
     takerBuyVolume: parseFloat(row[9]),
   };
@@ -84,7 +88,13 @@ export async function loadBinanceHistory({
     url.searchParams.set("limit", String(pageSize));
     if (endTime !== undefined) url.searchParams.set("endTime", String(endTime));
 
-    const res = await fetch(url.toString(), { signal });
+    // BUGFIX 2026-04-28: add 15s timeout so a hanging Binance call doesn't
+    // freeze the entire Live signal loop indefinitely.
+    const timeoutSig = AbortSignal.timeout(15_000);
+    const finalSignal = signal
+      ? AbortSignal.any([signal, timeoutSig])
+      : timeoutSig;
+    const res = await fetch(url.toString(), { signal: finalSignal });
     if (!res.ok) throw new Error(`Binance history fetch failed: ${res.status}`);
     const rows: RawKline[] = await res.json();
     if (!rows || rows.length === 0) break;

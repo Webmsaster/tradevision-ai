@@ -153,7 +153,9 @@ def read_json(path: Path, fallback: Any) -> Any:
 
 def write_json(path: Path, obj: Any) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    # BUGFIX 2026-04-28: PID-suffixed tmp prevents cross-process race
+    # (Node telegramBot and Python both write bot-controls.json).
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
     with open(tmp, "w") as f:
         json.dump(obj, f, indent=2)
     tmp.replace(path)
@@ -187,6 +189,9 @@ def mt5_ensure_connected() -> bool:
         return True
     log_event("mt5_disconnected", action="attempting_reconnect")
     tg_send(f"⚠️ <b>MT5 Disconnected</b>\nExecutor attempting reconnect every {RECONNECT_BACKOFF_SEC}s…")
+    # BUGFIX 2026-04-28: was infinite loop with no escalation. Now exits after
+    # MAX_RECONNECT_ATTEMPTS so PM2/systemd can fully restart the process.
+    MAX_RECONNECT_ATTEMPTS = 60  # ~5 min at 5s backoff
     attempt = 0
     while True:
         attempt += 1
@@ -202,6 +207,10 @@ def mt5_ensure_connected() -> bool:
         if attempt == 3 or attempt == 10 or attempt % 30 == 0:
             log_event("mt5_still_disconnected", attempt=attempt)
             tg_send(f"🔴 <b>MT5 still down</b> — attempt #{attempt}, backoff {RECONNECT_BACKOFF_SEC}s")
+        if attempt >= MAX_RECONNECT_ATTEMPTS:
+            log_event("mt5_reconnect_giving_up", attempt=attempt)
+            tg_send(f"💀 <b>MT5 reconnect FAILED</b> after {attempt} attempts — exiting (PM2 will restart)")
+            sys.exit(1)
 
 
 def mt5_get_equity() -> dict:
@@ -369,7 +378,7 @@ class OrderResult:
     entry_price: Optional[float]
 
 
-def compute_lot_size(symbol_info: Any, risk_frac: float, stop_pct: float, account_equity: float) -> float:
+def compute_lot_size(symbol_info: Any, risk_frac: float, stop_pct: float, account_equity: float, direction: str = "long") -> float:
     """
     Compute lot size for a target risk. Always rounds DOWN (floor) to never
     exceed the requested risk. Returns 0.0 if the requested risk is below
@@ -379,7 +388,12 @@ def compute_lot_size(symbol_info: Any, risk_frac: float, stop_pct: float, accoun
     risk_usd = account_equity * risk_frac
     tick_size = symbol_info.trade_tick_size or symbol_info.point
     tick_value = symbol_info.trade_tick_value or 1.0
-    current_price = (symbol_info.ask + symbol_info.bid) / 2 if (symbol_info.ask and symbol_info.bid) else 0
+    # BUGFIX 2026-04-28: use direction-aware fill price (ask for long, bid for short)
+    # Wide spreads otherwise undersize the stop-distance and oversize the lot.
+    if direction == "short":
+        current_price = symbol_info.bid if symbol_info.bid else 0
+    else:
+        current_price = symbol_info.ask if symbol_info.ask else 0
     if tick_size <= 0 or tick_value <= 0 or current_price <= 0:
         return 0.0
     stop_distance_price = current_price * stop_pct
@@ -431,7 +445,7 @@ def place_market_order(
         )
         risk_frac = RISK_FRAC_HARD_CAP
 
-    lot = compute_lot_size(info, risk_frac, stop_pct, account_equity)
+    lot = compute_lot_size(info, risk_frac, stop_pct, account_equity, direction)
     if lot <= 0:
         # BUGFIX 2026-04-28: Was silent. Now logs symbol-info dump so user can
         # diagnose why lot=0 (typically broker volume_min too high or tick_size=0).
@@ -1134,6 +1148,12 @@ def check_news_auto_close() -> None:
     positions = mt5.positions_get() or []
     bot_positions = [p for p in positions if p.magic == 231]
     if bot_positions:
+        # BUGFIX 2026-04-28: evict timestamps older than 7 days to prevent
+        # unbounded set growth in long-running bot.
+        cutoff_ms = now_ms - 7 * 24 * 3600 * 1000
+        _news_closes_announced.difference_update(
+            t for t in list(_news_closes_announced) if t < cutoff_ms
+        )
         for e in incoming:
             if e["timestamp"] in _news_closes_announced:
                 continue

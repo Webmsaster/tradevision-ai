@@ -485,6 +485,19 @@ export function detectLiveSignalsV231(
   newsEvents: NewsEvent[] = [],
   extraCandles?: Record<string, Candle[]>,
 ): DetectionResult {
+  // BUGFIX 2026-04-28: filter out non-final (still-forming) candles before
+  // detection. Binance returns the current incomplete bar at index [-1] when
+  // polling close to bar boundary → would create phantom signals on partial
+  // data that re-trigger on bar close.
+  btcCandles = btcCandles.filter((c) => c.isFinal !== false);
+  ethCandles = ethCandles.filter((c) => c.isFinal !== false);
+  if (extraCandles) {
+    const filtered: Record<string, Candle[]> = {};
+    for (const [k, v] of Object.entries(extraCandles)) {
+      filtered[k] = v.filter((c) => c.isFinal !== false);
+    }
+    extraCandles = filtered;
+  }
   // Guard against empty candle arrays — prevents -1 index crashes.
   if (btcCandles.length === 0 || ethCandles.length === 0) {
     return {
@@ -703,20 +716,15 @@ export function detectLiveSignalsV231(
 
   // Loss-streak cooldown: pause entries after N consecutive losers.
   // Reads from account.recentPnls (most recent last). Engine matches.
-  // BUGFIX 2026-04-28: Engine resets streak on reason !== "stop" (TP or time
-  // exit). Live was counting any negative PnL as loss, including time-exits
-  // with slippage (-0.1 to -0.5%). Now uses magnitude threshold: only count
-  // PnL magnitude > 50% of expected stop loss as a real "stop loss". For V5
-  // stop=5% × lev=2 × riskFrac=0.4 = -4% realized stop, so threshold ~-2%.
+  // BUGFIX 2026-04-28 (v2): Engine resets streak on reason !== "stop" (TP or
+  // time exit). Live was counting any negative PnL as loss. PREVIOUS fix had
+  // wrong magnitude — recentPnls are equity-fractions (d.profit/100000), so
+  // a real stop = -riskFrac (~-4% with cap), not -stopPct*lev*riskFrac.
+  // Threshold = 50% of expected stop magnitude = -riskFrac * 0.5.
   let lscBlocked = false;
   if (CFG.lossStreakCooldown) {
     const { afterLosses, cooldownBars } = CFG.lossStreakCooldown;
-    // Compute a "stop-like" loss threshold from CFG (avoids counting tiny
-    // slippage-only losses as losses).
-    const baseStop = CFG.stopPct ?? 0.05;
-    const baseLev = CFG.leverage ?? 2;
-    const baseRisk = LIVE_MAX_RISK_FRAC; // hard-cap matches live executor
-    const stopLikeThreshold = -baseStop * baseLev * baseRisk * 0.5; // 50% of expected stop magnitude
+    const stopLikeThreshold = -LIVE_MAX_RISK_FRAC * 0.5; // -2% with riskFrac=0.04
     let streak = 0;
     for (let i = account.recentPnls.length - 1; i >= 0; i--) {
       if (account.recentPnls[i] <= stopLikeThreshold) streak++;

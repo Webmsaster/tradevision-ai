@@ -304,11 +304,10 @@ export function readControls(stateDir: string): BotControls {
 function setControls(stateDir: string, update: Partial<BotControls>) {
   const current = readControls(stateDir);
   const next = { ...current, ...update };
-  // BUGFIX 2026-04-28: was non-atomic. Python executor polls every 5s and could
-  // read truncated file mid-write → fallback {paused:false} → executor processes
-  // signals during a /pause window. Now atomic via temp + rename.
+  // BUGFIX 2026-04-28: PID-suffixed tmp prevents cross-process race
+  // (Node and Python both write to bot-controls.json — bare .tmp would clash).
   const target = path.join(stateDir, CONTROLS_FILE);
-  const tmp = target + ".tmp";
+  const tmp = `${target}.tmp.${process.pid}`;
   fs.writeFileSync(tmp, JSON.stringify(next, null, 2));
   fs.renameSync(tmp, target);
 }
