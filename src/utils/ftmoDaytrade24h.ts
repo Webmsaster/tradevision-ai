@@ -3254,6 +3254,8 @@ export interface FtmoDaytrade24hResult {
   finalEquityPct: number;
   maxDrawdown: number;
   uniqueTradingDays: number;
+  /** One-based official challenge pass day, including virtual ping days. */
+  passDay?: number;
   trades: Daytrade24hTrade[];
   maxHoldHoursObserved: number;
 }
@@ -3822,6 +3824,7 @@ export function detectAsset(
       }
       if (blocked) continue;
       let eb = candles[i + 1];
+      let ebIdx = i + 1;
       if (!eb) break;
 
       // Pullback-entry: wait for retrace from trigger close before entering
@@ -3842,11 +3845,13 @@ export function detectAsset(
           // For short: did price rally to target?
           if (direction === "long" && wb.low <= target) {
             eb = candles[i + k]; // entry on this bar (use as eb)
+            ebIdx = i + k;
             entered = true;
             break;
           }
           if (direction === "short" && wb.high >= target) {
             eb = candles[i + k];
+            ebIdx = i + k;
             entered = true;
             break;
           }
@@ -3916,7 +3921,11 @@ export function detectAsset(
         direction === "long" ? entry * (1 + effTp) : entry * (1 - effTp);
       const stop =
         direction === "long" ? entry * (1 - effStop) : entry * (1 + effStop);
-      const mx = Math.min(i + 1 + holdBars, candles.length - 1);
+      // BUGFIX 2026-04-28 (Engine audit Bug 5): holdBars must count from the
+      // ACTUAL entry bar (after pullback may have shifted it forward). Was
+      // anchored to i+1 which gave pullback trades fewer hold bars than
+      // configured.
+      const mx = Math.min(ebIdx + holdBars, candles.length - 1);
       let exitBar = mx;
       let exitPrice = candles[mx].close;
       let reason: "tp" | "stop" | "time" = "time";
@@ -3955,10 +3964,12 @@ export function detectAsset(
       const timeExit = asset.timeExit ?? cfg.timeExit;
       const minGainAbs = timeExit ? timeExit.minGainR * effStop : 0;
       let everReachedMinGain = false;
-      // Start at the entry bar itself (i+1) — stop/TP may trigger in the
-      // same bar we entered on. Previously started at i+2, which silently
-      // skipped the entry bar and produced optimistic backtests.
-      for (let j = i + 1; j <= mx; j++) {
+      // Start at the actual entry bar (ebIdx) — stop/TP may trigger in the
+      // same bar we entered on. Pullback entries shift ebIdx forward.
+      // BUGFIX 2026-04-28 (Engine audit Bug 5 follow-up): was hardcoded i+1,
+      // which evaluated the entry bar's range BEFORE the pullback fill bar
+      // for trades using pullbackEntry — producing impossible stops/TPs.
+      for (let j = ebIdx; j <= mx; j++) {
         const bar = candles[j];
         // BUGFIX 2026-04-28 (Round 35 Finding 1): check PTP via bar.high/low
         // BEFORE stop/tp on same bar. Realistic intra-bar order: price moves
@@ -4370,6 +4381,28 @@ export function runFtmoDaytrade24h(
   let totalTradesExecuted = 0;
   const recentPnls: number[] = []; // iter231: rolling buffer for Kelly sizing
 
+  function finishPausedPass(targetDay: number): FtmoDaytrade24hResult | null {
+    if (!cfg.pauseAtTargetReached || equity < 1 + cfg.profitTarget) return null;
+    let pingDay = targetDay;
+    let lastPingDay = targetDay;
+    while (tradingDays.size < cfg.minTradingDays && pingDay < cfg.maxDays) {
+      tradingDays.add(pingDay);
+      lastPingDay = pingDay;
+      pingDay++;
+    }
+    if (tradingDays.size < cfg.minTradingDays) return null;
+    return {
+      passed: true,
+      reason: "profit_target",
+      finalEquityPct: equity - 1,
+      maxDrawdown: maxDd,
+      uniqueTradingDays: tradingDays.size,
+      passDay: lastPingDay + 1,
+      trades: executed,
+      maxHoldHoursObserved: maxHold,
+    };
+  }
+
   // V5: helper to compute momentum ranking at trade entry time
   function rankAtEntryTime(entryTime: number): string[] {
     if (!cfg.momentumRanking) return [];
@@ -4410,24 +4443,8 @@ export function runFtmoDaytrade24h(
     // Iterate forward from target-hit-day to satisfy minTradingDays via
     // virtual ping-trades on quiet days too.
     if (cfg.pauseAtTargetReached && equity >= 1 + cfg.profitTarget) {
-      // Add this day + all subsequent days up to maxDays as "ping" days
-      // until minTradingDays threshold is met.
-      let pingDay = t.day;
-      while (tradingDays.size < cfg.minTradingDays && pingDay < cfg.maxDays) {
-        tradingDays.add(pingDay);
-        pingDay++;
-      }
-      if (tradingDays.size >= cfg.minTradingDays) {
-        return {
-          passed: true,
-          reason: "profit_target",
-          finalEquityPct: equity - 1,
-          maxDrawdown: maxDd,
-          uniqueTradingDays: tradingDays.size,
-          trades: executed,
-          maxHoldHoursObserved: maxHold,
-        };
-      }
+      const pausedPass = finishPausedPass(t.day);
+      if (pausedPass) return pausedPass;
       continue; // skip trade execution (no risk, no PnL change)
     }
 
@@ -4602,6 +4619,8 @@ export function runFtmoDaytrade24h(
         maxHoldHoursObserved: maxHold,
       };
     }
+    const pausedPass = finishPausedPass(t.day);
+    if (pausedPass) return pausedPass;
     if (
       equity >= 1 + cfg.profitTarget &&
       tradingDays.size >= cfg.minTradingDays
@@ -4612,10 +4631,20 @@ export function runFtmoDaytrade24h(
         finalEquityPct: equity - 1,
         maxDrawdown: maxDd,
         uniqueTradingDays: tradingDays.size,
+        passDay: t.day + 1,
         trades: executed,
         maxHoldHoursObserved: maxHold,
       };
     }
+  }
+  // BUGFIX 2026-04-28 (Engine audit Bug 2): if pauseAtTargetReached + equity
+  // already at target but no further signals fire AND tradingDays < min,
+  // a real FTMO trader would ping-trade quiet days. Without this we
+  // false-fail those windows as "insufficient_days" / "time".
+  if (cfg.pauseAtTargetReached && equity >= 1 + cfg.profitTarget) {
+    const lastDay = executed.length > 0 ? executed[executed.length - 1].day : 0;
+    const ping = finishPausedPass(lastDay);
+    if (ping) return ping;
   }
   const late =
     equity >= 1 + cfg.profitTarget && tradingDays.size >= cfg.minTradingDays;
@@ -4629,6 +4658,10 @@ export function runFtmoDaytrade24h(
     finalEquityPct: equity - 1,
     maxDrawdown: maxDd,
     uniqueTradingDays: tradingDays.size,
+    passDay:
+      late && executed.length > 0
+        ? executed[executed.length - 1].day + 1
+        : undefined,
     trades: executed,
     maxHoldHoursObserved: maxHold,
   };
@@ -5598,6 +5631,134 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5: FtmoDaytrade24hConfig = {
       disableShort: true,
       stopPct: 0.05,
       tpPct: 0.07,
+      holdBars: 240,
+    },
+  ],
+};
+
+/**
+ * TREND_2H_V5_FASTMAX — fast Step-1 challenger, V5 with uniform 6% TP.
+ *
+ * Live-capped Step-1 sweep (2026-04-28, 5.60y / 672 rolling 30d windows):
+ *   V5:          329/672 = 48.96% / official med 4d / p90 5d / DL 307 / TL 36
+ *   V5_FASTMAX:  335/672 = 49.85% / official med 4d / p90 5d / DL 299 / TL 38
+ *
+ * Use when the hard constraint is median pass day <= 4. V5_PRIMEX still has a
+ * higher raw pass-rate, but its official median is 8d under current live caps.
+ *
+ * Live Service: `FTMO_TF=2h-trend-v5-fastmax`.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_FASTMAX: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5,
+    tpPct: 0.06,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5.assets.map((a) => ({
+      ...a,
+      tpPct: 0.06,
+    })),
+  };
+
+/**
+ * TREND_2H_V5_HIWIN — V5 with tighter TP (4%) for higher daytrade win-rate.
+ *
+ * Targeted sweep 2026-04-28 to maximize trade-level winrate while keeping
+ * challenge pass-rate ≥ V5 baseline. Searched tpPct 4-7%, breakEven 1.5-3.5%,
+ * chandelierExit (4 variants), partialTakeProfit (4 variants) on 5.60y / 672
+ * rolling 30d windows under live-caps {maxStopPct: 0.05, maxRiskFrac: 0.4}.
+ *
+ *   V5 (TP=7%):           329/672 = 48.96% / winrate 62.01% / TL 36
+ *   V5_FASTMAX (TP=6%):   335/672 = 49.85% / winrate 62.10% / TL 38
+ *   V5_HIWIN (TP=4%):     335/672 = 49.85% / winrate 64.60% / TL 31  ← winner
+ *
+ * +2.50pp trade-winrate vs FASTMAX, identical pass-rate (49.85%), -7 TL
+ * (less total-loss-breach risk), same med 4d / p90 5d.
+ *
+ * Why TP=4% wins on winrate: V5 is mean-reversion with 5% SL. Tighter TP
+ * (TP/SL ratio 0.8) catches the high-frequency reversion within the noise
+ * envelope; longer TP (1.4 R:R at 7%) needs persistent move that often
+ * reverses → unrealized winners turn into stops.
+ *
+ * BreakEven did NOT help (1.5-2.5% triggers killed winrate to 46-55% — trades
+ * exit at BE-stop instead of TP). Chandelier marginal +0.30pp pass / -0.88pp
+ * winrate. PartialTakeProfit marginal +0.45pp pass / +4 TL.
+ *
+ * Use when daytrade win-percentage matters more than R:R per trade
+ * (e.g. psychological consistency, prop-firm consistency rule, scaling).
+ *
+ * Live Service: `FTMO_TF=2h-trend-v5-hiwin`.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_HIWIN: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5,
+    tpPct: 0.04,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5.assets.map((a) => ({
+      ...a,
+      tpPct: 0.04,
+    })),
+  };
+
+/**
+ * TREND_2H_V5_PRO — V5_HIWIN + AAVE + XRP − LINK (10 assets, asset-greedy).
+ *
+ * Phase A overnight sweep 2026-04-28: ran greedy single-asset add + drop on
+ * V5_HIWIN (5.60y / 672 windows, FTMO live caps 5%/40%):
+ *
+ *   V5_HIWIN baseline:   335/672 = 49.85% / winrate 64.60% / med 4d / p90 5d / TL 31
+ *   + AAVE:              347/664 = 52.26% / winrate 66.57% / med 4d / p90 4d / TL  8
+ *   + AAVE + XRP:        354/664 = 53.31% / winrate 67.37% / med 4d / p90 4d / TL  4
+ *   + AAVE + XRP - LINK: 355/664 = 53.46% / winrate 67.32% / med 4d / p90 4d / TL  4 ← winner
+ *
+ * vs V5 baseline (TP 7%, 9 assets):
+ *   +4.50pp pass-rate   (48.96% → 53.46%)
+ *   +5.31pp trade-winrate (62.01% → 67.32%)
+ *   p90 5d → 4d  (faster + more reliable)
+ *   TL 36 → 4    (-89% total-loss breaches; massive defensive improvement)
+ *
+ * Why these 3 changes work:
+ *   - AAVE: high-vol DeFi token gives uncorrelated trade entries; net +12 passes
+ *   - XRP: established + liquid + structurally different mean-reversion regime
+ *   - LINK drop: was net-negative once AAVE+XRP joined (regime overlap)
+ *
+ * Window count drops 672 → 664 because AAVE/XRP common history starts 2020-09
+ * (same constraint as SOL/AVAX in the original V5). Effective coverage: 4.99y.
+ *
+ * Use this when both speed AND high pass-rate matter. PRIMEX still has
+ * marginally higher raw pass-rate but med 8d (too slow).
+ *
+ * Live Service: `FTMO_TF=2h-trend-v5-pro`.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRO: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_HIWIN,
+  assets: [
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_HIWIN.assets.filter(
+      (a) => a.symbol !== "LINK-TREND",
+    ),
+    {
+      symbol: "AAVE-TREND",
+      sourceSymbol: "AAVEUSDT",
+      costBp: 30,
+      slippageBp: 8,
+      swapBpPerDay: 4,
+      riskFrac: 1.0,
+      triggerBars: 1,
+      invertDirection: true,
+      disableShort: true,
+      stopPct: 0.05,
+      tpPct: 0.04,
+      holdBars: 240,
+    },
+    {
+      symbol: "XRP-TREND",
+      sourceSymbol: "XRPUSDT",
+      costBp: 30,
+      slippageBp: 8,
+      swapBpPerDay: 4,
+      riskFrac: 1.0,
+      triggerBars: 1,
+      invertDirection: true,
+      disableShort: true,
+      stopPct: 0.05,
+      tpPct: 0.04,
       holdBars: 240,
     },
   ],

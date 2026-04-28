@@ -68,6 +68,9 @@ import {
   FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V3,
   FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V4,
   FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_FASTMAX,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_HIWIN,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRO,
   FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ENSEMBLE,
   FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_STEP2,
   FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V6,
@@ -100,33 +103,18 @@ import {
 } from "@/utils/ftmoDaytrade24h";
 import type { NewsEvent } from "@/utils/forexFactoryNews";
 import { isNewsBlackout } from "@/utils/forexFactoryNews";
+import { LIVE_MAX_RISK_FRAC, LIVE_MAX_STOP_PCT } from "@/utils/ftmoLiveCaps";
 
 export type Regime = "BULL" | "BEAR_CHOP";
 
 /**
- * Hard-cap on risk-per-trade as fraction of equity, sent to MT5 executor.
- *
- * Why: backtest riskFrac is an "exposure fraction" multiplied by leverage in
- * the PnL formula, NOT the realised max-loss-per-trade. Sending raw backtest
- * riskFrac (e.g. ETH-MR baseRisk=1.0 × leverage=2 = 2.0 = 200%) to MT5 makes
- * compute_lot_size build a position so big that it breaches FTMO margin
- * limits → "no money" rejection.
+ * LIVE_MAX_RISK_FRAC is account-risk fraction at stop, not raw exposure.
+ * LIVE_MAX_STOP_PCT caps ATR-adaptive stop widening before sending to MT5.
  *
  * 2026-04-26 update: tightened originally to 2% / 3% (ultra-safe), but those
  * caps made the 30d FTMO challenge mathematically unprofitable for crypto
- * mean-reversion (~+0.2% expected per trade × 50 trades = barely +10%).
- * Loosened to 4% / 5% — still well below FTMO daily-loss (5%) so a single
- * stop costs at most 4%, and 5 stops in a row hit total-loss (-10%). 2.5
- * consecutive stops survivable. Pass-rate becomes mathematically achievable.
+ * mean-reversion. Loosened to 4% / 5%, so a single stop costs at most 4%.
  */
-const LIVE_MAX_RISK_FRAC = 0.04;
-
-/**
- * Hard-cap on stopPct after ATR-adaptive widening.
- *
- * 2026-04-26 update: 3% → 5%. Same trade-off as above.
- */
-const LIVE_MAX_STOP_PCT = 0.05;
 
 export interface AccountState {
   /** Current equity as fraction of starting capital (1.0 = break even, 1.05 = +5%). */
@@ -224,7 +212,7 @@ export interface DetectionResult {
 }
 
 // CFG selection via ENV var FTMO_TF:
-// LIVE-CAP-VALIDATED (production-ready, with stopPct ≤ 3% + riskFrac ≤ 2%):
+// LIVE-CAP-VALIDATED (production-ready, with stopPct ≤ 5% + riskFrac ≤ 4%):
 //   - "15m-live"  → LIVE_15M_V1 (82.41% / med 1d / p90 6d / EV $3197) ← CHAMPION
 //   - "30m-live"  → LIVE_30M_V1 (71.74% / med 1d / p90 12d / EV $2771)
 //   - "1h-live"   → LIVE_1H_V1  (74.89% / med 1d / p90 12d / EV $2897)
@@ -239,6 +227,9 @@ export interface DetectionResult {
 //   - else        → V261 4h (no-cap 94.31%)
 const USE_2H_TREND_V5_ENSEMBLE = process.env.FTMO_TF === "2h-trend-v5-ensemble";
 const USE_2H_TREND_V5_STEP2 = process.env.FTMO_TF === "2h-trend-v5-step2";
+const USE_2H_TREND_V5_FASTMAX = process.env.FTMO_TF === "2h-trend-v5-fastmax";
+const USE_2H_TREND_V5_HIWIN = process.env.FTMO_TF === "2h-trend-v5-hiwin";
+const USE_2H_TREND_V5_PRO = process.env.FTMO_TF === "2h-trend-v5-pro";
 const USE_2H_TREND_V5_PRIMEX = process.env.FTMO_TF === "2h-trend-v5-primex";
 const USE_2H_TREND_V5_PRIME = process.env.FTMO_TF === "2h-trend-v5-prime";
 const USE_2H_TREND_V5_NOVA = process.env.FTMO_TF === "2h-trend-v5-nova";
@@ -291,99 +282,105 @@ const CFG = USE_2H_TREND_V5_ENSEMBLE
   ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ENSEMBLE
   : USE_2H_TREND_V5_STEP2
     ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_STEP2
-    : USE_2H_TREND_V5_PRIMEX
-      ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRIMEX
-      : USE_2H_TREND_V5_PRIME
-        ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRIME
-        : USE_2H_TREND_V5_NOVA
-          ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_NOVA
-          : USE_2H_TREND_V5_TITAN_REAL
-            ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITAN_REAL
-            : USE_2H_TREND_V5_LEGEND
-              ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_LEGEND
-              : USE_2H_TREND_V5_TITAN
-                ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITAN
-                : USE_2H_TREND_V5_APEX
-                  ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_APEX
-                  : USE_2H_TREND_V5_ELITE
-                    ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ELITE
-                    : USE_2H_TREND_V5_HIGH
-                      ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_HIGH
-                      : USE_2H_TREND_V5_ULTRA
-                        ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ULTRA
-                        : USE_2H_TREND_V5_FUND
-                          ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_FUND
-                          : USE_2H_TREND_V5_PARETO
-                            ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PARETO
-                            : USE_2H_TREND_V5_RECENT
-                              ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_RECENT
-                              : USE_2H_TREND_V5_ROBUST
-                                ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ROBUST
-                                : USE_2H_TREND_V15
-                                  ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V15_RECENT
-                                  : USE_2H_TREND_V14
-                                    ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V14
-                                    : USE_2H_TREND_V13
-                                      ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V13_RISKY
-                                      : USE_2H_TREND_V12
-                                        ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V12
-                                        : USE_2H_TREND_V11
-                                          ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V11
-                                          : USE_2H_TREND_V10
-                                            ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V10
-                                            : USE_2H_TREND_V9
-                                              ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V9
-                                              : USE_2H_TREND_V8
-                                                ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V8
-                                                : USE_2H_TREND_V7
-                                                  ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V7
-                                                  : USE_2H_TREND_V6
-                                                    ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V6
-                                                    : USE_2H_TREND_V5
-                                                      ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5
-                                                      : USE_2H_TREND_V4
-                                                        ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V4
-                                                        : USE_2H_TREND_V3
-                                                          ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V3
-                                                          : USE_2H_TREND_V2
-                                                            ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V2
-                                                            : USE_2H_TREND
-                                                              ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V1
-                                                              : USE_4H_TREND
-                                                                ? FTMO_DAYTRADE_24H_CONFIG_TREND_4H_V2
-                                                                : USE_5M_LIVE
-                                                                  ? FTMO_DAYTRADE_24H_CONFIG_LIVE_5M_V3
-                                                                  : USE_15M_LIVE
-                                                                    ? FTMO_DAYTRADE_24H_CONFIG_LIVE_15M_V3
-                                                                    : USE_30M_LIVE
-                                                                      ? FTMO_DAYTRADE_24H_CONFIG_LIVE_30M_V2
-                                                                      : USE_1H_LIVE
-                                                                        ? FTMO_DAYTRADE_24H_CONFIG_LIVE_1H_V2
-                                                                        : USE_2H_LIVE
-                                                                          ? FTMO_DAYTRADE_24H_CONFIG_LIVE_2H_V2
-                                                                          : USE_4H_LIVE
-                                                                            ? FTMO_DAYTRADE_24H_CONFIG_LIVE_4H_V2
-                                                                            : USE_15M_LIVE_V1
-                                                                              ? FTMO_DAYTRADE_24H_CONFIG_LIVE_15M_V1
-                                                                              : USE_30M_LIVE_V1
-                                                                                ? FTMO_DAYTRADE_24H_CONFIG_LIVE_30M_V1
-                                                                                : USE_1H_LIVE_V1
-                                                                                  ? FTMO_DAYTRADE_24H_CONFIG_LIVE_1H_V1
-                                                                                  : USE_2H_LIVE_V1
-                                                                                    ? FTMO_DAYTRADE_24H_CONFIG_LIVE_2H_V1
-                                                                                    : USE_4H_LIVE_V1
-                                                                                      ? FTMO_DAYTRADE_24H_CONFIG_LIVE_4H_V1
-                                                                                      : USE_15M
-                                                                                        ? FTMO_DAYTRADE_24H_CONFIG_V16_15M_OPT
-                                                                                        : USE_30M_TURBO
-                                                                                          ? FTMO_DAYTRADE_24H_CONFIG_V12_TURBO_30M_OPT
-                                                                                          : USE_30M
-                                                                                            ? FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT
-                                                                                            : USE_1H
-                                                                                              ? FTMO_DAYTRADE_24H_CONFIG_V7_1H_OPT
-                                                                                              : USE_2H
-                                                                                                ? FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT
-                                                                                                : FTMO_DAYTRADE_24H_CONFIG_V261; // ← default fallback if no flag matches
+    : USE_2H_TREND_V5_PRO
+      ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRO
+      : USE_2H_TREND_V5_HIWIN
+        ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_HIWIN
+        : USE_2H_TREND_V5_FASTMAX
+          ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_FASTMAX
+          : USE_2H_TREND_V5_PRIMEX
+            ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRIMEX
+            : USE_2H_TREND_V5_PRIME
+              ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRIME
+              : USE_2H_TREND_V5_NOVA
+                ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_NOVA
+                : USE_2H_TREND_V5_TITAN_REAL
+                  ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITAN_REAL
+                  : USE_2H_TREND_V5_LEGEND
+                    ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_LEGEND
+                    : USE_2H_TREND_V5_TITAN
+                      ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITAN
+                      : USE_2H_TREND_V5_APEX
+                        ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_APEX
+                        : USE_2H_TREND_V5_ELITE
+                          ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ELITE
+                          : USE_2H_TREND_V5_HIGH
+                            ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_HIGH
+                            : USE_2H_TREND_V5_ULTRA
+                              ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ULTRA
+                              : USE_2H_TREND_V5_FUND
+                                ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_FUND
+                                : USE_2H_TREND_V5_PARETO
+                                  ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PARETO
+                                  : USE_2H_TREND_V5_RECENT
+                                    ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_RECENT
+                                    : USE_2H_TREND_V5_ROBUST
+                                      ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ROBUST
+                                      : USE_2H_TREND_V15
+                                        ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V15_RECENT
+                                        : USE_2H_TREND_V14
+                                          ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V14
+                                          : USE_2H_TREND_V13
+                                            ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V13_RISKY
+                                            : USE_2H_TREND_V12
+                                              ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V12
+                                              : USE_2H_TREND_V11
+                                                ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V11
+                                                : USE_2H_TREND_V10
+                                                  ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V10
+                                                  : USE_2H_TREND_V9
+                                                    ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V9
+                                                    : USE_2H_TREND_V8
+                                                      ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V8
+                                                      : USE_2H_TREND_V7
+                                                        ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V7
+                                                        : USE_2H_TREND_V6
+                                                          ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V6
+                                                          : USE_2H_TREND_V5
+                                                            ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5
+                                                            : USE_2H_TREND_V4
+                                                              ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V4
+                                                              : USE_2H_TREND_V3
+                                                                ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V3
+                                                                : USE_2H_TREND_V2
+                                                                  ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V2
+                                                                  : USE_2H_TREND
+                                                                    ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V1
+                                                                    : USE_4H_TREND
+                                                                      ? FTMO_DAYTRADE_24H_CONFIG_TREND_4H_V2
+                                                                      : USE_5M_LIVE
+                                                                        ? FTMO_DAYTRADE_24H_CONFIG_LIVE_5M_V3
+                                                                        : USE_15M_LIVE
+                                                                          ? FTMO_DAYTRADE_24H_CONFIG_LIVE_15M_V3
+                                                                          : USE_30M_LIVE
+                                                                            ? FTMO_DAYTRADE_24H_CONFIG_LIVE_30M_V2
+                                                                            : USE_1H_LIVE
+                                                                              ? FTMO_DAYTRADE_24H_CONFIG_LIVE_1H_V2
+                                                                              : USE_2H_LIVE
+                                                                                ? FTMO_DAYTRADE_24H_CONFIG_LIVE_2H_V2
+                                                                                : USE_4H_LIVE
+                                                                                  ? FTMO_DAYTRADE_24H_CONFIG_LIVE_4H_V2
+                                                                                  : USE_15M_LIVE_V1
+                                                                                    ? FTMO_DAYTRADE_24H_CONFIG_LIVE_15M_V1
+                                                                                    : USE_30M_LIVE_V1
+                                                                                      ? FTMO_DAYTRADE_24H_CONFIG_LIVE_30M_V1
+                                                                                      : USE_1H_LIVE_V1
+                                                                                        ? FTMO_DAYTRADE_24H_CONFIG_LIVE_1H_V1
+                                                                                        : USE_2H_LIVE_V1
+                                                                                          ? FTMO_DAYTRADE_24H_CONFIG_LIVE_2H_V1
+                                                                                          : USE_4H_LIVE_V1
+                                                                                            ? FTMO_DAYTRADE_24H_CONFIG_LIVE_4H_V1
+                                                                                            : USE_15M
+                                                                                              ? FTMO_DAYTRADE_24H_CONFIG_V16_15M_OPT
+                                                                                              : USE_30M_TURBO
+                                                                                                ? FTMO_DAYTRADE_24H_CONFIG_V12_TURBO_30M_OPT
+                                                                                                : USE_30M
+                                                                                                  ? FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT
+                                                                                                  : USE_1H
+                                                                                                    ? FTMO_DAYTRADE_24H_CONFIG_V7_1H_OPT
+                                                                                                    : USE_2H
+                                                                                                      ? FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT
+                                                                                                      : FTMO_DAYTRADE_24H_CONFIG_V261; // ← default fallback if no flag matches
 
 // BUGFIX 2026-04-28: warn loudly if FTMO_TF is set but didn't match any flag.
 // Trailing whitespace, typos (v6 vs V6), or unknown variants previously
@@ -430,6 +427,9 @@ if (
     USE_2H_TREND_V5_PARETO,
     USE_2H_TREND_V5_RECENT,
     USE_2H_TREND_V5_ROBUST,
+    USE_2H_TREND_V5_FASTMAX,
+    USE_2H_TREND_V5_HIWIN,
+    USE_2H_TREND_V5_PRO,
     USE_2H_TREND_V5_STEP2,
     USE_2H_TREND_V5_ENSEMBLE,
     USE_2H_TREND_V6,
@@ -502,6 +502,9 @@ function resolveCfgLabel(tfLabel: string): string {
     "2h-trend-v5-robust": "TREND_2H_V5_ROBUST",
     "2h-trend-v5-prime": "TREND_2H_V5_PRIME",
     "2h-trend-v5-primex": "TREND_2H_V5_PRIMEX",
+    "2h-trend-v5-fastmax": "TREND_2H_V5_FASTMAX",
+    "2h-trend-v5-hiwin": "TREND_2H_V5_HIWIN",
+    "2h-trend-v5-pro": "TREND_2H_V5_PRO",
     "2h-trend-v5-step2": "TREND_2H_V5_STEP2",
     "2h-trend-v5-ensemble": "TREND_2H_V5_ENSEMBLE",
     "2h-trend-v5": "TREND_2H_V5",
@@ -666,8 +669,11 @@ export function detectLiveSignalsV231(
     }
     extraCandles = filtered;
   }
-  // Guard against empty candle arrays — prevents -1 index crashes.
-  if (btcCandles.length === 0 || ethCandles.length === 0) {
+  // Guard against empty/tiny candle arrays — prevents -1 / -2 index crashes.
+  // BUGFIX 2026-04-28 (Live audit Bug 7): BULL detector reads
+  // ethCandles[lastIdx-2], so we need at least 3 candles to be safe;
+  // also need ≥3 BTC candles for momentum/EMA seeds.
+  if (btcCandles.length < 3 || ethCandles.length < 3) {
     return {
       timestamp: Date.now(),
       regime: "BEAR_CHOP",
@@ -786,6 +792,9 @@ export function detectLiveSignalsV231(
     USE_2H_TREND_V5_PARETO ||
     USE_2H_TREND_V5_RECENT ||
     USE_2H_TREND_V5_ROBUST ||
+    USE_2H_TREND_V5_FASTMAX ||
+    USE_2H_TREND_V5_HIWIN ||
+    USE_2H_TREND_V5_PRO ||
     USE_2H_TREND_V5_STEP2 ||
     USE_2H_TREND_V5_ENSEMBLE;
   const tfHours = USE_5M_LIVE
@@ -1139,7 +1148,20 @@ function detectBullSignals(
   result: DetectionResult,
 ): DetectionResult {
   const BULL = FTMO_DAYTRADE_24H_CONFIG_BULL;
-  const tfHours = USE_1H ? 1 : USE_2H ? 2 : 4;
+  // BUGFIX 2026-04-28 (Live audit Bug 6): include 5m/15m/30m so BULL regime
+  // doesn't compute the wrong entryOpenTime / maxHold offset when the bot
+  // runs on shorter timeframes. Was: USE_1H ? 1 : USE_2H ? 2 : 4 (default).
+  const tfHours = USE_5M_LIVE
+    ? 5 / 60
+    : USE_15M_LIVE || USE_15M
+      ? 0.25
+      : USE_30M_LIVE || USE_30M || USE_30M_TURBO
+        ? 0.5
+        : USE_1H || USE_1H_LIVE
+          ? 1
+          : USE_2H || USE_2H_LIVE
+            ? 2
+            : 4;
   const { factor, notes: sizingNotes } = computeSizingFactor(account);
   result.notes.push(...sizingNotes);
 
