@@ -239,7 +239,12 @@ export function choppiness(candles: Candle[], period = 14): (number | null)[] {
       if (candles[j].low < minL) minL = candles[j].low;
     }
     const range = maxH - minL;
-    if (range > 0) out[i] = (100 * Math.log10(sumTr / range)) / log10p;
+    if (range > 0) {
+      // BUGFIX 2026-04-28 (Round 9): clamp to documented 0-100 scale.
+      // log10(sumTr/range) can be negative when sumTr < range (compact range).
+      const ci = (100 * Math.log10(sumTr / range)) / log10p;
+      out[i] = Math.max(0, Math.min(100, ci));
+    }
   }
   return out;
 }

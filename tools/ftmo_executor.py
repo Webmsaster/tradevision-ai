@@ -759,6 +759,16 @@ def process_pending_signals() -> None:
     MAX_SIGNAL_AGE_MS = 5 * 60_000
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     for sig in pending:
+        # BUGFIX 2026-04-28 (Round 24): validate required fields up-front to
+        # prevent KeyError crashes from malformed signals (schema drift, manual
+        # JSON edits, corruption). Skip + log signal if any required field missing.
+        required_fields = ["assetSymbol", "riskFrac", "stopPct", "tpPct", "stopPrice", "tpPrice", "maxHoldUntil", "entryPrice"]
+        missing = [f for f in required_fields if f not in sig]
+        if missing:
+            log_event("signal_invalid_schema", missing=missing, sig_keys=list(sig.keys()))
+            tg_send(f"⚠️ <b>Invalid signal schema</b>\nMissing: {html_escape(','.join(missing))}")
+            executed["executions"].append({"signal": sig, "result": "invalid_schema", "missing": missing, "ts": datetime.now(timezone.utc).isoformat()})
+            continue
         sig_ts = sig.get("signalBarClose") or sig.get("ts_ms")
         if sig_ts and (now_ms - sig_ts) > MAX_SIGNAL_AGE_MS:
             age_min = (now_ms - sig_ts) / 60000
@@ -899,6 +909,10 @@ def process_pending_signals() -> None:
             remaining.extend(new_signals)
     except Exception as e:
         log_event("merge_check_failed", error=str(e))
+    # BUGFIX 2026-04-28 (Round 12): cap executed-signals.json at 500 entries
+    # to prevent unbounded growth + JSON-parse stalls.
+    if len(executed.get("executions", [])) > 500:
+        executed["executions"] = executed["executions"][-500:]
     write_json(PENDING_PATH, {"signals": remaining})
     write_json(EXECUTED_PATH, executed)
     write_json(OPEN_POS_PATH, open_positions)
@@ -1733,6 +1747,12 @@ def main_loop() -> None:
                 if now_ts - last_sent > 1800:
                     tg_send(f"⚠️ <b>Executor Loop Error</b>\n<code>{html_escape(str(e))}</code>")
                     _loop_error_last_sent[err_key] = now_ts
+                    # BUGFIX 2026-04-28 (Round 12): cap dict size to prevent
+                    # unbounded growth from diverse error messages over months.
+                    if len(_loop_error_last_sent) > 100:
+                        # Drop oldest entries (Python 3.7+ dict is insertion-ordered)
+                        for old_key in list(_loop_error_last_sent.keys())[:50]:
+                            del _loop_error_last_sent[old_key]
             time.sleep(POLL_INTERVAL_SEC)
     except KeyboardInterrupt:
         log_event("executor_stopped", reason="keyboard_interrupt")

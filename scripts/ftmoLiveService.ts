@@ -231,6 +231,23 @@ async function refreshNewsIfStale() {
     );
   } catch (e) {
     console.error(`[ftmo-live] news fetch failed:`, e);
+    // BUGFIX 2026-04-28 (Round 10): retry-storm prevention. On failure, set
+    // cooldown so we don't hammer the API every check. Also fall back to
+    // last persisted news file if available so news-blackout still works.
+    newsLastFetched = Date.now() - NEWS_REFRESH_MS + 5 * 60_000; // retry in 5min
+    if (cachedNews.length === 0) {
+      try {
+        const persisted = readJSON<{ events: NewsEvent[] }>(NEWS_PATH, {
+          events: [],
+        });
+        if (persisted.events.length > 0) {
+          cachedNews = persisted.events;
+          console.log(
+            `[ftmo-live] news fetch failed — using persisted ${cachedNews.length} events as fallback`,
+          );
+        }
+      } catch {}
+    }
   }
 }
 
