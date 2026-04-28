@@ -76,7 +76,9 @@ All 17 pattern detectors run in the browser with no API calls. Logic is in `src/
 - **E2E tests** (`e2e/`): Playwright against dev server — navigation, trade CRUD, CSV import, calculator, login flow
 - E2E helpers in `e2e/helpers.ts` (`loadSampleData`, `createTestTrade`, `gotoAndWaitForApp`)
 - **Strategy/FTMO tests** (`scripts/ftmo*.test.ts` and `scripts/exploratory/`): Heavy backtests run via vitest.
-  - **Active live config: `FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5`** (selected via `FTMO_TF=2h-trend-v5` env). 9 cryptos on 2h, 47% pass-rate (mathematically verified plateau via 35 audit rounds + 200000+ GA evaluations).
+  - **Production champion (2026-04-28): `FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PLATINUM`** (`FTMO_TF=2h-trend-v5-platinum`). 14 cryptos (V5 9 + AAVE + XRP - LINK + INJ + RUNE + ETC + SAND) with per-asset TP. **58.46% pass / med 4d / p90 4d / TL 0.60% / wr 70.63%** on 5.60y / 662 windows under live caps {maxStopPct: 0.05, maxRiskFrac: 0.4}. Progression V5 → V5_PRO → V5_GOLD → V5_DIAMOND → V5_PLATINUM. **+9.50pp pass / -89% TL** vs V5 baseline.
+  - V5 family alt variants: V5_HIWIN (49.85%/wr 64.60% TP=4%), V5_FASTMAX (49.85%/wr 62% TP=6%), V5 legacy (48.96%/wr 62% TP=7%).
+  - **Legacy: `FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5`** (selected via `FTMO_TF=2h-trend-v5` env). 9 cryptos on 2h, 47-49% pass-rate (V5_PLATINUM supersedes).
   - **Step 2 config: `FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_STEP2`** (selected via `FTMO_TF=2h-trend-v5-step2`). Tuned for 5% target / 60d.
   - Top backtest configs (post-bugfix re-validated 2026-04-28): V12_30M_OPT 97.99% (1.71y), V12_TURBO 96.48%, V261_2H_OPT 95.98% (5.6y), V261 4h 94.17%. V12 family is fully live-deployable as of round 11 fix (PTP/chandelier/breakEven/timeExit implemented in Python executor).
   - Engine fields `pauseAtTargetReached: true` + `atrStop` + `liveCaps {maxStopPct: 0.05, maxRiskFrac: 0.4}` are mandatory for FTMO-realistic backtests. `minTradingDays: 4` (real FTMO 2-Step rule).
