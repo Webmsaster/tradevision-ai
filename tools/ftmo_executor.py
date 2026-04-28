@@ -208,6 +208,72 @@ def write_json(path: Path, obj: Any) -> None:
     tmp.replace(path)
 
 
+# BUGFIX 2026-04-28 (Round 36 Bug 5/7): cross-process exclusive lock for
+# bot-controls.json read-modify-write. Without this, Node telegramBot's
+# R-M-W (e.g. /pause) could race with Python's R-M-W (orderFailStreak++),
+# losing one update. Concrete failure: user sends /pause during an
+# order-failure burst; Python's stale read writes back paused=False → bot
+# keeps firing failed orders.
+#
+# Mechanism: O_CREAT|O_EXCL sentinel file ("bot-controls.lock"). Cross-
+# platform AND interoperable with the Node setControls helper which uses
+# the exact same primitive (fs.openSync(path, "wx")). Falls back to
+# force-acquire if the lock is older than 2s (assume crashed holder).
+import contextlib
+
+CONTROLS_LOCK_TIMEOUT_SEC = 2.0
+
+@contextlib.contextmanager
+def _file_lock(lock_path: Path):
+    """Exclusive lock on lock_path via O_CREAT|O_EXCL sentinel."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    start = time.time()
+    fd: Optional[int] = None
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            try:
+                os.write(fd, str(os.getpid()).encode())
+            except Exception:
+                pass
+            break
+        except FileExistsError:
+            # Force-take if the lock is stale (crashed holder).
+            if time.time() - start > CONTROLS_LOCK_TIMEOUT_SEC:
+                try:
+                    lock_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            time.sleep(0.005)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+        try:
+            lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def update_controls(updater) -> dict:
+    """Atomic read-modify-write on bot-controls.json under cross-process lock.
+    `updater` receives a dict and mutates it in-place (or returns a new dict).
+    Returns the post-update dict.
+    """
+    lock_path = STATE_DIR / "bot-controls.lock"
+    with _file_lock(lock_path):
+        controls = read_json(CONTROLS_PATH, {})
+        result = updater(controls)
+        if isinstance(result, dict):
+            controls = result
+        write_json(CONTROLS_PATH, controls)
+        return controls
+
+
 # =============================================================================
 # MT5 connection — with reconnect
 # =============================================================================
@@ -1531,7 +1597,12 @@ def sync_account_state() -> None:
 
 def handle_kill_request() -> bool:
     """Check bot-controls.json for killRequested. If set, close all positions
-    and reset the flag. Returns True if kill was processed."""
+    and reset the flag. Returns True if kill was processed.
+
+    BUGFIX 2026-04-28 (Round 36 Bug 5/7): R-M-W via update_controls under
+    file lock. Was: read → loop → write — Telegram bot's concurrent
+    write between read and write was lost.
+    """
     controls = read_json(CONTROLS_PATH, {})
     if not controls.get("killRequested"):
         return False
@@ -1543,10 +1614,11 @@ def handle_kill_request() -> bool:
         if pos.magic == 231:
             if close_position(pos.ticket):
                 closed += 1
-    # Reset flag, keep paused
-    controls["killRequested"] = False
-    controls["paused"] = True
-    write_json(CONTROLS_PATH, controls)
+    def _apply(c: dict) -> dict:
+        c["killRequested"] = False
+        c["paused"] = True
+        return c
+    update_controls(_apply)
     tg_send(f"🛑 <b>Kill complete</b> — {closed} position(s) closed. Bot is PAUSED. Send /resume to re-enable.")
     log_event("kill_complete", closed=closed)
     return True
@@ -1561,36 +1633,44 @@ def _bump_order_fail_counter(error: str) -> None:
     """Increment consecutive-failure counter; auto-pause on threshold."""
     if ORDER_FAIL_AUTO_PAUSE <= 0:
         return
-    controls = read_json(CONTROLS_PATH, {})
-    streak = int(controls.get("orderFailStreak", 0)) + 1
-    controls["orderFailStreak"] = streak
-    controls["lastOrderFailError"] = (error or "")[:200]
-    if streak >= ORDER_FAIL_AUTO_PAUSE and not controls.get("paused"):
-        controls["paused"] = True
-        controls["lastCommand"] = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "cmd": "/auto-pause",
-            "reason": f"{streak} consecutive order failures",
-        }
-        write_json(CONTROLS_PATH, controls)
+    auto_paused = {"set": False, "streak": 0}
+
+    def _apply(c: dict) -> dict:
+        streak = int(c.get("orderFailStreak", 0)) + 1
+        c["orderFailStreak"] = streak
+        c["lastOrderFailError"] = (error or "")[:200]
+        auto_paused["streak"] = streak
+        if streak >= ORDER_FAIL_AUTO_PAUSE and not c.get("paused"):
+            c["paused"] = True
+            c["lastCommand"] = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "cmd": "/auto-pause",
+                "reason": f"{streak} consecutive order failures",
+            }
+            auto_paused["set"] = True
+        return c
+
+    update_controls(_apply)
+    if auto_paused["set"]:
         tg_send(
             f"🛑 <b>BOT AUTO-PAUSED</b>\n"
-            f"{streak} consecutive order failures.\n"
+            f"{auto_paused['streak']} consecutive order failures.\n"
             f"Last error: <code>{html_escape((error or 'unknown')[:120])}</code>\n"
             f"Use /resume after fixing the cause."
         )
-    else:
-        write_json(CONTROLS_PATH, controls)
 
 
 def _reset_order_fail_counter() -> None:
     """Reset consecutive-failure counter after a successful order."""
     if ORDER_FAIL_AUTO_PAUSE <= 0:
         return
-    controls = read_json(CONTROLS_PATH, {})
-    if int(controls.get("orderFailStreak", 0)) > 0:
-        controls["orderFailStreak"] = 0
-        write_json(CONTROLS_PATH, controls)
+
+    def _apply(c: dict) -> dict:
+        if int(c.get("orderFailStreak", 0)) > 0:
+            c["orderFailStreak"] = 0
+        return c
+
+    update_controls(_apply)
 
 
 _last_equity_snapshot = [0.0]  # wrapped in list for closure mutation
@@ -1638,16 +1718,23 @@ def check_circuit_breaker() -> Optional[str]:
     if streak > _last_cb_check_streak[0]:
         # Streak grew
         if streak >= CB_LOSS_STREAK:
-            # Trip the breaker: set paused flag
-            controls = read_json(CONTROLS_PATH, {})
-            if not controls.get("paused"):
-                controls["paused"] = True
-                controls["lastCommand"] = {
-                    "from": "circuit-breaker",
-                    "cmd": "/pause",
-                    "ts": datetime.now(timezone.utc).isoformat(),
-                }
-                write_json(CONTROLS_PATH, controls)
+            # Trip the breaker: set paused flag (under file lock so a
+            # concurrent /resume from Telegram doesn't get clobbered).
+            tripped = {"set": False}
+
+            def _apply(c: dict) -> dict:
+                if not c.get("paused"):
+                    c["paused"] = True
+                    c["lastCommand"] = {
+                        "from": "circuit-breaker",
+                        "cmd": "/pause",
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                    }
+                    tripped["set"] = True
+                return c
+
+            update_controls(_apply)
+            if tripped["set"]:
                 log_event("circuit_breaker_tripped", streak=streak)
                 tg_send(
                     f"🚨 <b>CIRCUIT BREAKER TRIPPED</b>\n"
