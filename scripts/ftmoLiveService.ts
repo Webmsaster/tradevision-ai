@@ -66,8 +66,12 @@ const TF_HOURS =
           : TF === "2h"
             ? 2
             : 4;
+// BUGFIX 2026-04-28 (Round 16): per-FTMO_TF state-dir prevents Step 1 / Step 2
+// collision (V5 + V5_STEP2 both mapped to TF=2h, same state dir → Step 2 inherited
+// Step 1's pause-state → bot stuck in pause).
 const STATE_DIR =
-  process.env.FTMO_STATE_DIR ?? path.join(process.cwd(), `ftmo-state-${TF}`);
+  process.env.FTMO_STATE_DIR ??
+  path.join(process.cwd(), `ftmo-state-${process.env.FTMO_TF ?? TF}`);
 const PENDING_PATH = path.join(STATE_DIR, "pending-signals.json");
 const EXECUTED_PATH = path.join(STATE_DIR, "executed-signals.json");
 const ACCOUNT_PATH = path.join(STATE_DIR, "account.json");

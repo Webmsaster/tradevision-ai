@@ -1711,4 +1711,14 @@ def main_loop() -> None:
 
 
 if __name__ == "__main__":
+    # BUGFIX 2026-04-28 (Round 23 C1): handle SIGTERM (sent by PM2 on restart)
+    # so we trigger the same KeyboardInterrupt cleanup path. Without this,
+    # MT5 connection terminates mid-order_send → orphan trades without SL/TP.
+    import signal as _signal
+    def _on_sigterm(*_args):
+        raise KeyboardInterrupt()
+    try:
+        _signal.signal(_signal.SIGTERM, _on_sigterm)
+    except (AttributeError, ValueError):
+        pass  # Windows doesn't support all signals
     main_loop()
