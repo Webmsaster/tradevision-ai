@@ -5981,6 +5981,37 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PLATINUM: FtmoDaytrade24hConfi
   })();
 
 /**
+ * TREND_2H_V5_PLATINUM_30M — V5_PLATINUM asset-set + per-asset TPs on 30m TF.
+ *
+ * Phase M timeframe shootout (V5_PLATINUM 14-asset basket × 30m/1h/2h/4h on
+ * 5.52y / 662 windows step=3d / 1985 windows step=1d / live caps 5%/40%):
+ *
+ *                  step=3d         step=1d        wr      TL(3d)  TL(1d)
+ *   30m:           56.04%/371      55.52%/1102    70.00%  4       9
+ *   1h:            53.63%/355      53.15%/1055    68.23%  2       9
+ *   2h (PLATINUM): 58.46%/387      54.13%/1075    70.63%  4       27
+ *   4h:            51.81%/343      51.06%/1014    65.24%  22      44
+ *
+ * Verdict by step-anchor:
+ *   - step=3d (default sweep anchor): 2h V5_PLATINUM wins (58.46%).
+ *   - step=1d (high-N robustness): 30m wins (55.52% — first config to pass
+ *     55% target on the daily-anchor regime).
+ *
+ * 30m has the most stable pass-rate across step sizes (55.52% to 56.04%, var <1pp).
+ * 2h has higher peak (58.46%) but drift down to 54.13% on 1d-step.
+ *
+ * Use this when robustness across challenge-start dates matters more than
+ * absolute peak. Live: `FTMO_TF=2h-trend-v5-platinum-30m` (signal service must
+ * also poll 30m). Per-asset TPs are inherited from 2h V5_PLATINUM tune; the
+ * 30m-native optimum may differ — open optimization for a follow-up sweep.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PLATINUM_30M: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PLATINUM,
+    timeframe: "30m",
+  };
+
+/**
  * TREND_2H_V5_STEP2 — Step-2 variant of V5 (winner of ftmoStep2Tuning sweep).
  *
  * FTMO Step-2 rules:
