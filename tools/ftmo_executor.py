@@ -436,10 +436,10 @@ def place_market_order(
         # BUGFIX 2026-04-28: Was silent. Now logs symbol-info dump so user can
         # diagnose why lot=0 (typically broker volume_min too high or tick_size=0).
         diag = (
-            f"lot=0 for {ftmo_symbol}: vol_min={info.volume_min} "
-            f"vol_step={info.volume_step} tick_value={info.trade_tick_value} "
-            f"tick_size={info.trade_tick_size} point={info.point} "
-            f"contract={info.trade_contract_size} risk={risk_frac:.4f} stop={stop_pct:.4f}"
+            f"lot=0 for {ftmo_symbol}: vol_min={getattr(info, 'volume_min', '?')} "
+            f"vol_step={getattr(info, 'volume_step', '?')} tick_value={getattr(info, 'trade_tick_value', '?')} "
+            f"tick_size={getattr(info, 'trade_tick_size', '?')} point={getattr(info, 'point', '?')} "
+            f"contract={getattr(info, 'trade_contract_size', '?')} risk={risk_frac:.4f} stop={stop_pct:.4f}"
         )
         log_event("lot_zero", asset=binance_symbol, ftmo_symbol=ftmo_symbol, diag=diag)
         tg_send(f"⚠️ <b>Lot=0 skip</b>\n{ftmo_symbol}\n<code>{html_escape(diag)}</code>")
