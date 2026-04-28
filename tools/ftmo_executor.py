@@ -876,6 +876,9 @@ def _apply_trailing_stop(pos: dict) -> dict:
                 if _modify_position_sl(pos["ticket"], new_sl):
                     log_event("trailing_sl_updated", ticket=pos["ticket"], old_sl=current_sl, new_sl=new_sl, price=current_price)
                     pos["stop_price"] = new_sl
+            else:
+                # BUGFIX 2026-04-28: log skip so user can verify trail is active but not ratcheting.
+                log_event("trailing_skip", ticket=pos["ticket"], current_sl=current_sl, candidate_sl=new_sl, price=current_price, dir="long")
     elif direction == "short":
         if not activated:
             if current_price <= entry * (1 - activate_pct):
@@ -889,6 +892,8 @@ def _apply_trailing_stop(pos: dict) -> dict:
                 if _modify_position_sl(pos["ticket"], new_sl):
                     log_event("trailing_sl_updated", ticket=pos["ticket"], old_sl=current_sl, new_sl=new_sl, price=current_price)
                     pos["stop_price"] = new_sl
+            else:
+                log_event("trailing_skip", ticket=pos["ticket"], current_sl=current_sl, candidate_sl=new_sl, price=current_price, dir="short")
     return pos
 
 
