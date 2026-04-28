@@ -6012,6 +6012,69 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PLATINUM_30M: FtmoDaytrade24hC
   };
 
 /**
+ * TREND_2H_V5_TITANIUM — V5_PLATINUM_30M with 30m-tuned per-asset TP.
+ *
+ * Phase O greedy single-axis TP sweep on V5_PLATINUM_30M's 14-asset basket
+ * (5.52y / 1985 windows step=1d / 662 windows step=3d / live caps 5%/40%).
+ * Optimization criterion: maximize step=1d pass-rate (high-N robust signal).
+ *
+ *                       step=1d        step=3d        wr      TL3d
+ *   V5_PLATINUM_30M:    1102/1985 = 55.52%   371/662 = 56.04%   70.00%  4
+ *   V5_TITANIUM (this): 1156/1985 = 58.24%   385/662 = 58.16%   75.76%  5
+ *
+ *   +2.72pp step=1d / +2.11pp step=3d / +5.76pp winrate / TL same.
+ *
+ * Per-asset optimal TP on 30m basket:
+ *   ETH/BTC/BNB/ADA/DOGE/LTC/BCH/SAND  2.5%   (high mean-reversion on 30m bars)
+ *   RUNE                                3.0%
+ *   ETC                                 3.5%
+ *   AVAX/XRP                            4.0%
+ *   INJ                                 5.5%
+ *   AAVE                                6.0%   (DeFi token, slower mean revert)
+ *
+ * Notable: 30m optimal TPs are dramatically tighter than 2h V5_PLATINUM
+ * optimum (most assets 2.5% on 30m vs 3.5-4% on 2h). 30m intra-bar moves
+ * are smaller — tighter TP captures more of the per-bar reversion edge.
+ *
+ * vs V5 baseline (TP 7%, 9 assets, no live caps):
+ *   +9.20pp step=1d, +9.28pp step=3d
+ *   wr +13.75pp (62.01% → 75.76%) — best winrate in V5 family
+ *
+ * V5_TITANIUM is the most-robust V5 family champion: pass-rate above 55% on
+ * BOTH step-anchors, with the highest trade win-rate across all V5 variants.
+ *
+ * Live Service: `FTMO_TF=2h-trend-v5-titanium` (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM: FtmoDaytrade24hConfig =
+  (() => {
+    const tpByAsset: Record<string, number> = {
+      "ETH-TREND": 0.025,
+      "BTC-TREND": 0.025,
+      "BNB-TREND": 0.025,
+      "ADA-TREND": 0.025,
+      "DOGE-TREND": 0.025,
+      "AVAX-TREND": 0.04,
+      "LTC-TREND": 0.025,
+      "BCH-TREND": 0.025,
+      "AAVE-TREND": 0.06,
+      "XRP-TREND": 0.04,
+      "INJ-TREND": 0.055,
+      "RUNE-TREND": 0.03,
+      "ETC-TREND": 0.035,
+      "SAND-TREND": 0.025,
+    };
+    return {
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PLATINUM_30M,
+      assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PLATINUM_30M.assets.map(
+        (a) => ({
+          ...a,
+          tpPct: tpByAsset[a.symbol] ?? a.tpPct,
+        }),
+      ),
+    };
+  })();
+
+/**
  * TREND_2H_V5_STEP2 — Step-2 variant of V5 (winner of ftmoStep2Tuning sweep).
  *
  * FTMO Step-2 rules:
