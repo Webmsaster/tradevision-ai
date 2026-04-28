@@ -3273,9 +3273,9 @@ export function detectAsset(
   const assetDisableShort = asset.disableShort ?? cfg.disableShort ?? false;
   if (candles.length < triggerBars + 2) return out;
   // iter262+ Loss-streak cooldown state
+  // BUGFIX 2026-04-28: lossStreak/cooldownUntilBar moved into direction loop
+  // (was leaking between long/short — short trades got cooldown'd by long stops).
   const lsc = cfg.lossStreakCooldown;
-  let lossStreak = 0;
-  let cooldownUntilBar = -1;
   const ts0 = candles[0].openTime;
   const cost = asset.costBp / 10000;
   // Derive bar duration from the data so 30m / 1h / 2h / 4h all report
@@ -3377,6 +3377,9 @@ export function detectAsset(
   for (const direction of ["long", "short"] as const) {
     if (direction === "long" && assetDisableLong) continue;
     if (direction === "short" && assetDisableShort) continue;
+    // Per-direction LSC state (bugfix 2026-04-28: was shared, leaked across directions)
+    let lossStreak = 0;
+    let cooldownUntilBar = -1;
     let cooldown = -1;
     let reEntryRetriesUsed = 0;
     let reEntryWindowEnd = -1;
@@ -6289,3 +6292,173 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V7: FtmoDaytrade24hConfig = {
   chandelierExit: { period: 56, mult: 2.5, minMoveR: 0.5 },
   choppinessFilter: { period: 10, maxCi: 75 },
 };
+
+/**
+ * MR_2H — 2h Mean-Reversion baseline (complementary to TREND_2H_V5).
+ *
+ * Hypothesis: V5 trend-follower fires only in trending markets. A
+ * mean-reversion bot fires in sideway/range markets → minimal overlap →
+ * combined ensemble can pass FTMO with a higher rate than V5 alone.
+ *
+ * Default direction logic in the engine (invertDirection=false) means:
+ *   - long after N consecutive RED closes (fade the dip)
+ *   - short after N consecutive GREEN closes (fade the pump)
+ *
+ * Same 9 cryptos as V5. Uses "-MR" suffix to keep symbols distinct so the
+ * ensemble can union them with V5's "-TREND" symbols on a shared equity
+ * pool (sourceSymbol points back to the underlying USDT pair).
+ *
+ * Tunable defaults — final values determined by Stage-2 sweep in
+ * scripts/ftmoV5MrEnsemble.test.ts.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_MR_2H: FtmoDaytrade24hConfig = {
+  triggerBars: 1,
+  leverage: 2,
+  tpPct: 0.015,
+  stopPct: 0.025,
+  holdBars: 24,
+  timeframe: "2h",
+  maxConcurrentTrades: 6,
+  assets: [
+    {
+      symbol: "ETH-MR2",
+      sourceSymbol: "ETHUSDT",
+      costBp: 30,
+      slippageBp: 8,
+      swapBpPerDay: 4,
+      riskFrac: 0.5,
+      triggerBars: 1,
+      stopPct: 0.025,
+      tpPct: 0.015,
+      holdBars: 24,
+    },
+    {
+      symbol: "BTC-MR2",
+      sourceSymbol: "BTCUSDT",
+      costBp: 30,
+      slippageBp: 8,
+      swapBpPerDay: 4,
+      riskFrac: 0.5,
+      triggerBars: 1,
+      stopPct: 0.025,
+      tpPct: 0.015,
+      holdBars: 24,
+    },
+    {
+      symbol: "BNB-MR2",
+      sourceSymbol: "BNBUSDT",
+      costBp: 30,
+      slippageBp: 8,
+      swapBpPerDay: 4,
+      riskFrac: 0.5,
+      triggerBars: 1,
+      stopPct: 0.025,
+      tpPct: 0.015,
+      holdBars: 24,
+    },
+    {
+      symbol: "ADA-MR2",
+      sourceSymbol: "ADAUSDT",
+      costBp: 30,
+      slippageBp: 8,
+      swapBpPerDay: 4,
+      riskFrac: 0.5,
+      triggerBars: 1,
+      stopPct: 0.025,
+      tpPct: 0.015,
+      holdBars: 24,
+    },
+    {
+      symbol: "DOGE-MR2",
+      sourceSymbol: "DOGEUSDT",
+      costBp: 30,
+      slippageBp: 8,
+      swapBpPerDay: 4,
+      riskFrac: 0.5,
+      triggerBars: 1,
+      stopPct: 0.025,
+      tpPct: 0.015,
+      holdBars: 24,
+    },
+    {
+      symbol: "AVAX-MR2",
+      sourceSymbol: "AVAXUSDT",
+      costBp: 30,
+      slippageBp: 8,
+      swapBpPerDay: 4,
+      riskFrac: 0.5,
+      triggerBars: 1,
+      stopPct: 0.025,
+      tpPct: 0.015,
+      holdBars: 24,
+    },
+    {
+      symbol: "LTC-MR2",
+      sourceSymbol: "LTCUSDT",
+      costBp: 30,
+      slippageBp: 8,
+      swapBpPerDay: 4,
+      riskFrac: 0.5,
+      triggerBars: 1,
+      stopPct: 0.025,
+      tpPct: 0.015,
+      holdBars: 24,
+    },
+    {
+      symbol: "BCH-MR2",
+      sourceSymbol: "BCHUSDT",
+      costBp: 30,
+      slippageBp: 8,
+      swapBpPerDay: 4,
+      riskFrac: 0.5,
+      triggerBars: 1,
+      stopPct: 0.025,
+      tpPct: 0.015,
+      holdBars: 24,
+    },
+    {
+      symbol: "LINK-MR2",
+      sourceSymbol: "LINKUSDT",
+      costBp: 30,
+      slippageBp: 8,
+      swapBpPerDay: 4,
+      riskFrac: 0.5,
+      triggerBars: 1,
+      stopPct: 0.025,
+      tpPct: 0.015,
+      holdBars: 24,
+    },
+  ],
+  profitTarget: 0.08,
+  maxDailyLoss: 0.05,
+  maxTotalLoss: 0.1,
+  minTradingDays: 4,
+  maxDays: 30,
+  pauseAtTargetReached: true,
+  liveCaps: { maxStopPct: 0.05, maxRiskFrac: 0.4 },
+};
+
+/**
+ * TREND_2H_V5_ENSEMBLE — V5 (trend longs) + MR (both-side reverters)
+ * unified on a single 2h engine pass with shared equity pool.
+ *
+ * Asset list = V5 assets (all -TREND, long-only momentum-continuation)
+ *            ∪ MR assets (-MR2, default MR direction logic).
+ * Both run on the same equity track via the engine's sourceSymbol mechanism
+ * — TREND symbols share BTCUSDT/ETHUSDT etc. with their MR2 counterparts.
+ *
+ * maxConcurrentTrades raised 6 → 12 so the trend and MR sides don't crowd
+ * each other out under heavy regime overlap. Other engine settings inherit
+ * V5 (allowedHoursUtc, trailingStop, liveCaps).
+ *
+ * Live Service: `FTMO_TF=2h-trend-v5-ensemble`.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ENSEMBLE: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5,
+    maxConcurrentTrades: 12,
+    assets: [
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5.assets,
+      ...FTMO_DAYTRADE_24H_CONFIG_MR_2H.assets,
+    ],
+  };
