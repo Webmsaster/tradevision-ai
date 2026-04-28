@@ -953,8 +953,15 @@ def process_pending_signals() -> None:
         # BUGFIX 2026-04-28 (Round 36 Bug 3): embed marker ID in comment so
         # reconcile can match exactly instead of substring-matching the
         # asset symbol (which false-positives against unrelated prior trades).
+        # BUGFIX 2026-04-28 (Round 38): marker_id MUST come FIRST. MT5 truncates
+        # comment to 31 chars; long tag+asset names (e.g. "iter231 AVAX-TREND
+        # <16hex>" = 35 chars) chopped the marker tail and the next reconcile
+        # missed the match → re-queued an already-placed signal → DOUBLE order.
+        # Use first 8 chars of marker (32 bits, collision-safe per session).
         marker_id = _signal_marker_id(sig)
-        # Comment is capped at 31 chars by MT5; tag/asset are short so this fits.
+        marker_short = marker_id[:8]
+        # Total length: 8 (marker) + 1 + ~22 = ≤31; remaining truncation safely
+        # affects the asset/tag suffix only, not the marker prefix.
         result = place_market_order(
             binance_symbol=sig["sourceSymbol"],
             direction=direction,
@@ -962,7 +969,7 @@ def process_pending_signals() -> None:
             stop_pct=sig["stopPct"],
             tp_pct=sig["tpPct"],
             account_equity=account_equity,
-            comment=f"{tag} {sig['assetSymbol']} {marker_id}",
+            comment=f"{marker_short} {tag} {sig['assetSymbol']}",
         )
         # Marker stays until executed-signals is written successfully (cleanup at end).
         if result.ok:
@@ -1492,7 +1499,11 @@ def reconcile_pending_order_markers() -> None:
             # BUGFIX 2026-04-28 (Round 36 Bug 3): exact marker-ID match. Was
             # substring `asset in comment`, which false-matched any prior
             # trade containing the same asset string.
-            placed = any(mid in c for c in comments)
+            # BUGFIX 2026-04-28 (Round 38): comments are MT5-truncated to 31
+            # chars; place_market_order writes the first 8 chars of the marker
+            # at the START of the comment, so we match on that prefix.
+            mid_short = mid[:8]
+            placed = any(mid_short in c for c in comments)
             if placed:
                 marker.unlink(missing_ok=True)
                 cleaned += 1
