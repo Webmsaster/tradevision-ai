@@ -242,30 +242,42 @@ def get_challenge_day() -> int:
 
 def handle_daily_reset(current_equity_usd: float) -> float:
     """
-    Return the equity-at-day-start (in USD). At UTC 00:00 each calendar day,
-    snapshots the current equity as the new day-start baseline.
-    Persists to daily-reset.json.
+    Return the equity-at-day-start (in USD). At CE(S)T 00:00 each calendar day
+    (FTMO server timezone = Europe/Prague), snapshots the current equity as
+    the new day-start baseline. Persists to daily-reset.json.
+
+    BUGFIX 2026-04-28: Was using UTC, but FTMO daily-loss anchor is at
+    midnight Prague (00:00 CET = 23:00 UTC winter, 22:00 UTC summer).
+    Off-by-1-2h led to spurious DL boundary detection at the timezone edge.
     """
-    today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    try:
+        from zoneinfo import ZoneInfo
+        prague_tz = ZoneInfo("Europe/Prague")
+    except ImportError:
+        # Python <3.9 fallback — use fixed CET offset
+        from datetime import timedelta
+        prague_tz = timezone(timedelta(hours=1))  # CET, ignores DST
+    today_prague = datetime.now(prague_tz).strftime("%Y-%m-%d")
     state = read_json(DAILY_STATE_PATH, {})
     last_date = state.get("date")
 
-    if last_date != today_utc:
-        # New UTC day — snapshot current equity
+    if last_date != today_prague:
+        # New Prague day — snapshot current equity
         new_state = {
-            "date": today_utc,
+            "date": today_prague,
             "equity_at_day_start_usd": current_equity_usd,
             "snapped_at": datetime.now(timezone.utc).isoformat(),
+            "tz": "Europe/Prague",
         }
         write_json(DAILY_STATE_PATH, new_state)
         if last_date is not None:
             prev_start = state.get("equity_at_day_start_usd", current_equity_usd)
             prev_pnl = current_equity_usd - prev_start
             prev_pct = prev_pnl / prev_start if prev_start else 0
-            log_event("daily_reset", prev_date=last_date, new_date=today_utc, prev_day_pnl=prev_pnl)
-            tg_send(_build_daily_summary(today_utc, last_date, prev_pct, prev_pnl, current_equity_usd))
+            log_event("daily_reset", prev_date=last_date, new_date=today_prague, prev_day_pnl=prev_pnl)
+            tg_send(_build_daily_summary(today_prague, last_date, prev_pct, prev_pnl, current_equity_usd))
         else:
-            log_event("daily_state_first_write", date=today_utc, equity=current_equity_usd)
+            log_event("daily_state_first_write", date=today_prague, equity=current_equity_usd)
         return current_equity_usd
     return float(state.get("equity_at_day_start_usd", current_equity_usd))
 
