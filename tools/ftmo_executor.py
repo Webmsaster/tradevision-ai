@@ -132,10 +132,22 @@ NEWS_CLOSE_MINUTES_BEFORE = int(os.environ.get("FTMO_NEWS_CLOSE_MINUTES", "30"))
 # =============================================================================
 # IO helpers
 # =============================================================================
+def _rotate_jsonl_if_needed(path: Path, max_mb: int = 50) -> None:
+    """BUGFIX 2026-04-28 (Round 12): rotate jsonl files at 50MB to prevent
+    unbounded disk fill on long-running bots."""
+    try:
+        if path.exists() and path.stat().st_size > max_mb * 1024 * 1024:
+            archive = path.with_suffix(f".{datetime.now(timezone.utc).strftime('%Y%m%d')}.jsonl")
+            path.rename(archive)
+    except Exception:
+        pass  # don't crash on rotation issues
+
+
 def log_event(event: str, **kwargs: Any) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _rotate_jsonl_if_needed(EXECUTOR_LOG_PATH)
     entry = {"ts": datetime.now(timezone.utc).isoformat(), "event": event, **kwargs}
-    with open(EXECUTOR_LOG_PATH, "a") as f:
+    with open(EXECUTOR_LOG_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
     print(f"[executor] {event}: {kwargs}")
 
@@ -588,7 +600,7 @@ def close_position(ticket: int) -> bool:
     }
     result = mt5.order_send(request)
     ok = result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
-    if ok:
+    if ok and result is not None:
         log_event("closed", ticket=ticket, close_price=result.price)
     else:
         log_event("close_failed", ticket=ticket, retcode=getattr(result, "retcode", None))
@@ -1246,6 +1258,22 @@ def _apply_time_exit(pos: dict, now_ms: int) -> bool:
     return False
 
 
+def _emergency_close_all_positions(reason: str) -> None:
+    """BUGFIX 2026-04-28 (Round 23 C2): force-close all open positions when
+    daily-loss approaches breach. Was previously only blocking new signals
+    while existing positions could still drag equity past -5%.
+    """
+    open_positions = read_json(OPEN_POS_PATH, {"positions": []})
+    closed = 0
+    for pos in open_positions.get("positions", []):
+        if close_position(pos["ticket"]):
+            closed += 1
+    if closed > 0:
+        log_event("emergency_close", reason=reason, count=closed)
+        tg_send(f"🚨 <b>Emergency Close {closed} positions</b>\nReason: {html_escape(reason)}")
+    write_json(OPEN_POS_PATH, {"positions": []})
+
+
 def manage_open_positions() -> None:
     open_positions = read_json(OPEN_POS_PATH, {"positions": []})
     now_ms = int(time.time() * 1000)
@@ -1284,6 +1312,12 @@ def sync_account_state() -> None:
         return
     equity_frac = acct["equity"] / CHALLENGE_START_BALANCE
     day_start_usd = handle_daily_reset(acct["equity"])
+    # BUGFIX 2026-04-28 (Round 23 C2): emergency close at -4.5% daily-loss.
+    # Existing positions could otherwise drag equity past -5% breach point.
+    if day_start_usd > 0:
+        daily_pct = (acct["equity"] - day_start_usd) / day_start_usd
+        if daily_pct <= -0.045:
+            _emergency_close_all_positions(f"daily_loss_imminent: {daily_pct:.2%}")
 
     deals = mt5.history_deals_get(datetime.fromtimestamp(time.time() - 30 * 86400), datetime.now())
     recent_pnls: list[float] = []

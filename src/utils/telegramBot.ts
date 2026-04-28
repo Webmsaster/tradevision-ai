@@ -50,15 +50,38 @@ export async function startTelegramBot(ctx: TelegramCommandHandlerCtx) {
 }
 
 async function pollLoop(cfg: TelegramConfig, ctx: TelegramCommandHandlerCtx) {
+  // BUGFIX 2026-04-28 (Round 18): exp-backoff on consecutive errors.
+  let consecutiveErrors = 0;
   while (true) {
     try {
       const url = `https://api.telegram.org/bot${cfg.token}/getUpdates?timeout=${POLL_TIMEOUT_SEC}&offset=${lastUpdateId + 1}`;
-      const resp = await fetch(url);
+      // BUGFIX 2026-04-28 (Round 18): timeout (Telegram long-poll = 25s + 10s buffer).
+      const resp = await fetch(url, {
+        signal: AbortSignal.timeout((POLL_TIMEOUT_SEC + 10) * 1000),
+      });
       if (!resp.ok) {
-        console.error(`[tg-bot] HTTP ${resp.status}`);
-        await sleep(5000);
+        // Round 18: don't log full URL (contains token). Only status + retry-after.
+        const retryAfter =
+          resp.status === 429
+            ? Number(resp.headers.get("Retry-After") || 5)
+            : 5;
+        console.error(`[tg-bot] HTTP ${resp.status} (retry in ${retryAfter}s)`);
+        // 401/404 = invalid token / chat gone — exit loop.
+        if (resp.status === 401 || resp.status === 404) {
+          console.error(
+            `[tg-bot] fatal status ${resp.status} — exiting poll loop`,
+          );
+          return;
+        }
+        consecutiveErrors++;
+        const backoff = Math.min(
+          60_000,
+          retryAfter * 1000 * Math.pow(2, Math.min(consecutiveErrors - 1, 4)),
+        );
+        await sleep(backoff);
         continue;
       }
+      consecutiveErrors = 0;
       const body = (await resp.json()) as { ok: boolean; result: TgUpdate[] };
       if (!body.ok || !body.result) {
         await sleep(5000);
@@ -66,13 +89,26 @@ async function pollLoop(cfg: TelegramConfig, ctx: TelegramCommandHandlerCtx) {
       }
       for (const upd of body.result) {
         lastUpdateId = Math.max(lastUpdateId, upd.update_id);
-        if (upd.message?.text) {
-          await handleCommand(upd.message, cfg, ctx);
+        // BUGFIX 2026-04-28 (Round 18): also handle edited_message.
+        const msg = upd.message ?? (upd as any).edited_message;
+        if (msg?.text) {
+          try {
+            await handleCommand(msg, cfg, ctx);
+          } catch (cmdErr) {
+            console.error(`[tg-bot] command handler error:`, cmdErr);
+          }
         }
       }
     } catch (e) {
-      console.error(`[tg-bot] poll error:`, e);
-      await sleep(5000);
+      // Don't dump full error (may include URL/token).
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[tg-bot] poll error: ${msg}`);
+      consecutiveErrors++;
+      const backoff = Math.min(
+        60_000,
+        5_000 * Math.pow(2, Math.min(consecutiveErrors - 1, 3)),
+      );
+      await sleep(backoff);
     }
   }
 }
@@ -237,9 +273,17 @@ async function renderPositions(
     // which is writable by the Python executor and could in principle contain
     // stray HTML — escape every interpolated string before sending to TG.
     const safeAsset = htmlEscape(String(p.signalAsset ?? "?"));
-    const safeOpened = htmlEscape(
-      new Date(p.opened_at).toISOString().slice(11, 16) + "Z",
-    );
+    // BUGFIX 2026-04-28 (Round 27): guard invalid date strings — would crash
+    // entire handler with no outer catch.
+    let safeOpened = "?";
+    try {
+      const d = new Date(p.opened_at);
+      if (!Number.isNaN(d.getTime())) {
+        safeOpened = htmlEscape(d.toISOString().slice(11, 16) + "Z");
+      }
+    } catch {
+      // ignore — keep "?"
+    }
     lines.push(
       `<b>${safeAsset}</b> #${p.ticket}\n` +
         `  ${p.lot} lot @ $${p.entry_price.toFixed(4)}\n` +
@@ -259,10 +303,14 @@ async function renderPnl(ctx: TelegramCommandHandlerCtx): Promise<string> {
     path.join(ctx.stateDir, "daily-reset.json"),
     {},
   );
-  if (!acc.equity) return "ℹ️ <b>No account data yet</b>";
+  // BUGFIX 2026-04-28 (Round 27): equity===0 (total loss) is legitimate but
+  // !acc.equity rejects it. Use explicit undefined check.
+  if (acc.equity === undefined) return "ℹ️ <b>No account data yet</b>";
 
   const totalEq = ((acc.equity - 1) * 100).toFixed(2);
-  const dailyStart = acc.equityAtDayStart ?? 1;
+  // BUGFIX 2026-04-28 (Round 27): guard divide-by-zero if equityAtDayStart corrupt.
+  const dailyStart =
+    acc.equityAtDayStart && acc.equityAtDayStart > 0 ? acc.equityAtDayStart : 1;
   const dailyPct = (((acc.equity - dailyStart) / dailyStart) * 100).toFixed(2);
   const dailyUsd =
     acc.raw_equity_usd && daily.equity_at_day_start_usd
