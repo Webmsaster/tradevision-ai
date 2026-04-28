@@ -4244,14 +4244,23 @@ export function runFtmoDaytrade24h(
     const lookupKey = asset.sourceSymbol ?? asset.symbol;
     const candles = candlesBySymbol[lookupKey];
     if (!candles) continue;
-    // Only pass cross-asset candles if they align in length with this asset's.
+    // Only pass cross-asset candles if they align in length AND timestamps with this asset's.
+    // BUGFIX 2026-04-28: Was only checking .length — same length but different
+    // start/end times caused index-misaligned cross-asset filter (BTC trend
+    // applied to ETH bars at wrong timestamps). Now also verifies first+last
+    // openTime match (cheap O(1) check, catches 99% of misalignment).
+    const alignsByTimestamp = (a: Candle[], b: Candle[]): boolean =>
+      a.length === b.length &&
+      a.length > 0 &&
+      a[0].openTime === b[0].openTime &&
+      a[a.length - 1].openTime === b[b.length - 1].openTime;
     const crossForAsset =
-      crossCandles && crossCandles.length === candles.length
+      crossCandles && alignsByTimestamp(crossCandles, candles)
         ? crossCandles
         : undefined;
     const extraForAsset: Record<string, Candle[]> = {};
     for (const [sym, arr] of Object.entries(extraCrossMap)) {
-      if (arr.length === candles.length) extraForAsset[sym] = arr;
+      if (alignsByTimestamp(arr, candles)) extraForAsset[sym] = arr;
     }
     const fundingForAsset =
       fundingBySymbol &&

@@ -703,12 +703,23 @@ export function detectLiveSignalsV231(
 
   // Loss-streak cooldown: pause entries after N consecutive losers.
   // Reads from account.recentPnls (most recent last). Engine matches.
+  // BUGFIX 2026-04-28: Engine resets streak on reason !== "stop" (TP or time
+  // exit). Live was counting any negative PnL as loss, including time-exits
+  // with slippage (-0.1 to -0.5%). Now uses magnitude threshold: only count
+  // PnL magnitude > 50% of expected stop loss as a real "stop loss". For V5
+  // stop=5% × lev=2 × riskFrac=0.4 = -4% realized stop, so threshold ~-2%.
   let lscBlocked = false;
   if (CFG.lossStreakCooldown) {
     const { afterLosses, cooldownBars } = CFG.lossStreakCooldown;
+    // Compute a "stop-like" loss threshold from CFG (avoids counting tiny
+    // slippage-only losses as losses).
+    const baseStop = CFG.stopPct ?? 0.05;
+    const baseLev = CFG.leverage ?? 2;
+    const baseRisk = LIVE_MAX_RISK_FRAC; // hard-cap matches live executor
+    const stopLikeThreshold = -baseStop * baseLev * baseRisk * 0.5; // 50% of expected stop magnitude
     let streak = 0;
     for (let i = account.recentPnls.length - 1; i >= 0; i--) {
-      if (account.recentPnls[i] < 0) streak++;
+      if (account.recentPnls[i] <= stopLikeThreshold) streak++;
       else break;
     }
     if (streak >= afterLosses) {
