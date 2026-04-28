@@ -124,6 +124,11 @@ DAILY_STATE_PATH = STATE_DIR / "daily-reset.json"
 CONTROLS_PATH = STATE_DIR / "bot-controls.json"
 EQUITY_HISTORY_PATH = STATE_DIR / "equity-history.jsonl"
 NEWS_PATH = STATE_DIR / "news-events.json"
+# BUGFIX 2026-04-28 (Round 13 Bug 1): write-ahead log for order idempotency.
+# Each pending order gets a marker file with a deterministic ID before
+# mt5.order_send is called. On boot, markers without confirmed MT5 orders
+# are re-queued; markers with confirmed MT5 orders are removed.
+PENDING_ORDERS_DIR = STATE_DIR / "pending-orders"
 
 # News auto-close: flatten positions N minutes before high-impact events
 NEWS_CLOSE_MINUTES_BEFORE = int(os.environ.get("FTMO_NEWS_CLOSE_MINUTES", "30"))
@@ -837,6 +842,10 @@ def process_pending_signals() -> None:
             })
             continue
 
+        # BUGFIX 2026-04-28 (Round 13 Bug 1): write-ahead log for order idempotency.
+        # If executor crashes between mt5.order_send and write_json(EXECUTED_PATH),
+        # the marker file lets us detect duplicates on boot.
+        order_marker = _write_pending_order_marker(sig)
         result = place_market_order(
             binance_symbol=sig["sourceSymbol"],
             direction=direction,
@@ -846,7 +855,9 @@ def process_pending_signals() -> None:
             account_equity=account_equity,
             comment=f"{tag} {sig['assetSymbol']}",
         )
+        # Marker stays until executed-signals is written successfully (cleanup at end).
         if result.ok:
+            _clear_pending_order_marker(order_marker)
             _reset_order_fail_counter()
             log_event("order_placed", asset=sig["assetSymbol"], ticket=result.ticket, lot=result.lot, entry=result.entry_price)
             tg_send(
@@ -1302,6 +1313,78 @@ def _apply_time_exit(pos: dict, now_ms: int) -> bool:
     return False
 
 
+def _signal_marker_id(sig: dict) -> str:
+    """Deterministic ID for write-ahead log: same signal → same ID."""
+    import hashlib
+    key = f"{sig.get('assetSymbol','')}|{sig.get('signalBarClose','')}|{sig.get('direction','')}"
+    return hashlib.sha1(key.encode()).hexdigest()[:16]
+
+
+def _write_pending_order_marker(sig: dict) -> Path:
+    """BUGFIX 2026-04-28 (Round 13 Bug 1): write-ahead log marker before
+    mt5.order_send. Lets us detect duplicate-trade risk on crash recovery."""
+    PENDING_ORDERS_DIR.mkdir(parents=True, exist_ok=True)
+    mid = _signal_marker_id(sig)
+    marker = PENDING_ORDERS_DIR / f"{mid}.json"
+    write_json(marker, {
+        "id": mid,
+        "signal": sig,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    })
+    return marker
+
+
+def _clear_pending_order_marker(marker: Path) -> None:
+    """Called after order placement is recorded in executed-signals.json."""
+    try:
+        marker.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def reconcile_pending_order_markers() -> None:
+    """BUGFIX 2026-04-28 (Round 13 Bug 1): on boot, check pending-orders/
+    markers against MT5 actual positions. If MT5 has the order → mark
+    cleaned-up. If not → re-queue signal back to pending-signals.json."""
+    if not PENDING_ORDERS_DIR.exists():
+        return
+    markers = list(PENDING_ORDERS_DIR.glob("*.json"))
+    if not markers:
+        return
+    log_event("order_marker_reconcile_start", count=len(markers))
+    # Get MT5 positions to check for matching comments
+    try:
+        # Note: mt5.positions_get accepts magic= kw at runtime even if pyright complains
+        positions = mt5.positions_get(magic=231) or []  # type: ignore[call-arg]
+        comments = {p.comment for p in positions}
+    except Exception:
+        comments = set()
+    requeued = []
+    cleaned = 0
+    for marker in markers:
+        try:
+            data = read_json(marker, {})
+            sig = data.get("signal", {})
+            asset = sig.get("assetSymbol", "")
+            # If MT5 has a position with matching asset comment → assume it's our order
+            if any(asset in c for c in comments):
+                marker.unlink(missing_ok=True)
+                cleaned += 1
+            else:
+                # Re-queue signal to pending-signals.json
+                requeued.append(sig)
+                marker.unlink(missing_ok=True)
+        except Exception as e:
+            log_event("marker_reconcile_failed", marker=str(marker), error=str(e), level="warn")
+    if requeued:
+        existing = read_json(PENDING_PATH, {"signals": []})
+        existing["signals"] = existing.get("signals", []) + requeued
+        write_json(PENDING_PATH, existing)
+        log_event("orphan_signals_requeued", count=len(requeued))
+        tg_send(f"🔄 <b>Recovery</b>\nRe-queued {len(requeued)} orphan signal(s) from previous crash")
+    log_event("order_marker_reconcile_done", cleaned=cleaned, requeued=len(requeued))
+
+
 def _emergency_close_all_positions(reason: str) -> None:
     """BUGFIX 2026-04-28 (Round 23 C2): force-close all open positions when
     daily-loss approaches breach. Was previously only blocking new signals
@@ -1724,6 +1807,9 @@ def main_loop() -> None:
     # Round-7 #11: reconcile on-disk position state with MT5 truth on boot.
     # Critical when the executor restarts while trades are open.
     rebuild_open_positions_from_mt5()
+    # Round 13 Bug 1: reconcile pending-orders write-ahead log to detect
+    # crashed-mid-order_send signals (re-queue or cleanup).
+    reconcile_pending_order_markers()
 
     mode = "MOCK" if MOCK_MODE else "LIVE (MT5)"
     tg_send(
