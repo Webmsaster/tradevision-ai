@@ -63,6 +63,7 @@ module.exports = {
       env: {
         ...sharedEnv,
         PYTHONUNBUFFERED: "1",
+        PYTHONIOENCODING: "utf-8",
         FTMO_ETH_SYMBOL: "ETHUSD",
         FTMO_BTC_SYMBOL: "BTCUSD",
         FTMO_SOL_SYMBOL: "SOLUSD",
