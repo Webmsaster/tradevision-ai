@@ -820,6 +820,26 @@ def process_pending_signals() -> None:
                 # or entry × (1 - activatePct) [short]. Once activated, SL trails by trailPct.
                 "trailing_stop": sig.get("trailingStop"),
                 "trailing_activated": False,
+                # Round 11 — engine-feature live mirrors. All None = no-op.
+                # PTP: one-shot scale-out at trigger.
+                "partial_tp": sig.get("partialTakeProfit"),
+                "partial_tp_done": False,
+                # PTP-Levels: multi-stage scale-out, one-shot per level.
+                "partial_tp_levels": sig.get("partialTakeProfitLevels"),
+                "partial_tp_levels_done": (
+                    [False] * len(sig["partialTakeProfitLevels"])
+                    if sig.get("partialTakeProfitLevels") else []
+                ),
+                # Chandelier: ATR trailing (price units, not pct).
+                "chandelier": sig.get("chandelierExit"),
+                "chandelier_armed": False,
+                "chandelier_best_close": None,
+                # Break-even: one-shot SL→entry on profit ≥ threshold.
+                "break_even": sig.get("breakEvenAtProfit"),
+                "break_even_done": False,
+                # Time-exit: close at market if no minGainR within maxBars.
+                "time_exit": sig.get("timeExit"),
+                "time_exit_reached_min_gain": False,
             })
             executed["executions"].append({
                 "signal": sig, "result": "placed", "ticket": result.ticket,
@@ -857,8 +877,11 @@ def process_pending_signals() -> None:
         latest_pending = read_json(PENDING_PATH, {"signals": []})
         latest_signals = latest_pending.get("signals", [])
         # Find signals not in our original 'pending' list (= newly arrived)
-        original_keys = {(s.get("ts"), s.get("assetSymbol")) for s in pending}
-        new_signals = [s for s in latest_signals if (s.get("ts"), s.get("assetSymbol")) not in original_keys]
+        # BUGFIX 2026-04-28: dedup-key fixed — was using "ts" (None for all signals)
+        # → key collapsed to (None, asset) → late merge re-queued duplicates.
+        # Now uses signalBarClose (the schema actually used by Node).
+        original_keys = {(s.get("signalBarClose"), s.get("assetSymbol")) for s in pending}
+        new_signals = [s for s in latest_signals if (s.get("signalBarClose"), s.get("assetSymbol")) not in original_keys]
         if new_signals:
             log_event("merged_late_signals", count=len(new_signals))
             remaining.extend(new_signals)
@@ -952,6 +975,277 @@ def _apply_trailing_stop(pos: dict) -> dict:
     return pos
 
 
+def _close_partial_lot(ticket: int, close_lot: float, reason: str) -> bool:
+    """
+    Close `close_lot` of an open position via opposite-direction market order.
+    Used by partialTakeProfit and partialTakeProfitLevels. Floors to broker
+    volume_step. Returns True on success.
+    """
+    live = mt5.positions_get(ticket=ticket)
+    if not live:
+        return False
+    pos = live[0]
+    info = mt5.symbol_info(pos.symbol)
+    if info is None:
+        return False
+    step = info.volume_step or 0.01
+    vol_min = info.volume_min or 0.01
+    # Floor partial-close lot down to step grid; refuse if below min
+    close_lot = math.floor(close_lot / step) * step
+    if close_lot < vol_min or close_lot >= pos.volume:
+        return False  # too small or would close everything
+    price = info.ask if pos.type == mt5.POSITION_TYPE_SELL else info.bid
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": pos.symbol,
+        "volume": float(close_lot),
+        "type": mt5.ORDER_TYPE_BUY if pos.type == mt5.POSITION_TYPE_SELL else mt5.ORDER_TYPE_SELL,
+        "position": ticket,
+        "price": price,
+        "deviation": 20,
+        "magic": 231,
+        "comment": f"r11 {reason}"[:31],
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    }
+    result = mt5.order_send(request)
+    ok = result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
+    if ok:
+        log_event("partial_close", ticket=ticket, lot=close_lot, reason=reason, price=result.price)
+    else:
+        log_event("partial_close_failed", ticket=ticket, lot=close_lot, retcode=getattr(result, "retcode", None))
+    return ok
+
+
+def _unrealized_pct(pos: dict, current_price: float) -> float:
+    """Direction-aware unrealized P&L as fraction of entry."""
+    entry = float(pos.get("entry_price", 0))
+    if entry <= 0:
+        return 0.0
+    if pos.get("direction") == "long":
+        return (current_price - entry) / entry
+    return (entry - current_price) / entry
+
+
+def _apply_partial_tp(pos: dict) -> dict:
+    """One-shot partial TP: close `closeFraction` of lot when unrealized P&L
+    crosses `triggerPct`. Mirrors engine src/utils/ftmoDaytrade24h.ts:3996-4007.
+    """
+    cfg = pos.get("partial_tp")
+    if not cfg or pos.get("partial_tp_done"):
+        return pos
+    live = mt5.positions_get(ticket=pos["ticket"])
+    if not live:
+        return pos
+    p = live[0]
+    unrealized = _unrealized_pct(pos, float(p.price_current))
+    trigger = float(cfg.get("triggerPct", 0))
+    frac = float(cfg.get("closeFraction", 0))
+    if unrealized < trigger or frac <= 0:
+        return pos
+    close_lot = float(p.volume) * frac
+    if _close_partial_lot(pos["ticket"], close_lot, "ptp"):
+        pos["partial_tp_done"] = True
+        log_event("partial_tp_fired", ticket=pos["ticket"],
+                  trigger=trigger, fraction=frac, unrealized=unrealized,
+                  closed_lot=close_lot)
+        tg_send(
+            f"🎯 <b>Partial TP fired</b>\n"
+            f"{pos['signalAsset']} ticket <code>{pos['ticket']}</code>\n"
+            f"Closed {frac*100:.0f}% @ +{unrealized*100:.2f}%"
+        )
+    return pos
+
+
+def _apply_partial_tp_levels(pos: dict) -> dict:
+    """Multi-stage partial TP: each level fires once, in order, on its trigger.
+    Mirrors engine src/utils/ftmoDaytrade24h.ts:4008-4021.
+    """
+    levels = pos.get("partial_tp_levels")
+    if not levels:
+        return pos
+    done = pos.get("partial_tp_levels_done") or [False] * len(levels)
+    if all(done):
+        return pos
+    live = mt5.positions_get(ticket=pos["ticket"])
+    if not live:
+        return pos
+    p = live[0]
+    unrealized = _unrealized_pct(pos, float(p.price_current))
+    for idx, lv in enumerate(levels):
+        if done[idx]:
+            continue
+        trigger = float(lv.get("triggerPct", 0))
+        frac = float(lv.get("closeFraction", 0))
+        if unrealized < trigger or frac <= 0:
+            continue
+        close_lot = float(p.volume) * frac
+        if _close_partial_lot(pos["ticket"], close_lot, f"ptpL{idx}"):
+            done[idx] = True
+            log_event("partial_tp_level_fired", ticket=pos["ticket"],
+                      level=idx, trigger=trigger, fraction=frac,
+                      unrealized=unrealized, closed_lot=close_lot)
+    pos["partial_tp_levels_done"] = done
+    return pos
+
+
+def _apply_chandelier_stop(pos: dict) -> dict:
+    """ATR-based trailing stop: highest_close − K × ATR (long) or
+    lowest_close + K × ATR (short). Arms only after price moves
+    minMoveR × stopPct in favorable direction. Only ratchets, never widens.
+    Mirrors engine src/utils/ftmoDaytrade24h.ts:4044-4077.
+
+    NB: ATR is fixed at signal-time (atrAtEntry). The engine recomputes ATR
+    each bar; live executor uses the snapshot to avoid pulling a fresh OHLC
+    feed. For 30m–4h timeframes this is a safe approximation (bot is meant
+    to ratchet on price extremes, not chase real-time volatility shifts).
+    """
+    cfg = pos.get("chandelier")
+    if not cfg:
+        return pos
+    atr_at_entry = float(cfg.get("atrAtEntry", 0))
+    mult = float(cfg.get("mult", 0))
+    min_move_r = float(cfg.get("minMoveR", 0.5))
+    stop_pct = float(cfg.get("stopPct", 0))
+    if atr_at_entry <= 0 or mult <= 0:
+        return pos
+    live = mt5.positions_get(ticket=pos["ticket"])
+    if not live:
+        return pos
+    p = live[0]
+    direction = pos.get("direction", "long")
+    current_price = float(p.price_current)
+    current_close = current_price  # tick-level close approximation
+    current_sl = float(p.sl) if p.sl else None
+
+    unrealized = _unrealized_pct(pos, current_price)
+    min_move_abs = min_move_r * stop_pct
+    if unrealized < min_move_abs and not pos.get("chandelier_armed"):
+        return pos
+
+    pos["chandelier_armed"] = True
+    best = pos.get("chandelier_best_close")
+    if direction == "long":
+        if best is None or current_close > best:
+            best = current_close
+        new_sl = best - mult * atr_at_entry
+    else:
+        if best is None or current_close < best:
+            best = current_close
+        new_sl = best + mult * atr_at_entry
+    pos["chandelier_best_close"] = best
+
+    # Ratchet only — never loosen
+    if direction == "long":
+        if current_sl is not None and new_sl <= current_sl:
+            return pos
+    else:
+        if current_sl is not None and new_sl >= current_sl:
+            return pos
+
+    if _modify_position_sl(pos["ticket"], new_sl):
+        log_event("chandelier_sl_updated", ticket=pos["ticket"],
+                  old_sl=current_sl, new_sl=new_sl, best=best, atr=atr_at_entry,
+                  unrealized=unrealized, dir=direction)
+        pos["stop_price"] = new_sl
+    return pos
+
+
+def _apply_break_even(pos: dict) -> dict:
+    """Move SL to entry once unrealized P&L crosses `threshold`. One-shot.
+    Mirrors engine src/utils/ftmoDaytrade24h.ts:3986-3995.
+    """
+    cfg = pos.get("break_even")
+    if not cfg or pos.get("break_even_done"):
+        return pos
+    threshold = float(cfg.get("threshold", 0))
+    if threshold <= 0:
+        return pos
+    live = mt5.positions_get(ticket=pos["ticket"])
+    if not live:
+        return pos
+    p = live[0]
+    unrealized = _unrealized_pct(pos, float(p.price_current))
+    if unrealized < threshold:
+        return pos
+    entry = float(pos.get("entry_price", p.price_open))
+    current_sl = float(p.sl) if p.sl else None
+    direction = pos.get("direction", "long")
+    # Only move SL if it's currently worse than entry (long: below; short: above)
+    if direction == "long":
+        if current_sl is not None and current_sl >= entry:
+            pos["break_even_done"] = True
+            return pos
+    else:
+        if current_sl is not None and current_sl <= entry:
+            pos["break_even_done"] = True
+            return pos
+    if _modify_position_sl(pos["ticket"], entry):
+        pos["break_even_done"] = True
+        pos["stop_price"] = entry
+        log_event("break_even_moved", ticket=pos["ticket"],
+                  old_sl=current_sl, new_sl=entry, unrealized=unrealized)
+        tg_send(
+            f"🔒 <b>Break-Even SL</b>\n"
+            f"{pos['signalAsset']} ticket <code>{pos['ticket']}</code>\n"
+            f"SL → entry @ +{unrealized*100:.2f}%"
+        )
+    return pos
+
+
+def _apply_time_exit(pos: dict, now_ms: int) -> bool:
+    """Close at market if `maxBarsWithoutGain` bars have elapsed without
+    unrealized P&L ever reaching `minGainR × stopPct`. Returns True if closed.
+    Mirrors engine src/utils/ftmoDaytrade24h.ts:4081-4094.
+    """
+    cfg = pos.get("time_exit")
+    if not cfg:
+        return False
+    max_bars = int(cfg.get("maxBarsWithoutGain", 0))
+    min_gain_r = float(cfg.get("minGainR", 0))
+    bar_ms = int(cfg.get("barDurationMs", 0))
+    if max_bars <= 0 or bar_ms <= 0:
+        return False
+
+    live = mt5.positions_get(ticket=pos["ticket"])
+    if not live:
+        return False
+    p = live[0]
+
+    try:
+        opened_iso = pos.get("opened_at")
+        if not opened_iso:
+            return False
+        opened_ms = int(datetime.fromisoformat(opened_iso.replace("Z", "+00:00")).timestamp() * 1000)
+    except Exception:
+        return False
+
+    bars_held = (now_ms - opened_ms) // bar_ms
+
+    entry = float(pos.get("entry_price", 0))
+    stop_price = float(pos.get("stop_price", 0))
+    if entry <= 0 or stop_price <= 0:
+        return False
+    eff_stop = abs(stop_price - entry) / entry  # back-derive stopPct
+    min_gain_abs = min_gain_r * eff_stop
+    unrealized = _unrealized_pct(pos, float(p.price_current))
+    if unrealized >= min_gain_abs:
+        pos["time_exit_reached_min_gain"] = True
+
+    if bars_held >= max_bars and not pos.get("time_exit_reached_min_gain"):
+        log_event("time_exit_close", ticket=pos["ticket"],
+                  bars_held=int(bars_held), unrealized=unrealized,
+                  min_gain_abs=min_gain_abs)
+        if close_position(pos["ticket"]):
+            tg_send(
+                f"⏳ <b>Time-exit close</b>\n"
+                f"{pos['signalAsset']} ticket <code>{pos['ticket']}</code>\n"
+                f"Held {int(bars_held)} bars, no min-gain reached."
+            )
+        return True
+    return False
+
+
 def manage_open_positions() -> None:
     open_positions = read_json(OPEN_POS_PATH, {"positions": []})
     now_ms = int(time.time() * 1000)
@@ -967,8 +1261,19 @@ def manage_open_positions() -> None:
             if close_position(pos["ticket"]):
                 tg_send(f"⏱ <b>Hold Expired — Closed</b>\n{pos['signalAsset']} ticket <code>{pos['ticket']}</code>")
             continue
+        # Round 11: time-exit short-circuits before any other management.
+        if _apply_time_exit(pos, now_ms):
+            continue
+        # Round 11: break-even runs first so its SL is in place before
+        # chandelier/trailing try to ratchet further.
+        pos = _apply_break_even(pos)
         # Apply trailing-stop updates if configured
         pos = _apply_trailing_stop(pos)
+        # Round 11: chandelier ATR trail (ratchets only)
+        pos = _apply_chandelier_stop(pos)
+        # Round 11: partial TPs fire last so SL adjustments above use full lot
+        pos = _apply_partial_tp(pos)
+        pos = _apply_partial_tp_levels(pos)
         still_open.append(pos)
     write_json(OPEN_POS_PATH, {"positions": still_open})
 
@@ -1255,6 +1560,81 @@ def check_daily_dd_warning(current_equity_usd: float, day_start_usd: float) -> N
         )
 
 
+def rebuild_open_positions_from_mt5() -> None:
+    """Reconcile open-positions.json with the live MT5 positions on boot.
+
+    Round-7 #11: if the executor is restarted while positions are open
+    (e.g. crash, reboot, deploy), open-positions.json may be stale or wiped.
+    Without this, manage_open_positions() can't trail/exit those tickets.
+    Strategy: pull all magic=231 positions from MT5, merge with whatever
+    open-positions.json currently holds (preserve trailing-stop state for
+    known tickets, add minimal entries for unknown tickets so SL/TP are
+    still managed by MT5 server-side and time/break-even logic resumes).
+    """
+    try:
+        positions = mt5.positions_get() or []
+    except Exception as e:
+        log_event("rebuild_open_positions_mt5_get_failed", error=str(e))
+        return
+    bot_positions = [p for p in positions if getattr(p, "magic", None) == 231]
+
+    existing = read_json(OPEN_POS_PATH, {"positions": []})
+    by_ticket = {p["ticket"]: p for p in existing.get("positions", [])}
+
+    rebuilt: list[dict] = []
+    added = 0
+    kept = 0
+    for live in bot_positions:
+        ticket = live.ticket
+        if ticket in by_ticket:
+            # Preserve trailing/PTP/chandelier state from on-disk record.
+            rebuilt.append(by_ticket[ticket])
+            kept += 1
+        else:
+            # Minimal stub — allows time-exit + max-hold to fire even on
+            # tickets we lost state for. Trailing-stop / PTP / chandelier
+            # cannot be resumed (no entry config), so we leave them None.
+            direction = "long" if live.type == mt5.POSITION_TYPE_BUY else "short"
+            rebuilt.append({
+                "ticket": ticket,
+                "signalAsset": live.symbol,
+                "sourceSymbol": live.symbol,
+                "direction": direction,
+                "lot": live.volume,
+                "entry_price": live.price_open,
+                "stop_price": live.sl or 0.0,
+                "tp_price": live.tp or 0.0,
+                "max_hold_until": 0,  # 0 disables time exit on rebuilt stubs
+                "opened_at": datetime.fromtimestamp(live.time, tz=timezone.utc).isoformat(),
+                "trailing_stop": None,
+                "trailing_activated": False,
+                "partial_tp": None,
+                "partial_tp_done": False,
+                "partial_tp_levels": None,
+                "partial_tp_levels_done": [],
+                "chandelier": None,
+                "chandelier_armed": False,
+                "chandelier_best_close": None,
+                "break_even": None,
+                "break_even_done": False,
+                "time_exit": None,
+                "time_exit_reached_min_gain": False,
+                "_rebuilt_from_mt5": True,
+            })
+            added += 1
+
+    # Drop on-disk records whose tickets are no longer live (already closed).
+    dropped = len(by_ticket) - kept
+    write_json(OPEN_POS_PATH, {"positions": rebuilt})
+    log_event(
+        "rebuild_open_positions_complete",
+        live_total=len(bot_positions),
+        kept=kept,
+        added_stubs=added,
+        dropped_stale=dropped,
+    )
+
+
 def main_loop() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1262,6 +1642,10 @@ def main_loop() -> None:
     while not mt5_init_with_retry():
         log_event("initial_connect_retry", backoff_sec=RECONNECT_BACKOFF_SEC)
         time.sleep(RECONNECT_BACKOFF_SEC)
+
+    # Round-7 #11: reconcile on-disk position state with MT5 truth on boot.
+    # Critical when the executor restarts while trades are open.
+    rebuild_open_positions_from_mt5()
 
     mode = "MOCK" if MOCK_MODE else "LIVE (MT5)"
     tg_send(

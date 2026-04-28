@@ -4247,6 +4247,30 @@ export function runFtmoDaytrade24h(
   cfg: FtmoDaytrade24hConfig = FTMO_DAYTRADE_24H_CONFIG,
   fundingBySymbol?: Record<string, (number | null)[]>,
 ): FtmoDaytrade24hResult {
+  // Round-15 audit B5/B6: validate critical optional flags eagerly so that
+  // a typo in a new config (omitting `pauseAtTargetReached` or omitting
+  // `htfTrendFilter.threshold`) fails LOUDLY rather than silently producing
+  // a stale/optimistic backtest. We DON'T flip the type to required because
+  // it would break ~119 historical configs; we enforce semantically here.
+  if (cfg.htfTrendFilter && cfg.htfTrendFilter.threshold === undefined) {
+    throw new Error(
+      "[ftmoDaytrade24h] Config defines htfTrendFilter but omits 'threshold' — must be explicit (e.g. 0.10). Implicit fallback to 0 hides the gate.",
+    );
+  }
+  if (cfg.htfTrendFilterAux && cfg.htfTrendFilterAux.threshold === undefined) {
+    throw new Error(
+      "[ftmoDaytrade24h] Config defines htfTrendFilterAux but omits 'threshold' — must be explicit.",
+    );
+  }
+  if (cfg.pauseAtTargetReached === undefined) {
+    // Default false is allowed (legacy backwards compat) but must be set
+    // explicitly on the config so reviewers see the intent. Live FTMO
+    // configs (V236+) all set this to true.
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[ftmoDaytrade24h] cfg.pauseAtTargetReached not set explicitly — using legacy default false. New live configs should set this explicitly (true for FTMO-realistic, false for raw backtest).",
+    );
+  }
   const all: Daytrade24hTrade[] = [];
   // Resolve cross-asset candles once (same alignment as primary candles).
   const crossKey = cfg.crossAssetFilter?.symbol;

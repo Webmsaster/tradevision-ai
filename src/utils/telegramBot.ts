@@ -233,10 +233,17 @@ async function renderPositions(
       0,
       Math.round((p.max_hold_until - Date.now()) / 60000),
     );
+    // Round-7 #5: signalAsset and opened_at originate from open-positions.json,
+    // which is writable by the Python executor and could in principle contain
+    // stray HTML — escape every interpolated string before sending to TG.
+    const safeAsset = htmlEscape(String(p.signalAsset ?? "?"));
+    const safeOpened = htmlEscape(
+      new Date(p.opened_at).toISOString().slice(11, 16) + "Z",
+    );
     lines.push(
-      `<b>${p.signalAsset}</b> #${p.ticket}\n` +
+      `<b>${safeAsset}</b> #${p.ticket}\n` +
         `  ${p.lot} lot @ $${p.entry_price.toFixed(4)}\n` +
-        `  opened ${new Date(p.opened_at).toISOString().slice(11, 16)}Z · hold left: ${holdLeft}min`,
+        `  opened ${safeOpened} · hold left: ${holdLeft}min`,
     );
   }
   return lines.join("\n\n");
@@ -262,10 +269,12 @@ async function renderPnl(ctx: TelegramCommandHandlerCtx): Promise<string> {
       ? (acc.raw_equity_usd - daily.equity_at_day_start_usd).toFixed(2)
       : "?";
 
+  // Round-7 #5: daily.date originates from JSON state file — escape before send.
+  const safeDate = htmlEscape(String(daily.date ?? "?"));
   return [
     "<b>💰 P&L Summary</b>",
     "",
-    `<b>Today</b> (${daily.date ?? "?"})`,
+    `<b>Today</b> (${safeDate})`,
     `  ${dailyPct}% · $${dailyUsd}`,
     "",
     `<b>Total challenge</b>`,
@@ -372,11 +381,13 @@ function renderTrades(ctx: TelegramCommandHandlerCtx): string {
     const ts = e.ts
       ? new Date(e.ts).toISOString().slice(5, 16).replace("T", " ")
       : "?";
-    const sym = e.signal?.assetSymbol ?? "?";
+    // Round-7 #5: assetSymbol from executed.json is user-controllable via the
+    // Python executor — escape before HTML send.
+    const sym = htmlEscape(String(e.signal?.assetSymbol ?? "?"));
     const px = e.actual_entry?.toFixed(2) ?? "?";
     const lot = e.lot?.toFixed(3) ?? "?";
     lines.push(
-      `<code>${ts}</code> ${sym} @ $${px} × ${lot} lot (#${e.ticket ?? "?"})`,
+      `<code>${htmlEscape(ts)}</code> ${sym} @ $${px} × ${lot} lot (#${e.ticket ?? "?"})`,
     );
   }
   return lines.join("\n");
@@ -442,7 +453,9 @@ function renderPreview(ctx: TelegramCommandHandlerCtx): string {
   const age = Date.now() - last.timestamp;
   const ageMin = Math.round(age / 60000);
   const lines = [`🔍 <b>Last Check</b> (${ageMin}m ago)`, ""];
-  if (last.regime) lines.push(`Regime: <b>${last.regime}</b>`);
+  // Round-7 #5: regime/asset/reason/notes originate from last-check.json which
+  // is written by the signal service — escape every interpolation.
+  if (last.regime) lines.push(`Regime: <b>${htmlEscape(last.regime)}</b>`);
   if (last.btc) {
     const trend =
       last.btc.close > last.btc.ema10 && last.btc.ema10 > last.btc.ema15
@@ -456,12 +469,14 @@ function renderPreview(ctx: TelegramCommandHandlerCtx): string {
   if (last.skipped && last.skipped.length > 0) {
     lines.push("\n<b>Skipped:</b>");
     for (const s of last.skipped.slice(0, 6)) {
-      lines.push(`  ${s.asset}: ${s.reason}`);
+      lines.push(
+        `  ${htmlEscape(String(s.asset ?? "?"))}: ${htmlEscape(String(s.reason ?? "?"))}`,
+      );
     }
   }
   if (last.notes && last.notes.length > 0) {
     lines.push("\n<b>Notes:</b>");
-    for (const n of last.notes.slice(0, 5)) lines.push(`  ${n}`);
+    for (const n of last.notes.slice(0, 5)) lines.push(`  ${htmlEscape(n)}`);
   }
   return lines.join("\n");
 }

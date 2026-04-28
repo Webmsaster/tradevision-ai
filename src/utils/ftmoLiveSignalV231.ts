@@ -162,6 +162,48 @@ export interface LiveSignal {
     activatePct: number;
     trailPct: number;
   };
+  /**
+   * Round 11 — Live versions of engine-only exit features.
+   * All optional, no-ops when missing (V5 / legacy configs unaffected).
+   *
+   * partialTakeProfit: close `closeFraction` of lot when unrealized P&L
+   *   crosses `triggerPct`. One-shot, sets a flag so it never re-fires.
+   * partialTakeProfitLevels: multi-stage variant — each level fires once
+   *   in order. Total closed across all levels must stay < 1.0.
+   * chandelierExit: ATR-based trailing stop. ATR seeded with `atrAtEntry`
+   *   from signal time so executor doesn't need to refetch a candle series.
+   *   Stop = highest_close − mult × atrAtEntry (long).
+   *   Only ratchets, never widens.
+   * breakEvenAtProfit: when profit ≥ threshold, move SL to entry. One-shot.
+   * timeExit: if `bars` bars elapse without minGainR × stopPct unrealized,
+   *   close at market. Mirrors engine's triple-barrier semantics.
+   */
+  partialTakeProfit?: {
+    triggerPct: number;
+    closeFraction: number;
+  };
+  partialTakeProfitLevels?: Array<{
+    triggerPct: number;
+    closeFraction: number;
+  }>;
+  chandelierExit?: {
+    /** ATR computed at signal time (price units, NOT fraction). */
+    atrAtEntry: number;
+    mult: number;
+    minMoveR: number;
+    /** stopPct used for minMoveR gating (price-fraction units). */
+    stopPct: number;
+  };
+  breakEvenAtProfit?: {
+    threshold: number;
+  };
+  timeExit?: {
+    /** Max bars to wait for unrealized gain ≥ minGainR × stopPct. */
+    maxBarsWithoutGain: number;
+    minGainR: number;
+    /** Bar duration in ms — executor uses to clock barsHeld. */
+    barDurationMs: number;
+  };
 }
 
 export interface DetectionResult {
@@ -438,6 +480,67 @@ void FTMO_DAYTRADE_24H_CONFIG_V259; // rollback reference
 void FTMO_DAYTRADE_24H_CONFIG_V260; // rollback reference
 
 /**
+ * Resolve human-readable config label from FTMO_TF env var.
+ * Single source of truth — keep in sync with the CFG selection ladder
+ * in this file. Bug-fix (Round 15): the LIVE_*_V1 labels lied: tf=15m-live
+ * actually loads LIVE_15M_V3 (V2/V3 added later but the label string was
+ * never updated). Now reflects the actually-loaded config.
+ */
+function resolveCfgLabel(tfLabel: string): string {
+  const map: Record<string, string> = {
+    "2h-trend-v5-nova": "TREND_2H_V5_NOVA",
+    "2h-trend-v5-titan-real": "TREND_2H_V5_TITAN_REAL",
+    "2h-trend-v5-titan": "TREND_2H_V5_TITAN",
+    "2h-trend-v5-legend": "TREND_2H_V5_LEGEND",
+    "2h-trend-v5-apex": "TREND_2H_V5_APEX",
+    "2h-trend-v5-elite": "TREND_2H_V5_ELITE",
+    "2h-trend-v5-high": "TREND_2H_V5_HIGH",
+    "2h-trend-v5-ultra": "TREND_2H_V5_ULTRA",
+    "2h-trend-v5-fund": "TREND_2H_V5_FUND",
+    "2h-trend-v5-pareto": "TREND_2H_V5_PARETO",
+    "2h-trend-v5-recent": "TREND_2H_V5_RECENT",
+    "2h-trend-v5-robust": "TREND_2H_V5_ROBUST",
+    "2h-trend-v5-prime": "TREND_2H_V5_PRIME",
+    "2h-trend-v5-primex": "TREND_2H_V5_PRIMEX",
+    "2h-trend-v5-step2": "TREND_2H_V5_STEP2",
+    "2h-trend-v5-ensemble": "TREND_2H_V5_ENSEMBLE",
+    "2h-trend-v5": "TREND_2H_V5",
+    "2h-trend-v6": "TREND_2H_V6",
+    "2h-trend-v7": "TREND_2H_V7",
+    "2h-trend-v8": "TREND_2H_V8",
+    "2h-trend-v9": "TREND_2H_V9",
+    "2h-trend-v10": "TREND_2H_V10",
+    "2h-trend-v11": "TREND_2H_V11",
+    "2h-trend-v12": "TREND_2H_V12",
+    "2h-trend-v13": "TREND_2H_V13",
+    "2h-trend-v14": "TREND_2H_V14",
+    "2h-trend-v15": "TREND_2H_V15",
+    "2h-trend-v4": "TREND_2H_V4",
+    "2h-trend-v3": "TREND_2H_V3",
+    "2h-trend-v2": "TREND_2H_V2",
+    "2h-trend": "TREND_2H_V1",
+    "4h-trend": "TREND_4H_V2",
+    "5m-live": "LIVE_5M_V3",
+    "15m-live": "LIVE_15M_V3",
+    "30m-live": "LIVE_30M_V2",
+    "1h-live": "LIVE_1H_V2",
+    "2h-live": "LIVE_2H_V2",
+    "4h-live": "LIVE_4H_V2",
+    "15m-live-v1": "LIVE_15M_V1",
+    "30m-live-v1": "LIVE_30M_V1",
+    "1h-live-v1": "LIVE_1H_V1",
+    "2h-live-v1": "LIVE_2H_V1",
+    "4h-live-v1": "LIVE_4H_V1",
+    "15m": "V16",
+    "30m-turbo": "V12-TURBO",
+    "30m": "V12",
+    "1h": "V7",
+    "2h": "V6",
+  };
+  return map[tfLabel] ?? "V261";
+}
+
+/**
  * Compute current sizing factor from adaptiveSizing + timeBoost + Kelly.
  * Mirrors the engine's logic at src/utils/ftmoDaytrade24h.ts.
  */
@@ -602,40 +705,7 @@ export function detectLiveSignalsV231(
   const regime: Regime = btcUptrend && btcBullMom ? "BULL" : "BEAR_CHOP";
 
   const tfLabel = process.env.FTMO_TF ?? "4h";
-  const cfgLabel =
-    tfLabel === "2h-trend-v4"
-      ? "TREND_2H_V4"
-      : tfLabel === "2h-trend-v3"
-        ? "TREND_2H_V3"
-        : tfLabel === "2h-trend"
-          ? "TREND_2H_V1"
-          : tfLabel === "2h-trend-v2"
-            ? "TREND_2H_V2"
-            : tfLabel === "4h-trend"
-              ? "TREND_4H_V2"
-              : tfLabel === "5m-live"
-                ? "LIVE_5M_V1"
-                : tfLabel === "15m-live"
-                  ? "LIVE_15M_V1"
-                  : tfLabel === "30m-live"
-                    ? "LIVE_30M_V1"
-                    : tfLabel === "1h-live"
-                      ? "LIVE_1H_V1"
-                      : tfLabel === "2h-live"
-                        ? "LIVE_2H_V1"
-                        : tfLabel === "4h-live"
-                          ? "LIVE_4H_V1"
-                          : tfLabel === "15m"
-                            ? "V16"
-                            : tfLabel === "30m-turbo"
-                              ? "V12-TURBO"
-                              : tfLabel === "30m"
-                                ? "V12"
-                                : tfLabel === "1h"
-                                  ? "V7"
-                                  : tfLabel === "2h"
-                                    ? "V6"
-                                    : "V261";
+  const cfgLabel = resolveCfgLabel(tfLabel);
   const shortBot = `${cfgLabel} (${tfLabel})`;
   // Detect if active CFG is trend-long (any asset has invertDirection=true and disableShort=true)
   const cfgIsTrendLong = (CFG.assets ?? []).some(
@@ -962,6 +1032,15 @@ export function detectLiveSignalsV231(
     const rawRiskFrac = a.baseRisk * factor;
     const effectiveRiskFrac = Math.min(rawRiskFrac, LIVE_MAX_RISK_FRAC);
 
+    // Round 11 — compute ATR-at-entry for chandelier exit (executor side).
+    // We pre-compute here because Python executor doesn't have a candle series.
+    let chandelierAtrAtEntry: number | null = null;
+    if (CFG.chandelierExit) {
+      const chSeries = atr(a.candles, CFG.chandelierExit.period);
+      const v = chSeries[chSeries.length - 1];
+      if (v !== null && v !== undefined) chandelierAtrAtEntry = v;
+    }
+
     result.signals.push({
       assetSymbol: a.asset,
       sourceSymbol: a.source,
@@ -991,8 +1070,58 @@ export function detectLiveSignalsV231(
             },
           }
         : {}),
+      // Round 11 — engine-feature forwarding. All no-op when CFG.* missing.
+      ...(CFG.partialTakeProfit
+        ? {
+            partialTakeProfit: {
+              triggerPct: CFG.partialTakeProfit.triggerPct,
+              closeFraction: CFG.partialTakeProfit.closeFraction,
+            },
+          }
+        : {}),
+      ...(CFG.partialTakeProfitLevels && CFG.partialTakeProfitLevels.length > 0
+        ? {
+            partialTakeProfitLevels: CFG.partialTakeProfitLevels.map((lv) => ({
+              triggerPct: lv.triggerPct,
+              closeFraction: lv.closeFraction,
+            })),
+          }
+        : {}),
+      ...(CFG.chandelierExit && chandelierAtrAtEntry !== null
+        ? {
+            chandelierExit: {
+              atrAtEntry: chandelierAtrAtEntry,
+              mult: CFG.chandelierExit.mult,
+              minMoveR: CFG.chandelierExit.minMoveR ?? 0.5,
+              stopPct,
+            },
+          }
+        : {}),
+      ...(CFG.breakEven
+        ? {
+            breakEvenAtProfit: {
+              threshold: CFG.breakEven.threshold,
+            },
+          }
+        : {}),
+      ...(CFG.timeExit
+        ? {
+            timeExit: {
+              maxBarsWithoutGain: CFG.timeExit.maxBarsWithoutGain,
+              minGainR: CFG.timeExit.minGainR,
+              barDurationMs: tfHours * 3600_000,
+            },
+          }
+        : {}),
     });
   }
+
+  // Round-6 #11 (resolved Round-15): when MT5 receives multiple signals on the
+  // same poll cycle and live-margin runs out before all are filled, the
+  // executor should prefer the highest-conviction (= highest riskFrac) order.
+  // We sort here so the Python executor processes signals in priority order
+  // (descending). Stable sort preserves emission order on ties.
+  result.signals.sort((a, b) => b.riskFrac - a.riskFrac);
 
   return result;
 }
@@ -1106,40 +1235,7 @@ export function renderDetection(r: DetectionResult): string {
   const ts =
     new Date(r.timestamp).toISOString().slice(0, 16).replace("T", " ") + " UTC";
   const tfLabel = process.env.FTMO_TF ?? "4h";
-  const cfgLabel =
-    tfLabel === "2h-trend-v4"
-      ? "TREND_2H_V4"
-      : tfLabel === "2h-trend-v3"
-        ? "TREND_2H_V3"
-        : tfLabel === "2h-trend"
-          ? "TREND_2H_V1"
-          : tfLabel === "2h-trend-v2"
-            ? "TREND_2H_V2"
-            : tfLabel === "4h-trend"
-              ? "TREND_4H_V2"
-              : tfLabel === "5m-live"
-                ? "LIVE_5M_V1"
-                : tfLabel === "15m-live"
-                  ? "LIVE_15M_V1"
-                  : tfLabel === "30m-live"
-                    ? "LIVE_30M_V1"
-                    : tfLabel === "1h-live"
-                      ? "LIVE_1H_V1"
-                      : tfLabel === "2h-live"
-                        ? "LIVE_2H_V1"
-                        : tfLabel === "4h-live"
-                          ? "LIVE_4H_V1"
-                          : tfLabel === "15m"
-                            ? "V16"
-                            : tfLabel === "30m-turbo"
-                              ? "V12-TURBO"
-                              : tfLabel === "30m"
-                                ? "V12"
-                                : tfLabel === "1h"
-                                  ? "V7"
-                                  : tfLabel === "2h"
-                                    ? "V6"
-                                    : "V261";
+  const cfgLabel = resolveCfgLabel(tfLabel);
   lines.push(`━━━━━ ${cfgLabel} (${tfLabel}) Signal Check @ ${ts} ━━━━━`);
   const fastP = CFG.crossAssetFilter?.emaFastPeriod ?? 10;
   const slowP = CFG.crossAssetFilter?.emaSlowPeriod ?? 15;
