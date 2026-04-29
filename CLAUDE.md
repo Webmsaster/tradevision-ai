@@ -76,7 +76,7 @@ All 17 pattern detectors run in the browser with no API calls. Logic is in `src/
 - **E2E tests** (`e2e/`): Playwright against dev server — navigation, trade CRUD, CSV import, calculator, login flow
 - E2E helpers in `e2e/helpers.ts` (`loadSampleData`, `createTestTrade`, `gotoAndWaitForApp`)
 - **Strategy/FTMO tests** (`scripts/ftmo*.test.ts` and `scripts/exploratory/`): Heavy backtests run via vitest.
-  - **🏆 Production champion (2026-04-29 final): `V5_AGATE`** (`FTMO_TF=2h-trend-v5-agate`, polls 30m bars). 19 cryptos, ULTIMATE V5-family champion: **65.46% step=1d / 68.21% step=3d / wr 88.35% / TL 0** on 3.04y / 1103 windows. +19.25pp step=3d / +26.34pp wr / TL -100% vs V5 baseline. Allowed hours: [4,6,8,14,18,22].
+  - **🏆 Production champion (2026-04-29 final): `V5_JADE`** (`FTMO_TF=2h-trend-v5-jade`, polls 30m bars). 20 cryptos, ULTIMATE V5-family champion: **65.46% step=1d / 69.02% step=3d / wr 88.56% / TL 0** on 3.04y / 1103 windows. +20.06pp step=3d / +26.55pp wr / TL -100% vs V5 baseline. Allowed hours: [4,6,8,14,18,22]. Assets: ETH BTC BNB ADA DOGE AVAX LTC BCH AAVE XRP INJ ETC SAND ARB DOT TRX ALGO NEAR ATOM STX.
   - **Sister champions:**
     - **`V5_RUBIN`** (`FTMO_TF=2h-trend-v5-rubin`): 64.40% step=3d / wr 86.72% / TL 0 (14 assets, smaller basket)
     - **`V5_TOPAZ`** (`FTMO_TF=2h-trend-v5-topaz`): 63.86% step=3d / wr 86.45% / TL 0 (14 assets, V5_QUARTZ minus RUNE)
