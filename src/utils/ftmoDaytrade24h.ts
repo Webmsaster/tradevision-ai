@@ -6580,6 +6580,50 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AGATE: FtmoDaytrade24hConfig =
   };
 
 /**
+ * TREND_2H_V5_JADE — V5_AGATE + STX (20 assets).
+ *
+ * Phase ZH asset add round-5 on V5_AGATE. STX was the cleanest helper:
+ *
+ *   V5_AGATE baseline (19):  722/1103 = 65.46% step=1d / 251/368 = 68.21% step=3d / wr 88.35% / TL 0
+ *   V5_JADE +STX (20):       722/1103 = 65.46% step=1d / 254/368 = 69.02% step=3d / wr 88.56% / TL 0
+ *
+ *   +0.00pp step=1d / +0.82pp step=3d / +0.21pp winrate / TL still 0.
+ *
+ * Strict step=3d improvement, no regression on step=1d.
+ *
+ * Final 20-asset basket: ETH BTC BNB ADA DOGE AVAX LTC BCH AAVE XRP
+ *                        INJ ETC SAND ARB DOT TRX ALGO NEAR ATOM STX
+ *
+ * Cumulative gains over V5 baseline:
+ *   +18.56pp step=1d / +20.06pp step=3d
+ *   +26.55pp trade-winrate (62.01% → 88.56%) — best in V5 family
+ *   TL -100% (36 → 0)
+ *
+ * Live: FTMO_TF=2h-trend-v5-jade (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_JADE: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AGATE,
+    assets: [
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AGATE.assets,
+      {
+        symbol: "STX-TREND",
+        sourceSymbol: "STXUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.02,
+        holdBars: 240,
+      },
+    ],
+  };
+
+/**
  * TREND_2H_V5_STEP2 — Step-2 variant of V5 (winner of ftmoStep2Tuning sweep).
  *
  * FTMO Step-2 rules:
