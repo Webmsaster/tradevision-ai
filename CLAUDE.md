@@ -76,8 +76,13 @@ All 17 pattern detectors run in the browser with no API calls. Logic is in `src/
 - **E2E tests** (`e2e/`): Playwright against dev server — navigation, trade CRUD, CSV import, calculator, login flow
 - E2E helpers in `e2e/helpers.ts` (`loadSampleData`, `createTestTrade`, `gotoAndWaitForApp`)
 - **Strategy/FTMO tests** (`scripts/ftmo*.test.ts` and `scripts/exploratory/`): Heavy backtests run via vitest.
-  - **🏆 Production champion (2026-04-29): `FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN`** (`FTMO_TF=2h-trend-v5-obsidian`, polls 30m bars). 15 cryptos (V5_TITANIUM 14 + ARB) with per-asset TP retuned for 30m TF. **60.56% step=1d / 61.41% step=3d / wr 78.24% / TL 0.18%** on 3.04y / 1103 windows post-2023. Passes 55% target on BOTH step-anchors with massive margin. Phase Q (per-asset SL +0.05pp), Phase R (engine adders +0.18pp), all plateau-confirming.
-  - **Sister: V5_TITANIUM** (14 assets, 5.52y/1985w sample): 58.24% step=1d / 58.16% step=3d / wr 75.76% / TL 0.25%. Use when longer-history validation matters more than the +2.32pp ARB boost.
+  - **🏆 Production champions (2026-04-29):**
+    - **`V5_AMBER`** (`FTMO_TF=2h-trend-v5-amber`): **62.83% step=1d** / 61.14% step=3d / wr 81.74% / TL 2 — best step=1d anchor (high-N robust)
+    - **`V5_ZIRKON`** (`FTMO_TF=2h-trend-v5-zirkon`): 61.65% step=1d / **61.96% step=3d / wr 82.59%** / TL 2 — best 3d + best winrate
+    - **`V5_OBSIDIAN`** (`FTMO_TF=2h-trend-v5-obsidian`): 60.56% step=1d / 61.41% step=3d / wr 78.24% / TL 2 — base before mct/hour-drop tweaks
+    - All on 15-asset basket (V5 + AAVE + XRP - LINK + INJ + RUNE + ETC + SAND + ARB) on 30m timeframe, 3.04y / 1103 windows under live caps {maxStopPct: 0.05, maxRiskFrac: 0.4}.
+  - **Sister: V5_TITANIUM** (14 assets, 5.52y/1985w long-history sample): 58.24% step=1d / 58.16% step=3d / wr 75.76% / TL 0.25%. Use when longer-history validation matters more than the +2.32pp ARB boost.
+  - **Progression:** V5 (48.96%) → V5_PRO 53% → V5_GOLD 55% → V5_DIAMOND 56.5% → V5_PLATINUM 58.5% → V5_TITANIUM 58.2% (30m) → V5_OBSIDIAN 60.6% → V5_ZIRKON 61.6% → V5_AMBER 62.8%. **+15.93pp step=1d / +19.73pp winrate / TL -94%** vs V5 baseline.
   - **Sister config: V5_PLATINUM 2h** (`FTMO_TF=2h-trend-v5-platinum`). 14 cryptos same basket, 2h-tuned per-asset TP. **58.46% step=3d / 54.13% step=1d / TL 0.60%**. Higher peak on 3d-anchor but less robust on 1d. Progression V5 → V5_PRO → V5_GOLD → V5_DIAMOND → V5_PLATINUM → V5_TITANIUM. **+9.50pp pass / -89% TL** vs V5 baseline.
   - V5 family alt variants: V5_HIWIN (49.85%/wr 64.60% TP=4%), V5_FASTMAX (49.85%/wr 62% TP=6%), V5 legacy (48.96%/wr 62% TP=7%).
   - **Legacy: `FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5`** (selected via `FTMO_TF=2h-trend-v5` env). 9 cryptos on 2h, 47-49% pass-rate (V5_PLATINUM supersedes).
