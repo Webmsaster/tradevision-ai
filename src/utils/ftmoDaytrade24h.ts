@@ -6294,6 +6294,39 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ: FtmoDaytrade24hConfig 
   };
 
 /**
+ * TREND_2H_V5_TOPAZ — V5_QUARTZ minus RUNE (14 assets).
+ *
+ * Phase Y greedy asset drop on V5_QUARTZ. RUNE was the only single-asset
+ * drop that improved on baseline (5.52y / 1103 windows step=1d / 368
+ * windows step=3d / live caps 5%/40%):
+ *
+ *   V5_QUARTZ baseline (15):  679/1103 = 61.56% step=1d / 233/368 = 63.32% step=3d / wr 86.33% / TL 0
+ *   V5_TOPAZ (drop RUNE, 14): 680/1103 = 61.65% step=1d / 235/368 = 63.86% step=3d / wr 86.45% / TL 0
+ *
+ *   +0.09pp step=1d / +0.54pp step=3d / +0.12pp winrate / TL still 0.
+ *
+ * Marginal but strict-better than QUARTZ on all metrics. Drops the only asset
+ * that produced unfavourable trade entries under the QUARTZ engine stack
+ * (atrStop p56m2 + chand p56m2 + breakEven 3% + tight TPs).
+ *
+ * Final 14-asset basket: ETH BTC BNB ADA DOGE AVAX LTC BCH AAVE XRP INJ ETC SAND ARB
+ *
+ * Cumulative gains over V5 baseline:
+ *   +14.75pp step=1d / +14.90pp step=3d
+ *   +24.44pp trade-winrate (62.01% → 86.45%) — best in V5 family
+ *   TL -100% (36 → 0)
+ *
+ * Live: FTMO_TF=2h-trend-v5-topaz (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TOPAZ: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ.assets.filter(
+      (a) => a.symbol !== "RUNE-TREND",
+    ),
+  };
+
+/**
  * TREND_2H_V5_STEP2 — Step-2 variant of V5 (winner of ftmoStep2Tuning sweep).
  *
  * FTMO Step-2 rules:
