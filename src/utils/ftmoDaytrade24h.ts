@@ -6126,6 +6126,46 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN: FtmoDaytrade24hConfi
   };
 
 /**
+ * TREND_2H_V5_ZIRKON — V5_OBSIDIAN + tighter TPs + mct=10 + drop hrs {2,12}.
+ *
+ * Phase S GA random search 150 trials on V5_OBSIDIAN base. Top trials all
+ * shared a common pattern: subtract 0.5pp from each asset's TP, cap concurrent
+ * trades at 10, and drop hours 2/12 UTC. Best trial t96 (3.04y / 1103 windows,
+ * live caps 5%/40%):
+ *
+ *   V5_OBSIDIAN baseline:  668/1103 = 60.56% step=1d / 226/368 = 61.41% step=3d / wr 78.24% / TL 2
+ *   V5_ZIRKON (this):      680/1103 = 61.65% step=1d / 228/368 = 61.96% step=3d / wr 82.59% / TL 2
+ *
+ *   +1.09pp step=1d / +0.55pp step=3d / +4.35pp winrate / TL same.
+ *
+ * Confirmed by t2 (61.56% / wr 82.27%) and t38 (61.47% / wr 82.09%) — all
+ * tpShift=-0.005 + mct=10 trials cluster at this pattern. Effect is robust.
+ *
+ * Per-asset TPs after -0.005 shift:
+ *   ETH/BTC/BNB/ADA/DOGE/LTC/BCH/SAND/ARB  2.0%
+ *   RUNE                                    2.5%
+ *   ETC                                     3.0%
+ *   AVAX/XRP                                3.5%
+ *   INJ                                     5.0%
+ *   AAVE                                    5.5%
+ *
+ * vs V5 baseline:
+ *   +14.75pp step=1d / +13.00pp step=3d / +20.58pp winrate / TL -94%
+ *
+ * Live: FTMO_TF=2h-trend-v5-zirkon (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ZIRKON: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN,
+    allowedHoursUtc: [4, 6, 8, 10, 14, 18, 20, 22],
+    maxConcurrentTrades: 10,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN.assets.map((a) => ({
+      ...a,
+      tpPct: Math.max(0.02, (a.tpPct ?? 0.04) - 0.005),
+    })),
+  };
+
+/**
  * TREND_2H_V5_STEP2 — Step-2 variant of V5 (winner of ftmoStep2Tuning sweep).
  *
  * FTMO Step-2 rules:
