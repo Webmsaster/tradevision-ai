@@ -6239,6 +6239,61 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER: FtmoDaytrade24hConfig =
   })();
 
 /**
+ * TREND_2H_V5_QUARTZ — V5_AMBER + Phase U engine stack (zero-TL champion).
+ *
+ * Phase U GA second-pass on V5_AMBER with seed 20260430. Trial t6 found a
+ * remarkable engine combination: drop hour 20, atrStop p56m2, chandelierExit
+ * p56m2, breakEven 3%, plus tp shift -0.005 (most assets at 1.5-2% TP).
+ * 3.04y / 1103 windows step=1d / 368 windows step=3d / live caps 5%/40%:
+ *
+ *   V5_AMBER baseline:    693/1103 = 62.83% step=1d / 225/368 = 61.14% step=3d / wr 81.74% / TL 2
+ *   V5_QUARTZ (this):     679/1103 = 61.56% step=1d / 233/368 = 63.32% step=3d / wr 86.33% / TL 0
+ *
+ *   -1.27pp step=1d / +2.18pp step=3d / +4.59pp winrate / TL 0 (perfect defensive!)
+ *
+ * Mixed Pareto vs AMBER:
+ *   - AMBER wins step=1d (62.83% vs 61.56%)
+ *   - QUARTZ wins step=3d (63.32% vs 61.14%) — best 3d in V5 family
+ *   - QUARTZ wr 86.33% — best winrate in V5 family
+ *   - **QUARTZ TL = 0** — zero total-loss breaches in 368 windows (best defensive)
+ *
+ * The tp -0.005 shift makes most TPs very tight (1.5-2.0%) → R:R ~0.3 with
+ * 5% SL. Profitability requires winrate ≥ 0.75; at 86.33% wr the strategy
+ * is firmly in +EV territory but the R:R profile means small drawdown bursts
+ * are normal — managed by the very tight per-asset TPs hitting frequently.
+ *
+ * Use V5_QUARTZ when:
+ *   - Maximum defensive (zero-TL aspiration) matters
+ *   - Step=3d / 30d-window-anchor pass-rate is the primary metric
+ *   - Highest trade-winrate is desired (psychological consistency, prop-firm
+ *     consistency rule, easier ramp-up sizing)
+ *
+ * Use V5_AMBER when:
+ *   - Step=1d / daily-anchor robustness is more important
+ *   - Slightly looser R:R profile (less per-trade execution sensitivity)
+ *
+ * Cumulative gains over V5 baseline:
+ *   +14.66pp step=1d (46.90% → 61.56%)
+ *   +14.36pp step=3d (48.96% → 63.32%)
+ *   +24.32pp trade-winrate (62.01% → 86.33%) — best in V5 family
+ *   TL -100% (36 → 0) — first config with zero total-loss breaches
+ *
+ * Live: FTMO_TF=2h-trend-v5-quartz (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER,
+    allowedHoursUtc: [4, 6, 8, 10, 14, 18, 22], // drop hr 20
+    atrStop: { period: 56, stopMult: 2 },
+    chandelierExit: { period: 56, mult: 2, minMoveR: 0.5 },
+    breakEven: { threshold: 0.03 },
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER.assets.map((a) => ({
+      ...a,
+      tpPct: Math.max(0.015, (a.tpPct ?? 0.02) - 0.005),
+    })),
+  };
+
+/**
  * TREND_2H_V5_STEP2 — Step-2 variant of V5 (winner of ftmoStep2Tuning sweep).
  *
  * FTMO Step-2 rules:
