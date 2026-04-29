@@ -6327,6 +6327,35 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TOPAZ: FtmoDaytrade24hConfig =
   };
 
 /**
+ * TREND_2H_V5_RUBIN — V5_TOPAZ + INJ tp 4.5% → 5.0%.
+ *
+ * Phase ZA per-asset TP greedy single-axis on V5_TOPAZ. Only INJ wanted a
+ * different TP (5.0% vs 4.5%). All other 13 assets confirmed optimal at
+ * their existing values.
+ *
+ *   V5_TOPAZ baseline:  680/1103 = 61.65% step=1d / 235/368 = 63.86% step=3d / wr 86.45% / TL 0
+ *   V5_RUBIN (this):    681/1103 = 61.74% step=1d / 237/368 = 64.40% step=3d / wr 86.72% / TL 0
+ *
+ *   +0.09pp step=1d / +0.54pp step=3d / +0.27pp winrate / TL still 0.
+ *
+ * Strict-better than V5_TOPAZ on all metrics. Tightest single-asset win.
+ *
+ * Cumulative gains over V5 baseline:
+ *   +14.84pp step=1d / +15.44pp step=3d
+ *   +24.71pp trade-winrate (62.01% → 86.72%) — best in V5 family
+ *   TL -100% (36 → 0)
+ *
+ * Live: FTMO_TF=2h-trend-v5-rubin (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_RUBIN: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TOPAZ,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TOPAZ.assets.map((a) =>
+      a.symbol === "INJ-TREND" ? { ...a, tpPct: 0.05 } : a,
+    ),
+  };
+
+/**
  * TREND_2H_V5_STEP2 — Step-2 variant of V5 (winner of ftmoStep2Tuning sweep).
  *
  * FTMO Step-2 rules:
