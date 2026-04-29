@@ -6481,6 +6481,51 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_EMERALD: FtmoDaytrade24hConfig
   };
 
 /**
+ * TREND_2H_V5_PEARL — V5_EMERALD + ATOM (19 assets).
+ *
+ * Phase ZE asset add round-4 on V5_EMERALD. ATOM was the only single-asset
+ * helper:
+ *
+ *   V5_EMERALD baseline (18):  715/1103 = 64.82% step=1d / 247/368 = 67.12% step=3d / wr 87.74% / TL 0
+ *   V5_PEARL +ATOM (19):       718/1103 = 65.10% step=1d / 248/368 = 67.39% step=3d / wr 87.91% / TL 0
+ *
+ *   +0.27pp step=1d / +0.27pp step=3d / +0.17pp winrate / TL still 0.
+ *
+ * Strict-better than V5_EMERALD on all metrics.
+ *
+ * Final 19-asset basket: ETH BTC BNB ADA DOGE AVAX LTC BCH AAVE XRP
+ *                        INJ ETC SAND ARB DOT TRX ALGO NEAR ATOM
+ *
+ * Cumulative gains over V5 baseline:
+ *   +18.20pp step=1d / +18.43pp step=3d
+ *   +25.90pp trade-winrate (62.01% → 87.91%) — best in V5 family
+ *   TL -100% (36 → 0)
+ *
+ * Live: FTMO_TF=2h-trend-v5-pearl (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PEARL: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_EMERALD,
+    assets: [
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_EMERALD.assets,
+      {
+        symbol: "ATOM-TREND",
+        sourceSymbol: "ATOMUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.02,
+        holdBars: 240,
+      },
+    ],
+  };
+
+/**
  * TREND_2H_V5_STEP2 — Step-2 variant of V5 (winner of ftmoStep2Tuning sweep).
  *
  * FTMO Step-2 rules:
