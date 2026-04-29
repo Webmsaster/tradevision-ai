@@ -6556,6 +6556,30 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OPAL: FtmoDaytrade24hConfig =
   };
 
 /**
+ * TREND_2H_V5_AGATE — V5_OPAL drop hr 10 (final hours [4,6,8,14,18,22]).
+ *
+ * Phase ZG hour-filter greedy drop on V5_OPAL. Hour 10 was net-negative —
+ * dropping it (kept hours: 4,6,8,14,18,22) lifted both step anchors.
+ *
+ *   V5_OPAL baseline:  720/1103 = 65.28% step=1d / 250/368 = 67.93% step=3d / wr 88.23% / TL 0
+ *   V5_AGATE:          722/1103 = 65.46% step=1d / 251/368 = 68.21% step=3d / wr 88.35% / TL 0
+ *
+ *   +0.18pp step=1d / +0.27pp step=3d / +0.13pp winrate / TL still 0.
+ *
+ * Cumulative gains over V5 baseline:
+ *   +18.56pp step=1d / +19.25pp step=3d
+ *   +26.34pp trade-winrate (62.01% → 88.35%) — best in V5 family
+ *   TL -100% (36 → 0)
+ *
+ * Live: FTMO_TF=2h-trend-v5-agate (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AGATE: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OPAL,
+    allowedHoursUtc: [4, 6, 8, 14, 18, 22],
+  };
+
+/**
  * TREND_2H_V5_STEP2 — Step-2 variant of V5 (winner of ftmoStep2Tuning sweep).
  *
  * FTMO Step-2 rules:
