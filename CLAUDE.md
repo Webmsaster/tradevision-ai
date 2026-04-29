@@ -76,12 +76,12 @@ All 17 pattern detectors run in the browser with no API calls. Logic is in `src/
 - **E2E tests** (`e2e/`): Playwright against dev server — navigation, trade CRUD, CSV import, calculator, login flow
 - E2E helpers in `e2e/helpers.ts` (`loadSampleData`, `createTestTrade`, `gotoAndWaitForApp`)
 - **Strategy/FTMO tests** (`scripts/ftmo*.test.ts` and `scripts/exploratory/`): Heavy backtests run via vitest.
-  - **🏆 Production champions (2026-04-29 final):**
-    - **`V5_TOPAZ`** (`FTMO_TF=2h-trend-v5-topaz`): 61.65% step=1d / **63.86% step=3d** / **wr 86.45%** / **TL 0** — final champion (best 3d + best winrate + zero TL). 14 assets (V5_QUARTZ minus RUNE).
+  - **🏆 Production champion (2026-04-29 final): `V5_SAPPHIR`** (`FTMO_TF=2h-trend-v5-sapphir`, polls 30m bars). 18 cryptos, ULTIMATE V5-family champion: **64.73% step=1d / 66.85% step=3d / wr 87.65% / TL 0** on 3.04y / 1103 windows. +17.89pp step=3d / +25.64pp wr / TL -100% vs V5 baseline.
+  - **Sister champions:**
+    - **`V5_RUBIN`** (`FTMO_TF=2h-trend-v5-rubin`): 64.40% step=3d / wr 86.72% / TL 0 (14 assets, smaller basket)
+    - **`V5_TOPAZ`** (`FTMO_TF=2h-trend-v5-topaz`): 63.86% step=3d / wr 86.45% / TL 0 (14 assets, V5_QUARTZ minus RUNE)
     - **`V5_AMBER`** (`FTMO_TF=2h-trend-v5-amber`): **62.83% step=1d** / 61.14% step=3d / wr 81.74% / TL 2 — best step=1d anchor (high-N robust)
-    - **`V5_QUARTZ`** (`FTMO_TF=2h-trend-v5-quartz`): 61.56% step=1d / 63.32% step=3d / wr 86.33% / TL 0 — zero-TL champion (15 assets, includes RUNE)
-    - **`V5_ZIRKON`** (`FTMO_TF=2h-trend-v5-zirkon`): 61.65% step=1d / 61.96% step=3d / wr 82.59% / TL 2 — balanced
-    - All on 14-15 asset basket (V5 + AAVE + XRP - LINK + INJ + ETC + SAND + ARB ± RUNE) on 30m timeframe, 3.04y / 1103 windows step=1d / 368 windows step=3d under live caps {maxStopPct: 0.05, maxRiskFrac: 0.4}.
+    - All 30m timeframe, 3.04y / 1103 windows step=1d / 368 windows step=3d, live caps {maxStopPct: 0.05, maxRiskFrac: 0.4}.
   - **Sister: V5_TITANIUM** (14 assets, 5.52y/1985w long-history sample): 58.24% step=1d / 58.16% step=3d / wr 75.76% / TL 0.25%. Use when longer-history validation matters more than the +2.32pp ARB boost.
   - **Progression:** V5 (48.96%) → V5_PRO 53% → V5_GOLD 55% → V5_DIAMOND 56.5% → V5_PLATINUM 58.5% → V5_TITANIUM 58.2% (30m) → V5_OBSIDIAN 60.6% → V5_ZIRKON 61.6% → V5_AMBER 62.8%. **+15.93pp step=1d / +19.73pp winrate / TL -94%** vs V5 baseline.
   - **Sister config: V5_PLATINUM 2h** (`FTMO_TF=2h-trend-v5-platinum`). 14 cryptos same basket, 2h-tuned per-asset TP. **58.46% step=3d / 54.13% step=1d / TL 0.60%**. Higher peak on 3d-anchor but less robust on 1d. Progression V5 → V5_PRO → V5_GOLD → V5_DIAMOND → V5_PLATINUM → V5_TITANIUM. **+9.50pp pass / -89% TL** vs V5 baseline.
