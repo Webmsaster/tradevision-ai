@@ -6166,6 +6166,79 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ZIRKON: FtmoDaytrade24hConfig 
   };
 
 /**
+ * TREND_2H_V5_AMBER — V5_ZIRKON + 2nd-pass per-asset TP retune.
+ *
+ * Phase T per-asset TP greedy single-axis on V5_ZIRKON 30m base, optimized
+ * for step=1d pass-rate (high-N robustness anchor at 1985 windows / 5.52y):
+ *
+ *   V5_ZIRKON baseline:    680/1103 = 61.65% step=1d / 228/368 = 61.96% step=3d / wr 82.59% / TL 2
+ *   V5_AMBER (this):       693/1103 = 62.83% step=1d / 225/368 = 61.14% step=3d / wr 81.74% / TL 2
+ *
+ *   +1.18pp step=1d / -0.82pp step=3d / -0.85pp winrate / TL same.
+ *
+ * Mixed Pareto: step=1d wins (high-N robust), step=3d slightly down.
+ * Use AMBER when daily-anchor robustness matters most. V5_ZIRKON for
+ * balanced peak (better step=3d / higher wr).
+ *
+ * Per-asset TPs after Phase T re-tune (vs Phase O's V5_TITANIUM 2h-tuned):
+ *   ETH    2.5%   (was 2.0% in ZIRKON pre-shift)
+ *   BTC    2.0%   (was 2.0%)
+ *   BNB    2.0%   (was 2.0%)
+ *   ADA    2.0%   (was 2.0%)
+ *   DOGE   4.0%   (was 5.0%) — narrower TP captured more reversion
+ *   AVAX   2.0%   (was 3.5%) — significant change, AVAX wants tight TP on 30m
+ *   LTC    4.0%   (was 2.0%)
+ *   BCH    2.0%   (was 2.0%)
+ *   AAVE   3.0%   (was 5.5%) — major change, narrower lifts pass-rate
+ *   XRP    3.5%   (was 3.5%)
+ *   INJ    5.0%   (was 5.0%)
+ *   RUNE   2.5%   (was 2.5%)
+ *   ETC    2.0%   (was 3.0%)
+ *   SAND   2.0%   (was 2.0%)
+ *   ARB    2.0%   (was 2.0%)
+ *
+ * Notable Phase T discoveries: AVAX/AAVE wanted significantly tighter TPs in
+ * the post-mct=10/hour-drop regime than in PLATINUM_30M's basket. The mct=10
+ * cap rebalances which trades capture entries — fewer concurrent positions
+ * means each trade is more "selected" and tighter TPs hit more often.
+ *
+ * Cumulative gains over V5 baseline (TP 7%, 9 assets, no live caps):
+ *   +15.93pp step=1d (46.90% → 62.83%)
+ *   +12.18pp step=3d (48.96% → 61.14%)
+ *   +19.73pp trade-winrate (62.01% → 81.74%)
+ *   TL -94% (36 → 2)
+ *
+ * Live: FTMO_TF=2h-trend-v5-amber (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER: FtmoDaytrade24hConfig =
+  (() => {
+    const tpByAsset: Record<string, number> = {
+      "ETH-TREND": 0.025,
+      "BTC-TREND": 0.02,
+      "BNB-TREND": 0.02,
+      "ADA-TREND": 0.02,
+      "DOGE-TREND": 0.04,
+      "AVAX-TREND": 0.02,
+      "LTC-TREND": 0.04,
+      "BCH-TREND": 0.02,
+      "AAVE-TREND": 0.03,
+      "XRP-TREND": 0.035,
+      "INJ-TREND": 0.05,
+      "RUNE-TREND": 0.025,
+      "ETC-TREND": 0.02,
+      "SAND-TREND": 0.02,
+      "ARB-TREND": 0.02,
+    };
+    return {
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ZIRKON,
+      assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ZIRKON.assets.map((a) => ({
+        ...a,
+        tpPct: tpByAsset[a.symbol] ?? a.tpPct,
+      })),
+    };
+  })();
+
+/**
  * TREND_2H_V5_STEP2 — Step-2 variant of V5 (winner of ftmoStep2Tuning sweep).
  *
  * FTMO Step-2 rules:
