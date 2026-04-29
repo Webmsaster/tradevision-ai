@@ -6075,6 +6075,57 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM: FtmoDaytrade24hConfi
   })();
 
 /**
+ * TREND_2H_V5_OBSIDIAN — V5_TITANIUM + ARB (15 assets, 30m).
+ *
+ * Phase P greedy asset expansion on V5_TITANIUM 30m base. Across 22 FTMO
+ * crypto candidates, ARB gave the cleanest robust improvement on a 3-year
+ * sample (live caps 5%/40%):
+ *
+ *   V5_TITANIUM (14 assets, 1985 windows / 5.52y):
+ *     58.24% step=1d / 58.16% step=3d / wr 75.76% / TL 5
+ *   V5_OBSIDIAN (15 assets, 1103 windows / 3.04y):
+ *     60.56% step=1d / 61.41% step=3d / wr 78.24% / TL 2
+ *
+ *   +2.32pp step=1d / +3.25pp step=3d / +2.48pp winrate / TL halved.
+ *
+ * Window count drops 1985→1103 because ARB started 2023-03 — common-aligned
+ * timestamps reduce to 3 years. Lift is over a 3-year post-2023 crypto regime.
+ *
+ * Other Phase P candidates had shorter samples (TIA 2.4y, MKR 1.79y, MATIC
+ * full-stack only 0.78y due to compounding-history bottleneck), making them
+ * less safe for production despite higher absolute pass-rates.
+ *
+ * Per-asset TPs inherited from V5_TITANIUM. ARB uses tp=2.5% (the 30m default,
+ * matching most other reversion-style assets in the basket).
+ *
+ * vs V5 baseline:
+ *   +11.60pp step=3d / +13.66pp step=1d / wr +16.23pp / TL -94%
+ *
+ * Live: FTMO_TF=2h-trend-v5-obsidian (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    assets: [
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM.assets,
+      {
+        symbol: "ARB-TREND",
+        sourceSymbol: "ARBUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.025,
+        holdBars: 240,
+      },
+    ],
+  };
+
+/**
  * TREND_2H_V5_STEP2 — Step-2 variant of V5 (winner of ftmoStep2Tuning sweep).
  *
  * FTMO Step-2 rules:
