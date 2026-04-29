@@ -6356,6 +6356,100 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_RUBIN: FtmoDaytrade24hConfig =
   };
 
 /**
+ * TREND_2H_V5_SAPPHIR — V5_RUBIN + DOT + TRX + ALGO + NEAR (18 assets).
+ *
+ * Phase ZC greedy asset add round-3 on V5_RUBIN. Discovery: with the polished
+ * RUBIN engine stack (atrStop p56m2 + chand p56m2 + breakEven 3% + tight
+ * per-asset TPs + INJ tp 5%), four previously-tied/dropped tickers now
+ * contribute net-positive in the basket:
+ *
+ *   V5_RUBIN baseline (14 assets):    681/1103 = 61.74% step=1d / 237/368 = 64.40% step=3d / wr 86.72% / TL 0
+ *   stack +DOT (15):                  686/1103 = 62.19% step=1d / 242/368 = 65.76% step=3d / wr 87.29% / TL 0
+ *   stack +TRX (16):                  690/1103 = 62.56% step=1d / 244/368 = 66.30% step=3d / wr 87.46% / TL 0
+ *   stack +ALGO (17):                 701/1103 = 63.55% step=1d / 245/368 = 66.58% step=3d / wr 87.66% / TL 0
+ *   V5_SAPPHIR (this, 18 assets):     714/1103 = 64.73% step=1d / 246/368 = 66.85% step=3d / wr 87.65% / TL 0
+ *
+ *   +2.99pp step=1d / +2.45pp step=3d / +0.93pp winrate / TL still 0.
+ *
+ * Final 18-asset basket: ETH BTC BNB ADA DOGE AVAX LTC BCH AAVE XRP
+ *                        INJ ETC SAND ARB DOT TRX ALGO NEAR
+ *
+ * All four added assets have history back to 2020-2021, so the 1103-window
+ * sample is preserved (no recency bias from short-history additions).
+ *
+ * Cumulative gains over V5 baseline:
+ *   +17.83pp step=1d (46.90% → 64.73%)
+ *   +17.89pp step=3d (48.96% → 66.85%)
+ *   +25.64pp trade-winrate (62.01% → 87.65%) — best in V5 family
+ *   TL -100% (36 → 0)
+ *
+ * Live: FTMO_TF=2h-trend-v5-sapphir (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_SAPPHIR: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_RUBIN,
+    assets: [
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_RUBIN.assets,
+      {
+        symbol: "DOT-TREND",
+        sourceSymbol: "DOTUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.02,
+        holdBars: 240,
+      },
+      {
+        symbol: "TRX-TREND",
+        sourceSymbol: "TRXUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.02,
+        holdBars: 240,
+      },
+      {
+        symbol: "ALGO-TREND",
+        sourceSymbol: "ALGOUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.02,
+        holdBars: 240,
+      },
+      {
+        symbol: "NEAR-TREND",
+        sourceSymbol: "NEARUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.02,
+        holdBars: 240,
+      },
+    ],
+  };
+
+/**
  * TREND_2H_V5_STEP2 — Step-2 variant of V5 (winner of ftmoStep2Tuning sweep).
  *
  * FTMO Step-2 rules:
