@@ -3987,6 +3987,23 @@ export function detectAsset(
           if (ptpHit) {
             ptpTriggered = true;
             ptpRealizedPct = ptp.closeFraction * ptp.triggerPct;
+            // BUGFIX 2026-04-29 (Audit Bug A): after PTP, auto-move dynStop
+            // to entry on remainder leg. Industry-standard: once partial
+            // profit is locked, the trade should be guaranteed-profitable
+            // at minimum break-even. Without this, the same-bar PTP+stop
+            // sequence booked partial profit AND a non-tightened loss on
+            // remainder, inflating PnL on trades that had a wick up.
+            const beStop = entry;
+            if (direction === "long") {
+              if (beStop > dynStop) dynStop = beStop;
+            } else {
+              if (beStop < dynStop) dynStop = beStop;
+            }
+            beActive = true;
+            // Also reset chandelier reference to current bar so the trail
+            // anchors at PTP-fire price, not pre-PTP high (Bug B).
+            chanBestClose = bar.close;
+            chanArmed = false;
           }
         }
         if (direction === "long") {
@@ -4119,7 +4136,11 @@ export function detectAsset(
               ? (bar.close - entry) / entry
               : (entry - bar.close) / entry;
           if (unrealized >= minGainAbs) everReachedMinGain = true;
-          const barsHeld = j - (i + 1);
+          // BUGFIX 2026-04-29 (Audit Bug C): barsHeld must measure from
+          // ACTUAL entry bar (ebIdx), not signal bar (i+1). With pullbackEntry,
+          // entry can shift to i+k → time-exit fired (k-1) bars too early,
+          // closing dead trades faster than configured and inflating pass-rate.
+          const barsHeld = j - ebIdx;
           if (barsHeld >= timeExit.maxBarsWithoutGain && !everReachedMinGain) {
             exitBar = j;
             exitPrice = bar.close;
@@ -4379,11 +4400,23 @@ export function runFtmoDaytrade24h(
 
   const cappedDays = new Set<number>();
   let totalTradesExecuted = 0;
-  const recentPnls: number[] = []; // iter231: rolling buffer for Kelly sizing
+  // BUGFIX 2026-04-29 (Audit Bug 1 — Kelly look-ahead): the rolling buffer
+  // must be queried by ENTRY time, not append order. Trades are processed
+  // in exit-time order so a later-entry trade B can exit before an earlier-
+  // entry trade A → naively pushing effPnl in iteration order leaks B's
+  // result into A's Kelly tier. Fix: store {closeTime, effPnl} and filter
+  // to entries that closed STRICTLY BEFORE the current trade's entryTime.
+  const pnlBuffer: Array<{ closeTime: number; effPnl: number }> = [];
 
   function finishPausedPass(targetDay: number): FtmoDaytrade24hResult | null {
     if (!cfg.pauseAtTargetReached || equity < 1 + cfg.profitTarget) return null;
-    let pingDay = targetDay;
+    // BUGFIX 2026-04-29 (Audit Bug 1b): pingDay must start at targetDay + 1.
+    // targetDay itself is already in tradingDays from the trade that hit
+    // target. Starting at targetDay made the first iteration a no-op
+    // (set.add of existing element), which inflated pass-rate by ~0.5-1.5pp
+    // — the tradingDays size already met minTradingDays before the loop
+    // could legitimately ping additional days.
+    let pingDay = targetDay + 1;
     let lastPingDay = targetDay;
     while (tradingDays.size < cfg.minTradingDays && pingDay < cfg.maxDays) {
       tradingDays.add(pingDay);
@@ -4421,8 +4454,14 @@ export function runFtmoDaytrade24h(
         }
         if (cs[k].openTime < entryTime) break;
       }
-      if (idx < lb) continue;
-      const ret = (cs[idx].close - cs[idx - lb].close) / cs[idx - lb].close;
+      if (idx < lb + 1) continue;
+      // BUGFIX 2026-04-29 (Audit Bug 2): use signal-bar close (idx-1), not
+      // entry-bar close. cs[idx] is the entry bar — its close is FUTURE
+      // info at the moment the trade enters at cs[idx].open. Live signal
+      // computes momentum from previous closed bar; backtest must match.
+      const sigIdx = idx - 1;
+      const ret =
+        (cs[sigIdx].close - cs[sigIdx - lb].close) / cs[sigIdx - lb].close;
       ranked.push({ sym: asset.symbol, ret });
     }
     ranked.sort((a, b) => b.ret - a.ret);
@@ -4463,7 +4502,17 @@ export function runFtmoDaytrade24h(
     // after, making the first loop pure dead code (and incorrect since
     // executed is now sorted by exit-time, not entry-time).
     if (cfg.maxConcurrentTrades !== undefined) {
-      const openCount = executed.filter((e) => e.exitTime > t.entryTime).length;
+      // BUGFIX 2026-04-29 (Audit Bug 3): scan the FULL pre-sorted trade list,
+      // not just `executed`. `all` is sorted by exit-time, so earlier-entry
+      // trades with later exit aren't yet in `executed` when we process `t`.
+      // The previous `executed.filter(...)` systematically under-counted
+      // openCount → MCT cap leaked winners through → winrate inflated by
+      // ~2-5pp (selection-bias toward long-running winners over fast losers).
+      let openCount = 0;
+      for (const e of all) {
+        if (e === t) continue;
+        if (e.entryTime <= t.entryTime && e.exitTime > t.entryTime) openCount++;
+      }
       if (openCount >= cfg.maxConcurrentTrades) continue;
     }
     // V5: cross-asset correlation overheat filter
@@ -4528,21 +4577,30 @@ export function runFtmoDaytrade24h(
         // Tracks last N completed trades; when realized win rate is above
         // a tier threshold, multiplies factor. Applied after adaptive &
         // timeBoost but before drawdown shield.
-        if (cfg.kellySizing && recentPnls.length >= cfg.kellySizing.minTrades) {
-          const wins = recentPnls.filter((p) => p > 0).length;
-          const wr = wins / recentPnls.length;
-          let kMult = 1;
-          // tiers checked from highest threshold down
-          const sortedTiers = [...cfg.kellySizing.tiers].sort(
-            (a, b) => b.winRateAbove - a.winRateAbove,
-          );
-          for (const tier of sortedTiers) {
-            if (wr >= tier.winRateAbove) {
-              kMult = tier.multiplier;
-              break;
+        if (cfg.kellySizing) {
+          // BUGFIX 2026-04-29 (Audit Bug 1): only consider pnls that closed
+          // BEFORE this trade's entry time. Otherwise we leak future info
+          // (later-entered, earlier-exited trades) into Kelly tier selection.
+          const recentPnls = pnlBuffer
+            .filter((p) => p.closeTime < t.entryTime)
+            .slice(-cfg.kellySizing.windowSize)
+            .map((p) => p.effPnl);
+          if (recentPnls.length >= cfg.kellySizing.minTrades) {
+            const wins = recentPnls.filter((p) => p > 0).length;
+            const wr = wins / recentPnls.length;
+            let kMult = 1;
+            // tiers checked from highest threshold down
+            const sortedTiers = [...cfg.kellySizing.tiers].sort(
+              (a, b) => b.winRateAbove - a.winRateAbove,
+            );
+            for (const tier of sortedTiers) {
+              if (wr >= tier.winRateAbove) {
+                kMult = tier.multiplier;
+                break;
+              }
             }
+            factor *= kMult;
           }
-          factor *= kMult;
         }
         // iter204 drawdown shield: scale DOWN when already underwater.
         // Applied AFTER ramps/boosts so it always wins when triggered.
@@ -4574,9 +4632,14 @@ export function runFtmoDaytrade24h(
     }
 
     // iter231: track rolling PnL for Kelly window (after effPnl finalized)
+    // BUGFIX 2026-04-29 (Audit Bug 1): tag with closeTime so future Kelly
+    // tier checks can filter to pnls available at the trade's entryTime.
     if (cfg.kellySizing) {
-      recentPnls.push(effPnl);
-      if (recentPnls.length > cfg.kellySizing.windowSize) recentPnls.shift();
+      pnlBuffer.push({ closeTime: t.exitTime, effPnl });
+      // Keep buffer bounded — windowSize × 4 is enough since each Kelly
+      // check filters then slices to windowSize.
+      const maxBuf = cfg.kellySizing.windowSize * 4;
+      while (pnlBuffer.length > maxBuf) pnlBuffer.shift();
     }
 
     equity *= 1 + effPnl;
