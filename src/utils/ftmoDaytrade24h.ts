@@ -6624,6 +6624,50 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_JADE: FtmoDaytrade24hConfig =
   };
 
 /**
+ * TREND_2H_V5_ONYX — V5_JADE + per-asset TP retune (4 assets shifted).
+ *
+ * Phase ZI per-asset TP greedy single-axis on V5_JADE (20 assets):
+ *
+ *   V5_JADE baseline:  722/1103 = 65.46% step=1d / 254/368 = 69.02% step=3d / wr 88.56% / TL 0
+ *   V5_ONYX:           736/1103 = 66.73% step=1d / 258/368 = 70.11% step=3d / wr 89.00% / TL 1
+ *
+ *   +1.27pp step=1d / +1.09pp step=3d / +0.44pp winrate / TL 1 (was 0).
+ *
+ * TL=1 in 368 windows = 0.27% rate — still excellent. Pareto-better on
+ * pass-rate; minimal TL trade-off.
+ *
+ * TP shifts vs V5_JADE:
+ *   LTC  3.5% → 1.5% (tighter)
+ *   BCH  1.5% → 2.5% (slightly wider)
+ *   AAVE 2.5% → 4.5% (significantly wider)
+ *   XRP  3.0% → 4.5% (wider — captures XRP's longer move-out)
+ *
+ * Cumulative gains over V5 baseline:
+ *   +19.83pp step=1d / +21.15pp step=3d
+ *   +26.99pp trade-winrate (62.01% → 89.00%) — best in V5 family
+ *   TL -97% (36 → 1)
+ *
+ * Live: FTMO_TF=2h-trend-v5-onyx (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ONYX: FtmoDaytrade24hConfig =
+  (() => {
+    const tpShifts: Record<string, number> = {
+      "LTC-TREND": 0.015,
+      "BCH-TREND": 0.025,
+      "AAVE-TREND": 0.045,
+      "XRP-TREND": 0.045,
+    };
+    return {
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_JADE,
+      assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_JADE.assets.map((a) =>
+        tpShifts[a.symbol] !== undefined
+          ? { ...a, tpPct: tpShifts[a.symbol] }
+          : a,
+      ),
+    };
+  })();
+
+/**
  * TREND_2H_V5_STEP2 — Step-2 variant of V5 (winner of ftmoStep2Tuning sweep).
  *
  * FTMO Step-2 rules:
