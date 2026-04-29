@@ -4516,10 +4516,21 @@ export function runFtmoDaytrade24h(
       if (openCount >= cfg.maxConcurrentTrades) continue;
     }
     // V5: cross-asset correlation overheat filter
+    // BUGFIX 2026-04-29 (Audit): mirror of MCT fix — scan full pre-sorted
+    // `all` array, not `executed`. Same selection-bias (later-exit winners
+    // not yet in executed) was leaking same-direction concurrent trades.
     if (cfg.correlationFilter) {
-      const sameDirOpen = executed.filter(
-        (e) => e.exitTime > t.entryTime && e.direction === t.direction,
-      ).length;
+      let sameDirOpen = 0;
+      for (const e of all) {
+        if (e === t) continue;
+        if (
+          e.entryTime <= t.entryTime &&
+          e.exitTime > t.entryTime &&
+          e.direction === t.direction
+        ) {
+          sameDirOpen++;
+        }
+      }
       if (sameDirOpen >= cfg.correlationFilter.maxOpenSameDirection) continue;
     }
     // V5: cross-asset momentum ranking — only top-N qualify
