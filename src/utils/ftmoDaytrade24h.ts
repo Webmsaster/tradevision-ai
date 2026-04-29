@@ -6450,6 +6450,37 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_SAPPHIR: FtmoDaytrade24hConfig
   };
 
 /**
+ * TREND_2H_V5_EMERALD — V5_SAPPHIR + DOGE tp 3.5% → 4.0%.
+ *
+ * Phase ZD per-asset TP greedy single-axis on V5_SAPPHIR. Only DOGE wanted
+ * a different TP (4.0% vs 3.5% baseline). All 17 other assets confirmed
+ * optimal at their existing values.
+ *
+ *   V5_SAPPHIR baseline:  714/1103 = 64.73% step=1d / 246/368 = 66.85% step=3d / wr 87.65% / TL 0
+ *   V5_EMERALD:           715/1103 = 64.82% step=1d / 247/368 = 67.12% step=3d / wr 87.74% / TL 0
+ *
+ *   +0.09pp step=1d / +0.27pp step=3d / +0.09pp winrate / TL still 0.
+ *
+ * Strict-better than V5_SAPPHIR. DOGE's wider 4.0% TP matches its higher
+ * per-trade volatility better in the 18-asset basket (vs 3.5% optimum in
+ * the 14-asset RUBIN context).
+ *
+ * Cumulative gains over V5 baseline:
+ *   +17.92pp step=1d / +18.16pp step=3d
+ *   +25.73pp trade-winrate (62.01% → 87.74%) — best in V5 family
+ *   TL -100% (36 → 0)
+ *
+ * Live: FTMO_TF=2h-trend-v5-emerald (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_EMERALD: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_SAPPHIR,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_SAPPHIR.assets.map((a) =>
+      a.symbol === "DOGE-TREND" ? { ...a, tpPct: 0.04 } : a,
+    ),
+  };
+
+/**
  * TREND_2H_V5_STEP2 — Step-2 variant of V5 (winner of ftmoStep2Tuning sweep).
  *
  * FTMO Step-2 rules:
