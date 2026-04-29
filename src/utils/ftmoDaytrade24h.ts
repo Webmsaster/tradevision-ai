@@ -6526,6 +6526,36 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PEARL: FtmoDaytrade24hConfig =
   };
 
 /**
+ * TREND_2H_V5_OPAL — V5_PEARL + INJ tp 5.0% → 2.0%.
+ *
+ * Phase ZF per-asset TP greedy single-axis on V5_PEARL. Only INJ wanted a
+ * different TP (2.0% vs 5.0% baseline). In the 14-asset RUBIN context INJ
+ * preferred 5.0%; in the 19-asset PEARL context cross-asset interactions
+ * shift INJ to behave like a "tight" reversion asset.
+ *
+ *   V5_PEARL baseline:  718/1103 = 65.10% step=1d / 248/368 = 67.39% step=3d / wr 87.91% / TL 0
+ *   V5_OPAL:            720/1103 = 65.28% step=1d / 250/368 = 67.93% step=3d / wr 88.23% / TL 0
+ *
+ *   +0.18pp step=1d / +0.54pp step=3d / +0.32pp winrate / TL still 0.
+ *
+ * Strict-better than V5_PEARL on all metrics.
+ *
+ * Cumulative gains over V5 baseline:
+ *   +18.38pp step=1d / +18.97pp step=3d
+ *   +26.22pp trade-winrate (62.01% → 88.23%) — best in V5 family
+ *   TL -100% (36 → 0)
+ *
+ * Live: FTMO_TF=2h-trend-v5-opal (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OPAL: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PEARL,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PEARL.assets.map((a) =>
+      a.symbol === "INJ-TREND" ? { ...a, tpPct: 0.02 } : a,
+    ),
+  };
+
+/**
  * TREND_2H_V5_STEP2 — Step-2 variant of V5 (winner of ftmoStep2Tuning sweep).
  *
  * FTMO Step-2 rules:
