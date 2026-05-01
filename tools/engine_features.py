@@ -592,37 +592,70 @@ def simulate_trade(
 
     for j in range(entry_idx, mx + 1):
         bar = bars[j]
-        # Check PTP first (R12 same-bar fix)
-        if cfg.partial_take_profit and not ptp_state.triggered:
-            check_partial_take_profit(
-                direction, entry, bar.high, bar.low, bar.close,
-                cfg.partial_take_profit["triggerPct"],
-                cfg.partial_take_profit["closeFraction"],
-                ptp_state,
-            )
-        # Stop / TP intra-bar
+        # Phase 16 (engine_features Bugs 1+2+3): mirror TS engine 4198-4304
+        # tie-break order EXACTLY:
+        #   1. gap-past-TP wins if bar.open already past TP.
+        #   2. stop hits before PTP UNLESS gap-past-PTP.
+        #   3. stop fill = bar.open if gap-down, else dyn_stop.
+        #   4. PTP fires → auto-move dyn_stop to BE+cost (Bug 1).
+        #   5. plain TP if no stop/PTP intervened.
         if direction == "long":
-            if bar.low <= dyn_stop:
-                exit_idx = j
-                exit_price = dyn_stop
-                exit_reason = "stop"
-                break
-            if bar.high >= tp:
-                exit_idx = j
-                exit_price = tp
-                exit_reason = "tp"
-                break
+            stop_hit = bar.low <= dyn_stop
+            tp_hit = bar.high >= tp
+            ptp_trigger_price = entry * (1 + (cfg.partial_take_profit["triggerPct"] if cfg.partial_take_profit else 0))
+            ptp_hit = bool(cfg.partial_take_profit) and not ptp_state.triggered and bar.high >= ptp_trigger_price
+            gap_past_tp = bar.open >= tp
+            gap_past_ptp = bool(cfg.partial_take_profit) and bar.open >= ptp_trigger_price
         else:
-            if bar.high >= dyn_stop:
-                exit_idx = j
-                exit_price = dyn_stop
-                exit_reason = "stop"
-                break
-            if bar.low <= tp:
-                exit_idx = j
-                exit_price = tp
-                exit_reason = "tp"
-                break
+            stop_hit = bar.high >= dyn_stop
+            tp_hit = bar.low <= tp
+            ptp_trigger_price = entry * (1 - (cfg.partial_take_profit["triggerPct"] if cfg.partial_take_profit else 0))
+            ptp_hit = bool(cfg.partial_take_profit) and not ptp_state.triggered and bar.low <= ptp_trigger_price
+            gap_past_tp = bar.open <= tp
+            gap_past_ptp = bool(cfg.partial_take_profit) and bar.open <= ptp_trigger_price
+
+        # 1. Gap-past-TP wins (rare but real on Black-Swan opens)
+        if tp_hit and gap_past_tp:
+            exit_idx = j
+            exit_price = bar.open
+            exit_reason = "tp"
+            break
+        # 2. Stop wins over PTP unless gap-past-PTP at open
+        if stop_hit and not (ptp_hit and gap_past_ptp):
+            exit_idx = j
+            # 3. Gap-down: open already below stop → fill at the worse price
+            if direction == "long":
+                exit_price = bar.open if bar.open < dyn_stop else dyn_stop
+            else:
+                exit_price = bar.open if bar.open > dyn_stop else dyn_stop
+            exit_reason = "stop"
+            break
+        # 4. PTP fires (intra-bar wick reached trigger or gap-past-PTP)
+        if ptp_hit and cfg.partial_take_profit:
+            ptp_cfg = cfg.partial_take_profit
+            ptp_state.triggered = True
+            # Phase 16 (Bug 2): ptpFillCost = cost/2 (no slippage in SimConfig).
+            ptp_fill_cost = cost / 2
+            ptp_state.realized_pct = ptp_cfg["closeFraction"] * (
+                ptp_cfg["triggerPct"] - ptp_fill_cost
+            )
+            # Phase 16 (Bug 1): auto-move dyn_stop to BE+cost on the remainder
+            be_stop = entry * (1 + cost) if direction == "long" else entry * (1 - cost)
+            if direction == "long":
+                if be_stop > dyn_stop:
+                    dyn_stop = be_stop
+            else:
+                if be_stop < dyn_stop:
+                    dyn_stop = be_stop
+            be_state.moved = True
+            # Reset chandelier reference so it re-arms from the new BE base
+            chan_state = ChandelierState()
+        # 5. Plain TP
+        if tp_hit and not stop_hit:
+            exit_idx = j
+            exit_price = tp
+            exit_reason = "tp"
+            break
 
         # Break-even
         if cfg.break_even:

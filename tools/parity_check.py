@@ -105,10 +105,14 @@ def scenario_short_tp() -> tuple[str, list[Bar], int, SimConfig, float]:
 
 
 def scenario_long_ptp_then_stop() -> tuple[str, list[Bar], int, SimConfig, float]:
-    """Long with PTP at 2%/30%, then drift down to base stop -5%.
-    Expected = 0.30 × 0.02 + 0.70 × (-0.05) = 0.006 - 0.035 = -0.029
+    """Long with PTP at 2%/30%, then drift down. After Phase 16 BE-auto-move
+    fix: when PTP fires, remainder stop is moved to BE+cost. So drift to -5%
+    only loses ~0% on the remainder (hits BE), not the full -5%.
+
+    Expected = 0.30 × 0.02 + 0.70 × (~0) ≈ 0.006 (cost=0 here)
     """
-    # bar1 entry, bar2 hits +2% (PTP), bar3 returns to entry, bar4 stop
+    # bar1 entry, bar2 hits +2% (PTP fires + dyn_stop → entry+cost),
+    # bar3 returns to entry (touches BE), bar4 stays low
     closes = [100, 100, 102.5, 100, 95]
     bars = [Bar(open=closes[i - 1] if i > 0 else c, high=c * 1.005, low=c * 0.995, close=c)
             for i, c in enumerate(closes)]
@@ -116,7 +120,8 @@ def scenario_long_ptp_then_stop() -> tuple[str, list[Bar], int, SimConfig, float
         stop_pct=0.05, tp_pct=0.10, hold_bars=10,
         partial_take_profit={"triggerPct": 0.02, "closeFraction": 0.30},
     )
-    expected = 0.30 * 0.02 + 0.70 * (-0.05)
+    # PTP fires at bar2 → 30%×2% = 0.006 locked; remainder hits BE stop ≈ 0.
+    expected = 0.006
     return ("long_ptp_then_stop", bars, 1, cfg, expected)
 
 
