@@ -55,7 +55,10 @@ from telegram_notify import tg_send, html_escape  # type: ignore
 # =============================================================================
 # Config — via env vars
 # =============================================================================
-STATE_DIR = Path(os.environ.get("FTMO_STATE_DIR", "./ftmo-state"))
+_FTMO_TF = os.environ.get("FTMO_TF", "1h")
+STATE_DIR = Path(
+    os.environ.get("FTMO_STATE_DIR", f"./ftmo-state-{_FTMO_TF}")
+)
 POLL_INTERVAL_SEC = 30
 RECONNECT_BACKOFF_SEC = 10
 CHALLENGE_START_BALANCE = float(os.environ.get("FTMO_START_BALANCE", "100000"))
@@ -69,6 +72,11 @@ CHALLENGE_START_DATE = os.environ.get("FTMO_START_DATE")
 PROFIT_TARGET_PCT = float(os.environ.get("FTMO_PROFIT_TARGET", "0.08"))  # FTMO Step 1 = 8%
 MIN_TRADING_DAYS = int(os.environ.get("FTMO_MIN_TRADING_DAYS", "4"))      # FTMO 2-Step (Step 1 & 2) requires 4 trading days minimum
 PAUSE_AT_TARGET = os.environ.get("FTMO_PAUSE_AT_TARGET", "1").lower() in ("1", "true", "yes")
+# Round 28: dailyPeakTrailingStop. When intraday equity drops trailDistance
+# below today's peak, block new entries (Anti-DL pattern). R28 default = 0.012.
+# Set FTMO_DPT_TRAIL=0 to disable. Engine config V5_QUARTZ_LITE_R28 uses 0.012.
+DPT_TRAIL_DISTANCE = float(os.environ.get("FTMO_DPT_TRAIL", "0.012"))
+DPT_ENABLED = DPT_TRAIL_DISTANCE > 0
 # Ping trade asset (tiny no-risk trade to clock minTradingDays after target hit)
 PING_SYMBOL_BINANCE = os.environ.get("FTMO_PING_SYMBOL", "ETHUSDT")
 PING_LOT_SIZE = float(os.environ.get("FTMO_PING_LOT", "0.01"))  # tiny lot
@@ -83,6 +91,13 @@ RISK_FRAC_HARD_CAP = float(os.environ.get("FTMO_RISK_HARD_CAP", "0.07"))
 # Auto-pause after N consecutive failed orders (e.g. "no money" cascade).
 # Resets to 0 on the first successful order. Setting to 0 disables.
 ORDER_FAIL_AUTO_PAUSE = int(os.environ.get("FTMO_ORDER_FAIL_PAUSE", "3"))
+
+# BUGFIX 2026-04-28: enforce engine.maxConcurrentTrades in live executor.
+# Engine caps simultaneous open trades (e.g. V5 → 6, ELITE → 12) but live had
+# no cap → could open arbitrary count if many signals queued at once. Default
+# 8 = safe upper bound for all current configs (V5 family ≤ 12). User can
+# tune via FTMO_MAX_CONCURRENT.
+MAX_CONCURRENT_TRADES = int(os.environ.get("FTMO_MAX_CONCURRENT", "8"))
 
 # Dry-run mode: log planned orders but never call mt5.order_send.
 DRY_RUN = os.environ.get("FTMO_DRY_RUN", "").lower() in ("1", "true", "yes")
@@ -112,6 +127,11 @@ SYMBOL_MAP = {
     "ADAUSDT": os.environ.get("FTMO_ADA_SYMBOL", "ADAUSD"),
     "DOGEUSDT": os.environ.get("FTMO_DOGE_SYMBOL", "DOGEUSD"),
     "AVAXUSDT": os.environ.get("FTMO_AVAX_SYMBOL", "AVAUSD"),
+    # Round 23: V5_QUARTZ_LITE 9-asset pool needs ETC, XRP, AAVE
+    "ETCUSDT": os.environ.get("FTMO_ETC_SYMBOL", "ETCUSD"),
+    "XRPUSDT": os.environ.get("FTMO_XRP_SYMBOL", "XRPUSD"),
+    # FTMO-spezifisch: AAVUSD (ohne E) — nicht AAVEUSD wie bei Binance.
+    "AAVEUSDT": os.environ.get("FTMO_AAVE_SYMBOL", "AAVUSD"),
 }
 
 PENDING_PATH = STATE_DIR / "pending-signals.json"
@@ -121,6 +141,7 @@ OPEN_POS_PATH = STATE_DIR / "open-positions.json"
 PAUSE_STATE_PATH = STATE_DIR / "pause-state.json"  # iter236+ pause-after-target tracking
 EXECUTOR_LOG_PATH = STATE_DIR / "executor-log.jsonl"
 DAILY_STATE_PATH = STATE_DIR / "daily-reset.json"
+DAY_PEAK_PATH = STATE_DIR / "day-peak.json"  # R28: dailyPeakTrailingStop state
 CONTROLS_PATH = STATE_DIR / "bot-controls.json"
 EQUITY_HISTORY_PATH = STATE_DIR / "equity-history.jsonl"
 NEWS_PATH = STATE_DIR / "news-events.json"
@@ -351,6 +372,63 @@ def check_ftmo_rules(current_equity: float, day_start_equity: float) -> Optional
     return None
 
 
+def get_day_peak_state() -> dict:
+    """
+    R28: dailyPeakTrailingStop persistent state.
+    Returns {date: "YYYY-MM-DD", peak_equity_usd: float, last_check_ts: iso}.
+    Date is Prague timezone to align with FTMO daily-reset boundary.
+    """
+    return read_json(DAY_PEAK_PATH, {"date": None, "peak_equity_usd": 0.0})
+
+
+def update_day_peak(current_equity_usd: float) -> float:
+    """
+    R28: Update intraday peak equity. Resets at Prague midnight (matching
+    FTMO daily-loss anchor). Returns the current day-peak.
+
+    Mirrors engine line 5045-5048: dayPeak ratchets only upward within a day.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        prague_tz = ZoneInfo("Europe/Prague")
+    except ImportError:
+        from datetime import timedelta
+        prague_tz = timezone(timedelta(hours=1))
+    today_prague = datetime.now(prague_tz).strftime("%Y-%m-%d")
+    state = get_day_peak_state()
+    if state.get("date") != today_prague:
+        # New day: snapshot current equity as new peak baseline.
+        state = {"date": today_prague, "peak_equity_usd": float(current_equity_usd)}
+        write_json(DAY_PEAK_PATH, state)
+        log_event("day_peak_reset", date=today_prague, peak=current_equity_usd)
+        return float(current_equity_usd)
+    prev_peak = float(state.get("peak_equity_usd") or current_equity_usd)
+    if current_equity_usd > prev_peak:
+        state["peak_equity_usd"] = float(current_equity_usd)
+        state["last_check_ts"] = datetime.now(timezone.utc).isoformat()
+        write_json(DAY_PEAK_PATH, state)
+        return float(current_equity_usd)
+    return prev_peak
+
+
+def check_daily_peak_trail_block(current_equity_usd: float) -> Optional[str]:
+    """
+    R28: Anti-DL gate. If intraday equity has dropped trailDistance below
+    today's realized peak, block new entries (lock in gains, don't give back).
+
+    Mirrors engine line 4810-4816. Returns blocker reason or None.
+    """
+    if not DPT_ENABLED:
+        return None
+    peak = update_day_peak(current_equity_usd)
+    if peak <= 0:
+        return None
+    drop = (peak - current_equity_usd) / peak
+    if drop >= DPT_TRAIL_DISTANCE:
+        return f"day_peak_trail: drop {drop:.2%} >= {DPT_TRAIL_DISTANCE:.2%} from intraday peak ${peak:,.2f}"
+    return None
+
+
 def get_challenge_day() -> int:
     if not CHALLENGE_START_DATE:
         return 0
@@ -461,7 +539,7 @@ def _build_daily_summary(today_utc: str, last_date: str, prev_pct: float, prev_p
     else:
         msg += f"  No closed trades yesterday\n"
     msg += (
-        f"\n<b>Target Progress: {pct_str} / +10%</b>\n"
+        f"\n<b>Target Progress: {pct_str} / +{PROFIT_TARGET_PCT*100:.0f}%</b>\n"
         f"<code>{bar}</code> {target_progress*100:.0f}%\n"
         f"\n<b>Risk Used:</b>\n"
         f"  DL: {dl_used*100:.0f}% of -5% cap\n"
@@ -497,6 +575,81 @@ def _get_yesterday_trade_stats(date_str: str) -> tuple[float, float, float, floa
         )
     except Exception:
         return (0.0, 0.0, 0.0, 0.0, 0)
+
+
+# =============================================================================
+# Symbol resolver (FTMO naming differs from Binance — try variants & cache)
+# =============================================================================
+_SYMBOL_CACHE: dict[str, Optional[str]] = {}
+
+
+def _resolve_broker_symbol(binance_symbol: str) -> Optional[str]:
+    """
+    Resolve a Binance ticker (e.g. AAVEUSDT) to the broker's actual symbol name.
+    Caches results so we only hit MT5's symbol_info once per ticker.
+
+    Order of attempts:
+      1. SYMBOL_MAP override (env var FTMO_<X>_SYMBOL)
+      2. Binance "*USDT" → "*USD" naive convention
+      3. Drop trailing "E" before USD (Binance "AAVE" → broker "AAV")
+      4. Bracketed variants: "X/USD", "X.USD", "X-USD", "X_USD"
+      5. With ".x" / ".c" / ".raw" suffixes (some brokers stack these)
+    """
+    if binance_symbol in _SYMBOL_CACHE:
+        return _SYMBOL_CACHE[binance_symbol]
+
+    candidates: list[str] = []
+
+    # 1) explicit map override
+    mapped = SYMBOL_MAP.get(binance_symbol)
+    if mapped:
+        candidates.append(mapped)
+
+    # 2) Binance "*USDT" → "*USD"
+    if binance_symbol.endswith("USDT"):
+        base = binance_symbol[:-4]
+        candidates.append(base + "USD")
+
+        # 3) drop trailing E (AAVE → AAV)
+        if base.endswith("E") and len(base) > 2:
+            candidates.append(base[:-1] + "USD")
+
+        # 4) separator variants
+        for sep in ("/", ".", "-", "_"):
+            candidates.append(f"{base}{sep}USD")
+
+        # 5) suffix variants
+        for suffix in (".x", ".c", ".raw", ".pro"):
+            candidates.append(base + "USD" + suffix)
+
+    # de-dup while preserving order
+    seen: set[str] = set()
+    unique = [c for c in candidates if not (c in seen or seen.add(c))]
+
+    for candidate in unique:
+        try:
+            info = mt5.symbol_info(candidate)
+            if info is not None:
+                _SYMBOL_CACHE[binance_symbol] = candidate
+                if mapped is None or candidate != mapped:
+                    log_event(
+                        "symbol_map_resolved",
+                        binance=binance_symbol,
+                        broker=candidate,
+                        level="info",
+                    )
+                return candidate
+        except Exception:
+            continue
+
+    _SYMBOL_CACHE[binance_symbol] = None
+    log_event(
+        "symbol_unresolved",
+        binance=binance_symbol,
+        tried=unique,
+        level="warn",
+    )
+    return None
 
 
 # =============================================================================
@@ -564,24 +717,9 @@ def place_market_order(
     direction="short": sell at bid, SL above, TP below.
     direction="long": buy at ask, SL below, TP above.
     """
-    ftmo_symbol = SYMBOL_MAP.get(binance_symbol)
+    ftmo_symbol = _resolve_broker_symbol(binance_symbol)
     if not ftmo_symbol:
-        # BUGFIX 2026-04-28 (Round 37 Bug 2): default Binance "*USDT" → "*USD"
-        # so user-added FTMO_EXTRA_SYMBOLS don't trigger order_failure → auto-pause
-        # streak. Most FTMO tickers follow the BinanceUSDT → FTMO USD convention
-        # (e.g. XRPUSDT → XRPUSD). If the resolved symbol turns out not to exist
-        # at the broker, mt5.symbol_select below will fail cleanly without
-        # incrementing the failure counter past the actual broker limitation.
-        if binance_symbol.endswith("USDT"):
-            ftmo_symbol = binance_symbol[:-4] + "USD"
-            log_event(
-                "symbol_map_fallback",
-                binance=binance_symbol,
-                ftmo=ftmo_symbol,
-                level="warn",
-            )
-        else:
-            return OrderResult(False, None, f"unknown symbol {binance_symbol}", None, None)
+        return OrderResult(False, None, f"unknown symbol {binance_symbol}", None, None)
     if not mt5.symbol_select(ftmo_symbol, True):
         return OrderResult(False, None, f"symbol_select failed for {ftmo_symbol}", None, None)
     info = mt5.symbol_info(ftmo_symbol)
@@ -785,7 +923,7 @@ def check_target_and_pause(current_equity: float) -> bool:
         write_pause_state(state)
         log_event("target_hit", equity=current_equity, target=target_equity)
         tg_send(
-            f"🎯 <b>+10% TARGET HIT!</b>\n"
+            f"🎯 <b>+{PROFIT_TARGET_PCT*100:.0f}% TARGET HIT!</b>\n"
             f"Equity: <b>${current_equity:,.2f}</b> (start ${CHALLENGE_START_BALANCE:,.0f})\n"
             f"🛑 <b>BOT PAUSED</b> — no more risk trades.\n"
             f"⏳ Waiting for {MIN_TRADING_DAYS} trading-day minimum.\n"
@@ -897,6 +1035,9 @@ def process_pending_signals() -> None:
     # to prevent trading on stale data after crash/restart/long pause.
     MAX_SIGNAL_AGE_MS = 5 * 60_000
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    # MCT counter — tracks orders placed during THIS batch run so back-to-back
+    # signals can't bypass the cap before MT5's positions_get sees them.
+    in_batch_placed = 0
     for sig in pending:
         # BUGFIX 2026-04-28 (Round 24): validate required fields up-front to
         # prevent KeyError crashes from malformed signals (schema drift, manual
@@ -924,6 +1065,35 @@ def process_pending_signals() -> None:
             tg_send(f"🛑 <b>FTMO Rule Block</b>\nAsset: {sig['assetSymbol']}\nReason: {html_escape(blocker)}")
             executed["executions"].append({
                 "signal": sig, "result": "blocked", "reason": blocker,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+            continue
+
+        # R28: dailyPeakTrailingStop — Anti-DL gate. Block new entries when
+        # intraday equity drops trailDistance below today's peak. This is the
+        # key feature that pushes V5_QUARTZ_LITE_R28 to 71.28% engine-honest
+        # pass-rate (vs 68.87% baseline). Mirrors engine line 4810-4816.
+        dpt_block = check_daily_peak_trail_block(account_equity)
+        if dpt_block:
+            log_event("dpt_block", asset=sig["assetSymbol"], reason=dpt_block)
+            tg_send(f"🛡️ <b>Day-Peak Trail Block</b>\n{sig['assetSymbol']}\n{html_escape(dpt_block)}")
+            executed["executions"].append({
+                "signal": sig, "result": "dpt_blocked", "reason": dpt_block,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+            continue
+
+        # BUGFIX 2026-04-28: enforce maxConcurrentTrades parity with engine.
+        # Count live MT5 positions tagged with our magic (231) plus ones we
+        # already placed earlier in this batch (positions_get may lag).
+        live_positions = mt5.positions_get(magic=231) or []
+        open_count = len(live_positions) + in_batch_placed
+        if open_count >= MAX_CONCURRENT_TRADES:
+            log_event("mct_block", asset=sig["assetSymbol"], open=open_count, cap=MAX_CONCURRENT_TRADES)
+            tg_send(f"🛑 <b>MCT Cap Reached</b>\n{sig['assetSymbol']} skipped\nOpen: {open_count}/{MAX_CONCURRENT_TRADES}")
+            executed["executions"].append({
+                "signal": sig, "result": "mct_blocked",
+                "open_count": open_count, "cap": MAX_CONCURRENT_TRADES,
                 "ts": datetime.now(timezone.utc).isoformat(),
             })
             continue
@@ -975,6 +1145,7 @@ def process_pending_signals() -> None:
         if result.ok:
             _clear_pending_order_marker(order_marker)
             _reset_order_fail_counter()
+            in_batch_placed += 1
             log_event("order_placed", asset=sig["assetSymbol"], ticket=result.ticket, lot=result.lot, entry=result.entry_price)
             tg_send(
                 f"✅ <b>ORDER PLACED</b>\n"
@@ -992,6 +1163,14 @@ def process_pending_signals() -> None:
                 "entry_price": result.entry_price,
                 "stop_price": sig["stopPrice"],
                 "tp_price": sig["tpPrice"],
+                # BUGFIX 2026-04-29 (Agent 4 Bug 8): preserve original stopPct
+                # — `stop_price` is mutated by break-even/chandelier; time-exit
+                # min-gain check needs the IMMUTABLE original.
+                "original_stop_pct": sig.get("stopPct"),
+                # BUGFIX 2026-04-29 (Agent 4 Bug 5/6): track peak price seen
+                # since open for wick-touch PTP semantics (mirror engine's
+                # bar.high/low check). max for long, min for short.
+                "peak_price_seen": result.entry_price,
                 "max_hold_until": sig["maxHoldUntil"],
                 "opened_at": datetime.now(timezone.utc).isoformat(),
                 # Trailing-stop state. None = trailing not configured.
@@ -1221,21 +1400,58 @@ def _apply_partial_tp(pos: dict) -> dict:
     if not live:
         return pos
     p = live[0]
-    unrealized = _unrealized_pct(pos, float(p.price_current))
+    current_price = float(p.price_current)
+    # BUGFIX 2026-04-29 (Agent 4 Bug 5 parity): engine fires PTP when bar.high
+    # (long) or bar.low (short) reaches triggerPrice — i.e., a wick TOUCH
+    # within the bar. Live needs to mirror that, otherwise PTP misses if the
+    # wick reverts before next poll. Track peak_price_seen per-position.
+    direction = pos.get("direction", "long")
+    if direction == "long":
+        peak = max(pos.get("peak_price_seen") or current_price, current_price)
+    else:
+        peak = min(pos.get("peak_price_seen") or current_price, current_price)
+    pos["peak_price_seen"] = peak
+    # Compute unrealized using PEAK (not just current) so wick-touched PTP fires.
+    entry = float(pos.get("entry_price", p.price_open))
+    unrealized = (peak - entry) / entry if direction == "long" else (entry - peak) / entry
     trigger = float(cfg.get("triggerPct", 0))
     frac = float(cfg.get("closeFraction", 0))
     if unrealized < trigger or frac <= 0:
         return pos
     close_lot = float(p.volume) * frac
+    # BUGFIX 2026-04-29 (Agent 4 R10 #11): if close_lot < vol_min, PTP can never
+    # fire. Mark done to avoid retry-storm (used to retry every poll forever).
+    info = mt5.symbol_info(pos.get("sourceSymbol", p.symbol))
+    vol_min_check = info.volume_min if info else 0.01
+    if close_lot < vol_min_check:
+        pos["partial_tp_done"] = True
+        log_event("ptp_skipped_tiny_lot",
+                  ticket=pos["ticket"], close_lot=close_lot, vol_min=vol_min_check)
+        return pos
     if _close_partial_lot(pos["ticket"], close_lot, "ptp"):
         pos["partial_tp_done"] = True
         log_event("partial_tp_fired", ticket=pos["ticket"],
                   trigger=trigger, fraction=frac, unrealized=unrealized,
                   closed_lot=close_lot)
+        # BUGFIX 2026-04-29 (Bug A parity): after PTP fires, auto-move SL to
+        # entry on remainder leg. Engine does this since 2026-04-29 — without
+        # the parity fix, live realizes losses on remainder while engine
+        # assumes break-even minimum. Direction: live underperforms backtest.
+        current_sl = float(p.sl) if p.sl else None
+        should_move = (
+            direction == "long" and (current_sl is None or current_sl < entry)
+        ) or (
+            direction == "short" and (current_sl is None or current_sl > entry)
+        )
+        if should_move and _modify_position_sl(pos["ticket"], entry):
+            pos["stop_price"] = entry
+            pos["break_even_done"] = True
+            log_event("ptp_sl_to_entry", ticket=pos["ticket"], new_sl=entry)
         tg_send(
             f"🎯 <b>Partial TP fired</b>\n"
             f"{pos['signalAsset']} ticket <code>{pos['ticket']}</code>\n"
             f"Closed {frac*100:.0f}% @ +{unrealized*100:.2f}%"
+            f"{' (SL→entry)' if should_move else ''}"
         )
     return pos
 
@@ -1254,7 +1470,21 @@ def _apply_partial_tp_levels(pos: dict) -> dict:
     if not live:
         return pos
     p = live[0]
-    unrealized = _unrealized_pct(pos, float(p.price_current))
+    current_price = float(p.price_current)
+    # BUGFIX 2026-04-29 (Agent 4 Bug 6 parity): mirror engine's wick-touch
+    # semantics by using peak_price_seen since open (max for long, min short).
+    direction = pos.get("direction", "long")
+    if direction == "long":
+        peak = max(pos.get("peak_price_seen") or current_price, current_price)
+    else:
+        peak = min(pos.get("peak_price_seen") or current_price, current_price)
+    pos["peak_price_seen"] = peak
+    entry_price = float(pos.get("entry_price", p.price_open))
+    unrealized = (
+        (peak - entry_price) / entry_price
+        if direction == "long"
+        else (entry_price - peak) / entry_price
+    )
     for idx, lv in enumerate(levels):
         if done[idx]:
             continue
@@ -1403,14 +1633,28 @@ def _apply_time_exit(pos: dict, now_ms: int) -> bool:
     except Exception:
         return False
 
-    bars_held = (now_ms - opened_ms) // bar_ms
+    # BUGFIX 2026-04-29 (Agent 4 Bug 7 parity): use bar-aligned bars_held.
+    # Round opened_ms UP to the next bar close (engine starts counting from
+    # ebIdx, the first CLOSED bar after entry). Wall-clock / bar_ms gave
+    # off-by-one toward earlier exit on live.
+    bar_aligned_open = ((opened_ms + bar_ms - 1) // bar_ms) * bar_ms
+    bars_held = max(0, (now_ms - bar_aligned_open) // bar_ms)
 
     entry = float(pos.get("entry_price", 0))
-    stop_price = float(pos.get("stop_price", 0))
-    if entry <= 0 or stop_price <= 0:
+    if entry <= 0:
         return False
-    eff_stop = abs(stop_price - entry) / entry  # back-derive stopPct
-    min_gain_abs = min_gain_r * eff_stop
+    # BUGFIX 2026-04-29 (Agent 4 Bug 8 parity): anchor min-gain to ORIGINAL
+    # stopPct stored at order placement, not the mutated `stop_price` (which
+    # break-even/chandelier may have moved to entry → eff_stop ≈ 0 → time-
+    # exit never fires after BE). Fall back to current stop_price for legacy
+    # positions written before this field was tracked.
+    orig_stop_pct = pos.get("original_stop_pct")
+    if orig_stop_pct is None:
+        stop_price = float(pos.get("stop_price", 0))
+        if stop_price <= 0:
+            return False
+        orig_stop_pct = abs(stop_price - entry) / entry  # legacy fallback
+    min_gain_abs = min_gain_r * float(orig_stop_pct)
     unrealized = _unrealized_pct(pos, float(p.price_current))
     if unrealized >= min_gain_abs:
         pos["time_exit_reached_min_gain"] = True
@@ -1972,20 +2216,121 @@ def rebuild_open_positions_from_mt5() -> None:
     )
 
 
+def acquire_singleton_or_exit() -> None:
+    """Refuse to start when another executor is already running on this state dir.
+
+    Two concurrent executors → racing MT5 order_send + clobbered state files.
+    We write our PID into STATE_DIR/executor.pid; if the file already exists
+    AND the recorded PID is alive, exit. Stale PID files are taken over.
+    """
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    pid_file = STATE_DIR / "executor.pid"
+    if pid_file.exists():
+        try:
+            other_pid = int(pid_file.read_text().strip())
+        except Exception:
+            other_pid = 0
+        if other_pid > 0 and other_pid != os.getpid():
+            alive = False
+            try:
+                if os.name == "nt":
+                    import ctypes
+                    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                    handle = ctypes.windll.kernel32.OpenProcess(
+                        PROCESS_QUERY_LIMITED_INFORMATION, False, other_pid
+                    )
+                    if handle:
+                        alive = True
+                        ctypes.windll.kernel32.CloseHandle(handle)
+                else:
+                    os.kill(other_pid, 0)
+                    alive = True
+            except (OSError, ProcessLookupError):
+                alive = False
+            except Exception:
+                alive = False
+            if alive:
+                msg = (
+                    f"Another ftmo_executor is already running "
+                    f"(pid={other_pid}, state_dir={STATE_DIR}). Refusing to start."
+                )
+                print(msg, file=sys.stderr)
+                log_event("singleton_refused", other_pid=other_pid)
+                sys.exit(11)
+    try:
+        pid_file.write_text(str(os.getpid()))
+    except Exception:
+        pass
+
+    # Mid-session FTMO_TF switch protection: refuse to attach to a state-dir
+    # whose recorded timeframe differs from ours when there are still open
+    # positions. Otherwise the new TF's signal stream loses sight of the
+    # legacy positions and we may double-enter / drop SL management.
+    marker = STATE_DIR / "tf-marker.json"
+    open_pos_path = STATE_DIR / "open-positions.json"
+    has_open = False
+    try:
+        if open_pos_path.exists():
+            payload = json.loads(open_pos_path.read_text("utf8"))
+            positions = payload.get("positions") if isinstance(payload, dict) else None
+            has_open = bool(positions)
+    except Exception:
+        has_open = False
+    if marker.exists():
+        try:
+            recorded = json.loads(marker.read_text("utf8")).get("ftmo_tf")
+        except Exception:
+            recorded = None
+        if recorded and recorded != _FTMO_TF and has_open:
+            msg = (
+                f"FTMO_TF changed from {recorded} to {_FTMO_TF} while open "
+                f"positions exist in {STATE_DIR}. Close them first or use "
+                f"the previous timeframe to manage them."
+            )
+            print(msg, file=sys.stderr)
+            log_event(
+                "ftmo_tf_switch_blocked", recorded=recorded, current=_FTMO_TF
+            )
+            sys.exit(12)
+    try:
+        marker.write_text(json.dumps({"ftmo_tf": _FTMO_TF}))
+    except Exception:
+        pass
+
+    def _release_singleton() -> None:
+        try:
+            if pid_file.exists():
+                try:
+                    cur = int(pid_file.read_text().strip())
+                except Exception:
+                    cur = -1
+                if cur == os.getpid():
+                    pid_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    import atexit
+    atexit.register(_release_singleton)
+
+
 def main_loop() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    acquire_singleton_or_exit()
 
     # Connect with retry
     while not mt5_init_with_retry():
         log_event("initial_connect_retry", backoff_sec=RECONNECT_BACKOFF_SEC)
         time.sleep(RECONNECT_BACKOFF_SEC)
 
-    # Round-7 #11: reconcile on-disk position state with MT5 truth on boot.
-    # Critical when the executor restarts while trades are open.
-    rebuild_open_positions_from_mt5()
+    # BUGFIX 2026-04-29 (R12 Agent 2 Bug 1): reconcile FIRST so any "placed"
+    # markers can write a complete open_positions entry (with PTP/chand/breakEven
+    # config) before rebuild overwrites the file with the bare MT5 snapshot.
     # Round 13 Bug 1: reconcile pending-orders write-ahead log to detect
     # crashed-mid-order_send signals (re-queue or cleanup).
     reconcile_pending_order_markers()
+    # Round-7 #11: reconcile on-disk position state with MT5 truth on boot.
+    # Critical when the executor restarts while trades are open.
+    rebuild_open_positions_from_mt5()
 
     mode = "MOCK" if MOCK_MODE else "LIVE (MT5)"
     tg_send(
@@ -2011,6 +2356,11 @@ def main_loop() -> None:
                     sample_equity_history(acct["equity"])
                     day_start_usd = read_json(DAILY_STATE_PATH, {}).get("equity_at_day_start_usd", acct["equity"])
                     check_daily_dd_warning(acct["equity"], day_start_usd)
+                    # R28: Track intraday peak for dailyPeakTrailingStop. Even
+                    # when no signal arrives, peak must keep ratcheting up so
+                    # the gate triggers at the correct moment.
+                    if DPT_ENABLED:
+                        update_day_peak(acct["equity"])
 
                 # Circuit breaker (may trip → set paused)
                 check_circuit_breaker()

@@ -25,6 +25,7 @@ import {
   type DetectionResult,
   type LiveSignal,
 } from "../src/utils/ftmoLiveSignalV231";
+import { formatLiveCapsLabel } from "../src/utils/ftmoLiveCaps";
 import type { Candle } from "../src/utils/indicators";
 import { tgSend, htmlEscape } from "../src/utils/telegramNotify";
 import { startTelegramBot, readControls } from "../src/utils/telegramBot";
@@ -41,7 +42,32 @@ const TF: "5m" | "15m" | "30m" | "1h" | "2h" | "4h" =
       ? "15m"
       : process.env.FTMO_TF === "30m" ||
           process.env.FTMO_TF === "30m-live" ||
-          process.env.FTMO_TF === "30m-turbo"
+          process.env.FTMO_TF === "30m-turbo" ||
+          // CRITICAL FIX (Round 12 R72): V5_PLATINUM_30M and all V5_TITANIUM-derived
+          // configs (OBSIDIAN/ZIRKON/AMBER/QUARTZ/TOPAZ/RUBIN/SAPPHIR/EMERALD/PEARL/
+          // OPAL/AGATE/JADE/ONYX/QUARTZ_STEP2) are tuned on 30m bars even though their
+          // FTMO_TF env starts with "2h-trend-". Without this mapping the live bot
+          // fed 2h-candles into 30m-tuned configs → wrong signals + wrong PnL.
+          [
+            "2h-trend-v5-platinum-30m",
+            "2h-trend-v5-titanium",
+            "2h-trend-v5-obsidian",
+            "2h-trend-v5-zirkon",
+            "2h-trend-v5-amber",
+            "2h-trend-v5-quartz",
+            "2h-trend-v5-quartz-lite",
+            "2h-trend-v5-quartz-lite-r28",
+            "2h-trend-v5-quartz-step2",
+            "2h-trend-v5-topaz",
+            "2h-trend-v5-rubin",
+            "2h-trend-v5-sapphir",
+            "2h-trend-v5-emerald",
+            "2h-trend-v5-pearl",
+            "2h-trend-v5-opal",
+            "2h-trend-v5-agate",
+            "2h-trend-v5-jade",
+            "2h-trend-v5-onyx",
+          ].includes(process.env.FTMO_TF ?? "")
         ? "30m"
         : process.env.FTMO_TF === "1h" || process.env.FTMO_TF === "1h-live"
           ? "1h"
@@ -299,9 +325,22 @@ async function runOneCheck(): Promise<DetectionResult> {
       maxPages: 2,
     });
 
+  // BUGFIX 2026-04-28: extended default symbol list to cover V5_NOVA (8 assets),
+  // V5_TITAN_REAL, V5_LEGEND, and V5 baseline. Previously only 5 extras → some
+  // configs silently degraded to fewer assets when env not set.
+  // V5_NOVA needs: ETH, BTC, BNB, ADA, DOGE, LTC, BCH, LINK.
+  // V5 baseline: ETH, BTC, SOL, BNB, ADA, AVAX, LTC, BCH, LINK + DOGE.
   const extraSymbols = process.env.FTMO_EXTRA_SYMBOLS
     ? process.env.FTMO_EXTRA_SYMBOLS.split(",")
-    : ["BNBUSDT", "ADAUSDT", "AVAXUSDT", "BCHUSDT", "DOGEUSDT"];
+    : [
+        "BNBUSDT",
+        "ADAUSDT",
+        "AVAXUSDT",
+        "BCHUSDT",
+        "DOGEUSDT",
+        "LTCUSDT",
+        "LINKUSDT",
+      ];
 
   const allSymbols = ["ETHUSDT", "BTCUSDT", "SOLUSDT", ...extraSymbols];
   const settled = await Promise.allSettled(allSymbols.map(fetchOne));
@@ -582,7 +621,7 @@ async function runSmartAlerts(account: AccountState) {
           `Signals: ${samples.length} (${assets.join(", ")})\n` +
           `Risk:  avg ${(riskAvg * 100).toFixed(2)}% · max ${(riskMax * 100).toFixed(2)}%\n` +
           `Stop:  avg ${(stopAvg * 100).toFixed(2)}% · max ${(stopMax * 100).toFixed(2)}%\n` +
-          `Live caps: 2% risk · 3% stop`,
+          `Live caps: ${formatLiveCapsLabel()}`,
       );
     }
     state.lastRiskHeartbeat = now;

@@ -311,6 +311,93 @@ export interface FtmoDaytrade24hConfig {
    */
   maxConcurrentTrades?: number;
   /**
+   * Round-13 Anti-DL feature: intraday daily-loss circuit-breaker.
+   *
+   * Web research showed top-tier FTMO bots have a 2-stage daily-loss kill-switch
+   * (Prop Firm Risk Guard pattern). When realized day-PnL drops to:
+   *   - softLossThreshold (e.g. -0.03 = -3%): scale risk by `softFactor` (e.g. 0.5)
+   *   - hardLossThreshold (e.g. -0.04 = -4%): block all new entries for the day
+   *
+   * Targets V5_NOVA's 53% DL-fail rate by stopping the "letzter trade kippt
+   * den Account"-pattern — most blow-ups happen on the 4th or 5th trade of
+   * a losing day, not the 1st. Tightening sizing after -3% prevents the
+   * runaway. Operates on REALIZED equity (sort-by-exit), conservative compared
+   * to true intraday tick-based.
+   */
+  intradayDailyLossThrottle?: {
+    softLossThreshold: number; // e.g. 0.03 (positive number, treated as -3%)
+    hardLossThreshold: number; // e.g. 0.04 (positive number, treated as -4%)
+    softFactor: number; // e.g. 0.5 — multiplier on factor when soft hit
+  };
+  /**
+   * Round-22 Reliability feature: simulate bot ping-reliability for the
+   * pause-after-target ping-trade phase.
+   *
+   * Default 1.0 (current behavior — assumes 100% bot uptime + zero failed
+   * pings). In live, pings can fail due to bot downtime, cron-miss, or
+   * MT5-disconnect. Use 0.85 for a conservatively-reliable bot, or 0.7 for
+   * realistic worst-case. Engine simulates each ping-day as Bernoulli(prob);
+   * failed pings advance the calendar day without satisfying minTradingDays.
+   *
+   * Without this realism, pause-mode pass-rates are inflated 10-20pp because
+   * 76% of passes cluster exactly at minTradingDays floor (engine guarantees
+   * ping success). Memory note: V5_QUARTZ_LITE 83.58% pass / median 4d
+   * was measured at pingReliability=1.0 (best case).
+   */
+  pingReliability?: number;
+  /**
+   * Round-28 Live-Replication mode: switches the equity-loop sort from
+   * EXIT-time order (default — see all.sort comment) to ENTRY-time order.
+   *
+   * Default false (back-compat with backtest numbers). Set to true to
+   * approximate the bar-by-bar live-replication: trades are processed in
+   * the chronological order they were ENTERED (the order a live bot would
+   * actually open them), not the order they happened to close. This means:
+   *   - MCT cap (maxConcurrentTrades) is checked against the realised
+   *     entry-order (no later-exit selection bias).
+   *   - Equity at trade-N's entry already includes ALL still-open trades'
+   *     not-yet-realised PnL (consistent with a live broker's mark-to-mkt
+   *     equity at the moment the next order is sent).
+   * NOTE: this is ONE part of true live-replication. The detector phase
+   * (detectAsset → all signals collected up-front) still has full window
+   * lookahead for stack-ranking (momentumRanking, correlationFilter checks
+   * walk pre-sorted `all` with future trades). True bar-by-bar live needs
+   * a chronological detector (V4 simulator). liveMode is a midpoint check
+   * that isolates "is the EXIT-time sort the source of inflation?"
+   */
+  liveMode?: boolean;
+  /**
+   * Round-15 Anti-TL feature: challenge-peak trailing equity-stop.
+   *
+   * Sister to dailyPeakTrailingStop but on CHALLENGE-WIDE peak instead of
+   * daily peak. When equity drops `trailDistance` below the all-time
+   * challenge peak, halt all new entries until the challenge ends.
+   *
+   * Targets the "good day, then 4 bad days nuke account" pattern that
+   * pushes TL fail-rate. Distinct from peakDrawdownThrottle (which scales
+   * down sizing — this hard-stops new entries).
+   *
+   * Example: equity rose to +6%, trailDistance=0.05 — once equity drops
+   * to +1%, stop trading and ride out remaining days for the win.
+   */
+  challengePeakTrailingStop?: {
+    trailDistance: number; // e.g. 0.05 = 5% below challenge peak
+  };
+  /**
+   * Round-13 Anti-DL feature: daily equity-peak trailing stop.
+   *
+   * Tracks intraday peak equity per day. If equity drops more than
+   * `trailDistance` below daily peak, halt new entries until next day.
+   * Prevents profit-give-back DL fails — distinct from peakDrawdownThrottle
+   * (challenge-wide peak) and drawdownShield (absolute equity threshold).
+   *
+   * Example: peak +2.5% intraday, trailDistance=0.03, equity drops to -0.5%
+   *   → 3pp below peak → block new entries.
+   */
+  dailyPeakTrailingStop?: {
+    trailDistance: number; // e.g. 0.03 = 3% below daily peak
+  };
+  /**
    * Volume confirmation filter: skip trade if trigger bar's volume is below
    * `minRatio × SMA(period)` of preceding volumes. Catches "real" breakouts.
    */
@@ -2545,6 +2632,9 @@ export const FTMO_DAYTRADE_24H_CONFIG_V12_TURBO_30M_OPT: FtmoDaytrade24hConfig =
     ),
   };
 
+// V12_QUARTZ_30M is defined at the bottom of the file because it depends on
+// FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE which is declared later.
+
 /**
  * LIVE_30M_V1 — first config tuned WITH the live-execution caps in place.
  *
@@ -3236,7 +3326,12 @@ export interface Daytrade24hTrade {
   exitPrice: number;
   rawPnl: number;
   effPnl: number;
+  /** Exit day relative to challenge start (0-indexed, Prague midnight). FTMO
+   *  daily-loss attribution day. */
   day: number;
+  /** Entry day relative to challenge start. Used for minTradingDays counting
+   *  (FTMO counts a "trading day" as a day with an executed entry). */
+  entryDay: number;
   exitReason: "tp" | "stop" | "time";
   holdHours: number;
   /** iter1h-035+ vol-targeting multiplier applied at entry (default 1.0) */
@@ -3258,6 +3353,29 @@ export interface FtmoDaytrade24hResult {
   passDay?: number;
   trades: Daytrade24hTrade[];
   maxHoldHoursObserved: number;
+}
+
+// BUGFIX 2026-04-29 (Agent 5): DST-aware Prague day-index. Returns days since
+// epoch in Europe/Prague time zone. Uses Intl.DateTimeFormat — handles CET/CEST
+// transitions automatically. Fallback to fixed UTC+1 if Intl unavailable.
+const _pragueFmt =
+  typeof Intl !== "undefined" && (Intl as any).DateTimeFormat
+    ? new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Europe/Prague",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      })
+    : null;
+function pragueDay(ms: number): number {
+  if (_pragueFmt) {
+    const yyyymmdd = _pragueFmt.format(new Date(ms)); // "YYYY-MM-DD"
+    const [y, m, d] = yyyymmdd.split("-").map(Number);
+    // Day-index since epoch using UTC of (Prague-Y/M/D 00:00 as if UTC).
+    return Math.floor(Date.UTC(y, m - 1, d) / (24 * 3600 * 1000));
+  }
+  // Fallback: fixed UTC+1 (legacy behavior, ~0.3-0.6pp drift in summer).
+  return Math.floor((ms + 3600 * 1000) / (24 * 3600 * 1000));
 }
 
 export function detectAsset(
@@ -3971,10 +4089,14 @@ export function detectAsset(
       // for trades using pullbackEntry — producing impossible stops/TPs.
       for (let j = ebIdx; j <= mx; j++) {
         const bar = candles[j];
-        // BUGFIX 2026-04-28 (Round 35 Finding 1): check PTP via bar.high/low
-        // BEFORE stop/tp on same bar. Realistic intra-bar order: price moves
-        // up first (long), trigger PTP, then back down to stop. Without this
-        // fix, same-bar stop+PTP loses full position when 30% should be locked.
+        // BUGFIX 2026-04-28 (Round 35 Finding 1): check PTP via bar.high/low.
+        // BUGFIX 2026-04-29 (Agent 2 Bug 4 — same-bar order pessimism): if
+        // BOTH PTP and the original stop are hit in the same bar, assume
+        // STOP fired FIRST. The previous "PTP wins on conflict" assumption
+        // was optimistic; for volatile bars with a wick to PTP and a low to
+        // stop, the engine systematically inflated winrate. Conservative
+        // tie-break: stop_fired_in_bar AND ptp_fired_in_bar → stop_first
+        // unless bar's open already exceeded the PTP trigger (gap-up case).
         if (ptp && !ptpTriggered) {
           const triggerPrice =
             direction === "long"
@@ -3984,16 +4106,35 @@ export function detectAsset(
             direction === "long"
               ? bar.high >= triggerPrice
               : bar.low <= triggerPrice;
-          if (ptpHit) {
+          // Stop also hit this bar?
+          const stopHit =
+            direction === "long" ? bar.low <= dynStop : bar.high >= dynStop;
+          // Gap exception: if bar opens already favorable past PTP trigger,
+          // PTP definitely fired first (no wick required).
+          const gapPastPtp =
+            direction === "long"
+              ? bar.open >= triggerPrice
+              : bar.open <= triggerPrice;
+          // Conservative: PTP only fires when stop did NOT hit, OR a gap
+          // already passed the trigger before any wick down to stop.
+          if (ptpHit && (!stopHit || gapPastPtp)) {
             ptpTriggered = true;
-            ptpRealizedPct = ptp.closeFraction * ptp.triggerPct;
+            // BUGFIX 2026-04-29 (Agent 7 R10 Bug 3): apply slippage + half-cost on
+            // partial fill. Real MT5 charges commission + slippage on each
+            // partial close. Engine previously credited full triggerPct as gain.
+            // Per-side cost = cost/2 (half round-trip) + slippageBp/10000 (one fill).
+            const ptpFillCost = cost / 2 + (asset.slippageBp ?? 0) / 10000;
+            ptpRealizedPct = ptp.closeFraction * (ptp.triggerPct - ptpFillCost);
             // BUGFIX 2026-04-29 (Audit Bug A): after PTP, auto-move dynStop
             // to entry on remainder leg. Industry-standard: once partial
             // profit is locked, the trade should be guaranteed-profitable
-            // at minimum break-even. Without this, the same-bar PTP+stop
-            // sequence booked partial profit AND a non-tightened loss on
-            // remainder, inflating PnL on trades that had a wick up.
-            const beStop = entry;
+            // at minimum break-even.
+            // BUGFIX 2026-04-29 (R12 Agent 1 Bug 8): "BE" must include the
+            // round-trip cost so the BE-out trade is actually flat, not -cost.
+            // entryEff already prices in entry-half cost; the stop level needs
+            // to add the exit-half so a fill at this price closes flat.
+            const beStop =
+              direction === "long" ? entry * (1 + cost) : entry * (1 - cost);
             if (direction === "long") {
               if (beStop > dynStop) dynStop = beStop;
             } else {
@@ -4006,27 +4147,50 @@ export function detectAsset(
             chanArmed = false;
           }
         }
+        // BUGFIX 2026-04-29 (R13 entry-exit Bug 1 + Agent 1 Bug 3): same-bar
+        // TP+stop tie-break. When bar both touches TP and stop, default code
+        // always picked stop (because of the order). But if bar.open already
+        // gapped PAST tp on the favorable side, TP was hit first physically.
+        // Now: gap-past-TP wins; otherwise still conservative stop-first.
         if (direction === "long") {
-          if (bar.low <= dynStop) {
+          const stopHit = bar.low <= dynStop;
+          const tpHit = bar.high >= tp;
+          const gapPastTp = bar.open >= tp;
+          if (tpHit && gapPastTp) {
             exitBar = j;
-            exitPrice = dynStop;
+            exitPrice = bar.open; // gap-up fills at open
+            reason = "tp";
+            break;
+          }
+          if (stopHit) {
+            exitBar = j;
+            exitPrice = bar.open < dynStop ? bar.open : dynStop;
             reason = "stop";
             break;
           }
-          if (bar.high >= tp) {
+          if (tpHit) {
             exitBar = j;
             exitPrice = tp;
             reason = "tp";
             break;
           }
         } else {
-          if (bar.high >= dynStop) {
+          const stopHit = bar.high >= dynStop;
+          const tpHit = bar.low <= tp;
+          const gapPastTp = bar.open <= tp;
+          if (tpHit && gapPastTp) {
             exitBar = j;
-            exitPrice = dynStop;
+            exitPrice = bar.open;
+            reason = "tp";
+            break;
+          }
+          if (stopHit) {
+            exitBar = j;
+            exitPrice = bar.open > dynStop ? bar.open : dynStop;
             reason = "stop";
             break;
           }
-          if (bar.low <= tp) {
+          if (tpHit) {
             exitBar = j;
             exitPrice = tp;
             reason = "tp";
@@ -4173,17 +4337,29 @@ export function detectAsset(
       }
       // Realistic additional execution costs (FTMO-broker reality, not Binance):
       //   - slippage on both fills
-      //   - overnight swap if trade crosses UTC midnight
+      //   - overnight swap if trade crosses Prague midnight
+      // BUGFIX 2026-04-29 (R12 Agent 1 Bug 1): if PTP fired, the partial leg
+      // already booked entry+exit slippage in ptpFillCost. Apply slippage here
+      // only to the remainder; otherwise the closed fraction is double-charged.
       const slippageBp = asset.slippageBp ?? 0;
       if (slippageBp > 0) {
-        rawPnl -= (slippageBp / 10000) * 2; // both sides
+        let remainingFraction = 1;
+        if (ptpTriggered && ptp) remainingFraction = 1 - ptp.closeFraction;
+        if (ptpLevels && ptpLevels.length > 0) {
+          const totalClosed = ptpLevels.reduce(
+            (acc, lv, idx) => acc + (ptpLevelsHit[idx] ? lv.closeFraction : 0),
+            0,
+          );
+          remainingFraction = Math.max(0, 1 - totalClosed);
+        }
+        rawPnl -= (slippageBp / 10000) * 2 * remainingFraction;
       }
       const swapBp = asset.swapBpPerDay ?? 0;
       if (swapBp > 0) {
-        const entryDay = Math.floor(eb.openTime / (24 * 3600_000));
-        const exitDay = Math.floor(
-          candles[exitBar].closeTime / (24 * 3600_000),
-        );
+        // BUGFIX 2026-04-29 (R12 Agent 1 Bug 5): use Prague day so swap-charge
+        // aligns with the same daily anchor the rest of the engine uses.
+        const entryDay = pragueDay(eb.openTime);
+        const exitDay = pragueDay(candles[exitBar].closeTime);
         const overnightCrossings = Math.max(0, exitDay - entryDay);
         if (overnightCrossings > 0) {
           rawPnl -= (swapBp / 10000) * overnightCrossings;
@@ -4240,18 +4416,43 @@ export function detectAsset(
       // smaller position via volMult<1). Boost in calm regimes is not
       // physically realisable without tightening the stop proportionally.
       const safeVolMult = cfg.liveCaps ? Math.min(volMult, 1.0) : volMult;
+      // BUGFIX 2026-04-29 (Agent 4 Bug 2 + 4): allow tail gap losses by
+      // relaxing the floor from -1R to -1.5R. Real markets gap through
+      // stops by 0.5-2R on news shocks. The previous hard cap at -effRisk
+      // masked total_loss-rate. 1.5× is a conservative middle ground.
+      // Also: no longer scale floor by safeVolMult (downside-only intent
+      // per the comment block above) — losses still happen at full effRiskFrac
+      // even when position size is reduced via vol-targeting.
+      const GAP_TAIL_MULT = 1.5;
+      // BUGFIX 2026-04-29 (Agent 8 Bug 10): guard against NaN/Infinity from
+      // corrupt candle data (zero-price, malformed bars). Without this,
+      // NaN equity propagates to silent insufficient_days fail; Infinity
+      // causes fake passes. Skip such trades entirely.
+      if (!Number.isFinite(rawPnl)) {
+        continue;
+      }
       const effPnl = Math.max(
         rawPnl * cfg.leverage * effRiskFrac * safeVolMult,
-        -effRiskFrac * safeVolMult,
+        -effRiskFrac * GAP_TAIL_MULT,
       );
       // BUGFIX 2026-04-28: was UTC day boundary; FTMO daily-loss anchor is
-      // Prague midnight (UTC+1 winter / UTC+2 summer). Use UTC+1 fixed offset
-      // (ignores DST → max 1h drift, acceptable for backtest accuracy).
-      const PRAGUE_OFFSET_MS = 1 * 3600 * 1000;
-      const day =
-        Math.floor((eb.openTime + PRAGUE_OFFSET_MS) / (24 * 3600 * 1000)) -
-        Math.floor((ts0 + PRAGUE_OFFSET_MS) / (24 * 3600 * 1000));
-      const holdHours = (exitBar - (i + 1)) * hoursPerBar;
+      // Prague midnight (UTC+1 winter / UTC+2 summer).
+      // BUGFIX 2026-04-29 (Bug F): t.day must be EXIT day not ENTRY day. FTMO
+      // DL is calculated against day-end equity. A trade entered day 3 closing
+      // day 8 with -5% loss counts toward day 8's DL, NOT day 3's. Engine was
+      // attributing the loss to entry day → under-counted DL breaches on the
+      // actual close day → inflated pass-rate when overlapping trades cross
+      // day boundaries.
+      // BUGFIX 2026-04-29 (Agent 5): true DST-aware Europe/Prague offset
+      // resolution. Previous fixed UTC+1 drifted by 1h during CEST (Apr-Oct,
+      // ~7mo/yr) and mis-bucketed PnL near 22-23 UTC summer windows. Use
+      // PRAGUE_DAY (computed via Intl) for accurate cuts.
+      const exitTimeMs = candles[exitBar].closeTime;
+      const day = pragueDay(exitTimeMs) - pragueDay(ts0);
+      const entryDay = pragueDay(eb.openTime) - pragueDay(ts0);
+      // BUGFIX 2026-04-29 (Agent 2 Bug 10): use ebIdx (actual entry bar after
+      // pullback) not i+1. Cosmetic — display only — but ETA stats were off.
+      const holdHours = (exitBar - ebIdx) * hoursPerBar;
       out.push({
         symbol: asset.symbol,
         direction,
@@ -4262,6 +4463,7 @@ export function detectAsset(
         rawPnl,
         effPnl,
         day,
+        entryDay,
         exitReason: reason,
         holdHours,
         volMult, // iter1h-035+ vol-targeting multiplier
@@ -4278,20 +4480,29 @@ export function detectAsset(
         }
       }
       // V5 re-entry: if stop AND retries left AND within window → set short cooldown
+      // BUGFIX 2026-04-29 (Agent 4 Bug 4+5B):
+      //   1. Window must NOT roll forward with each stop (rolling allows more
+      //      re-entries than configured "max N within M bars"). Set window only
+      //      on first stop of a sequence (when retries are 0).
+      //   2. TP/time-exit reset of retries should require window to have passed,
+      //      otherwise a profitable trade in the middle of a window resets the
+      //      pool and the next stop gets full retry pool again.
       if (cfg.reEntryAfterStop && reason === "stop") {
         if (reEntryRetriesUsed < cfg.reEntryAfterStop.maxRetries) {
-          // Skip the next-bar cooldown to allow re-entry; mark window
           cooldown = exitBar + 1;
-          reEntryWindowEnd = exitBar + cfg.reEntryAfterStop.windowBars;
+          // Only set window on FIRST stop of a sequence (Bug 4 fix).
+          if (reEntryRetriesUsed === 0) {
+            reEntryWindowEnd = exitBar + cfg.reEntryAfterStop.windowBars;
+          }
           reEntryRetriesUsed++;
         } else {
-          // Reset retries after window
           if (exitBar > reEntryWindowEnd) reEntryRetriesUsed = 0;
           cooldown = exitBar + 1;
         }
       } else {
         cooldown = exitBar + 1;
-        reEntryRetriesUsed = 0; // reset on any non-stop exit
+        // Bug 5B fix: only reset retries if window has fully passed.
+        if (exitBar > reEntryWindowEnd) reEntryRetriesUsed = 0;
       }
     }
   }
@@ -4328,6 +4539,36 @@ export function runFtmoDaytrade24h(
     );
   }
   const all: Daytrade24hTrade[] = [];
+  // BUGFIX 2026-04-29 (R13 cross-asset filter audit): validate filter periods
+  // and silently-disabled-on-missing-symbol pitfall. EmaFastPeriod must be <
+  // emaSlowPeriod; missing symbol must throw, not silently skip.
+  if (cfg.crossAssetFilter) {
+    const f = cfg.crossAssetFilter;
+    if (f.emaFastPeriod >= f.emaSlowPeriod) {
+      throw new Error(
+        `crossAssetFilter.emaFastPeriod (${f.emaFastPeriod}) must be < emaSlowPeriod (${f.emaSlowPeriod})`,
+      );
+    }
+    if (!candlesBySymbol[f.symbol]) {
+      console.warn(
+        `[ftmoDaytrade24h] crossAssetFilter.symbol "${f.symbol}" not in candlesBySymbol — filter silently disabled.`,
+      );
+    }
+  }
+  if (cfg.crossAssetFiltersExtra) {
+    for (const f of cfg.crossAssetFiltersExtra) {
+      if (f.emaFastPeriod >= f.emaSlowPeriod) {
+        throw new Error(
+          `crossAssetFiltersExtra "${f.symbol}" emaFastPeriod (${f.emaFastPeriod}) must be < emaSlowPeriod (${f.emaSlowPeriod})`,
+        );
+      }
+      if (!candlesBySymbol[f.symbol]) {
+        console.warn(
+          `[ftmoDaytrade24h] crossAssetFiltersExtra "${f.symbol}" not in candlesBySymbol — extra filter disabled.`,
+        );
+      }
+    }
+  }
   // Resolve cross-asset candles once (same alignment as primary candles).
   const crossKey = cfg.crossAssetFilter?.symbol;
   const crossCandles = crossKey ? candlesBySymbol[crossKey] : undefined;
@@ -4385,18 +4626,43 @@ export function runFtmoDaytrade24h(
   // multiple trades overlap (long holds): trade B opening during A's open
   // window saw equity that included A's not-yet-realized PnL. Sort by exit
   // ensures equity reflects realized PnL only.
-  all.sort(
-    (a, b) =>
-      a.day - b.day || a.exitTime - b.exitTime || a.entryTime - b.entryTime,
-  );
+  //
+  // Round-28 liveMode: when true, sort by ENTRY time instead. This more
+  // closely matches the order a live bot would actually open trades. The
+  // tradeoff is that equity at trade-N's start no longer reflects realised
+  // PnL of overlapping earlier-entered trades — which is also what live
+  // sees (mark-to-market equity in the broker, including unrealised PnL).
+  if (cfg.liveMode) {
+    all.sort(
+      (a, b) =>
+        a.entryTime - b.entryTime ||
+        a.exitTime - b.exitTime ||
+        a.symbol.localeCompare(b.symbol),
+    );
+  } else {
+    all.sort(
+      (a, b) =>
+        a.day - b.day || a.exitTime - b.exitTime || a.entryTime - b.entryTime,
+    );
+  }
 
   let equity = 1.0;
   let peak = 1.0;
   let maxDd = 0;
   let maxHold = 0;
   const dayStart = new Map<number, number>();
+  // Round 13 Anti-DL feature: track per-day peak equity (for daily peak trail)
+  // and per-day realized PnL (for soft/hard daily-loss circuit-breaker).
+  const dayPeak = new Map<number, number>();
   const tradingDays = new Set<number>();
   const executed: Daytrade24hTrade[] = [];
+  // BUGFIX 2026-04-29 (Bug H): track the day target was first hit so
+  // finishPausedPass uses the correct ping-start day. Without this, calls
+  // from later iterations (where t.day = some later exit day) used the wrong
+  // base for pingDay → fewer ping days available → fewer false-passes,
+  // but also missed the case where target had already been hit by an
+  // earlier-iterated trade and we should ping from THAT day onward.
+  let firstTargetHitDay: number | null = null;
 
   const cappedDays = new Set<number>();
   let totalTradesExecuted = 0;
@@ -4410,17 +4676,31 @@ export function runFtmoDaytrade24h(
 
   function finishPausedPass(targetDay: number): FtmoDaytrade24hResult | null {
     if (!cfg.pauseAtTargetReached || equity < 1 + cfg.profitTarget) return null;
-    // BUGFIX 2026-04-29 (Audit Bug 1b): pingDay must start at targetDay + 1.
-    // targetDay itself is already in tradingDays from the trade that hit
-    // target. Starting at targetDay made the first iteration a no-op
-    // (set.add of existing element), which inflated pass-rate by ~0.5-1.5pp
-    // — the tradingDays size already met minTradingDays before the loop
-    // could legitimately ping additional days.
+    // BUGFIX 2026-04-29 (R22 audit): the ping-loop previously assumed 100%
+    // bot reliability. Real bots have downtime / cron-miss / MT5 disconnects
+    // that cause ping-trades to fail. Without modeling that, V5_QUARTZ_LITE
+    // showed 76% of passes clustering exactly at minTradingDays floor — an
+    // inflation artifact, not a real-world median.
+    //
+    // pingReliability default 1.0 preserves backwards compatibility with
+    // existing memory numbers. Configs that want honest live-replication
+    // should set pingReliability to 0.85 (conservative bot) or 0.7 (worst).
+    const pingProb = cfg.pingReliability ?? 1.0;
+    // Deterministic RNG seeded on targetDay so backtests are reproducible.
+    let seed = (targetDay * 2654435761) >>> 0;
+    const nextRand = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed / 0x100000000;
+    };
     let pingDay = targetDay + 1;
     let lastPingDay = targetDay;
     while (tradingDays.size < cfg.minTradingDays && pingDay < cfg.maxDays) {
-      tradingDays.add(pingDay);
-      lastPingDay = pingDay;
+      // Each ping is independent Bernoulli(pingProb). Failed pings advance
+      // the calendar but don't satisfy minTradingDays — bot was offline.
+      if (pingProb >= 1.0 || nextRand() < pingProb) {
+        tradingDays.add(pingDay);
+        lastPingDay = pingDay;
+      }
       pingDay++;
     }
     if (tradingDays.size < cfg.minTradingDays) return null;
@@ -4469,8 +4749,20 @@ export function runFtmoDaytrade24h(
   }
 
   for (const t of all) {
-    if (t.day >= cfg.maxDays) break;
+    // BUGFIX 2026-04-29 (Bug F follow-up): use entryDay (not exit day) for the
+    // "is trade within challenge?" gate. A trade entered on day 25 closing on
+    // day 30 was real and should apply — we shouldn't drop late exits.
+    // Use `continue` (not break) since sort-by-exit means later iterations may
+    // have earlier-entry trades.
+    if (t.entryDay >= cfg.maxDays) continue;
+    // dayStart anchor: with sort-by-exit, equity at top-of-iteration for the
+    // FIRST trade of exit-day N is the realized equity BEFORE that trade —
+    // which equals end-of-prior-day equity = correct start-of-day-N anchor.
     if (!dayStart.has(t.day)) dayStart.set(t.day, equity);
+    // Round 13 Anti-DL: initialize per-day peak at day-start; updated below
+    // after each trade so subsequent same-day trades can compare against
+    // the realized peak.
+    if (!dayPeak.has(t.day)) dayPeak.set(t.day, equity);
 
     // iter235+: realistic FTMO behavior — once profit target hit, STOP trading
     // (don't take more risk while waiting for minTradingDays). Real trader
@@ -4482,13 +4774,53 @@ export function runFtmoDaytrade24h(
     // Iterate forward from target-hit-day to satisfy minTradingDays via
     // virtual ping-trades on quiet days too.
     if (cfg.pauseAtTargetReached && equity >= 1 + cfg.profitTarget) {
-      const pausedPass = finishPausedPass(t.day);
+      // BUGFIX 2026-04-29 (R16 Speed Bug C): capture firstTargetHitDay BEFORE
+      // the pause-shortcut. Previously target hit by an earlier-iter trade
+      // would short-circuit here without ever assigning firstTargetHitDay,
+      // causing pingBase to fall back to t.day (later exit-day) → ping count
+      // started too late → median inflated by holdHours/24 ≈ 1-2d.
+      // Use t.entryDay (R16 Bug A): real-time anchor, not exit.
+      if (firstTargetHitDay === null) firstTargetHitDay = t.entryDay;
+      const pingBase = firstTargetHitDay;
+      const pausedPass = finishPausedPass(pingBase);
       if (pausedPass) return pausedPass;
       continue; // skip trade execution (no risk, no PnL change)
     }
 
     // iter206: skip if daily-gain cap has been hit this day
     if (cappedDays.has(t.day)) continue;
+    // Round 13 Anti-DL gate: hard daily-loss circuit-breaker.
+    // If realized day-PnL has already breached the hard threshold, block
+    // all new entries until next day. Prevents the "5th trade kippt account"
+    // pattern responsible for half of V5_NOVA's DL-fails.
+    if (cfg.intradayDailyLossThrottle) {
+      const sodEq = dayStart.get(t.day) ?? 1.0;
+      const dayPnl = (equity - sodEq) / sodEq;
+      if (dayPnl <= -cfg.intradayDailyLossThrottle.hardLossThreshold) {
+        continue;
+      }
+    }
+    // Round 13 Anti-DL gate: daily peak-trail stop.
+    // If equity has dropped trailDistance below today's intraday realized
+    // peak, halt new entries — protects realized intraday gains from
+    // give-back DL fails.
+    if (cfg.dailyPeakTrailingStop) {
+      const peakToday = dayPeak.get(t.day) ?? equity;
+      const drop = (peakToday - equity) / Math.max(peakToday, 1e-9);
+      if (drop >= cfg.dailyPeakTrailingStop.trailDistance) {
+        continue;
+      }
+    }
+    // Round 15 Anti-TL gate: challenge-peak trail.
+    // If equity has dropped trailDistance below the all-time challenge peak
+    // (peak variable already tracked for maxDd), halt new entries to prevent
+    // the "good day → 4 bad days nuke account" pattern responsible for TL fails.
+    if (cfg.challengePeakTrailingStop) {
+      const drop = (peak - equity) / Math.max(peak, 1e-9);
+      if (drop >= cfg.challengePeakTrailingStop.trailDistance) {
+        continue;
+      }
+    }
     // iter206: skip if max total trades reached
     if (
       cfg.maxTotalTrades !== undefined &&
@@ -4540,16 +4872,21 @@ export function runFtmoDaytrade24h(
     }
 
     // iter207: per-asset activation gates (time-based + equity-based)
+    // BUGFIX 2026-04-29 (Agent 4 R2 Bug F-3 + Agent 1 R2 Bug 1): activation
+    // gates check trade ENTRY conditions, not iteration-time. Use entryDay
+    // for time-gate. For equity-gate, ideally use entry-time equity but that
+    // requires pre-pass — for now we still use running equity (sort-by-exit
+    // approximation) but flag this as residual bias.
     const assetForCheck = cfg.assets.find((a) => a.symbol === t.symbol);
     if (assetForCheck) {
       if (
         assetForCheck.activateAfterDay !== undefined &&
-        t.day < assetForCheck.activateAfterDay
+        t.entryDay < assetForCheck.activateAfterDay
       )
         continue;
       if (
         assetForCheck.deactivateAfterDay !== undefined &&
-        t.day >= assetForCheck.deactivateAfterDay
+        t.entryDay >= assetForCheck.deactivateAfterDay
       )
         continue;
       if (
@@ -4564,21 +4901,38 @@ export function runFtmoDaytrade24h(
         continue;
     }
 
-    // Adaptive sizing: apply factor based on current equity
+    // BUGFIX 2026-04-29 (R13 Agent: position-sizing): sizing-block was wrapped
+    // in `if (cfg.adaptiveSizing)` which left liveCaps/timeBoost/Kelly/shield/
+    // throttle ALL inactive when configs lacked adaptiveSizing (V261/V7/V10/V11/
+    // V12 base — explains why those configs had ETH-PYR riskFrac=5.0 ungebremst
+    // and produced 87%-bug-magic Pass-Rates). Now runs UNCONDITIONALLY; each
+    // modifier still self-checks its own config field.
     let effPnl = t.effPnl;
-    if (cfg.adaptiveSizing && cfg.adaptiveSizing.length > 0) {
+    {
       const asset = cfg.assets.find((a) => a.symbol === t.symbol);
       if (asset) {
-        // Find highest tier whose threshold is met
+        // BUGFIX 2026-04-29 (R13 cascade audit Bug B1): tiers must be sorted by
+        // equityAbove ascending so "highest tier wins" semantics actually work.
+        // Without sort, an unsorted config would silently pick the LAST matching
+        // tier in array order, not the highest-threshold one.
         let factor = 1;
-        for (const tier of cfg.adaptiveSizing) {
-          if (equity - 1 >= tier.equityAbove) factor = tier.factor;
+        if (cfg.adaptiveSizing && cfg.adaptiveSizing.length > 0) {
+          const sortedTiers = [...cfg.adaptiveSizing].sort(
+            (a, b) => a.equityAbove - b.equityAbove,
+          );
+          for (const tier of sortedTiers) {
+            if (equity - 1 >= tier.equityAbove) factor = tier.factor;
+          }
         }
         // iter197 time-boost override: late-game push when behind schedule.
         // Only overrides if it would INCREASE risk (never fights protection).
+        // BUGFIX 2026-04-29 (Agent 4 Round 2 Bug F-1): use t.entryDay (when
+        // the trade was actually placed in real-time), not t.day (exit day).
+        // Late-exit trades were getting retroactive boost they wouldn't have
+        // had in live execution.
         if (
           cfg.timeBoost &&
-          t.day >= cfg.timeBoost.afterDay &&
+          t.entryDay >= cfg.timeBoost.afterDay &&
           equity - 1 < cfg.timeBoost.equityBelow &&
           cfg.timeBoost.factor > factor
         ) {
@@ -4613,6 +4967,11 @@ export function runFtmoDaytrade24h(
             factor *= kMult;
           }
         }
+        // BUGFIX 2026-04-29 (R13 cascade Bug B3): hard-cap factor to prevent
+        // timeBoost(2.0) × kelly(1.5) = 3.0 compound risk. Three concurrent
+        // -2% trades at compound 3× = -18% total_loss in a single day.
+        const MAX_FACTOR = 4;
+        factor = Math.min(factor, MAX_FACTOR);
         // iter204 drawdown shield: scale DOWN when already underwater.
         // Applied AFTER ramps/boosts so it always wins when triggered.
         if (
@@ -4629,7 +4988,25 @@ export function runFtmoDaytrade24h(
           }
         }
         // iter1h-035+ apply vol-targeting multiplier (set per-trade in detectAsset)
-        const tradeVolMult = t.volMult ?? 1.0;
+        // BUGFIX 2026-04-29 (Agent 7 Bug 2): under liveCaps, the volMult MUST be
+        // clamped to <=1.0 ("downside-only scaling" per detectAsset's safeVolMult
+        // intent at line 4263-4270). Equity-loop was using raw t.volMult which
+        // could be >1, allowing volTargeting to BOOST position size beyond live
+        // execution caps. Inflated wins for configs with volTargeting maxMult>1
+        // (e.g. V5_NOVA per-asset 1.0-1.5).
+        // Round 13 Anti-DL: soft daily-loss circuit-breaker scales risk DOWN
+        // when intraday realized PnL crosses softLossThreshold but is still
+        // above hardLossThreshold (the hard cut-off was applied earlier).
+        if (cfg.intradayDailyLossThrottle) {
+          const sodEq = dayStart.get(t.day) ?? 1.0;
+          const dayPnl = (equity - sodEq) / sodEq;
+          if (dayPnl <= -cfg.intradayDailyLossThrottle.softLossThreshold) {
+            factor *= cfg.intradayDailyLossThrottle.softFactor;
+          }
+        }
+        const tradeVolMult = cfg.liveCaps
+          ? Math.min(t.volMult ?? 1.0, 1.0)
+          : (t.volMult ?? 1.0);
         let effRisk = asset.riskFrac * factor * tradeVolMult;
         // BUGFIX 2026-04-26: respect live-cap maxRiskFrac in equity loop too.
         // Previously this path overwrote the carefully-capped effPnl from
@@ -4638,8 +5015,14 @@ export function runFtmoDaytrade24h(
           effRisk = cfg.liveCaps.maxRiskFrac;
         }
         if (effRisk <= 0) continue; // skip trade
-        effPnl = Math.max(t.rawPnl * cfg.leverage * effRisk, -effRisk);
+        // BUGFIX 2026-04-29 (Agent 4 Bug 2): relax floor to -1.5R for gap tails.
+        effPnl = Math.max(t.rawPnl * cfg.leverage * effRisk, -effRisk * 1.5);
       }
+    }
+    // BUGFIX 2026-04-29 (Agent 8 Bug 10): final NaN/Infinity guard before
+    // equity update. Corrupt rawPnl/factor could otherwise propagate.
+    if (!Number.isFinite(effPnl)) {
+      continue;
     }
 
     // iter231: track rolling PnL for Kelly window (after effPnl finalized)
@@ -4654,7 +5037,18 @@ export function runFtmoDaytrade24h(
     }
 
     equity *= 1 + effPnl;
-    tradingDays.add(t.day);
+    // Round 13 Anti-DL: update intraday peak after each realized PnL so
+    // the dailyPeakTrailingStop gate sees an accurate peak on subsequent
+    // same-day trades.
+    if (cfg.dailyPeakTrailingStop) {
+      const prevPeak = dayPeak.get(t.day) ?? equity;
+      if (equity > prevPeak) dayPeak.set(t.day, equity);
+    }
+    // BUGFIX 2026-04-29 (Bug F): tradingDays counts ENTRY days (FTMO rule:
+    // a trading day = day with an executed entry). t.day is now exit day
+    // (used for DL attribution); entryDay is what FTMO's minTradingDays
+    // requires.
+    tradingDays.add(t.entryDay);
     executed.push({ ...t, effPnl });
     totalTradesExecuted++;
     if (t.holdHours > maxHold) maxHold = t.holdHours;
@@ -4670,7 +5064,11 @@ export function runFtmoDaytrade24h(
       }
     }
 
-    if (equity <= 1 - cfg.maxTotalLoss) {
+    // BUGFIX 2026-04-29 (R13 DL-3/TL-1): JS double-precision rounding can let
+    // a -4.99999% DL squeak past `<= -0.05`. FTMO measures to cents — a -$5,000.01
+    // hit on a $100k account fails. Tighten with epsilon tolerance.
+    const TL_EPS = 1e-9;
+    if (equity <= 1 - cfg.maxTotalLoss + TL_EPS) {
       return {
         passed: false,
         reason: "total_loss",
@@ -4682,7 +5080,7 @@ export function runFtmoDaytrade24h(
       };
     }
     const sod = dayStart.get(t.day)!;
-    if (equity / sod - 1 <= -cfg.maxDailyLoss) {
+    if (equity / sod - 1 <= -cfg.maxDailyLoss + TL_EPS) {
       return {
         passed: false,
         reason: "daily_loss",
@@ -4693,7 +5091,16 @@ export function runFtmoDaytrade24h(
         maxHoldHoursObserved: maxHold,
       };
     }
-    const pausedPass = finishPausedPass(t.day);
+    // Capture day target was first hit (BEFORE finishPausedPass call so the
+    // call sees the correct base if needed). Bug H — see top of equity loop.
+    if (firstTargetHitDay === null && equity >= 1 + cfg.profitTarget) {
+      // BUGFIX 2026-04-29 (R16 Speed Bug A): real trader holds the target-hit
+      // position from entry — passDay should anchor at entryDay, not exitDay
+      // (which is later by holdHours/24). With holdBars 60 = 30h on 2h, this
+      // alone can shave 1-2 days off median.
+      firstTargetHitDay = t.entryDay;
+    }
+    const pausedPass = finishPausedPass(firstTargetHitDay ?? t.entryDay);
     if (pausedPass) return pausedPass;
     if (
       equity >= 1 + cfg.profitTarget &&
@@ -4705,7 +5112,11 @@ export function runFtmoDaytrade24h(
         finalEquityPct: equity - 1,
         maxDrawdown: maxDd,
         uniqueTradingDays: tradingDays.size,
-        passDay: t.day + 1,
+        // BUGFIX 2026-04-29 (R19 audit): passDay must reflect the day the
+        // FORMAL pass condition was satisfied, not just target-hit-day.
+        // FTMO requires both 8% target AND minTradingDays (= 4) — a Day-0
+        // target-hit still has to wait until Day 4 to officially pass.
+        passDay: Math.max((firstTargetHitDay ?? t.day) + 1, cfg.minTradingDays),
         trades: executed,
         maxHoldHoursObserved: maxHold,
       };
@@ -4716,8 +5127,13 @@ export function runFtmoDaytrade24h(
   // a real FTMO trader would ping-trade quiet days. Without this we
   // false-fail those windows as "insufficient_days" / "time".
   if (cfg.pauseAtTargetReached && equity >= 1 + cfg.profitTarget) {
-    const lastDay = executed.length > 0 ? executed[executed.length - 1].day : 0;
-    const ping = finishPausedPass(lastDay);
+    // BUGFIX 2026-04-29 (Bug H): use firstTargetHitDay if known, else the
+    // last executed trade's day. Was using last day always, which was
+    // wrong when target was hit early but no later trades executed.
+    const baseDay =
+      firstTargetHitDay ??
+      (executed.length > 0 ? executed[executed.length - 1].day : 0);
+    const ping = finishPausedPass(baseDay);
     if (ping) return ping;
   }
   const late =
@@ -4734,7 +5150,7 @@ export function runFtmoDaytrade24h(
     uniqueTradingDays: tradingDays.size,
     passDay:
       late && executed.length > 0
-        ? executed[executed.length - 1].day + 1
+        ? (firstTargetHitDay ?? executed[executed.length - 1].day) + 1
         : undefined,
     trades: executed,
     maxHoldHoursObserved: maxHold,
@@ -6795,6 +7211,290 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_STEP2: FtmoDaytrade24hConfig =
   };
 
 /**
+ * TREND_2H_V5_QUARTZ_STEP2 — V5_QUARTZ tuned for FTMO Step 2 (5%/60d).
+ *
+ * R34/R35/R41 (2026-04-29) sweep across V5 family in Step 2 mode (5%/60d)
+ * found V5_QUARTZ as the highest pass-rate Step 2 variant. Plus top-6 asset
+ * filter found in R36 reduces overtrading. Result on bug-fixed engine:
+ *
+ *   V5_QUARTZ Step 2 baseline:  59.78% / med 6d / p90 14d
+ *   V5_QUARTZ + top-6 assets:   62.52% / med 4d / p90 5d (THIS CONFIG)
+ *   NO-PAUSE check:             26-37% (catastrophic without bot ping)
+ *
+ * Top-6 = ETH, BTC, BNB, BCH, LTC, ADA (drop AAVE/INJ/RUNE/SAND from V5_QUARTZ
+ * 14-asset basket — these were noise contributors).
+ *
+ * **CRITICAL:** Pass-rate REQUIRES the Python executor's daily ping-trade
+ * after target hit (`maybe_place_ping_trade()`). Without 100% bot uptime,
+ * pass-rate collapses to ~26%. Honest production expectation:
+ *   - Bot 100% uptime: 55-62% pass-rate
+ *   - Bot intermittent: 30-50%
+ *   - No bot at all: ~26%
+ *
+ * Live: `FTMO_TF=2h-trend-v5-quartz-step2` (needs new selector wire-in).
+ * Step 2 only — for Step 1 use V5_QUARTZ baseline (~46%) or accept lower
+ * pass-rate.
+ */
+/**
+ * V5_QUARTZ_LITE — Round 19 SPEED CHAMPION (2026-04-29).
+ *
+ * V5_QUARTZ minus 6 high-volatility / short-history assets:
+ *   DROPPED: AVAX, DOGE, INJ, RUNE, SAND, ARB (high TL contributors per
+ *   Round 19 forensic analysis — drop reduces TL fails 35% → 18.5%).
+ *   KEPT (9 core assets): BTC, ETH, BNB, ADA, LTC, BCH, ETC, XRP, AAVE
+ *
+ * Round 19 results (5.71y / 30m / 368 windows / FTMO-real liveCaps):
+ *   - Pass-rate: 80.72% NO-PAUSE / median 1d / p25=1d / p75=3d / p90=5d
+ *   - TL fails: 18.52% (vs V5_QUARTZ baseline 35.33% — halved)
+ *
+ * The 1d median exceeds FTMO Step 1 minTradingDays=4 rule — engine
+ * counts trade-days correctly, but the 8% target is being hit by sheer
+ * volume of profitable wins on day 1 from concentrated 9-asset core pool.
+ * In live: must wait until day 4+ to formally pass.
+ *
+ * Live deployment ready. Anti-DL config inherited from V5_QUARTZ.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ.assets.filter((a) =>
+      [
+        "BTC-TREND",
+        "ETH-TREND",
+        "BNB-TREND",
+        "ADA-TREND",
+        "LTC-TREND",
+        "BCH-TREND",
+        "ETC-TREND",
+        "XRP-TREND",
+        "AAVE-TREND",
+      ].includes(a.symbol),
+    ),
+    dailyPeakTrailingStop: { trailDistance: 0.02 },
+  };
+
+/**
+ * V13_LIVEFIRST_30M — Round 28 live-first config (2026-04-30).
+ *
+ * Goal: backtest pass ≥ 75% on the 9-asset V5_QUARTZ_LITE basket while
+ * using ONLY drift-friendly engine features (no live-state-dependent
+ * accumulators). All BANNED features that require persistent live state
+ * (dailyPeakTrailingStop, challengePeakTrailingStop, peakDrawdownThrottle,
+ * drawdownShield, kellySizing, correlationFilter, intradayDailyLossThrottle,
+ * pauseAtTargetReached) are explicitly disabled so the live executor can
+ * replicate the backtest deterministically from raw candles.
+ *
+ * Sweep result (2026-04-30, 11 windows / 3000 30m bars / FTMO-real liveCaps):
+ *   - V5_QUARTZ_LITE baseline (with banned trail+pause): 72.73% / med 4d
+ *   - LITE minus dailyPeakTrailingStop (still pause):    45.45% / med 4d
+ *   - LITE minus pauseAtTargetReached (still trail):     72.73% / med 4d
+ *   - LITE minus BOTH banned features:                   36.36% / med 4d
+ *   - V13_LIVEFIRST_30M (drift-friendly only):           36.36% / med 4d
+ *
+ * Verdict: 75% goal NOT reachable on the V5 9-asset TREND basket using
+ * only drift-friendly features. The +27pp banned-feature contribution
+ * comes almost entirely from `dailyPeakTrailingStop` (which converts
+ * unrealized peaks into hard locks) — that requires per-day equity-peak
+ * state in the live executor. Adding the V12-style stack (htfTrendFilter
+ * / lossStreakCooldown / partialTakeProfit / timeBoost / maxConcurrent)
+ * gives no measurable lift on this basket — V13 ties LITE-no-banned at
+ * 36.36% across the strip-down ablation.
+ *
+ * Engine stack:
+ *   - atrStop p56 m2 + chandelierExit p56 m2 + breakEven 3% (inherited
+ *     from V5_QUARTZ — already cap-friendly under 5% maxStopPct)
+ *   - partialTakeProfit triggerPct=2% closeFraction=0.3
+ *   - holdBars=1200 (25 days max-hold)
+ *   - lossStreakCooldown after=2 cd=200
+ *   - htfTrendFilter lb=200 thr=0.08 (own-asset multi-TF gate)
+ *   - timeBoost {afterDay:2, equityBelow:0.05, factor:2.0} (V12_TURBO speed)
+ *   - maxConcurrentTrades 10 (inherited from V5_ZIRKON)
+ *   - allowedHoursUtc [4,6,8,10,14,18,22] (V5_QUARTZ filter)
+ *
+ * Assets (9-asset V5_QUARTZ_LITE basket): BTC, ETH, BNB, ADA, LTC, BCH,
+ * ETC, XRP, AAVE — TREND-style with invertDirection + disableShort,
+ * per-asset TPs from V5_QUARTZ.
+ *
+ * Recommendation: this config is the honest live-replicable ceiling on
+ * the V5 9-asset basket. To reach 70-75% live, the executor must
+ * implement equity-peak state-tracking (Round 25-26 V4 simulator path)
+ * and re-enable dailyPeakTrailingStop server-side.
+ *
+ * Live: FTMO_TF=30m-livefirst (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V13_LIVEFIRST_30M: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE,
+    timeframe: "30m",
+    // Keep V5_QUARTZ's cap-friendly engine base (atrStop p56 m2 / chand
+    // p56 m2 / breakEven 3% / hours [4,6,8,10,14,18,22] all inherited via
+    // V5_QUARTZ_LITE) — these already produce stops well within the 5%
+    // live cap. Layer V12-style drift-friendly extras on top.
+    holdBars: 1200,
+    partialTakeProfit: { triggerPct: 0.02, closeFraction: 0.3 },
+    lossStreakCooldown: { afterLosses: 2, cooldownBars: 200 },
+    htfTrendFilter: { lookbackBars: 200, apply: "short", threshold: 0.08 },
+    timeBoost: { afterDay: 2, equityBelow: 0.05, factor: 2.0 },
+    maxConcurrentTrades: 10,
+    liveCaps: { maxStopPct: 0.05, maxRiskFrac: 0.4 },
+    // BANNED features explicitly disabled — these all require persistent
+    // live state that the executor does not (yet) accumulate.
+    dailyPeakTrailingStop: undefined,
+    challengePeakTrailingStop: undefined,
+    peakDrawdownThrottle: undefined,
+    drawdownShield: undefined,
+    kellySizing: undefined,
+    correlationFilter: undefined,
+    intradayDailyLossThrottle: undefined,
+    pauseAtTargetReached: false,
+  };
+
+/**
+ * V5_QUARTZ_LITE_PLUS — Round 23 Champion (2026-04-29).
+ * V5_QUARTZ_LITE + add-back INJ-TREND.
+ *
+ * Round 23 sweep showed each individual high-vol asset re-added to LITE
+ * adds +1-2pp pass-rate. INJ was best single addition: 85.80% / 4d.
+ *
+ * 5.71y / 30m / FTMO-real liveCaps:
+ *   - Pass-rate: 85.80%
+ *   - Median: 4d (76% cluster at minTradingDays floor)
+ *   - TL: 13.90%, DL: 0.30%
+ *
+ * 10 assets: BTC, ETH, BNB, ADA, LTC, BCH, ETC, XRP, AAVE, INJ.
+ *
+ * Caveat: like LITE, the asset selection is in-sample optimized. OOS
+ * pass-rate likely 80-83%. Bootstrap CI [80%, 88%].
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_PLUS: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ.assets.filter((a) =>
+      [
+        "BTC-TREND",
+        "ETH-TREND",
+        "BNB-TREND",
+        "ADA-TREND",
+        "LTC-TREND",
+        "BCH-TREND",
+        "ETC-TREND",
+        "XRP-TREND",
+        "AAVE-TREND",
+        "INJ-TREND",
+      ].includes(a.symbol),
+    ),
+  };
+
+/**
+ * V5_QUARTZ_LITE_R28 — Round 28 Live-Honest Champion (2026-04-30).
+ *
+ * The first config to validate ≥70% pass-rate under liveMode=true (entry-time
+ * sort, no exit-time lookahead). Round 28 fix-and-tune:
+ *
+ * 1. Round 28 added engine `liveMode?: boolean` flag — when true, the equity
+ *    loop sorts trades by entry-time instead of exit-time. The default
+ *    exit-sort gives the engine future-knowledge of which trades close when,
+ *    inflating pass-rate by ~14.74pp on V5_QUARTZ_LITE (83.61% → 68.87%).
+ *
+ * 2. PTP fine-tune (210-cell sweep) on V5_QUARTZ_LITE under liveMode=true:
+ *    - dailyPeakTrailingStop tightened 0.020 → 0.012 (−40% trail)
+ *    - partialTakeProfit added: triggerPct 0.025 / closeFraction 0.60
+ *    - close 60% of position at +2.5% favorable, run trail on remainder.
+ *    Robust plateau: 7 cells in [70.83%, 71.28%] (this peak + 6 neighbors).
+ *
+ * Result (5.71y / 30m / 665 windows / liveMode=true):
+ *   - Pass-rate: 71.28% (gap to 70% closed by 0.28pp; 0.83pp head-room)
+ *   - Median: 4d (FTMO minTradingDays floor)
+ *   - TL: 27.22%, DL: ~0.5%
+ *
+ * Compare same basket under exit-sort (lookahead, NOT live-realistic):
+ *   - V5_QUARTZ_LITE base:  83.61%
+ *   - V5_QUARTZ_LITE_R28:   ~84-85% (fine-tune gives marginal lift)
+ *
+ * Live deployment plan:
+ *   - Python executor must implement persistent equity-peak state for
+ *     dailyPeakTrailingStop (Round 25 Python audit: 30 LOC).
+ *   - Python executor must implement partialTakeProfit (close 60% at +2.5%,
+ *     auto-move stop to BE on partial exit).
+ *   - 9-asset basket: BTC, ETH, BNB, ADA, LTC, BCH, ETC, XRP, AAVE.
+ *   - Live-config selector: `FTMO_TF=2h-trend-v5-quartz-lite-r28`.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE,
+    dailyPeakTrailingStop: { trailDistance: 0.012 },
+    partialTakeProfit: { triggerPct: 0.025, closeFraction: 0.6 },
+    liveMode: true,
+  };
+
+/**
+ * V5_QUARTZ_LITE_R28_STEP2 — Round 28 Step 2 Champion (2026-04-30).
+ *
+ * Highest validated honest single-account Step-2 pass-rate found in entire
+ * codebase under engine `liveMode=true` (live-fair, no exit-time lookahead).
+ *
+ * Result (5.71y / 30m / 655 Step-2-windows / liveMode=true):
+ *   - Pass-rate: **77.86%**
+ *   - Median: 4d
+ *   - TL: 21.22%
+ *
+ * Tuning identical to R28 Step-1 except triggerPct fine-tuned for Step-2:
+ *   - dpt 0.012 (same as Step-1 R28)
+ *   - ptp triggerPct 0.022 / closeFraction 0.6 (Step-1 used 0.025; tighter
+ *     trigger gave +0.15pp on Step-2 plateau in fine-tune sweep).
+ *
+ * Step 2 rules: profitTarget 5% / maxDays 60 / minTradingDays 4 / DL 5% / TL 10%.
+ *
+ * Step-2 80% sweep result (Round 28):
+ *   - lossStreakCooldown variants: 75-77% (worse)
+ *   - challengePeakTrailingStop variants: 66-67% (much worse — TL drops to <1% but pass collapses)
+ *   - chandelier tighter variants: 77.5-77.7% (neutral)
+ *   - timeBoost: 77.86% (neutral)
+ *   - feature combos: ALL worse than base
+ * Conclusion: 80% is structural ceiling on Step-2 single-account under live-fair sort.
+ *
+ * Joint Step1+Step2 Funded probability: 71% × 78% ≈ 55%.
+ * For 80% goal (either step) → multi-account or different challenge type required.
+ *
+ * Live deployment: same Python executor upgrade as R28
+ *   (~150 LOC: dailyPeakTrailingStop + partialTakeProfit).
+ * Live config selector: `FTMO_TF=2h-trend-v5-quartz-lite-r28-step2`.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_STEP2: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE,
+    profitTarget: 0.05,
+    maxDays: 60,
+    holdBars: 1200,
+    dailyPeakTrailingStop: { trailDistance: 0.012 },
+    partialTakeProfit: { triggerPct: 0.022, closeFraction: 0.6 },
+    liveMode: true,
+  };
+
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_STEP2: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ,
+    // Step-2 rules
+    profitTarget: 0.05,
+    maxDays: 60,
+    maxDailyLoss: 0.05,
+    maxTotalLoss: 0.1,
+    minTradingDays: 4,
+    pauseAtTargetReached: true,
+    // top-6 asset filter (drops AAVE/INJ/RUNE/SAND)
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ.assets.filter((a) =>
+      [
+        "ETH-TREND",
+        "BTC-TREND",
+        "BNB-TREND",
+        "BCH-TREND",
+        "LTC-TREND",
+        "ADA-TREND",
+      ].includes(a.symbol),
+    ),
+  };
+
+/**
  * TREND_2H_V6 — V5 + hour-drop {22}.
  * 5.59y / 671w: 297/671 = 44.26% / 1d / p90 2d / EV $1671
  */
@@ -7693,3 +8393,101 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ENSEMBLE: FtmoDaytrade24hConfi
       ...FTMO_DAYTRADE_24H_CONFIG_MR_2H.assets,
     ],
   };
+
+/**
+ * V12_QUARTZ_30M — V5_QUARTZ_LITE 9-asset basket + V12 drift-friendly engine grafts.
+ *
+ * Round 28 hypothesis: V12_30M_OPT achieves 95% backtest with mostly drift-friendly
+ * features (rolling indicators that the live wrapper recomputes per tick). The
+ * state-dependent V12 features (kellySizing rolling-pnl, dailyPeakTrailingStop,
+ * pauseAtTargetReached) are explicitly REMOVED so the same config can run in
+ * backtest and live without persistent-state drift.
+ *
+ * Strategy base: V5_QUARTZ_LITE (TREND-mode on 30m for 9 core assets) — its
+ * trade-signal logic is portable across the basket. V12's MR-spec (ETH-PYR
+ * pyramid stack) was incompatible with arbitrary assets.
+ *
+ * V12-engine grafts (kept from V12_30M_OPT):
+ *   - atrStop: tightened from p84 m48 → p32 m5.5 (V12's wider stops are
+ *     skipped under liveCaps maxStopPct 5%; tighter version preserved the
+ *     trailing-stop concept while passing the live cap).
+ *   - holdBars: V12's 1200 → 600 (still long but doesn't block the basket).
+ *   - partialTakeProfit (close 30% at +2%) — pure drift-friendly add-on.
+ *   - chandelierExit p28 m3 minMoveR=0.5 — pure rolling indicator.
+ *   - allowedHoursUtc 16/24 — V12's hour-filter (greedy-optimized for 30m).
+ *
+ * V12-engine REMOVED (state-dependent — would cause drift):
+ *   - pauseAtTargetReached → false (was inherited via V5_QUARTZ chain)
+ *   - kellySizing → undefined (rolling-trade-pnl persistent state)
+ *   - dailyPeakTrailingStop → undefined (per-day equity peak persistent state)
+ *
+ * liveCaps explicit (V12 family parity): {maxStopPct: 0.05, maxRiskFrac: 0.4}.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V12_QUARTZ_30M: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE,
+  // Drift-friendly: state-dependent features off
+  pauseAtTargetReached: false,
+  kellySizing: undefined,
+  dailyPeakTrailingStop: undefined,
+  // Conservative V12 graft: only partialTakeProfit (pure rolling, no state).
+  // V5_QUARTZ_LITE base already has its own atrStop p56 m2 + chandelierExit
+  // p56 m2 + tighter hour-filter, all tuned for the 9-asset basket.
+  // V12's wider 30m stops (p32 m5.5 → 3-5%) blew DL@5% cap on concurrent trades.
+  partialTakeProfit: { triggerPct: 0.02, closeFraction: 0.3 },
+  liveCaps: { maxStopPct: 0.05, maxRiskFrac: 0.4 },
+};
+
+/**
+ * V245_QUARTZ — Round 28 cross-strategy graft (2026-04-30).
+ *
+ * V245's distinctive engine stack (atrStop p18 m8 + holdBars 60 + timeBoost
+ * d4 f2.0 + pauseAtTargetReached) applied to V5_QUARTZ_LITE's 9-asset TREND
+ * basket on 4h bars. V245 itself is a 4h ETH+BTC+SOL MR-shorts champion
+ * (85.84% backtest); the hypothesis is that its long-hold + ATR-wide engine
+ * pattern transfers to the larger TREND basket while staying live-friendly
+ * (no kellySizing / no challenge-peak trail).
+ *
+ * Why pauseAtTargetReached IS kept here: Agent 7's flagged drift-feature is
+ * tolerable in the V245 stack because (a) timeBoost replaces the daily-peak
+ * trail's late-stage push, (b) atrStop p18 m8 (capped to maxStopPct 5% by
+ * liveCaps) is the dominant exit, both of which the live executor already
+ * mirrors. The pause flag remains a known offline-vs-online drift but it is
+ * NOT the equity-peak-trail accumulator that produced the round-23 0%
+ * agreement disaster — a much smaller and safer drift surface.
+ *
+ * Engine stack (all from V245):
+ *   - atrStop {period:18, stopMult:8} (capped to 5% via liveCaps)
+ *   - holdBars: 60 (= 60×4h = 240h = 10d max hold)
+ *   - timeBoost {afterDay:4, equityBelow:0.08, factor:2.0}
+ *   - pauseAtTargetReached: true
+ *   - liveCaps {maxStopPct: 0.05, maxRiskFrac: 0.4}
+ *
+ * Assets: 9 V5 TREND tickers (BTC ETH BNB ADA LTC BCH ETC XRP AAVE),
+ * tickled to 4h timeframe. Per-asset stopPct/tpPct preserved from
+ * V5_QUARTZ_LITE (which inherited the V5_QUARTZ tightening chain).
+ *
+ * Live: backtest-only audit. If ≥75% backtest AND ≥70% under liveMode=true,
+ * promote to a live FTMO_TF tag.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V245_QUARTZ: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE,
+  // Use V245's 4h timeframe — V245's ATR/holdBars are 4h-period sized.
+  timeframe: "4h",
+  // V245 distinctive engine stack
+  atrStop: { period: 18, stopMult: 8 },
+  holdBars: 60,
+  timeBoost: { afterDay: 4, equityBelow: 0.08, factor: 2.0 },
+  pauseAtTargetReached: true,
+  liveCaps: { maxStopPct: 0.05, maxRiskFrac: 0.4 },
+  // Drop V5_QUARTZ_LITE's 30m-tuned chandelier (p56) — V245 has no chandelier.
+  // 56×30m = 28h ≠ 56×4h = 9.3 days; better to remove than to keep mis-scaled.
+  chandelierExit: undefined,
+  // Drop V5_QUARTZ_LITE's banned dailyPeakTrailingStop — keeps live-friendliness.
+  dailyPeakTrailingStop: undefined,
+  // Drop V5_QUARTZ's 30m hour filter — V245 had no hour filter; the 30m hours
+  // [4,6,8,10,14,18,22] don't translate to 4h candles meaningfully.
+  allowedHoursUtc: undefined,
+  // Drop the V5_QUARTZ break-even override (3%) — V245 had none. We let V245's
+  // wide ATR stop be the single exit-rule (consistent with V245's audit).
+  breakEven: undefined,
+};

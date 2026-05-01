@@ -137,6 +137,7 @@ def test_handle_daily_reset_first_write():
     with tempfile.TemporaryDirectory() as td:
         exe.STATE_DIR = Path(td)
         exe.DAILY_STATE_PATH = Path(td) / "daily-reset.json"
+        exe.EXECUTOR_LOG_PATH = Path(td) / "executor-log.jsonl"
         # First call with no existing state → snapshots now
         result = exe.handle_daily_reset(100500.0)
         assert result == 100500.0
@@ -159,6 +160,79 @@ def test_handle_daily_reset_same_day_returns_cached():
         # Call later — should return cached day-start, NOT current equity
         result = exe.handle_daily_reset(99500.0)
         assert result == 98000.0
+
+
+# ============================================================================
+# R28 dailyPeakTrailingStop
+# ============================================================================
+def test_dpt_first_call_seeds_peak():
+    import ftmo_executor as exe
+    with tempfile.TemporaryDirectory() as td:
+        exe.STATE_DIR = Path(td)
+        exe.DAY_PEAK_PATH = Path(td) / "day-peak.json"
+        exe.EXECUTOR_LOG_PATH = Path(td) / "executor-log.jsonl"
+        peak = exe.update_day_peak(100000.0)
+        assert peak == 100000.0
+        saved = json.loads((Path(td) / "day-peak.json").read_text())
+        assert saved["peak_equity_usd"] == 100000.0
+
+
+def test_dpt_ratchets_up_only():
+    import ftmo_executor as exe
+    with tempfile.TemporaryDirectory() as td:
+        exe.STATE_DIR = Path(td)
+        exe.DAY_PEAK_PATH = Path(td) / "day-peak.json"
+        exe.EXECUTOR_LOG_PATH = Path(td) / "executor-log.jsonl"
+        # Seed at 100k
+        exe.update_day_peak(100000.0)
+        # Equity rises to 102k → peak should track up
+        peak = exe.update_day_peak(102000.0)
+        assert peak == 102000.0
+        # Equity drops to 99k → peak stays at 102k (no slide-down)
+        peak = exe.update_day_peak(99000.0)
+        assert peak == 102000.0
+
+
+def test_dpt_blocks_when_drop_exceeds_trail():
+    import ftmo_executor as exe
+    with tempfile.TemporaryDirectory() as td:
+        exe.STATE_DIR = Path(td)
+        exe.DAY_PEAK_PATH = Path(td) / "day-peak.json"
+        exe.EXECUTOR_LOG_PATH = Path(td) / "executor-log.jsonl"
+        exe.DPT_TRAIL_DISTANCE = 0.012
+        exe.DPT_ENABLED = True
+        # Peak 102k, current 100k → drop = 1.96% > 1.2% → block
+        exe.update_day_peak(102000.0)
+        block = exe.check_daily_peak_trail_block(100000.0)
+        assert block is not None
+        assert "day_peak_trail" in block
+
+
+def test_dpt_does_not_block_when_drop_below_trail():
+    import ftmo_executor as exe
+    with tempfile.TemporaryDirectory() as td:
+        exe.STATE_DIR = Path(td)
+        exe.DAY_PEAK_PATH = Path(td) / "day-peak.json"
+        exe.EXECUTOR_LOG_PATH = Path(td) / "executor-log.jsonl"
+        exe.DPT_TRAIL_DISTANCE = 0.012
+        exe.DPT_ENABLED = True
+        # Peak 102k, current 101k → drop = 0.98% < 1.2% → no block
+        exe.update_day_peak(102000.0)
+        block = exe.check_daily_peak_trail_block(101000.0)
+        assert block is None
+
+
+def test_dpt_disabled_returns_none():
+    import ftmo_executor as exe
+    with tempfile.TemporaryDirectory() as td:
+        exe.STATE_DIR = Path(td)
+        exe.DAY_PEAK_PATH = Path(td) / "day-peak.json"
+        exe.EXECUTOR_LOG_PATH = Path(td) / "executor-log.jsonl"
+        exe.DPT_ENABLED = False
+        # Even with massive drop, returns None when disabled
+        exe.update_day_peak(110000.0)
+        block = exe.check_daily_peak_trail_block(95000.0)
+        assert block is None
 
 
 # ============================================================================
@@ -228,6 +302,92 @@ def test_mock_mt5_place_and_close_short():
     positions_after = mt5.positions_get()
     assert not any(p.ticket == ticket for p in positions_after)
     mt5.shutdown()
+
+
+# ============================================================================
+# Symbol resolver — handles FTMO's broker-specific naming variants
+# ============================================================================
+def test_symbol_resolver_aave_default_is_ftmo_correct():
+    """AAVUSD (no E) is FTMO's actual symbol — bot default must match."""
+    import ftmo_executor as fe
+    # Confirms env-default in SYMBOL_MAP (line 124) was fixed FTMO-correct.
+    assert fe.SYMBOL_MAP["AAVEUSDT"] == "AAVUSD"
+
+
+def test_symbol_resolver_uses_explicit_map_first(monkeypatch):
+    """Resolver tries SYMBOL_MAP candidate before naive fallbacks."""
+    import ftmo_executor as fe
+    fe._SYMBOL_CACHE.clear()
+    tried: list[str] = []
+
+    class FakeInfo:
+        bid = 100.0
+        ask = 100.5
+
+    def fake_symbol_info(s: str):
+        tried.append(s)
+        return FakeInfo() if s == "AAVUSD" else None
+
+    monkeypatch.setattr(fe.mt5, "symbol_info", fake_symbol_info)
+    resolved = fe._resolve_broker_symbol("AAVEUSDT")
+    assert resolved == "AAVUSD"
+    assert tried[0] == "AAVUSD"  # explicit map wins first
+
+
+def test_symbol_resolver_falls_through_to_e_drop_variant(monkeypatch):
+    """If primary fails, resolver tries dropping trailing E (AAVE → AAV)."""
+    import ftmo_executor as fe
+    fe._SYMBOL_CACHE.clear()
+
+    class FakeInfo:
+        bid = 1.0
+        ask = 1.1
+
+    def fake_symbol_info(s: str):
+        # Only the e-dropped variant exists at the broker
+        return FakeInfo() if s == "AAVUSD" else None
+
+    monkeypatch.setattr(fe.mt5, "symbol_info", fake_symbol_info)
+    # If SYMBOL_MAP override gets cleared, resolver still finds AAVUSD via fallback
+    original = fe.SYMBOL_MAP.pop("AAVEUSDT", None)
+    try:
+        resolved = fe._resolve_broker_symbol("AAVEUSDT")
+        assert resolved == "AAVUSD"
+    finally:
+        if original is not None:
+            fe.SYMBOL_MAP["AAVEUSDT"] = original
+
+
+def test_symbol_resolver_caches_result(monkeypatch):
+    """Second call must hit cache, not call symbol_info again."""
+    import ftmo_executor as fe
+    fe._SYMBOL_CACHE.clear()
+    call_count = 0
+
+    class FakeInfo:
+        bid = 1.0
+        ask = 1.1
+
+    def fake_symbol_info(s: str):
+        nonlocal call_count
+        call_count += 1
+        return FakeInfo() if s == "BTCUSD" else None
+
+    monkeypatch.setattr(fe.mt5, "symbol_info", fake_symbol_info)
+    a = fe._resolve_broker_symbol("BTCUSDT")
+    before = call_count
+    b = fe._resolve_broker_symbol("BTCUSDT")
+    assert a == b == "BTCUSD"
+    assert call_count == before  # cache hit, no new call
+
+
+def test_symbol_resolver_returns_none_when_nothing_matches(monkeypatch):
+    """If broker has none of the variants, resolver returns None (not crash)."""
+    import ftmo_executor as fe
+    fe._SYMBOL_CACHE.clear()
+    monkeypatch.setattr(fe.mt5, "symbol_info", lambda s: None)
+    resolved = fe._resolve_broker_symbol("XYZUSDT")
+    assert resolved is None
 
 
 if __name__ == "__main__":
