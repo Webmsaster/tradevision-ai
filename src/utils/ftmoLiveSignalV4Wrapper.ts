@@ -1,0 +1,247 @@
+/**
+ * V4 LIVE-ENGINE WRAPPER — produces drop-in replacement signals using
+ * the persistent-state V4 engine (`ftmoLiveEngineV4.ts`).
+ *
+ * Usage:
+ *   FTMO_TF=2h-trend-v5-quartz-lite-r28-v4engine
+ *
+ * This wrapper:
+ *   1. Loads V4 engine state from `${stateDir}/v4-engine.json`.
+ *   2. Calls `pollLive()` with the latest aligned bar.
+ *   3. Translates V4 PollSignal → LiveSignal (same interface V231 uses).
+ *   4. Persists state via atomic-write.
+ *
+ * Crucially: the V4 engine has full feature-parity with the backtest's
+ * persistent-state behavior (dailyPeakTrailingStop, peakDrawdownThrottle,
+ * MCT, lossStreakCooldown, kelly, etc.) — features that the polling V231
+ * detector cannot replicate because it has no persistent state.
+ */
+import * as path from "node:path";
+import {
+  loadState,
+  saveState,
+  pollLive,
+  type FtmoLiveStateV4,
+} from "@/utils/ftmoLiveEngineV4";
+import type { Candle } from "@/utils/indicators";
+import type {
+  AccountState,
+  DetectionResult,
+  LiveSignal,
+  Regime,
+} from "@/utils/ftmoLiveSignalV231";
+import type { FtmoDaytrade24hConfig } from "@/utils/ftmoDaytrade24h";
+
+export interface DetectionResultV4 extends DetectionResult {
+  /** V4-specific: snapshot of persistent state after this poll. */
+  v4State?: {
+    equity: number;
+    mtmEquity: number;
+    day: number;
+    challengePeak: number;
+    dayPeak: number;
+    openPositions: number;
+    pausedAtTarget: boolean;
+    challengeEnded: boolean;
+  };
+}
+
+/**
+ * Build aligned candles dict for V4 engine. Caller passes flat
+ * candleMap; we filter to assets present in the cfg + crossAssetFilter
+ * symbol(s), and return only the aligned subset.
+ */
+function buildAligned(
+  cfg: FtmoDaytrade24hConfig,
+  candleMap: Record<string, Candle[]>,
+): Record<string, Candle[]> {
+  const out: Record<string, Candle[]> = {};
+  const requiredKeys = new Set<string>();
+  for (const a of cfg.assets) requiredKeys.add(a.sourceSymbol ?? a.symbol);
+  if (cfg.crossAssetFilter?.symbol)
+    requiredKeys.add(cfg.crossAssetFilter.symbol);
+  for (const f of cfg.crossAssetFiltersExtra ?? []) requiredKeys.add(f.symbol);
+
+  for (const k of requiredKeys) {
+    if (!candleMap[k]) continue;
+    out[k] = candleMap[k].filter((c) => c.isFinal !== false);
+  }
+  if (Object.keys(out).length === 0) return out;
+
+  // Trim to common-openTime intersection so V4 engine's "latest bar"
+  // assumption holds: every asset's last candle must share openTime.
+  const arrs = Object.values(out);
+  const common = new Set(arrs[0].map((c) => c.openTime));
+  for (let i = 1; i < arrs.length; i++) {
+    const seen = new Set(arrs[i].map((c) => c.openTime));
+    for (const t of [...common]) if (!seen.has(t)) common.delete(t);
+  }
+  const aligned: Record<string, Candle[]> = {};
+  for (const [k, v] of Object.entries(out)) {
+    aligned[k] = v.filter((c) => common.has(c.openTime));
+  }
+  return aligned;
+}
+
+/**
+ * V4 wrapper detection — drop-in replacement for `detectLiveSignalsV231`.
+ *
+ * Stateful: reads/writes `${stateDir}/v4-engine.json`. The V4 engine
+ * encapsulates ALL persistent state (equity, day, peaks, MCT, pause).
+ * The `account: AccountState` argument is used only to inform Telegram /
+ * UI — the V4 engine maintains its own equity/day tracking internally.
+ *
+ * Signal-to-LiveSignal translation:
+ *   - PollDecision.opens → LiveSignal[]
+ *   - effRisk → riskFrac (as live-account risk fraction; the engine's
+ *     effRisk is already in matching units for FTMO live-cap conventions)
+ *   - chandelierAtrAtEntry / ptpConfig / beThreshold passed through.
+ */
+export function detectLiveSignalsV4(
+  candleMap: Record<string, Candle[]>,
+  cfg: FtmoDaytrade24hConfig,
+  cfgLabel: string,
+  stateDir: string,
+  account: AccountState,
+): DetectionResultV4 {
+  const result: DetectionResultV4 = {
+    timestamp: Date.now(),
+    regime: "BEAR_CHOP" as Regime,
+    activeBotConfig: `V4_ENGINE:${cfgLabel}`,
+    signals: [],
+    skipped: [],
+    notes: [`detectLiveSignalsV4: V4 persistent-state engine, cfg=${cfgLabel}`],
+    account,
+    btc: { close: 0, ema10: 0, ema15: 0, uptrend: false, mom24h: 0 },
+  };
+
+  const aligned = buildAligned(cfg, candleMap);
+  if (Object.keys(aligned).length === 0) {
+    result.notes.push("V4: no aligned candles after intersection");
+    return result;
+  }
+  // Drop assets that have <100 bars (detectAsset minimum).
+  for (const [k, v] of Object.entries(aligned)) {
+    if (v.length < 100) {
+      result.skipped.push({ asset: k, reason: `<100 bars (${v.length})` });
+      delete aligned[k];
+    }
+  }
+  if (Object.keys(aligned).length === 0) {
+    result.notes.push("V4: all assets dropped (insufficient bars)");
+    return result;
+  }
+
+  const state: FtmoLiveStateV4 = loadState(stateDir, cfgLabel);
+
+  // BTC sample for the legacy `btc` field (display only, not used by V4).
+  const btc = aligned["BTCUSDT"];
+  if (btc && btc.length > 0) {
+    const last = btc[btc.length - 1];
+    result.btc.close = last.close;
+  }
+
+  let poll;
+  try {
+    poll = pollLive(state, aligned, cfg);
+  } catch (err) {
+    result.notes.push(`V4 pollLive threw: ${(err as Error).message}`);
+    return result;
+  }
+
+  // Translate decisions to LiveSignal records (same shape V231 emits).
+  const refKey = Object.keys(aligned)[0];
+  const refCandles = aligned[refKey];
+  const lastBar = refCandles[refCandles.length - 1];
+  const barDur =
+    refCandles.length >= 2
+      ? refCandles[refCandles.length - 1].openTime -
+        refCandles[refCandles.length - 2].openTime
+      : 30 * 60 * 1000;
+
+  for (const open of poll.decision.opens) {
+    const asset = cfg.assets.find((a) => a.symbol === open.symbol);
+    const holdBars = asset?.holdBars ?? cfg.holdBars;
+    const hoursPerBar = barDur / 3_600_000;
+    const maxHoldHours = (holdBars + 1) * hoursPerBar;
+    // engine effRisk → live-loss-fraction conversion
+    const equityLossFrac = open.effRisk * open.stopPct * cfg.leverage;
+    const sig: LiveSignal = {
+      assetSymbol: open.symbol,
+      sourceSymbol: open.sourceSymbol,
+      direction: open.direction,
+      regime: result.regime,
+      entryPrice: open.entryPrice,
+      stopPrice: open.stopPrice,
+      tpPrice: open.tpPrice,
+      stopPct: open.stopPct,
+      tpPct: open.tpPct,
+      riskFrac: Math.min(equityLossFrac, 0.04), // live-cap 4% per trade
+      sizingFactor: 1, // already baked into effRisk by engine
+      maxHoldHours,
+      maxHoldUntil: open.entryTime + maxHoldHours * 3_600_000,
+      signalBarClose: lastBar.closeTime,
+      reasons: [`V4 engine open: ${open.symbol} ${open.direction}`],
+      ...(open.chandelierAtrAtEntry != null
+        ? {
+            chandelierExit: {
+              atrAtEntry: open.chandelierAtrAtEntry,
+              mult: cfg.chandelierExit?.mult ?? 0,
+              minMoveR: cfg.chandelierExit?.minMoveR ?? 0.5,
+              stopPct: open.stopPct,
+            },
+          }
+        : {}),
+      ...(open.ptpConfig ? { partialTakeProfit: open.ptpConfig } : {}),
+      ...(open.beThreshold !== undefined
+        ? { breakEvenAtProfit: { threshold: open.beThreshold } }
+        : {}),
+    };
+    result.signals.push(sig);
+  }
+
+  result.skipped.push(...poll.skipped);
+  result.notes.push(...poll.notes);
+  if (poll.targetHit) result.notes.push("V4: profitTarget hit");
+  if (poll.challengeEnded) {
+    result.notes.push(
+      `V4: challenge ended — ${poll.passed ? "PASSED" : `FAILED (${poll.failReason})`}`,
+    );
+  }
+
+  result.v4State = {
+    equity: state.equity,
+    mtmEquity: state.mtmEquity,
+    day: state.day,
+    challengePeak: state.challengePeak,
+    dayPeak: state.dayPeak,
+    openPositions: state.openPositions.length,
+    pausedAtTarget: state.pausedAtTarget,
+    challengeEnded: poll.challengeEnded,
+  };
+
+  // Persist updated state.
+  try {
+    saveState(state, stateDir);
+  } catch (err) {
+    result.notes.push(`V4: saveState failed — ${(err as Error).message}`);
+  }
+  return result;
+}
+
+/**
+ * Reset V4 state — call on new challenge start. Wipes `v4-engine.json`
+ * and re-initializes from cfgLabel.
+ */
+export function resetV4State(stateDir: string, cfgLabel: string): void {
+  const filePath = path.join(stateDir, "v4-engine.json");
+  try {
+    const fs = require("node:fs");
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch {
+    /* ignore */
+  }
+  // Just write a fresh initial state.
+  const fresh = loadState(stateDir, cfgLabel);
+  saveState(fresh, stateDir);
+}
