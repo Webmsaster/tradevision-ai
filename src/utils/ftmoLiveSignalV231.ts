@@ -766,10 +766,21 @@ function computeSizingFactor(account: AccountState): {
   // Required for R28_V2/V3/V4 to deliver backtest pass-rate in live (without
   // this, peakDrawdownThrottle is ignored and live falls back to R28 71%).
   if (CFG.peakDrawdownThrottle) {
-    const peak =
-      account.challengePeak !== undefined && account.challengePeak > 0
-        ? account.challengePeak
-        : account.equity;
+    // Bug-Audit Phase 2 (V231 Bug 4): challengePeak missing → fail-loud.
+    // Previously fell back silently to current equity (= no throttle ever),
+    // which silently degraded R28_V2/V3/V4 to R28 baseline if Python's
+    // challenge-peak.json was missing/outdated. console.error makes the
+    // operator notice; behavior preserved (no throttle when peak unknown).
+    const peakKnown =
+      account.challengePeak !== undefined && account.challengePeak > 0;
+    if (!peakKnown) {
+      console.error(
+        "[V231] peakDrawdownThrottle CONFIGURED but account.challengePeak " +
+          "is missing — silent under-performance vs backtest. Check Python " +
+          "ftmo_executor.py challenge-peak.json sync.",
+      );
+    }
+    const peak = peakKnown ? account.challengePeak! : account.equity;
     if (peak > 0) {
       const fromPeak = (peak - account.equity) / peak;
       if (fromPeak >= CFG.peakDrawdownThrottle.fromPeak) {
@@ -780,13 +791,13 @@ function computeSizingFactor(account: AccountState): {
             `peakDrawdownThrottle: equity ${(fromPeak * 100).toFixed(2)}% below peak (peak=${((peak - 1) * 100).toFixed(2)}%) → factor=${factor.toFixed(3)}`,
           );
         }
-      } else if (account.challengePeak !== undefined) {
+      } else if (peakKnown) {
         notes.push(
           `peakDrawdownThrottle: equity ${(fromPeak * 100).toFixed(2)}% below peak (threshold ${(CFG.peakDrawdownThrottle.fromPeak * 100).toFixed(2)}%) — no throttle`,
         );
       } else {
         notes.push(
-          `peakDrawdownThrottle: account.challengePeak missing (Python sync_account_state outdated?) — no throttle`,
+          `peakDrawdownThrottle: account.challengePeak missing (Python sync outdated?) — no throttle (logged to console.error)`,
         );
       }
     }
@@ -850,6 +861,10 @@ export function detectLiveSignalsV231(
   // data that re-trigger on bar close.
   btcCandles = btcCandles.filter((c) => c.isFinal !== false);
   ethCandles = ethCandles.filter((c) => c.isFinal !== false);
+  // Bug-Audit Phase 2: solCandles was missing the same filter — SOL-MR
+  // signals could re-fire on partial bars. SOL is referenced via
+  // candlesForSrc.SOLUSDT for V261/V12 configs.
+  solCandles = solCandles.filter((c) => c.isFinal !== false);
   if (extraCandles) {
     const filtered: Record<string, Candle[]> = {};
     for (const [k, v] of Object.entries(extraCandles)) {
@@ -945,96 +960,42 @@ export function detectLiveSignalsV231(
   }
 
   // Session filter. Entry = next bar's open.
-  // 30m: bar-close hour, 1h: bar-close, 2h/4h: standard.
-  // BUGFIX 2026-04-28: Was missing V5..V15 + all V5 variants (NOVA/PRIMEX/STEP2/etc).
-  // Single flag covers entire 2h family to prevent missing any future variant.
-  const IS_2H_FAMILY =
-    USE_2H_LIVE ||
-    USE_2H ||
-    USE_2H_TREND ||
-    USE_2H_TREND_V2 ||
-    USE_2H_TREND_V3 ||
-    USE_2H_TREND_V4 ||
-    USE_2H_TREND_V5 ||
-    USE_2H_TREND_V6 ||
-    USE_2H_TREND_V7 ||
-    USE_2H_TREND_V8 ||
-    USE_2H_TREND_V9 ||
-    USE_2H_TREND_V10 ||
-    USE_2H_TREND_V11 ||
-    USE_2H_TREND_V12 ||
-    USE_2H_TREND_V13 ||
-    USE_2H_TREND_V14 ||
-    USE_2H_TREND_V15 ||
-    USE_2H_TREND_V5_NOVA ||
-    USE_2H_TREND_V5_PRIME ||
-    USE_2H_TREND_V5_PRIMEX ||
-    USE_2H_TREND_V5_TITAN ||
-    USE_2H_TREND_V5_TITAN_REAL ||
-    USE_2H_TREND_V5_LEGEND ||
-    USE_2H_TREND_V5_APEX ||
-    USE_2H_TREND_V5_ELITE ||
-    USE_2H_TREND_V5_HIGH ||
-    USE_2H_TREND_V5_ULTRA ||
-    USE_2H_TREND_V5_FUND ||
-    USE_2H_TREND_V5_PARETO ||
-    USE_2H_TREND_V5_RECENT ||
-    USE_2H_TREND_V5_ROBUST ||
-    USE_2H_TREND_V5_FASTMAX ||
-    USE_2H_TREND_V5_HIWIN ||
-    USE_2H_TREND_V5_PRO ||
-    USE_2H_TREND_V5_GOLD ||
-    USE_2H_TREND_V5_DIAMOND ||
-    USE_2H_TREND_V5_PLATINUM ||
-    USE_2H_TREND_V5_PLATINUM_30M ||
-    USE_2H_TREND_V5_TITANIUM ||
-    USE_2H_TREND_V5_OBSIDIAN ||
-    USE_2H_TREND_V5_ZIRKON ||
-    USE_2H_TREND_V5_AMBER ||
-    USE_2H_TREND_V5_QUARTZ ||
-    USE_2H_TREND_V5_QUARTZ_LITE ||
-    USE_2H_TREND_V5_QUARTZ_LITE_R28 ||
-    USE_2H_TREND_V5_QUARTZ_LITE_R28_V2 ||
-    USE_2H_TREND_V5_QUARTZ_LITE_R28_V3 ||
-    USE_2H_TREND_V5_QUARTZ_LITE_R28_V4 ||
-    USE_2H_TREND_V5_QUARTZ_STEP2 ||
-    USE_2H_TREND_V5_TOPAZ ||
-    USE_2H_TREND_V5_RUBIN ||
-    USE_2H_TREND_V5_SAPPHIR ||
-    USE_2H_TREND_V5_EMERALD ||
-    USE_2H_TREND_V5_PEARL ||
-    USE_2H_TREND_V5_OPAL ||
-    USE_2H_TREND_V5_AGATE ||
-    USE_2H_TREND_V5_JADE ||
-    USE_2H_TREND_V5_ONYX ||
-    USE_2H_TREND_V5_STEP2 ||
-    USE_2H_TREND_V5_ENSEMBLE;
-  const tfHours = USE_5M_LIVE
-    ? 5 / 60
-    : USE_15M_LIVE || USE_15M
-      ? 0.25
-      : USE_30M_LIVE || USE_30M || USE_30M_TURBO
-        ? 0.5
-        : USE_1H_LIVE || USE_1H
-          ? 1
-          : IS_2H_FAMILY
-            ? 2
-            : 4; // 4h default also handles USE_4H_TREND
+  // Bug-Audit Phase 2 — CRITICAL FIX (V231 Bug 2):
+  // Drive tfHours from CFG.timeframe directly instead of guessing via FTMO_TF
+  // env-var ternary. Previously most V5_TITANIUM-derived configs (PLATINUM_30M,
+  // OBSIDIAN, ZIRKON, AMBER, QUARTZ, QUARTZ_LITE, QUARTZ_LITE_R28*, TOPAZ,
+  // RUBIN, SAPPHIR, EMERALD, PEARL, OPAL, AGATE, JADE, ONYX, QUARTZ_STEP2)
+  // were stamped IS_2H_FAMILY → tfHours=2 even though they're 30m configs.
+  // Result: entryOpenTime, entryHour, maxHoldHours, barDurationMs all 4×
+  // wrong for these production champions, contributing to the 0%
+  // entry-agreement live-vs-backtest. Source-of-truth is CFG.timeframe.
+  const cfgTfMs =
+    CFG.timeframe === "5m"
+      ? 5 * 60_000
+      : CFG.timeframe === "15m"
+        ? 15 * 60_000
+        : CFG.timeframe === "30m"
+          ? 30 * 60_000
+          : CFG.timeframe === "1h"
+            ? 60 * 60_000
+            : CFG.timeframe === "2h"
+              ? 2 * 60 * 60_000
+              : CFG.timeframe === "4h"
+                ? 4 * 60 * 60_000
+                : 4 * 60 * 60_000; // unknown → 4h default (matches prior behavior)
+  const tfHours = cfgTfMs / 3600_000;
   const ethLastIdx = ethCandles.length - 1;
   const b1 = ethCandles[ethLastIdx];
   const entryOpenTime = b1.openTime + tfHours * 3600_000;
   const entryHour = new Date(entryOpenTime).getUTCHours();
+  // Default allowed hours by bar-cadence (overridable via CFG.allowedHoursUtc).
+  // Sub-2h timeframes get all 24 hours; 2h gets every-other-hour; 4h gets the
+  // standard quarterly schedule. Drive from cfgTfMs not env-var flags so 30m
+  // configs misnamed as "2h-trend-*" get the correct 24h cadence.
   const defaultHours =
-    USE_5M_LIVE ||
-    USE_15M_LIVE ||
-    USE_15M ||
-    USE_30M_LIVE ||
-    USE_30M_TURBO ||
-    USE_30M ||
-    USE_1H_LIVE ||
-    USE_1H
+    cfgTfMs <= 60 * 60_000
       ? Array.from({ length: 24 }, (_, i) => i)
-      : IS_2H_FAMILY
+      : cfgTfMs === 2 * 60 * 60_000
         ? [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]
         : [0, 4, 8, 12, 16, 20];
   const allowedHours = CFG.allowedHoursUtc ?? defaultHours;
