@@ -5148,7 +5148,17 @@ export function runFtmoDaytrade24h(
         }
         if (effRisk <= 0) continue; // skip trade
         // BUGFIX 2026-04-29 (Agent 4 Bug 2): relax floor to -1.5R for gap tails.
-        effPnl = Math.max(t.rawPnl * cfg.leverage * effRisk, -effRisk * 1.5);
+        // Phase 18 (FTMO Engine Bug 8): floor anchored at *base* risk × 1.5,
+        // NOT post-factor effRisk × 1.5. Otherwise Kelly+timeBoost stack
+        // (factor up to MAX_FACTOR=4) lifts the floor proportionally,
+        // allowing -6R loss on a single bad gap-stop. With liveCaps the
+        // anchor is min(base, liveCaps.maxRiskFrac); without liveCaps
+        // (legacy V231-V261 configs) we still anchor at base to avoid the
+        // unbounded riskFrac=5.0 ETH-PYR multiplier blowing past -7.5R.
+        const baseRisk = cfg.liveCaps
+          ? Math.min(asset.riskFrac, cfg.liveCaps.maxRiskFrac)
+          : Math.min(asset.riskFrac, 1.0);
+        effPnl = Math.max(t.rawPnl * cfg.leverage * effRisk, -baseRisk * 1.5);
       }
     }
     // BUGFIX 2026-04-29 (Agent 8 Bug 10): final NaN/Infinity guard before
@@ -5226,11 +5236,15 @@ export function runFtmoDaytrade24h(
     // Capture day target was first hit (BEFORE finishPausedPass call so the
     // call sees the correct base if needed). Bug H — see top of equity loop.
     if (firstTargetHitDay === null && equity >= 1 + cfg.profitTarget) {
-      // BUGFIX 2026-04-29 (R16 Speed Bug A): real trader holds the target-hit
-      // position from entry — passDay should anchor at entryDay, not exitDay
-      // (which is later by holdHours/24). With holdBars 60 = 30h on 2h, this
-      // alone can shave 1-2 days off median.
-      firstTargetHitDay = t.entryDay;
+      // Phase 18 (FTMO Engine Bug 2): split sort-by-exit (default research
+      // mode) vs liveMode (sort-by-entry, honest anchor).
+      //   • liveMode=true (sort-by-entry): t.entryDay is genuinely the day
+      //     the trader crossed target — no lookahead. Mirrors R16 Bug A.
+      //   • liveMode=false (sort-by-exit, default): t.entryDay is BEFORE
+      //     the actual equity-cross because earlier-entered-but-later-exited
+      //     trades are counted into equity that the trader couldn't yet see.
+      //     Use t.day (exit day) here for honest pass-day reporting.
+      firstTargetHitDay = cfg.liveMode ? t.entryDay : t.day;
     }
     const pausedPass = finishPausedPass(firstTargetHitDay ?? t.entryDay);
     if (pausedPass) return pausedPass;
