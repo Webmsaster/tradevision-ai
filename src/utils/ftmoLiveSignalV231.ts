@@ -1020,18 +1020,19 @@ export function detectLiveSignalsV231(
 
   // Loss-streak cooldown: pause entries after N consecutive losers.
   // Reads from account.recentPnls (most recent last). Engine matches.
-  // BUGFIX 2026-04-28 (v2): Engine resets streak on reason !== "stop" (TP or
-  // time exit). Live was counting any negative PnL as loss. PREVIOUS fix had
-  // wrong magnitude — recentPnls are equity-fractions (d.profit/100000), so
-  // a real stop = -riskFrac (~-4% with cap), not -stopPct*lev*riskFrac.
-  // Threshold = 50% of expected stop magnitude = -riskFrac * 0.5.
+  // Phase 8 (V231 Bug 5): the previous threshold `-LIVE_MAX_RISK_FRAC * 0.5`
+  // (=-2%) assumed every config used riskFrac near the live cap. V5_QUARTZ
+  // family uses riskFrac=0.005 → real stop ≈ -0.5%, never crossed -2% →
+  // LSC NEVER triggered live, while engine LSC fires constantly. Engine
+  // resets streak on reason !== "stop" (TP/time-exit), but live can't see
+  // exit-reason — closest proxy: ANY pnl <= 0 counts as loser. Mirrors
+  // engine intent and works across all riskFrac magnitudes.
   let lscBlocked = false;
   if (CFG.lossStreakCooldown) {
     const { afterLosses, cooldownBars } = CFG.lossStreakCooldown;
-    const stopLikeThreshold = -LIVE_MAX_RISK_FRAC * 0.5; // -2% with riskFrac=0.04
     let streak = 0;
     for (let i = account.recentPnls.length - 1; i >= 0; i--) {
-      if (account.recentPnls[i] <= stopLikeThreshold) streak++;
+      if (account.recentPnls[i] <= 0) streak++;
       else break;
     }
     if (streak >= afterLosses) {

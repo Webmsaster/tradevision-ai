@@ -12,7 +12,20 @@ import { NextResponse } from "next/server";
 
 const STATE_FILE = join(homedir(), ".tradevision-ai", "paper-trades.json");
 
+// Phase 12 (CRITICAL Auth Bug 5): gate behind FTMO_MONITOR_ENABLED, same
+// pattern as /api/ftmo-state and /api/ftmo-preview. Without this, anonymous
+// callers on Vercel-prod could read arbitrary user-home paper-trade JSON.
+function isEnabled() {
+  return (
+    process.env.FTMO_MONITOR_ENABLED === "1" ||
+    process.env.FTMO_MONITOR_ENABLED === "true"
+  );
+}
+
 export async function GET() {
+  if (!isEnabled()) {
+    return new NextResponse("Not Found", { status: 404 });
+  }
   if (!existsSync(STATE_FILE)) {
     return NextResponse.json({
       openPositions: [],

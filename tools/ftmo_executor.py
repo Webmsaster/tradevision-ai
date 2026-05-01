@@ -86,7 +86,10 @@ PING_LOT_SIZE = float(os.environ.get("FTMO_PING_LOT", "0.01"))  # tiny lot
 # worst a single bad fill costs 5% — still inside DL after one stop-out.
 # A hot signal can still arrive at 200% (legacy backtest formula) — this
 # is the executor's last line of defence against the "no money" cascade.
-RISK_FRAC_HARD_CAP = float(os.environ.get("FTMO_RISK_HARD_CAP", "0.07"))
+# Phase 12 (CRITICAL Auth Bug 4): default 0.07 contradicted the doc above
+# ("5% means at worst single fill costs 5%") and could blow the FTMO -5%
+# DL on a single stop-out. Lowered to 0.05 to match the comment.
+RISK_FRAC_HARD_CAP = float(os.environ.get("FTMO_RISK_HARD_CAP", "0.05"))
 
 # Auto-pause after N consecutive failed orders (e.g. "no money" cascade).
 # Resets to 0 on the first successful order. Setting to 0 disables.

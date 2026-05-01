@@ -35,10 +35,17 @@ interface FFEntry {
 export async function loadForexFactoryNews(
   signal?: AbortSignal,
 ): Promise<NewsEvent[]> {
+  // Phase 12 (Auth Bug 12): hard 10s timeout + 5MB response cap. Without
+  // these a slow / malicious upstream can hang the live service for minutes
+  // (single point of DoS) or OOM-kill it on a malformed huge response.
+  const timeoutSignal = AbortSignal.timeout(10_000);
+  const composedSignal = signal
+    ? AbortSignal.any([signal, timeoutSignal])
+    : timeoutSignal;
   const res = await fetch(
     "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
     {
-      signal,
+      signal: composedSignal,
       headers: {
         "User-Agent":
           "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
@@ -46,7 +53,11 @@ export async function loadForexFactoryNews(
     },
   );
   if (!res.ok) throw new Error(`ForexFactory fetch ${res.status}`);
-  const raw = (await res.json()) as FFEntry[];
+  const txt = await res.text();
+  if (txt.length > 5_000_000) {
+    throw new Error(`ForexFactory response too large: ${txt.length} bytes`);
+  }
+  const raw = JSON.parse(txt) as FFEntry[];
   const out: NewsEvent[] = [];
   for (const e of raw) {
     const ts = parseFFDate(e.date);

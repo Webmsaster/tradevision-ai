@@ -25,10 +25,17 @@ const TF = process.env.FTMO_TF || "1h"; // "1h" | "2h" | "4h"
 const STATE_DIR = path.resolve(__dirname, "..", `ftmo-state-${TF}`);
 const REPO_ROOT = path.resolve(__dirname, "..");
 
-// Telegram (set via real env vars or hardcode here for VPS-only deploy)
-const TELEGRAM_BOT_TOKEN =
-  process.env.TELEGRAM_BOT_TOKEN || "8784347792:AAGOuLww-yTQIYs_ZsE1EbvnoZuBpXaGMtU";
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "8794162768";
+// Telegram — Phase 12 (CRITICAL Auth Bug 1): hardcoded fallback removed.
+// Previously contained committed bot token + chat-id (visible in git history).
+// MUST be set via real env vars / .env.ftmo / pm2 ecosystem env.
+// REVOKE the leaked token at @BotFather → /revoke before redeploying.
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
+if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+  console.warn(
+    "[pm2] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — running without Telegram alerts",
+  );
+}
 
 const sharedEnv = {
   FTMO_TF: TF,

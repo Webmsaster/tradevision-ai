@@ -314,9 +314,9 @@ npm install -g pm2 pm2-windows-startup
 # 2. Bot-Verzeichnis
 cd C:\tradevision-ai
 
-# 3. ENV-Variablen für Telegram in Session setzen (oder direkt in ecosystem.config.js editieren)
-$env:TELEGRAM_BOT_TOKEN = "8784347792:AAGOuLww-yTQIYs_ZsE1EbvnoZuBpXaGMtU"
-$env:TELEGRAM_CHAT_ID = "8794162768"
+# 3. ENV-Variablen für Telegram in Session setzen (NICHT mehr ins Repo committen!)
+$env:TELEGRAM_BOT_TOKEN = "<YOUR_BOT_TOKEN>"
+$env:TELEGRAM_CHAT_ID = "<YOUR_CHAT_ID>"
 
 # 4. Beide Services starten (default: 1h Variante = V7_1H_OPT)
 pm2 start tools/ecosystem.config.js

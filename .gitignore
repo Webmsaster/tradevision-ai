@@ -12,11 +12,11 @@ dist/
 # misc
 .DS_Store
 *.pem
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+# Phase 12 (CRITICAL Auth Bug 3): catch ALL .env* incl. .env.ftmo where the
+# Windows installer writes Telegram tokens. Keep `.env.local.example` allowed
+# so onboarding still has a template.
+.env*
+!.env.local.example
 
 # debug
 npm-debug.log*
@@ -54,6 +54,8 @@ lh-*.json
 /ftmo-state/
 paper-trade-log.json
 signal-alerts.log
+# Phase 12: signal-alerts dedup state — runtime-only
+signal-alerts.state.json
 
 # Exploratory iteration sweeps (archived under scripts/exploratory/)
 scripts/exploratory/
