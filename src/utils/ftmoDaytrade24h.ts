@@ -1480,7 +1480,7 @@ export const FTMO_DAYTRADE_24H_CONFIG_V231: FtmoDaytrade24hConfig = {
  */
 export const FTMO_DAYTRADE_24H_CONFIG_V232: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V231,
-  minTradingDays: 5,
+  minTradingDays: 4, // Phase 24: 5→4 (FTMO real rule, was research-mode artifact)
   crossAssetFilter: {
     symbol: "BTCUSDT",
     emaFastPeriod: 10,
@@ -1539,7 +1539,7 @@ export const FTMO_DAYTRADE_24H_CONFIG_V232: FtmoDaytrade24hConfig = {
  */
 export const FTMO_DAYTRADE_24H_CONFIG_V232_FAST: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V231,
-  minTradingDays: 5,
+  minTradingDays: 4, // Phase 24: 5→4 (FTMO real rule, was research-mode artifact)
   assets: [
     ...FTMO_DAYTRADE_24H_CONFIG_V231.assets,
     {
@@ -1643,7 +1643,7 @@ export const FTMO_DAYTRADE_24H_CONFIG_V233_FAST: FtmoDaytrade24hConfig = {
  */
 export const FTMO_DAYTRADE_24H_CONFIG_V233_LITE: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V231,
-  minTradingDays: 5,
+  minTradingDays: 4, // Phase 24: 5→4 (FTMO real rule, was research-mode artifact)
   timeBoost: { afterDay: 5, equityBelow: 0.08, factor: 1.8 },
   // Same assets as V231 (ETH+BTC+SOL) — no ARB/MATIC needed
 };
@@ -1667,7 +1667,7 @@ export const FTMO_DAYTRADE_24H_CONFIG_V233_LITE: FtmoDaytrade24hConfig = {
  */
 export const FTMO_DAYTRADE_24H_CONFIG_V234: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V231,
-  minTradingDays: 5,
+  minTradingDays: 4, // Phase 24: 5→4 (FTMO real rule, was research-mode artifact)
   timeBoost: { afterDay: 5, equityBelow: 0.08, factor: 1.6 },
   // ETH+BTC+SOL (no ARB/MATIC — they didn't help on full data)
 };
@@ -2919,7 +2919,7 @@ export const FTMO_DAYTRADE_24H_CONFIG_V1H_CHAMPION: FtmoDaytrade24hConfig = {
     momSkipShortAbove: 0.005, // skip even tiny BTC bullish drift (BTC-residual approximation)
   },
   breakEven: { threshold: 0.015 }, // iter1h-020 win: 1.5% > 1.2% by +0.7pp pass
-  minTradingDays: 5, // FTMO REAL requirement (engine default 4 was too lenient)
+  minTradingDays: 4, // Phase 24: 5→4 (FTMO real rule, was research-mode artifact) // FTMO REAL requirement (engine default 4 was too lenient)
   assets: [
     {
       symbol: "ETH-MR",

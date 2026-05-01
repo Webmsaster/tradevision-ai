@@ -306,6 +306,18 @@ const USE_2H_TREND_V5_TITAN_REAL =
   process.env.FTMO_TF === "2h-trend-v5-titan-real";
 const USE_2H_TREND_V5_LEGEND = process.env.FTMO_TF === "2h-trend-v5-legend";
 const USE_2H_TREND_V5_TITAN = process.env.FTMO_TF === "2h-trend-v5-titan";
+
+// Phase 24 (Strategy Configs Bug 9): hard-block deprecated V5_TITAN /
+// V5_LEGEND selectors at module-load. These have volTargeting maxMult=5
+// → a single stop can lose 5× FTMO daily-loss cap → instant fail. Must
+// throw rather than route, otherwise a Telegram /set or env-var typo
+// could activate them silently.
+if (USE_2H_TREND_V5_TITAN || USE_2H_TREND_V5_LEGEND) {
+  throw new Error(
+    `FTMO_TF=${process.env.FTMO_TF} is DEPRECATED (volTargeting maxMult=5 ` +
+      `unsafe — single stop can blow FTMO -5% DL). Use V5_TITAN_REAL instead.`,
+  );
+}
 const USE_2H_TREND_V5_APEX = process.env.FTMO_TF === "2h-trend-v5-apex";
 const USE_2H_TREND_V5_ELITE = process.env.FTMO_TF === "2h-trend-v5-elite";
 const USE_2H_TREND_V5_HIGH = process.env.FTMO_TF === "2h-trend-v5-high";
