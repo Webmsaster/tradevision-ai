@@ -1,19 +1,22 @@
-import type { Trade, CSVColumnMapping } from '@/types/trade';
-import Papa from 'papaparse';
-import { v4 as uuidv4 } from 'uuid';
-import { calculatePnl } from '@/utils/calculations';
+import type { Trade, CSVColumnMapping } from "@/types/trade";
+import Papa from "papaparse";
+import { v4 as uuidv4 } from "uuid";
+import { calculatePnl } from "@/utils/calculations";
 
 /**
  * Parse a CSV File object using PapaParse with headers enabled.
  * Returns a Promise that resolves with the full ParseResult.
  */
 export function parseCSVFile(
-  file: File
+  file: File,
 ): Promise<Papa.ParseResult<Record<string, string>>> {
   return new Promise((resolve, reject) => {
     Papa.parse<Record<string, string>>(file, {
       header: true,
       skipEmptyLines: true,
+      // Strip UTF-8 BOM (﻿) and whitespace from headers — Excel-exported
+      // CSVs frequently include a BOM that breaks column matching.
+      transformHeader: (h) => h.replace(/^﻿/, "").trim(),
       complete(results) {
         resolve(results);
       },
@@ -25,10 +28,44 @@ export function parseCSVFile(
 }
 
 /**
+ * Locale-aware number parser. Handles:
+ *   "1,50"     → 1.5   (EU decimal comma)
+ *   "1.234,56" → 1234.56 (EU thousands + decimal)
+ *   "1,234.56" → 1234.56 (US thousands + decimal)
+ *   "1234"     → 1234
+ *   "$45.50"   → NaN (rejected — stricter than parseFloat)
+ *   "45.50 USD" → NaN (rejected)
+ *   ""         → NaN
+ *   undefined  → NaN
+ *
+ * Returns NaN when the input is not a clean numeric string. Callers should
+ * check `Number.isFinite(result)` to filter out NaN AND Infinity.
+ */
+export function parseLocaleNumber(s: string | undefined): number {
+  if (!s) return NaN;
+  const trimmed = s.trim().replace(/['\s]/g, "");
+  if (!trimmed) return NaN;
+  // Reject anything containing non-numeric/non-separator characters
+  if (!/^-?[\d.,]+$/.test(trimmed)) return NaN;
+  const lastComma = trimmed.lastIndexOf(",");
+  const lastDot = trimmed.lastIndexOf(".");
+  let normalized: string;
+  if (lastComma > lastDot) {
+    // EU format: "1.234,56" → "1234.56"
+    normalized = trimmed.replace(/\./g, "").replace(",", ".");
+  } else {
+    // US format: "1,234.56" → "1234.56"
+    normalized = trimmed.replace(/,/g, "");
+  }
+  const n = parseFloat(normalized);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+/**
  * Extract the column headers from a PapaParse result.
  */
 export function getCSVHeaders(
-  result: Papa.ParseResult<Record<string, string>>
+  result: Papa.ParseResult<Record<string, string>>,
 ): string[] {
   return result.meta.fields ?? [];
 }
@@ -40,50 +77,77 @@ export function getCSVHeaders(
  */
 export function mapCSVToTrades(
   data: Record<string, string>[],
-  mapping: CSVColumnMapping
+  mapping: CSVColumnMapping,
 ): Trade[] {
   return data
     .map((row): Trade | null => {
-      const pair = sanitizeCSVField(row[mapping.pair] ?? '');
-      const entryPrice = parseFloat(row[mapping.entryPrice]);
-      const exitPrice = parseFloat(row[mapping.exitPrice]);
-      const quantity = parseFloat(row[mapping.quantity]);
+      const pair = sanitizeCSVField(row[mapping.pair] ?? "");
+      const entryPrice = parseLocaleNumber(row[mapping.entryPrice]);
+      const exitPrice = parseLocaleNumber(row[mapping.exitPrice]);
+      const quantity = parseLocaleNumber(row[mapping.quantity]);
 
-      // Filter out rows where essential fields are missing or invalid
-      if (!pair || isNaN(entryPrice) || isNaN(exitPrice) || isNaN(quantity)) {
+      // Filter out rows where essential fields are missing or invalid.
+      // Number.isFinite filters NaN AND Infinity; positive prices/quantities only.
+      if (
+        !pair ||
+        !Number.isFinite(entryPrice) ||
+        !Number.isFinite(exitPrice) ||
+        !Number.isFinite(quantity) ||
+        entryPrice <= 0 ||
+        exitPrice <= 0 ||
+        quantity <= 0
+      ) {
         return null;
       }
 
       // Parse direction -------------------------------------------------
-      const rawDirection = sanitizeCSVField(row[mapping.direction] ?? '').toLowerCase();
-      let direction: 'long' | 'short';
-      if (rawDirection === 'long' || rawDirection === 'buy') {
-        direction = 'long';
-      } else if (rawDirection === 'short' || rawDirection === 'sell') {
-        direction = 'short';
+      const rawDirection = sanitizeCSVField(
+        row[mapping.direction] ?? "",
+      ).toLowerCase();
+      let direction: "long" | "short";
+      if (rawDirection === "long" || rawDirection === "buy") {
+        direction = "long";
+      } else if (rawDirection === "short" || rawDirection === "sell") {
+        direction = "short";
       } else {
         // Default to long when direction cannot be determined
-        direction = 'long';
+        direction = "long";
       }
 
       // Parse dates -----------------------------------------------------
-      const entryDate = mapping.entryDate
-        ? safeISODate(row[mapping.entryDate])
-        : new Date().toISOString();
-      const exitDate = mapping.exitDate
-        ? safeISODate(row[mapping.exitDate])
-        : new Date().toISOString();
+      // Empty value → fall back to "now" (caller didn't supply a date).
+      // Non-empty but unparseable → drop the row (fail-loud, prevents stale
+      // trades from being silently re-dated to the import time).
+      const entryDateRaw = mapping.entryDate
+        ? row[mapping.entryDate]?.trim()
+        : "";
+      let entryDate: string;
+      if (!entryDateRaw) {
+        entryDate = new Date().toISOString();
+      } else {
+        const parsed = safeISODate(entryDateRaw);
+        if (!parsed) return null;
+        entryDate = parsed;
+      }
+      const exitDateRaw = mapping.exitDate ? row[mapping.exitDate]?.trim() : "";
+      let exitDate: string;
+      if (!exitDateRaw) {
+        exitDate = new Date().toISOString();
+      } else {
+        const parsed = safeISODate(exitDateRaw);
+        if (!parsed) return null;
+        exitDate = parsed;
+      }
 
       // Parse optional numeric fields -----------------------------------
+      const leverageRaw = mapping.leverage
+        ? parseLocaleNumber(row[mapping.leverage])
+        : NaN;
       const leverage =
-        mapping.leverage && !isNaN(parseFloat(row[mapping.leverage]))
-          ? parseFloat(row[mapping.leverage])
-          : 1;
+        Number.isFinite(leverageRaw) && leverageRaw > 0 ? leverageRaw : 1;
 
-      const fees =
-        mapping.fees && !isNaN(parseFloat(row[mapping.fees]))
-          ? parseFloat(row[mapping.fees])
-          : 0;
+      const feesRaw = mapping.fees ? parseLocaleNumber(row[mapping.fees]) : NaN;
+      const fees = Number.isFinite(feesRaw) ? feesRaw : 0;
 
       // Calculate PnL ---------------------------------------------------
       const { pnl, pnlPercent } = calculatePnl({
@@ -96,7 +160,7 @@ export function mapCSVToTrades(
         pair,
         entryDate,
         exitDate,
-        notes: '',
+        notes: "",
         tags: [],
       });
 
@@ -112,7 +176,7 @@ export function mapCSVToTrades(
         pnl,
         pnlPercent,
         fees,
-        notes: '',
+        notes: "",
         tags: [],
         leverage,
         strategy: undefined,
@@ -127,45 +191,45 @@ export function mapCSVToTrades(
  * Returns only the fields that could be matched.
  */
 export function autoDetectMapping(
-  headers: string[]
+  headers: string[],
 ): Partial<CSVColumnMapping> {
   const aliases: Record<keyof CSVColumnMapping, string[]> = {
-    pair: ['pair', 'symbol', 'market', 'instrument', 'asset'],
-    direction: ['direction', 'side', 'type', 'action'],
+    pair: ["pair", "symbol", "market", "instrument", "asset"],
+    direction: ["direction", "side", "type", "action"],
     entryPrice: [
-      'entry_price',
-      'entryprice',
-      'entry',
-      'open_price',
-      'openprice',
-      'buy_price',
+      "entry_price",
+      "entryprice",
+      "entry",
+      "open_price",
+      "openprice",
+      "buy_price",
     ],
     exitPrice: [
-      'exit_price',
-      'exitprice',
-      'exit',
-      'close_price',
-      'closeprice',
-      'sell_price',
+      "exit_price",
+      "exitprice",
+      "exit",
+      "close_price",
+      "closeprice",
+      "sell_price",
     ],
-    quantity: ['quantity', 'qty', 'amount', 'size', 'volume', 'lots'],
+    quantity: ["quantity", "qty", "amount", "size", "volume", "lots"],
     entryDate: [
-      'entry_date',
-      'entrydate',
-      'entry_time',
-      'open_date',
-      'open_time',
-      'date',
+      "entry_date",
+      "entrydate",
+      "entry_time",
+      "open_date",
+      "open_time",
+      "date",
     ],
     exitDate: [
-      'exit_date',
-      'exitdate',
-      'exit_time',
-      'close_date',
-      'close_time',
+      "exit_date",
+      "exitdate",
+      "exit_time",
+      "close_date",
+      "close_time",
     ],
-    fees: ['fees', 'fee', 'commission', 'cost'],
-    leverage: ['leverage', 'lev', 'multiplier'],
+    fees: ["fees", "fee", "commission", "cost"],
+    leverage: ["leverage", "lev", "multiplier"],
   };
 
   const mapping: Partial<CSVColumnMapping> = {};
@@ -175,7 +239,7 @@ export function autoDetectMapping(
     string[],
   ][]) {
     const match = headers.find((h) =>
-      candidates.includes(h.trim().toLowerCase())
+      candidates.includes(h.trim().toLowerCase()),
     );
     if (match) {
       mapping[field] = match;
@@ -191,48 +255,48 @@ export function autoDetectMapping(
 
 export const PLATFORM_PRESETS: Record<string, CSVColumnMapping> = {
   binance: {
-    pair: 'Symbol',
-    direction: 'Side',
-    entryPrice: 'Price',
-    exitPrice: 'Price',
-    quantity: 'Quantity',
-    entryDate: 'Time',
-    exitDate: 'Time',
-    fees: 'Fee',
-    leverage: '',
+    pair: "Symbol",
+    direction: "Side",
+    entryPrice: "Price",
+    exitPrice: "Price",
+    quantity: "Quantity",
+    entryDate: "Time",
+    exitDate: "Time",
+    fees: "Fee",
+    leverage: "",
   },
   bybit: {
-    pair: 'Symbol',
-    direction: 'Side',
-    entryPrice: 'Entry Price',
-    exitPrice: 'Exit Price',
-    quantity: 'Qty',
-    entryDate: 'Created Time',
-    exitDate: 'Closed Time',
-    fees: 'Trading Fee',
-    leverage: 'Leverage',
+    pair: "Symbol",
+    direction: "Side",
+    entryPrice: "Entry Price",
+    exitPrice: "Exit Price",
+    quantity: "Qty",
+    entryDate: "Created Time",
+    exitDate: "Closed Time",
+    fees: "Trading Fee",
+    leverage: "Leverage",
   },
   mt4: {
-    pair: 'Symbol',
-    direction: 'Type',
-    entryPrice: 'Open Price',
-    exitPrice: 'Close Price',
-    quantity: 'Volume',
-    entryDate: 'Open Time',
-    exitDate: 'Close Time',
-    fees: 'Commission',
-    leverage: '',
+    pair: "Symbol",
+    direction: "Type",
+    entryPrice: "Open Price",
+    exitPrice: "Close Price",
+    quantity: "Volume",
+    entryDate: "Open Time",
+    exitDate: "Close Time",
+    fees: "Commission",
+    leverage: "",
   },
   generic: {
-    pair: 'Pair',
-    direction: 'Direction',
-    entryPrice: 'Entry Price',
-    exitPrice: 'Exit Price',
-    quantity: 'Quantity',
-    entryDate: 'Entry Date',
-    exitDate: 'Exit Date',
-    fees: 'Fees',
-    leverage: 'Leverage',
+    pair: "Pair",
+    direction: "Direction",
+    entryPrice: "Entry Price",
+    exitPrice: "Exit Price",
+    quantity: "Quantity",
+    entryDate: "Entry Date",
+    exitDate: "Exit Date",
+    fees: "Fees",
+    leverage: "Leverage",
   },
 };
 
@@ -260,14 +324,13 @@ export function sanitizeCSVField(value: string): string {
 
 /**
  * Safely convert a raw date string into an ISO-8601 string.
- * Returns the current date/time if the input cannot be parsed.
+ * Returns null if the input cannot be parsed (callers must handle).
+ * Previously fell silently to "now" — that hid CSV import errors and put
+ * old trades on the import date, breaking equity curves.
  */
-function safeISODate(raw: string | undefined): string {
-  if (!raw || !raw.trim()) return new Date().toISOString();
-
+function safeISODate(raw: string | undefined): string | null {
+  if (!raw || !raw.trim()) return null;
   const date = new Date(raw.trim());
-  if (isNaN(date.getTime())) return new Date().toISOString();
-
+  if (isNaN(date.getTime())) return null;
   return date.toISOString();
 }
-

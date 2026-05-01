@@ -38,6 +38,9 @@ export function detectRevengeTrade(trades: Trade[]): AIInsight | null {
         2;
       const currentSize = current.quantity * current.entryPrice;
 
+      // Guard against zero-cost reference (corrupt data, cash positions).
+      // Without this, increasePercent becomes Infinity → "increased by Infinity%".
+      if (prevAvgSize <= 0) continue;
       if (currentSize > prevAvgSize * 1.5) {
         const increasePercent = Math.round(
           ((currentSize - prevAvgSize) / prevAvgSize) * 100,

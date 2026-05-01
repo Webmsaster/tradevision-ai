@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import type { Trade } from '@/types/trade';
+import { describe, it, expect } from "vitest";
+import type { Trade } from "@/types/trade";
 import {
   calculatePnl,
   calculateWinRate,
@@ -15,77 +15,77 @@ import {
   calculateAllStats,
   calculatePerformanceByDayOfWeek,
   calculatePerformanceByHour,
-} from '@/utils/calculations';
+} from "@/utils/calculations";
 
 function makeTrade(overrides: Partial<Trade> = {}): Trade {
   return {
-    id: 'test-1',
-    pair: 'BTC/USDT',
-    direction: 'long',
+    id: "test-1",
+    pair: "BTC/USDT",
+    direction: "long",
     entryPrice: 100,
     exitPrice: 110,
     quantity: 1,
-    entryDate: '2024-01-01T10:00:00Z',
-    exitDate: '2024-01-01T14:00:00Z',
+    entryDate: "2024-01-01T10:00:00Z",
+    exitDate: "2024-01-01T14:00:00Z",
     pnl: 10,
     pnlPercent: 10,
     fees: 0,
-    notes: '',
+    notes: "",
     tags: [],
     leverage: 1,
     ...overrides,
   };
 }
 
-describe('calculatePnl', () => {
-  it('calculates long trade PnL correctly', () => {
+describe("calculatePnl", () => {
+  it("calculates long trade PnL correctly", () => {
     const result = calculatePnl({
-      direction: 'long',
+      direction: "long",
       entryPrice: 100,
       exitPrice: 110,
       quantity: 2,
       leverage: 1,
       fees: 1,
-      pair: 'BTC/USDT',
-      entryDate: '',
-      exitDate: '',
-      notes: '',
+      pair: "BTC/USDT",
+      entryDate: "",
+      exitDate: "",
+      notes: "",
       tags: [],
     });
     expect(result.pnl).toBe(19); // (110-100)*2 - 1
     expect(result.pnlPercent).toBeCloseTo(9.5); // 19 / (200/1) * 100
   });
 
-  it('calculates short trade PnL correctly', () => {
+  it("calculates short trade PnL correctly", () => {
     const result = calculatePnl({
-      direction: 'short',
+      direction: "short",
       entryPrice: 100,
       exitPrice: 90,
       quantity: 2,
       leverage: 1,
       fees: 0,
-      pair: 'BTC/USDT',
-      entryDate: '',
-      exitDate: '',
-      notes: '',
+      pair: "BTC/USDT",
+      entryDate: "",
+      exitDate: "",
+      notes: "",
       tags: [],
     });
     expect(result.pnl).toBe(20); // (100-90)*2
     expect(result.pnlPercent).toBe(10);
   });
 
-  it('leverage does not multiply PnL but affects pnlPercent', () => {
+  it("leverage does not multiply PnL but affects pnlPercent", () => {
     const result = calculatePnl({
-      direction: 'long',
+      direction: "long",
       entryPrice: 100,
       exitPrice: 105,
       quantity: 1,
       leverage: 10,
       fees: 0,
-      pair: 'BTC/USDT',
-      entryDate: '',
-      exitDate: '',
-      notes: '',
+      pair: "BTC/USDT",
+      entryDate: "",
+      exitDate: "",
+      notes: "",
       tags: [],
     });
     // PnL = (105-100)*1 = 5 (leverage does NOT multiply PnL)
@@ -94,30 +94,30 @@ describe('calculatePnl', () => {
     expect(result.pnlPercent).toBe(50);
   });
 
-  it('handles zero investment', () => {
+  it("handles zero investment", () => {
     const result = calculatePnl({
-      direction: 'long',
+      direction: "long",
       entryPrice: 0,
       exitPrice: 10,
       quantity: 0,
       leverage: 1,
       fees: 0,
-      pair: 'BTC/USDT',
-      entryDate: '',
-      exitDate: '',
-      notes: '',
+      pair: "BTC/USDT",
+      entryDate: "",
+      exitDate: "",
+      notes: "",
       tags: [],
     });
     expect(result.pnlPercent).toBe(0);
   });
 });
 
-describe('calculateWinRate', () => {
-  it('returns 0 for empty trades', () => {
+describe("calculateWinRate", () => {
+  it("returns 0 for empty trades", () => {
     expect(calculateWinRate([])).toBe(0);
   });
 
-  it('calculates win rate correctly', () => {
+  it("calculates win rate correctly", () => {
     const trades = [
       makeTrade({ pnl: 10 }),
       makeTrade({ pnl: -5 }),
@@ -127,20 +127,20 @@ describe('calculateWinRate', () => {
     expect(calculateWinRate(trades)).toBe(50);
   });
 
-  it('returns 100 for all winners', () => {
+  it("returns 100 for all winners", () => {
     const trades = [makeTrade({ pnl: 10 }), makeTrade({ pnl: 5 })];
     expect(calculateWinRate(trades)).toBe(100);
   });
 });
 
-describe('calculateAvgWinLoss', () => {
-  it('returns zeros for empty trades', () => {
+describe("calculateAvgWinLoss", () => {
+  it("returns zeros for empty trades", () => {
     const { avgWin, avgLoss } = calculateAvgWinLoss([]);
     expect(avgWin).toBe(0);
     expect(avgLoss).toBe(0);
   });
 
-  it('calculates averages correctly', () => {
+  it("calculates averages correctly", () => {
     const trades = [
       makeTrade({ pnl: 10 }),
       makeTrade({ pnl: 20 }),
@@ -153,50 +153,48 @@ describe('calculateAvgWinLoss', () => {
   });
 });
 
-describe('calculateRiskReward', () => {
-  it('returns 0 when no losses', () => {
+describe("calculateRiskReward", () => {
+  it("returns Infinity when only wins (semantically correct — undefined R:R)", () => {
     const trades = [makeTrade({ pnl: 10 })];
-    expect(calculateRiskReward(trades)).toBe(0);
+    expect(calculateRiskReward(trades)).toBe(Infinity);
   });
 
-  it('calculates ratio correctly', () => {
-    const trades = [
-      makeTrade({ pnl: 20 }),
-      makeTrade({ pnl: -10 }),
-    ];
+  it("returns 0 when no trades at all", () => {
+    expect(calculateRiskReward([])).toBe(0);
+  });
+
+  it("calculates ratio correctly", () => {
+    const trades = [makeTrade({ pnl: 20 }), makeTrade({ pnl: -10 })];
     expect(calculateRiskReward(trades)).toBe(2); // 20/10
   });
 });
 
-describe('calculateExpectancy', () => {
-  it('returns 0 for empty trades', () => {
+describe("calculateExpectancy", () => {
+  it("returns 0 for empty trades", () => {
     expect(calculateExpectancy([])).toBe(0);
   });
 
-  it('calculates expectancy correctly', () => {
-    const trades = [
-      makeTrade({ pnl: 30 }),
-      makeTrade({ pnl: -10 }),
-    ];
+  it("calculates expectancy correctly", () => {
+    const trades = [makeTrade({ pnl: 30 }), makeTrade({ pnl: -10 })];
     // winRate=50%, avgWin=30, avgLoss=10
     // 0.5*30 - 0.5*10 = 15 - 5 = 10
     expect(calculateExpectancy(trades)).toBe(10);
   });
 });
 
-describe('calculateMaxDrawdown', () => {
-  it('returns 0 for empty trades', () => {
+describe("calculateMaxDrawdown", () => {
+  it("returns 0 for empty trades", () => {
     const { maxDrawdown, maxDrawdownPercent } = calculateMaxDrawdown([]);
     expect(maxDrawdown).toBe(0);
     expect(maxDrawdownPercent).toBe(0);
   });
 
-  it('calculates drawdown correctly', () => {
+  it("calculates drawdown correctly", () => {
     const trades = [
-      makeTrade({ id: '1', pnl: 100, exitDate: '2024-01-01T00:00:00Z' }),
-      makeTrade({ id: '2', pnl: -30, exitDate: '2024-01-02T00:00:00Z' }),
-      makeTrade({ id: '3', pnl: -20, exitDate: '2024-01-03T00:00:00Z' }),
-      makeTrade({ id: '4', pnl: 10, exitDate: '2024-01-04T00:00:00Z' }),
+      makeTrade({ id: "1", pnl: 100, exitDate: "2024-01-01T00:00:00Z" }),
+      makeTrade({ id: "2", pnl: -30, exitDate: "2024-01-02T00:00:00Z" }),
+      makeTrade({ id: "3", pnl: -20, exitDate: "2024-01-03T00:00:00Z" }),
+      makeTrade({ id: "4", pnl: 10, exitDate: "2024-01-04T00:00:00Z" }),
     ];
     // Equity: 100, 70, 50, 60. Peak: 100. Max drawdown: 100-50=50, 50%
     const { maxDrawdown, maxDrawdownPercent } = calculateMaxDrawdown(trades);
@@ -205,15 +203,15 @@ describe('calculateMaxDrawdown', () => {
   });
 });
 
-describe('calculateEquityCurve', () => {
-  it('returns empty for no trades', () => {
+describe("calculateEquityCurve", () => {
+  it("returns empty for no trades", () => {
     expect(calculateEquityCurve([])).toEqual([]);
   });
 
-  it('builds equity curve correctly', () => {
+  it("builds equity curve correctly", () => {
     const trades = [
-      makeTrade({ pnl: 10, exitDate: '2024-01-01T00:00:00Z' }),
-      makeTrade({ pnl: -5, exitDate: '2024-01-02T00:00:00Z' }),
+      makeTrade({ pnl: 10, exitDate: "2024-01-01T00:00:00Z" }),
+      makeTrade({ pnl: -5, exitDate: "2024-01-02T00:00:00Z" }),
     ];
     const curve = calculateEquityCurve(trades);
     expect(curve).toHaveLength(2);
@@ -224,39 +222,36 @@ describe('calculateEquityCurve', () => {
   });
 });
 
-describe('calculateProfitFactor', () => {
-  it('returns 0 for empty trades', () => {
+describe("calculateProfitFactor", () => {
+  it("returns 0 for empty trades", () => {
     expect(calculateProfitFactor([])).toBe(0);
   });
 
-  it('returns Infinity when no losses', () => {
+  it("returns Infinity when no losses", () => {
     const trades = [makeTrade({ pnl: 10 })];
     expect(calculateProfitFactor(trades)).toBe(Infinity);
   });
 
-  it('calculates profit factor correctly', () => {
-    const trades = [
-      makeTrade({ pnl: 30 }),
-      makeTrade({ pnl: -10 }),
-    ];
+  it("calculates profit factor correctly", () => {
+    const trades = [makeTrade({ pnl: 30 }), makeTrade({ pnl: -10 })];
     expect(calculateProfitFactor(trades)).toBe(3); // 30/10
   });
 });
 
-describe('calculateStreaks', () => {
-  it('returns zeros for empty trades', () => {
+describe("calculateStreaks", () => {
+  it("returns zeros for empty trades", () => {
     const { longestWinStreak, longestLossStreak } = calculateStreaks([]);
     expect(longestWinStreak).toBe(0);
     expect(longestLossStreak).toBe(0);
   });
 
-  it('calculates streaks correctly', () => {
+  it("calculates streaks correctly", () => {
     const trades = [
-      makeTrade({ pnl: 10, exitDate: '2024-01-01T00:00:00Z' }),
-      makeTrade({ pnl: 20, exitDate: '2024-01-02T00:00:00Z' }),
-      makeTrade({ pnl: 5, exitDate: '2024-01-03T00:00:00Z' }),
-      makeTrade({ pnl: -10, exitDate: '2024-01-04T00:00:00Z' }),
-      makeTrade({ pnl: -5, exitDate: '2024-01-05T00:00:00Z' }),
+      makeTrade({ pnl: 10, exitDate: "2024-01-01T00:00:00Z" }),
+      makeTrade({ pnl: 20, exitDate: "2024-01-02T00:00:00Z" }),
+      makeTrade({ pnl: 5, exitDate: "2024-01-03T00:00:00Z" }),
+      makeTrade({ pnl: -10, exitDate: "2024-01-04T00:00:00Z" }),
+      makeTrade({ pnl: -5, exitDate: "2024-01-05T00:00:00Z" }),
     ];
     const { longestWinStreak, longestLossStreak } = calculateStreaks(trades);
     expect(longestWinStreak).toBe(3);
@@ -264,20 +259,17 @@ describe('calculateStreaks', () => {
   });
 });
 
-describe('calculateSharpeRatio', () => {
-  it('returns 0 for fewer than 2 trades', () => {
+describe("calculateSharpeRatio", () => {
+  it("returns 0 for fewer than 2 trades", () => {
     expect(calculateSharpeRatio([makeTrade()])).toBe(0);
   });
 
-  it('returns 0 when all trades have same PnL', () => {
-    const trades = [
-      makeTrade({ pnl: 10 }),
-      makeTrade({ pnl: 10 }),
-    ];
+  it("returns 0 when all trades have same PnL", () => {
+    const trades = [makeTrade({ pnl: 10 }), makeTrade({ pnl: 10 })];
     expect(calculateSharpeRatio(trades)).toBe(0);
   });
 
-  it('returns positive value for profitable trades', () => {
+  it("returns positive value for profitable trades", () => {
     const trades = [
       makeTrade({ pnl: 10 }),
       makeTrade({ pnl: 20 }),
@@ -287,20 +279,20 @@ describe('calculateSharpeRatio', () => {
   });
 });
 
-describe('calculateAvgHoldTime', () => {
-  it('returns 0 for empty trades', () => {
+describe("calculateAvgHoldTime", () => {
+  it("returns 0 for empty trades", () => {
     expect(calculateAvgHoldTime([])).toBe(0);
   });
 
-  it('calculates average hold time correctly', () => {
+  it("calculates average hold time correctly", () => {
     const trades = [
       makeTrade({
-        entryDate: '2024-01-01T10:00:00Z',
-        exitDate: '2024-01-01T14:00:00Z', // 4 hours
+        entryDate: "2024-01-01T10:00:00Z",
+        exitDate: "2024-01-01T14:00:00Z", // 4 hours
       }),
       makeTrade({
-        entryDate: '2024-01-02T10:00:00Z',
-        exitDate: '2024-01-02T12:00:00Z', // 2 hours
+        entryDate: "2024-01-02T10:00:00Z",
+        exitDate: "2024-01-02T12:00:00Z", // 2 hours
       }),
     ];
     const avg = calculateAvgHoldTime(trades);
@@ -308,8 +300,8 @@ describe('calculateAvgHoldTime', () => {
   });
 });
 
-describe('calculateAllStats', () => {
-  it('returns default stats for empty trades', () => {
+describe("calculateAllStats", () => {
+  it("returns default stats for empty trades", () => {
     const stats = calculateAllStats([]);
     expect(stats.totalTrades).toBe(0);
     expect(stats.winRate).toBe(0);
@@ -317,69 +309,69 @@ describe('calculateAllStats', () => {
     expect(stats.worstTrade).toBeNull();
   });
 
-  it('calculates all stats for a set of trades', () => {
+  it("calculates all stats for a set of trades", () => {
     const trades = [
-      makeTrade({ id: '1', pnl: 50, exitDate: '2024-01-01T00:00:00Z' }),
-      makeTrade({ id: '2', pnl: -20, exitDate: '2024-01-02T00:00:00Z' }),
-      makeTrade({ id: '3', pnl: 30, exitDate: '2024-01-03T00:00:00Z' }),
+      makeTrade({ id: "1", pnl: 50, exitDate: "2024-01-01T00:00:00Z" }),
+      makeTrade({ id: "2", pnl: -20, exitDate: "2024-01-02T00:00:00Z" }),
+      makeTrade({ id: "3", pnl: 30, exitDate: "2024-01-03T00:00:00Z" }),
     ];
     const stats = calculateAllStats(trades);
     expect(stats.totalTrades).toBe(3);
     expect(stats.winRate).toBeCloseTo(66.67, 1);
     expect(stats.totalPnl).toBe(60);
-    expect(stats.bestTrade?.id).toBe('1');
-    expect(stats.worstTrade?.id).toBe('2');
+    expect(stats.bestTrade?.id).toBe("1");
+    expect(stats.worstTrade?.id).toBe("2");
   });
 });
 
-describe('calculatePerformanceByDayOfWeek', () => {
-  it('returns empty array for no trades', () => {
+describe("calculatePerformanceByDayOfWeek", () => {
+  it("returns empty array for no trades", () => {
     expect(calculatePerformanceByDayOfWeek([])).toEqual([]);
   });
 
-  it('groups trades by day of week with correct stats', () => {
+  it("groups trades by day of week with correct stats", () => {
     // 2024-01-01 = Monday, 2024-01-02 = Tuesday
     const trades = [
-      makeTrade({ pnl: 10, entryDate: '2024-01-01T10:00:00Z' }),
-      makeTrade({ pnl: -5, entryDate: '2024-01-01T14:00:00Z' }),
-      makeTrade({ pnl: 20, entryDate: '2024-01-02T10:00:00Z' }),
+      makeTrade({ pnl: 10, entryDate: "2024-01-01T10:00:00Z" }),
+      makeTrade({ pnl: -5, entryDate: "2024-01-01T14:00:00Z" }),
+      makeTrade({ pnl: 20, entryDate: "2024-01-02T10:00:00Z" }),
     ];
     const result = calculatePerformanceByDayOfWeek(trades);
     expect(result.length).toBe(2);
 
-    const monday = result.find(r => r.label === 'Monday');
+    const monday = result.find((r) => r.label === "Monday");
     expect(monday).toBeDefined();
     expect(monday!.trades).toBe(2);
     expect(monday!.totalPnl).toBe(5);
     expect(monday!.winRate).toBe(50);
 
-    const tuesday = result.find(r => r.label === 'Tuesday');
+    const tuesday = result.find((r) => r.label === "Tuesday");
     expect(tuesday).toBeDefined();
     expect(tuesday!.trades).toBe(1);
     expect(tuesday!.winRate).toBe(100);
   });
 });
 
-describe('calculatePerformanceByHour', () => {
-  it('returns empty array for no trades', () => {
+describe("calculatePerformanceByHour", () => {
+  it("returns empty array for no trades", () => {
     expect(calculatePerformanceByHour([])).toEqual([]);
   });
 
-  it('groups trades by hour with correct stats', () => {
+  it("groups trades by hour with correct stats", () => {
     const trades = [
-      makeTrade({ pnl: 10, entryDate: '2024-01-01T09:00:00' }),
-      makeTrade({ pnl: -5, entryDate: '2024-01-02T09:30:00' }),
-      makeTrade({ pnl: 20, entryDate: '2024-01-01T14:00:00' }),
+      makeTrade({ pnl: 10, entryDate: "2024-01-01T09:00:00" }),
+      makeTrade({ pnl: -5, entryDate: "2024-01-02T09:30:00" }),
+      makeTrade({ pnl: 20, entryDate: "2024-01-01T14:00:00" }),
     ];
     const result = calculatePerformanceByHour(trades);
     expect(result.length).toBe(2);
 
-    const hour9 = result.find(r => r.label === '09:00');
+    const hour9 = result.find((r) => r.label === "09:00");
     expect(hour9).toBeDefined();
     expect(hour9!.trades).toBe(2);
     expect(hour9!.totalPnl).toBe(5);
 
-    const hour14 = result.find(r => r.label === '14:00');
+    const hour14 = result.find((r) => r.label === "14:00");
     expect(hour14).toBeDefined();
     expect(hour14!.trades).toBe(1);
     expect(hour14!.winRate).toBe(100);

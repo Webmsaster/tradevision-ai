@@ -51,7 +51,8 @@ create policy "Users can insert their own trades"
 
 create policy "Users can update their own trades"
   on trades for update
-  using (auth.uid() = user_id);
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
 
 create policy "Users can delete their own trades"
   on trades for delete

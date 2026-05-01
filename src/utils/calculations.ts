@@ -3,21 +3,22 @@ import type {
   TradeStats,
   EquityCurvePoint,
   PerformanceByTime,
-} from '@/types/trade';
+} from "@/types/trade";
 
 /**
  * Calculate PnL and PnL percentage for a trade based on direction, prices,
  * quantity, leverage, and fees.
  */
-export function calculatePnl(
-  trade: Omit<Trade, 'id' | 'pnl' | 'pnlPercent'>
-): { pnl: number; pnlPercent: number } {
+export function calculatePnl(trade: Omit<Trade, "id" | "pnl" | "pnlPercent">): {
+  pnl: number;
+  pnlPercent: number;
+} {
   const { direction, entryPrice, exitPrice, quantity, leverage, fees } = trade;
 
   // quantity = total units in the position (full exposure).
   // Leverage only affects the margin (collateral) required, not the raw PnL.
   let pnl: number;
-  if (direction === 'long') {
+  if (direction === "long") {
     pnl = (exitPrice - entryPrice) * quantity - fees;
   } else {
     pnl = (entryPrice - exitPrice) * quantity - fees;
@@ -52,12 +53,11 @@ export function calculateAvgWinLoss(trades: Trade[]): {
   avgLoss: number;
 } {
   const wins = trades.filter((t) => t.pnl > 0);
-  const losses = trades.filter((t) => t.pnl <= 0);
+  // Break-even (pnl === 0) is neither win nor loss — consistent with calculateWinRate.
+  const losses = trades.filter((t) => t.pnl < 0);
 
   const avgWin =
-    wins.length > 0
-      ? wins.reduce((sum, t) => sum + t.pnl, 0) / wins.length
-      : 0;
+    wins.length > 0 ? wins.reduce((sum, t) => sum + t.pnl, 0) / wins.length : 0;
 
   const avgLoss =
     losses.length > 0
@@ -73,7 +73,8 @@ export function calculateAvgWinLoss(trades: Trade[]): {
  */
 export function calculateRiskReward(trades: Trade[]): number {
   const { avgWin, avgLoss } = calculateAvgWinLoss(trades);
-  if (avgLoss === 0) return 0;
+  // No losses but wins → infinite R:R (UI should render as "∞" / "N/A").
+  if (avgLoss === 0) return avgWin > 0 ? Infinity : 0;
   return avgWin / avgLoss;
 }
 
@@ -96,7 +97,7 @@ export function calculateExpectancy(trades: Trade[]): number {
  */
 function sortByExitDate(trades: Trade[]): Trade[] {
   return [...trades].sort(
-    (a, b) => new Date(a.exitDate).getTime() - new Date(b.exitDate).getTime()
+    (a, b) => new Date(a.exitDate).getTime() - new Date(b.exitDate).getTime(),
   );
 }
 
@@ -134,13 +135,16 @@ export function calculateMaxDrawdown(trades: Trade[]): {
       maxDrawdown = drawdown;
     }
 
-    // Calculate drawdown as percentage of peak.
+    // Float-point tolerance: ignore sub-penny pseudo-drawdowns from cumulative
+    // floating-point error (e.g. 0.1 + 0.2 - 0.3 ≈ 5.55e-17).
     // When peak <= 0 (all trades are losses), use absolute equity as reference.
-    if (drawdown > 0) {
+    const FP_TOLERANCE = 1e-9;
+    if (drawdown > FP_TOLERANCE) {
       const reference = peak > 0 ? peak : Math.abs(equity);
       const drawdownPercent = reference > 0 ? (drawdown / reference) * 100 : 0;
       if (drawdownPercent > maxDrawdownPercent) {
-        maxDrawdownPercent = Math.min(drawdownPercent, 100);
+        // No silent cap — if real DD > 100% (loss exceeds peak), report it.
+        maxDrawdownPercent = drawdownPercent;
       }
     }
   }
@@ -227,18 +231,17 @@ export function calculateStreaks(trades: Trade[]): {
     if (trade.pnl > 0) {
       currentWinStreak++;
       currentLossStreak = 0;
-
       if (currentWinStreak > longestWinStreak) {
         longestWinStreak = currentWinStreak;
       }
-    } else {
+    } else if (trade.pnl < 0) {
       currentLossStreak++;
       currentWinStreak = 0;
-
       if (currentLossStreak > longestLossStreak) {
         longestLossStreak = currentLossStreak;
       }
     }
+    // Break-even trades (pnl === 0) do NOT break or extend either streak.
   }
 
   return { longestWinStreak, longestLossStreak };
@@ -278,18 +281,18 @@ export function calculateSharpeRatio(trades: Trade[]): number {
  * performance stats for each group.
  */
 export function calculatePerformanceByDayOfWeek(
-  trades: Trade[]
+  trades: Trade[],
 ): PerformanceByTime[] {
   if (trades.length === 0) return [];
 
   const dayNames = [
-    'Sunday',
-    'Monday',
-    'Tuesday',
-    'Wednesday',
-    'Thursday',
-    'Friday',
-    'Saturday',
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
   ];
 
   const groups: Map<number, Trade[]> = new Map();
@@ -331,7 +334,7 @@ export function calculatePerformanceByDayOfWeek(
  * performance stats for each group.
  */
 export function calculatePerformanceByHour(
-  trades: Trade[]
+  trades: Trade[],
 ): PerformanceByTime[] {
   if (trades.length === 0) return [];
 
@@ -356,7 +359,7 @@ export function calculatePerformanceByHour(
     const wins = hourTrades.filter((t) => t.pnl > 0).length;
 
     result.push({
-      label: `${hour.toString().padStart(2, '0')}:00`,
+      label: `${hour.toString().padStart(2, "0")}:00`,
       trades: hourTrades.length,
       winRate: (wins / hourTrades.length) * 100,
       avgPnl: totalPnl / hourTrades.length,
@@ -422,14 +425,14 @@ export function calculateAllStats(trades: Trade[]): TradeStats {
   const totalPnl = trades.reduce((sum, t) => sum + t.pnl, 0);
 
   // Find best and worst trades by PnL
-  const bestTrade = trades.reduce<Trade>((best, t) =>
-    t.pnl > best.pnl ? t : best,
-    trades[0]
+  const bestTrade = trades.reduce<Trade>(
+    (best, t) => (t.pnl > best.pnl ? t : best),
+    trades[0],
   );
 
-  const worstTrade = trades.reduce<Trade>((worst, t) =>
-    t.pnl < worst.pnl ? t : worst,
-    trades[0]
+  const worstTrade = trades.reduce<Trade>(
+    (worst, t) => (t.pnl < worst.pnl ? t : worst),
+    trades[0],
   );
 
   return {
