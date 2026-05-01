@@ -25,6 +25,11 @@ import {
   type DetectionResult,
   type LiveSignal,
 } from "../src/utils/ftmoLiveSignalV231";
+import { detectLiveSignalsV4 } from "../src/utils/ftmoLiveSignalV4Wrapper";
+import {
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4,
+  FTMO_DAYTRADE_24H_CONFIG_BREAKOUT_V1,
+} from "../src/utils/ftmoDaytrade24h";
 import { formatLiveCapsLabel } from "../src/utils/ftmoLiveCaps";
 import type { Candle } from "../src/utils/indicators";
 import { tgSend, htmlEscape } from "../src/utils/telegramNotify";
@@ -60,6 +65,9 @@ const TF: "5m" | "15m" | "30m" | "1h" | "2h" | "4h" =
             "2h-trend-v5-quartz-lite-r28-v2",
             "2h-trend-v5-quartz-lite-r28-v3",
             "2h-trend-v5-quartz-lite-r28-v4",
+            "2h-trend-v5-quartz-lite-r28-v4engine",
+            // Round 46/47 Breakout champion — deployed via V4-Engine path.
+            "2h-trend-breakout-v1",
             "2h-trend-v5-quartz-step2",
             "2h-trend-v5-topaz",
             "2h-trend-v5-rubin",
@@ -379,14 +387,46 @@ async function runOneCheck(): Promise<DetectionResult> {
 
   const account = readJSON<AccountState>(ACCOUNT_PATH, defaultAccount());
   await refreshNewsIfStale();
-  const result = detectLiveSignalsV231(
-    eth,
-    btc,
-    sol,
-    account,
-    cachedNews,
-    extraCandles,
-  );
+  // V4-Engine path: persistent-state live engine (Round 40).
+  // Selector convention: FTMO_TF ends with "-v4engine" OR is "2h-trend-breakout-v1"
+  // (Breakout always runs on V4-Engine because polling V231 doesn't know breakoutEntry).
+  const isBreakoutV1 = process.env.FTMO_TF === "2h-trend-breakout-v1";
+  const useV4Engine =
+    (process.env.FTMO_TF ?? "").endsWith("-v4engine") || isBreakoutV1;
+  let result: DetectionResult;
+  if (useV4Engine) {
+    // For now two cfgs supported via v4engine — extend mapping here
+    // as more configs are validated under V4 persistent-state semantics.
+    const v4Cfg = isBreakoutV1
+      ? FTMO_DAYTRADE_24H_CONFIG_BREAKOUT_V1
+      : FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4;
+    const v4Label = isBreakoutV1 ? "BREAKOUT_V1" : "V5_QUARTZ_LITE_R28_V4";
+    const fullCandleMap: Record<
+      string,
+      import("../src/utils/indicators").Candle[]
+    > = {
+      ETHUSDT: eth,
+      BTCUSDT: btc,
+      SOLUSDT: sol,
+      ...extraCandles,
+    };
+    result = detectLiveSignalsV4(
+      fullCandleMap,
+      v4Cfg,
+      v4Label,
+      STATE_DIR,
+      account,
+    );
+  } else {
+    result = detectLiveSignalsV231(
+      eth,
+      btc,
+      sol,
+      account,
+      cachedNews,
+      extraCandles,
+    );
+  }
 
   console.log(renderDetection(result));
 

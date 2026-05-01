@@ -8734,3 +8734,53 @@ export const FTMO_DAYTRADE_24H_CONFIG_V245_QUARTZ: FtmoDaytrade24hConfig = {
   // wide ATR stop be the single exit-rule (consistent with V245's audit).
   breakEven: undefined,
 };
+
+/**
+ * Round 46/47 Breakout Champion `BO_dp20_cm1.5_v70` — V4-Sim 49.25% / 1.71y /
+ * walk-forward Δ +0.01pp. First crypto strategy ≥45% V4-Sim with clean
+ * walk-forward. Donchian-20 entry + ATR(14) > SMA(ATR, 70) volatility-expansion
+ * gate + chandelier mult=1.5 trailing exit.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_BREAKOUT_V1: FtmoDaytrade24hConfig = {
+  triggerBars: 1,
+  leverage: 2,
+  tpPct: 0.07,
+  stopPct: 0.05,
+  holdBars: 240,
+  timeframe: "30m",
+  profitTarget: 0.08,
+  maxDailyLoss: 0.05,
+  maxTotalLoss: 0.1,
+  minTradingDays: 4,
+  maxDays: 30,
+  maxConcurrentTrades: 4,
+  pauseAtTargetReached: true,
+  atrStop: { period: 14, stopMult: 2.5 },
+  chandelierExit: { period: 14, mult: 1.5, minMoveR: 0.5 },
+  partialTakeProfit: { triggerPct: 0.02, closeFraction: 0.5 },
+  liveCaps: { maxStopPct: 0.05, maxRiskFrac: 0.4 },
+  assets: [
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "ADAUSDT",
+    "LTCUSDT",
+    "BCHUSDT",
+    "DOGEUSDT",
+    "AVAXUSDT",
+    "LINKUSDT",
+  ].map((s) => ({
+    symbol: `${s.replace("USDT", "")}-BO`,
+    sourceSymbol: s,
+    costBp: 30,
+    slippageBp: 8,
+    swapBpPerDay: 4,
+    riskFrac: 1.0,
+    triggerBars: 1,
+    disableShort: true,
+    stopPct: 0.05,
+    tpPct: 0.07,
+    holdBars: 240,
+    breakoutEntry: { donchianPeriod: 20, atrPeriod: 14, volMaPeriod: 70 },
+  })),
+};
