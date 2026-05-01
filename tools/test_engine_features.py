@@ -327,9 +327,11 @@ def test_break_even_one_shot():
 # ============================================================================
 def test_time_exit_closes_when_no_gain_after_max_bars():
     state = TimeExitState()
-    # 4 bars with no gain >= 0.5*0.05 = 0.025 → close at bar 4
+    # Phase 10 (engine_features Bug 8): bars_held now mirrors `j - ebIdx`,
+    # so on entry-bar barsHeld=0, after 4 elapsed bars barsHeld=4.
+    # Need 5 iterations to reach barsHeld>=max=4.
     closed = False
-    for _ in range(4):
+    for _ in range(5):
         closed, state = check_time_exit(
             "long", entry_price=100.0, bar_close=99.5,
             base_stop_pct=0.05, max_bars_without_gain=4, min_gain_r=0.5, state=state,

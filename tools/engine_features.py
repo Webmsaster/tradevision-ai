@@ -177,6 +177,13 @@ def adaptive_position_sizing(
                 factor *= t["multiplier"]
                 break
 
+    # Phase 10 (engine_features Bug 5): MAX_FACTOR cap. Mirrors TS-Engine
+    # 5078-5079 (R13 Cascade Audit Bug B3) — without this, a hot streak
+    # combining Kelly(1.5) + timeBoost(2) + base(2) = factor 6 stacks into
+    # catastrophic risk. Hard ceiling at 4.
+    MAX_FACTOR = 4.0
+    factor = min(factor, MAX_FACTOR)
+
     # 5. Drawdown shield (Math.min — only tightens)
     if drawdown_shield and equity - 1 <= drawdown_shield["belowEquity"]:
         factor = min(factor, drawdown_shield["factor"])
@@ -447,7 +454,11 @@ def check_time_exit(
     Mirrors TS lines 4102-4118. Closes if `max_bars_without_gain` bars have
     elapsed AND price never reached `min_gain_r × stopPct` favorable.
     """
-    state.bars_held += 1
+    # Phase 10 (engine_features Bug 8): TS-Engine uses `barsHeld = j - ebIdx`,
+    # so on entry-bar barsHeld=0. Python was incrementing BEFORE the check,
+    # closing 1 bar earlier than TS → ~5-8% spurious 'time' exits, missing
+    # the TP that would have fired on the held-1-bar-longer side.
+    # Increment AFTER check below.
     if direction == "long":
         unrealized = (bar_close - entry_price) / entry_price
     else:
@@ -457,6 +468,8 @@ def check_time_exit(
         state.ever_reached_min_gain = True
     if state.bars_held >= max_bars_without_gain and not state.ever_reached_min_gain:
         return True, state
+    # Increment AFTER the check, mirroring TS j-ebIdx loop ordering.
+    state.bars_held += 1
     return False, state
 
 
@@ -661,7 +674,12 @@ def simulate_trade(
     eff_risk = cfg.risk_frac
     if cfg.live_max_risk_frac is not None:
         eff_risk = min(eff_risk, cfg.live_max_risk_frac)
-    eff_pnl = max(raw_pnl * cfg.leverage * eff_risk, -eff_risk)
+    # Phase 10 (engine_features Bug 4): TS-Engine 4531-4542 allows gap-tail
+    # losses up to -1.5R via GAP_TAIL_MULT=1.5. Previous floor at -1R
+    # masked ~30% of real gap-stops on volatile crypto bars (Black-Swan
+    # days like LUNA / FTX). Match TS reference.
+    GAP_TAIL_MULT = 1.5
+    eff_pnl = max(raw_pnl * cfg.leverage * eff_risk, -eff_risk * GAP_TAIL_MULT)
 
     return SimulatedTrade(
         direction=direction,
