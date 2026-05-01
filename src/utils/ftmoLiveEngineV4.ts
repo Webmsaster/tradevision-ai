@@ -362,8 +362,12 @@ function dayIndex(barTs: number, challengeStart: number): number {
   // UTC midnight. Python executor uses ZoneInfo("Europe/Prague") for
   // dayPeak; engine was using UTC → 1-2h disagreement per day → DL/TL
   // checks attribute trades to the wrong day around CET 23:00-00:00.
-  const offset = pragueOffsetMs(barTs);
-  return Math.floor((barTs + offset - challengeStart) / (24 * 3600 * 1000));
+  // Phase 30 (V4 Audit Bug 1): apply offset to BOTH sides — offset on
+  // barTs only drifted at DST-changeover (winter→summer or vice versa)
+  // because challengeStart was un-offset.
+  const barLocal = barTs + pragueOffsetMs(barTs);
+  const startLocal = challengeStart + pragueOffsetMs(challengeStart);
+  return Math.floor((barLocal - startLocal) / (24 * 3600 * 1000));
 }
 
 /**
@@ -380,6 +384,10 @@ function pragueOffsetMs(ts: number): number {
       hour12: false,
     });
     const pragueHour = parseInt(fmt.format(d), 10);
+    // Phase 30 (V4 Audit Bug 8): NaN-guard. Buggy ICU / locale-twist could
+    // return "AM/PM" or empty → parseInt → NaN → diff=NaN → return NaN →
+    // dayIndex returns NaN → day-rollover never trips for the rest of session.
+    if (!Number.isFinite(pragueHour)) return 3600_000;
     const utcHour = d.getUTCHours();
     let diff = pragueHour - utcHour;
     if (diff > 12) diff -= 24;
@@ -1089,31 +1097,10 @@ export function pollLive(
 
       // Sizing: derive effRisk same way as backtest equity loop.
       const factor = resolveSizingFactor(state, cfg, lastBar.openTime);
-      const volMult = cfg.liveCaps
-        ? Math.min(matched.volMult ?? 1.0, 1.0)
-        : (matched.volMult ?? 1.0);
-      let effRisk = asset.riskFrac * factor * volMult;
-      if (cfg.liveCaps && effRisk > cfg.liveCaps.maxRiskFrac) {
-        effRisk = cfg.liveCaps.maxRiskFrac;
-      }
-      // Phase 15 (V4 Bug 7): back-derive effRisk from the live equity-loss
-      // cap so MTM accounting stays aligned with what the broker actually
-      // deploys. Without this, engine effRisk=0.4 × stopPct=5% × lev=10 =
-      // 20% modelled loss/trade, but Python wrapper clamps the deployed
-      // size to 4% live-cap → MTM diverges by 5× per trade.
-      const LIVE_LOSS_CAP = 0.04;
-      // Use this asset's stop+leverage to find the equivalent effRisk that
-      // would produce LIVE_LOSS_CAP equity-loss at stop-out.
-      const stopPctForCalc = asset.stopPct ?? cfg.stopPct;
-      if (stopPctForCalc > 0 && cfg.leverage > 0) {
-        const modelledLoss = effRisk * stopPctForCalc * cfg.leverage;
-        if (modelledLoss > LIVE_LOSS_CAP) {
-          effRisk = LIVE_LOSS_CAP / (stopPctForCalc * cfg.leverage);
-        }
-      }
-      if (effRisk <= 0) continue;
-
-      // Stop/TP — recompute from entryPrice + asset overrides + atrStop.
+      // Phase 30 (V4 Audit Bug 6): compute final stopPct (incl. atrStop)
+      // BEFORE effRisk back-derive. Was: back-derive used base stopPct,
+      // then atrStop pushed stopPct higher → modelled loss exceeded
+      // LIVE_LOSS_CAP for atrStop-heavy configs (V5_QUARTZ family).
       const tpPct = asset.tpPct ?? cfg.tpPct;
       let stopPct = asset.stopPct ?? cfg.stopPct;
       if (cfg.atrStop) {
@@ -1133,6 +1120,23 @@ export function pollLive(
         });
         continue;
       }
+
+      const volMult = cfg.liveCaps
+        ? Math.min(matched.volMult ?? 1.0, 1.0)
+        : (matched.volMult ?? 1.0);
+      let effRisk = asset.riskFrac * factor * volMult;
+      if (cfg.liveCaps && effRisk > cfg.liveCaps.maxRiskFrac) {
+        effRisk = cfg.liveCaps.maxRiskFrac;
+      }
+      // Back-derive effRisk from live equity-loss cap, using FINAL stopPct.
+      const LIVE_LOSS_CAP = 0.04;
+      if (stopPct > 0 && cfg.leverage > 0) {
+        const modelledLoss = effRisk * stopPct * cfg.leverage;
+        if (modelledLoss > LIVE_LOSS_CAP) {
+          effRisk = LIVE_LOSS_CAP / (stopPct * cfg.leverage);
+        }
+      }
+      if (effRisk <= 0) continue;
 
       const stopPrice =
         matched.direction === "long"

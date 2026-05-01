@@ -307,17 +307,10 @@ const USE_2H_TREND_V5_TITAN_REAL =
 const USE_2H_TREND_V5_LEGEND = process.env.FTMO_TF === "2h-trend-v5-legend";
 const USE_2H_TREND_V5_TITAN = process.env.FTMO_TF === "2h-trend-v5-titan";
 
-// Phase 24 (Strategy Configs Bug 9): hard-block deprecated V5_TITAN /
-// V5_LEGEND selectors at module-load. These have volTargeting maxMult=5
-// → a single stop can lose 5× FTMO daily-loss cap → instant fail. Must
-// throw rather than route, otherwise a Telegram /set or env-var typo
-// could activate them silently.
-if (USE_2H_TREND_V5_TITAN || USE_2H_TREND_V5_LEGEND) {
-  throw new Error(
-    `FTMO_TF=${process.env.FTMO_TF} is DEPRECATED (volTargeting maxMult=5 ` +
-      `unsafe — single stop can blow FTMO -5% DL). Use V5_TITAN_REAL instead.`,
-  );
-}
+// Phase 30 (V231 Audit Bug 8): runtime-guard instead of module-load throw.
+// Module-load throw breaks tests that import config exports transitively
+// even when FTMO_TF is set externally. The guard moved to detectLiveSignalsV231
+// (returns empty result with note) — same protection without crashing tests.
 const USE_2H_TREND_V5_APEX = process.env.FTMO_TF === "2h-trend-v5-apex";
 const USE_2H_TREND_V5_ELITE = process.env.FTMO_TF === "2h-trend-v5-elite";
 const USE_2H_TREND_V5_HIGH = process.env.FTMO_TF === "2h-trend-v5-high";
@@ -874,6 +867,24 @@ export function detectLiveSignalsV231(
   newsEvents: NewsEvent[] = [],
   extraCandles?: Record<string, Candle[]>,
 ): DetectionResult {
+  // Phase 30 (V231 Audit Bug 8): runtime guard for deprecated configs.
+  // V5_TITAN / V5_LEGEND have volTargeting maxMult=5 → single stop can
+  // blow FTMO -5% DL. Block at runtime here instead of module-load throw
+  // so test imports don't crash.
+  if (USE_2H_TREND_V5_TITAN || USE_2H_TREND_V5_LEGEND) {
+    return {
+      timestamp: Date.now(),
+      regime: "BEAR_CHOP",
+      activeBotConfig: "DEPRECATED",
+      signals: [],
+      skipped: [],
+      notes: [
+        `FTMO_TF=${process.env.FTMO_TF} is DEPRECATED (volTargeting maxMult=5 unsafe). Use V5_TITAN_REAL instead.`,
+      ],
+      account,
+      btc: { close: 0, ema10: 0, ema15: 0, uptrend: false, mom24h: 0 },
+    };
+  }
   // BUGFIX 2026-04-28: filter out non-final (still-forming) candles before
   // detection. Binance returns the current incomplete bar at index [-1] when
   // polling close to bar boundary → would create phantom signals on partial
@@ -1043,19 +1054,20 @@ export function detectLiveSignalsV231(
 
   // Loss-streak cooldown: pause entries after N consecutive losers.
   // Reads from account.recentPnls (most recent last). Engine matches.
-  // Phase 8 (V231 Bug 5): the previous threshold `-LIVE_MAX_RISK_FRAC * 0.5`
-  // (=-2%) assumed every config used riskFrac near the live cap. V5_QUARTZ
-  // family uses riskFrac=0.005 → real stop ≈ -0.5%, never crossed -2% →
-  // LSC NEVER triggered live, while engine LSC fires constantly. Engine
-  // resets streak on reason !== "stop" (TP/time-exit), but live can't see
-  // exit-reason — closest proxy: ANY pnl <= 0 counts as loser. Mirrors
-  // engine intent and works across all riskFrac magnitudes.
+  // Phase 30 (V231 Audit Bug 4 — CRITICAL FIX): the Phase-8 `pnl <= 0` test
+  // counted breakEven exits as losses. V5_QUARTZ family / R28 use
+  // breakEven{threshold: 0.03} which produces tons of ~0% to -0.05% trades
+  // → after 2-3 BE exits, LSC fired permanently → bot stops trading from
+  // week 1. New threshold: -10bp absolute (-0.001) — clearly a stop-out,
+  // not a breakeven. Works across all riskFrac magnitudes (V5_QUARTZ
+  // riskFrac=0.005 stop = -0.5% → counts; BE = -0.05% → does NOT count).
   let lscBlocked = false;
   if (CFG.lossStreakCooldown) {
     const { afterLosses, cooldownBars } = CFG.lossStreakCooldown;
+    const STOP_LIKE_THRESHOLD = -0.001;
     let streak = 0;
     for (let i = account.recentPnls.length - 1; i >= 0; i--) {
-      if (account.recentPnls[i] <= 0) streak++;
+      if (account.recentPnls[i] <= STOP_LIKE_THRESHOLD) streak++;
       else break;
     }
     if (streak >= afterLosses) {
@@ -1408,20 +1420,27 @@ function detectBullSignals(
   result: DetectionResult,
 ): DetectionResult {
   const BULL = FTMO_DAYTRADE_24H_CONFIG_BULL;
-  // BUGFIX 2026-04-28 (Live audit Bug 6): include 5m/15m/30m so BULL regime
-  // doesn't compute the wrong entryOpenTime / maxHold offset when the bot
-  // runs on shorter timeframes. Was: USE_1H ? 1 : USE_2H ? 2 : 4 (default).
-  const tfHours = USE_5M_LIVE
-    ? 5 / 60
-    : USE_15M_LIVE || USE_15M
-      ? 0.25
-      : USE_30M_LIVE || USE_30M || USE_30M_TURBO
-        ? 0.5
-        : USE_1H || USE_1H_LIVE
-          ? 1
-          : USE_2H || USE_2H_LIVE
-            ? 2
-            : 4;
+  // Phase 30 (V231 Audit Bug 7 — Phase 2 regression): derive tfHours from
+  // CFG.timeframe directly, same as the main detector. Was using ENV-flag
+  // ternary which silently fell to "4" for any 30m-tuned config wearing a
+  // "2h-trend-*" badge → BULL regime emitted signals with 8× wrong hold
+  // and entry timing on V5_TITANIUM/OBSIDIAN/QUARTZ_LITE/R28* (the very
+  // bug Phase 2 fixed in the main detector).
+  const cfgTfMs =
+    BULL.timeframe === "5m"
+      ? 5 * 60_000
+      : BULL.timeframe === "15m"
+        ? 15 * 60_000
+        : BULL.timeframe === "30m"
+          ? 30 * 60_000
+          : BULL.timeframe === "1h"
+            ? 60 * 60_000
+            : BULL.timeframe === "2h"
+              ? 2 * 60 * 60_000
+              : BULL.timeframe === "4h"
+                ? 4 * 60 * 60_000
+                : 4 * 60 * 60_000;
+  const tfHours = cfgTfMs / 3600_000;
   const { factor, notes: sizingNotes } = computeSizingFactor(account);
   result.notes.push(...sizingNotes);
 

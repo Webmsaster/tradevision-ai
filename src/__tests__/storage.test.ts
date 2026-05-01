@@ -200,26 +200,24 @@ describe("importFromJSON", () => {
     expect(result).toHaveLength(1);
   });
 
-  it("assigns fresh UUIDs on import (Phase 22 Storage Bug 14)", async () => {
-    // Was: deduped on duplicate id. Now: ALL imported trades get fresh
-    // UUIDs so a malformed/tampered JSON cannot overwrite existing user
-    // trades by id-collision in upsert.
-    const duplicateId = "dup-1";
+  it("preserves IDs unless conflict with existing (Phase 30 — Storage Bug 4)", async () => {
+    // Phase 30 (Storage Audit Bug 4): regenerate UUIDs only on CONFLICT
+    // with existing trades. Preserves AIInsight relatedTrades references
+    // when re-importing your own backup.
+    const fresh = "fresh-1";
     const wrapper = {
       exportDate: "2024-01-01",
       version: "1.0",
       trades: [
-        makeTrade({ id: duplicateId, pair: "BTC/USDT" }),
-        makeTrade({ id: duplicateId, pair: "ETH/USDT" }),
+        makeTrade({ id: fresh, pair: "BTC/USDT" }),
+        makeTrade({ id: "fresh-2", pair: "ETH/USDT" }),
       ],
     };
     const file = makeFile(JSON.stringify(wrapper));
     const result = await importFromJSON(file);
-    // Both rows preserved with fresh, unique ids.
     expect(result).toHaveLength(2);
-    expect(result[0].id).not.toBe(duplicateId);
-    expect(result[1].id).not.toBe(duplicateId);
-    expect(result[0].id).not.toBe(result[1].id);
+    expect(result[0].id).toBe(fresh);
+    expect(result[1].id).toBe("fresh-2");
   });
 
   it("preserves screenshot data from JSON backup entries", async () => {

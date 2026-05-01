@@ -142,11 +142,39 @@ export function detectLiveSignalsV4(
   // real MT5 equity, and ftmo_executor maintains real open positions.
   // Without this sync the engine's MTM diverges 1-3% per day from reality
   // → fail-checks and peak-drawdown trigger on phantom equity.
+  // Phase 30 (V4 Audit Bug 2 — CRITICAL FIX): account.equity is the MT5 MTM
+  // (realised + unrealised). Engine state.equity is realised-only. Setting
+  // state.equity = account.equity caused double-counting: computeMtmEquity
+  // adds unrealised PnL on top of state.equity → MTM was inflated by the
+  // unrealised amount on every tick with open positions.
+  // Sanity-checked sync only when SAFE — i.e. when no open positions
+  // (then MTM == realised, so the equality holds), OR as a sanity-check only
+  // (don't overwrite if engine and MT5 agree within 0.5%).
   if (account.equity != null && Number.isFinite(account.equity)) {
-    // account.equity is a fraction (1.0 = 100% of start balance).
-    state.equity = account.equity;
-    if (state.mtmEquity == null || !Number.isFinite(state.mtmEquity)) {
-      state.mtmEquity = account.equity;
+    // Range-check: reject anomalous values (MT5-API glitch, reconnect).
+    if (account.equity > 0.5 && account.equity < 2.0) {
+      if (state.openPositions.length === 0) {
+        // No unrealised — safe to fully adopt.
+        state.equity = account.equity;
+        state.mtmEquity = account.equity;
+      } else {
+        // Have open positions: account.equity reflects MTM, can't directly
+        // assign to state.equity (realised). Instead, SANITY-CHECK: if the
+        // engine's mtmEquity (recomputed last tick) drifted >2% from MT5,
+        // log it but keep engine's view (engine has the asset-level detail).
+        const drift = Math.abs(
+          (state.mtmEquity ?? state.equity) - account.equity,
+        );
+        if (drift > 0.02) {
+          result.notes.push(
+            `V4 sync: engine MTM ${(state.mtmEquity * 100).toFixed(2)}% diverges from MT5 ${(account.equity * 100).toFixed(2)}% (drift ${(drift * 100).toFixed(2)}pp) — keeping engine view`,
+          );
+        }
+      }
+    } else {
+      result.notes.push(
+        `V4 sync: rejected anomalous account.equity=${account.equity}`,
+      );
     }
   }
   if (
@@ -185,14 +213,26 @@ export function detectLiveSignalsV4(
         }),
       );
       const before = state.openPositions.length;
-      // Only drop positions older than 1 bar — gives Python 1 tick to
-      // execute the order before we treat it as a phantom.
-      const lastBarOpen = state.lastBarOpenTime;
+      // Phase 30 (V4 Audit Bug 5): GRACE_BARS=3 instead of 1 — slow brokers
+      // can take >1 bar to confirm fills (especially on volatile crypto).
+      // 1-bar grace was dropping legitimate slow-fills as phantoms.
+      const GRACE_BARS = 3;
+      // Estimate bar duration from candle map for grace window.
+      const refKeyForBar = Object.keys(candleMap)[0];
+      const refCandlesForBar = refKeyForBar
+        ? candleMap[refKeyForBar]
+        : undefined;
+      const barDurMs =
+        refCandlesForBar && refCandlesForBar.length >= 2
+          ? refCandlesForBar[refCandlesForBar.length - 1].openTime -
+            refCandlesForBar[refCandlesForBar.length - 2].openTime
+          : 30 * 60_000;
+      const graceCutoff = state.lastBarOpenTime - GRACE_BARS * barDurMs;
       state.openPositions = state.openPositions.filter((pos) => {
         const key = `${pos.symbol}@${pos.direction}`;
         if (mt5Keys.has(key)) return true;
-        // Position not in MT5: keep if entered THIS tick (give Python a chance)
-        if (pos.entryTime >= lastBarOpen) return true;
+        // Position not in MT5: keep within grace window (slow broker fills).
+        if (pos.entryTime >= graceCutoff) return true;
         return false;
       });
       const dropped = before - state.openPositions.length;

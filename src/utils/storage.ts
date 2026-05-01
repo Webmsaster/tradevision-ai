@@ -469,13 +469,15 @@ export function importFromJSON(file: File): Promise<Trade[]> {
           if (valid.length === 0) {
             reject(new Error("No valid trades found in the file."));
           } else {
-            // Phase 22 (Storage Bug 14): assign FRESH UUIDs on import. Was
-            // preserving incoming `id` which let a tampered JSON overwrite
-            // existing user trades on upsert (same id → UPDATE on the user's
-            // own row). Importing should always create new records.
+            // Phase 30 (Storage Audit Bug 4): only re-generate UUIDs on
+            // CONFLICT with existing trades — preserves AIInsight
+            // relatedTrades references when re-importing your own backup.
+            // Phase 22 was too aggressive (regenerate ALL) which broke
+            // every saved insight after a re-import.
+            const existingIds = new Set(loadTrades().map((t) => t.id));
             const deduped: Trade[] = (valid as Trade[]).map((trade) => ({
               ...trade,
-              id: uuidv4(),
+              id: existingIds.has(trade.id) ? uuidv4() : trade.id,
             }));
             // Legacy dedup loop (kept for symmetry — though all ids are now
             // freshly generated so seenIds will always pass).

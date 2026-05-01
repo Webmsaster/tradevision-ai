@@ -386,32 +386,34 @@ function appendLog(entry: object) {
  * Safe defaults (0 day, fresh equity) mean we won't unlock delayed BTC/SOL
  * until the executor actually reports gains.
  */
-function defaultAccount(): AccountState {
-  // Bug-Audit Phase 4 (Live Service Bug 9): when account.json is missing
-  // (cold start, state-dir wipe), still try to read Python's
-  // challenge-peak.json to preserve peakDrawdownThrottle correctness for
-  // R28_V2/V3/V4. Otherwise we'd silently fall to challengePeak=1.0
-  // → V231 sees no drawdown → no throttle → live drifts back to R28 baseline.
+/** Read Python's challenge-peak.json, return undefined if missing/invalid. */
+function readChallengePeakFromDisk(): number | undefined {
   const peakFile = path.join(STATE_DIR, "challenge-peak.json");
-  let challengePeak = 1.0;
   try {
-    if (fs.existsSync(peakFile)) {
-      const raw = JSON.parse(fs.readFileSync(peakFile, "utf8"));
-      // Python writes either {peak: <frac>} (Round 36 helper) or
-      // {peak_equity_usd: <usd>, ...} (Round 35). Try both shapes.
-      if (typeof raw?.peak === "number" && raw.peak > 0) {
-        challengePeak = raw.peak;
-      } else if (
-        typeof raw?.peak_equity_usd === "number" &&
-        raw.peak_equity_usd > 0
-      ) {
-        const startBal = Number(process.env.FTMO_START_BALANCE ?? "100000");
-        if (startBal > 0) challengePeak = raw.peak_equity_usd / startBal;
-      }
+    if (!fs.existsSync(peakFile)) return undefined;
+    const raw = JSON.parse(fs.readFileSync(peakFile, "utf8"));
+    if (typeof raw?.peak === "number" && raw.peak > 0) {
+      return raw.peak;
     }
+    if (typeof raw?.peak_equity_usd === "number" && raw.peak_equity_usd > 0) {
+      const startBal = Number(process.env.FTMO_START_BALANCE ?? "100000");
+      if (startBal > 0) return raw.peak_equity_usd / startBal;
+    }
+    return undefined;
   } catch (e) {
-    console.error("[svc] failed to read challenge-peak.json fallback:", e);
+    console.error("[svc] failed to read challenge-peak.json:", e);
+    return undefined;
   }
+}
+
+function defaultAccount(): AccountState {
+  // Phase 30 (V231 Audit Bug 1 — CRITICAL FIX): challenge-peak fallback
+  // moved to its own helper so EVERY runOneCheck can merge the on-disk
+  // peak into the account state, not just cold-start. Previous Phase-4
+  // implementation only ran on cold-start → if Python wrote account.json
+  // without `challengePeak`, every poll triggered the noisy console.error
+  // cascade in V231 + R28_V2/V3/V4 silently degraded to R28 baseline.
+  const challengePeak = readChallengePeakFromDisk() ?? 1.0;
   return {
     equity: 1.0,
     day: 0,
@@ -604,6 +606,14 @@ async function runOneCheck(): Promise<DetectionResult> {
   }
 
   const account = readJSON<AccountState>(ACCOUNT_PATH, defaultAccount());
+  // Phase 30: ALWAYS merge challenge-peak.json into account, not just on
+  // cold-start. Python writes account.json without `challengePeak` field,
+  // and V231's peakDrawdownThrottle would otherwise emit console.error
+  // every poll for the entire process lifetime.
+  if (account.challengePeak === undefined) {
+    const onDisk = readChallengePeakFromDisk();
+    if (onDisk !== undefined) account.challengePeak = onDisk;
+  }
   await refreshNewsIfStale();
   // V4-Engine path: persistent-state live engine (Round 40).
   // Selector convention: FTMO_TF ends with "-v4engine" OR is "2h-trend-breakout-v1"
