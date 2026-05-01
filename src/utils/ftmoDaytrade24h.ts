@@ -144,6 +144,31 @@ export interface Daytrade24hAssetCfg {
     compressionBars: number; // lookback for narrowest-range identification
   };
   /**
+   * Round-45+ MEAN-REVERSION (Bollinger + RSI) entry.
+   * Long when:  close < lower Bollinger Band (bbPeriod, bbSigma stddev) AND
+   *             RSI(rsiPeriod) <= rsiThresh (oversold confirmation)
+   * Short skipped (FTMO crypto is long-only by design — disableShort=true).
+   * Best paired with TP at middle BB (not implemented as exit — use cfg.tpPct
+   * tuned to ~mean-distance) and tight atrStop.
+   */
+  meanRevEntry?: {
+    bbPeriod: number;
+    bbSigma: number;
+    rsiPeriod: number;
+    rsiThresh: number; // long fires when RSI <= rsiThresh
+  };
+  /**
+   * Round-46+ BREAKOUT entry (Donchian + Volatility-Expansion gate).
+   * Long when:  close > N-bar prior highest-high AND
+   *             ATR(atrPeriod) > SMA-of-ATR over volMaPeriod bars
+   *             (volatility expansion confirms breakout, filters out fakeouts)
+   */
+  breakoutEntry?: {
+    donchianPeriod: number;
+    atrPeriod: number;
+    volMaPeriod: number;
+  };
+  /**
    * Source symbol for candle lookup, if different from `symbol`.
    * Lets two logical assets share the same underlying candles (e.g.
    * ETHUSDT mean-reversion and ETHUSDT momentum as virtual assets).
@@ -3516,6 +3541,18 @@ export function detectAsset(
     const maCross = asset.maCrossEntry;
     const tsMom = asset.tsMomentumEntry;
     const nr7 = asset.nr7Entry;
+    const mrEntry = asset.meanRevEntry;
+    const boEntry = asset.breakoutEntry;
+    // Pre-compute series for new signal generators (round 45/46).
+    const mrRsiSeries: (number | null)[] | null = mrEntry
+      ? rsi(
+          candles.map((c) => c.close),
+          mrEntry.rsiPeriod,
+        )
+      : null;
+    const boAtrSeries: (number | null)[] | null = boEntry
+      ? atr(candles, boEntry.atrPeriod)
+      : null;
     const startBar = donchianP
       ? donchianP + 1
       : bbKc
@@ -3526,7 +3563,14 @@ export function detectAsset(
             ? tsMom.lookbackBars + 1
             : nr7
               ? nr7.compressionBars + 1
-              : triggerBars;
+              : mrEntry
+                ? Math.max(mrEntry.bbPeriod, mrEntry.rsiPeriod) + 1
+                : boEntry
+                  ? Math.max(
+                      boEntry.donchianPeriod,
+                      boEntry.atrPeriod + boEntry.volMaPeriod,
+                    ) + 1
+                  : triggerBars;
     for (let i = startBar; i < candles.length - 1; i++) {
       if (i < cooldown) continue;
       // V5 re-entry: skip pattern check if within re-entry window after stop
@@ -3680,6 +3724,67 @@ export function detectAsset(
           candles[i].close >= candles[narrowIdx].low
         )
           ok = false;
+      } else if (mrEntry) {
+        // Mean-Reversion (Bollinger + RSI): long when close < lower BB AND RSI <= rsiThresh.
+        // Short side intentionally disabled (FTMO crypto long-only).
+        if (direction === "short") {
+          ok = false;
+        } else {
+          const bbP = mrEntry.bbPeriod;
+          if (i < bbP) {
+            ok = false;
+          } else {
+            let sum = 0;
+            for (let k = i - bbP + 1; k <= i; k++) sum += candles[k].close;
+            const mean = sum / bbP;
+            let varSum = 0;
+            for (let k = i - bbP + 1; k <= i; k++)
+              varSum += (candles[k].close - mean) ** 2;
+            const sd = Math.sqrt(varSum / bbP);
+            const lower = mean - mrEntry.bbSigma * sd;
+            const rs = mrRsiSeries ? mrRsiSeries[i] : null;
+            if (rs === null || rs === undefined) ok = false;
+            else if (candles[i].close >= lower) ok = false;
+            else if (rs > mrEntry.rsiThresh) ok = false;
+          }
+        }
+      } else if (boEntry) {
+        // Breakout (Donchian + Vol-Expansion): long when close > N-bar high
+        // AND ATR(p) > SMA(ATR, volMaPeriod) — volatility-expansion gate.
+        if (direction === "short") {
+          ok = false;
+        } else {
+          const dp = boEntry.donchianPeriod;
+          if (i < dp + boEntry.volMaPeriod) {
+            ok = false;
+          } else {
+            let pHigh = -Infinity;
+            for (let k = i - dp; k < i; k++) {
+              if (candles[k].high > pHigh) pHigh = candles[k].high;
+            }
+            if (candles[i].close <= pHigh) ok = false;
+            else {
+              const atrNow = boAtrSeries ? boAtrSeries[i] : null;
+              if (atrNow === null || atrNow === undefined) ok = false;
+              else {
+                let aSum = 0;
+                let aCnt = 0;
+                for (let k = i - boEntry.volMaPeriod + 1; k <= i; k++) {
+                  const v = boAtrSeries ? boAtrSeries[k] : null;
+                  if (v !== null && v !== undefined) {
+                    aSum += v;
+                    aCnt++;
+                  }
+                }
+                if (aCnt === 0) ok = false;
+                else {
+                  const atrMa = aSum / aCnt;
+                  if (atrNow <= atrMa) ok = false;
+                }
+              }
+            }
+          }
+        }
       } else {
         // Default: N consecutive close-comparison
         for (let k = 0; k < triggerBars; k++) {
