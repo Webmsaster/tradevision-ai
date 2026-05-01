@@ -185,6 +185,63 @@ function readJSON<T>(p: string, fallback: T): T {
   }
 }
 
+/**
+ * Cross-process advisory lock via O_EXCL — same pattern as Python's
+ * `_file_lock` in tools/ftmo_executor.py. Used when read-modify-write of
+ * shared state files (pending-signals.json, executed-signals.json) must be
+ * atomic across the Node service AND the Python executor.
+ *
+ * Phase 19 (Live Service Bug 3): without this lock, the R-M-W sequence
+ *   Node: read pending → check dedup → write pending+new
+ * could be interleaved with the Python executor's
+ *   Py: read pending → process & remove → write pending-remaining
+ * → Node's write overwrote Python's removal, OR Python's write lost
+ * Node's append. Race-window is tiny but real on shared 30s polling.
+ */
+async function withFileLock<T>(
+  lockPath: string,
+  fn: () => T | Promise<T>,
+  timeoutMs = 5000,
+): Promise<T> {
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const start = Date.now();
+  let fd: number | null = null;
+  while (true) {
+    try {
+      fd = fs.openSync(lockPath, "wx");
+      fs.writeSync(fd, String(process.pid));
+      break;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST") throw e;
+      if (Date.now() - start > timeoutMs) {
+        // Stale lock recovery: if older than 30s, claim it.
+        try {
+          const st = fs.statSync(lockPath);
+          if (Date.now() - st.mtimeMs > 30_000) {
+            fs.unlinkSync(lockPath);
+            continue;
+          }
+        } catch {
+          /* lock disappeared — retry */
+        }
+        throw new Error(`withFileLock: timeout acquiring ${lockPath}`);
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+    try {
+      fs.unlinkSync(lockPath);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 function writeJSON(p: string, obj: unknown) {
   // Atomic write: write to temp file, then rename. Prevents corruption if
   // process is killed mid-write (Python executor reads these files concurrently).
@@ -489,115 +546,121 @@ async function runOneCheck(): Promise<DetectionResult> {
 
   console.log(renderDetection(result));
 
-  // Append new signals to pending queue.
-  // Dedup against BOTH pending AND executed signals — otherwise a service
-  // restart between signal queue and executor pickup could re-queue the
-  // same setup → 2x risk on a single bar.
-  const pending = readJSON<{ signals: LiveSignal[] }>(PENDING_PATH, {
-    signals: [],
-  });
-  // Python executor schema: { executions: [{ signal: {...}, result, ts }] }
-  // Older/forward-compat schema: { signals: [{ assetSymbol, signalBarClose }] }
-  // Read both shapes so dedup works regardless of who wrote the file.
-  const executed = readJSON<{
-    executions?: Array<{
-      signal?: { assetSymbol?: string; signalBarClose?: number };
-    }>;
-    signals?: Array<{
-      signalAsset?: string;
-      assetSymbol?: string;
-      signalBarClose?: number;
-    }>;
-  }>(EXECUTED_PATH, { executions: [] });
-  const executedKeys: string[] = [];
-  for (const e of executed.executions ?? []) {
-    if (e.signal && e.signal.signalBarClose !== undefined) {
-      executedKeys.push(`${e.signal.assetSymbol}@${e.signal.signalBarClose}`);
+  // Phase 19 (Live Service Bug 3): cross-process R-M-W on pending-signals.json
+  // wrapped in file-lock. Python executor uses _file_lock for the same path —
+  // both processes now serialize on the same lock file (O_EXCL semantics).
+  const PENDING_LOCK = path.join(STATE_DIR, "pending-signals.lock");
+  await withFileLock(PENDING_LOCK, async () => {
+    // Append new signals to pending queue.
+    // Dedup against BOTH pending AND executed signals — otherwise a service
+    // restart between signal queue and executor pickup could re-queue the
+    // same setup → 2x risk on a single bar.
+    const pending = readJSON<{ signals: LiveSignal[] }>(PENDING_PATH, {
+      signals: [],
+    });
+    // Python executor schema: { executions: [{ signal: {...}, result, ts }] }
+    // Older/forward-compat schema: { signals: [{ assetSymbol, signalBarClose }] }
+    // Read both shapes so dedup works regardless of who wrote the file.
+    const executed = readJSON<{
+      executions?: Array<{
+        signal?: { assetSymbol?: string; signalBarClose?: number };
+      }>;
+      signals?: Array<{
+        signalAsset?: string;
+        assetSymbol?: string;
+        signalBarClose?: number;
+      }>;
+    }>(EXECUTED_PATH, { executions: [] });
+    const executedKeys: string[] = [];
+    for (const e of executed.executions ?? []) {
+      if (e.signal && e.signal.signalBarClose !== undefined) {
+        executedKeys.push(`${e.signal.assetSymbol}@${e.signal.signalBarClose}`);
+      }
     }
-  }
-  for (const s of executed.signals ?? []) {
-    if (s.signalBarClose !== undefined) {
-      executedKeys.push(
-        `${s.signalAsset ?? s.assetSymbol}@${s.signalBarClose}`,
+    for (const s of executed.signals ?? []) {
+      if (s.signalBarClose !== undefined) {
+        executedKeys.push(
+          `${s.signalAsset ?? s.assetSymbol}@${s.signalBarClose}`,
+        );
+      }
+    }
+    const existingKeys = new Set([
+      ...pending.signals.map((s) => `${s.assetSymbol}@${s.signalBarClose}`),
+      ...executedKeys,
+    ]);
+    const newSignals = result.signals.filter(
+      (s) => !existingKeys.has(`${s.assetSymbol}@${s.signalBarClose}`),
+    );
+    // Check pause flag before queuing
+    const controls = readControls(STATE_DIR);
+    if (controls.paused && newSignals.length > 0) {
+      console.log(
+        `[ftmo-live] bot is PAUSED — dropping ${newSignals.length} new signal(s)`,
       );
+      await tgSend(
+        `⏸ <b>${newSignals.length} signal(s) dropped (bot paused)</b>\n` +
+          newSignals
+            .map(
+              (s) =>
+                `${s.assetSymbol} ${s.direction} @ $${s.entryPrice.toFixed(2)}`,
+            )
+            .join("\n") +
+          `\n\nUse /resume to re-enable.`,
+      );
+      newSignals.length = 0; // don't queue
     }
-  }
-  const existingKeys = new Set([
-    ...pending.signals.map((s) => `${s.assetSymbol}@${s.signalBarClose}`),
-    ...executedKeys,
-  ]);
-  const newSignals = result.signals.filter(
-    (s) => !existingKeys.has(`${s.assetSymbol}@${s.signalBarClose}`),
-  );
-  // Check pause flag before queuing
-  const controls = readControls(STATE_DIR);
-  if (controls.paused && newSignals.length > 0) {
-    console.log(
-      `[ftmo-live] bot is PAUSED — dropping ${newSignals.length} new signal(s)`,
-    );
-    await tgSend(
-      `⏸ <b>${newSignals.length} signal(s) dropped (bot paused)</b>\n` +
-        newSignals
-          .map(
-            (s) =>
-              `${s.assetSymbol} ${s.direction} @ $${s.entryPrice.toFixed(2)}`,
-          )
-          .join("\n") +
-        `\n\nUse /resume to re-enable.`,
-    );
-    newSignals.length = 0; // don't queue
-  }
 
-  if (newSignals.length > 0) {
-    pending.signals.push(...newSignals);
-    writeJSON(PENDING_PATH, pending);
-    console.log(
-      `[ftmo-live] queued ${newSignals.length} new signal(s) to ${PENDING_PATH}`,
-    );
+    if (newSignals.length > 0) {
+      pending.signals.push(...newSignals);
+      writeJSON(PENDING_PATH, pending);
+      console.log(
+        `[ftmo-live] queued ${newSignals.length} new signal(s) to ${PENDING_PATH}`,
+      );
 
-    // Telegram alert per new signal
-    for (const sig of newSignals) {
-      const msg = [
-        `🚨 <b>NEW SIGNAL</b>`,
-        `<b>${sig.assetSymbol}</b> (${sig.sourceSymbol}) — ${sig.direction.toUpperCase()}`,
-        `Entry: $${sig.entryPrice.toFixed(4)}`,
-        `Stop: $${sig.stopPrice.toFixed(4)} (+${(sig.stopPct * 100).toFixed(2)}%)`,
-        `TP: $${sig.tpPrice.toFixed(4)} (−${(sig.tpPct * 100).toFixed(2)}%)`,
-        `Risk: ${(sig.riskFrac * 100).toFixed(3)}% · Factor ${sig.sizingFactor.toFixed(2)}×`,
-        `Max hold: ${sig.maxHoldHours}h`,
-      ].join("\n");
-      await tgSend(msg);
+      // Telegram alert per new signal
+      for (const sig of newSignals) {
+        const msg = [
+          `🚨 <b>NEW SIGNAL</b>`,
+          `<b>${sig.assetSymbol}</b> (${sig.sourceSymbol}) — ${sig.direction.toUpperCase()}`,
+          `Entry: $${sig.entryPrice.toFixed(4)}`,
+          `Stop: $${sig.stopPrice.toFixed(4)} (+${(sig.stopPct * 100).toFixed(2)}%)`,
+          `TP: $${sig.tpPrice.toFixed(4)} (−${(sig.tpPct * 100).toFixed(2)}%)`,
+          `Risk: ${(sig.riskFrac * 100).toFixed(3)}% · Factor ${sig.sizingFactor.toFixed(2)}×`,
+          `Max hold: ${sig.maxHoldHours}h`,
+        ].join("\n");
+        await tgSend(msg);
+      }
     }
-  }
 
-  writeJSON(LAST_CHECK_PATH, {
-    timestamp: result.timestamp,
-    signalCount: result.signals.length,
-    skipped: result.skipped.length,
-    account,
-    btc: result.btc,
-  });
+    writeJSON(LAST_CHECK_PATH, {
+      timestamp: result.timestamp,
+      signalCount: result.signals.length,
+      skipped: result.skipped.length,
+      account,
+      btc: result.btc,
+    });
 
-  appendLog({
-    event: "check",
-    signalCount: result.signals.length,
-    newSignalsQueued: newSignals.length,
-    account,
-    signals: result.signals.map((s) => ({
-      asset: s.assetSymbol,
-      direction: s.direction,
-      entry: s.entryPrice,
-    })),
-    skipped: result.skipped,
-  });
+    appendLog({
+      event: "check",
+      signalCount: result.signals.length,
+      newSignalsQueued: newSignals.length,
+      account,
+      signals: result.signals.map((s) => ({
+        asset: s.assetSymbol,
+        direction: s.direction,
+        entry: s.entryPrice,
+      })),
+      skipped: result.skipped,
+    });
 
-  // Sample emitted signals into rolling 24h log for the risk heartbeat.
-  if (result.signals.length > 0) {
-    recordRecentSignals(result.signals);
-  }
+    // Sample emitted signals into rolling 24h log for the risk heartbeat.
+    if (result.signals.length > 0) {
+      recordRecentSignals(result.signals);
+    }
 
-  // Smart alerts (equity drop, DL/TL warnings, stuck challenge, daily summary, risk heartbeat)
-  await runSmartAlerts(account);
+    // Smart alerts (equity drop, DL/TL warnings, stuck challenge, daily summary, risk heartbeat)
+    await runSmartAlerts(account);
+  }); // close withFileLock(PENDING_LOCK, ...)
 
   return result;
 }
