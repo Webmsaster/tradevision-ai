@@ -290,10 +290,25 @@ export function loadState(stateDir: string, cfgLabel: string): FtmoLiveStateV4 {
     try {
       const raw = fs.readFileSync(filePath, "utf-8");
       const parsed = JSON.parse(raw) as Partial<FtmoLiveStateV4>;
-      if (parsed.schemaVersion !== SCHEMA_VERSION) {
-        return initialState(cfgLabel);
-      }
-      if (parsed.cfgLabel !== cfgLabel) {
+      // Phase 14 (V4 Bug 9): on schema/cfg mismatch, BACK UP the old state
+      // file before discarding. Without this, deploying a new version or
+      // changing FTMO_TF wiped the entire challenge state silently — losing
+      // peakDrawdown, pause state, ping-day records, kelly window, etc.
+      if (
+        parsed.schemaVersion !== SCHEMA_VERSION ||
+        parsed.cfgLabel !== cfgLabel
+      ) {
+        const backupPath = `${filePath}.backup.${Date.now()}`;
+        try {
+          fs.renameSync(filePath, backupPath);
+        } catch {
+          /* ignore — fresh state will overwrite anyway */
+        }
+        console.error(
+          `[V4] STATE MISMATCH — backed up to ${backupPath}. ` +
+            `Old: ${parsed.cfgLabel}/${parsed.schemaVersion}, ` +
+            `New: ${cfgLabel}/${SCHEMA_VERSION}`,
+        );
         return initialState(cfgLabel);
       }
       return parsed as FtmoLiveStateV4;
@@ -314,7 +329,11 @@ export function saveState(state: FtmoLiveStateV4, stateDir: string): void {
     fs.mkdirSync(stateDir, { recursive: true });
   }
   const filePath = path.join(stateDir, STATE_FILENAME);
-  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
+  // Phase 14 (V4 Bug 12): random suffix instead of Date.now() to avoid
+  // tmpPath collision when two saveState calls land in the same ms within
+  // the same process (async race in pollLive wrappers).
+  const rand = Math.floor(Math.random() * 0xffffffff).toString(16);
+  const tmpPath = `${filePath}.tmp.${process.pid}.${rand}`;
   state.updatedAt = Date.now();
   // Trim audit log to last 200.
   if (state.closedTrades.length > 200) {
@@ -339,7 +358,36 @@ export function saveState(state: FtmoLiveStateV4, stateDir: string): void {
 
 function dayIndex(barTs: number, challengeStart: number): number {
   if (challengeStart <= 0) return 0;
-  return Math.floor((barTs - challengeStart) / (24 * 3600 * 1000));
+  // Phase 14 (V4 Bug 5): align day-rollover with FTMO Prague-midnight, not
+  // UTC midnight. Python executor uses ZoneInfo("Europe/Prague") for
+  // dayPeak; engine was using UTC → 1-2h disagreement per day → DL/TL
+  // checks attribute trades to the wrong day around CET 23:00-00:00.
+  const offset = pragueOffsetMs(barTs);
+  return Math.floor((barTs + offset - challengeStart) / (24 * 3600 * 1000));
+}
+
+/**
+ * Approximate Prague (CET/CEST) offset in ms for a given UTC timestamp.
+ * Uses Intl.DateTimeFormat for DST correctness; falls back to UTC+1 if Intl
+ * unavailable (matches the existing pragueDay helper in ftmoDaytrade24h).
+ */
+function pragueOffsetMs(ts: number): number {
+  try {
+    const d = new Date(ts);
+    const fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Europe/Prague",
+      hour: "2-digit",
+      hour12: false,
+    });
+    const pragueHour = parseInt(fmt.format(d), 10);
+    const utcHour = d.getUTCHours();
+    let diff = pragueHour - utcHour;
+    if (diff > 12) diff -= 24;
+    if (diff < -12) diff += 24;
+    return diff * 3600_000;
+  } catch {
+    return 3600_000; // UTC+1 fallback (winter)
+  }
 }
 
 function lsKey(symbol: string, direction: "long" | "short"): string {
@@ -685,8 +733,27 @@ export function pollLive(
     result.notes.push("no candles");
     return result;
   }
-  // Pick a reference asset to derive bar timing.
-  const refKey = assetKeys[0];
+  // Phase 14 (V4 Bug 6): assert all assets share the same lastBar.openTime.
+  // Insertion order in `candlesByAsset` is non-deterministic — picking
+  // assetKeys[0] without checking alignment let inconsistent feed timing
+  // (one asset 30s ahead) silently corrupt the idempotency guard.
+  const lastBarTimes = assetKeys.map((k) => {
+    const arr = candlesByAsset[k];
+    return arr[arr.length - 1].openTime;
+  });
+  const minLastBar = Math.min(...lastBarTimes);
+  const maxLastBar = Math.max(...lastBarTimes);
+  if (maxLastBar !== minLastBar) {
+    result.notes.push(
+      `assets misaligned (lastBar ${minLastBar}…${maxLastBar}) — using minimum`,
+    );
+  }
+  // Use the OLDEST common lastBar to ensure all assets have data through it.
+  const refKey =
+    assetKeys.find(
+      (k) =>
+        candlesByAsset[k][candlesByAsset[k].length - 1].openTime === minLastBar,
+    ) ?? assetKeys[0];
   const refCandles = candlesByAsset[refKey];
   const lastBar = refCandles[refCandles.length - 1];
   const barIdx = refCandles.length - 1;

@@ -16,6 +16,7 @@
  * MCT, lossStreakCooldown, kelly, etc.) — features that the polling V231
  * detector cannot replicate because it has no persistent state.
  */
+import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   loadState,
@@ -234,9 +235,10 @@ export function detectLiveSignalsV4(
  * and re-initializes from cfgLabel.
  */
 export function resetV4State(stateDir: string, cfgLabel: string): void {
+  // Phase 14 (V4 Bug 13): top-level ESM `import * as fs` instead of CJS
+  // require(). Strict-ESM environments throw on require() in .ts files.
   const filePath = path.join(stateDir, "v4-engine.json");
   try {
-    const fs = require("node:fs");
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
   } catch {
     /* ignore */
