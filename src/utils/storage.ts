@@ -1,37 +1,89 @@
-import { Trade } from '@/types/trade';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import { Trade } from "@/types/trade";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
-const STORAGE_KEY = 'trading-journal-trades';
-const SCREENSHOTS_KEY = 'trading-journal-screenshots';
+const STORAGE_KEY = "trading-journal-trades";
+const SCREENSHOTS_KEY = "trading-journal-screenshots";
+
+// Phase 7 (Storage Bug 7): screenshot data-URL safety. Reject anything that
+// isn't an image base64 data URL. Caps size at 2 MB to prevent DB-bloat.
+// Without this, javascript: / data:text/html URLs can flow through to <img
+// src> producing XSS, and unbounded base64 hoses Supabase storage.
+const SCREENSHOT_RE = /^data:image\/(png|jpe?g|webp|gif);base64,/i;
+const SCREENSHOT_MAX_BYTES = 2 * 1024 * 1024;
+
+export function validateScreenshot(s: string | undefined): string | undefined {
+  if (!s) return undefined;
+  if (!SCREENSHOT_RE.test(s)) return undefined;
+  // base64 length × 0.75 ≈ decoded bytes; allow 1.4× headroom
+  if (s.length > SCREENSHOT_MAX_BYTES * 1.4) return undefined;
+  return s;
+}
+
+// Phase 7 (Storage Bug 6): NaN-safe numeric coercion at the boundary.
+// Number(null) === 0 (acceptable), Number('garbage') === NaN — propagates
+// into stats and poisons winRate/sharpe.
+function num(v: unknown, fallback = 0): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+const ALLOWED_EMOTIONS = [
+  "confident",
+  "neutral",
+  "fearful",
+  "greedy",
+  "fomo",
+  "revenge",
+] as const;
+const ALLOWED_MARKET_CONDITIONS = [
+  "trending",
+  "ranging",
+  "volatile",
+  "calm",
+] as const;
 
 // ---------------------------------------------------------------------------
 // Helper: convert between DB snake_case and app camelCase
 // ---------------------------------------------------------------------------
 
 function dbToTrade(row: Record<string, unknown>): Trade {
+  // Phase 7 (Storage Bug 6): allow-list emotion / marketCondition; arbitrary
+  // strings from the DB cast straight to Trade['emotion'] would let a future
+  // dangerouslySetInnerHTML render unfiltered values.
+  const rawEmotion = row.emotion as string | null | undefined;
+  const emotion =
+    rawEmotion && (ALLOWED_EMOTIONS as readonly string[]).includes(rawEmotion)
+      ? (rawEmotion as Trade["emotion"])
+      : undefined;
+  const rawMarket = row.market_condition as string | null | undefined;
+  const marketCondition =
+    rawMarket &&
+    (ALLOWED_MARKET_CONDITIONS as readonly string[]).includes(rawMarket)
+      ? (rawMarket as Trade["marketCondition"])
+      : undefined;
   return {
     id: row.id as string,
     pair: row.pair as string,
-    direction: row.direction as 'long' | 'short',
-    entryPrice: Number(row.entry_price),
-    exitPrice: Number(row.exit_price),
-    quantity: Number(row.quantity),
+    direction: row.direction as "long" | "short",
+    entryPrice: num(row.entry_price),
+    exitPrice: num(row.exit_price),
+    quantity: num(row.quantity),
     entryDate: row.entry_date as string,
     exitDate: row.exit_date as string,
-    pnl: Number(row.pnl),
-    pnlPercent: Number(row.pnl_percent),
-    fees: Number(row.fees),
-    leverage: Number(row.leverage),
-    notes: (row.notes as string) ?? '',
+    pnl: num(row.pnl),
+    pnlPercent: num(row.pnl_percent),
+    fees: num(row.fees),
+    leverage: num(row.leverage, 1),
+    notes: (row.notes as string) ?? "",
     tags: (row.tags as string[]) ?? [],
     strategy: row.strategy as string | undefined,
-    emotion: row.emotion as Trade['emotion'],
+    emotion,
     confidence: row.confidence as number | undefined,
     setupType: row.setup_type as string | undefined,
     timeframe: row.timeframe as string | undefined,
-    marketCondition: row.market_condition as Trade['marketCondition'],
-    screenshot: row.screenshot_url as string | undefined,
-    accountId: (row.account_id as string) ?? 'default',
+    marketCondition,
+    screenshot: validateScreenshot(row.screenshot_url as string | undefined),
+    accountId: (row.account_id as string) ?? "default",
   };
 }
 
@@ -58,8 +110,10 @@ function tradeToDb(trade: Trade, userId: string) {
     setup_type: trade.setupType ?? null,
     timeframe: trade.timeframe ?? null,
     market_condition: trade.marketCondition ?? null,
-    screenshot_url: trade.screenshot ?? null,
-    account_id: trade.accountId ?? 'default',
+    // Phase 7: validate before persisting too — defense-in-depth so a
+    // tampered client cannot inject javascript:/data:text/html URLs.
+    screenshot_url: validateScreenshot(trade.screenshot) ?? null,
+    account_id: trade.accountId ?? "default",
   };
 }
 
@@ -69,16 +123,16 @@ function tradeToDb(trade: Trade, userId: string) {
 
 export async function loadTradesFromSupabase(
   supabase: SupabaseClient,
-  userId: string
+  userId: string,
 ): Promise<Trade[]> {
   const { data, error } = await supabase
-    .from('trades')
-    .select('*')
-    .eq('user_id', userId)
-    .order('exit_date', { ascending: false });
+    .from("trades")
+    .select("*")
+    .eq("user_id", userId)
+    .order("exit_date", { ascending: false });
 
   if (error) {
-    console.error('Failed to load trades from Supabase:', error);
+    console.error("Failed to load trades from Supabase:", error);
     return [];
   }
 
@@ -88,14 +142,14 @@ export async function loadTradesFromSupabase(
 export async function saveTradeToSupabase(
   supabase: SupabaseClient,
   trade: Trade,
-  userId: string
+  userId: string,
 ): Promise<boolean> {
   const { error } = await supabase
-    .from('trades')
+    .from("trades")
     .upsert(tradeToDb(trade, userId));
 
   if (error) {
-    console.error('Failed to save trade to Supabase:', error);
+    console.error("Failed to save trade to Supabase:", error);
     return false;
   }
   return true;
@@ -104,17 +158,14 @@ export async function saveTradeToSupabase(
 export async function deleteTradeFromSupabase(
   supabase: SupabaseClient,
   tradeId: string,
-  userId?: string
+  userId?: string,
 ): Promise<boolean> {
-  let query = supabase
-    .from('trades')
-    .delete()
-    .eq('id', tradeId);
-  if (userId) query = query.eq('user_id', userId);
+  let query = supabase.from("trades").delete().eq("id", tradeId);
+  if (userId) query = query.eq("user_id", userId);
   const { error } = await query;
 
   if (error) {
-    console.error('Failed to delete trade from Supabase:', error);
+    console.error("Failed to delete trade from Supabase:", error);
     return false;
   }
   return true;
@@ -123,13 +174,13 @@ export async function deleteTradeFromSupabase(
 export async function saveBulkTradesToSupabase(
   supabase: SupabaseClient,
   trades: Trade[],
-  userId: string
+  userId: string,
 ): Promise<boolean> {
   const rows = trades.map((t) => tradeToDb(t, userId));
-  const { error } = await supabase.from('trades').upsert(rows);
+  const { error } = await supabase.from("trades").upsert(rows);
 
   if (error) {
-    console.error('Failed to bulk save trades to Supabase:', error);
+    console.error("Failed to bulk save trades to Supabase:", error);
     return false;
   }
   return true;
@@ -137,15 +188,15 @@ export async function saveBulkTradesToSupabase(
 
 export async function clearAllSupabaseTrades(
   supabase: SupabaseClient,
-  userId: string
+  userId: string,
 ): Promise<boolean> {
   const { error } = await supabase
-    .from('trades')
+    .from("trades")
     .delete()
-    .eq('user_id', userId);
+    .eq("user_id", userId);
 
   if (error) {
-    console.error('Failed to clear trades from Supabase:', error);
+    console.error("Failed to clear trades from Supabase:", error);
     return false;
   }
   return true;
@@ -162,11 +213,11 @@ export async function clearAllSupabaseTrades(
  */
 export function saveTrades(trades: Trade[]): void {
   try {
-    if (typeof window === 'undefined') return;
+    if (typeof window === "undefined") return;
 
     // Separate screenshots from trade data
     const screenshots: Record<string, string> = {};
-    const tradesWithoutScreenshots = trades.map(t => {
+    const tradesWithoutScreenshots = trades.map((t) => {
       if (t.screenshot) {
         screenshots[t.id] = t.screenshot;
         const { screenshot: _, ...rest } = t;
@@ -180,14 +231,19 @@ export function saveTrades(trades: Trade[]): void {
     // Store screenshots separately; if quota is exceeded, trade data is still safe
     if (Object.keys(screenshots).length > 0) {
       try {
-        const existing = JSON.parse(localStorage.getItem(SCREENSHOTS_KEY) || '{}');
-        localStorage.setItem(SCREENSHOTS_KEY, JSON.stringify({ ...existing, ...screenshots }));
+        const existing = JSON.parse(
+          localStorage.getItem(SCREENSHOTS_KEY) || "{}",
+        );
+        localStorage.setItem(
+          SCREENSHOTS_KEY,
+          JSON.stringify({ ...existing, ...screenshots }),
+        );
       } catch {
-        console.warn('Failed to save screenshots - storage quota may be full.');
+        console.warn("Failed to save screenshots - storage quota may be full.");
       }
     }
   } catch (error) {
-    console.error('Failed to save trades to localStorage:', error);
+    console.error("Failed to save trades to localStorage:", error);
   }
 }
 
@@ -197,7 +253,7 @@ export function saveTrades(trades: Trade[]): void {
  */
 export function loadTrades(): Trade[] {
   try {
-    if (typeof window === 'undefined') {
+    if (typeof window === "undefined") {
       return [];
     }
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -212,21 +268,19 @@ export function loadTrades(): Trade[] {
     // Re-attach screenshots from separate store
     let screenshots: Record<string, string> = {};
     try {
-      screenshots = JSON.parse(localStorage.getItem(SCREENSHOTS_KEY) || '{}');
+      screenshots = JSON.parse(localStorage.getItem(SCREENSHOTS_KEY) || "{}");
     } catch (err) {
-      console.error('Failed to parse screenshots from localStorage:', err);
+      console.error("Failed to parse screenshots from localStorage:", err);
     }
 
-    return (parsed as unknown[])
-      .filter(isValidTrade)
-      .map(t => {
-        if (screenshots[t.id]) {
-          return { ...t, screenshot: screenshots[t.id] };
-        }
-        return t;
-      });
+    return (parsed as unknown[]).filter(isValidTrade).map((t) => {
+      if (screenshots[t.id]) {
+        return { ...t, screenshot: screenshots[t.id] };
+      }
+      return t;
+    });
   } catch (error) {
-    console.error('Failed to load trades from localStorage:', error);
+    console.error("Failed to load trades from localStorage:", error);
     return [];
   }
 }
@@ -272,22 +326,22 @@ export function exportToJSON(trades: Trade[]): void {
   try {
     const wrapper = {
       exportDate: new Date().toISOString(),
-      version: '1.0',
+      version: "1.0",
       trades,
     };
     const blob = new Blob([JSON.stringify(wrapper, null, 2)], {
-      type: 'application/json',
+      type: "application/json",
     });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
+    const link = document.createElement("a");
     link.href = url;
-    link.download = 'trading-journal-backup.json';
+    link.download = "trading-journal-backup.json";
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   } catch (error) {
-    console.error('Failed to export trades to JSON:', error);
+    console.error("Failed to export trades to JSON:", error);
   }
 }
 
@@ -298,24 +352,24 @@ export function exportToJSON(trades: Trade[]): void {
 export function exportToCSV(trades: Trade[]): void {
   try {
     const headers = [
-      'Pair',
-      'Direction',
-      'Entry Price',
-      'Exit Price',
-      'Quantity',
-      'Leverage',
-      'Fees',
-      'PnL',
-      'PnL %',
-      'Entry Date',
-      'Exit Date',
-      'Strategy',
-      'Emotion',
-      'Notes',
+      "Pair",
+      "Direction",
+      "Entry Price",
+      "Exit Price",
+      "Quantity",
+      "Leverage",
+      "Fees",
+      "PnL",
+      "PnL %",
+      "Entry Date",
+      "Exit Date",
+      "Strategy",
+      "Emotion",
+      "Notes",
     ];
 
     const escapeCSV = (value: string): string => {
-      if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+      if (value.includes(",") || value.includes('"') || value.includes("\n")) {
         return `"${value.replace(/"/g, '""')}"`;
       }
       return value;
@@ -334,41 +388,44 @@ export function exportToCSV(trades: Trade[]): void {
         t.pnlPercent.toFixed(2),
         t.entryDate,
         t.exitDate,
-        escapeCSV(t.strategy ?? ''),
-        t.emotion ?? '',
-        escapeCSV(t.notes ?? ''),
-      ].join(',')
+        escapeCSV(t.strategy ?? ""),
+        t.emotion ?? "",
+        escapeCSV(t.notes ?? ""),
+      ].join(","),
     );
 
-    const csv = [headers.join(','), ...rows].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const csv = [headers.join(","), ...rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
+    const link = document.createElement("a");
     link.href = url;
-    link.download = 'trading-journal-export.csv';
+    link.download = "trading-journal-export.csv";
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   } catch (error) {
-    console.error('Failed to export trades to CSV:', error);
+    console.error("Failed to export trades to CSV:", error);
   }
 }
 
 function isValidTrade(obj: unknown): obj is Trade {
-  if (!obj || typeof obj !== 'object') return false;
+  if (!obj || typeof obj !== "object") return false;
   const t = obj as Record<string, unknown>;
   return (
-    typeof t.id === 'string' &&
-    typeof t.pair === 'string' &&
-    (t.direction === 'long' || t.direction === 'short') &&
-    typeof t.entryPrice === 'number' && t.entryPrice > 0 &&
-    typeof t.exitPrice === 'number' && t.exitPrice > 0 &&
-    typeof t.quantity === 'number' && t.quantity > 0 &&
-    typeof t.entryDate === 'string' &&
-    typeof t.exitDate === 'string' &&
-    typeof t.pnl === 'number' &&
-    typeof t.pnlPercent === 'number'
+    typeof t.id === "string" &&
+    typeof t.pair === "string" &&
+    (t.direction === "long" || t.direction === "short") &&
+    typeof t.entryPrice === "number" &&
+    t.entryPrice > 0 &&
+    typeof t.exitPrice === "number" &&
+    t.exitPrice > 0 &&
+    typeof t.quantity === "number" &&
+    t.quantity > 0 &&
+    typeof t.entryDate === "string" &&
+    typeof t.exitDate === "string" &&
+    typeof t.pnl === "number" &&
+    typeof t.pnlPercent === "number"
   );
 }
 
@@ -380,7 +437,7 @@ export function importFromJSON(file: File): Promise<Trade[]> {
   const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
   return new Promise((resolve, reject) => {
     if (file.size > MAX_FILE_SIZE) {
-      reject(new Error('File too large. Maximum size is 10 MB.'));
+      reject(new Error("File too large. Maximum size is 10 MB."));
       return;
     }
 
@@ -393,14 +450,14 @@ export function importFromJSON(file: File): Promise<Trade[]> {
 
         const rawTrades = Array.isArray(parsed)
           ? parsed
-          : parsed && typeof parsed === 'object' && Array.isArray(parsed.trades)
+          : parsed && typeof parsed === "object" && Array.isArray(parsed.trades)
             ? parsed.trades
             : null;
 
         if (rawTrades) {
           const valid = rawTrades.filter(isValidTrade);
           if (valid.length === 0) {
-            reject(new Error('No valid trades found in the file.'));
+            reject(new Error("No valid trades found in the file."));
           } else {
             // Keep the first occurrence of each trade id to avoid duplicate imports
             // from malformed backups.
@@ -416,14 +473,18 @@ export function importFromJSON(file: File): Promise<Trade[]> {
           return;
         }
 
-        reject(new Error('Invalid JSON structure: expected a Trade[] array or an object with a "trades" array.'));
+        reject(
+          new Error(
+            'Invalid JSON structure: expected a Trade[] array or an object with a "trades" array.',
+          ),
+        );
       } catch (error) {
-        reject(new Error('Failed to parse JSON file.'));
+        reject(new Error("Failed to parse JSON file."));
       }
     };
 
     reader.onerror = () => {
-      reject(new Error('Failed to read file.'));
+      reject(new Error("Failed to read file."));
     };
 
     reader.readAsText(file);
@@ -435,12 +496,12 @@ export function importFromJSON(file: File): Promise<Trade[]> {
  */
 export function clearAllData(): void {
   try {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== "undefined") {
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem(SCREENSHOTS_KEY);
     }
   } catch (error) {
-    console.error('Failed to clear trade data from localStorage:', error);
+    console.error("Failed to clear trade data from localStorage:", error);
   }
 }
 
@@ -450,7 +511,7 @@ export function clearAllData(): void {
  */
 export function hasSavedData(): boolean {
   try {
-    if (typeof window === 'undefined') {
+    if (typeof window === "undefined") {
       return false;
     }
     const raw = localStorage.getItem(STORAGE_KEY);

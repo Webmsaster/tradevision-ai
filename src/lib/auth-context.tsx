@@ -1,8 +1,8 @@
-'use client';
+"use client";
 
-import { createContext, useContext, useEffect, useState } from 'react';
-import type { User, SupabaseClient } from '@supabase/supabase-js';
-import { createClient } from './supabase';
+import { createContext, useContext, useEffect, useState } from "react";
+import type { User, SupabaseClient } from "@supabase/supabase-js";
+import { createClient } from "./supabase";
 
 interface AuthContextValue {
   user: User | null;
@@ -68,6 +68,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (supabase) {
       await supabase.auth.signOut();
     }
+    // Phase 7 (Storage Bug 12): clear localStorage on logout so the next
+    // browser user on a shared device doesn't see the previous user's
+    // trades through the localStorage fallback path.
+    if (typeof window !== "undefined") {
+      try {
+        const { clearAllData } = await import("@/utils/storage");
+        clearAllData();
+      } catch (e) {
+        console.error("[auth] failed to clear storage on signOut:", e);
+      }
+    }
+    setUser(null);
   };
 
   return (

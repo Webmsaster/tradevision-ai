@@ -13,7 +13,15 @@ function getHoldTimeMs(trade: Trade): number {
 }
 
 function getHourOfDay(dateStr: string): number {
-  return new Date(dateStr).getHours();
+  // Phase 6 (AI Bug 5/14): use UTC consistently — local-time would change
+  // bucketing per-Browser timezone (Tokyo vs NYC see different patterns
+  // for the same UTC trade) and cause SSR/CSR hydration mismatch.
+  return new Date(dateStr).getUTCHours();
+}
+
+function getDayOfWeek(dateStr: string): number {
+  // Phase 6 (AI Bug 5/14): same — UTC bucketing for day-of-week.
+  return new Date(dateStr).getUTCDay();
 }
 
 /**
@@ -403,13 +411,16 @@ export function detectGoodRiskManagement(trades: Trade[]): AIInsight | null {
 
   const profitFactor = grossProfit / grossLoss;
 
-  // Estimate total equity as sum of all PnL (as a proxy)
-  const totalEquity = trades.reduce((sum, t) => sum + Math.abs(t.pnl), 0);
+  // Phase 6 (AI Bug 3): "totalEquity = sum(|pnl|)" was semantically meaningless
+  // — many small trades inflated the denominator → maxLossPercent always tiny
+  // → false-positive "Strong Risk Management" insight. Use grossProfit (real
+  // capital deployed) as a proxy that at least scales with the account.
+  const totalEquity = grossProfit;
   const maxSingleLoss = Math.abs(
     Math.min(...trades.filter((t) => t.pnl < 0).map((t) => t.pnl)),
   );
   const maxLossPercent =
-    totalEquity > 0 ? (maxSingleLoss / totalEquity) * 100 : 0;
+    totalEquity > 0 ? (maxSingleLoss / totalEquity) * 100 : 100;
 
   if (profitFactor > 1.5 && maxLossPercent < 3) {
     return {
@@ -487,7 +498,7 @@ export function detectWeekendTrading(trades: Trade[]): AIInsight | null {
   const weekendTrades: Trade[] = [];
 
   for (const trade of trades) {
-    const dayOfWeek = new Date(trade.exitDate).getDay();
+    const dayOfWeek = getDayOfWeek(trade.exitDate);
     if (dayOfWeek === 0 || dayOfWeek === 6) {
       weekendTrades.push(trade);
     } else {
@@ -819,7 +830,7 @@ export function detectDayOfWeekBias(trades: Trade[]): AIInsight | null {
   ];
   const byDay: Record<number, Trade[]> = {};
   for (const t of trades) {
-    const d = new Date(t.exitDate).getDay();
+    const d = getDayOfWeek(t.exitDate);
     if (!byDay[d]) byDay[d] = [];
     byDay[d].push(t);
   }

@@ -69,8 +69,12 @@ export async function loadForexSymbol(
     return resampleCandles(hourly, TF_MS["2h"]);
   }
   if (timeframe === "4h") {
+    // Phase 5 (Forex Bug 8): Yahoo v8 chart API does NOT support "4h"
+    // interval — request fails (Bad Request) or silently downgrades to 1h.
+    // Build 4h bars by resampling 1h instead.
     const range = opts.range ?? "2y";
-    return loadYahooIntraday(symbol, "4h", range);
+    const hourly = await loadYahooIntraday(symbol, "1h", range);
+    return resampleCandles(hourly, TF_MS["4h"]);
   }
   if (timeframe === "1d") {
     const range = opts.range ?? "max";
@@ -117,7 +121,11 @@ export function alignForexCommon(
   common.sort((a, b) => a - b);
   const cs = new Set(common);
   const aligned: Record<string, Candle[]> = {};
+  // Phase 5 (Forex Bug 6): explicit sort after filter — preserves order
+  // even if upstream Yahoo returned unsorted bars (page-joins can reorder).
   for (const s of symbols)
-    aligned[s] = data[s].filter((c) => cs.has(c.openTime));
+    aligned[s] = data[s]
+      .filter((c) => cs.has(c.openTime))
+      .sort((a, b) => a.openTime - b.openTime);
   return aligned;
 }
