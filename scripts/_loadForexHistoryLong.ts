@@ -26,7 +26,14 @@
  * Cache: results are persisted to scripts/cache_forex/{symbol}_daily.json
  * to avoid re-fetching across runs.
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  mkdirSync,
+  statSync,
+  renameSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { Candle } from "../src/utils/indicators";
 import { loadYahooIntraday, resampleCandles } from "./_loadYahooHistory";
@@ -69,18 +76,43 @@ export async function loadForexDailyCached(
   range = "10y",
 ): Promise<Candle[]> {
   if (!existsSync(CACHE_DIR)) mkdirSync(CACHE_DIR, { recursive: true });
-  const cachePath = join(CACHE_DIR, `${symbol.replace("=X", "")}_daily.json`);
+  // Phase 22 (Forex Bug 2): cache filename includes range so a "5y" cache
+  // doesn't get returned for a "10y" request. Plus 24h TTL via mtime.
+  // Plus schema validation on parsed candles to catch corrupt cache files.
+  const cachePath = join(
+    CACHE_DIR,
+    `${symbol.replace("=X", "")}_${range}_daily.json`,
+  );
   if (existsSync(cachePath)) {
     try {
-      const raw = readFileSync(cachePath, "utf8");
-      const parsed: Candle[] = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 100) return parsed;
+      const ageMs = Date.now() - statSync(cachePath).mtimeMs;
+      if (ageMs < 24 * 3600_000) {
+        const raw = readFileSync(cachePath, "utf8");
+        const parsed: Candle[] = JSON.parse(raw);
+        // Phase 22 (Forex Bug 14): validate every cached bar — corrupt entries
+        // (NaN OHLC, missing fields) would propagate into Brownian-bridge
+        // and crash on Math.max(daily.high - daily.low, ...).
+        const valid =
+          Array.isArray(parsed) &&
+          parsed.length > 100 &&
+          parsed.every(
+            (c) =>
+              Number.isFinite(c.open) &&
+              Number.isFinite(c.high) &&
+              Number.isFinite(c.low) &&
+              Number.isFinite(c.close),
+          );
+        if (valid) return parsed;
+      }
     } catch {
       // fall through to refetch
     }
   }
   const candles = await loadYahooIntraday(symbol, "1d", range);
-  writeFileSync(cachePath, JSON.stringify(candles));
+  // Atomic write: tmp + rename, prevents corrupt cache on crash.
+  const tmp = `${cachePath}.tmp.${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(candles));
+  renameSync(tmp, cachePath);
   return candles;
 }
 

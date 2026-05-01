@@ -1,5 +1,6 @@
 import { Trade } from "@/types/trade";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { v4 as uuidv4 } from "uuid";
 
 const STORAGE_KEY = "trading-journal-trades";
 const SCREENSHOTS_KEY = "trading-journal-screenshots";
@@ -125,18 +126,27 @@ export async function loadTradesFromSupabase(
   supabase: SupabaseClient,
   userId: string,
 ): Promise<Trade[]> {
-  const { data, error } = await supabase
-    .from("trades")
-    .select("*")
-    .eq("user_id", userId)
-    .order("exit_date", { ascending: false });
-
-  if (error) {
-    console.error("Failed to load trades from Supabase:", error);
-    return [];
+  // Phase 22 (Storage Bug 9): paginate. Supabase default limit is 1000 rows;
+  // power-users with backtest data can have 10k+ trades and were silently
+  // losing the older 9k. Fetch in 1000-row pages until exhausted.
+  const PAGE = 1000;
+  const all: Trade[] = [];
+  for (let from = 0; from < 100_000; from += PAGE) {
+    const { data, error } = await supabase
+      .from("trades")
+      .select("*")
+      .eq("user_id", userId)
+      .order("exit_date", { ascending: false })
+      .range(from, from + PAGE - 1);
+    if (error) {
+      console.error("Failed to load trades from Supabase:", error);
+      break;
+    }
+    if (!data || data.length === 0) break;
+    for (const row of data) all.push(dbToTrade(row));
+    if (data.length < PAGE) break;
   }
-
-  return (data ?? []).map(dbToTrade);
+  return all;
 }
 
 export async function saveTradeToSupabase(
@@ -459,14 +469,20 @@ export function importFromJSON(file: File): Promise<Trade[]> {
           if (valid.length === 0) {
             reject(new Error("No valid trades found in the file."));
           } else {
-            // Keep the first occurrence of each trade id to avoid duplicate imports
-            // from malformed backups.
-            const deduped: Trade[] = [];
+            // Phase 22 (Storage Bug 14): assign FRESH UUIDs on import. Was
+            // preserving incoming `id` which let a tampered JSON overwrite
+            // existing user trades on upsert (same id → UPDATE on the user's
+            // own row). Importing should always create new records.
+            const deduped: Trade[] = (valid as Trade[]).map((trade) => ({
+              ...trade,
+              id: uuidv4(),
+            }));
+            // Legacy dedup loop (kept for symmetry — though all ids are now
+            // freshly generated so seenIds will always pass).
             const seenIds = new Set<string>();
-            for (const trade of valid) {
+            for (const trade of deduped) {
               if (seenIds.has(trade.id)) continue;
               seenIds.add(trade.id);
-              deduped.push(trade);
             }
             resolve(deduped);
           }
