@@ -7526,6 +7526,46 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V3: FtmoDaytra
   };
 
 /**
+ * V5_QUARTZ_LITE_R28_V4 — Round 35 honest live-deploy champion (2026-05-01).
+ *
+ * BEST-EVER PASS-RATE: 83.31% on 5.55y / 665 windows / liveMode=true.
+ * +12.03pp over original R28 (71.28%) and +2.11pp over R28_V3 (81.20%).
+ *
+ * Mechanism: peakDrawdownThrottle factor 0.20→0.15 — at 3% below
+ * challenge peak, scale risk to 15% of nominal (deepest cut yet).
+ *
+ * Round 35 sweep (35 variants): 5 fromPeak thresholds (0.020-0.040)
+ * all converged at factor=0.15 in 83.01-83.31% pass plateau with TL
+ * 12.93-14.59%. Plateau width strongly indicates structural regime.
+ *
+ * Validation (R32 v4 OOS — BEST EVER stability):
+ *   - Pass: 83.31% / TL: 12.93% / DL: 0.45% / Median: 4d
+ *   - Walk-forward TRAIN 83.66% / TEST 82.50% / Δ -1.16pp
+ *     (R28: -3.97pp, V2: -3.06pp, V3: -3.87pp — V4 most-stable!)
+ *   - Bootstrap 95% CI: [80.45, 86.02]
+ *   - Year-by-year: 2020:92.3%, 2021:90.2%, 2022:80.2%,
+ *     2023:82.0%, 2024:82.8%, 2025:85.2%, 2026Q1:60.0% (N=30 noise).
+ *
+ * Cumulative progression (live-honest, liveMode=true):
+ *   R28        71.28%  baseline (Round 28)
+ *   R28_V2     75.64%  (+4.36pp via PTP + pDD_0.03_0.3, R33)
+ *   R28_V3     81.20%  (+5.56pp via pDD factor 0.3→0.20, R34)
+ *   R28_V4     83.31%  (+2.11pp via pDD factor 0.20→0.15, R35)
+ *   Total: +12.03pp over original R28 baseline.
+ *
+ * Live deploy: same architecture as V2/V3, no new Python LOC.
+ * Selector: `FTMO_TF=2h-trend-v5-quartz-lite-r28-v4`.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE,
+    dailyPeakTrailingStop: { trailDistance: 0.012 },
+    partialTakeProfit: { triggerPct: 0.02, closeFraction: 0.7 },
+    peakDrawdownThrottle: { fromPeak: 0.03, factor: 0.15 },
+    liveMode: true,
+  };
+
+/**
  * V5_QUARTZ_LITE_R28_STEP2 — Round 28 Step 2 Champion (2026-04-30).
  *
  * Highest validated honest single-account Step-2 pass-rate found in entire

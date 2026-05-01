@@ -111,6 +111,20 @@ function buildVariant(name: string): FtmoDaytrade24hConfig {
       liveCaps,
     };
   }
+  // R35 winners: same shape but tighter factor.
+  if (name.startsWith("R35_pDD_")) {
+    const m = name.match(/R35_pDD_([\d.]+)_([\d.]+)/);
+    if (!m) throw new Error(`bad name ${name}`);
+    return {
+      ...BASE,
+      partialTakeProfit: { triggerPct: 0.02, closeFraction: 0.7 },
+      peakDrawdownThrottle: {
+        fromPeak: parseFloat(m[1]),
+        factor: parseFloat(m[2]),
+      },
+      liveCaps,
+    };
+  }
   throw new Error(`unknown variant: ${name}`);
 }
 
