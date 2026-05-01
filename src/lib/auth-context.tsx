@@ -65,12 +65,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signOut = async () => {
+    // Phase 32 (Re-Audit Storage Bug 7): only clearAllData() AFTER
+    // successful Supabase signOut. Previous behavior wiped local cache
+    // even on auth failure (Network glitch / 500) → user lost their
+    // trades for a transient outage they couldn't recover from.
     if (supabase) {
-      await supabase.auth.signOut();
+      const { error } = await supabase.auth.signOut();
+      if (error) {
+        console.error(
+          "[auth] signOut failed, NOT clearing local cache:",
+          error,
+        );
+        return;
+      }
     }
-    // Phase 7 (Storage Bug 12): clear localStorage on logout so the next
-    // browser user on a shared device doesn't see the previous user's
-    // trades through the localStorage fallback path.
     if (typeof window !== "undefined") {
       try {
         const { clearAllData } = await import("@/utils/storage");

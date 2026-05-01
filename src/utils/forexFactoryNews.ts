@@ -35,28 +35,63 @@ interface FFEntry {
 export async function loadForexFactoryNews(
   signal?: AbortSignal,
 ): Promise<NewsEvent[]> {
-  // Phase 12 (Auth Bug 12): hard 10s timeout + 5MB response cap. Without
-  // these a slow / malicious upstream can hang the live service for minutes
-  // (single point of DoS) or OOM-kill it on a malformed huge response.
-  const timeoutSignal = AbortSignal.timeout(10_000);
-  const composedSignal = signal
-    ? AbortSignal.any([signal, timeoutSignal])
-    : timeoutSignal;
-  const res = await fetch(
-    "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
-    {
-      signal: composedSignal,
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+  // Phase 32 (Re-Audit FF Bug 8+9): manual AbortController instead of
+  // AbortSignal.any (Node 20.0-20.2 doesn't have it). Plus streaming reader
+  // with hard 5MB cut — was loading entire response into memory before
+  // checking the cap → OOM-killable by malicious upstream.
+  const ac = new AbortController();
+  const timeout = setTimeout(() => ac.abort(new Error("FF timeout")), 10_000);
+  const onUserAbort = () => ac.abort(signal?.reason);
+  if (signal) signal.addEventListener("abort", onUserAbort);
+  const MAX_BYTES = 5_000_000;
+  let res: Response;
+  try {
+    res = await fetch(
+      "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+      {
+        signal: ac.signal,
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+        },
       },
-    },
-  );
-  if (!res.ok) throw new Error(`ForexFactory fetch ${res.status}`);
-  const txt = await res.text();
-  if (txt.length > 5_000_000) {
-    throw new Error(`ForexFactory response too large: ${txt.length} bytes`);
+    );
+  } finally {
+    if (signal) signal.removeEventListener("abort", onUserAbort);
   }
+  if (!res.ok) {
+    clearTimeout(timeout);
+    throw new Error(`ForexFactory fetch ${res.status}`);
+  }
+  // Streaming read with size cap — never accumulate >5MB.
+  const reader = res.body?.getReader();
+  if (!reader) {
+    clearTimeout(timeout);
+    throw new Error("ForexFactory: no response body");
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_BYTES) {
+        await reader.cancel();
+        throw new Error(`ForexFactory response too large: >${MAX_BYTES} bytes`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
+  const buf = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    buf.set(c, off);
+    off += c.byteLength;
+  }
+  const txt = new TextDecoder().decode(buf);
   const raw = JSON.parse(txt) as FFEntry[];
   const out: NewsEvent[] = [];
   for (const e of raw) {

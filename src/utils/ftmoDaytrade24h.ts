@@ -4837,7 +4837,14 @@ export function runFtmoDaytrade24h(
       finalEquityPct: equity - 1,
       maxDrawdown: maxDd,
       uniqueTradingDays: tradingDays.size,
-      passDay: lastPingDay + 1,
+      // Phase 32 (Re-Audit FTMO Bug 9+10): clamp passDay to
+      // [minTradingDays, maxDays]. Was returning lastPingDay+1 directly
+      // → could be < minTradingDays (early exit-day target hits) OR
+      // > maxDays (very late target hits with long-hold positions).
+      passDay: Math.min(
+        cfg.maxDays,
+        Math.max(lastPingDay + 1, cfg.minTradingDays),
+      ),
       trades: executed,
       maxHoldHoursObserved: maxHold,
     };
@@ -4961,22 +4968,17 @@ export function runFtmoDaytrade24h(
     // after, making the first loop pure dead code (and incorrect since
     // executed is now sorted by exit-time, not entry-time).
     if (cfg.maxConcurrentTrades !== undefined) {
-      // BUGFIX 2026-04-29 (Audit Bug 3): scan the FULL pre-sorted trade list,
-      // not just `executed`. `all` is sorted by exit-time, so earlier-entry
-      // trades with later exit aren't yet in `executed` when we process `t`.
-      // The previous `executed.filter(...)` systematically under-counted
-      // openCount → MCT cap leaked winners through → winrate inflated by
-      // ~2-5pp (selection-bias toward long-running winners over fast losers).
-      //
-      // Phase 28 (FTMO Engine Bug 4): in liveMode use the strict `executed`
-      // count — that mirrors what a real bot sees (only confirmed-executed
-      // trades count toward MCT). Default mode keeps the post-Round-12
-      // `all` scan to preserve selection-bias-free research-mode statistics.
+      // Phase 32 (Re-Audit FTMO Bug 5): scan `all` with EXPLICIT entry-time
+      // filter — provably lookahead-free regardless of sort order. Was
+      // `liveMode ? executed : all` which (a) under-counted in liveMode
+      // because executed was being built (filters drop trades from it),
+      // and (b) over-counted in research-mode because all includes future
+      // trades by exit-time. The entry-time guard is the correct invariant.
       let openCount = 0;
-      const mctSource = cfg.liveMode ? executed : all;
-      for (const e of mctSource) {
+      for (const e of all) {
         if (e === t) continue;
-        if (e.entryTime <= t.entryTime && e.exitTime > t.entryTime) openCount++;
+        if (e.entryTime > t.entryTime) continue; // future entry, not yet open
+        if (e.exitTime > t.entryTime) openCount++;
       }
       if (openCount >= cfg.maxConcurrentTrades) continue;
     }
@@ -4985,17 +4987,12 @@ export function runFtmoDaytrade24h(
     // `all` array, not `executed`. Same selection-bias (later-exit winners
     // not yet in executed) was leaking same-direction concurrent trades.
     if (cfg.correlationFilter) {
-      // Phase 28 (FTMO Engine Bug 4): same liveMode treatment as MCT —
-      // executed-only in live, full pre-sorted in research mode.
+      // Phase 32: same entry-time-filter as MCT (Bug 5 fix).
       let sameDirOpen = 0;
-      const corrSource = cfg.liveMode ? executed : all;
-      for (const e of corrSource) {
+      for (const e of all) {
         if (e === t) continue;
-        if (
-          e.entryTime <= t.entryTime &&
-          e.exitTime > t.entryTime &&
-          e.direction === t.direction
-        ) {
+        if (e.entryTime > t.entryTime) continue;
+        if (e.exitTime > t.entryTime && e.direction === t.direction) {
           sameDirOpen++;
         }
       }

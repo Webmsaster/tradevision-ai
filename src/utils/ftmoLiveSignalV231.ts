@@ -20,6 +20,10 @@ import type { Candle } from "@/utils/indicators";
 const NEWS_BLACKOUT_MINUTES = Number(
   process.env.FTMO_NEWS_BLACKOUT_MIN ?? "15",
 );
+
+// Phase 32 (Re-Audit V231 Bug 15): warn-once flag for the
+// peakDrawdownThrottle missing-challengePeak warning.
+let peakWarnedOnce = false;
 import { ema, atr } from "@/utils/indicators";
 import {
   FTMO_DAYTRADE_24H_CONFIG_V231,
@@ -785,11 +789,15 @@ function computeSizingFactor(account: AccountState): {
     // operator notice; behavior preserved (no throttle when peak unknown).
     const peakKnown =
       account.challengePeak !== undefined && account.challengePeak > 0;
-    if (!peakKnown) {
+    // Phase 32 (Re-Audit V231 Bug 15): warn-once. Was firing console.error
+    // on EVERY poll for the entire process lifetime if challengePeak was
+    // missing → log noise + alert fatigue + log-rotate stress.
+    if (!peakKnown && !peakWarnedOnce) {
+      peakWarnedOnce = true;
       console.error(
         "[V231] peakDrawdownThrottle CONFIGURED but account.challengePeak " +
           "is missing — silent under-performance vs backtest. Check Python " +
-          "ftmo_executor.py challenge-peak.json sync.",
+          "ftmo_executor.py challenge-peak.json sync. (warning suppressed for further polls)",
       );
     }
     const peak = peakKnown ? account.challengePeak! : account.equity;
