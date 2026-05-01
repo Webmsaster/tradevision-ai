@@ -4967,8 +4967,14 @@ export function runFtmoDaytrade24h(
       // The previous `executed.filter(...)` systematically under-counted
       // openCount → MCT cap leaked winners through → winrate inflated by
       // ~2-5pp (selection-bias toward long-running winners over fast losers).
+      //
+      // Phase 28 (FTMO Engine Bug 4): in liveMode use the strict `executed`
+      // count — that mirrors what a real bot sees (only confirmed-executed
+      // trades count toward MCT). Default mode keeps the post-Round-12
+      // `all` scan to preserve selection-bias-free research-mode statistics.
       let openCount = 0;
-      for (const e of all) {
+      const mctSource = cfg.liveMode ? executed : all;
+      for (const e of mctSource) {
         if (e === t) continue;
         if (e.entryTime <= t.entryTime && e.exitTime > t.entryTime) openCount++;
       }
@@ -4979,8 +4985,11 @@ export function runFtmoDaytrade24h(
     // `all` array, not `executed`. Same selection-bias (later-exit winners
     // not yet in executed) was leaking same-direction concurrent trades.
     if (cfg.correlationFilter) {
+      // Phase 28 (FTMO Engine Bug 4): same liveMode treatment as MCT —
+      // executed-only in live, full pre-sorted in research mode.
       let sameDirOpen = 0;
-      for (const e of all) {
+      const corrSource = cfg.liveMode ? executed : all;
+      for (const e of corrSource) {
         if (e === t) continue;
         if (
           e.entryTime <= t.entryTime &&
