@@ -1096,6 +1096,21 @@ export function pollLive(
       if (cfg.liveCaps && effRisk > cfg.liveCaps.maxRiskFrac) {
         effRisk = cfg.liveCaps.maxRiskFrac;
       }
+      // Phase 15 (V4 Bug 7): back-derive effRisk from the live equity-loss
+      // cap so MTM accounting stays aligned with what the broker actually
+      // deploys. Without this, engine effRisk=0.4 × stopPct=5% × lev=10 =
+      // 20% modelled loss/trade, but Python wrapper clamps the deployed
+      // size to 4% live-cap → MTM diverges by 5× per trade.
+      const LIVE_LOSS_CAP = 0.04;
+      // Use this asset's stop+leverage to find the equivalent effRisk that
+      // would produce LIVE_LOSS_CAP equity-loss at stop-out.
+      const stopPctForCalc = asset.stopPct ?? cfg.stopPct;
+      if (stopPctForCalc > 0 && cfg.leverage > 0) {
+        const modelledLoss = effRisk * stopPctForCalc * cfg.leverage;
+        if (modelledLoss > LIVE_LOSS_CAP) {
+          effRisk = LIVE_LOSS_CAP / (stopPctForCalc * cfg.leverage);
+        }
+      }
       if (effRisk <= 0) continue;
 
       // Stop/TP — recompute from entryPrice + asset overrides + atrStop.

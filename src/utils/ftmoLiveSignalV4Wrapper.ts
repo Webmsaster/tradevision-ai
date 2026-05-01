@@ -135,6 +135,32 @@ export function detectLiveSignalsV4(
 
   const state: FtmoLiveStateV4 = loadState(stateDir, cfgLabel);
 
+  // Phase 15 (V4 Bug 1+2): SYNC engine state with the authoritative MT5
+  // state from Python BEFORE pollLive. The engine's `state.equity` and
+  // `state.openPositions` are reproductions, not source of truth. The
+  // Python executor (sync_account_state) writes account.json with the
+  // real MT5 equity, and ftmo_executor maintains real open positions.
+  // Without this sync the engine's MTM diverges 1-3% per day from reality
+  // → fail-checks and peak-drawdown trigger on phantom equity.
+  if (account.equity != null && Number.isFinite(account.equity)) {
+    // account.equity is a fraction (1.0 = 100% of start balance).
+    state.equity = account.equity;
+    if (state.mtmEquity == null || !Number.isFinite(state.mtmEquity)) {
+      state.mtmEquity = account.equity;
+    }
+  }
+  if (
+    account.challengePeak != null &&
+    Number.isFinite(account.challengePeak) &&
+    account.challengePeak > 0
+  ) {
+    // Adopt Python's persisted peak — it survives engine restart and
+    // cross-process state-dir sharing better than the engine's own peak.
+    if (account.challengePeak > state.challengePeak) {
+      state.challengePeak = account.challengePeak;
+    }
+  }
+
   // BTC sample for the legacy `btc` field (display only, not used by V4).
   const btc = aligned["BTCUSDT"];
   if (btc && btc.length > 0) {
