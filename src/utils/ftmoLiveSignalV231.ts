@@ -13,6 +13,13 @@
  * recent PnLs for Kelly) so we can compute the exact risk multiplier.
  */
 import type { Candle } from "@/utils/indicators";
+
+// Phase 23 (V231 Bug 15): newsBlackout window now configurable via env.
+// 2min was too short for high-impact events (NFP, CPI, FOMC move markets
+// 30+ minutes). Default 15min covers post-event volatility tail.
+const NEWS_BLACKOUT_MINUTES = Number(
+  process.env.FTMO_NEWS_BLACKOUT_MIN ?? "15",
+);
 import { ema, atr } from "@/utils/indicators";
 import {
   FTMO_DAYTRADE_24H_CONFIG_V231,
@@ -1007,7 +1014,11 @@ export function detectLiveSignalsV231(
   }
 
   // News filter
-  const newsBlocked = isNewsBlackout(entryOpenTime, newsEvents, 2);
+  const newsBlocked = isNewsBlackout(
+    entryOpenTime,
+    newsEvents,
+    NEWS_BLACKOUT_MINUTES,
+  );
   if (newsBlocked) {
     result.notes.push(`News blackout: within 2min of high-impact event`);
   }
@@ -1413,7 +1424,7 @@ function detectBullSignals(
   }
 
   const entryOpenTime = b1.openTime + tfHours * 3600_000;
-  if (isNewsBlackout(entryOpenTime, newsEvents, 2)) {
+  if (isNewsBlackout(entryOpenTime, newsEvents, NEWS_BLACKOUT_MINUTES)) {
     result.notes.push("News blackout");
     return result;
   }

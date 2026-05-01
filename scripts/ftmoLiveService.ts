@@ -621,7 +621,10 @@ async function runOneCheck(): Promise<DetectionResult> {
       for (const sig of newSignals) {
         const msg = [
           `🚨 <b>NEW SIGNAL</b>`,
-          `<b>${sig.assetSymbol}</b> (${sig.sourceSymbol}) — ${sig.direction.toUpperCase()}`,
+          // Phase 23 (Auth Bug 7): htmlEscape symbol fields. Currently
+          // these are enum-like, but a future custom-symbol config could
+          // smuggle <tags> that break parse_mode=HTML or open phishing.
+          `<b>${htmlEscape(sig.assetSymbol)}</b> (${htmlEscape(sig.sourceSymbol)}) — ${htmlEscape(sig.direction.toUpperCase())}`,
           `Entry: $${sig.entryPrice.toFixed(4)}`,
           `Stop: $${sig.stopPrice.toFixed(4)} (+${(sig.stopPct * 100).toFixed(2)}%)`,
           `TP: $${sig.tpPrice.toFixed(4)} (−${(sig.tpPct * 100).toFixed(2)}%)`,

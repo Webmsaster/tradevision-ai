@@ -157,6 +157,22 @@ async function handleCommand(
 ) {
   // Only respond to messages from configured chat ID
   if (String(msg.chat.id) !== cfg.chatId) return;
+  // Phase 23 (Auth Bug 2): optional user-id whitelist via env. If the chat
+  // is a group / channel, anyone in there could fire /kill. With a token
+  // leak this is the second line of defence.
+  const allowedUserIds = (process.env.TELEGRAM_ALLOWED_USER_IDS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (
+    allowedUserIds.length > 0 &&
+    !allowedUserIds.includes(String(msg.from?.id ?? ""))
+  ) {
+    console.warn(
+      `[tg-bot] denied cmd from unauthorized user id=${msg.from?.id}`,
+    );
+    return;
+  }
   const text = msg.text.trim();
   if (!text.startsWith("/")) return;
   const cmd = text.split(/\s+/)[0].toLowerCase().split("@")[0]; // strip @botname
