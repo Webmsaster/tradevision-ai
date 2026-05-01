@@ -363,13 +363,31 @@ def mt5_get_equity() -> dict:
 # FTMO rules + daily reset
 # =============================================================================
 def check_ftmo_rules(current_equity: float, day_start_equity: float) -> Optional[str]:
+    """Block-new-entries gate — runs each pending-signal cycle.
+
+    Bug-Audit Phase 3 (Python Bug 1+2): widened buffers so we stop QUEUING
+    new orders well before the actual FTMO -5% / -10% caps. Emergency-close
+    of OPEN positions is handled separately in sync_account_state with a
+    larger buffer (see DL_EMERGENCY_BUFFER / TL_EMERGENCY_BUFFER).
+    """
     daily_pct = (current_equity - day_start_equity) / day_start_equity
-    if daily_pct <= -MAX_DAILY_LOSS_PCT + 0.005:
+    # 0.005 → 0.010 (block at -4.0% instead of -4.5%): crypto can move 0.5%
+    # in a 30-second poll window, that buffer was too tight to prevent breach.
+    if daily_pct <= -MAX_DAILY_LOSS_PCT + 0.010:
         return f"daily_loss: {daily_pct:.2%} near -{MAX_DAILY_LOSS_PCT:.0%} cap"
     total_pct = (current_equity - CHALLENGE_START_BALANCE) / CHALLENGE_START_BALANCE
-    if total_pct <= -MAX_TOTAL_LOSS_PCT + 0.01:
+    if total_pct <= -MAX_TOTAL_LOSS_PCT + 0.015:
         return f"total_loss: {total_pct:.2%} near -{MAX_TOTAL_LOSS_PCT:.0%} cap"
     return None
+
+
+# Bug-Audit Phase 3: emergency-close thresholds.
+# DL: close all open positions when intraday drawdown reaches -2.5% to leave
+#     SL slippage room before the actual -5% breach.
+# TL: close all open positions at -7.5% to prevent the -10% all-time breach
+#     (was completely missing — only DL had emergency close).
+DL_EMERGENCY_BUFFER = 0.025  # close positions at -(MAX_DAILY_LOSS_PCT - 0.025) = -2.5%
+TL_EMERGENCY_BUFFER = 0.025  # close positions at -(MAX_TOTAL_LOSS_PCT - 0.025) = -7.5%
 
 
 def get_day_peak_state() -> dict:
@@ -1142,9 +1160,12 @@ def process_pending_signals() -> None:
             continue
 
         # BUGFIX 2026-04-28: enforce maxConcurrentTrades parity with engine.
-        # Count live MT5 positions tagged with our magic (231) plus ones we
-        # already placed earlier in this batch (positions_get may lag).
-        live_positions = mt5.positions_get(magic=231) or []
+        # Bug-Audit Phase 3 (Python Bug 11): mt5.positions_get(magic=) is NOT
+        # a documented filter — on new MT5 builds raises TypeError, on old
+        # builds silently ignores → returns ALL positions including manual
+        # trades from other bots. Filter by magic manually.
+        all_positions = mt5.positions_get() or []
+        live_positions = [p for p in all_positions if getattr(p, "magic", 0) == 231]
         open_count = len(live_positions) + in_batch_placed
         if open_count >= MAX_CONCURRENT_TRADES:
             log_event("mct_block", asset=sig["assetSymbol"], open=open_count, cap=MAX_CONCURRENT_TRADES)
@@ -1771,9 +1792,12 @@ def reconcile_pending_order_markers() -> None:
         return
     log_event("order_marker_reconcile_start", count=len(markers))
     # Get MT5 positions to check for matching comments
+    # Bug-Audit Phase 3 (Python Bug 11): magic= is NOT a documented MT5 API
+    # parameter — filter manually so we don't accidentally see manual trades
+    # or other bots' positions.
     try:
-        # Note: mt5.positions_get accepts magic= kw at runtime even if pyright complains
-        positions = mt5.positions_get(magic=231) or []  # type: ignore[call-arg]
+        all_positions = mt5.positions_get() or []
+        positions = [p for p in all_positions if getattr(p, "magic", 0) == 231]
         comments = {p.comment for p in positions}
     except Exception:
         comments = set()
@@ -1804,8 +1828,13 @@ def reconcile_pending_order_markers() -> None:
             # BUGFIX 2026-04-28 (Round 38): comments are MT5-truncated to 31
             # chars; place_market_order writes the first 8 chars of the marker
             # at the START of the comment, so we match on that prefix.
+            # Bug-Audit Phase 3 (Python Bug 7): substring match (`mid_short in
+            # c`) collided with random hex sequences in unrelated comments
+            # (~birthday-paradox at 8 hex chars over weeks of trades). Using
+            # startswith anchors to bar-by-bar prefix structure → no spurious
+            # "already placed" hits, no false re-queue / double-order.
             mid_short = mid[:8]
-            placed = any(mid_short in c for c in comments)
+            placed = any(c.startswith(mid_short) for c in comments)
             if placed:
                 marker.unlink(missing_ok=True)
                 cleaned += 1
@@ -1896,12 +1925,20 @@ def sync_account_state() -> None:
         return
     equity_frac = acct["equity"] / CHALLENGE_START_BALANCE
     day_start_usd = handle_daily_reset(acct["equity"])
-    # BUGFIX 2026-04-28 (Round 23 C2): emergency close at -4.5% daily-loss.
-    # Existing positions could otherwise drag equity past -5% breach point.
+    # Bug-Audit Phase 3 (Python Bug 1+2): emergency close on BOTH daily AND
+    # total loss with wider buffers. Crypto can move 0.5%+ in a 30s poll
+    # window — old -4.5% threshold left no slippage room before -5% breach.
+    # TL had no emergency-close at all — only blocked new entries → static
+    # bleed-down to -10% was unprotected.
+    dl_emergency_threshold = -(MAX_DAILY_LOSS_PCT - DL_EMERGENCY_BUFFER)  # -2.5%
+    tl_emergency_threshold = -(MAX_TOTAL_LOSS_PCT - TL_EMERGENCY_BUFFER)  # -7.5%
     if day_start_usd > 0:
         daily_pct = (acct["equity"] - day_start_usd) / day_start_usd
-        if daily_pct <= -0.045:
+        if daily_pct <= dl_emergency_threshold:
             _emergency_close_all_positions(f"daily_loss_imminent: {daily_pct:.2%}")
+    total_pct = (acct["equity"] - CHALLENGE_START_BALANCE) / CHALLENGE_START_BALANCE
+    if total_pct <= tl_emergency_threshold:
+        _emergency_close_all_positions(f"total_loss_imminent: {total_pct:.2%}")
 
     deals = mt5.history_deals_get(datetime.fromtimestamp(time.time() - 30 * 86400), datetime.now())
     recent_pnls: list[float] = []
