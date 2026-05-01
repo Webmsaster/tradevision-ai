@@ -1043,7 +1043,9 @@ export function detectLiveSignalsV231(
     NEWS_BLACKOUT_MINUTES,
   );
   if (newsBlocked) {
-    result.notes.push(`News blackout: within 2min of high-impact event`);
+    result.notes.push(
+      `News blackout: within ${NEWS_BLACKOUT_MINUTES}min of high-impact event`,
+    );
   }
 
   // HTF trend filter — moved to per-asset/per-direction check below.

@@ -8805,6 +8805,11 @@ export const FTMO_DAYTRADE_24H_CONFIG_BREAKOUT_V1: FtmoDaytrade24hConfig = {
   maxDays: 30,
   maxConcurrentTrades: 4,
   pauseAtTargetReached: true,
+  // Phase 31 (Strategy Configs Audit Bug 7): liveMode=true so backtest
+  // pass-rates match the V4-Sim (49.25%) measurement that the Memory cites.
+  // Without it, runFtmoDaytrade24h(BREAKOUT_V1) would use sort-by-exit
+  // semantics → slower passDay → different pass-rate.
+  liveMode: true,
   atrStop: { period: 14, stopMult: 2.5 },
   chandelierExit: { period: 14, mult: 1.5, minMoveR: 0.5 },
   partialTakeProfit: { triggerPct: 0.02, closeFraction: 0.5 },

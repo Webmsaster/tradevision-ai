@@ -834,7 +834,10 @@ async function runSmartAlerts(account: AccountState) {
   // observed dt so the threshold is an intuitive "% per hour".
   if (state.lastEquitySnapshot) {
     const dtMs = now - state.lastEquitySnapshot.ts;
-    if (dtMs > 0 && dtMs <= 6 * 3600_000) {
+    // Phase 31 (Live Service Audit Bug 6): require minimum dt of 10min
+    // before computing %/h rate. Tiny dtMs (boundary-doubled poll, --once
+    // immediately after a normal cycle) inflated tiny drops to fake alerts.
+    if (dtMs >= 10 * 60_000 && dtMs <= 6 * 3600_000) {
       // up to 6h window
       const drop = state.lastEquitySnapshot.equity - account.equity;
       const dropPerHour = drop / (dtMs / 3600_000);
