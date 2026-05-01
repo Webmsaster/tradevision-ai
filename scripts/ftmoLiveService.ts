@@ -276,24 +276,77 @@ function writeJSON(p: string, obj: unknown) {
 const LOG_ROTATE_BYTES = 10 * 1024 * 1024;
 const LOG_KEEP = 5;
 
+// Phase 26 (Live Service Bug 4): O_EXCL lock around the rotate critical
+// section so two concurrent appendLog callers can't half-rotate. Best-effort
+// — if lock can't be acquired in 200ms, skip rotation this tick.
+function tryAcquireRotateLock(): number | null {
+  const lockPath = `${LOG_PATH}.rotate.lock`;
+  const start = Date.now();
+  while (Date.now() - start < 200) {
+    try {
+      const fd = fs.openSync(lockPath, "wx");
+      fs.writeSync(fd, String(process.pid));
+      return fd;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST") return null;
+      // Stale lock recovery — older than 5s, take it.
+      try {
+        const st = fs.statSync(lockPath);
+        if (Date.now() - st.mtimeMs > 5000) {
+          fs.unlinkSync(lockPath);
+          continue;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return null;
+}
+
 function rotateLogIfNeeded(): void {
   try {
     if (!fs.existsSync(LOG_PATH)) return;
     const size = fs.statSync(LOG_PATH).size;
     if (size < LOG_ROTATE_BYTES) return;
-    // Shift archives: .4 → .5, .3 → .4, …, .jsonl → .1
-    for (let i = LOG_KEEP - 1; i >= 1; i--) {
-      const src = `${LOG_PATH}.${i}`;
-      const dst = `${LOG_PATH}.${i + 1}`;
-      if (fs.existsSync(src)) {
+    const lockFd = tryAcquireRotateLock();
+    if (lockFd === null) return; // another process is rotating — skip
+    try {
+      // Re-check size under lock — another rotator may have just finished.
+      if (!fs.existsSync(LOG_PATH)) return;
+      if (fs.statSync(LOG_PATH).size < LOG_ROTATE_BYTES) return;
+      // Phase 26 (Live Service Bug 5): clean up pre-existing archives beyond
+      // LOG_KEEP. If LOG_KEEP was lowered from 10→5 in a redeploy, the old
+      // .6..10 files would otherwise leak forever.
+      for (let i = LOG_KEEP; i <= 20; i++) {
         try {
-          fs.renameSync(src, dst);
+          fs.unlinkSync(`${LOG_PATH}.${i}`);
         } catch {
-          /* ignore */
+          /* not present — ok */
         }
       }
+      // Shift archives: .4 → .5, .3 → .4, …, .jsonl → .1
+      for (let i = LOG_KEEP - 1; i >= 1; i--) {
+        const src = `${LOG_PATH}.${i}`;
+        const dst = `${LOG_PATH}.${i + 1}`;
+        if (fs.existsSync(src)) {
+          try {
+            fs.renameSync(src, dst);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+      fs.renameSync(LOG_PATH, `${LOG_PATH}.1`);
+    } finally {
+      fs.closeSync(lockFd);
+      try {
+        fs.unlinkSync(`${LOG_PATH}.rotate.lock`);
+      } catch {
+        /* ignore */
+      }
     }
-    fs.renameSync(LOG_PATH, `${LOG_PATH}.1`);
   } catch (e) {
     console.error(`[svc] log rotate failed:`, e);
   }
