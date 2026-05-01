@@ -131,7 +131,7 @@ def adaptive_position_sizing(
     time_boost: Optional[dict] = None,                  # {afterDay, equityBelow, factor}
     challenge_day: int = 0,
     kelly_cfg: Optional[dict] = None,                   # {windowSize, minTrades, tiers}
-    recent_pnls: Optional[List[float]] = None,          # rolling PnL window
+    recent_pnls: Optional[List[float]] = None,          # rolling PnL window — must be PRE-FILTERED by caller for closeTime < currentEntryTime (no lookahead)
     drawdown_shield: Optional[dict] = None,             # {belowEquity, factor}
     peak_drawdown_throttle: Optional[dict] = None,      # {fromPeak, factor}
     live_max_risk_frac: Optional[float] = None,         # cfg.liveCaps.maxRiskFrac

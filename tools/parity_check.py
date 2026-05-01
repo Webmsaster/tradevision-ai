@@ -176,9 +176,15 @@ SCENARIOS = [
 def _expected_pnl_for_simple_trade(direction: str, bars: list[Bar], entry_idx: int, cfg: SimConfig) -> float:
     """Reference P&L for a trade WITHOUT chandelier/PTP/timeExit/breakEven.
 
-    Tracks bar-by-bar high/low for stop/TP intersection — same intra-bar
-    order as the TS engine (`bar.low <= dynStop` checked before `bar.high >= tp`).
-    Returns the same raw_pnl `simulate_trade` should produce.
+    Phase 17 (engine_features Bug 9): mirror TS engine 4260-4304 EXACTLY:
+      1. If TP-hit AND bar.open already gapped past TP → fill at bar.open
+         (gap-past-TP wins).
+      2. Otherwise, stop-first: if stop-hit, fill at bar.open (gap-down)
+         or stop-price, whichever is more conservative.
+      3. Otherwise, TP-hit at TP price.
+    The previous reference checked stop-first without the gap-past-TP
+    override → it tested simulate_trade against itself's bug instead of
+    against the TS engine.
     """
     if entry_idx >= len(bars):
         return 0.0
@@ -190,17 +196,31 @@ def _expected_pnl_for_simple_trade(direction: str, bars: list[Bar], entry_idx: i
     for j in range(entry_idx, mx + 1):
         b = bars[j]
         if direction == "long":
-            if b.low <= stop:
-                exit_price = stop
+            stop_hit = b.low <= stop
+            tp_hit = b.high >= tp
+            gap_past_tp = b.open >= tp
+            if tp_hit and gap_past_tp:
+                exit_price = b.open
                 break
-            if b.high >= tp:
+            if stop_hit:
+                # gap-down: open < stop → fill at the worse open price
+                exit_price = b.open if b.open < stop else stop
+                break
+            if tp_hit:
                 exit_price = tp
                 break
         else:
-            if b.high >= stop:
-                exit_price = stop
+            stop_hit = b.high >= stop
+            tp_hit = b.low <= tp
+            gap_past_tp = b.open <= tp
+            if tp_hit and gap_past_tp:
+                exit_price = b.open
                 break
-            if b.low <= tp:
+            if stop_hit:
+                # gap-up: open > stop → fill at the worse open price
+                exit_price = b.open if b.open > stop else stop
+                break
+            if tp_hit:
                 exit_price = tp
                 break
     return reference_raw_pnl(direction, entry, exit_price, cfg.cost_bp)
