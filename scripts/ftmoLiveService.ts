@@ -57,6 +57,7 @@ const TF: "5m" | "15m" | "30m" | "1h" | "2h" | "4h" =
             "2h-trend-v5-quartz",
             "2h-trend-v5-quartz-lite",
             "2h-trend-v5-quartz-lite-r28",
+            "2h-trend-v5-quartz-lite-r28-v2",
             "2h-trend-v5-quartz-step2",
             "2h-trend-v5-topaz",
             "2h-trend-v5-rubin",

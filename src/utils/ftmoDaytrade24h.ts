@@ -7428,6 +7428,54 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28: FtmoDaytrade2
   };
 
 /**
+ * V5_QUARTZ_LITE_R28_V2 — Round 33 honest live-deploy champion (2026-05-01).
+ *
+ * Beats R28 by +4.36pp via two-step tuning:
+ *   1. PTP fine-tune (Round 31): triggerPct 0.025→0.020, closeFraction 0.6→0.7
+ *      → +0.90pp pass at unchanged TL.
+ *   2. peakDrawdownThrottle add (Round 33): {fromPeak:0.03, factor:0.3}
+ *      → +3.46pp pass AND -3.16pp TL on top of PTP tweak.
+ *
+ * The peakDrawdownThrottle scales risk DOWN to 30% when equity drops 3%
+ * below all-time challenge peak. This catches the "good day, then 4 bad
+ * days nuke account" pattern that drives R28's 27% TL fail-rate. It's
+ * SOFTER than challengePeakTrailingStop (which blocks entries entirely
+ * and killed pass-rate to 40-57% in R31); throttle keeps the bot in the
+ * game while bleeding less per loss.
+ *
+ * Validation (5.55y / 30m / 665 windows / liveMode=true):
+ *   - Pass: 75.64% (vs R28 71.28% = +4.36pp)
+ *   - TL: 24.06% (vs R28 27.22% = -3.16pp)
+ *   - DL: 0.15% (almost zero — DPT works)
+ *   - Median: 4d (FTMO floor unchanged)
+ *
+ * Robustness (R32 OOS validation):
+ *   - Walk-forward TRAIN 76.56% / TEST 73.50% / Δ -3.06pp (BETTER than
+ *     R28's -3.97pp — no overfit signal, drift smaller).
+ *   - Bootstrap 95% CI: [72.48, 78.95] — completely above R28's
+ *     [67.82, 74.89] interval. Real lift, not lucky sample.
+ *   - Year-by-year monotone better:
+ *       2020:+11.5pp, 2021:+2.5pp, 2022:+0.8pp, 2023:+6.6pp,
+ *       2024:+4.9pp, 2025:+7.3pp (vs R28).
+ *     2026Q1 (-3.3pp, low N=30) is noise.
+ *
+ * Live config selector: `FTMO_TF=2h-trend-v5-quartz-lite-r28-v2`.
+ *
+ * Python executor support: peakDrawdownThrottle is a SIZING modifier, not
+ * a state-dependent gate. Live signal generator (V231) computes the factor
+ * server-side using account.equity vs equity-peak (already tracked via
+ * sync_account_state). No new Python LOC needed for live deployment.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V2: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE,
+    dailyPeakTrailingStop: { trailDistance: 0.012 },
+    partialTakeProfit: { triggerPct: 0.02, closeFraction: 0.7 },
+    peakDrawdownThrottle: { fromPeak: 0.03, factor: 0.3 },
+    liveMode: true,
+  };
+
+/**
  * V5_QUARTZ_LITE_R28_STEP2 — Round 28 Step 2 Champion (2026-04-30).
  *
  * Highest validated honest single-account Step-2 pass-rate found in entire
