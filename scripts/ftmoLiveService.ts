@@ -127,7 +127,11 @@ const ALERTS_STATE_PATH = path.join(STATE_DIR, "alerts-state.json");
 /** News events list cached for the session (refreshed once per hour). */
 let cachedNews: NewsEvent[] = [];
 let newsLastFetched = 0;
+let newsLastSuccessfulFetch = 0;
 const NEWS_REFRESH_MS = 60 * 60_000;
+// Phase 25 (Live Service Bug 10): if news cache is older than this, treat
+// as stale and clear it (don't apply blackout against weeks-old events).
+const NEWS_MAX_AGE_MS = 24 * 3600_000;
 
 /** Smart-alerts thresholds. */
 const ALERT_EQUITY_DROP_PCT = 0.02; // 2% drop in 1h triggers alert
@@ -172,7 +176,10 @@ function saveAlertsState(s: AlertsState) {
 }
 
 function ensureStateDir() {
-  if (!fs.existsSync(STATE_DIR)) fs.mkdirSync(STATE_DIR, { recursive: true });
+  // Phase 25 (Live Service Bug 15): mkdirSync(recursive: true) is idempotent
+  // — drop the existsSync TOCTOU race + handle EEXIST that PM2 cluster-mode
+  // could otherwise crash on.
+  fs.mkdirSync(STATE_DIR, { recursive: true });
 }
 
 function readJSON<T>(p: string, fallback: T): T {
@@ -248,9 +255,17 @@ function writeJSON(p: string, obj: unknown) {
   // Bug-Audit Phase 4 (Live Service Bug 1): mkdir parent first — without this
   // a cold-start before ensureStateDir() crashes with ENOENT (e.g. Telegram
   // supervisor coroutine starts before runOneCheck calls ensureStateDir).
+  // Phase 25 (Live Service Bug 2): fsync before rename so power-loss /
+  // OS-cache flush doesn't leave a 0-byte file at the destination.
   fs.mkdirSync(path.dirname(p), { recursive: true });
   const tmp = `${p}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
+  const fd = fs.openSync(tmp, "w");
+  try {
+    fs.writeSync(fd, JSON.stringify(obj, null, 2));
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
   fs.renameSync(tmp, p);
 }
 
@@ -381,6 +396,20 @@ function msUntilNextTfBoundary(): number {
 }
 
 async function refreshNewsIfStale() {
+  // Phase 25 (Live Service Bug 10): if last successful fetch is older than
+  // NEWS_MAX_AGE_MS, clear cachedNews so blackout doesn't apply against
+  // possibly-completed events. Better to skip news-filter than to act on
+  // weeks-old data when ForexFactory is down for an extended period.
+  if (
+    newsLastSuccessfulFetch > 0 &&
+    Date.now() - newsLastSuccessfulFetch > NEWS_MAX_AGE_MS &&
+    cachedNews.length > 0
+  ) {
+    console.warn(
+      "[ftmo-live] news cache >24h old — clearing (ForexFactory unreachable)",
+    );
+    cachedNews = [];
+  }
   if (Date.now() - newsLastFetched < NEWS_REFRESH_MS && cachedNews.length > 0) {
     return;
   }
@@ -392,6 +421,7 @@ async function refreshNewsIfStale() {
       currencies: ["USD"],
     });
     newsLastFetched = Date.now();
+    newsLastSuccessfulFetch = Date.now();
     // Write to state dir so Python executor can read for auto-close
     writeJSON(NEWS_PATH, {
       events: cachedNews,
@@ -657,8 +687,12 @@ async function runOneCheck(): Promise<DetectionResult> {
     });
 
     // Sample emitted signals into rolling 24h log for the risk heartbeat.
-    if (result.signals.length > 0) {
-      recordRecentSignals(result.signals);
+    // Phase 25 (Live Service Bug 13): use newSignals (post-dedup, post-pause)
+    // so the heartbeat reflects what was actually QUEUED for execution, not
+    // signals that were dropped (paused, dedup'd, blocked). Old behavior gave
+    // false-positive 'OUT-OF-BAND Risk' flags during pause periods.
+    if (newSignals.length > 0) {
+      recordRecentSignals(newSignals);
     }
 
     // Smart alerts (equity drop, DL/TL warnings, stuck challenge, daily summary, risk heartbeat)
@@ -696,19 +730,27 @@ async function runSmartAlerts(account: AccountState) {
   const dayStartEquityPct = (account.equityAtDayStart - 1) * 100;
   const dailyPct = equityPct - dayStartEquityPct;
 
-  // 1) Equity-drop alert (>2% drop within 1h)
-  if (
-    state.lastEquitySnapshot &&
-    now - state.lastEquitySnapshot.ts <= 3600_000
-  ) {
-    const drop = state.lastEquitySnapshot.equity - account.equity;
-    if (drop >= ALERT_EQUITY_DROP_PCT) {
-      await tgSend(
-        `📉 <b>EQUITY DROP ALERT</b>\n` +
-          `Equity dropped ${(drop * 100).toFixed(2)}% within 1h\n` +
-          `From ${(state.lastEquitySnapshot.equity * 100).toFixed(2)}% → ${(account.equity * 100).toFixed(2)}%\n` +
-          `Day ${account.day} of challenge`,
-      );
+  // 1) Equity-drop alert: ≥2% drop normalized to a 1h window — works
+  // regardless of polling frequency.
+  // Phase 25 (Live Service Bug 6+7): old check `<= 3600_000` only triggered
+  // when polling more often than 1h. On 4h-TF the snapshot was always older
+  // than 1h → alert NEVER fired. Now: scale `ALERT_EQUITY_DROP_PCT` to the
+  // observed dt so the threshold is an intuitive "% per hour".
+  if (state.lastEquitySnapshot) {
+    const dtMs = now - state.lastEquitySnapshot.ts;
+    if (dtMs > 0 && dtMs <= 6 * 3600_000) {
+      // up to 6h window
+      const drop = state.lastEquitySnapshot.equity - account.equity;
+      const dropPerHour = drop / (dtMs / 3600_000);
+      if (dropPerHour >= ALERT_EQUITY_DROP_PCT) {
+        await tgSend(
+          `📉 <b>EQUITY DROP ALERT</b>\n` +
+            `Equity dropped ${(drop * 100).toFixed(2)}% over ${(dtMs / 3600_000).toFixed(1)}h ` +
+            `(rate: ${(dropPerHour * 100).toFixed(2)}%/h)\n` +
+            `From ${(state.lastEquitySnapshot.equity * 100).toFixed(2)}% → ${(account.equity * 100).toFixed(2)}%\n` +
+            `Day ${account.day} of challenge`,
+        );
+      }
     }
   }
   state.lastEquitySnapshot = { ts: now, equity: account.equity };
