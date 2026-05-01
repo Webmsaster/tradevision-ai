@@ -1202,7 +1202,9 @@ export function pollLive(
 
 export interface SimulateResult {
   passed: boolean;
-  reason: "profit_target" | "daily_loss" | "total_loss" | "time";
+  // Phase 29: "give_back" added — target hit mid-stream but final equity
+  // gave back > 50% of profit by end-of-window.
+  reason: "profit_target" | "daily_loss" | "total_loss" | "time" | "give_back";
   passDay?: number;
   finalEquityPct: number;
   trades: ClosedTradeV4[];
@@ -1280,12 +1282,27 @@ export function simulate(
   // Window exhausted — end-of-time check. FTMO rule: if target was hit at
   // any point AND minTradingDays satisfied, the challenge passed (subsequent
   // give-back doesn't void the pass, as long as DL/TL didn't trip).
-  const passed =
+  //
+  // Phase 29 (V4 Engine Bug 15): also check final MTM equity. If a
+  // catastrophic open-position-stop drove state.equity well below target
+  // AFTER the engine recorded firstTargetHitDay but BEFORE DL/TL fail-checks
+  // could trip, the engine would still report `passed: true`. The DL/TL
+  // checks already handle the proper-fail cases mid-stream — this is just a
+  // belt-and-suspenders sanity check at window-exhaust. Threshold:
+  // finalEquity must be at least (1 + 0.5×profitTarget). Below that we
+  // demote to a 'partial' fail with an explanatory reason.
+  const targetHit =
     state.firstTargetHitDay !== null &&
     state.tradingDays.length >= cfg.minTradingDays;
+  const finalEquityFloor = 1 + cfg.profitTarget * 0.5;
+  const giveBackTooFar =
+    targetHit &&
+    Number.isFinite(state.equity) &&
+    state.equity < finalEquityFloor;
+  const passed = targetHit && !giveBackTooFar;
   return {
     passed,
-    reason: passed ? "profit_target" : "time",
+    reason: passed ? "profit_target" : giveBackTooFar ? "give_back" : "time",
     passDay: passed
       ? Math.max((state.firstTargetHitDay ?? state.day) + 1, cfg.minTradingDays)
       : undefined,
