@@ -429,6 +429,64 @@ def check_daily_peak_trail_block(current_equity_usd: float) -> Optional[str]:
     return None
 
 
+# Round 35: peakDrawdownThrottle persistent state for R28_V2/V3/V4 sizing.
+# Engine ftmoDaytrade24h.ts:4983-4988 scales risk by `factor` when equity
+# is `fromPeak` below all-time challenge peak. Without persistent state,
+# Python forgets the peak across restarts and the backtest's +12pp lift
+# becomes a Live-mode illusion (V13_LIVEFIRST_30M doc warns about this).
+CHALLENGE_PEAK_PATH = STATE_DIR / "challenge-peak.json"
+
+
+def get_challenge_peak_state() -> dict:
+    """
+    Returns {peak_equity_usd: float, last_update_ts: iso, started_at: iso}.
+    Resets only when CHALLENGE_START_DATE changes (new challenge).
+    """
+    return read_json(
+        CHALLENGE_PEAK_PATH,
+        {"peak_equity_usd": 0.0, "last_update_ts": None, "started_at": None},
+    )
+
+
+def update_challenge_peak(current_equity_usd: float) -> float:
+    """
+    Round 35: Update all-time challenge-peak equity. Persists across PM2
+    restarts via challenge-peak.json. Resets only when CHALLENGE_START_DATE
+    changes (new challenge → old peak no longer valid) or when the file
+    has not yet been seeded for this challenge.
+
+    Mirrors engine line 5055: `peak = max(peak, equity)`, but persistent.
+    Returns the current challenge-peak.
+    """
+    raw = read_json(CHALLENGE_PEAK_PATH, None)
+    needs_seed = (
+        raw is None
+        or raw.get("started_at") != CHALLENGE_START_DATE
+        or float(raw.get("peak_equity_usd") or 0.0) <= 0
+    )
+    if needs_seed:
+        seeded = {
+            "peak_equity_usd": float(current_equity_usd),
+            "last_update_ts": datetime.now(timezone.utc).isoformat(),
+            "started_at": CHALLENGE_START_DATE,
+        }
+        write_json(CHALLENGE_PEAK_PATH, seeded)
+        log_event(
+            "challenge_peak_seeded",
+            started_at=CHALLENGE_START_DATE,
+            peak=current_equity_usd,
+        )
+        return float(current_equity_usd)
+
+    prev_peak = float(raw["peak_equity_usd"])
+    if current_equity_usd > prev_peak:
+        raw["peak_equity_usd"] = float(current_equity_usd)
+        raw["last_update_ts"] = datetime.now(timezone.utc).isoformat()
+        write_json(CHALLENGE_PEAK_PATH, raw)
+        return float(current_equity_usd)
+    return prev_peak
+
+
 def get_challenge_day() -> int:
     if not CHALLENGE_START_DATE:
         return 0
@@ -1853,11 +1911,17 @@ def sync_account_state() -> None:
         for d in closes[-20:]:
             recent_pnls.append(d.profit / CHALLENGE_START_BALANCE)
 
+    # Round 35: persist all-time challenge peak so V231 can compute
+    # peakDrawdownThrottle (R28_V2/V3/V4 sizing) deterministically.
+    challenge_peak_usd = update_challenge_peak(acct["equity"])
+    challenge_peak_frac = challenge_peak_usd / CHALLENGE_START_BALANCE
+
     state = {
         "equity": equity_frac,
         "day": get_challenge_day(),
         "recentPnls": recent_pnls,
         "equityAtDayStart": day_start_usd / CHALLENGE_START_BALANCE,
+        "challengePeak": challenge_peak_frac,
         "raw_equity_usd": acct["equity"],
         "raw_balance_usd": acct["balance"],
         "updated_at": datetime.now(timezone.utc).isoformat(),

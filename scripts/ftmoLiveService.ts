@@ -227,6 +227,7 @@ function defaultAccount(): AccountState {
     day: 0,
     recentPnls: [],
     equityAtDayStart: 1.0,
+    challengePeak: 1.0,
   };
 }
 

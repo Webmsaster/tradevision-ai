@@ -390,5 +390,57 @@ def test_symbol_resolver_returns_none_when_nothing_matches(monkeypatch):
     assert resolved is None
 
 
+# ============================================================================
+# challenge_peak — required for peakDrawdownThrottle (R28_V2/V3/V4)
+# ============================================================================
+def test_update_challenge_peak_first_call_seeds_peak():
+    import ftmo_executor as exe
+    with tempfile.TemporaryDirectory() as td:
+        exe.STATE_DIR = Path(td)
+        exe.CHALLENGE_PEAK_PATH = Path(td) / "challenge-peak.json"
+        peak = exe.update_challenge_peak(105_000.0)
+        assert peak == 105_000.0
+        saved = json.loads((Path(td) / "challenge-peak.json").read_text())
+        assert saved["peak_equity_usd"] == 105_000.0
+
+
+def test_update_challenge_peak_ratchets_up_only():
+    import ftmo_executor as exe
+    with tempfile.TemporaryDirectory() as td:
+        exe.STATE_DIR = Path(td)
+        exe.CHALLENGE_PEAK_PATH = Path(td) / "challenge-peak.json"
+        exe.update_challenge_peak(105_000.0)
+        peak = exe.update_challenge_peak(108_000.0)
+        assert peak == 108_000.0
+        peak = exe.update_challenge_peak(102_000.0)
+        assert peak == 108_000.0
+
+
+def test_update_challenge_peak_resets_on_new_challenge():
+    import ftmo_executor as exe
+    with tempfile.TemporaryDirectory() as td:
+        exe.STATE_DIR = Path(td)
+        exe.CHALLENGE_PEAK_PATH = Path(td) / "challenge-peak.json"
+        (Path(td) / "challenge-peak.json").write_text(json.dumps({
+            "peak_equity_usd": 108_000.0,
+            "started_at": "2026-04-01",
+            "last_update_ts": "2026-04-15T12:00:00Z",
+        }))
+        exe.CHALLENGE_START_DATE = "2026-05-02"
+        peak = exe.update_challenge_peak(100_000.0)
+        assert peak == 100_000.0
+
+
+def test_update_challenge_peak_persists_within_same_challenge():
+    import ftmo_executor as exe
+    with tempfile.TemporaryDirectory() as td:
+        exe.STATE_DIR = Path(td)
+        exe.CHALLENGE_PEAK_PATH = Path(td) / "challenge-peak.json"
+        exe.CHALLENGE_START_DATE = "2026-05-02"
+        exe.update_challenge_peak(105_000.0)
+        peak = exe.update_challenge_peak(103_000.0)
+        assert peak == 105_000.0
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

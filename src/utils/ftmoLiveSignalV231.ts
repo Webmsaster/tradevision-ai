@@ -149,6 +149,13 @@ export interface AccountState {
   recentPnls: number[];
   /** Start-of-day equity for daily-loss check. */
   equityAtDayStart: number;
+  /**
+   * Round 35: All-time challenge-peak equity (fraction of start). Required
+   * for peakDrawdownThrottle sizing in R28_V2/V3/V4. Persisted server-side
+   * by Python `update_challenge_peak()` → `challenge-peak.json`.
+   * Optional for back-compat: if missing, treated as current equity (no throttle).
+   */
+  challengePeak?: number;
 }
 
 export interface LiveSignal {
@@ -752,6 +759,37 @@ function computeSizingFactor(account: AccountState): {
     notes.push(
       `kelly: warming up (${account.recentPnls.length}/${CFG.kellySizing.minTrades} trades)`,
     );
+  }
+
+  // Round 35: peakDrawdownThrottle — scale risk DOWN when equity drops
+  // `fromPeak` below all-time challenge peak. Mirrors engine line 4983-4988.
+  // Required for R28_V2/V3/V4 to deliver backtest pass-rate in live (without
+  // this, peakDrawdownThrottle is ignored and live falls back to R28 71%).
+  if (CFG.peakDrawdownThrottle) {
+    const peak =
+      account.challengePeak !== undefined && account.challengePeak > 0
+        ? account.challengePeak
+        : account.equity;
+    if (peak > 0) {
+      const fromPeak = (peak - account.equity) / peak;
+      if (fromPeak >= CFG.peakDrawdownThrottle.fromPeak) {
+        const pDDFactor = CFG.peakDrawdownThrottle.factor;
+        if (pDDFactor < factor) {
+          factor = pDDFactor;
+          notes.push(
+            `peakDrawdownThrottle: equity ${(fromPeak * 100).toFixed(2)}% below peak (peak=${((peak - 1) * 100).toFixed(2)}%) → factor=${factor.toFixed(3)}`,
+          );
+        }
+      } else if (account.challengePeak !== undefined) {
+        notes.push(
+          `peakDrawdownThrottle: equity ${(fromPeak * 100).toFixed(2)}% below peak (threshold ${(CFG.peakDrawdownThrottle.fromPeak * 100).toFixed(2)}%) — no throttle`,
+        );
+      } else {
+        notes.push(
+          `peakDrawdownThrottle: account.challengePeak missing (Python sync_account_state outdated?) — no throttle`,
+        );
+      }
+    }
   }
 
   return { factor, notes };
