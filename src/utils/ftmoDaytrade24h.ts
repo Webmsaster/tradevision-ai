@@ -4310,7 +4310,19 @@ export function detectAsset(
               ? (bar.close - entry) / entry
               : (entry - bar.close) / entry;
           if (unrealized >= beTh) {
-            dynStop = entry;
+            // Bug-Audit Phase 4 (Engine Bug 1): BE stop must offset cost so
+            // a stop-out at BE realises ~0 PnL. Without `+ cost` for long /
+            // `- cost` for short, the resulting (entryEff vs exitEff)
+            // calculation yields ≈ −cost on every BE-stop. The PTP-driven
+            // BE move at line 4241 already does this correctly — this is
+            // the standalone breakEven path catching up.
+            const beStop =
+              direction === "long" ? entry * (1 + cost) : entry * (1 - cost);
+            if (direction === "long") {
+              if (beStop > dynStop) dynStop = beStop;
+            } else {
+              if (beStop < dynStop) dynStop = beStop;
+            }
             beActive = true;
           }
         }

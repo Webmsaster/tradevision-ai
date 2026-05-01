@@ -181,6 +181,10 @@ function readJSON<T>(p: string, fallback: T): T {
 function writeJSON(p: string, obj: unknown) {
   // Atomic write: write to temp file, then rename. Prevents corruption if
   // process is killed mid-write (Python executor reads these files concurrently).
+  // Bug-Audit Phase 4 (Live Service Bug 1): mkdir parent first — without this
+  // a cold-start before ensureStateDir() crashes with ENOENT (e.g. Telegram
+  // supervisor coroutine starts before runOneCheck calls ensureStateDir).
+  fs.mkdirSync(path.dirname(p), { recursive: true });
   const tmp = `${p}.tmp.${process.pid}`;
   fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
   fs.renameSync(tmp, p);
@@ -217,11 +221,20 @@ function rotateLogIfNeeded(): void {
 }
 
 function appendLog(entry: object) {
-  rotateLogIfNeeded();
-  fs.appendFileSync(
-    LOG_PATH,
-    JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n",
-  );
+  // Bug-Audit Phase 4 (Live Service Bug 14): swallow log-write errors.
+  // Disk-full / permission errors here would otherwise propagate up to
+  // trackedRunOneCheck → consecutiveFailures++ → false-positive
+  // "Binance failing" alert + recovery toggle.
+  try {
+    rotateLogIfNeeded();
+    fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+    fs.appendFileSync(
+      LOG_PATH,
+      JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n",
+    );
+  } catch (e) {
+    console.error("[svc] log append failed:", e);
+  }
 }
 
 /**
@@ -230,12 +243,37 @@ function appendLog(entry: object) {
  * until the executor actually reports gains.
  */
 function defaultAccount(): AccountState {
+  // Bug-Audit Phase 4 (Live Service Bug 9): when account.json is missing
+  // (cold start, state-dir wipe), still try to read Python's
+  // challenge-peak.json to preserve peakDrawdownThrottle correctness for
+  // R28_V2/V3/V4. Otherwise we'd silently fall to challengePeak=1.0
+  // → V231 sees no drawdown → no throttle → live drifts back to R28 baseline.
+  const peakFile = path.join(STATE_DIR, "challenge-peak.json");
+  let challengePeak = 1.0;
+  try {
+    if (fs.existsSync(peakFile)) {
+      const raw = JSON.parse(fs.readFileSync(peakFile, "utf8"));
+      // Python writes either {peak: <frac>} (Round 36 helper) or
+      // {peak_equity_usd: <usd>, ...} (Round 35). Try both shapes.
+      if (typeof raw?.peak === "number" && raw.peak > 0) {
+        challengePeak = raw.peak;
+      } else if (
+        typeof raw?.peak_equity_usd === "number" &&
+        raw.peak_equity_usd > 0
+      ) {
+        const startBal = Number(process.env.FTMO_START_BALANCE ?? "100000");
+        if (startBal > 0) challengePeak = raw.peak_equity_usd / startBal;
+      }
+    }
+  } catch (e) {
+    console.error("[svc] failed to read challenge-peak.json fallback:", e);
+  }
   return {
     equity: 1.0,
     day: 0,
     recentPnls: [],
     equityAtDayStart: 1.0,
-    challengePeak: 1.0,
+    challengePeak,
   };
 }
 
