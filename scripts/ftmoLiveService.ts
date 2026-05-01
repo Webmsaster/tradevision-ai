@@ -40,64 +40,76 @@ import {
   type NewsEvent,
 } from "../src/utils/forexFactoryNews";
 
-const TF: "5m" | "15m" | "30m" | "1h" | "2h" | "4h" =
-  process.env.FTMO_TF === "5m-live"
-    ? "5m"
-    : process.env.FTMO_TF === "15m" ||
-        process.env.FTMO_TF === "15m-live" ||
-        process.env.FTMO_TF === "15m-live-v1" ||
-        process.env.FTMO_TF === "15m-live-v2"
-      ? "15m"
-      : process.env.FTMO_TF === "30m" ||
-          process.env.FTMO_TF === "30m-live-v1" ||
-          process.env.FTMO_TF === "30m-live" ||
-          process.env.FTMO_TF === "30m-turbo" ||
-          // CRITICAL FIX (Round 12 R72): V5_PLATINUM_30M and all V5_TITANIUM-derived
-          // configs (OBSIDIAN/ZIRKON/AMBER/QUARTZ/TOPAZ/RUBIN/SAPPHIR/EMERALD/PEARL/
-          // OPAL/AGATE/JADE/ONYX/QUARTZ_STEP2) are tuned on 30m bars even though their
-          // FTMO_TF env starts with "2h-trend-". Without this mapping the live bot
-          // fed 2h-candles into 30m-tuned configs → wrong signals + wrong PnL.
-          [
-            "2h-trend-v5-platinum-30m",
-            "2h-trend-v5-titanium",
-            "2h-trend-v5-obsidian",
-            "2h-trend-v5-zirkon",
-            "2h-trend-v5-amber",
-            "2h-trend-v5-quartz",
-            "2h-trend-v5-quartz-lite",
-            "2h-trend-v5-quartz-lite-r28",
-            "2h-trend-v5-quartz-lite-r28-v2",
-            "2h-trend-v5-quartz-lite-r28-v3",
-            "2h-trend-v5-quartz-lite-r28-v4",
-            "2h-trend-v5-quartz-lite-r28-v4engine",
-            // Round 46/47 Breakout champion — deployed via V4-Engine path.
-            "2h-trend-breakout-v1",
-            "2h-trend-v5-quartz-step2",
-            "2h-trend-v5-topaz",
-            "2h-trend-v5-rubin",
-            "2h-trend-v5-sapphir",
-            "2h-trend-v5-emerald",
-            "2h-trend-v5-pearl",
-            "2h-trend-v5-opal",
-            "2h-trend-v5-agate",
-            "2h-trend-v5-jade",
-            "2h-trend-v5-onyx",
-          ].includes(process.env.FTMO_TF ?? "")
-        ? "30m"
-        : process.env.FTMO_TF === "1h" ||
-            process.env.FTMO_TF === "1h-live" ||
-            process.env.FTMO_TF === "1h-live-v1"
-          ? "1h"
-          : process.env.FTMO_TF === "2h" ||
-              process.env.FTMO_TF === "2h-live" ||
-              process.env.FTMO_TF === "2h-live-v1" ||
-              (process.env.FTMO_TF ?? "").startsWith("2h-trend")
-            ? "2h"
-            : process.env.FTMO_TF === "4h-live" ||
-                process.env.FTMO_TF === "4h-live-v1" ||
-                process.env.FTMO_TF === "4h-trend"
-              ? "4h"
-              : "4h";
+// Phase 27 (Live Service Bug 12): TF-mapping refactored to a dispatch table.
+// Was a 60-line nested ternary that required adding new selectors to BOTH
+// the cascade AND `useV4Engine` — typos / forgotten entries silently routed
+// into the 4h-default fallback (R72-class bug). Single source of truth now.
+//
+// Format: env-string → polled-bar TF.
+// Configs that aren't here fall back via the `2h-trend` prefix rule below
+// (which routes to "2h"); add here explicitly when polling cadence differs.
+type TfTag = "5m" | "15m" | "30m" | "1h" | "2h" | "4h";
+
+const TF_DISPATCH: Record<string, TfTag> = {
+  // 5m
+  "5m-live": "5m",
+  // 15m
+  "15m": "15m",
+  "15m-live": "15m",
+  "15m-live-v1": "15m",
+  "15m-live-v2": "15m",
+  // 30m direct
+  "30m": "30m",
+  "30m-live": "30m",
+  "30m-live-v1": "30m",
+  "30m-turbo": "30m",
+  // 30m-tuned configs that wear a "2h-trend-" badge — DO NOT REMOVE without
+  // verifying the underlying CFG.timeframe! (Round 12 R72)
+  "2h-trend-v5-platinum-30m": "30m",
+  "2h-trend-v5-titanium": "30m",
+  "2h-trend-v5-obsidian": "30m",
+  "2h-trend-v5-zirkon": "30m",
+  "2h-trend-v5-amber": "30m",
+  "2h-trend-v5-quartz": "30m",
+  "2h-trend-v5-quartz-lite": "30m",
+  "2h-trend-v5-quartz-lite-r28": "30m",
+  "2h-trend-v5-quartz-lite-r28-v2": "30m",
+  "2h-trend-v5-quartz-lite-r28-v3": "30m",
+  "2h-trend-v5-quartz-lite-r28-v4": "30m",
+  "2h-trend-v5-quartz-lite-r28-v4engine": "30m",
+  "2h-trend-breakout-v1": "30m",
+  "2h-trend-v5-quartz-step2": "30m",
+  "2h-trend-v5-topaz": "30m",
+  "2h-trend-v5-rubin": "30m",
+  "2h-trend-v5-sapphir": "30m",
+  "2h-trend-v5-emerald": "30m",
+  "2h-trend-v5-pearl": "30m",
+  "2h-trend-v5-opal": "30m",
+  "2h-trend-v5-agate": "30m",
+  "2h-trend-v5-jade": "30m",
+  "2h-trend-v5-onyx": "30m",
+  // 1h
+  "1h": "1h",
+  "1h-live": "1h",
+  "1h-live-v1": "1h",
+  // 2h
+  "2h": "2h",
+  "2h-live": "2h",
+  "2h-live-v1": "2h",
+  // 4h
+  "4h-live": "4h",
+  "4h-live-v1": "4h",
+  "4h-trend": "4h",
+};
+
+function resolveTf(envValue: string | undefined): TfTag {
+  if (envValue && TF_DISPATCH[envValue]) return TF_DISPATCH[envValue];
+  // Fall-through rule: any other "2h-trend-*" gets 2h (legacy V231 family).
+  if (envValue?.startsWith("2h-trend")) return "2h";
+  return "4h"; // ultimate default
+}
+
+const TF: TfTag = resolveTf(process.env.FTMO_TF);
 const TF_HOURS =
   TF === "5m"
     ? 5 / 60
@@ -410,6 +422,13 @@ function defaultAccount(): AccountState {
 }
 
 /** Msec until next TF UTC boundary. 30m: HH:00/HH:30. 1h: HH:00. 2h/4h: standard. */
+// Phase 27 (Live Service Bug 8): boundary buffer scales with TF cadence.
+// Was hardcoded 30s — on 5m TF that's ~10% of the bar duration wasted on
+// every tick. Clamp to [5s, 30s] depending on TF.
+const BOUNDARY_BUFFER_SEC = Math.max(
+  5,
+  Math.min(30, Math.round(TF_HOURS * 60 * 5)),
+);
 function msUntilNextTfBoundary(): number {
   const now = Date.now();
   const d = new Date(now);
@@ -426,7 +445,7 @@ function msUntilNextTfBoundary(): number {
         d.getUTCDate(),
         Math.floor(nextMin / 60),
         nextMin % 60,
-        30,
+        BOUNDARY_BUFFER_SEC,
         0,
       ),
     );
@@ -441,7 +460,7 @@ function msUntilNextTfBoundary(): number {
       d.getUTCDate(),
       nextHour,
       0,
-      30,
+      BOUNDARY_BUFFER_SEC,
       0,
     ),
   );
@@ -694,28 +713,42 @@ async function runOneCheck(): Promise<DetectionResult> {
     }
 
     if (newSignals.length > 0) {
-      pending.signals.push(...newSignals);
-      writeJSON(PENDING_PATH, pending);
-      console.log(
-        `[ftmo-live] queued ${newSignals.length} new signal(s) to ${PENDING_PATH}`,
-      );
+      // Phase 27 (Live Service Bug 11): re-read controls IMMEDIATELY before
+      // writing so a Telegram /pause that arrived between the first read
+      // (line ~685) and now is honored. Closes the small msec-window race
+      // where a signal was queued despite an in-flight /pause command.
+      const controlsRecheck = readControls(STATE_DIR);
+      if (controlsRecheck.paused) {
+        console.log(
+          `[ftmo-live] /pause arrived during dedup — dropping ${newSignals.length} signal(s)`,
+        );
+        await tgSend(
+          `⏸ <b>${newSignals.length} signal(s) dropped</b> (pause arrived during processing)`,
+        );
+      } else {
+        pending.signals.push(...newSignals);
+        writeJSON(PENDING_PATH, pending);
+        console.log(
+          `[ftmo-live] queued ${newSignals.length} new signal(s) to ${PENDING_PATH}`,
+        );
 
-      // Telegram alert per new signal
-      for (const sig of newSignals) {
-        const msg = [
-          `🚨 <b>NEW SIGNAL</b>`,
-          // Phase 23 (Auth Bug 7): htmlEscape symbol fields. Currently
-          // these are enum-like, but a future custom-symbol config could
-          // smuggle <tags> that break parse_mode=HTML or open phishing.
-          `<b>${htmlEscape(sig.assetSymbol)}</b> (${htmlEscape(sig.sourceSymbol)}) — ${htmlEscape(sig.direction.toUpperCase())}`,
-          `Entry: $${sig.entryPrice.toFixed(4)}`,
-          `Stop: $${sig.stopPrice.toFixed(4)} (+${(sig.stopPct * 100).toFixed(2)}%)`,
-          `TP: $${sig.tpPrice.toFixed(4)} (−${(sig.tpPct * 100).toFixed(2)}%)`,
-          `Risk: ${(sig.riskFrac * 100).toFixed(3)}% · Factor ${sig.sizingFactor.toFixed(2)}×`,
-          `Max hold: ${sig.maxHoldHours}h`,
-        ].join("\n");
-        await tgSend(msg);
-      }
+        // Telegram alert per new signal
+        for (const sig of newSignals) {
+          const msg = [
+            `🚨 <b>NEW SIGNAL</b>`,
+            // Phase 23 (Auth Bug 7): htmlEscape symbol fields. Currently
+            // these are enum-like, but a future custom-symbol config could
+            // smuggle <tags> that break parse_mode=HTML or open phishing.
+            `<b>${htmlEscape(sig.assetSymbol)}</b> (${htmlEscape(sig.sourceSymbol)}) — ${htmlEscape(sig.direction.toUpperCase())}`,
+            `Entry: $${sig.entryPrice.toFixed(4)}`,
+            `Stop: $${sig.stopPrice.toFixed(4)} (+${(sig.stopPct * 100).toFixed(2)}%)`,
+            `TP: $${sig.tpPrice.toFixed(4)} (−${(sig.tpPct * 100).toFixed(2)}%)`,
+            `Risk: ${(sig.riskFrac * 100).toFixed(3)}% · Factor ${sig.sizingFactor.toFixed(2)}×`,
+            `Max hold: ${sig.maxHoldHours}h`,
+          ].join("\n");
+          await tgSend(msg);
+        }
+      } // end of else (controlsRecheck.paused)
     }
 
     writeJSON(LAST_CHECK_PATH, {
