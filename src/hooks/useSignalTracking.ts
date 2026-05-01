@@ -80,44 +80,51 @@ export function useSignalTracking({
   }, []);
 
   // Record new signals (flip to long/short with SL/TP)
+  // Phase 33 (React Audit Bug 2): removed `tracked` from deps. Was causing
+  // permanent re-renders + stale-closure (mostRecent was an old snapshot).
+  // Round 12's R73 fix was incomplete. Now uses functional setTracked
+  // which sees the FRESH `prev` state and does dedup inside the updater.
   useEffect(() => {
     if (!snapshot || !snapshot.levels || snapshot.action === "flat") return;
     const key = `${symbol}:${timeframe}:${snapshot.time}:${snapshot.action}`;
     if (lastRecordedActionRef.current === key) return;
-
-    const mostRecent = tracked[tracked.length - 1];
-    // Avoid duplicate recordings if current action matches the last open signal
-    if (
-      mostRecent &&
-      mostRecent.status === "open" &&
-      mostRecent.symbol === symbol &&
-      mostRecent.timeframe === timeframe &&
-      mostRecent.action === snapshot.action
-    ) {
-      lastRecordedActionRef.current = key;
-      return;
-    }
-
-    const entry: TrackedSignal = {
-      id: `${symbol}-${timeframe}-${snapshot.time}-${snapshot.action}`,
-      symbol,
-      timeframe,
-      openTime: snapshot.time,
-      action: snapshot.action,
-      entry: snapshot.levels.entry,
-      stopLoss: snapshot.levels.stopLoss,
-      takeProfit: snapshot.levels.takeProfit,
-      strength: snapshot.strength,
-      confidence,
-      status: "open",
-    };
     lastRecordedActionRef.current = key;
+    // Phase 33: capture narrowed values OUTSIDE the closure so TS keeps
+    // the action/levels narrowing inside setTracked.
+    const action = snapshot.action;
+    const levels = snapshot.levels;
+    const time = snapshot.time;
+    const strength = snapshot.strength;
+
     setTracked((prev) => {
+      const mostRecent = prev[prev.length - 1];
+      if (
+        mostRecent &&
+        mostRecent.status === "open" &&
+        mostRecent.symbol === symbol &&
+        mostRecent.timeframe === timeframe &&
+        mostRecent.action === action
+      ) {
+        return prev;
+      }
+      const entry: TrackedSignal = {
+        id: `${symbol}-${timeframe}-${time}-${action}`,
+        symbol,
+        timeframe,
+        openTime: time,
+        action,
+        entry: levels.entry,
+        stopLoss: levels.stopLoss,
+        takeProfit: levels.takeProfit,
+        strength,
+        confidence,
+        status: "open",
+      };
       const next = [...prev, entry].slice(-MAX_STORED);
       persist(next);
       return next;
     });
-  }, [snapshot, symbol, timeframe, confidence, tracked]);
+  }, [snapshot, symbol, timeframe, confidence]);
 
   // Price-watcher: evaluate open positions
   useEffect(() => {

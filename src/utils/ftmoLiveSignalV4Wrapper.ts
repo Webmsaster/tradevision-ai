@@ -147,54 +147,9 @@ export function detectLiveSignalsV4(
   // state.equity = account.equity caused double-counting: computeMtmEquity
   // adds unrealised PnL on top of state.equity → MTM was inflated by the
   // unrealised amount on every tick with open positions.
-  // Sanity-checked sync only when SAFE — i.e. when no open positions
-  // (then MTM == realised, so the equality holds), OR as a sanity-check only
-  // (don't overwrite if engine and MT5 agree within 0.5%).
-  if (account.equity != null && Number.isFinite(account.equity)) {
-    // Range-check: reject anomalous values (MT5-API glitch, reconnect).
-    if (account.equity > 0.5 && account.equity < 2.0) {
-      if (state.openPositions.length === 0) {
-        // No unrealised — safe to fully adopt.
-        state.equity = account.equity;
-        state.mtmEquity = account.equity;
-      } else {
-        // Have open positions: account.equity reflects MTM, can't directly
-        // assign to state.equity (realised). Instead, SANITY-CHECK: if the
-        // engine's mtmEquity (recomputed last tick) drifted >2% from MT5,
-        // log it but keep engine's view (engine has the asset-level detail).
-        const drift = Math.abs(
-          (state.mtmEquity ?? state.equity) - account.equity,
-        );
-        if (drift > 0.02) {
-          result.notes.push(
-            `V4 sync: engine MTM ${(state.mtmEquity * 100).toFixed(2)}% diverges from MT5 ${(account.equity * 100).toFixed(2)}% (drift ${(drift * 100).toFixed(2)}pp) — keeping engine view`,
-          );
-        }
-      }
-    } else {
-      result.notes.push(
-        `V4 sync: rejected anomalous account.equity=${account.equity}`,
-      );
-    }
-  }
-  if (
-    account.challengePeak != null &&
-    Number.isFinite(account.challengePeak) &&
-    account.challengePeak > 0
-  ) {
-    // Adopt Python's persisted peak — it survives engine restart and
-    // cross-process state-dir sharing better than the engine's own peak.
-    if (account.challengePeak > state.challengePeak) {
-      state.challengePeak = account.challengePeak;
-    }
-  }
-
-  // Phase 20 (V4 Bug 2): RECONCILE state.openPositions against Python's
-  // open-positions.json. Engine speculatively pushes a new OpenPositionV4
-  // when pollLive decides to open, BUT if the Python order_send fails
-  // (broker reject, market closed, no margin) MT5 has zero positions and
-  // the engine's MTM keeps eating the phantom. Reconcile by symbol+direction
-  // — drop phantoms that aren't in MT5 after one tick of grace.
+  // Phase 33 (Audit Bug 1): RECONCILE openPositions BEFORE equity-sync.
+  // Otherwise a phantom position prevents the safe sync path (gated on
+  // openPositions.length===0) — engine equity stays stale forever.
   try {
     const openPosPath = path.join(stateDir, "open-positions.json");
     if (fs.existsSync(openPosPath)) {
@@ -213,11 +168,7 @@ export function detectLiveSignalsV4(
         }),
       );
       const before = state.openPositions.length;
-      // Phase 30 (V4 Audit Bug 5): GRACE_BARS=3 instead of 1 — slow brokers
-      // can take >1 bar to confirm fills (especially on volatile crypto).
-      // 1-bar grace was dropping legitimate slow-fills as phantoms.
       const GRACE_BARS = 3;
-      // Estimate bar duration from candle map for grace window.
       const refKeyForBar = Object.keys(candleMap)[0];
       const refCandlesForBar = refKeyForBar
         ? candleMap[refKeyForBar]
@@ -227,25 +178,63 @@ export function detectLiveSignalsV4(
           ? refCandlesForBar[refCandlesForBar.length - 1].openTime -
             refCandlesForBar[refCandlesForBar.length - 2].openTime
           : 30 * 60_000;
-      const graceCutoff = state.lastBarOpenTime - GRACE_BARS * barDurMs;
-      state.openPositions = state.openPositions.filter((pos) => {
-        const key = `${pos.symbol}@${pos.direction}`;
-        if (mt5Keys.has(key)) return true;
-        // Position not in MT5: keep within grace window (slow broker fills).
-        if (pos.entryTime >= graceCutoff) return true;
-        return false;
-      });
-      const dropped = before - state.openPositions.length;
-      if (dropped > 0) {
-        result.notes.push(
-          `V4 reconcile: dropped ${dropped} phantom position(s) not present in MT5`,
-        );
+      // Phase 33 (Audit Bug 6): cold-start guard. lastBarOpenTime=0 would
+      // make graceCutoff negative → all phantoms survive forever.
+      if (state.lastBarOpenTime > 0) {
+        const graceCutoff = state.lastBarOpenTime - GRACE_BARS * barDurMs;
+        state.openPositions = state.openPositions.filter((pos) => {
+          const key = `${pos.symbol}@${pos.direction}`;
+          if (mt5Keys.has(key)) return true;
+          if (pos.entryTime >= graceCutoff) return true;
+          return false;
+        });
+        const dropped = before - state.openPositions.length;
+        if (dropped > 0) {
+          result.notes.push(
+            `V4 reconcile: dropped ${dropped} phantom position(s) not present in MT5`,
+          );
+        }
       }
     }
   } catch (e) {
     result.notes.push(
       `V4 reconcile failed: ${(e as Error).message} — keeping engine view`,
     );
+  }
+
+  // Equity sync — runs AFTER reconcile so the openPositions.length===0 gate
+  // sees the true post-reconcile state.
+  if (account.equity != null && Number.isFinite(account.equity)) {
+    if (account.equity > 0.5 && account.equity < 2.0) {
+      if (state.openPositions.length === 0) {
+        // No unrealised — safe to fully adopt MT5 MTM into realised.
+        state.equity = account.equity;
+        state.mtmEquity = account.equity;
+      } else {
+        // Have open positions: account.equity reflects MTM. Sanity-check
+        // drift but keep engine view (asset-level detail).
+        const engineMtm = state.mtmEquity ?? state.equity;
+        const drift = Math.abs(engineMtm - account.equity);
+        if (drift > 0.02) {
+          result.notes.push(
+            `V4 sync: engine MTM ${(engineMtm * 100).toFixed(2)}% diverges from MT5 ${(account.equity * 100).toFixed(2)}% (drift ${(drift * 100).toFixed(2)}pp) — keeping engine view`,
+          );
+        }
+      }
+    } else {
+      result.notes.push(
+        `V4 sync: rejected anomalous account.equity=${account.equity}`,
+      );
+    }
+  }
+  if (
+    account.challengePeak != null &&
+    Number.isFinite(account.challengePeak) &&
+    account.challengePeak > 0
+  ) {
+    if (account.challengePeak > state.challengePeak) {
+      state.challengePeak = account.challengePeak;
+    }
   }
 
   // Phase 20 (V4 Bug 4): adopt Python's externally-confirmed ping-days for

@@ -6,6 +6,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import * as path from "node:path";
 import { NextResponse } from "next/server";
 
 function isEnabled() {
@@ -169,22 +170,29 @@ export async function GET() {
     totalGainPct,
   };
 
-  return NextResponse.json({
-    account,
-    status,
-    pending,
-    executed,
-    openPos,
-    dailyReset,
-    controls,
-    lastCheck,
-    signalLog,
-    executorLog,
-    equityHistory: equityHistory.slice(-200), // cap for wire size
-    stats,
-    drawdown,
-    ruleProgress,
-    stateDir: getStateDir(),
-    generatedAt: new Date().toISOString(),
-  });
+  return NextResponse.json(
+    {
+      account,
+      status,
+      pending,
+      executed,
+      openPos,
+      dailyReset,
+      controls,
+      lastCheck,
+      signalLog,
+      executorLog,
+      equityHistory: equityHistory.slice(-200), // cap for wire size
+      stats,
+      drawdown,
+      ruleProgress,
+      // Phase 33 (API Audit Bug 5): only relative path — leaking absolute
+      // server filesystem paths is information-disclosure (server topology).
+      stateDir: path.relative(process.cwd(), getStateDir()) || ".",
+      generatedAt: new Date().toISOString(),
+    },
+    {
+      headers: { "Cache-Control": "no-store" },
+    },
+  );
 }

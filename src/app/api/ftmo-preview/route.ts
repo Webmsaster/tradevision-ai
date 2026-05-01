@@ -45,36 +45,61 @@ function readAccount(): AccountState {
   }
 }
 
-// 30s in-memory cache
-let cache: { ts: number; body: unknown } | null = null;
+// Phase 33 (API Audit Bug 1+2): per-TF cache + dynamic timeframe resolution
+// from FTMO_TF env. Was hardcoded to 4h candles which is wrong for the
+// V5_QUARTZ_LITE / R28 champions (30m) and V261_2H_OPT (2h) → preview
+// emitted bogus signals. Cache is now keyed so a TF switch evicts the
+// stale entry.
+const cache = new Map<string, { ts: number; body: unknown }>();
 const CACHE_MS = 30_000;
+
+function resolvePreviewTf(): "30m" | "1h" | "2h" | "4h" {
+  const v = process.env.FTMO_TF ?? "";
+  if (
+    v.includes("30m") ||
+    v === "2h-trend-breakout-v1" ||
+    v.startsWith("2h-trend-v5-quartz") ||
+    v.startsWith("2h-trend-v5-titanium") ||
+    v.startsWith("2h-trend-v5-obsidian")
+  )
+    return "30m";
+  if (v === "1h" || v.endsWith("-1h") || v.includes("1h-live")) return "1h";
+  if (v === "2h" || v.startsWith("2h-trend") || v.includes("2h-live"))
+    return "2h";
+  return "4h";
+}
 
 export async function GET() {
   if (!isEnabled()) {
     return new NextResponse("Not Found", { status: 404 });
   }
 
-  if (cache && Date.now() - cache.ts < CACHE_MS) {
-    return NextResponse.json(cache.body);
+  const tf = resolvePreviewTf();
+  const cacheKey = `${tf}:${process.env.FTMO_TF ?? "default"}`;
+  const hit = cache.get(cacheKey);
+  if (hit && Date.now() - hit.ts < CACHE_MS) {
+    return NextResponse.json(hit.body, {
+      headers: { "Cache-Control": "no-store" },
+    });
   }
 
   try {
     const [eth, btc, sol] = await Promise.all([
       loadBinanceHistory({
         symbol: "ETHUSDT",
-        timeframe: "4h",
+        timeframe: tf,
         targetCount: 100,
         maxPages: 2,
       }),
       loadBinanceHistory({
         symbol: "BTCUSDT",
-        timeframe: "4h",
+        timeframe: tf,
         targetCount: 100,
         maxPages: 2,
       }),
       loadBinanceHistory({
         symbol: "SOLUSDT",
-        timeframe: "4h",
+        timeframe: tf,
         targetCount: 100,
         maxPages: 2,
       }),
@@ -85,11 +110,16 @@ export async function GET() {
       ...result,
       lastBarClose: eth[eth.length - 1]?.closeTime ?? null,
       nextCheckAt: computeNext4hBoundary(),
+      tf,
     };
-    cache = { ts: Date.now(), body };
-    return NextResponse.json(body);
+    cache.set(cacheKey, { ts: Date.now(), body });
+    return NextResponse.json(body, {
+      headers: { "Cache-Control": "no-store" },
+    });
   } catch (e) {
-    return NextResponse.json({ error: (e as Error).message }, { status: 500 });
+    // Phase 33 (API Audit Bug 6): don't leak internal error message to client.
+    console.error("[ftmo-preview]", e);
+    return NextResponse.json({ error: "Internal error" }, { status: 500 });
   }
 }
 

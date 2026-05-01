@@ -17,9 +17,13 @@ import type { Candle } from "@/utils/indicators";
 // Phase 23 (V231 Bug 15): newsBlackout window now configurable via env.
 // 2min was too short for high-impact events (NFP, CPI, FOMC move markets
 // 30+ minutes). Default 15min covers post-event volatility tail.
-const NEWS_BLACKOUT_MINUTES = Number(
-  process.env.FTMO_NEWS_BLACKOUT_MIN ?? "15",
-);
+// Phase 33 (Audit Bug 8): NaN-guard — bad env value silently disabled news
+// filter (Number("abc") = NaN, all comparisons false → never blackout).
+const _newsBlackoutRaw = Number(process.env.FTMO_NEWS_BLACKOUT_MIN ?? "15");
+const NEWS_BLACKOUT_MINUTES =
+  Number.isFinite(_newsBlackoutRaw) && _newsBlackoutRaw > 0
+    ? _newsBlackoutRaw
+    : 15;
 
 // Phase 32 (Re-Audit V231 Bug 15): warn-once flag for the
 // peakDrawdownThrottle missing-challengePeak warning.
@@ -789,15 +793,17 @@ function computeSizingFactor(account: AccountState): {
     // operator notice; behavior preserved (no throttle when peak unknown).
     const peakKnown =
       account.challengePeak !== undefined && account.challengePeak > 0;
-    // Phase 32 (Re-Audit V231 Bug 15): warn-once. Was firing console.error
-    // on EVERY poll for the entire process lifetime if challengePeak was
-    // missing → log noise + alert fatigue + log-rotate stress.
-    if (!peakKnown && !peakWarnedOnce) {
+    // Phase 33 (Audit Bug 8): warn-once is per-incident, not lifetime.
+    // Reset the flag whenever peak is known, so a Python recovery → later
+    // re-failure produces a fresh alert.
+    if (peakKnown) {
+      peakWarnedOnce = false;
+    } else if (!peakWarnedOnce) {
       peakWarnedOnce = true;
       console.error(
         "[V231] peakDrawdownThrottle CONFIGURED but account.challengePeak " +
           "is missing — silent under-performance vs backtest. Check Python " +
-          "ftmo_executor.py challenge-peak.json sync. (warning suppressed for further polls)",
+          "ftmo_executor.py challenge-peak.json sync. (warning suppressed until challengePeak is restored)",
       );
     }
     const peak = peakKnown ? account.challengePeak! : account.equity;
@@ -978,14 +984,35 @@ export function detectLiveSignalsV231(
     },
   };
 
+  // Phase 33: derive active CFG tfHours BEFORE BULL-detector dispatch
+  // (was after — causing TS2454 use-before-declaration when we want to
+  // pass it down).
+  const _cfgTfMsForBull =
+    CFG.timeframe === "5m"
+      ? 5 * 60_000
+      : CFG.timeframe === "15m"
+        ? 15 * 60_000
+        : CFG.timeframe === "30m"
+          ? 30 * 60_000
+          : CFG.timeframe === "1h"
+            ? 60 * 60_000
+            : CFG.timeframe === "2h"
+              ? 2 * 60 * 60_000
+              : CFG.timeframe === "4h"
+                ? 4 * 60 * 60_000
+                : 4 * 60 * 60_000;
+
   // In BULL regime we delegate to BULL-bot logic (see below).
   if (regime === "BULL") {
+    // Phase 33 (Audit Bug 3): pass active config tfHours so BULL detector
+    // matches the candle cadence. Was using BULL.timeframe constant (4h).
     return detectBullSignals(
       ethCandles,
       btcCandles,
       account,
       newsEvents,
       result,
+      _cfgTfMsForBull / 3600_000,
     );
   }
 
@@ -1428,29 +1455,13 @@ function detectBullSignals(
   account: AccountState,
   newsEvents: NewsEvent[],
   result: DetectionResult,
+  // Phase 33 (Audit Bug 3): callsite passes active CFG.timeframe-derived
+  // tfHours. Phase 30 had used BULL.timeframe (a 4h constant) which made
+  // BULL regime emit signals with 8× wrong hold/entry on 30m-active configs
+  // — same R72-class bug Phase 2 fixed in the main detector.
+  tfHours: number,
 ): DetectionResult {
   const BULL = FTMO_DAYTRADE_24H_CONFIG_BULL;
-  // Phase 30 (V231 Audit Bug 7 — Phase 2 regression): derive tfHours from
-  // CFG.timeframe directly, same as the main detector. Was using ENV-flag
-  // ternary which silently fell to "4" for any 30m-tuned config wearing a
-  // "2h-trend-*" badge → BULL regime emitted signals with 8× wrong hold
-  // and entry timing on V5_TITANIUM/OBSIDIAN/QUARTZ_LITE/R28* (the very
-  // bug Phase 2 fixed in the main detector).
-  const cfgTfMs =
-    BULL.timeframe === "5m"
-      ? 5 * 60_000
-      : BULL.timeframe === "15m"
-        ? 15 * 60_000
-        : BULL.timeframe === "30m"
-          ? 30 * 60_000
-          : BULL.timeframe === "1h"
-            ? 60 * 60_000
-            : BULL.timeframe === "2h"
-              ? 2 * 60 * 60_000
-              : BULL.timeframe === "4h"
-                ? 4 * 60 * 60_000
-                : 4 * 60 * 60_000;
-  const tfHours = cfgTfMs / 3600_000;
   const { factor, notes: sizingNotes } = computeSizingFactor(account);
   result.notes.push(...sizingNotes);
 

@@ -1,9 +1,9 @@
-'use client';
+"use client";
 
-import { useState, useEffect, useMemo } from 'react';
-import { Trade } from '@/types/trade';
-import { calculatePnl } from '@/utils/calculations';
-import { useFocusTrap } from '@/hooks/useFocusTrap';
+import { useState, useEffect, useMemo } from "react";
+import { Trade } from "@/types/trade";
+import { calculatePnl } from "@/utils/calculations";
+import { useFocusTrap } from "@/hooks/useFocusTrap";
 
 interface TradeFormProps {
   isOpen: boolean;
@@ -14,38 +14,50 @@ interface TradeFormProps {
 
 /** Convert an ISO date string to the `YYYY-MM-DDTHH:mm` format expected by datetime-local inputs. */
 function toDatetimeLocal(iso: string): string {
-  if (!iso) return '';
+  if (!iso) return "";
   const date = new Date(iso);
-  const pad = (n: number) => n.toString().padStart(2, '0');
+  // Phase 33 (React Audit Bug 4): guard against Invalid Date — was rendering
+  // 'NaN-NaN-NaNTNaN:NaN' in the form when entryDate was empty/corrupt.
+  if (isNaN(date.getTime())) return "";
+  const pad = (n: number) => n.toString().padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 /** Convert a `YYYY-MM-DDTHH:mm` value from a datetime-local input back to an ISO string. */
 function fromDatetimeLocal(value: string): string {
-  if (!value) return '';
-  return new Date(value).toISOString();
+  if (!value) return "";
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return "";
+  return d.toISOString();
 }
 
-export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: TradeFormProps) {
+export default function TradeForm({
+  isOpen,
+  onClose,
+  onSubmit,
+  editTrade,
+}: TradeFormProps) {
   // ---- form state ----
-  const [pair, setPair] = useState('');
-  const [direction, setDirection] = useState<'long' | 'short'>('long');
-  const [entryPrice, setEntryPrice] = useState('');
-  const [exitPrice, setExitPrice] = useState('');
-  const [quantity, setQuantity] = useState('');
-  const [leverage, setLeverage] = useState('1');
-  const [fees, setFees] = useState('0');
-  const [entryDate, setEntryDate] = useState('');
-  const [exitDate, setExitDate] = useState('');
-  const [notes, setNotes] = useState('');
-  const [tags, setTags] = useState('');
-  const [strategy, setStrategy] = useState('');
-  const [emotion, setEmotion] = useState<Trade['emotion'] | ''>('');
+  const [pair, setPair] = useState("");
+  const [direction, setDirection] = useState<"long" | "short">("long");
+  const [entryPrice, setEntryPrice] = useState("");
+  const [exitPrice, setExitPrice] = useState("");
+  const [quantity, setQuantity] = useState("");
+  const [leverage, setLeverage] = useState("1");
+  const [fees, setFees] = useState("0");
+  const [entryDate, setEntryDate] = useState("");
+  const [exitDate, setExitDate] = useState("");
+  const [notes, setNotes] = useState("");
+  const [tags, setTags] = useState("");
+  const [strategy, setStrategy] = useState("");
+  const [emotion, setEmotion] = useState<Trade["emotion"] | "">("");
   const [confidence, setConfidence] = useState<number>(0);
-  const [setupType, setSetupType] = useState('');
-  const [timeframe, setTimeframe] = useState('');
-  const [marketCondition, setMarketCondition] = useState<Trade['marketCondition'] | ''>('');
-  const [screenshot, setScreenshot] = useState<string>('');
+  const [setupType, setSetupType] = useState("");
+  const [timeframe, setTimeframe] = useState("");
+  const [marketCondition, setMarketCondition] = useState<
+    Trade["marketCondition"] | ""
+  >("");
+  const [screenshot, setScreenshot] = useState<string>("");
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   // ---- populate fields when editing ----
@@ -61,14 +73,14 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
       setEntryDate(toDatetimeLocal(editTrade.entryDate));
       setExitDate(toDatetimeLocal(editTrade.exitDate));
       setNotes(editTrade.notes);
-      setTags(editTrade.tags.join(', '));
-      setStrategy(editTrade.strategy ?? '');
-      setEmotion(editTrade.emotion ?? '');
+      setTags(editTrade.tags.join(", "));
+      setStrategy(editTrade.strategy ?? "");
+      setEmotion(editTrade.emotion ?? "");
       setConfidence(editTrade.confidence ?? 0);
-      setSetupType(editTrade.setupType ?? '');
-      setTimeframe(editTrade.timeframe ?? '');
-      setMarketCondition(editTrade.marketCondition ?? '');
-      setScreenshot(editTrade.screenshot ?? '');
+      setSetupType(editTrade.setupType ?? "");
+      setTimeframe(editTrade.timeframe ?? "");
+      setMarketCondition(editTrade.marketCondition ?? "");
+      setScreenshot(editTrade.screenshot ?? "");
     } else {
       resetForm();
     }
@@ -79,37 +91,37 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
     if (!isOpen) return;
 
     const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === "Escape") onClose();
     };
 
-    document.addEventListener('keydown', handleEscape);
-    document.body.style.overflow = 'hidden';
+    document.addEventListener("keydown", handleEscape);
+    document.body.style.overflow = "hidden";
 
     return () => {
-      document.removeEventListener('keydown', handleEscape);
-      document.body.style.overflow = '';
+      document.removeEventListener("keydown", handleEscape);
+      document.body.style.overflow = "";
     };
   }, [isOpen, onClose]);
 
   function resetForm() {
-    setPair('');
-    setDirection('long');
-    setEntryPrice('');
-    setExitPrice('');
-    setQuantity('');
-    setLeverage('1');
-    setFees('0');
-    setEntryDate('');
-    setExitDate('');
-    setNotes('');
-    setTags('');
-    setStrategy('');
-    setEmotion('');
+    setPair("");
+    setDirection("long");
+    setEntryPrice("");
+    setExitPrice("");
+    setQuantity("");
+    setLeverage("1");
+    setFees("0");
+    setEntryDate("");
+    setExitDate("");
+    setNotes("");
+    setTags("");
+    setStrategy("");
+    setEmotion("");
     setConfidence(0);
-    setSetupType('');
-    setTimeframe('');
-    setMarketCondition('');
-    setScreenshot('');
+    setSetupType("");
+    setTimeframe("");
+    setMarketCondition("");
+    setScreenshot("");
     setErrors({});
   }
 
@@ -133,9 +145,9 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
       quantity: qty,
       leverage: isNaN(lev) || lev <= 0 ? 1 : lev,
       fees: isNaN(f) ? 0 : f,
-      entryDate: '',
-      exitDate: '',
-      notes: '',
+      entryDate: "",
+      exitDate: "",
+      notes: "",
       tags: [],
     });
 
@@ -146,17 +158,25 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
   function validate(): boolean {
     const newErrors: Record<string, string> = {};
 
-    if (!pair.trim()) newErrors.pair = 'Pair is required';
-    if (!entryPrice || isNaN(parseFloat(entryPrice)) || parseFloat(entryPrice) <= 0)
-      newErrors.entryPrice = 'Valid entry price is required';
-    if (!exitPrice || isNaN(parseFloat(exitPrice)) || parseFloat(exitPrice) <= 0)
-      newErrors.exitPrice = 'Valid exit price is required';
+    if (!pair.trim()) newErrors.pair = "Pair is required";
+    if (
+      !entryPrice ||
+      isNaN(parseFloat(entryPrice)) ||
+      parseFloat(entryPrice) <= 0
+    )
+      newErrors.entryPrice = "Valid entry price is required";
+    if (
+      !exitPrice ||
+      isNaN(parseFloat(exitPrice)) ||
+      parseFloat(exitPrice) <= 0
+    )
+      newErrors.exitPrice = "Valid exit price is required";
     if (!quantity || isNaN(parseFloat(quantity)) || parseFloat(quantity) <= 0)
-      newErrors.quantity = 'Valid quantity is required';
-    if (!entryDate) newErrors.entryDate = 'Entry date is required';
-    if (!exitDate) newErrors.exitDate = 'Exit date is required';
+      newErrors.quantity = "Valid quantity is required";
+    if (!entryDate) newErrors.entryDate = "Entry date is required";
+    if (!exitDate) newErrors.exitDate = "Exit date is required";
     if (entryDate && exitDate && new Date(exitDate) < new Date(entryDate)) {
-      newErrors.exitDate = 'Exit date must be after entry date';
+      newErrors.exitDate = "Exit date must be after entry date";
     }
 
     setErrors(newErrors);
@@ -174,7 +194,7 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
     const lev = parseFloat(leverage) || 1;
     const f = parseFloat(fees) || 0;
     const parsedTags = tags
-      .split(',')
+      .split(",")
       .map((t) => t.trim())
       .filter(Boolean);
 
@@ -199,7 +219,9 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
       screenshot: screenshot || undefined,
     };
 
-    const { pnl, pnlPercent } = calculatePnl(tradeBase as Omit<Trade, 'id' | 'pnl' | 'pnlPercent'>);
+    const { pnl, pnlPercent } = calculatePnl(
+      tradeBase as Omit<Trade, "id" | "pnl" | "pnlPercent">,
+    );
 
     const trade: Trade = {
       ...tradeBase,
@@ -219,12 +241,28 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
   if (!isOpen) return null;
 
   return (
-    <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="trade-form-title">
-      <div className="modal-content" ref={focusTrapRef} onClick={(e) => e.stopPropagation()}>
+    <div
+      className="modal-overlay"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="trade-form-title"
+    >
+      <div
+        className="modal-content"
+        ref={focusTrapRef}
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="trade-form-header">
-          <h2 id="trade-form-title" className="trade-form-title">{editTrade ? 'Edit Trade' : 'Add New Trade'}</h2>
-          <button className="trade-form-close" onClick={onClose} aria-label="Close">
+          <h2 id="trade-form-title" className="trade-form-title">
+            {editTrade ? "Edit Trade" : "Add New Trade"}
+          </h2>
+          <button
+            className="trade-form-close"
+            onClick={onClose}
+            aria-label="Close"
+          >
             &#x2715;
           </button>
         </div>
@@ -236,7 +274,7 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
               <label className="form-label">Pair *</label>
               <input
                 type="text"
-                className={`form-input${errors.pair ? ' error' : ''}`}
+                className={`form-input${errors.pair ? " error" : ""}`}
                 placeholder="BTC/USDT"
                 value={pair}
                 onChange={(e) => setPair(e.target.value)}
@@ -250,7 +288,9 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
               <select
                 className="form-input"
                 value={direction}
-                onChange={(e) => setDirection(e.target.value as 'long' | 'short')}
+                onChange={(e) =>
+                  setDirection(e.target.value as "long" | "short")
+                }
               >
                 <option value="long">Long</option>
                 <option value="short">Short</option>
@@ -276,14 +316,16 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
               <label className="form-label">Entry Price *</label>
               <input
                 type="number"
-                className={`form-input${errors.entryPrice ? ' error' : ''}`}
+                className={`form-input${errors.entryPrice ? " error" : ""}`}
                 placeholder="0.00"
                 min="0"
                 step="any"
                 value={entryPrice}
                 onChange={(e) => setEntryPrice(e.target.value)}
               />
-              {errors.entryPrice && <span className="form-error">{errors.entryPrice}</span>}
+              {errors.entryPrice && (
+                <span className="form-error">{errors.entryPrice}</span>
+              )}
             </div>
 
             {/* Exit Price */}
@@ -291,14 +333,16 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
               <label className="form-label">Exit Price *</label>
               <input
                 type="number"
-                className={`form-input${errors.exitPrice ? ' error' : ''}`}
+                className={`form-input${errors.exitPrice ? " error" : ""}`}
                 placeholder="0.00"
                 min="0"
                 step="any"
                 value={exitPrice}
                 onChange={(e) => setExitPrice(e.target.value)}
               />
-              {errors.exitPrice && <span className="form-error">{errors.exitPrice}</span>}
+              {errors.exitPrice && (
+                <span className="form-error">{errors.exitPrice}</span>
+              )}
             </div>
 
             {/* Quantity */}
@@ -306,14 +350,16 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
               <label className="form-label">Quantity *</label>
               <input
                 type="number"
-                className={`form-input${errors.quantity ? ' error' : ''}`}
+                className={`form-input${errors.quantity ? " error" : ""}`}
                 placeholder="0.00"
                 min="0"
                 step="any"
                 value={quantity}
                 onChange={(e) => setQuantity(e.target.value)}
               />
-              {errors.quantity && <span className="form-error">{errors.quantity}</span>}
+              {errors.quantity && (
+                <span className="form-error">{errors.quantity}</span>
+              )}
             </div>
 
             {/* Fees */}
@@ -335,11 +381,13 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
               <label className="form-label">Entry Date *</label>
               <input
                 type="datetime-local"
-                className={`form-input${errors.entryDate ? ' error' : ''}`}
+                className={`form-input${errors.entryDate ? " error" : ""}`}
                 value={entryDate}
                 onChange={(e) => setEntryDate(e.target.value)}
               />
-              {errors.entryDate && <span className="form-error">{errors.entryDate}</span>}
+              {errors.entryDate && (
+                <span className="form-error">{errors.entryDate}</span>
+              )}
             </div>
 
             {/* Exit Date */}
@@ -347,11 +395,13 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
               <label className="form-label">Exit Date *</label>
               <input
                 type="datetime-local"
-                className={`form-input${errors.exitDate ? ' error' : ''}`}
+                className={`form-input${errors.exitDate ? " error" : ""}`}
                 value={exitDate}
                 onChange={(e) => setExitDate(e.target.value)}
               />
-              {errors.exitDate && <span className="form-error">{errors.exitDate}</span>}
+              {errors.exitDate && (
+                <span className="form-error">{errors.exitDate}</span>
+              )}
             </div>
 
             {/* Strategy */}
@@ -401,7 +451,9 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
               <select
                 className="form-input"
                 value={emotion}
-                onChange={(e) => setEmotion(e.target.value as Trade['emotion'] | '')}
+                onChange={(e) =>
+                  setEmotion(e.target.value as Trade["emotion"] | "")
+                }
               >
                 <option value="">Select emotion...</option>
                 <option value="confident">Confident</option>
@@ -421,8 +473,10 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
                   <button
                     key={level}
                     type="button"
-                    className={`confidence-dot${level <= confidence ? ' active' : ''}`}
-                    onClick={() => setConfidence(level === confidence ? 0 : level)}
+                    className={`confidence-dot${level <= confidence ? " active" : ""}`}
+                    onClick={() =>
+                      setConfidence(level === confidence ? 0 : level)
+                    }
                     title={`Confidence: ${level}/5`}
                   >
                     {level}
@@ -480,7 +534,11 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
               <select
                 className="form-input"
                 value={marketCondition}
-                onChange={(e) => setMarketCondition(e.target.value as Trade['marketCondition'] | '')}
+                onChange={(e) =>
+                  setMarketCondition(
+                    e.target.value as Trade["marketCondition"] | "",
+                  )
+                }
               >
                 <option value="">Select condition...</option>
                 <option value="trending">Trending</option>
@@ -493,17 +551,22 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
             <div className="form-group trade-form-full">
               <label className="form-label">Chart Screenshot</label>
               {screenshot ? (
-                <div style={{ position: 'relative', marginBottom: '8px' }}>
+                <div style={{ position: "relative", marginBottom: "8px" }}>
                   <img
                     src={screenshot}
                     alt="Trade screenshot"
-                    style={{ maxWidth: '100%', maxHeight: '200px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)' }}
+                    style={{
+                      maxWidth: "100%",
+                      maxHeight: "200px",
+                      borderRadius: "8px",
+                      border: "1px solid rgba(255,255,255,0.1)",
+                    }}
                   />
                   <button
                     type="button"
                     className="btn btn-ghost btn-sm"
-                    style={{ position: 'absolute', top: '4px', right: '4px' }}
-                    onClick={() => setScreenshot('')}
+                    style={{ position: "absolute", top: "4px", right: "4px" }}
+                    onClick={() => setScreenshot("")}
                   >
                     Remove
                   </button>
@@ -517,22 +580,29 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
                     const file = e.target.files?.[0];
                     if (!file) return;
                     if (file.size > 5 * 1024 * 1024) {
-                      setErrors(prev => ({ ...prev, screenshot: 'Image must be under 5 MB' }));
+                      setErrors((prev) => ({
+                        ...prev,
+                        screenshot: "Image must be under 5 MB",
+                      }));
                       return;
                     }
-                    setErrors(prev => { const { screenshot: _, ...rest } = prev; return rest; });
+                    setErrors((prev) => {
+                      const { screenshot: _, ...rest } = prev;
+                      return rest;
+                    });
                     // Compress image: resize to max 800px wide and convert to JPEG
                     const img = new Image();
                     img.onload = () => {
                       const MAX_WIDTH = 800;
-                      const scale = img.width > MAX_WIDTH ? MAX_WIDTH / img.width : 1;
-                      const canvas = document.createElement('canvas');
+                      const scale =
+                        img.width > MAX_WIDTH ? MAX_WIDTH / img.width : 1;
+                      const canvas = document.createElement("canvas");
                       canvas.width = img.width * scale;
                       canvas.height = img.height * scale;
-                      const ctx = canvas.getContext('2d');
+                      const ctx = canvas.getContext("2d");
                       if (ctx) {
                         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                        const compressed = canvas.toDataURL('image/jpeg', 0.6);
+                        const compressed = canvas.toDataURL("image/jpeg", 0.6);
                         setScreenshot(compressed);
                       }
                       URL.revokeObjectURL(img.src);
@@ -541,7 +611,9 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
                   }}
                 />
               )}
-              {errors.screenshot && <span className="form-error">{errors.screenshot}</span>}
+              {errors.screenshot && (
+                <span className="form-error">{errors.screenshot}</span>
+              )}
             </div>
           </div>
 
@@ -551,10 +623,13 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
               <div className="trade-form-pnl-label">Estimated PnL</div>
               <div
                 className="trade-form-pnl-value"
-                style={{ color: pnlPreview.pnl >= 0 ? 'var(--profit)' : 'var(--loss)' }}
+                style={{
+                  color: pnlPreview.pnl >= 0 ? "var(--profit)" : "var(--loss)",
+                }}
               >
-                {pnlPreview.pnl >= 0 ? '+' : ''}
-                {pnlPreview.pnl.toFixed(2)} ({pnlPreview.pnlPercent >= 0 ? '+' : ''}
+                {pnlPreview.pnl >= 0 ? "+" : ""}
+                {pnlPreview.pnl.toFixed(2)} (
+                {pnlPreview.pnlPercent >= 0 ? "+" : ""}
                 {pnlPreview.pnlPercent.toFixed(2)}%)
               </div>
             </div>
@@ -566,7 +641,7 @@ export default function TradeForm({ isOpen, onClose, onSubmit, editTrade }: Trad
               Cancel
             </button>
             <button type="submit" className="btn btn-primary">
-              {editTrade ? 'Update Trade' : 'Add Trade'}
+              {editTrade ? "Update Trade" : "Add Trade"}
             </button>
           </div>
         </form>

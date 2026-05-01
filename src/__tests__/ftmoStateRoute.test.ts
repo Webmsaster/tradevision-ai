@@ -52,7 +52,9 @@ describe("/api/ftmo-state route", () => {
     expect(body.openPos.positions).toHaveLength(1);
     expect(body.openPos.positions[0].ticket).toBe(123);
     expect(body.controls.paused).toBe(true);
-    expect(body.stateDir).toBe(testStateDir);
+    // Phase 33 (API Audit Bug 5): stateDir is now relative to cwd
+    // (information-disclosure fix — no absolute server paths).
+    expect(body.stateDir).toBe(path.relative(process.cwd(), testStateDir));
     expect(body.generatedAt).toBeDefined();
   });
 

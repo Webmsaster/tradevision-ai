@@ -1079,13 +1079,18 @@ def maybe_place_ping_trade() -> None:
 
 
 def process_pending_signals() -> None:
-    data = read_json(PENDING_PATH, {"signals": []})
-    pending = data.get("signals", [])
-    if not pending:
-        return
-
-    executed = read_json(EXECUTED_PATH, {"executions": []})
-    open_positions = read_json(OPEN_POS_PATH, {"positions": []})
+    # Phase 33 (Audit Bug 1 — CRITICAL): acquire pending-signals.lock so we
+    # serialize against the Node service's R-M-W. Phase 19 added the lock
+    # on the Node side but not here — Python was racing the Node writer,
+    # leaving the cross-process race only HALF closed.
+    pending_lock = STATE_DIR / "pending-signals.lock"
+    with _file_lock(pending_lock):
+        data = read_json(PENDING_PATH, {"signals": []})
+        pending = data.get("signals", [])
+        if not pending:
+            return
+        executed = read_json(EXECUTED_PATH, {"executions": []})
+        open_positions = read_json(OPEN_POS_PATH, {"positions": []})
 
     acct = mt5_get_equity()
     account_equity = acct["equity"] or CHALLENGE_START_BALANCE

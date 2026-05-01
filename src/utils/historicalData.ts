@@ -46,17 +46,35 @@ function parseKline(row: RawKline): Candle {
   // of a bar close could include the still-forming next bar (closeTime > now)
   // → phantom signals on incomplete data. Now: closed only if closeTime <= now.
   const closeTime = row[6];
+  // Phase 33 (Indicators Audit Bug 4): NaN-validation. A single corrupt
+  // Binance row (rare but happens during maintenance windows) was
+  // permanently poisoning RSI/ATR for thousands of bars after — Wilder
+  // smoothing has no NaN-recovery.
+  const open = parseFloat(row[1]);
+  const high = parseFloat(row[2]);
+  const low = parseFloat(row[3]);
+  const close = parseFloat(row[4]);
+  if (
+    !Number.isFinite(open) ||
+    !Number.isFinite(high) ||
+    !Number.isFinite(low) ||
+    !Number.isFinite(close)
+  ) {
+    throw new Error(
+      `Corrupt Binance kline at openTime ${row[0]}: open=${row[1]} high=${row[2]} low=${row[3]} close=${row[4]}`,
+    );
+  }
   return {
     openTime: row[0],
-    open: parseFloat(row[1]),
-    high: parseFloat(row[2]),
-    low: parseFloat(row[3]),
-    close: parseFloat(row[4]),
-    volume: parseFloat(row[5]),
+    open,
+    high,
+    low,
+    close,
+    volume: parseFloat(row[5]) || 0,
     closeTime,
     isFinal: closeTime < Date.now(),
     // Binance kline schema index 9 = takerBuyBaseAssetVolume
-    takerBuyVolume: parseFloat(row[9]),
+    takerBuyVolume: parseFloat(row[9]) || 0,
   };
 }
 
@@ -95,18 +113,34 @@ export async function loadBinanceHistory({
       ? AbortSignal.any([signal, timeoutSig])
       : timeoutSig;
     let res = await fetch(url.toString(), { signal: finalSignal });
-    // Retry on 429/418 (rate-limit) with exponential backoff. Binance
-    // typically clears in 1-3s; we try twice before giving up.
+    // Retry on 429/418 (rate-limit) and 5xx (Binance maintenance) with
+    // exponential backoff. Binance typically clears in 1-3s; we try thrice.
+    // Phase 33 (Indicators Audit Bug 5+15): respect caller AbortSignal during
+    // backoff sleep AND on the retry fetch. Was using only AbortSignal.timeout
+    // → caller cancel was ignored during retry-after waits up to 60s.
     let retry = 0;
-    while ((res.status === 429 || res.status === 418) && retry < 3) {
+    const isRetryable = (s: number) =>
+      s === 429 || s === 418 || (s >= 500 && s < 600);
+    while (isRetryable(res.status) && retry < 3) {
       const retryAfterHdr = res.headers.get("retry-after");
-      const wait = retryAfterHdr
-        ? parseInt(retryAfterHdr, 10) * 1000
-        : 2000 * (retry + 1);
-      await new Promise((r) => setTimeout(r, wait));
-      res = await fetch(url.toString(), {
-        signal: AbortSignal.timeout(15_000),
+      const wait = Math.min(
+        retryAfterHdr ? parseInt(retryAfterHdr, 10) * 1000 : 2000 * (retry + 1),
+        60_000,
+      );
+      await new Promise<void>((r, reject) => {
+        const t = setTimeout(r, wait);
+        if (signal) {
+          const onAbort = () => {
+            clearTimeout(t);
+            reject(new Error("aborted"));
+          };
+          signal.addEventListener("abort", onAbort, { once: true });
+        }
       });
+      const retrySignal = signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
+        : AbortSignal.timeout(15_000);
+      res = await fetch(url.toString(), { signal: retrySignal });
       retry++;
     }
     if (!res.ok) throw new Error(`Binance history fetch failed: ${res.status}`);

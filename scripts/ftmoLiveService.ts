@@ -407,20 +407,17 @@ function readChallengePeakFromDisk(): number | undefined {
 }
 
 function defaultAccount(): AccountState {
-  // Phase 30 (V231 Audit Bug 1 — CRITICAL FIX): challenge-peak fallback
-  // moved to its own helper so EVERY runOneCheck can merge the on-disk
-  // peak into the account state, not just cold-start. Previous Phase-4
-  // implementation only ran on cold-start → if Python wrote account.json
-  // without `challengePeak`, every poll triggered the noisy console.error
-  // cascade in V231 + R28_V2/V3/V4 silently degraded to R28 baseline.
-  const challengePeak = readChallengePeakFromDisk() ?? 1.0;
+  // Phase 33 (Audit Bug 11): on cold-start, return undefined challengePeak
+  // when challenge-peak.json is missing — so the runOneCheck merge fires.
+  // Previously returned 1.0 default → merge skipt because !== undefined.
+  const onDisk = readChallengePeakFromDisk();
   return {
     equity: 1.0,
     day: 0,
     recentPnls: [],
     equityAtDayStart: 1.0,
-    challengePeak,
-  };
+    challengePeak: onDisk ?? undefined,
+  } as AccountState;
 }
 
 /** Msec until next TF UTC boundary. 30m: HH:00/HH:30. 1h: HH:00. 2h/4h: standard. */
@@ -828,17 +825,15 @@ async function runSmartAlerts(account: AccountState) {
 
   // 1) Equity-drop alert: ≥2% drop normalized to a 1h window — works
   // regardless of polling frequency.
-  // Phase 25 (Live Service Bug 6+7): old check `<= 3600_000` only triggered
-  // when polling more often than 1h. On 4h-TF the snapshot was always older
-  // than 1h → alert NEVER fired. Now: scale `ALERT_EQUITY_DROP_PCT` to the
-  // observed dt so the threshold is an intuitive "% per hour".
+  // Phase 33 (Audit Bug 4): only UPDATE the snapshot AFTER evaluating the
+  // alert. Previously the snapshot was unconditionally overwritten every
+  // poll → on sub-10min polling cadences dt was always < 10min → alert
+  // NEVER fired (silenced by Phase 31's min-dt gate). Snapshot now
+  // accumulates until ≥10min has passed, then evaluates + resets.
+  let updateSnapshot = false;
   if (state.lastEquitySnapshot) {
     const dtMs = now - state.lastEquitySnapshot.ts;
-    // Phase 31 (Live Service Audit Bug 6): require minimum dt of 10min
-    // before computing %/h rate. Tiny dtMs (boundary-doubled poll, --once
-    // immediately after a normal cycle) inflated tiny drops to fake alerts.
     if (dtMs >= 10 * 60_000 && dtMs <= 6 * 3600_000) {
-      // up to 6h window
       const drop = state.lastEquitySnapshot.equity - account.equity;
       const dropPerHour = drop / (dtMs / 3600_000);
       if (dropPerHour >= ALERT_EQUITY_DROP_PCT) {
@@ -850,9 +845,18 @@ async function runSmartAlerts(account: AccountState) {
             `Day ${account.day} of challenge`,
         );
       }
+      updateSnapshot = true;
+    } else if (dtMs > 6 * 3600_000) {
+      // Snapshot is stale — refresh it.
+      updateSnapshot = true;
     }
+  } else {
+    // No prior snapshot — initialize.
+    updateSnapshot = true;
   }
-  state.lastEquitySnapshot = { ts: now, equity: account.equity };
+  if (updateSnapshot) {
+    state.lastEquitySnapshot = { ts: now, equity: account.equity };
+  }
 
   // 2) Daily-loss warning (approaching 5% intraday loss cap)
   if (dailyPct < 0) {

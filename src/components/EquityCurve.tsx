@@ -98,6 +98,14 @@ export default function EquityCurve({ data, height }: EquityCurveProps) {
     return () => observer.disconnect();
   }, []);
 
+  // Phase 33 (React Audit Bug 1): hooks MUST come before any early-return
+  // (Rules of Hooks). Round 11's R48 fix was incomplete — useId() was still
+  // after the if-empty check, breaking hook order when data flips between
+  // empty/non-empty.
+  const uniqueId = useId();
+  const equityGradientId = `equityGradient-${uniqueId}`;
+  const drawdownGradientId = `drawdownGradient-${uniqueId}`;
+
   if (!data || data.length === 0) {
     return (
       <div className="glass-card equity-curve">
@@ -106,10 +114,6 @@ export default function EquityCurve({ data, height }: EquityCurveProps) {
       </div>
     );
   }
-
-  const uniqueId = useId();
-  const equityGradientId = `equityGradient-${uniqueId}`;
-  const drawdownGradientId = `drawdownGradient-${uniqueId}`;
 
   const latestEquity = data[data.length - 1].equity;
   const lineColor = latestEquity >= 0 ? colors.green : colors.red;

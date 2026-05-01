@@ -168,7 +168,10 @@ export async function saveTradeToSupabase(
 export async function deleteTradeFromSupabase(
   supabase: SupabaseClient,
   tradeId: string,
-  userId?: string,
+  // Phase 33 (API Audit Bug 10): userId now REQUIRED. Was optional → callers
+  // could forget it and rely on RLS alone (no defense-in-depth). Always
+  // filter explicitly so a future RLS misconfig doesn't leak deletes.
+  userId: string,
 ): Promise<boolean> {
   let query = supabase.from("trades").delete().eq("id", tradeId);
   if (userId) query = query.eq("user_id", userId);
