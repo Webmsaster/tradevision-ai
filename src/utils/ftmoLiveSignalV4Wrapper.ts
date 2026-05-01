@@ -161,6 +161,88 @@ export function detectLiveSignalsV4(
     }
   }
 
+  // Phase 20 (V4 Bug 2): RECONCILE state.openPositions against Python's
+  // open-positions.json. Engine speculatively pushes a new OpenPositionV4
+  // when pollLive decides to open, BUT if the Python order_send fails
+  // (broker reject, market closed, no margin) MT5 has zero positions and
+  // the engine's MTM keeps eating the phantom. Reconcile by symbol+direction
+  // — drop phantoms that aren't in MT5 after one tick of grace.
+  try {
+    const openPosPath = path.join(stateDir, "open-positions.json");
+    if (fs.existsSync(openPosPath)) {
+      const raw = JSON.parse(fs.readFileSync(openPosPath, "utf-8")) as {
+        positions?: Array<{
+          signalAsset?: string;
+          assetSymbol?: string;
+          direction?: string;
+        }>;
+      };
+      const mt5Keys = new Set(
+        (raw.positions ?? []).map((p) => {
+          const sym = p.signalAsset ?? p.assetSymbol ?? "";
+          const dir = p.direction ?? "";
+          return `${sym}@${dir}`;
+        }),
+      );
+      const before = state.openPositions.length;
+      // Only drop positions older than 1 bar — gives Python 1 tick to
+      // execute the order before we treat it as a phantom.
+      const lastBarOpen = state.lastBarOpenTime;
+      state.openPositions = state.openPositions.filter((pos) => {
+        const key = `${pos.symbol}@${pos.direction}`;
+        if (mt5Keys.has(key)) return true;
+        // Position not in MT5: keep if entered THIS tick (give Python a chance)
+        if (pos.entryTime >= lastBarOpen) return true;
+        return false;
+      });
+      const dropped = before - state.openPositions.length;
+      if (dropped > 0) {
+        result.notes.push(
+          `V4 reconcile: dropped ${dropped} phantom position(s) not present in MT5`,
+        );
+      }
+    }
+  } catch (e) {
+    result.notes.push(
+      `V4 reconcile failed: ${(e as Error).message} — keeping engine view`,
+    );
+  }
+
+  // Phase 20 (V4 Bug 4): adopt Python's externally-confirmed ping-days for
+  // post-target trading-day count. Engine speculatively counts days since
+  // target-hit, but FTMO only counts days where a real trade actually filled.
+  // Python's pause-state.json tracks confirmed ping-day fills.
+  try {
+    if (state.pausedAtTarget) {
+      const pauseStatePath = path.join(stateDir, "pause-state.json");
+      if (fs.existsSync(pauseStatePath)) {
+        const raw = JSON.parse(fs.readFileSync(pauseStatePath, "utf-8")) as {
+          ping_dates?: string[];
+        };
+        const confirmedPings = (raw.ping_dates ?? []).length;
+        // Pre-target trading days are real (they had real trade fills).
+        // Use min(engine-counted, target_day + confirmedPings + 1) as the honest count.
+        const targetDay = state.firstTargetHitDay ?? state.day;
+        const honestCount = Math.min(
+          state.tradingDays.length,
+          targetDay + confirmedPings + 1, // +1 for the target-hit day itself
+        );
+        if (honestCount < state.tradingDays.length) {
+          // Engine counted post-target days that Python hasn't confirmed.
+          state.tradingDays = state.tradingDays.slice(0, honestCount);
+          result.notes.push(
+            `V4 ping-confirm: capped tradingDays to ${honestCount} ` +
+              `(target ${targetDay} + ${confirmedPings} confirmed pings)`,
+          );
+        }
+      }
+    }
+  } catch (e) {
+    result.notes.push(
+      `V4 ping-confirm failed: ${(e as Error).message} — keeping engine view`,
+    );
+  }
+
   // BTC sample for the legacy `btc` field (display only, not used by V4).
   const btc = aligned["BTCUSDT"];
   if (btc && btc.length > 0) {
