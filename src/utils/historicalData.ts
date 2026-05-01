@@ -94,7 +94,21 @@ export async function loadBinanceHistory({
     const finalSignal = signal
       ? AbortSignal.any([signal, timeoutSig])
       : timeoutSig;
-    const res = await fetch(url.toString(), { signal: finalSignal });
+    let res = await fetch(url.toString(), { signal: finalSignal });
+    // Retry on 429/418 (rate-limit) with exponential backoff. Binance
+    // typically clears in 1-3s; we try twice before giving up.
+    let retry = 0;
+    while ((res.status === 429 || res.status === 418) && retry < 3) {
+      const retryAfterHdr = res.headers.get("retry-after");
+      const wait = retryAfterHdr
+        ? parseInt(retryAfterHdr, 10) * 1000
+        : 2000 * (retry + 1);
+      await new Promise((r) => setTimeout(r, wait));
+      res = await fetch(url.toString(), {
+        signal: AbortSignal.timeout(15_000),
+      });
+      retry++;
+    }
     if (!res.ok) throw new Error(`Binance history fetch failed: ${res.status}`);
     const rows: RawKline[] = await res.json();
     if (!rows || rows.length === 0) break;
