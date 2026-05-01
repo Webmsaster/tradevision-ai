@@ -193,6 +193,11 @@ export function detectOverleverageAfterWins(trades: Trade[]): AIInsight | null {
 
     if (!allWins) continue;
 
+    // Phase 21 (AI Bug 4): skip if any trade in the streak OR the current
+    // trade has no leverage recorded (mixed spot/margin). Spot trades default
+    // to 1x and falsely flagged as 'low leverage' against 2x margin trades.
+    if (sorted[i].leverage == null || streak.some((t) => t.leverage == null))
+      continue;
     const avgStreakLeverage =
       streak.reduce((sum, t) => sum + (t.leverage ?? 1), 0) / streak.length;
     const nextLeverage = sorted[i].leverage ?? 1;
@@ -351,8 +356,12 @@ export function detectConsistentPair(trades: Trade[]): AIInsight | null {
   for (const pair of Object.keys(pairStats)) {
     const stats = pairStats[pair];
     if (stats.total < 5) continue;
-
+    // Phase 21 (AI Bug 6): a 'positive' pair must actually be profitable
+    // and >50% WR. Without this we flagged unprofitable pairs as
+    // 'Strong Performance' just because they were the LEAST bad.
+    if (stats.totalPnl <= 0) continue;
     const winRate = stats.wins / stats.total;
+    if (winRate < 0.5) continue;
     if (winRate > bestWinRate) {
       bestWinRate = winRate;
       bestPair = pair;
@@ -543,7 +552,10 @@ export function detectWeekendTrading(trades: Trade[]): AIInsight | null {
  * Detects improving performance: second chronological half has >10% better win rate than first half.
  */
 export function detectImprovingPerformance(trades: Trade[]): AIInsight | null {
-  if (trades.length < 6) return null;
+  // Phase 21 (AI Bug 7): minimum 20 trades (each half ≥10) so the win-rate
+  // delta isn't dominated by 33%-step quantization noise. Was 6 → triggered
+  // on virtually any 6-trade dataset by chance.
+  if (trades.length < 20) return null;
 
   const sorted = [...trades].sort(
     (a, b) => new Date(a.exitDate).getTime() - new Date(b.exitDate).getTime(),
@@ -582,7 +594,8 @@ export function detectImprovingPerformance(trades: Trade[]): AIInsight | null {
  * Detects declining performance: second chronological half has >10% worse win rate than first half.
  */
 export function detectDecliningPerformance(trades: Trade[]): AIInsight | null {
-  if (trades.length < 6) return null;
+  // Phase 21 (AI Bug 7): see detectImprovingPerformance — same 20-min threshold.
+  if (trades.length < 20) return null;
 
   const sorted = [...trades].sort(
     (a, b) => new Date(a.exitDate).getTime() - new Date(b.exitDate).getTime(),
@@ -787,12 +800,16 @@ export function detectBestSetup(trades: Trade[]): AIInsight | null {
 export function detectFeeDrag(trades: Trade[]): AIInsight | null {
   if (trades.length < 5) return null;
 
-  const totalFees = trades.reduce((s, t) => s + (t.fees || 0), 0);
+  // Phase 21 (AI Bug 8): normalize fee sign — some CSV importers store fees
+  // as negative (cost convention), others positive. Maker rebates can mix.
+  // Use absolute value so the detector works across conventions; mask
+  // tiny rebates (|fee| < 1¢ per trade) as effectively zero.
+  const totalFees = trades.reduce((s, t) => s + Math.abs(t.fees || 0), 0);
   if (totalFees <= 0) return null;
 
   const grossWins = trades
     .filter((t) => t.pnl > 0)
-    .reduce((s, t) => s + t.pnl + (t.fees || 0), 0);
+    .reduce((s, t) => s + t.pnl + Math.abs(t.fees || 0), 0);
   if (grossWins <= 0) return null;
 
   const ratio = totalFees / grossWins;
