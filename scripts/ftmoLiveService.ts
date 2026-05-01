@@ -43,9 +43,13 @@ import {
 const TF: "5m" | "15m" | "30m" | "1h" | "2h" | "4h" =
   process.env.FTMO_TF === "5m-live"
     ? "5m"
-    : process.env.FTMO_TF === "15m" || process.env.FTMO_TF === "15m-live"
+    : process.env.FTMO_TF === "15m" ||
+        process.env.FTMO_TF === "15m-live" ||
+        process.env.FTMO_TF === "15m-live-v1" ||
+        process.env.FTMO_TF === "15m-live-v2"
       ? "15m"
       : process.env.FTMO_TF === "30m" ||
+          process.env.FTMO_TF === "30m-live-v1" ||
           process.env.FTMO_TF === "30m-live" ||
           process.env.FTMO_TF === "30m-turbo" ||
           // CRITICAL FIX (Round 12 R72): V5_PLATINUM_30M and all V5_TITANIUM-derived
@@ -80,7 +84,9 @@ const TF: "5m" | "15m" | "30m" | "1h" | "2h" | "4h" =
             "2h-trend-v5-onyx",
           ].includes(process.env.FTMO_TF ?? "")
         ? "30m"
-        : process.env.FTMO_TF === "1h" || process.env.FTMO_TF === "1h-live"
+        : process.env.FTMO_TF === "1h" ||
+            process.env.FTMO_TF === "1h-live" ||
+            process.env.FTMO_TF === "1h-live-v1"
           ? "1h"
           : process.env.FTMO_TF === "2h" ||
               process.env.FTMO_TF === "2h-live" ||
@@ -88,6 +94,7 @@ const TF: "5m" | "15m" | "30m" | "1h" | "2h" | "4h" =
               (process.env.FTMO_TF ?? "").startsWith("2h-trend")
             ? "2h"
             : process.env.FTMO_TF === "4h-live" ||
+                process.env.FTMO_TF === "4h-live-v1" ||
                 process.env.FTMO_TF === "4h-trend"
               ? "4h"
               : "4h";
@@ -380,6 +387,11 @@ async function runOneCheck(): Promise<DetectionResult> {
   // configs silently degraded to fewer assets when env not set.
   // V5_NOVA needs: ETH, BTC, BNB, ADA, DOGE, LTC, BCH, LINK.
   // V5 baseline: ETH, BTC, SOL, BNB, ADA, AVAX, LTC, BCH, LINK + DOGE.
+  // Phase 13 (Strategy Configs Bug 1): default extras now cover ALL active
+  // V5-family baskets. R28 needs {ETC, XRP, AAVE}, V5_QUARTZ adds {INJ,
+  // RUNE, SAND}, V5_OBSIDIAN+ adds ARB. Without these the live bot silently
+  // loaded only 6/9 (or 9/15) configured assets → wrong strategy.
+  // Override with FTMO_EXTRA_SYMBOLS=... to narrow.
   const extraSymbols = process.env.FTMO_EXTRA_SYMBOLS
     ? process.env.FTMO_EXTRA_SYMBOLS.split(",")
     : [
@@ -390,6 +402,15 @@ async function runOneCheck(): Promise<DetectionResult> {
         "DOGEUSDT",
         "LTCUSDT",
         "LINKUSDT",
+        // R28 9-asset basket additions:
+        "ETCUSDT",
+        "XRPUSDT",
+        "AAVEUSDT",
+        // V5_QUARTZ / V5_OBSIDIAN superset:
+        "INJUSDT",
+        "RUNEUSDT",
+        "SANDUSDT",
+        "ARBUSDT",
       ];
 
   const allSymbols = ["ETHUSDT", "BTCUSDT", "SOLUSDT", ...extraSymbols];
