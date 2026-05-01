@@ -4809,6 +4809,12 @@ export function runFtmoDaytrade24h(
       seed = (seed * 1664525 + 1013904223) >>> 0;
       return seed / 0x100000000;
     };
+    // Phase 11 (Engine Bug 3): snapshot tradingDays before the speculative
+    // ping loop. If we fail to reach minTradingDays we MUST roll back the
+    // mutations — otherwise repeated finishPausedPass calls accumulate
+    // ping-day side-effects (only matters when pingReliability<1.0, where
+    // the loop short-circuits early on bad RNG draws).
+    const snapshot = new Set(tradingDays);
     let pingDay = targetDay + 1;
     let lastPingDay = targetDay;
     while (tradingDays.size < cfg.minTradingDays && pingDay < cfg.maxDays) {
@@ -4820,7 +4826,11 @@ export function runFtmoDaytrade24h(
       }
       pingDay++;
     }
-    if (tradingDays.size < cfg.minTradingDays) return null;
+    if (tradingDays.size < cfg.minTradingDays) {
+      tradingDays.clear();
+      snapshot.forEach((d) => tradingDays.add(d));
+      return null;
+    }
     return {
       passed: true,
       reason: "profit_target",
@@ -5118,7 +5128,12 @@ export function runFtmoDaytrade24h(
           const sodEq = dayStart.get(t.day) ?? 1.0;
           const dayPnl = (equity - sodEq) / sodEq;
           if (dayPnl <= -cfg.intradayDailyLossThrottle.softLossThreshold) {
-            factor *= cfg.intradayDailyLossThrottle.softFactor;
+            // Phase 11 (Engine Bug 12): use Math.min as a hard cap, not `*=`.
+            // Multiplicative throttle on a Kelly+timeBoost-boosted factor
+            // (e.g. 4 * 0.5 = 2) is still ABOVE baseline 1.0 — the throttle
+            // only "scales down extreme push" instead of actually de-risking
+            // when intraday PnL crosses softLossThreshold.
+            factor = Math.min(factor, cfg.intradayDailyLossThrottle.softFactor);
           }
         }
         const tradeVolMult = cfg.liveCaps
