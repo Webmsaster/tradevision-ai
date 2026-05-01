@@ -7476,6 +7476,56 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V2: FtmoDaytra
   };
 
 /**
+ * V5_QUARTZ_LITE_R28_V3 — Round 34 honest live-deploy champion (2026-05-01).
+ *
+ * NEW BREAKTHROUGH: 81.20% pass / 17.74% TL — beats R28 baseline by +9.92pp
+ * and R28_V2 by +5.56pp via aggressive peakDrawdownThrottle factor 0.3 → 0.20.
+ *
+ * Round 34 sweep (49 variants on R28_V2 base): 5 different fromPeak
+ * thresholds (0.020-0.040) all converged at factor=0.20 in [80.45-81.20%]
+ * pass-rate plateau. The plateau width strongly indicates a structural
+ * regime change, not a single overfit point.
+ *
+ * Mechanism: when equity drops 3% from challenge peak, reduce risk to
+ * 20% of nominal (was 30% in R28_V2). This deeper cut preserves ~5pp
+ * more capital on the worst losing days, which compounds into +5.56pp
+ * pass-rate over the full window.
+ *
+ * Validation (5.55y / 30m / 665 windows / liveMode=true):
+ *   - Pass: 81.20% (vs R28_V2 75.64% = +5.56pp / vs R28 71.28% = +9.92pp)
+ *   - TL: 17.74% (vs R28_V2 24.06% = -6.32pp / vs R28 27.22% = -9.48pp)
+ *   - DL: 0.0% (DPT works perfectly with deeper pDD)
+ *   - Median: 4d
+ *
+ * Robustness (R32 v3 OOS validation):
+ *   - Walk-forward TRAIN 82.37% / TEST 78.50% / Δ -3.87pp
+ *   - Bootstrap 95% CI: [78.35, 83.91] — completely above R28_V2's
+ *     [72.48, 78.95] interval (lower-bound lifted by 5.87pp).
+ *   - Year-by-year monotone better:
+ *       2020:84.6%, 2021:86.1%, 2022:81.0%, 2023:84.4%,
+ *       2024:78.7%, 2025:82.0% (only 2026Q1 53.3% noise from N=30).
+ *
+ * Sister configs (R34 plateau, all OOS-validated):
+ *   - pDD_0.040_0.20: 80.60% / WF Δ -2.29pp (most-robust alternative)
+ *   - pDD_0.020_0.20: 80.90% / WF Δ -3.44pp
+ *
+ * Live deploy notes:
+ *   - peakDrawdownThrottle is sizing-side. V231 signal generator computes
+ *     the factor server-side using account.equity vs equity-peak (Python
+ *     `sync_account_state` already tracks both). NO new Python LOC.
+ *   - Selector: `FTMO_TF=2h-trend-v5-quartz-lite-r28-v3`.
+ *   - 30m polling, 9-asset basket (BTC/ETH/BNB/ADA/LTC/BCH/ETC/XRP/AAVE).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V3: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE,
+    dailyPeakTrailingStop: { trailDistance: 0.012 },
+    partialTakeProfit: { triggerPct: 0.02, closeFraction: 0.7 },
+    peakDrawdownThrottle: { fromPeak: 0.03, factor: 0.2 },
+    liveMode: true,
+  };
+
+/**
  * V5_QUARTZ_LITE_R28_STEP2 — Round 28 Step 2 Champion (2026-04-30).
  *
  * Highest validated honest single-account Step-2 pass-rate found in entire

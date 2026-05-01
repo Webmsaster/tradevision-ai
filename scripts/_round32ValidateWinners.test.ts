@@ -97,6 +97,20 @@ function buildVariant(name: string): FtmoDaytrade24hConfig {
       liveCaps,
     };
   }
+  // R34 winners: R28_V2 base (PTP_t0.02_f0.7 + pDD already) but with new pDD.
+  if (name.startsWith("R34_pDD_")) {
+    const m = name.match(/R34_pDD_([\d.]+)_([\d.]+)/);
+    if (!m) throw new Error(`bad name ${name}`);
+    return {
+      ...BASE,
+      partialTakeProfit: { triggerPct: 0.02, closeFraction: 0.7 },
+      peakDrawdownThrottle: {
+        fromPeak: parseFloat(m[1]),
+        factor: parseFloat(m[2]),
+      },
+      liveCaps,
+    };
+  }
   throw new Error(`unknown variant: ${name}`);
 }
 
