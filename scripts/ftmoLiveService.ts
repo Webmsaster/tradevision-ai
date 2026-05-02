@@ -34,6 +34,7 @@ import { formatLiveCapsLabel } from "../src/utils/ftmoLiveCaps";
 import type { Candle } from "../src/utils/indicators";
 import { tgSend, htmlEscape } from "../src/utils/telegramNotify";
 import { startTelegramBot, readControls } from "../src/utils/telegramBot";
+import { withFileLock } from "../src/utils/processLock";
 import {
   loadForexFactoryNews,
   filterNewsEvents,
@@ -204,62 +205,10 @@ function readJSON<T>(p: string, fallback: T): T {
   }
 }
 
-/**
- * Cross-process advisory lock via O_EXCL — same pattern as Python's
- * `_file_lock` in tools/ftmo_executor.py. Used when read-modify-write of
- * shared state files (pending-signals.json, executed-signals.json) must be
- * atomic across the Node service AND the Python executor.
- *
- * Phase 19 (Live Service Bug 3): without this lock, the R-M-W sequence
- *   Node: read pending → check dedup → write pending+new
- * could be interleaved with the Python executor's
- *   Py: read pending → process & remove → write pending-remaining
- * → Node's write overwrote Python's removal, OR Python's write lost
- * Node's append. Race-window is tiny but real on shared 30s polling.
- */
-async function withFileLock<T>(
-  lockPath: string,
-  fn: () => T | Promise<T>,
-  timeoutMs = 5000,
-): Promise<T> {
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  const start = Date.now();
-  let fd: number | null = null;
-  while (true) {
-    try {
-      fd = fs.openSync(lockPath, "wx");
-      fs.writeSync(fd, String(process.pid));
-      break;
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
-      if (code !== "EEXIST") throw e;
-      if (Date.now() - start > timeoutMs) {
-        // Stale lock recovery: if older than 30s, claim it.
-        try {
-          const st = fs.statSync(lockPath);
-          if (Date.now() - st.mtimeMs > 30_000) {
-            fs.unlinkSync(lockPath);
-            continue;
-          }
-        } catch {
-          /* lock disappeared — retry */
-        }
-        throw new Error(`withFileLock: timeout acquiring ${lockPath}`);
-      }
-      await new Promise((r) => setTimeout(r, 50));
-    }
-  }
-  try {
-    return await fn();
-  } finally {
-    if (fd !== null) fs.closeSync(fd);
-    try {
-      fs.unlinkSync(lockPath);
-    } catch {
-      /* ignore */
-    }
-  }
-}
+// Phase 19/34 (cross-process lock): see src/utils/processLock.ts. Same
+// sentinel convention as Python `process_lock.file_lock` so the Node
+// service AND the Python executor mutex on shared state files
+// (pending-signals.json, executed-signals.json).
 
 function writeJSON(p: string, obj: unknown) {
   // Atomic write: write to temp file, then rename. Prevents corruption if

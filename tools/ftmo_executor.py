@@ -243,44 +243,11 @@ def write_json(path: Path, obj: Any) -> None:
 # platform AND interoperable with the Node setControls helper which uses
 # the exact same primitive (fs.openSync(path, "wx")). Falls back to
 # force-acquire if the lock is older than 2s (assume crashed holder).
-import contextlib
-
-CONTROLS_LOCK_TIMEOUT_SEC = 2.0
-
-@contextlib.contextmanager
-def _file_lock(lock_path: Path):
-    """Exclusive lock on lock_path via O_CREAT|O_EXCL sentinel."""
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    start = time.time()
-    fd: Optional[int] = None
-    while True:
-        try:
-            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            try:
-                os.write(fd, str(os.getpid()).encode())
-            except Exception:
-                pass
-            break
-        except FileExistsError:
-            # Force-take if the lock is stale (crashed holder).
-            if time.time() - start > CONTROLS_LOCK_TIMEOUT_SEC:
-                try:
-                    lock_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
-            time.sleep(0.005)
-    try:
-        yield
-    finally:
-        if fd is not None:
-            try:
-                os.close(fd)
-            except Exception:
-                pass
-        try:
-            lock_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+#
+# Phase 34 (Code-Quality Audit refactor): the lock impl was lifted into
+# tools/process_lock.py and is mirrored by src/utils/processLock.ts. The
+# `_file_lock` name is kept as a thin alias so existing call-sites work.
+from process_lock import file_lock as _file_lock  # type: ignore  # noqa: F401
 
 
 def update_controls(updater) -> dict:

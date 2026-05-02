@@ -16,6 +16,7 @@ import {
   htmlEscape,
   type TelegramConfig,
 } from "./telegramNotify";
+import { withFileLockSync } from "./processLock";
 
 export interface BotControls {
   paused: boolean;
@@ -431,51 +432,20 @@ function setControls(stateDir: string, update: Partial<BotControls>) {
 }
 
 /**
- * Blocking-ish exclusive lock on bot-controls.json. Uses an O_CREAT|O_EXCL
- * sentinel file polled with backoff. Not perfect (no kernel-level flock from
- * Node without native deps) but good enough — the lock is held for ~ms.
+ * Blocking-ish exclusive lock on bot-controls.json. Wraps the shared sync
+ * lock from `processLock.ts`. Telegram callbacks must always make progress,
+ * so `staleMs: 0` → after 2s force-claim regardless of holder mtime.
+ *
+ * Phase 34: was a copy of the Python `_file_lock`; unified into
+ * src/utils/processLock.ts.
  */
 function withControlsLock(stateDir: string, fn: () => void): void {
   const lockPath = path.join(stateDir, "bot-controls.lock");
-  const startMs = Date.now();
-  const maxWaitMs = 2_000; // 2s upper bound — beyond this, assume stale
-  while (true) {
-    try {
-      const fd = fs.openSync(lockPath, "wx");
-      try {
-        fs.writeSync(fd, String(process.pid));
-      } finally {
-        fs.closeSync(fd);
-      }
-      try {
-        fn();
-      } finally {
-        try {
-          fs.unlinkSync(lockPath);
-        } catch {
-          /* lock file may already be gone */
-        }
-      }
-      return;
-    } catch (e: unknown) {
-      // Lock held by another process. If it's been there >2s, assume the
-      // holder crashed and force-take it.
-      if (Date.now() - startMs > maxWaitMs) {
-        try {
-          fs.unlinkSync(lockPath);
-        } catch {
-          /* nothing to clear */
-        }
-        // Loop will retry the openSync next iteration.
-      }
-      // Tiny backoff (sync — function is called from async context but
-      // total runtime here is bounded by maxWaitMs).
-      const until = Date.now() + 5;
-      while (Date.now() < until) {
-        /* spin */
-      }
-    }
-  }
+  withFileLockSync(lockPath, fn, {
+    timeoutMs: 2_000,
+    staleMs: 0,
+    backoffMs: 5,
+  });
 }
 
 // ---- IO ----

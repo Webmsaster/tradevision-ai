@@ -62,7 +62,7 @@ All 17 pattern detectors run in the browser with no API calls. Logic is in `src/
 | Module                  | Purpose                                                 |
 | ----------------------- | ------------------------------------------------------- |
 | `utils/calculations.ts` | Trade statistics (win rate, PF, Sharpe, drawdown, etc.) |
-| `utils/aiAnalysis.ts`   | 13 pattern detectors for AI insights                    |
+| `utils/aiAnalysis.ts`   | 17 pattern detectors for AI insights                    |
 | `utils/csvParser.ts`    | CSV import with column mapping                          |
 | `utils/storage.ts`      | Dual storage abstraction (Supabase + localStorage)      |
 | `utils/formatters.ts`   | Number/date formatting helpers                          |

@@ -16,18 +16,28 @@ correlationFilter — currently ONLY in the TS engine — into the live loop so
 the bot's behavior matches the 53–71% backtest claim instead of drifting
 30pp downward in production.
 
-Reference TS line numbers (ftmoDaytrade24h.ts as of 2026-05-01):
-  - chandelier            4068-4101
-  - adaptiveSizing        4495-4502
-  - kellySizing           4517-4532, 4562-4566
-  - peakDrawdownThrottle  4541-4547
-  - htfTrendFilter        3611-3626
-  - lossStreakCooldown    3581-3582 (gate), 4237-4247 (track)
-  - correlationFilter     4456-4461
-  - breakEven             4010-4019
-  - timeExit              4102-4118
-  - partialTakeProfit     3963-3980, 4020-4031, 4131-4133  (incl. R12 same-bar fix)
-  - minEquityGain         4481-4485
+Phase 34 (Code-Quality Audit refactor): line-number anchors are inherently
+fragile (drift after every edit upstream). Each TS-mirror reference below
+points to a stable feature anchor — a unique search-string in
+`src/utils/ftmoDaytrade24h.ts` that survives refactors as long as the
+feature itself exists. To find the corresponding TS code: open
+`ftmoDaytrade24h.ts` and search for the quoted anchor text.
+
+TS feature anchors (stable across refactors — search in ftmoDaytrade24h.ts):
+  - chandelier           → `if (cfg.chandelierExit)`
+  - adaptiveSizing       → `if (cfg.adaptiveSizing && cfg.adaptiveSizing.length > 0)`
+  - kellySizing          → `if (cfg.kellySizing && recentPnls.length`
+  - peakDrawdownThrottle → `if (cfg.peakDrawdownThrottle)`
+  - htfTrendFilter       → `if (cfg.htfTrendFilter)`
+  - lossStreakCooldown   → `if (cfg.lossStreakCooldown)`
+  - correlationFilter    → `if (cfg.correlationFilter)`
+  - breakEven            → `if (cfg.breakEven`
+  - timeExit             → `if (cfg.timeExit`
+  - partialTakeProfit    → `if (cfg.partialTakeProfit`
+  - minEquityGain        → `minEquityGain`
+
+Run `tools/parity_check.py` to verify Python↔TS feature-parity end-to-end
+after any change here.
 """
 from __future__ import annotations
 
@@ -42,8 +52,8 @@ from typing import List, Optional, Tuple
 class ChandelierState:
     """Per-trade chandelier-exit running state.
 
-    Mirrors `chanArmed` / `chanBestClose` / `dynStop` in TS engine
-    (ftmoDaytrade24h.ts:3935-3938, 4068-4101).
+    Mirrors `chanArmed` / `chanBestClose` / `dynStop` in TS engine.
+    TS anchor: search `if (cfg.chandelierExit)` in ftmoDaytrade24h.ts.
     """
     armed: bool = False
     best_close: Optional[float] = None  # highest (long) or lowest (short) close-since-entry
@@ -138,8 +148,11 @@ def adaptive_position_sizing(
 ) -> float:
     """Compute the effective per-trade risk_frac applying ALL sizing rules.
 
-    Mirrors TS engine equity-loop block ftmoDaytrade24h.ts:4493-4558 in the
-    SAME ORDER (critical: order matters because each step is a min/multiply).
+    Mirrors TS engine equity-loop sizing block in the SAME ORDER
+    (critical: order matters because each step is a min/multiply).
+    TS anchor: search `if (cfg.adaptiveSizing && cfg.adaptiveSizing.length > 0)`
+    in ftmoDaytrade24h.ts; this Python function reproduces the chain that
+    follows down to the `liveCaps` clamp.
 
     Order:
       1. base factor = 1.0
@@ -177,10 +190,10 @@ def adaptive_position_sizing(
                 factor *= t["multiplier"]
                 break
 
-    # Phase 10 (engine_features Bug 5): MAX_FACTOR cap. Mirrors TS-Engine
-    # 5078-5079 (R13 Cascade Audit Bug B3) — without this, a hot streak
-    # combining Kelly(1.5) + timeBoost(2) + base(2) = factor 6 stacks into
-    # catastrophic risk. Hard ceiling at 4.
+    # Phase 10 (engine_features Bug 5): MAX_FACTOR cap added by R13 Cascade
+    # Audit Bug B3 — without this, a hot streak combining Kelly(1.5) +
+    # timeBoost(2) + base(2) = factor 6 stacks into catastrophic risk.
+    # Hard ceiling at 4. TS anchor: search `MAX_FACTOR` in ftmoDaytrade24h.ts.
     MAX_FACTOR = 4.0
     factor = min(factor, MAX_FACTOR)
 
@@ -206,7 +219,8 @@ def adaptive_position_sizing(
 
 def update_kelly_window(recent_pnls: List[float], new_pnl: float, window_size: int) -> List[float]:
     """Append new PnL and trim oldest if window exceeded.
-    Mirrors TS lines 4562-4566.
+    TS anchor: search `recentPnls.push` in ftmoDaytrade24h.ts (the Kelly
+    rolling-window update inside the trade-close block).
     """
     recent_pnls.append(new_pnl)
     while len(recent_pnls) > window_size:
@@ -235,9 +249,11 @@ def check_partial_take_profit(
 ) -> Tuple[bool, PartialTPState]:
     """One-shot PTP. Fires if intra-bar high/low crosses trigger_price.
 
-    R12 audit fix (ftmoDaytrade24h.ts:3963-3980): we MUST check intra-bar
-    high/low before stop/tp, not only end-of-bar close. Otherwise a same-bar
-    win-then-stop closes the FULL position when 30% should be locked.
+    R12 audit fix: we MUST check intra-bar high/low before stop/tp, not only
+    end-of-bar close. Otherwise a same-bar win-then-stop closes the FULL
+    position when 30% should be locked.
+    TS anchor: search `if (cfg.partialTakeProfit` in ftmoDaytrade24h.ts —
+    the same-bar PTP-then-stop tie-break logic mirrors that block exactly.
 
     Returns (fired_this_bar, updated_state).
     """
@@ -270,9 +286,12 @@ def check_partial_take_profit(
 
 
 def blend_partial_tp_pnl(raw_pnl: float, ptp_state: PartialTPState, close_fraction: float) -> float:
-    """Apply P&L-blending after PTP fired (TS line 4131-4133):
+    """Apply P&L-blending after PTP fired:
 
       effPnL = closeFraction × triggerPct + (1 - closeFraction) × actual_exit_pnl
+
+    TS anchor: search `partialTakeProfit fired` in ftmoDaytrade24h.ts (the
+    blended-PnL block at trade-close after PTP).
     """
     if not ptp_state.triggered:
         return raw_pnl
@@ -291,10 +310,12 @@ def htf_trend_filter(
     apply: str = "short",         # "long" | "short" | "both"
 ) -> bool:
     """Returns True if the signal SHOULD be SKIPPED (i.e. trend goes the
-    wrong way). Mirrors TS lines 3611-3626.
+    wrong way).
 
     For SHORTS: skip if change > +threshold (don't short in uptrend).
     For LONGS:  skip if change < -threshold (don't long in downtrend).
+
+    TS anchor: search `if (cfg.htfTrendFilter)` in ftmoDaytrade24h.ts.
     """
     if current_idx < lookback_bars:
         return False  # not enough history → don't gate
@@ -321,10 +342,13 @@ class LossStreakState:
 
 
 def update_loss_streak(state: LossStreakState, exit_reason: str, exit_bar: int, after_losses: int, cooldown_bars: int) -> LossStreakState:
-    """Update state after a trade closes. Mirrors TS lines 4237-4247.
+    """Update state after a trade closes.
 
     - Stop-out: increment streak; if >= afterLosses, set cooldown to exit_bar + cooldownBars
     - TP / time exit: reset streak to 0
+
+    TS anchor: search `if (cfg.lossStreakCooldown)` in ftmoDaytrade24h.ts —
+    the trade-close branch that updates `lscStreak` / `cooldownUntilBar`.
     """
     if exit_reason == "stop":
         state.streak += 1
@@ -336,7 +360,9 @@ def update_loss_streak(state: LossStreakState, exit_reason: str, exit_bar: int, 
 
 
 def is_in_cooldown(state: LossStreakState, current_bar: int) -> bool:
-    """Returns True if entries are gated. Mirrors TS line 3582 (`i < cooldownUntilBar`)."""
+    """Returns True if entries are gated.
+    TS anchor: search `i < cooldownUntilBar` in ftmoDaytrade24h.ts (the
+    LSC entry-gate inside the per-bar entry loop)."""
     return current_bar < state.cooldown_until_bar
 
 
@@ -351,8 +377,9 @@ def compute_sizing_factor_from_pdd(
 ) -> float:
     """Returns the multiplier (1.0 if pDD not triggered, factor if triggered).
 
-    Mirrors TS lines 4541-4547. Persistence happens in caller via
-    challenge-peak.json (V231 round-35 mechanism).
+    Persistence happens in caller via challenge-peak.json (V231 round-35
+    mechanism). TS anchor: search `if (cfg.peakDrawdownThrottle)` in
+    ftmoDaytrade24h.ts.
     """
     if peak <= 0:
         return 1.0
@@ -377,8 +404,9 @@ def correlation_filter_blocks(
 ) -> bool:
     """Returns True if entry should be SKIPPED.
 
-    Mirrors TS lines 4456-4461. `open_positions_same_dir` counts positions
-    currently open across the asset universe in the same direction.
+    `open_positions_same_dir` counts positions currently open across the
+    asset universe in the same direction.
+    TS anchor: search `if (cfg.correlationFilter)` in ftmoDaytrade24h.ts.
     """
     return open_positions_same_dir >= max_open_same_direction
 
@@ -402,7 +430,8 @@ def check_break_even(
 ) -> Tuple[float, BreakEvenState]:
     """Move SL to entry + small offset once unrealized P&L >= threshold.
 
-    Mirrors TS engine breakEven block (ftmoDaytrade24h.ts:4010-4019). One-shot.
+    One-shot.
+    TS anchor: search `if (cfg.breakEven` in ftmoDaytrade24h.ts.
 
     NOTE — TS engine moves SL to exactly `entry`. The `sl_offset_pct` here is
     a small live-execution buffer (default +0.05%) used by the Python
@@ -451,8 +480,9 @@ def check_time_exit(
 ) -> Tuple[bool, TimeExitState]:
     """Returns (should_close_now, updated_state).
 
-    Mirrors TS lines 4102-4118. Closes if `max_bars_without_gain` bars have
-    elapsed AND price never reached `min_gain_r × stopPct` favorable.
+    Closes if `max_bars_without_gain` bars have elapsed AND price never
+    reached `min_gain_r × stopPct` favorable.
+    TS anchor: search `if (cfg.timeExit` in ftmoDaytrade24h.ts.
     """
     # Phase 10 (engine_features Bug 8): TS-Engine uses `barsHeld = j - ebIdx`,
     # so on entry-bar barsHeld=0. Python was incrementing BEFORE the check,
@@ -482,7 +512,8 @@ def min_equity_gain_skip(
     max_equity_gain: Optional[float] = None,
 ) -> bool:
     """Returns True if entry should be SKIPPED.
-    Mirrors TS lines 4481-4490.
+    TS anchor: search `minEquityGain` in ftmoDaytrade24h.ts (the per-asset
+    activation gate inside the entry loop).
     """
     if min_equity_gain is not None and equity - 1 < min_equity_gain:
         return True
@@ -541,9 +572,11 @@ def simulate_trade(
     entry_idx: int,
     cfg: SimConfig,
 ) -> Optional[SimulatedTrade]:
-    """Bar-by-bar trade simulation matching the TS engine inner loop
-    (ftmoDaytrade24h.ts:3961-4119). Returns None if trade cannot be opened
-    (e.g. liveCaps reject, entry beyond bar list).
+    """Bar-by-bar trade simulation matching the TS engine inner loop.
+    TS anchor: search `// === Inner: per-bar PnL` (or the comment-block at
+    the top of the entry-execution loop) in ftmoDaytrade24h.ts. Returns
+    None if trade cannot be opened (e.g. liveCaps reject, entry beyond
+    bar list).
 
     This is the SHARED reference simulator used both for parity validation
     and for live in-memory replay if needed.
