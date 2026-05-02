@@ -107,7 +107,11 @@ import {
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 1 as const;
+// Phase 36 (R44-V4-8): bumped to 2. lossStreakByAssetDir.cdUntilBarIdx
+// renamed to cdUntilBarsSeen because barIdx = refCandles.length-1 is
+// non-monotonic across ticks (refKey can change when feed alignment
+// shifts). Old states get auto-backed-up + reset by loadState.
+const SCHEMA_VERSION = 2 as const;
 
 export interface OpenPositionV4 {
   /** Stable position id (entryTime + symbol) for ticket idempotency. */
@@ -186,11 +190,14 @@ export interface FtmoLiveStateV4 {
   /**
    * Loss-streak state per (asset|direction) key — mirrors detectAsset
    * which keeps it per-direction. Streak resets on TP, increments on stop.
-   * cdUntilBarIdx is the relative bar index after which entries unblock.
+   * cdUntilBarsSeen is the absolute `state.barsSeen` value after which
+   * entries unblock — monotonic across ticks even when refKey reorders.
+   * (Phase 36 / R44-V4-8: was `cdUntilBarIdx` keyed off refCandles.length
+   * which is non-monotonic when the oldest-common asset changes.)
    */
   lossStreakByAssetDir: Record<
     string,
-    { streak: number; cdUntilBarIdx: number }
+    { streak: number; cdUntilBarsSeen: number }
   >;
   /** Kelly window: realised pnl-per-trade with closeTime for filter-by-entryTime. */
   kellyPnls: Array<{ closeTime: number; effPnl: number }>;
@@ -404,6 +411,24 @@ export function saveState(state: FtmoLiveStateV4, stateDir: string): void {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────
+
+/**
+ * Phase 36 (R44-V4-5/6): pick the candle whose openTime equals `targetTime`,
+ * NOT the array end. Asset feeds can arrive 1-2 bars ahead/behind each
+ * other; reading `arr[arr.length-1]` for MTM/exit checks then mixed bars
+ * across the reference timeline. Returns null if no exact match — caller
+ * decides whether to fall back to the nearest earlier bar.
+ */
+function findCandleAtTime(arr: Candle[], targetTime: number): Candle | null {
+  // Linear scan from the end is fastest because feeds are typically
+  // 0-2 bars ahead of `targetTime`.
+  for (let i = arr.length - 1; i >= 0; i--) {
+    const c = arr[i];
+    if (c.openTime === targetTime) return c;
+    if (c.openTime < targetTime) break; // sorted asc → no earlier match equals target
+  }
+  return null;
+}
 
 function dayIndex(barTs: number, challengeStart: number): number {
   if (challengeStart <= 0) return 0;
@@ -835,7 +860,12 @@ export function pollLive(
   if (newDay > state.day) {
     state.day = newDay;
     state.dayStart = state.equity;
-    state.dayPeak = state.mtmEquity; // reset to current MTM
+    // Phase 36 (R44-V4-7): set dayPeak to -Infinity so the recompute at
+    // step 4 (using THIS bar's closes) anchors it correctly. Was using
+    // state.mtmEquity which is the PREVIOUS bar's MTM — if today's open
+    // is below yesterday's close, dayPeak was anchored too high and
+    // dailyPeakTrailingStop fired spuriously.
+    state.dayPeak = -Infinity;
   }
   if (newDay >= cfg.maxDays) {
     // Time exhausted.
@@ -854,7 +884,21 @@ export function pollLive(
     const pos = state.openPositions[i];
     const cs = candlesByAsset[pos.sourceSymbol];
     if (!cs) continue;
-    const candle = cs[cs.length - 1];
+    // Phase 36 (R44-V4-6): pick the candle that matches lastBar.openTime,
+    // not array-end. When the position's feed runs ahead of the reference
+    // timeline, `cs[cs.length-1]` was a future bar — SL/TP could fire on
+    // a bar that hadn't happened yet on the reference clock. Falls back
+    // to the most recent bar at-or-before lastBar if exact match missing.
+    let candle = findCandleAtTime(cs, lastBar.openTime);
+    if (!candle) {
+      // Closest bar ≤ lastBar.openTime (feed lagging → use last available).
+      for (let j = cs.length - 1; j >= 0; j--) {
+        if (cs[j].openTime <= lastBar.openTime) {
+          candle = cs[j];
+          break;
+        }
+      }
+    }
     if (!candle) continue;
     let atrAtBar: number | null = null;
     if (cfg.chandelierExit) {
@@ -903,7 +947,7 @@ export function pollLive(
       const k = lsKey(pos.symbol, pos.direction);
       const ls = state.lossStreakByAssetDir[k] ?? {
         streak: 0,
-        cdUntilBarIdx: -1,
+        cdUntilBarsSeen: -1,
       };
       if (effPnl > 0) {
         ls.streak = 0;
@@ -913,7 +957,11 @@ export function pollLive(
           cfg.lossStreakCooldown &&
           ls.streak >= cfg.lossStreakCooldown.afterLosses
         ) {
-          ls.cdUntilBarIdx = barIdx + cfg.lossStreakCooldown.cooldownBars;
+          // Phase 36 (R44-V4-8): anchor cooldown on monotonic barsSeen
+          // (not on `barIdx = refCandles.length-1` which can shift across
+          // ticks when refKey changes).
+          ls.cdUntilBarsSeen =
+            state.barsSeen + cfg.lossStreakCooldown.cooldownBars;
         }
       }
       state.lossStreakByAssetDir[k] = ls;
@@ -924,10 +972,23 @@ export function pollLive(
   }
 
   // 4. Recompute MTM equity after exits — uses CLOSE prices for unrealised.
+  // Phase 36 (R44-V4-5): pick each asset's close at lastBar.openTime, not
+  // array-end. With misaligned feeds, array-end could be a newer bar than
+  // the reference, anchoring MTM peak too high.
   const closesBySource: Record<string, number> = {};
   for (const k of assetKeys) {
     const c = candlesByAsset[k];
-    if (c.length > 0) closesBySource[k] = c[c.length - 1].close;
+    if (c.length === 0) continue;
+    let chosen = findCandleAtTime(c, lastBar.openTime);
+    if (!chosen) {
+      for (let j = c.length - 1; j >= 0; j--) {
+        if (c[j].openTime <= lastBar.openTime) {
+          chosen = c[j];
+          break;
+        }
+      }
+    }
+    if (chosen) closesBySource[k] = chosen.close;
   }
   state.mtmEquity = computeMtmEquity(state, closesBySource, cfg);
   if (state.mtmEquity > state.dayPeak) state.dayPeak = state.mtmEquity;
@@ -1113,10 +1174,10 @@ export function pollLive(
       // Loss-streak cooldown (per asset|direction).
       const k = lsKey(asset.symbol, matched.direction);
       const ls = state.lossStreakByAssetDir[k];
-      if (ls && barIdx < ls.cdUntilBarIdx) {
+      if (ls && state.barsSeen < ls.cdUntilBarsSeen) {
         result.skipped.push({
           asset: asset.symbol,
-          reason: `lossStreakCooldown until bar ${ls.cdUntilBarIdx}`,
+          reason: `lossStreakCooldown until barsSeen=${ls.cdUntilBarsSeen}`,
         });
         continue;
       }
