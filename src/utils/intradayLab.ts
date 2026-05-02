@@ -397,20 +397,20 @@ export function runSpreadStrategy(
       const holdTooLong = i - open.bar >= config.holdBarsMax;
       const reachedMean = Math.abs(z) < config.exitZ;
       if (reachedMean || holdTooLong) {
-        const exitRatio = ratio[i];
+        const exitRatio = ratio[i]!;
         // PnL for ratio spread. long-ratio = long numerator + short denominator
         // Approximation: pnl ≈ (exitRatio - entryRatio) / entryRatio
         const gross =
           open.dir === "long-ratio"
-            ? (exitRatio! - open.entry) / open.entry
-            : (open.entry - exitRatio!) / open.entry;
+            ? (exitRatio - open.entry) / open.entry
+            : (open.entry - exitRatio) / open.entry;
         // 2 legs × 2 sides = 4 cost events
         const fees = costs.takerFee * 4;
         const slip = (costs.slippageBps / 10_000) * 4;
         const net = gross - fees - slip;
         trades.push({
-          entryTime: times[open.bar],
-          exitTime: times[i],
+          entryTime: times[open.bar]!,
+          exitTime: times[i]!,
           direction: open.dir,
           entryRatio: open.entry,
           exitRatio,
@@ -424,7 +424,7 @@ export function runSpreadStrategy(
     if (!open && Math.abs(z) > config.entryZ) {
       open = {
         dir: z > 0 ? "short-ratio" : "long-ratio",
-        entry: ratio[i],
+        entry: ratio[i]!,
         bar: i,
       };
     }

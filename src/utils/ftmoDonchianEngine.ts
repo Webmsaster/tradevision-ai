@@ -336,7 +336,7 @@ export function runDonchianEngine(
 
     if (open.length >= cfg.maxConcurrentTrades) continue;
 
-    const candleAny = candleData[symbols[0]][bar];
+    const candleAny = candleData[symbols[0]!]![bar]!;
     if (cfg.allowedHoursUtc) {
       const hour = new Date(candleAny.openTime).getUTCHours();
       if (!cfg.allowedHoursUtc.includes(hour)) continue;
@@ -347,10 +347,10 @@ export function runDonchianEngine(
       if (open.length >= cfg.maxConcurrentTrades) break;
       if (open.some((p) => p.asset === asset.symbol)) continue;
 
-      const candle = candleData[asset.sourceSymbol]![bar];
+      const candle = candleData[asset.sourceSymbol]![bar]!;
       const { longVotes, shortVotes } = ensembleVote(
         candle,
-        bandsData[asset.sourceSymbol],
+        bandsData[asset.sourceSymbol]!,
         bar,
       );
       const a = atrData[asset.sourceSymbol]![bar];

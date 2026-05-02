@@ -461,9 +461,9 @@ function findCandleAtTime(arr: Candle[], targetTime: number): Candle | null {
   // Linear scan from the end is fastest because feeds are typically
   // 0-2 bars ahead of `targetTime`.
   for (let i = arr.length - 1; i >= 0; i--) {
-    const c = arr[i];
-    if (c!.openTime === targetTime) return c;
-    if (c!.openTime < targetTime) break; // sorted asc → no earlier match equals target
+    const c = arr[i]!;
+    if (c.openTime === targetTime) return c;
+    if (c.openTime < targetTime) break; // sorted asc → no earlier match equals target
   }
   return null;
 }
@@ -872,11 +872,11 @@ export function pollLive(
   const refKey =
     assetKeys.find(
       (k) =>
-        candlesByAsset[k]![candlesByAsset[k]!.length - 1].openTime ===
+        candlesByAsset[k]![candlesByAsset[k]!.length - 1]!.openTime ===
         minLastBar,
-    ) ?? assetKeys[0];
-  const refCandles = candlesByAsset[refKey];
-  const lastBar = refCandles[refCandles.length - 1];
+    ) ?? assetKeys[0]!;
+  const refCandles = candlesByAsset[refKey]!;
+  const lastBar = refCandles[refCandles.length - 1]!;
   const barIdx = refCandles.length - 1;
 
   // First-call: anchor challenge start.
@@ -926,8 +926,8 @@ export function pollLive(
 
   // 3. Process exits FIRST (using current bar's HLC).
   for (let i = state.openPositions.length - 1; i >= 0; i--) {
-    const pos = state.openPositions[i];
-    const cs = candlesByAsset[pos!.sourceSymbol];
+    const pos = state.openPositions[i]!;
+    const cs = candlesByAsset[pos.sourceSymbol];
     if (!cs) continue;
     // Phase 36 (R44-V4-6): pick the candle that matches lastBar.openTime,
     // not array-end. When the position's feed runs ahead of the reference
@@ -939,7 +939,7 @@ export function pollLive(
       // Closest bar ≤ lastBar.openTime (feed lagging → use last available).
       for (let j = cs.length - 1; j >= 0; j--) {
         if (cs[j]!.openTime <= lastBar.openTime) {
-          candle = cs[j];
+          candle = cs[j]!;
           break;
         }
       }
@@ -1022,8 +1022,8 @@ export function pollLive(
   // the reference, anchoring MTM peak too high.
   const closesBySource: Record<string, number> = {};
   for (const k of assetKeys) {
-    const c = candlesByAsset[k];
-    if (c!.length === 0) continue;
+    const c = candlesByAsset[k]!;
+    if (c.length === 0) continue;
     let chosen = findCandleAtTime(c, lastBar.openTime);
     if (!chosen) {
       for (let j = c!.length - 1; j >= 0; j--) {

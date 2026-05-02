@@ -185,7 +185,7 @@ async function handleCommand(
   }
   const text = msg.text.trim();
   if (!text.startsWith("/")) return;
-  const cmd = text.split(/\s+/)[0]!.toLowerCase().split("@")[0]; // strip @botname
+  const cmd = text.split(/\s+/)[0]!.toLowerCase().split("@")[0]!; // strip @botname
   const from = msg.from?.username || msg.from?.first_name || "user";
   console.log(`[tg-bot] ${from}: ${cmd}`);
 

@@ -84,7 +84,7 @@ export function computeMetrics({
   let maxDdDuration = 0;
   for (let i = 0; i < equityCurve.length; i++) {
     if (equityCurve[i]! > peak) {
-      peak = equityCurve[i];
+      peak = equityCurve[i]!;
       peakIdx = i;
     }
     const dd = (peak - equityCurve[i]!) / peak;

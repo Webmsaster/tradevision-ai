@@ -238,18 +238,18 @@ function buildDistributionData(trades: Trade[]): BucketDatum[] {
     });
   }
   for (let i = 0; i < allBounds.length - 1; i++) {
-    const lo = allBounds[i];
-    const hi = allBounds[i + 1];
+    const lo = allBounds[i]!;
+    const hi = allBounds[i + 1]!;
     buckets.push({
       label: `${fmt(lo)} to ${fmt(hi)}`,
       count: 0,
-      isPositive: lo! >= 0,
+      isPositive: lo >= 0,
     });
   }
   // Above max boundary
   if (max >= allBounds[allBounds.length - 1]!) {
-    const last = allBounds[allBounds.length - 1];
-    buckets.push({ label: `> ${fmt(last)}`, count: 0, isPositive: last! >= 0 });
+    const last = allBounds[allBounds.length - 1]!;
+    buckets.push({ label: `> ${fmt(last)}`, count: 0, isPositive: last >= 0 });
   }
 
   // Fill buckets

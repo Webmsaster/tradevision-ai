@@ -142,7 +142,7 @@ export async function fetchRecentFunding(
 export function analyzeFunding(events: FundingEvent[]): FundingSnapshot | null {
   if (events.length < 10) return null;
   const sorted = [...events].sort((a, b) => a.fundingTime - b.fundingTime);
-  const latest = sorted[sorted.length - 1];
+  const latest = sorted[sorted.length - 1]!;
   const rates = sorted.slice(0, -1).map((e) => e.fundingRate);
   const mean = rates.reduce((s, v) => s + v, 0) / rates.length;
   const variance =

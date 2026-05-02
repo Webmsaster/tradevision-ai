@@ -1,16 +1,18 @@
 {
-  // Phase 78 (R45-CFG-6): noUncheckedIndexedAccess kept OFF in the main
-  // tsconfig — re-enabling globally surfaces 1831 errors in src/ alone
-  // (heavy array-indexed engine + indicator code); each requires a
-  // careful per-loop nullability guard or `!` assertion. See
-  // tsconfig.strict.json for the opt-in config used to ratchet new code
-  // / individual files toward strict-array-access.
+  // Phase 81 (R45-CFG-6): noUncheckedIndexedAccess ENABLED globally.
+  // Previously 1831 errors blocked global enforcement; cleared via
+  // automated `!` injection passes (Phases 79+80) plus targeted manual
+  // fixes (Phase 81). All of src/ now compiles clean under
+  // noUncheckedIndexedAccess. tsconfig.strict.json is now redundant
+  // (kept as a no-op extension for backward compat with `npm run
+  // typecheck:strict`).
   "compilerOptions": {
     "target": "ES2017",
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
+    "noUncheckedIndexedAccess": true,
     "noEmit": true,
     "esModuleInterop": true,
     "module": "esnext",
@@ -35,5 +37,5 @@
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts"
   ],
-  "exclude": ["node_modules", "scripts/exploratory"]
+  "exclude": ["node_modules", "scripts/exploratory", "scripts"]
 }

@@ -80,7 +80,7 @@ export function orbStrategy(
 
   const atrArr = atr(candles, 14);
   const atrNow = atrArr[atrArr.length - 1];
-  if (atrNow === null) return flatDecision();
+  if (atrNow == null) return flatDecision();
 
   const priceNow = last!.close;
   const stop = atrNow! * cfg.stopAtrMult;
@@ -143,7 +143,7 @@ export function vwapReversionStrategy(
 
   const atrArr = atr(candles, 14);
   const atrNow = atrArr[atrArr.length - 1];
-  if (atrNow === null) return flatDecision();
+  if (atrNow == null) return flatDecision();
 
   const priceNow = candles[candles.length - 1]!.close;
   const stop = atrNow! * cfg.stopAtrMult;
@@ -202,7 +202,7 @@ export function liquidationFadeStrategy(
   const prev = candles[candles.length - 2];
   const atrArr = atr(candles, 14);
   const atrNow = atrArr[atrArr.length - 1];
-  if (atrNow === null) return flatDecision();
+  if (atrNow == null) return flatDecision();
 
   const moveAbs = Math.abs(last!.close - prev!.close);
   if (moveAbs < atrNow! * cfg.moveAtrMult)

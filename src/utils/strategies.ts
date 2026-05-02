@@ -192,7 +192,7 @@ export function meanReversionStrategy(
       action: "long",
       strategy: "mean-reversion",
       stopDistance: stop,
-      targetDistance: Math.max(targetLong, atrNow),
+      targetDistance: Math.max(targetLong, atrNow!),
       notes: [
         `Price below lower BB, RSI ${rsiNow!.toFixed(1)} oversold — fade to mid`,
       ],
@@ -203,7 +203,7 @@ export function meanReversionStrategy(
       action: "short",
       strategy: "mean-reversion",
       stopDistance: stop,
-      targetDistance: Math.max(targetShort, atrNow),
+      targetDistance: Math.max(targetShort, atrNow!),
       notes: [
         `Price above upper BB, RSI ${rsiNow!.toFixed(1)} overbought — fade to mid`,
       ],

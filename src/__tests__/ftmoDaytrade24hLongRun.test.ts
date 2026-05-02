@@ -139,7 +139,7 @@ function summarize(results: FtmoDaytrade24hResult[]): SimStats {
   passDays.sort((a, b) => a - b);
   const median =
     passDays.length > 0
-      ? passDays[Math.floor(passDays.length / 2)]
+      ? passDays[Math.floor(passDays.length / 2)]!
       : Number.NaN;
   const avgEq =
     results.reduce((s, r) => s + r.finalEquityPct, 0) / results.length;

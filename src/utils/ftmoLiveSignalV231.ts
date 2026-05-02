@@ -1289,7 +1289,8 @@ function detectBullSignals(
   const b0 = ethCandles[ethLastIdx - 1];
   const b1 = ethCandles[ethLastIdx];
   const last2Green =
-    b1!.close > b0!.close && b0!.close > ethCandles[ethLastIdx - 2]!?.close;
+    b1!.close > b0!.close &&
+    b0!.close > (ethCandles[ethLastIdx - 2]?.close ?? Infinity);
   if (!last2Green) {
     result.notes.push("No 2-green sequence → no BULL signal");
     return result;

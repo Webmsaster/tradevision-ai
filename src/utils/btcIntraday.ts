@@ -359,7 +359,7 @@ function smaLast(v: number[], n: number): number {
 function medianLast(v: number[], n: number): number {
   if (v.length < n) return 0;
   const s = [...v.slice(-n)].sort((a, b) => a - b);
-  return s[Math.floor(s.length / 2)];
+  return s[Math.floor(s.length / 2)]!;
 }
 function maxLast(v: number[], n: number): number {
   const s = v.slice(-n);

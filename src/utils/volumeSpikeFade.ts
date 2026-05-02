@@ -72,7 +72,7 @@ function median(arr: number[]): number {
   const m = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 0
     ? (sorted[m - 1]! + sorted[m]!) / 2
-    : sorted[m];
+    : sorted[m]!;
 }
 
 function stdReturns(closes: number[]): number {

@@ -71,7 +71,7 @@ function indexOfCandleAt(
     if (candles[mid]!.closeTime < ts) lo = mid + 1;
     else hi = mid;
   }
-  return Math.abs(candles[lo]!?.closeTime - ts) <= tolMs ? lo : -1;
+  return Math.abs((candles[lo]?.closeTime ?? 0) - ts) <= tolMs ? lo : -1;
 }
 
 export function runFundingMinuteBacktest(

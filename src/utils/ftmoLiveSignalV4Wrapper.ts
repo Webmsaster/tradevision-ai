@@ -288,13 +288,13 @@ export function detectLiveSignalsV4(
   }
 
   // Translate decisions to LiveSignal records (same shape V231 emits).
-  const refKey = Object.keys(aligned)[0];
-  const refCandles = aligned[refKey];
-  const lastBar = refCandles[refCandles.length - 1];
+  const refKey = Object.keys(aligned)[0]!;
+  const refCandles = aligned[refKey]!;
+  const lastBar = refCandles[refCandles.length - 1]!;
   const barDur =
     refCandles.length >= 2
-      ? refCandles[refCandles.length - 1].openTime -
-        refCandles[refCandles.length - 2].openTime
+      ? refCandles[refCandles.length - 1]!.openTime -
+        refCandles[refCandles.length - 2]!.openTime
       : 30 * 60 * 1000;
 
   for (const open of poll.decision.opens) {

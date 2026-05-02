@@ -3398,7 +3398,7 @@ function pragueDay(ms: number): number {
     const yyyymmdd = _pragueFmt.format(new Date(ms)); // "YYYY-MM-DD"
     const [y, m, d] = yyyymmdd.split("-").map(Number);
     // Day-index since epoch using UTC of (Prague-Y/M/D 00:00 as if UTC).
-    return Math.floor(Date.UTC(y, m! - 1, d) / (24 * 3600 * 1000));
+    return Math.floor(Date.UTC(y!, m! - 1, d!) / (24 * 3600 * 1000));
   }
   // Fallback: fixed UTC+1 (legacy behavior, ~0.3-0.6pp drift in summer).
   return Math.floor((ms + 3600 * 1000) / (24 * 3600 * 1000));

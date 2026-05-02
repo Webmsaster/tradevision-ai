@@ -84,7 +84,7 @@ function alignSeries(byCandles: Record<string, Candle[]>): {
   const sets = symbols.map(
     (s) => new Set(byCandles[s]!.map((c) => c.openTime)),
   );
-  const sharedTimes = [...sets[0]]
+  const sharedTimes = [...sets[0]!]
     .filter((t) => sets.every((s) => s.has(t)))
     .sort((a, b) => a - b);
   const matrix: number[][] = [];
@@ -160,7 +160,7 @@ export function runCrossSectionalRotation({
 
     if (currentHold && needToSwitch) {
       // Close current hold
-      const exitPrice = matrix[i]![currentHold.symbolIdx];
+      const exitPrice = matrix[i]![currentHold.symbolIdx]!;
       const holdingHours = (i - currentHold.openBar) * hoursPerBar;
       const cost = applyCosts({
         entry: currentHold.entry,
@@ -171,7 +171,7 @@ export function runCrossSectionalRotation({
       });
       trades.push({
         openTime: currentHold.openTime,
-        closeTime: times[i],
+        closeTime: times[i]!,
         symbol: currentHold.symbol,
         direction: "long",
         entry: currentHold.entry,
@@ -183,12 +183,12 @@ export function runCrossSectionalRotation({
     }
 
     if (!currentHold && shouldHold) {
-      const entry = matrix[i]![shouldHold.idx];
+      const entry = matrix[i]![shouldHold.idx]!;
       currentHold = {
         symbol: shouldHold.symbol,
         symbolIdx: shouldHold.idx,
         entry,
-        openTime: times[i],
+        openTime: times[i]!,
         openBar: i,
       };
     }
@@ -198,7 +198,7 @@ export function runCrossSectionalRotation({
 
   if (currentHold) {
     const lastBar = matrix.length - 1;
-    const exitPrice = matrix[lastBar]![currentHold.symbolIdx];
+    const exitPrice = matrix[lastBar]![currentHold.symbolIdx]!;
     const holdingHours = (lastBar - currentHold.openBar) * hoursPerBar;
     const cost = applyCosts({
       entry: currentHold.entry,
@@ -209,7 +209,7 @@ export function runCrossSectionalRotation({
     });
     trades.push({
       openTime: currentHold.openTime,
-      closeTime: times[lastBar],
+      closeTime: times[lastBar]!,
       symbol: currentHold.symbol,
       direction: "long",
       entry: currentHold.entry,

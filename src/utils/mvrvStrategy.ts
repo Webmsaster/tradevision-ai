@@ -293,7 +293,8 @@ export function runMvrvBacktest(
     0,
   );
   const totalDays =
-    (withZ[withZ.length - 1]!?.time - withZ[0]!?.time) / 86400000 || 1;
+    ((withZ[withZ.length - 1]?.time ?? 0) - (withZ[0]?.time ?? 0)) / 86400000 ||
+    1;
   const timeInMarket = Math.min(1, tradesDays / totalDays);
 
   const currentZ = withZ[withZ.length - 1]?.zScore ?? null;

@@ -263,7 +263,7 @@ function computeChampionForSymbol(
   const closes = candles.map((c) => c.close);
   const smaArr = sma(closes, smaPeriodBars);
   const last = candles[candles.length - 1];
-  const smaNow = smaArr[smaArr.length - 1];
+  const smaNow = smaArr[smaArr.length - 1] ?? null;
   const aboveSma = smaNow !== null && last!.close > smaNow!;
   const now = new Date();
   const hour = now.getUTCHours();

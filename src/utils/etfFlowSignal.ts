@@ -111,7 +111,7 @@ export function parseEtfFlowPaste(raw: string): EtfFlowEntry[] {
       .trim()
       .match(/^(\d{4}-\d{2}-\d{2})[\s,\t]+(-?[\d,.]+)\s*([MmBb]?)/);
     if (!m) continue;
-    const date = m[1];
+    const date = m[1]!;
     let value = parseFloat(m[2]!.replace(/,/g, ""));
     const suffix = (m[3] ?? "").toLowerCase();
     if (suffix === "b") value *= 1_000_000_000;

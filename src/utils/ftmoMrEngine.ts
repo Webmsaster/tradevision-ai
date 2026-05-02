@@ -323,7 +323,7 @@ export function runMrEngine(
     if (open.length >= cfg.maxConcurrentTrades) continue;
 
     // Hour filter (if specified)
-    const candleAny = candleData[symbols[0]][bar];
+    const candleAny = candleData[symbols[0]!]![bar]!;
     if (cfg.allowedHoursUtc) {
       const hour = new Date(candleAny.openTime).getUTCHours();
       if (!cfg.allowedHoursUtc.includes(hour)) continue;
@@ -344,7 +344,7 @@ export function runMrEngine(
         rPrev! <= asset.rsiOversold &&
         r! > asset.rsiOversold
       ) {
-        const entryPrice = candleData[asset.sourceSymbol]![bar].close;
+        const entryPrice = candleData[asset.sourceSymbol]![bar]!.close;
         open.push({
           asset: asset.symbol,
           symbol: asset.sourceSymbol,
@@ -368,7 +368,7 @@ export function runMrEngine(
         rPrev! >= asset.rsiOverbought &&
         r! < asset.rsiOverbought
       ) {
-        const entryPrice = candleData[asset.sourceSymbol]![bar].close;
+        const entryPrice = candleData[asset.sourceSymbol]![bar]!.close;
         open.push({
           asset: asset.symbol,
           symbol: asset.sourceSymbol,

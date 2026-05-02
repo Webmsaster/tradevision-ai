@@ -469,17 +469,17 @@ export function detectOvertrading(trades: Trade[]): AIInsight | null {
     // of trade-decisions per day, and decisions are made at entry, not
     // exit. Was using exitDate which lumped multi-day-hold exits into
     // the wrong bucket and disagreed with the dashboard heatmap.
-    const day = new Date(trade.entryDate).toISOString().split("T")[0];
+    const day = new Date(trade.entryDate).toISOString().split("T")[0]!;
     if (!dayStats[day]) {
       dayStats[day] = { total: 0, wins: 0, tradeIds: [] };
     }
-    dayStats[day].total++;
-    if (trade.pnl > 0) dayStats[day].wins++;
-    dayStats[day].tradeIds.push(trade.id);
+    dayStats[day]!.total++;
+    if (trade.pnl > 0) dayStats[day]!.wins++;
+    dayStats[day]!.tradeIds.push(trade.id);
   }
 
   for (const day of Object.keys(dayStats)) {
-    const stats = dayStats[day];
+    const stats = dayStats[day]!;
     if (stats!.total > 5) {
       const winRate = stats!.wins / stats!.total;
       if (winRate < 0.4) {

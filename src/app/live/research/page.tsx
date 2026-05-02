@@ -3565,7 +3565,7 @@ function PortfolioEquityPanel() {
                 : 0,
             weight: c.weight,
             sharpe: c.sharpe,
-            color: palette[i % palette.length],
+            color: palette[i % palette.length]!,
           }))
           .sort((a, b) => b.absSharePct - a.absSharePct),
       );

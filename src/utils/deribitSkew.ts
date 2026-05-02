@@ -55,9 +55,9 @@ function parseInstrument(name: string): {
   if (parts.length !== 4) return null;
   const [, exp, strike, type] = parts;
   if (type !== "C" && type !== "P") return null;
-  const s = parseFloat(strike);
+  const s = parseFloat(strike!);
   if (!isFinite(s)) return null;
-  return { expiry: exp, strike: s, type };
+  return { expiry: exp!, strike: s, type };
 }
 
 export async function fetchDeribitSkew(): Promise<DeribitSkewSnapshot> {
@@ -103,7 +103,7 @@ export async function fetchDeribitSkew(): Promise<DeribitSkewSnapshot> {
     const m = exp.match(/^(\d{1,2})([A-Z]{3})(\d{2})$/);
     if (!m) return 0;
     const day = parseInt(m[1]!);
-    const mon = monthMap[m[2]] ?? 0;
+    const mon = monthMap[m[2]!] ?? 0;
     const year = 2000 + parseInt(m[3]!);
     return Date.UTC(year, mon, day, 8);
   }

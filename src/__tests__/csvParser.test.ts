@@ -135,7 +135,7 @@ describe("mapCSVToTrades", () => {
       },
     ];
 
-    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic);
+    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
     expect(trades).toHaveLength(1);
     expect(trades[0]!.pair).toBe("BTC/USDT");
     expect(trades[0]!.direction).toBe("long");
@@ -170,7 +170,7 @@ describe("mapCSVToTrades", () => {
       },
     ];
 
-    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic);
+    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
     expect(trades).toHaveLength(1);
   });
 
@@ -189,7 +189,7 @@ describe("mapCSVToTrades", () => {
       },
     ];
 
-    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic);
+    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
     expect(trades[0]!.direction).toBe("long");
   });
 
@@ -219,7 +219,7 @@ describe("mapCSVToTrades", () => {
       },
     ];
 
-    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic);
+    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
     expect(trades[0]!.direction).toBe("short");
     expect(trades[1]!.direction).toBe("long");
   });
@@ -278,7 +278,7 @@ describe("mapCSVToTrades - CSV injection protection", () => {
         Leverage: "",
       },
     ];
-    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic);
+    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
     expect(trades[0]!.pair).toBe("CMD()");
   });
 
@@ -296,7 +296,7 @@ describe("mapCSVToTrades - CSV injection protection", () => {
         Leverage: "",
       },
     ];
-    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic);
+    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
     expect(trades[0]!.direction).toBe("long");
   });
 });

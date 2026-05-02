@@ -107,7 +107,7 @@ export function macd(
       .map((v) => (v === null ? 0 : v));
     const sig = ema(slice, signalPeriod);
     for (let i = 0; i < sig.length; i++) {
-      signalLine[firstValidIdx + i] = sig[i];
+      signalLine[firstValidIdx + i] = sig[i] ?? null;
     }
   }
 

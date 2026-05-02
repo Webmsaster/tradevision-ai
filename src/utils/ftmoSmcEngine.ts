@@ -378,7 +378,7 @@ export function runSmcEngine(
     const dd = (peakEquity - equity) / peakEquity;
     if (dd > maxDD) maxDD = dd;
     if (open.length >= cfg.maxConcurrentTrades) continue;
-    const candleAny = candleData[symbols[0]][bar];
+    const candleAny = candleData[symbols[0]!]![bar]!;
     if (cfg.allowedHoursUtc) {
       const hour = new Date(candleAny.openTime).getUTCHours();
       if (!cfg.allowedHoursUtc.includes(hour)) continue;
@@ -388,7 +388,7 @@ export function runSmcEngine(
     for (const asset of cappedAssets) {
       if (open.length >= cfg.maxConcurrentTrades) break;
       if (open.some((p) => p.asset === asset.symbol)) continue;
-      const c = candleData[asset.sourceSymbol];
+      const c = candleData[asset.sourceSymbol]!;
       const a = atrData[asset.sourceSymbol]![bar];
       if (a === null || !Number.isFinite(a) || a! <= 0) continue;
 
@@ -408,7 +408,7 @@ export function runSmcEngine(
           entrySignal = { dir: "long", setup: "sweep" };
         else if (
           asset.obEnabled &&
-          isBullishOb(c, bar, a, asset.obStrongMoveAtr)
+          isBullishOb(c, bar, a!, asset.obStrongMoveAtr)
         )
           entrySignal = { dir: "long", setup: "ob" };
       }
@@ -423,7 +423,7 @@ export function runSmcEngine(
           entrySignal = { dir: "short", setup: "sweep" };
         else if (
           asset.obEnabled &&
-          isBearishOb(c, bar, a, asset.obStrongMoveAtr)
+          isBearishOb(c, bar, a!, asset.obStrongMoveAtr)
         )
           entrySignal = { dir: "short", setup: "ob" };
       }

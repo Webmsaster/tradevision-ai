@@ -162,7 +162,7 @@ export function runOiTakerBacktest(
       continue;
     }
     const z = (d! - means[i]!) / sigma!;
-    const tr = takerRatios[i];
+    const tr = takerRatios[i]!;
     const price = aligned[i]!.candle.close;
     const vw = vwap[i];
 

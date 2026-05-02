@@ -94,9 +94,11 @@ export function detectLiveSignal(
     });
   }
   const last2Green =
-    b1.close > b0.close && b0.close > ethCandles[ethLastIdx - 2]!?.close;
+    b1.close > b0.close &&
+    b0.close > (ethCandles[ethLastIdx - 2]?.close ?? Infinity);
   const last2Red =
-    b1.close < b0.close && b0.close < ethCandles[ethLastIdx - 2]!?.close;
+    b1.close < b0.close &&
+    b0.close < (ethCandles[ethLastIdx - 2]?.close ?? -Infinity);
 
   // iter212 MR-short: 2 green → short
   // iter213 MOM-long (invertDirection=true): 2 green → long

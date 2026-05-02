@@ -133,7 +133,7 @@ export function correlationMatrix(returns: number[][]): number[][] {
       const len = Math.min(returns[i]!.length, returns[j]!.length);
       let num = 0;
       for (let k = 0; k < len; k++) {
-        num += (returns[i]![k] - means[i]!) * (returns[j]![k] - means[j]!);
+        num += (returns[i]![k]! - means[i]!) * (returns[j]![k]! - means[j]!);
       }
       num /= Math.max(1, len);
       const denom = stds[i]! * stds[j]!;
@@ -193,7 +193,7 @@ export function allocate(
     if (valid.length <= 1) return 0;
     let sum = 0;
     for (let j = 0; j < valid.length; j++) {
-      if (i !== j) sum += Math.abs(corr[i]![j]);
+      if (i !== j) sum += Math.abs(corr[i]![j]!);
     }
     return sum / (valid.length - 1);
   });
@@ -217,7 +217,7 @@ export function allocate(
         afterKelly[j]! *
         valid[i]!.stdDevPct *
         valid[j]!.stdDevPct *
-        corr[i]![j];
+        corr[i]![j]!;
     }
   }
   const portStd = Math.sqrt(Math.max(0, portVar));
@@ -256,10 +256,10 @@ export function allocate(
     }
     return {
       name: m.name,
-      rawWeight: weights[idx],
-      correlationHaircut: avgCorr[idx],
-      kellyCap: kellyCaps[idx],
-      finalWeight: finalWeights[idx],
+      rawWeight: weights[idx] ?? 0,
+      correlationHaircut: avgCorr[idx] ?? 0,
+      kellyCap: kellyCaps[idx] ?? 0,
+      finalWeight: finalWeights[idx] ?? 0,
       cappedSharpe: m.cappedSharpe,
       stdevPct: m.stdDevPct,
     };

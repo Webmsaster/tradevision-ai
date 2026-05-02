@@ -96,19 +96,19 @@ export function analyzeCandles(
   const last = candles.length - 1;
   const prev = last - 1;
 
-  const emaFastNow = emaFastArr[last];
-  const emaFastPrev = emaFastArr[prev];
-  const emaSlowNow = emaSlowArr[last];
-  const emaSlowPrev = emaSlowArr[prev];
-  const rsiNow = rsiArr[last];
-  const macdNow = macdArr.macd[last];
-  const macdSignalNow = macdArr.signal[last];
-  const macdHistNow = macdArr.histogram[last];
-  const macdHistPrev = macdArr.histogram[prev];
-  const atrNow = atrArr[last];
-  const adxNow = adxResult.adx[last];
-  const volNow = volumes[last];
-  const volAvg = volSmaArr[last];
+  const emaFastNow = emaFastArr[last] ?? null;
+  const emaFastPrev = emaFastArr[prev] ?? null;
+  const emaSlowNow = emaSlowArr[last] ?? null;
+  const emaSlowPrev = emaSlowArr[prev] ?? null;
+  const rsiNow = rsiArr[last] ?? null;
+  const macdNow = macdArr.macd[last] ?? null;
+  const macdSignalNow = macdArr.signal[last] ?? null;
+  const macdHistNow = macdArr.histogram[last] ?? null;
+  const macdHistPrev = macdArr.histogram[prev] ?? null;
+  const atrNow = atrArr[last] ?? null;
+  const adxNow = adxResult.adx[last] ?? null;
+  const volNow = volumes[last] ?? 0;
+  const volAvg = volSmaArr[last] ?? null;
 
   const reasons: string[] = [];
   let longScore = 0;
@@ -503,9 +503,9 @@ export function monteCarloBacktest(
   maxDrawdowns.sort((a, b) => a - b);
   return {
     runs,
-    medianMaxDrawdownR: maxDrawdowns[Math.floor(maxDrawdowns.length / 2)],
-    p95MaxDrawdownR: maxDrawdowns[Math.floor(maxDrawdowns.length * 0.95)],
-    worstMaxDrawdownR: maxDrawdowns[maxDrawdowns.length - 1],
+    medianMaxDrawdownR: maxDrawdowns[Math.floor(maxDrawdowns.length / 2)] ?? 0,
+    p95MaxDrawdownR: maxDrawdowns[Math.floor(maxDrawdowns.length * 0.95)] ?? 0,
+    worstMaxDrawdownR: maxDrawdowns[maxDrawdowns.length - 1] ?? 0,
     probOfProfit: profitableRuns / runs,
   };
 }

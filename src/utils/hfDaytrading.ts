@@ -291,7 +291,7 @@ function median(a: number[]): number {
   if (a.length === 0) return 0;
   const s = [...a].sort((x, y) => x - y);
   const m = Math.floor(s.length / 2);
-  return s.length % 2 === 0 ? (s[m - 1]! + s[m]!) / 2 : s[m];
+  return s.length % 2 === 0 ? (s[m - 1]! + s[m]!) / 2 : s[m]!;
 }
 
 function stdReturns(c: number[]): number {
@@ -317,8 +317,8 @@ function smaOf(vals: number[]): number {
  */
 function findContaining1h(bar15m: Candle, candles1h: Candle[]): Candle | null {
   for (let i = candles1h.length - 1; i >= 0; i--) {
-    const c = candles1h[i];
-    if (c!.openTime <= bar15m.openTime && bar15m.openTime <= c!.closeTime) {
+    const c = candles1h[i]!;
+    if (c.openTime <= bar15m.openTime && bar15m.openTime <= c.closeTime) {
       return c;
     }
   }
@@ -583,9 +583,9 @@ export function evaluateHfDaytrading(
     };
   }
   const i = candles.length - 1;
-  const cur = candles[i];
-  const prev = candles[i - 1];
-  if (prev!.close <= 0) {
+  const cur = candles[i]!;
+  const prev = candles[i - 1]!;
+  if (prev.close <= 0) {
     return {
       ...base,
       active: false,
