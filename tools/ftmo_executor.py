@@ -254,9 +254,15 @@ def update_controls(updater) -> dict:
     """Atomic read-modify-write on bot-controls.json under cross-process lock.
     `updater` receives a dict and mutates it in-place (or returns a new dict).
     Returns the post-update dict.
+
+    Phase 49 (R45-1): explicit `stale_sec=2.0` (was relying on the default
+    which Phase 38 raised from 0 → 30). At 30s, a TS-side bot crash while
+    holding the lock would freeze update_controls for half a minute per
+    call — Telegram /pause / /kill UI looked dead. 2s matches the
+    pre-Phase-38 behavior tuned for this resource.
     """
     lock_path = STATE_DIR / "bot-controls.lock"
-    with _file_lock(lock_path):
+    with _file_lock(lock_path, timeout_sec=2.0, stale_sec=2.0):
         controls = read_json(CONTROLS_PATH, {})
         result = updater(controls)
         if isinstance(result, dict):
