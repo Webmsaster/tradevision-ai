@@ -32,7 +32,15 @@ export function bollingerBands(
     middle[i] = mean;
     upper[i] = mean + sd * stdDevMult;
     lower[i] = mean - sd * stdDevMult;
-    widthPct[i] = mean > 0 ? ((sd * stdDevMult * 2) / mean) * 100 : 0;
+    // Phase 53 (R45-IND-1): use |mean| so the relative-width metric works
+    // for any input series (returns/PnL series can have mean ≤ 0). The
+    // previous `mean > 0` guard silently zeroed widthPct on negative-mean
+    // inputs — fine for prices but a latent bug for any future use on
+    // PnL/returns streams.
+    widthPct[i] =
+      Math.abs(mean) > 1e-12
+        ? ((sd * stdDevMult * 2) / Math.abs(mean)) * 100
+        : 0;
   }
 
   return { middle, upper, lower, widthPct };
@@ -49,6 +57,12 @@ export interface VwapPoint {
 /**
  * Running VWAP with 1σ/2σ bands, reset at UTC midnight so each trading day
  * gets its own volume-weighted reference price (standard intraday convention).
+ *
+ * Phase 53 (R45-IND-2): INTRADAY ONLY. For ≥1d source candles the per-day
+ * reset fires every bar, making vwap === typical price (single-bar
+ * accumulator) and bands collapse to zero — meaningless. Callers feeding
+ * daily/weekly series should use a different reference (anchored VWAP or
+ * price-only equivalent).
  */
 export function vwap(candles: Candle[]): VwapPoint[] {
   const out: VwapPoint[] = [];
