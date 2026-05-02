@@ -143,8 +143,23 @@ export function useTradeStorage() {
       const detail = (e as CustomEvent).detail;
       if (detail?.activeAccountId) setActiveAccountId(detail.activeAccountId);
     };
+    // Phase 51 (R45-UI-H2): same-tab event handles account switches in
+    // this tab, but cross-tab account switches were missed — listening
+    // to the `storage` event for SETTINGS_KEY so a switch in tab B
+    // updates tab A's filter immediately. Without this, trades got
+    // saved/filtered under the wrong account until the user touched
+    // settings UI again.
+    const storageHandler = (e: StorageEvent) => {
+      if (e.key === SETTINGS_KEY) {
+        setActiveAccountId(getActiveAccountId());
+      }
+    };
     window.addEventListener(SETTINGS_CHANGED_EVENT, handler);
-    return () => window.removeEventListener(SETTINGS_CHANGED_EVENT, handler);
+    window.addEventListener("storage", storageHandler);
+    return () => {
+      window.removeEventListener(SETTINGS_CHANGED_EVENT, handler);
+      window.removeEventListener("storage", storageHandler);
+    };
   }, []);
 
   // Filter trades by active account
