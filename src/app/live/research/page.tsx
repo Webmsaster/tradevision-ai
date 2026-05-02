@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import {
   Area,
   AreaChart,
@@ -3293,6 +3294,10 @@ function EtfFlowPanel() {
     action: string;
   } | null>(null);
   const [refresh, setRefresh] = useState(0);
+  // Phase 76 (R45-UI-M5): replaced native `confirm()` with ConfirmDialog
+  // — native blocks the test harness (Playwright) and is inconsistent
+  // with the rest of the app's confirmation UX.
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -3316,11 +3321,14 @@ function EtfFlowPanel() {
     setRefresh((r) => r + 1);
   }
 
-  async function handleClear() {
-    if (!confirm("Clear ETF flow history?")) return;
+  function handleClear() {
+    setShowClearConfirm(true);
+  }
+  async function confirmClear() {
     const mod = await import("@/utils/etfFlowSignal");
     mod.saveEtfFlowHistory([]);
     setRefresh((r) => r + 1);
+    setShowClearConfirm(false);
   }
 
   const tone =
@@ -3414,6 +3422,14 @@ function EtfFlowPanel() {
           </div>
         </div>
       )}
+      <ConfirmDialog
+        isOpen={showClearConfirm}
+        title="Clear ETF flow history?"
+        message="This removes all ETF flow entries from local storage. The action cannot be undone."
+        confirmLabel="Clear"
+        onConfirm={confirmClear}
+        onCancel={() => setShowClearConfirm(false)}
+      />
     </div>
   );
 }
@@ -4037,6 +4053,7 @@ function SignalJournalPanel({
 }) {
   const [entries, setEntries] = useState<SignalEntry[]>([]);
   const [refresh, setRefresh] = useState(0);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   // Reload on manual refresh trigger AND whenever live signals refresh
   // (parent auto-closes expired paper trades on liveReport change).
@@ -4081,10 +4098,14 @@ function SignalJournalPanel({
     setRefresh((r) => r + 1);
   }
 
+  // Phase 76 (R45-UI-M5): ConfirmDialog instead of native confirm().
   function handleClear() {
-    if (!confirm("Clear all signal journal entries?")) return;
+    setShowClearConfirm(true);
+  }
+  function confirmClear() {
     saveJournal([]);
     setRefresh((r) => r + 1);
+    setShowClearConfirm(false);
   }
 
   const openEntries = entries.filter((e) => e.actualPnlPct === undefined);
@@ -4328,6 +4349,14 @@ function SignalJournalPanel({
           </div>
         </div>
       )}
+      <ConfirmDialog
+        isOpen={showClearConfirm}
+        title="Clear all signal journal entries?"
+        message="This removes the entire signal journal from local storage. The action cannot be undone."
+        confirmLabel="Clear"
+        onConfirm={confirmClear}
+        onCancel={() => setShowClearConfirm(false)}
+      />
     </div>
   );
 }
