@@ -44,10 +44,12 @@ describe("walkForwardBacktest", () => {
   it("does not flag overfitting when IS and OOS are similar", () => {
     const closes = Array.from({ length: 200 }, (_, i) => 100 + i * 0.2);
     const result = walkForwardBacktest(makeCandles(closes));
-    // smooth trend should generalise
-    if (result.inSample.profitFactor > 1.5) {
-      expect(result.overfitWarning).toBe(false);
-    }
+    // Phase 50 (R45-TEST-3): assert PF condition first instead of using a
+    // bare `if` — the previous form silently passed when PF<=1.5 (no
+    // assertion ran), masking real overfit-detector regressions on
+    // smooth-trend inputs that should yield a strong in-sample fit.
+    expect(result.inSample.profitFactor).toBeGreaterThan(1.5);
+    expect(result.overfitWarning).toBe(false);
   });
 });
 

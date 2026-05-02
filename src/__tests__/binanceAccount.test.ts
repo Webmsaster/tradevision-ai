@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { buildSignedQuery, configFromEnv } from "@/utils/binanceAccount";
 
 describe("binanceAccount — signing", () => {
@@ -26,14 +26,28 @@ describe("binanceAccount — signing", () => {
   });
 
   it("signature is deterministic given same input", () => {
-    // Freeze timestamp to make it deterministic
-    const params = "foo=bar&timestamp=12345&recvWindow=5000";
-    const crypto = require("node:crypto");
-    const expected = crypto
-      .createHmac("sha256", "test-secret")
-      .update(params)
-      .digest("hex");
-    expect(expected).toHaveLength(64);
+    // Phase 50 (R45-TEST-1): the previous test computed the expected
+    // signature directly via crypto.createHmac and only asserted its
+    // length — it never invoked the SUT (`buildSignedQuery`). Now we
+    // freeze Date.now() so the timestamp is stable across both calls
+    // and assert that two `buildSignedQuery` invocations yield the
+    // exact same query string.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    try {
+      const a = buildSignedQuery({ foo: "bar" }, cfg);
+      const b = buildSignedQuery({ foo: "bar" }, cfg);
+      expect(a).toBe(b);
+      // Sanity: the signature is a 64-char hex (SHA-256 hex digest).
+      const sigA = a.split("signature=")[1];
+      expect(sigA).toMatch(/^[a-f0-9]{64}$/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("configFromEnv reads BINANCE_* environment variables", () => {
