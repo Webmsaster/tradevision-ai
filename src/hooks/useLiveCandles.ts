@@ -112,7 +112,15 @@ export function useLiveCandles({
     const lowerSymbol = symbol.toLowerCase();
     const restUrl = `https://api.binance.com/api/v3/klines?symbol=${symbol.toUpperCase()}&interval=${timeframe}&limit=${history}`;
 
-    fetch(restUrl)
+    // Phase 54 (R45-UI-M4): AbortController so a rapid symbol/timeframe
+    // switch cancels the previous fetch before it can resolve and open
+    // a stale WebSocket. The cancelled flag alone blocked setCandles
+    // but `connectWebSocket()` ran from the resolved promise — opened
+    // a WS for the OLD symbol that the cleanup couldn't reach because
+    // wsRef had already been overwritten by the new effect run.
+    const abort = new AbortController();
+
+    fetch(restUrl, { signal: abort.signal })
       .then((res) => {
         if (!res.ok) throw new Error(`History fetch failed: ${res.status}`);
         return res.json();
@@ -123,7 +131,9 @@ export function useLiveCandles({
         connectWebSocket();
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (cancelled || (err instanceof Error && err.name === "AbortError")) {
+          return;
+        }
         setStatus("error");
         setError(err instanceof Error ? err.message : "Failed to load history");
       });
@@ -176,6 +186,7 @@ export function useLiveCandles({
 
     return () => {
       cancelled = true;
+      abort.abort();
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;

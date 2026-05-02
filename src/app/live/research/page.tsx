@@ -235,10 +235,30 @@ export default function ResearchPage() {
   // Auto-load on mount and refresh every 5 minutes so the signal stays
   // fresh as the UTC hour changes. Users can also click the button for an
   // immediate refresh.
+  //
+  // Phase 54 (R45-UI-H3): pause the interval when the tab is hidden.
+  // Without this, hours of background ticks queued up Notification.fire
+  // calls that all flushed when the user returned to the tab (treating
+  // every queued state diff as new), and burned battery on mobile.
   useEffect(() => {
     refreshLiveSignals();
-    const id = setInterval(refreshLiveSignals, 5 * 60 * 1000);
-    return () => clearInterval(id);
+    const tick = () => {
+      if (
+        typeof document === "undefined" ||
+        document.visibilityState === "visible"
+      ) {
+        refreshLiveSignals();
+      }
+    };
+    const id = setInterval(tick, 5 * 60 * 1000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refreshLiveSignals();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [refreshLiveSignals]);
 
   // Alert notification: fire a browser notification when any alert verdict
