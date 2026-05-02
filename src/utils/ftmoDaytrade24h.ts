@@ -4913,8 +4913,16 @@ export function runFtmoDaytrade24h(
       // would short-circuit here without ever assigning firstTargetHitDay,
       // causing pingBase to fall back to t.day (later exit-day) → ping count
       // started too late → median inflated by holdHours/24 ≈ 1-2d.
-      // Use t.entryDay (R16 Bug A): real-time anchor, not exit.
-      if (firstTargetHitDay === null) firstTargetHitDay = t.entryDay;
+      //
+      // Phase 40 (R44-FTMO-E2): mirror the post-trade equity-cross logic
+      // at line 5253. liveMode=true (sort-by-entry) → t.entryDay is the
+      // honest cross day. liveMode=false (sort-by-exit, research) →
+      // t.entryDay is BEFORE the actual cross because earlier-entered-
+      // but-later-exited trades pollute equity. Use t.day in research
+      // mode to keep the ping anchor lookahead-free.
+      if (firstTargetHitDay === null) {
+        firstTargetHitDay = cfg.liveMode ? t.entryDay : t.day;
+      }
       const pingBase = firstTargetHitDay;
       const pausedPass = finishPausedPass(pingBase);
       if (pausedPass) return pausedPass;
