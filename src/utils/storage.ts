@@ -1,8 +1,11 @@
 import { Trade } from "@/types/trade";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from "uuid";
+// Phase 41 (R44-UI-2): single source of truth for the trades-localStorage
+// key. Cross-tab `storage` event listeners in useTradeStorage compare
+// against this same constant instead of a hardcoded string literal.
+import { STORAGE_KEY } from "@/lib/constants";
 
-const STORAGE_KEY = "trading-journal-trades";
 const SCREENSHOTS_KEY = "trading-journal-screenshots";
 
 // Phase 7 (Storage Bug 7): screenshot data-URL safety. Reject anything that
