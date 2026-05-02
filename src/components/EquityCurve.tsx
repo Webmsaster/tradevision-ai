@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useId } from "react";
+import { useId } from "react";
+import { useThemeColors } from "@/hooks/useThemeColors";
 import {
   AreaChart,
   Area,
@@ -76,27 +77,9 @@ function CustomTooltip({
 }
 
 export default function EquityCurve({ data, height }: EquityCurveProps) {
-  const [colors, setColors] = useState({ green: "#00ff88", red: "#ff4757" });
-  useEffect(() => {
-    function readColors() {
-      const green = getComputedStyle(document.documentElement)
-        .getPropertyValue("--profit")
-        .trim();
-      const red = getComputedStyle(document.documentElement)
-        .getPropertyValue("--loss")
-        .trim();
-      if (green) setColors((c) => ({ ...c, green }));
-      if (red) setColors((c) => ({ ...c, red }));
-    }
-    readColors();
-    // Re-read colors when theme changes
-    const observer = new MutationObserver(readColors);
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["data-theme"],
-    });
-    return () => observer.disconnect();
-  }, []);
+  // Phase 68 (R45-UI-M1): shared theme-colors hook (single MutationObserver
+  // across all chart consumers, was per-component-instance).
+  const colors = useThemeColors();
 
   // Phase 33 (React Audit Bug 1): hooks MUST come before any early-return
   // (Rules of Hooks). Round 11's R48 fix was incomplete — useId() was still

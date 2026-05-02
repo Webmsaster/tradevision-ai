@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState, useEffect } from "react";
+import { useMemo } from "react";
+import { useThemeColors } from "@/hooks/useThemeColors";
 import {
   BarChart,
   Bar,
@@ -345,30 +346,9 @@ export default function PerformanceChart({
   data,
   height = 300,
 }: PerformanceChartProps) {
-  // ---- theme-aware chart colors ----
-  const [chartColors, setChartColors] = useState({
-    green: "#00ff88",
-    red: "#ff4757",
-  });
-  useEffect(() => {
-    function readColors() {
-      const green = getComputedStyle(document.documentElement)
-        .getPropertyValue("--profit")
-        .trim();
-      const red = getComputedStyle(document.documentElement)
-        .getPropertyValue("--loss")
-        .trim();
-      if (green) setChartColors((c) => ({ ...c, green }));
-      if (red) setChartColors((c) => ({ ...c, red }));
-    }
-    readColors();
-    const observer = new MutationObserver(readColors);
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["data-theme"],
-    });
-    return () => observer.disconnect();
-  }, []);
+  // Phase 68 (R45-UI-M1): shared theme-colors hook — was a per-instance
+  // MutationObserver, now one shared observer across all chart consumers.
+  const chartColors = useThemeColors();
 
   // ---- derived data ----
   const distributionData = useMemo(
