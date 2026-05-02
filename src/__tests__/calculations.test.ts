@@ -358,10 +358,13 @@ describe("calculatePerformanceByHour", () => {
   });
 
   it("groups trades by hour with correct stats", () => {
+    // Phase 42 (R44-CALC-3): Z-suffix so the test is TZ-stable. Without Z,
+    // the literal is parsed as LOCAL time and getUTCHours()-based bucketing
+    // fails in non-UTC environments (e.g. CET shifts 09:00 → 08:00).
     const trades = [
-      makeTrade({ pnl: 10, entryDate: "2024-01-01T09:00:00" }),
-      makeTrade({ pnl: -5, entryDate: "2024-01-02T09:30:00" }),
-      makeTrade({ pnl: 20, entryDate: "2024-01-01T14:00:00" }),
+      makeTrade({ pnl: 10, entryDate: "2024-01-01T09:00:00Z" }),
+      makeTrade({ pnl: -5, entryDate: "2024-01-02T09:30:00Z" }),
+      makeTrade({ pnl: 20, entryDate: "2024-01-01T14:00:00Z" }),
     ];
     const result = calculatePerformanceByHour(trades);
     expect(result.length).toBe(2);

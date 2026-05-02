@@ -80,13 +80,19 @@ export function calculateRiskReward(trades: Trade[]): number {
 
 /**
  * Calculate expectancy: the expected value per trade.
- * Formula: (winRate/100 * avgWin) - (lossRate/100 * avgLoss)
+ * Formula: (winRate * avgWin) - (lossRate * avgLoss), where rates count
+ * BE-trades as NEITHER (consistent with calculateWinRate / calculateAvgWinLoss).
  */
 export function calculateExpectancy(trades: Trade[]): number {
   if (trades.length === 0) return 0;
 
-  const winRate = calculateWinRate(trades) / 100;
-  const lossRate = 1 - winRate;
+  // Phase 42 (R44-CALC-1): lossRate = losses / total directly. Was
+  // `1 - winRate`, which folded BE-trades into the loss bucket and
+  // overweighted avgLoss when many BE trades were present (4 wins / 2
+  // losses / 4 BE used to yield lossRate=0.6 instead of 0.2).
+  const total = trades.length;
+  const winRate = trades.filter((t) => t.pnl > 0).length / total;
+  const lossRate = trades.filter((t) => t.pnl < 0).length / total;
   const { avgWin, avgLoss } = calculateAvgWinLoss(trades);
 
   return winRate * avgWin - lossRate * avgLoss;
@@ -297,8 +303,12 @@ export function calculatePerformanceByDayOfWeek(
 
   const groups: Map<number, Trade[]> = new Map();
 
+  // Phase 42 (R44-CALC-3): use UTC for time-of-week bucketing — Round 43
+  // Phase 6 already moved aiAnalysis day/hour helpers to UTC; this kept
+  // local time so detector insights ("Sunday underperforms") would
+  // disagree with the dashboard heatmap for the same trade set.
   for (const trade of trades) {
-    const day = new Date(trade.entryDate).getDay();
+    const day = new Date(trade.entryDate).getUTCDay();
     if (!groups.has(day)) {
       groups.set(day, []);
     }
@@ -340,8 +350,9 @@ export function calculatePerformanceByHour(
 
   const groups: Map<number, Trade[]> = new Map();
 
+  // Phase 42 (R44-CALC-3): UTC bucketing for parity with aiAnalysis.
   for (const trade of trades) {
-    const hour = new Date(trade.entryDate).getHours();
+    const hour = new Date(trade.entryDate).getUTCHours();
     if (!groups.has(hour)) {
       groups.set(hour, []);
     }
