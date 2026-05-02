@@ -462,7 +462,11 @@ export function detectOvertrading(trades: Trade[]): AIInsight | null {
   > = {};
 
   for (const trade of trades) {
-    const day = new Date(trade.exitDate).toISOString().split("T")[0];
+    // Phase 52 (R45-CC-H4): bucket by ENTRY day — overtrading is a count
+    // of trade-decisions per day, and decisions are made at entry, not
+    // exit. Was using exitDate which lumped multi-day-hold exits into
+    // the wrong bucket and disagreed with the dashboard heatmap.
+    const day = new Date(trade.entryDate).toISOString().split("T")[0];
     if (!dayStats[day]) {
       dayStats[day] = { total: 0, wins: 0, tradeIds: [] };
     }
@@ -507,7 +511,9 @@ export function detectWeekendTrading(trades: Trade[]): AIInsight | null {
   const weekendTrades: Trade[] = [];
 
   for (const trade of trades) {
-    const dayOfWeek = getDayOfWeek(trade.exitDate);
+    // Phase 52 (R45-CC-H4): use entryDate — weekend-trading is a behavior
+    // about WHEN you place trades, not when they happen to close.
+    const dayOfWeek = getDayOfWeek(trade.entryDate);
     if (dayOfWeek === 0 || dayOfWeek === 6) {
       weekendTrades.push(trade);
     } else {
@@ -847,7 +853,11 @@ export function detectDayOfWeekBias(trades: Trade[]): AIInsight | null {
   ];
   const byDay: Record<number, Trade[]> = {};
   for (const t of trades) {
-    const d = getDayOfWeek(t.exitDate);
+    // Phase 52 (R45-CC-H4): bucket by entry day to match the dashboard
+    // heatmap (calculations.calculatePerformanceByDayOfWeek already uses
+    // entryDate). Was exitDate → "Sundays underperform" insight could
+    // contradict the heatmap's Sunday cell for the same trade set.
+    const d = getDayOfWeek(t.entryDate);
     if (!byDay[d]) byDay[d] = [];
     byDay[d].push(t);
   }

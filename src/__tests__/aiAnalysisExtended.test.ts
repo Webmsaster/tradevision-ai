@@ -113,12 +113,22 @@ describe("detectDayOfWeekBias", () => {
 
   it("flags warning when worst weekday is notably negative", () => {
     // Monday = 2026-01-05, Tuesday = 2026-01-06
+    // Phase 52 (R45-CC-H4): detector now buckets by entryDate (was exitDate)
+    // for parity with the dashboard heatmap; provide both explicitly.
     const trades = [
       ...Array.from({ length: 5 }, () =>
-        t({ exitDate: "2026-01-05T12:00:00Z", pnl: 10 }),
+        t({
+          entryDate: "2026-01-05T10:00:00Z",
+          exitDate: "2026-01-05T12:00:00Z",
+          pnl: 10,
+        }),
       ),
       ...Array.from({ length: 5 }, () =>
-        t({ exitDate: "2026-01-06T12:00:00Z", pnl: -40 }),
+        t({
+          entryDate: "2026-01-06T10:00:00Z",
+          exitDate: "2026-01-06T12:00:00Z",
+          pnl: -40,
+        }),
       ),
     ];
     const insight = detectDayOfWeekBias(trades);
