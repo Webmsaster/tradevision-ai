@@ -167,6 +167,46 @@ def scenario_long_with_atrstop_and_live_caps() -> tuple[str, list[Bar], int, Sim
     return ("long_with_atrstop_and_live_caps", bars, 7, cfg, expected)
 
 
+def scenario_long_break_even_then_drift_to_zero() -> tuple[str, list[Bar], int, SimConfig, float]:
+    """Phase 64: break_even scenario — price climbs past BE threshold,
+    SL ratchets to entry+cost, then price drifts back to ~entry. Should
+    exit at BE (≈ -cost in raw P&L)."""
+    bars = []
+    # Run-up bars 0..4: price climbs from 100 → 104 (well past BE@2%)
+    closes = [100.0, 101.0, 102.5, 103.5, 104.0]
+    for c in closes:
+        bars.append(Bar(open=c * 0.999, high=c * 1.005, low=c * 0.995, close=c))
+    # Pullback bars 5..9: price drifts back to ~100 → triggers BE-stop
+    for c in [103.0, 102.0, 101.5, 100.8, 100.2]:
+        bars.append(Bar(open=c * 1.001, high=c * 1.005, low=c * 0.995, close=c))
+    cfg = SimConfig(
+        stop_pct=0.04, tp_pct=0.10, hold_bars=12,
+        break_even={"threshold": 0.02},
+    )
+    # Entry at bars[0].open=99.9, BE-trigger fires once close >= 99.9*1.02=101.9
+    # → SL moves to entry. When low later touches entry → exit at entry.
+    # Raw P&L ≈ 0 (minus default cost ~0.0002). Tolerance 2% of nominal.
+    expected = 0.0
+    return ("long_break_even_then_drift_to_zero", bars, 0, cfg, expected)
+
+
+def scenario_long_time_exit_no_progress() -> tuple[str, list[Bar], int, SimConfig, float]:
+    """Phase 64: time_exit scenario — flat price action for `maxBars`,
+    no minGainR met → close at last close (≈ raw P&L of close-vs-entry)."""
+    bars = []
+    # Flat-ish price 100 → 100.05 over 8 bars, never hits TP/stop
+    for c in [100.0, 100.02, 99.98, 100.05, 100.01, 99.99, 100.03, 100.05]:
+        bars.append(Bar(open=c * 0.9999, high=c * 1.001, low=c * 0.999, close=c))
+    cfg = SimConfig(
+        stop_pct=0.05, tp_pct=0.10, hold_bars=20,
+        time_exit={"maxBarsWithoutGain": 6, "minGainR": 0.5},
+    )
+    # Entry at bars[0].open=99.99. After 6 bars (i.e. at bars[6]) → close=100.03
+    # → raw P&L ≈ (100.03 - 99.99) / 99.99 ≈ 0.0004 (-cost)
+    expected = (100.03 - 99.99) / 99.99
+    return ("long_time_exit_no_progress", bars, 0, cfg, expected)
+
+
 SCENARIOS = [
     scenario_long_tp_no_addons,
     scenario_long_stop_no_addons,
@@ -174,6 +214,8 @@ SCENARIOS = [
     scenario_long_ptp_then_stop,
     scenario_long_chandelier_locks_profit,
     scenario_long_with_atrstop_and_live_caps,
+    scenario_long_break_even_then_drift_to_zero,
+    scenario_long_time_exit_no_progress,
 ]
 
 
