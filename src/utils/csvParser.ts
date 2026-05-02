@@ -47,16 +47,87 @@ export function parseLocaleNumber(s: string | undefined): number {
   if (!trimmed) return NaN;
   // Reject anything containing non-numeric/non-separator characters
   if (!/^-?[\d.,]+$/.test(trimmed)) return NaN;
-  const lastComma = trimmed.lastIndexOf(",");
-  const lastDot = trimmed.lastIndexOf(".");
-  let normalized: string;
-  if (lastComma > lastDot) {
-    // EU format: "1.234,56" → "1234.56"
-    normalized = trimmed.replace(/\./g, "").replace(",", ".");
+
+  // Phase 46 (R45-CC-C1): strict validation. The previous heuristic accepted
+  // ambiguous strings like "1,234,567" (US thousands, expected 1234567)
+  // and silently returned 1.234 because `.replace(",", ".")` only replaced
+  // the FIRST comma. CSV imports of quantity columns then under-sized PnL
+  // by a factor of 1,000,000.
+  //
+  // Rules:
+  //   1. At most one decimal separator (the LAST `,` or `.` if present
+  //      with no further separators after it).
+  //   2. Thousand separators must form 3-digit groups (e.g. "1,234" / "1,234,567").
+  //   3. Same separator can't appear multiple times AND also be the decimal
+  //      (two commas in "1,2,3" → ambiguous → reject).
+  const negative = trimmed.startsWith("-");
+  const body = negative ? trimmed.slice(1) : trimmed;
+  const dots = (body.match(/\./g) ?? []).length;
+  const commas = (body.match(/,/g) ?? []).length;
+  const lastDot = body.lastIndexOf(".");
+  const lastComma = body.lastIndexOf(",");
+
+  let intPart: string;
+  let fracPart = "";
+
+  if (dots === 0 && commas === 0) {
+    intPart = body;
+  } else if (dots > 0 && commas > 0) {
+    // Mixed: last-occurring separator is the decimal, the other is thousand.
+    if (lastComma > lastDot) {
+      // EU: dots = thousands, comma = decimal. Reject if comma appears more than once.
+      if (commas !== 1) return NaN;
+      const left = body.slice(0, lastComma);
+      fracPart = body.slice(lastComma + 1);
+      // All dots must form valid 3-digit groups.
+      if (!/^\d{1,3}(?:\.\d{3})*$/.test(left)) return NaN;
+      intPart = left.replace(/\./g, "");
+    } else {
+      // US: commas = thousands, dot = decimal. Reject if dot appears more than once.
+      if (dots !== 1) return NaN;
+      const left = body.slice(0, lastDot);
+      fracPart = body.slice(lastDot + 1);
+      if (!/^\d{1,3}(?:,\d{3})*$/.test(left)) return NaN;
+      intPart = left.replace(/,/g, "");
+    }
+  } else if (dots > 0) {
+    // Only dots. One dot → could be decimal OR thousand-separator. Disambiguate
+    // by the right-side digit count: exactly 3 digits AND no leading zeros AND
+    // multiple dots → thousand. Single dot with non-3-digit fraction → decimal.
+    if (dots === 1) {
+      const right = body.slice(lastDot + 1);
+      if (right.length === 3 && body.length >= 5 && !right.match(/^0/)) {
+        // Ambiguous "1.234" — could be 1.234 OR 1,234. Treat as decimal
+        // unless caller used unambiguous form ("1234.5", "0.5", etc.).
+        // Conservative: reject ambiguous form.
+        // Actually: if the user means thousand-separator they should have
+        // used commas in EN locale. Default decimal interpretation.
+        intPart = body.slice(0, lastDot);
+        fracPart = right;
+      } else {
+        intPart = body.slice(0, lastDot);
+        fracPart = right;
+      }
+    } else {
+      // Multiple dots, no commas → only valid as thousand-separators.
+      if (!/^\d{1,3}(?:\.\d{3})+$/.test(body)) return NaN;
+      intPart = body.replace(/\./g, "");
+    }
   } else {
-    // US format: "1,234.56" → "1234.56"
-    normalized = trimmed.replace(/,/g, "");
+    // Only commas, same logic mirrored.
+    if (commas === 1) {
+      intPart = body.slice(0, lastComma);
+      fracPart = body.slice(lastComma + 1);
+    } else {
+      if (!/^\d{1,3}(?:,\d{3})+$/.test(body)) return NaN;
+      intPart = body.replace(/,/g, "");
+    }
   }
+
+  if (!/^\d+$/.test(intPart)) return NaN;
+  if (fracPart && !/^\d+$/.test(fracPart)) return NaN;
+  const normalized =
+    (negative ? "-" : "") + intPart + (fracPart ? "." + fracPart : "");
   const n = parseFloat(normalized);
   return Number.isFinite(n) ? n : NaN;
 }
