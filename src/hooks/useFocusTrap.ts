@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef } from "react";
 
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -15,13 +15,19 @@ export function useFocusTrap(active: boolean) {
   useEffect(() => {
     if (!active || !containerRef.current) return;
 
-    // Remember the element that was focused before the trap opened
-    previousFocusRef.current = document.activeElement as HTMLElement;
+    // Phase 67 (R45-UI-M2): only capture the previous-focused element
+    // ONCE per active=true cycle. On rapid open/close/open transitions
+    // the second activation captured a focusable INSIDE the modal as
+    // "previous" — restore-focus then trapped the user back inside.
+    if (previousFocusRef.current === null) {
+      previousFocusRef.current = document.activeElement as HTMLElement;
+    }
 
     const container = containerRef.current;
     const focusableElements = () =>
-      Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
-        .filter(el => el.offsetParent !== null); // visible only
+      Array.from(
+        container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+      ).filter((el) => el.offsetParent !== null); // visible only
 
     // Focus the first focusable element
     const elements = focusableElements();
@@ -30,7 +36,7 @@ export function useFocusTrap(active: boolean) {
     }
 
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key !== 'Tab') return;
+      if (e.key !== "Tab") return;
 
       const elements = focusableElements();
       if (elements.length === 0) return;
@@ -53,14 +59,16 @@ export function useFocusTrap(active: boolean) {
       }
     }
 
-    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener("keydown", handleKeyDown);
 
     return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-      // Restore focus to the previously focused element
+      document.removeEventListener("keydown", handleKeyDown);
+      // Restore focus to the previously focused element + clear the ref
+      // so the next active=true cycle captures a fresh "previous".
       if (previousFocusRef.current && previousFocusRef.current.focus) {
         previousFocusRef.current.focus();
       }
+      previousFocusRef.current = null;
     };
   }, [active]);
 
