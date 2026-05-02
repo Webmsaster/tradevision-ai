@@ -4892,11 +4892,24 @@ export function runFtmoDaytrade24h(
     // dayStart anchor: with sort-by-exit, equity at top-of-iteration for the
     // FIRST trade of exit-day N is the realized equity BEFORE that trade —
     // which equals end-of-prior-day equity = correct start-of-day-N anchor.
-    if (!dayStart.has(t.day)) dayStart.set(t.day, equity);
+    // Phase 74 (R44-FTMO-E1): in liveMode the loop sorts by ENTRY time
+    // and t.day is exit-day. Keying day buckets on t.day then made
+    // overlapping multi-day trades anchor each other's dayStart/dayPeak
+    // — when trade A (entry day 1, exit day 5) iterates first, we set
+    // dayStart[5] = end-of-day-0 equity, then trade B (entry day 2,
+    // exit day 2) sets dayStart[2] = post-A equity (which a real trader
+    // hadn't realized yet on day 2). Net effect: -46pp drift between
+    // engine and V4-Sim on R28.
+    //
+    // Fix: in liveMode key buckets on t.entryDay (the day the trader
+    // committed to the trade); in research mode keep t.day so the
+    // sort-by-exit lookahead semantics stay consistent.
+    const dayKey = cfg.liveMode ? t.entryDay : t.day;
+    if (!dayStart.has(dayKey)) dayStart.set(dayKey, equity);
     // Round 13 Anti-DL: initialize per-day peak at day-start; updated below
     // after each trade so subsequent same-day trades can compare against
     // the realized peak.
-    if (!dayPeak.has(t.day)) dayPeak.set(t.day, equity);
+    if (!dayPeak.has(dayKey)) dayPeak.set(dayKey, equity);
 
     // iter235+: realistic FTMO behavior — once profit target hit, STOP trading
     // (don't take more risk while waiting for minTradingDays). Real trader
@@ -4930,13 +4943,14 @@ export function runFtmoDaytrade24h(
     }
 
     // iter206: skip if daily-gain cap has been hit this day
-    if (cappedDays.has(t.day)) continue;
+    // (Phase 74: dayKey = entryDay in liveMode, t.day in research)
+    if (cappedDays.has(dayKey)) continue;
     // Round 13 Anti-DL gate: hard daily-loss circuit-breaker.
     // If realized day-PnL has already breached the hard threshold, block
     // all new entries until next day. Prevents the "5th trade kippt account"
     // pattern responsible for half of V5_NOVA's DL-fails.
     if (cfg.intradayDailyLossThrottle) {
-      const sodEq = dayStart.get(t.day) ?? 1.0;
+      const sodEq = dayStart.get(dayKey) ?? 1.0;
       const dayPnl = (equity - sodEq) / sodEq;
       if (dayPnl <= -cfg.intradayDailyLossThrottle.hardLossThreshold) {
         continue;
@@ -4947,7 +4961,7 @@ export function runFtmoDaytrade24h(
     // peak, halt new entries — protects realized intraday gains from
     // give-back DL fails.
     if (cfg.dailyPeakTrailingStop) {
-      const peakToday = dayPeak.get(t.day) ?? equity;
+      const peakToday = dayPeak.get(dayKey) ?? equity;
       const drop = (peakToday - equity) / Math.max(peakToday, 1e-9);
       if (drop >= cfg.dailyPeakTrailingStop.trailDistance) {
         continue;
@@ -5139,7 +5153,8 @@ export function runFtmoDaytrade24h(
         // when intraday realized PnL crosses softLossThreshold but is still
         // above hardLossThreshold (the hard cut-off was applied earlier).
         if (cfg.intradayDailyLossThrottle) {
-          const sodEq = dayStart.get(t.day) ?? 1.0;
+          // Phase 74 (R44-FTMO-E1): same dayKey alignment as gate above.
+          const sodEq = dayStart.get(dayKey) ?? 1.0;
           const dayPnl = (equity - sodEq) / sodEq;
           if (dayPnl <= -cfg.intradayDailyLossThrottle.softLossThreshold) {
             // Phase 11 (Engine Bug 12): use Math.min as a hard cap, not `*=`.
@@ -5197,8 +5212,10 @@ export function runFtmoDaytrade24h(
     // the dailyPeakTrailingStop gate sees an accurate peak on subsequent
     // same-day trades.
     if (cfg.dailyPeakTrailingStop) {
-      const prevPeak = dayPeak.get(t.day) ?? equity;
-      if (equity > prevPeak) dayPeak.set(t.day, equity);
+      // Phase 74 (R44-FTMO-E1): keep the same dayKey alignment so the
+      // post-trade update lands in the same bucket the next gate reads.
+      const prevPeak = dayPeak.get(dayKey) ?? equity;
+      if (equity > prevPeak) dayPeak.set(dayKey, equity);
     }
     // BUGFIX 2026-04-29 (Bug F): tradingDays counts ENTRY days (FTMO rule:
     // a trading day = day with an executed entry). t.day is now exit day
@@ -5214,9 +5231,10 @@ export function runFtmoDaytrade24h(
 
     // iter206: daily-gain cap check (applied AFTER the trade closes)
     if (cfg.dailyGainCap !== undefined) {
-      const sodNow = dayStart.get(t.day)!;
+      // Phase 74 (R44-FTMO-E1): dayKey aligned with the gate above.
+      const sodNow = dayStart.get(dayKey)!;
       if (equity / sodNow - 1 >= cfg.dailyGainCap) {
-        cappedDays.add(t.day);
+        cappedDays.add(dayKey);
       }
     }
 
@@ -5235,7 +5253,8 @@ export function runFtmoDaytrade24h(
         maxHoldHoursObserved: maxHold,
       };
     }
-    const sod = dayStart.get(t.day)!;
+    // Phase 74 (R44-FTMO-E1): same dayKey for the daily-loss check.
+    const sod = dayStart.get(dayKey)!;
     if (equity / sod - 1 <= -cfg.maxDailyLoss + TL_EPS) {
       return {
         passed: false,
