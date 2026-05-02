@@ -98,7 +98,8 @@ export default function EquityCurve({ data, height }: EquityCurveProps) {
     );
   }
 
-  const latestEquity = data[data.length - 1].equity;
+  // Phase 78: data.length === 0 guarded above by early-return.
+  const latestEquity = data[data.length - 1]!.equity;
   const lineColor = latestEquity >= 0 ? colors.green : colors.red;
 
   return (

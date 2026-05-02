@@ -1,9 +1,10 @@
 {
-  // Phase 65 (R45-CFG-6): considered enabling `noUncheckedIndexedAccess`
-  // and `exactOptionalPropertyTypes`. The first surfaces 7500+ errors
-  // across the heavy array-indexed engine/indicator code — would need
-  // its own multi-day refactor with careful per-loop guards. Deferred
-  // until that scope is justified.
+  // Phase 78 (R45-CFG-6): noUncheckedIndexedAccess kept OFF in the main
+  // tsconfig — re-enabling globally surfaces 1831 errors in src/ alone
+  // (heavy array-indexed engine + indicator code); each requires a
+  // careful per-loop nullability guard or `!` assertion. See
+  // tsconfig.strict.json for the opt-in config used to ratchet new code
+  // / individual files toward strict-array-access.
   "compilerOptions": {
     "target": "ES2017",
     "lib": ["dom", "dom.iterable", "esnext"],

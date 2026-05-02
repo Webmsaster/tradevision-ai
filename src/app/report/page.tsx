@@ -1,10 +1,13 @@
-'use client';
+"use client";
 
-import { useMemo } from 'react';
-import { calculateAllStats, calculatePerformanceByDayOfWeek } from '@/utils/calculations';
-import { TradeStats, PerformanceByTime } from '@/types/trade';
-import { useTradeStorage } from '@/hooks/useTradeStorage';
-import { formatCurrency, formatFinite } from '@/utils/formatters';
+import { useMemo } from "react";
+import {
+  calculateAllStats,
+  calculatePerformanceByDayOfWeek,
+} from "@/utils/calculations";
+import { TradeStats, PerformanceByTime } from "@/types/trade";
+import { useTradeStorage } from "@/hooks/useTradeStorage";
+import { formatCurrency, formatFinite } from "@/utils/formatters";
 
 export default function ReportPage() {
   const { trades, isLoading } = useTradeStorage();
@@ -20,19 +23,27 @@ export default function ReportPage() {
   }, [trades]);
 
   const topPairs = useMemo(() => {
-    const map: Record<string, { pnl: number; trades: number; wins: number }> = {};
+    const map: Record<string, { pnl: number; trades: number; wins: number }> =
+      {};
     for (const t of trades) {
       if (!map[t.pair]) map[t.pair] = { pnl: 0, trades: 0, wins: 0 };
-      map[t.pair].pnl += t.pnl;
-      map[t.pair].trades += 1;
-      if (t.pnl > 0) map[t.pair].wins += 1;
+      // Phase 78: just-set above.
+      const entry = map[t.pair]!;
+      entry.pnl += t.pnl;
+      entry.trades += 1;
+      if (t.pnl > 0) entry.wins += 1;
     }
     return Object.entries(map)
       .map(([pair, d]) => ({ pair, ...d, winRate: (d.wins / d.trades) * 100 }))
       .sort((a, b) => b.pnl - a.pnl);
   }, [trades]);
 
-  if (isLoading) return <div className="report-page"><p>Loading...</p></div>;
+  if (isLoading)
+    return (
+      <div className="report-page">
+        <p>Loading...</p>
+      </div>
+    );
 
   if (!stats) {
     return (
@@ -43,8 +54,10 @@ export default function ReportPage() {
     );
   }
 
-  const reportDate = new Date().toLocaleDateString('en-US', {
-    year: 'numeric', month: 'long', day: 'numeric',
+  const reportDate = new Date().toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
   });
 
   return (
@@ -52,7 +65,10 @@ export default function ReportPage() {
       <div className="report-header">
         <h1>TradeVision AI - Performance Report</h1>
         <p className="report-date">Generated on {reportDate}</p>
-        <button className="btn btn-primary report-print-btn" onClick={() => window.print()}>
+        <button
+          className="btn btn-primary report-print-btn"
+          onClick={() => window.print()}
+        >
           Print / Save as PDF
         </button>
       </div>
@@ -66,33 +82,47 @@ export default function ReportPage() {
           </div>
           <div className="report-stat">
             <span className="report-stat-label">Total PnL</span>
-            <span className={`report-stat-value ${stats.totalPnl >= 0 ? 'text-profit' : 'text-loss'}`}>
+            <span
+              className={`report-stat-value ${stats.totalPnl >= 0 ? "text-profit" : "text-loss"}`}
+            >
               {formatCurrency(stats.totalPnl)}
             </span>
           </div>
           <div className="report-stat">
             <span className="report-stat-label">Win Rate</span>
-            <span className="report-stat-value">{stats.winRate.toFixed(1)}%</span>
+            <span className="report-stat-value">
+              {stats.winRate.toFixed(1)}%
+            </span>
           </div>
           <div className="report-stat">
             <span className="report-stat-label">Profit Factor</span>
-            <span className="report-stat-value">{formatFinite(stats.profitFactor)}</span>
+            <span className="report-stat-value">
+              {formatFinite(stats.profitFactor)}
+            </span>
           </div>
           <div className="report-stat">
             <span className="report-stat-label">Sharpe Ratio</span>
-            <span className="report-stat-value">{formatFinite(stats.sharpeRatio)}</span>
+            <span className="report-stat-value">
+              {formatFinite(stats.sharpeRatio)}
+            </span>
           </div>
           <div className="report-stat">
             <span className="report-stat-label">Expectancy</span>
-            <span className="report-stat-value">{formatCurrency(stats.expectancy)}</span>
+            <span className="report-stat-value">
+              {formatCurrency(stats.expectancy)}
+            </span>
           </div>
           <div className="report-stat">
             <span className="report-stat-label">Max Drawdown</span>
-            <span className="report-stat-value text-loss">{formatCurrency(stats.maxDrawdown)}</span>
+            <span className="report-stat-value text-loss">
+              {formatCurrency(stats.maxDrawdown)}
+            </span>
           </div>
           <div className="report-stat">
             <span className="report-stat-label">Risk:Reward</span>
-            <span className="report-stat-value">{formatFinite(stats.riskReward)}</span>
+            <span className="report-stat-value">
+              {formatFinite(stats.riskReward)}
+            </span>
           </div>
         </div>
       </section>
@@ -114,7 +144,7 @@ export default function ReportPage() {
                 <td>{p.pair}</td>
                 <td>{p.trades}</td>
                 <td>{p.winRate.toFixed(1)}%</td>
-                <td className={p.pnl >= 0 ? 'text-profit' : 'text-loss'}>
+                <td className={p.pnl >= 0 ? "text-profit" : "text-loss"}>
                   {formatCurrency(p.pnl)}
                 </td>
               </tr>
@@ -140,7 +170,7 @@ export default function ReportPage() {
                 <td>{d.label}</td>
                 <td>{d.trades}</td>
                 <td>{d.winRate.toFixed(1)}%</td>
-                <td className={d.totalPnl >= 0 ? 'text-profit' : 'text-loss'}>
+                <td className={d.totalPnl >= 0 ? "text-profit" : "text-loss"}>
                   {formatCurrency(d.totalPnl)}
                 </td>
               </tr>
@@ -165,7 +195,11 @@ export default function ReportPage() {
           </thead>
           <tbody>
             {[...trades]
-              .sort((a, b) => new Date(b.exitDate).getTime() - new Date(a.exitDate).getTime())
+              .sort(
+                (a, b) =>
+                  new Date(b.exitDate).getTime() -
+                  new Date(a.exitDate).getTime(),
+              )
               .slice(0, 50)
               .map((t) => (
                 <tr key={t.id}>
@@ -174,11 +208,15 @@ export default function ReportPage() {
                   <td>{t.direction.toUpperCase()}</td>
                   <td>${t.entryPrice.toFixed(2)}</td>
                   <td>${t.exitPrice.toFixed(2)}</td>
-                  <td className={t.pnl >= 0 ? 'text-profit' : 'text-loss'}>
-                    {t.pnl >= 0 ? '+' : ''}{t.pnl.toFixed(2)}
+                  <td className={t.pnl >= 0 ? "text-profit" : "text-loss"}>
+                    {t.pnl >= 0 ? "+" : ""}
+                    {t.pnl.toFixed(2)}
                   </td>
-                  <td className={t.pnlPercent >= 0 ? 'text-profit' : 'text-loss'}>
-                    {t.pnlPercent >= 0 ? '+' : ''}{t.pnlPercent.toFixed(2)}%
+                  <td
+                    className={t.pnlPercent >= 0 ? "text-profit" : "text-loss"}
+                  >
+                    {t.pnlPercent >= 0 ? "+" : ""}
+                    {t.pnlPercent.toFixed(2)}%
                   </td>
                 </tr>
               ))}

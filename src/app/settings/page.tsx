@@ -217,7 +217,8 @@ export default function SettingsPage() {
       accounts: prev.accounts.filter((a) => a.id !== id),
       activeAccountId:
         prev.activeAccountId === id
-          ? prev.accounts[0].id
+          ? // Phase 78: at least the "default" account is always present.
+            (prev.accounts[0]?.id ?? "default")
           : prev.activeAccountId,
     }));
   }

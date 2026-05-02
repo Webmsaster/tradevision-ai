@@ -40,7 +40,8 @@ function isPrivateHostname(host: string): boolean {
   // IPv4 literals
   const v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (v4) {
-    const [a, b] = [parseInt(v4[1], 10), parseInt(v4[2], 10)];
+    // Phase 78: regex with 4 capture groups guarantees 5 entries.
+    const [a, b] = [parseInt(v4[1]!, 10), parseInt(v4[2]!, 10)];
     if (a === 10) return true; // 10/8
     if (a === 127) return true; // 127/8 loopback
     if (a === 169 && b === 254) return true; // 169.254/16 link-local + AWS metadata

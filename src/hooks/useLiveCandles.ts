@@ -156,9 +156,10 @@ export function useLiveCandles({
           const candle = parseKlineMessage(msg.k);
           setCandles((prev) => {
             const next = [...prev];
+            // Phase 78: length check guards both reads.
             if (
               next.length > 0 &&
-              next[next.length - 1].openTime === candle.openTime
+              next[next.length - 1]!.openTime === candle.openTime
             ) {
               next[next.length - 1] = candle;
             } else {

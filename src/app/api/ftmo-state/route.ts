@@ -124,14 +124,15 @@ function computeStats(executorLog: ExecutorLogEntry[]) {
 
 function computeDrawdown(equityHistory: EquitySample[]) {
   if (!equityHistory.length) return { currentDd: 0, maxDd: 0, peak: 0 };
-  let peak = equityHistory[0].equity_usd;
+  // Phase 78: index access guarded by length check above; non-null safe.
+  let peak = equityHistory[0]!.equity_usd;
   let maxDd = 0;
   for (const s of equityHistory) {
     if (s.equity_usd > peak) peak = s.equity_usd;
     const dd = (s.equity_usd - peak) / peak;
     if (dd < maxDd) maxDd = dd;
   }
-  const last = equityHistory[equityHistory.length - 1];
+  const last = equityHistory[equityHistory.length - 1]!;
   const currentDd = (last.equity_usd - peak) / peak;
   return { currentDd, maxDd, peak };
 }

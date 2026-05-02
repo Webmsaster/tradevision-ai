@@ -1,0 +1,36 @@
+{
+  // Phase 78 (R45-CFG-6): opt-in strict-array-access tsconfig.
+  //
+  // Run via:  node ./node_modules/typescript/bin/tsc --noEmit -p tsconfig.strict.json
+  //
+  // Includes the same source set as tsconfig.json but with
+  // `noUncheckedIndexedAccess` enabled. Use during development to
+  // ratchet specific files toward strict-array-access discipline:
+  //   1. Add the file you're hardening to the `include` list below.
+  //   2. Run the strict typecheck and fix the surfaced errors with
+  //      explicit guards (`if (x === undefined) continue;`) or
+  //      non-null assertions (`arr[i]!`) in proven-safe hot loops.
+  //   3. When the file is clean, leave it in `include` so future
+  //      regressions are caught.
+  //
+  // The main tsconfig stays loose because the engine + indicator code
+  // (~1800 errors) would otherwise need a multi-day refactor that
+  // risks subtle runtime regressions in FTMO-bot behaviour.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noUncheckedIndexedAccess": true
+  },
+  // Files that have been ratcheted to strict-array-access.
+  // Add new entries here as files get cleaned. Avoid adding files that
+  // transitively import engine/indicator code until those are also clean.
+  "include": [
+    "src/lib/constants.ts",
+    "src/lib/supabase.ts",
+    "src/lib/supabase-server.ts",
+    "src/types/**/*.ts",
+    "src/hooks/useFocusTrap.ts",
+    "src/hooks/useThemeColors.ts",
+    "src/utils/processLock.ts",
+    "src/utils/formatters.ts"
+  ]
+}
