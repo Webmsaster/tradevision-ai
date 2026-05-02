@@ -211,7 +211,6 @@ function buildDistributionData(trades: Trade[]): BucketDatum[] {
   const step = niceStep(absMax);
 
   // Build boundary array from negative to positive
-  const boundaries: number[] = [];
   let b = 0;
   while (b + step < absMax * 1.01) {
     b += step;

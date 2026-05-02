@@ -185,7 +185,7 @@ export function runWalkForwardHourOfDay(
       // Simulate maker fill
       const filled =
         config.makerFillRate === undefined || rand() < config.makerFillRate;
-      let pnl = 0;
+      let pnl: number;
       let viaTaker = false;
       const adversePenalty = (config.adverseSelectionBps ?? 0) / 10_000;
       if (filled) {

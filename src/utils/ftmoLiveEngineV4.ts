@@ -1199,7 +1199,7 @@ export function pollLive(
         continue;
       }
       // detectAsset accepts a slice — we pass the whole array (live convention).
-      let trades: Daytrade24hTrade[] = [];
+      let trades: Daytrade24hTrade[];
       try {
         trades = detectAsset(candles, asset, cfg, crossCandles, extra);
       } catch (err) {

@@ -76,8 +76,8 @@ export function classifyDominance(
     else trend = "flat";
   }
 
-  let bias: DominanceRegime["bias"] = "neutral";
-  let interpretation = "";
+  let bias: DominanceRegime["bias"];
+  let interpretation: string;
 
   if (btcAbove200dSma === false) {
     bias = "risk-off";

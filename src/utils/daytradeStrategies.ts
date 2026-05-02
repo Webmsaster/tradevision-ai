@@ -1,6 +1,6 @@
 import type { Candle } from "@/utils/indicators";
 import { atr } from "@/utils/indicators";
-import { vwap, bollingerBands } from "@/utils/marketStructure";
+import { vwap } from "@/utils/marketStructure";
 import type { StrategyDecision, StrategyConfig } from "@/utils/strategies";
 import { DEFAULT_STRATEGY_CONFIG } from "@/utils/strategies";
 

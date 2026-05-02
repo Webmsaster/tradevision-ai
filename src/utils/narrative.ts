@@ -68,7 +68,10 @@ export function buildThesis(inputs: ThesisInputs): TradeThesis {
   } = inputs;
 
   const price = snapshot.price;
-  const actionWord = formatDirection(gatedAction);
+  // formatDirection result kept available via _actionWord; not currently
+  // rendered into the narrative copy but referenced as side-effect anchor.
+  const _actionWord = formatDirection(gatedAction);
+  void _actionWord;
   const structureWord =
     structure.state === "bullish"
       ? "bullish (higher highs + higher lows)"

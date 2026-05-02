@@ -103,7 +103,7 @@ export function collectTfEntryTimes(
         crossCandles && crossCandles.length === candles.length
           ? crossCandles
           : undefined;
-      let trades: Daytrade24hTrade[] = [];
+      let trades: Daytrade24hTrade[];
       try {
         trades = detectAsset(candles, asset, tf.cfg, crossForAsset);
       } catch {
@@ -294,7 +294,7 @@ export function runEnsembleEquityLoop(
     let exitPrice: number | null = null;
     let exitTime = entry.entryTime;
     let exitReason: "tp" | "stop" | "time" = "time";
-    let endIdx = Math.min(candles.length - 1, startIdx + holdBars30m);
+    const endIdx = Math.min(candles.length - 1, startIdx + holdBars30m);
     for (let i = startIdx + 1; i <= endIdx; i++) {
       const c = candles[i];
       if (c.low <= stopPrice) {

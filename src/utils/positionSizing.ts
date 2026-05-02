@@ -126,7 +126,7 @@ export interface RecommendOptions {
 export function recommendSize(opts: RecommendOptions): SizingRecommendation {
   const notes: string[] = [];
   const maxNotionalCap = opts.maxNotionalPctOfCapital ?? 0.25;
-  let notional = 0;
+  let notional: number;
   let kellyFrac: number | undefined;
 
   if (opts.method === "fixed-risk") {

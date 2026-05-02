@@ -11,7 +11,6 @@ import {
   Pie,
   PieChart,
   CartesianGrid,
-  Legend,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -299,7 +298,7 @@ export default function ResearchPage() {
   // the journal for open signals whose plannedExitTime has passed and close
   // them at the current champion price. Prevents the journal from filling
   // up with perpetually-open positions.
-  const [autoClosed, setAutoClosed] = useState<number>(0);
+  const [, setAutoClosed] = useState<number>(0);
   useEffect(() => {
     if (!liveSignals?.champion || liveSignals.champion.length === 0) return;
     const latestPrices: Record<string, number> = {};

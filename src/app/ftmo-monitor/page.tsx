@@ -626,7 +626,7 @@ function RuleBar({
   label,
   pct,
   displayValue,
-  tone,
+  tone: _tone,
   inverse,
 }: {
   label: string;

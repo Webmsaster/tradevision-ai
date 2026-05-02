@@ -518,7 +518,7 @@ const CFG_REGISTRY: Record<string, CfgRegistryEntry> = {
 const _ftmoTfRaw = process.env.FTMO_TF;
 if (_ftmoTfRaw && _ftmoTfRaw.trim() !== _ftmoTfRaw) {
   console.error(
-    `[ftmo-live] WARNING: FTMO_TF=\"${_ftmoTfRaw}\" has trailing whitespace — strip it!`,
+    `[ftmo-live] WARNING: FTMO_TF="${_ftmoTfRaw}" has trailing whitespace — strip it!`,
   );
 }
 const _ftmoTfKey = _ftmoTfRaw?.trim() ?? "";
@@ -526,7 +526,7 @@ const _registryHit =
   _ftmoTfKey in CFG_REGISTRY ? CFG_REGISTRY[_ftmoTfKey] : null;
 if (_ftmoTfKey && !_registryHit) {
   console.error(
-    `[ftmo-live] WARNING: FTMO_TF=\"${_ftmoTfRaw}\" did not match any known config — falling back to V261 4h. Check spelling!`,
+    `[ftmo-live] WARNING: FTMO_TF="${_ftmoTfRaw}" did not match any known config — falling back to V261 4h. Check spelling!`,
   );
 }
 

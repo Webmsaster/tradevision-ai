@@ -495,7 +495,7 @@ export function importFromJSON(file: File): Promise<Trade[]> {
           ),
         );
       } catch (error) {
-        reject(new Error("Failed to parse JSON file."));
+        reject(new Error("Failed to parse JSON file.", { cause: error }));
       }
     };
 
@@ -536,7 +536,7 @@ export function hasSavedData(): boolean {
     }
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) && parsed.length > 0;
-  } catch (error) {
+  } catch {
     return false;
   }
 }

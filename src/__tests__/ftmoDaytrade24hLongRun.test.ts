@@ -205,7 +205,7 @@ describe("ftmoDaytrade24h — LONG-RUN 1000+ day simulation", () => {
     const stats = summarize(results);
     expect(stats.windows).toBe(40);
     // Publish stats for human inspection via expect snapshot
-    // eslint-disable-next-line no-console
+
     console.log("[NON-OVERLAP 30d]", JSON.stringify(stats, null, 2));
     expect(stats.passRate).toBeGreaterThanOrEqual(0);
     expect(stats.passRate).toBeLessThanOrEqual(1);
@@ -215,7 +215,7 @@ describe("ftmoDaytrade24h — LONG-RUN 1000+ day simulation", () => {
     const results = runRollingChallenges(all, DAYS, 30, 5);
     const stats = summarize(results);
     expect(stats.windows).toBeGreaterThanOrEqual(200);
-    // eslint-disable-next-line no-console
+
     console.log("[ROLLING 5d step]", JSON.stringify(stats, null, 2));
   });
 

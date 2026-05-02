@@ -158,7 +158,7 @@ export async function fetchOkxLongHistory(
   let after: number | undefined;
   const maxPages = Math.ceil(targetBars / 100) + 5;
   for (let page = 0; page < maxPages && all.length < targetBars; page++) {
-    let batch: Candle[] = [];
+    let batch: Candle[];
     try {
       batch = await fetchOkxCandles(instId, bar, 100, after);
     } catch {

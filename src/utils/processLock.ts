@@ -78,7 +78,7 @@ export async function withFileLock<T>(
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   const start = Date.now();
   const ourToken = makeToken();
-  let fd: number | null = null;
+  let fd!: number; // assigned in the only break-out path below
   while (true) {
     try {
       fd = fs.openSync(lockPath, "wx");
@@ -98,7 +98,9 @@ export async function withFileLock<T>(
           /* lock disappeared — retry */
           continue;
         }
-        throw new Error(`withFileLock: timeout acquiring ${lockPath}`);
+        throw new Error(`withFileLock: timeout acquiring ${lockPath}`, {
+          cause: e,
+        });
       }
       await new Promise((r) => setTimeout(r, backoffMs));
     }
@@ -106,7 +108,7 @@ export async function withFileLock<T>(
   try {
     return await fn();
   } finally {
-    if (fd !== null) fs.closeSync(fd);
+    fs.closeSync(fd);
     safeReleaseLock(lockPath, ourToken);
   }
 }
@@ -123,9 +125,8 @@ export function withFileLockSync<T>(
   const start = Date.now();
   const ourToken = makeToken();
   while (true) {
-    let fd: number | null = null;
     try {
-      fd = fs.openSync(lockPath, "wx");
+      const fd = fs.openSync(lockPath, "wx");
       try {
         fs.writeSync(fd, ourToken);
       } finally {
@@ -150,7 +151,9 @@ export function withFileLockSync<T>(
           /* lock disappeared — retry */
           continue;
         }
-        throw new Error(`withFileLockSync: timeout acquiring ${lockPath}`);
+        throw new Error(`withFileLockSync: timeout acquiring ${lockPath}`, {
+          cause: e,
+        });
       }
       // Sync busy-spin (caller is sync — no async wait possible).
       const until = Date.now() + backoffMs;

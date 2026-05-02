@@ -21,10 +21,7 @@ import { loadBinanceHistory } from "@/utils/historicalData";
 import { computeHourStats } from "@/utils/hourOfDayStrategy";
 import { runWalkForwardHourOfDay } from "@/utils/walkForward";
 import { MAKER_COSTS } from "@/utils/intradayLab";
-import {
-  checkStrategyHealth,
-  type StrategyHealthReport,
-} from "@/utils/strategyHealth";
+import { checkStrategyHealth } from "@/utils/strategyHealth";
 import { classifyVolRegime, type VolRegimeBar } from "@/utils/volRegimeFilter";
 import {
   fetchCoinbasePremium,
@@ -73,7 +70,6 @@ import {
 import {
   evaluateHfDaytradingPortfolio,
   HF_DAYTRADING_ASSETS,
-  HF_DAYTRADING_CONFIG,
   type HfPortfolioSnapshot,
 } from "@/utils/hfDaytrading";
 import {
@@ -277,7 +273,7 @@ function computeChampionForSymbol(
   const isFundingHour = hour === 0 || hour === 8 || hour === 16;
 
   let action: "long" | "short" | "flat" = "flat";
-  let reason = "";
+  let reason: string;
   let confidence: "high" | "medium" | "low" = "low";
   const warnings: string[] = [];
 

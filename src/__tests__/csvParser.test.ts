@@ -320,7 +320,7 @@ describe("PLATFORM_PRESETS", () => {
       "exitDate",
     ];
 
-    for (const [name, preset] of Object.entries(PLATFORM_PRESETS)) {
+    for (const [_name, preset] of Object.entries(PLATFORM_PRESETS)) {
       for (const field of requiredFields) {
         expect(preset).toHaveProperty(field, expect.any(String));
       }

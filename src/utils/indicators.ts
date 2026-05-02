@@ -100,7 +100,7 @@ export function macd(
   );
 
   const firstValidIdx = macdLine.findIndex((v) => v !== null);
-  let signalLine: (number | null)[] = new Array(values.length).fill(null);
+  const signalLine: (number | null)[] = new Array(values.length).fill(null);
   if (firstValidIdx >= 0) {
     const slice = macdLine
       .slice(firstValidIdx)

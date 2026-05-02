@@ -400,7 +400,7 @@ export function runSpreadStrategy(
         const exitRatio = ratio[i];
         // PnL for ratio spread. long-ratio = long numerator + short denominator
         // Approximation: pnl ≈ (exitRatio - entryRatio) / entryRatio
-        let gross =
+        const gross =
           open.dir === "long-ratio"
             ? (exitRatio - open.entry) / open.entry
             : (open.entry - exitRatio) / open.entry;
