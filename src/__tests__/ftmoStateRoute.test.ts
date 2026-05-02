@@ -1,7 +1,15 @@
 /**
  * Test the /api/ftmo-state route reads state files correctly.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  vi,
+} from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -41,6 +49,15 @@ afterAll(() => {
 });
 
 describe("/api/ftmo-state route", () => {
+  // Phase 63 (R45-TEST-5): reset the module cache between tests so each
+  // `await import("@/app/api/ftmo-state/route")` re-evaluates the module
+  // against the CURRENT env. Without this, a route module that read env
+  // at import-time would see stale FTMO_STATE_DIR / FTMO_MONITOR_ENABLED
+  // values from the first test run.
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
   it("returns bundled state JSON", async () => {
     // Re-import so the route module picks up FTMO_STATE_DIR from env
     const { GET } = await import("@/app/api/ftmo-state/route");
