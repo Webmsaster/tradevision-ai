@@ -136,11 +136,24 @@ function parseIntervalMs(s: string): number {
  * Resample a sequence of candles to a coarser timeframe.
  * Bars are bucketed by `Math.floor(openTime / targetMs) * targetMs`.
  * Open = first bar's open, close = last bar's close, high = max, low = min.
+ *
+ * Phase 43 (R44-MD-2): drop incomplete leading bucket where the source
+ * bars don't cover the full target period. Without this, the first
+ * resampled bar reported open=src[0].open (e.g. 13:00 open) but
+ * openTime=12:00 (bucket boundary) — inconsistent with downstream
+ * indicators that assume `closeTime - openTime = targetMs` of real data.
  */
 export function resampleCandles(src: Candle[], targetMs: number): Candle[] {
   if (src.length === 0) return [];
+  const sorted = [...src].sort((a, b) => a.openTime - b.openTime);
+  // Infer source bar duration from the most common spacing (defensive
+  // against gaps); falls back to first-pair if length < 3.
+  const srcMs =
+    sorted.length >= 2 ? sorted[1].openTime - sorted[0].openTime : targetMs;
+  const expectedBarsPerBucket = srcMs > 0 ? Math.round(targetMs / srcMs) : 1;
+
   const buckets = new Map<number, Candle[]>();
-  for (const c of src) {
+  for (const c of sorted) {
     const k = Math.floor(c.openTime / targetMs) * targetMs;
     let arr = buckets.get(k);
     if (!arr) {
@@ -151,9 +164,21 @@ export function resampleCandles(src: Candle[], targetMs: number): Candle[] {
   }
   const keys = [...buckets.keys()].sort((a, b) => a - b);
   const out: Candle[] = [];
-  for (const k of keys) {
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
     const arr = buckets.get(k)!;
-    arr.sort((a, b) => a.openTime - b.openTime);
+    // Drop the FIRST bucket if it's missing leading source bars (open
+    // price would be wrong relative to bucket-aligned openTime). Don't
+    // drop trailing partials — most callers want the latest data even
+    // if the bucket isn't sealed yet (their `isFinal=false` upstream
+    // is the real seal-check).
+    if (
+      i === 0 &&
+      expectedBarsPerBucket > 1 &&
+      arr.length < expectedBarsPerBucket
+    ) {
+      continue;
+    }
     const first = arr[0];
     const last = arr[arr.length - 1];
     out.push({
