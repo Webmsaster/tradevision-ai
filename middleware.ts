@@ -1,6 +1,6 @@
-import { NextResponse } from 'next/server';
-import type { NextRequest } from 'next/server';
-import { createServerClient } from '@supabase/ssr';
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+import { createServerClient } from "@supabase/ssr";
 
 /**
  * Middleware to refresh the Supabase auth session on every request.
@@ -12,7 +12,7 @@ export async function middleware(request: NextRequest) {
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   // Skip middleware if Supabase is not configured
-  if (!url || !key || url === 'https://your-project.supabase.co') {
+  if (!url || !key || url === "https://your-project.supabase.co") {
     return NextResponse.next();
   }
 
@@ -25,11 +25,11 @@ export async function middleware(request: NextRequest) {
       },
       setAll(cookiesToSet) {
         cookiesToSet.forEach(({ name, value }) =>
-          request.cookies.set(name, value)
+          request.cookies.set(name, value),
         );
         supabaseResponse = NextResponse.next({ request });
         cookiesToSet.forEach(({ name, value, options }) =>
-          supabaseResponse.cookies.set(name, value, options)
+          supabaseResponse.cookies.set(name, value, options),
         );
       },
     },
@@ -43,7 +43,12 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    // Match all routes except static files and API
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    // Phase 45 (R45-API-1): the previous matcher actually let `/api/*` through —
+    // the comment claimed otherwise but the negation only excluded static
+    // assets. Effect: every API hit triggered `auth.getUser()` over the
+    // network (50-200ms latency, RLS counter-load, Set-Cookie on JSON
+    // responses, race conditions on parallel /api/* calls). Add `api` to
+    // the exclusion alongside the static-file extensions.
+    "/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };
