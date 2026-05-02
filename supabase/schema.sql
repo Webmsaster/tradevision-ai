@@ -75,11 +75,16 @@ create policy "Users can delete their own trades"
   on trades for delete
   using (auth.uid() = user_id);
 
--- Auto-update updated_at timestamp
+-- Auto-update updated_at timestamp + freeze created_at on update.
+-- Phase 69 (R45-DB-M6): without `new.created_at = old.created_at`, an
+-- API client (or a misbehaving migration) could rewrite created_at on
+-- update, breaking auditability and any time-series analytics that
+-- assumes created_at is monotonic.
 create or replace function update_updated_at()
 returns trigger as $$
 begin
   new.updated_at = now();
+  new.created_at = old.created_at;
   return new;
 end;
 $$ language plpgsql;

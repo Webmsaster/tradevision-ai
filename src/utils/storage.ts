@@ -169,9 +169,13 @@ export async function saveTradeToSupabase(
   trade: Trade,
   userId: string,
 ): Promise<boolean> {
+  // Phase 69 (R45-DB-M1): explicit onConflict on PK so the upsert path
+  // is unambiguous — supabase-js infers from the PK by default but
+  // future schema changes (e.g. composite PK on (user_id, id)) would
+  // silently change semantics.
   const { error } = await supabase
     .from("trades")
-    .upsert(tradeToDb(trade, userId));
+    .upsert(tradeToDb(trade, userId), { onConflict: "id" });
 
   if (error) {
     console.error("Failed to save trade to Supabase:", error);
@@ -214,7 +218,9 @@ export async function saveBulkTradesToSupabase(
   const rows = trades.map((t) => tradeToDb(t, userId));
   for (let i = 0; i < rows.length; i += CHUNK) {
     const slice = rows.slice(i, i + CHUNK);
-    const { error } = await supabase.from("trades").upsert(slice);
+    const { error } = await supabase
+      .from("trades")
+      .upsert(slice, { onConflict: "id" });
     if (error) {
       console.error(
         `Failed to bulk save trades to Supabase (chunk ${i / CHUNK}):`,

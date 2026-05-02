@@ -56,3 +56,13 @@ create index if not exists idx_trades_account_exit
 
 -- 4. Drop unused pair index (filter happens client-side).
 drop index if exists idx_trades_pair;
+
+-- 5. Phase 69 (R45-DB-M6): freeze created_at on update.
+create or replace function update_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  new.created_at = old.created_at;
+  return new;
+end;
+$$ language plpgsql;
