@@ -42,7 +42,7 @@ export async function fetchUsdtSupplyHistory(
   const rows = json.market_caps ?? [];
   const out: SupplySample[] = [];
   for (let i = 0; i < rows.length; i++) {
-    const [ts, mcap] = rows[i];
+    const [ts, mcap] = rows[i]!;
     const prev = i > 0 ? rows[i - 1]![1] : mcap;
     const delta = mcap - prev;
     const deltaPct = prev > 0 ? delta / prev : 0;

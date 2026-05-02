@@ -27,7 +27,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -922,9 +922,31 @@ def place_short_market(
 
 
 def close_position(ticket: int) -> bool:
+    """Close an open position by ticket. Returns True only on confirmed close.
+
+    Phase 84 (R51-PY-C1): when `mt5.positions_get(ticket=...)` returns
+    None/empty we cannot tell whether (a) the position was already closed
+    legitimately or (b) the API hiccupped. The previous code returned True
+    in BOTH cases, so a transient API failure during emergency-close
+    would mark the ticket "closed" and the executor would stop retrying
+    while the actual position kept bleeding into DL/TL.
+    Now we verify via `history_deals_get`: a confirmed exit-deal for the
+    ticket within the last 24h means the position genuinely closed; no
+    deal history → return False so the caller retries.
+    """
     positions = mt5.positions_get(ticket=ticket)
     if not positions:
-        return True
+        try:
+            since = datetime.now(timezone.utc) - timedelta(hours=24)
+            now = datetime.now(timezone.utc)
+            deals = mt5.history_deals_get(since, now) or []
+            # entry deal has type=DEAL_ENTRY_IN; closing deal has DEAL_ENTRY_OUT.
+            for d in deals:
+                if getattr(d, "position_id", None) == ticket and getattr(d, "entry", None) == mt5.DEAL_ENTRY_OUT:
+                    return True
+        except Exception as e:
+            log_event("close_position_history_check_failed", ticket=ticket, error=str(e))
+        return False
     pos = positions[0]
     info = mt5.symbol_info(pos.symbol)
     if info is None:

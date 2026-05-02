@@ -612,12 +612,23 @@ export default function TradeForm({
                     const img = new Image();
                     img.onload = () => {
                       try {
+                        // Phase 85 (R51-UI-1): clamp BOTH dimensions. The
+                        // previous code only capped width — a tall narrow
+                        // 800×100000 image (under the 5 MB upload cap)
+                        // produced an 800×100000 canvas (~320 MB ARGB
+                        // buffer) that crashed mobile browsers and many
+                        // desktop tabs. Use min-of-axis-scale so the
+                        // largest dimension determines the down-scale.
                         const MAX_WIDTH = 800;
-                        const scale =
-                          img.width > MAX_WIDTH ? MAX_WIDTH / img.width : 1;
+                        const MAX_HEIGHT = 800;
+                        const scale = Math.min(
+                          1,
+                          MAX_WIDTH / img.width,
+                          MAX_HEIGHT / img.height,
+                        );
                         const canvas = document.createElement("canvas");
-                        canvas.width = img.width * scale;
-                        canvas.height = img.height * scale;
+                        canvas.width = Math.round(img.width * scale);
+                        canvas.height = Math.round(img.height * scale);
                         const ctx = canvas.getContext("2d");
                         if (ctx) {
                           ctx.drawImage(img, 0, 0, canvas.width, canvas.height);

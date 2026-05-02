@@ -16,6 +16,7 @@
  */
 import type { Candle } from "./indicators";
 import { rsi } from "./indicators";
+import { pragueDay } from "./ftmoDaytrade24h";
 
 export interface MrAssetConfig {
   symbol: string;
@@ -153,8 +154,18 @@ export function runMrEngine(
   void _pendingLongConfirm;
   void _pendingShortConfirm;
 
+  // Phase 83 (R51-FTMO-2): anchor day-rollover on Prague midnight via
+  // pragueDay(closeTime), not bar-index arithmetic. The latter ignored
+  // DST + the bar-window's UTC offset, so DL/peak-trail caps could be
+  // attributed to the wrong day around CET 22:00–00:00 UTC. Captures
+  // the first bar's Prague day as anchor 0; subsequent bars compute
+  // their offset from that anchor.
+  const ts0 = candleData[symbols[0]!]?.[0]?.closeTime ?? 0;
+  const ts0Day = pragueDay(ts0);
+
   for (let bar = 1; bar < maxBars; bar++) {
-    const dayIndex = Math.floor(bar / barsPerDay!);
+    const tsBar = candleData[symbols[0]!]?.[bar]?.closeTime ?? 0;
+    const dayIndex = pragueDay(tsBar) - ts0Day;
     if (dayIndex !== lastDayIndex) {
       // New day — reset daily-loss counter
       dailyStartEquity = equity;
@@ -176,7 +187,11 @@ export function runMrEngine(
             ? (exitPrice - pos.entryPrice) / pos.entryPrice
             : (pos.entryPrice - exitPrice) / pos.entryPrice;
         const effPnl = rawPnl * cfg.leverage * pos.riskFrac;
-        equity += effPnl;
+        // Phase 83 (R51-FTMO-3): compound to match main engine
+        // (ftmoDaytrade24h.ts:5213 uses `equity *= 1 + effPnl`). Was
+        // additive `equity += effPnl` → backtest curves diverge from the
+        // main engine for any non-zero PnL.
+        equity *= 1 + effPnl;
         closed.push({
           asset: pos.asset,
           direction: pos.direction,
@@ -220,7 +235,11 @@ export function runMrEngine(
             ? (exitPrice - pos.entryPrice) / pos.entryPrice
             : (pos.entryPrice - exitPrice) / pos.entryPrice;
         const effPnl = rawPnl * cfg.leverage * pos.riskFrac;
-        equity += effPnl;
+        // Phase 83 (R51-FTMO-3): compound to match main engine
+        // (ftmoDaytrade24h.ts:5213 uses `equity *= 1 + effPnl`). Was
+        // additive `equity += effPnl` → backtest curves diverge from the
+        // main engine for any non-zero PnL.
+        equity *= 1 + effPnl;
         closed.push({
           asset: pos.asset,
           direction: pos.direction,
@@ -297,7 +316,11 @@ export function runMrEngine(
             Math.max(1, Math.floor((bar - pos!.entryBar) / barsPerDay!));
         const adjPnl = rawPnl - totalCostFrac;
         const effPnl = adjPnl * cfg.leverage * pos!.riskFrac;
-        equity += effPnl;
+        // Phase 83 (R51-FTMO-3): compound to match main engine
+        // (ftmoDaytrade24h.ts:5213 uses `equity *= 1 + effPnl`). Was
+        // additive `equity += effPnl` → backtest curves diverge from the
+        // main engine for any non-zero PnL.
+        equity *= 1 + effPnl;
         closed.push({
           asset: pos!.asset,
           direction: pos!.direction,

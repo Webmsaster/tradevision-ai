@@ -5,6 +5,7 @@ import {
   SETTINGS_CHANGED_EVENT,
   SETTINGS_KEY as SETTINGS_STORAGE_KEY,
 } from "@/lib/constants";
+import { isValidHttpsUrl } from "@/utils/urlSafety";
 
 interface WebhookSettings {
   enabled: boolean;
@@ -155,14 +156,14 @@ export default function SettingsPage() {
       setTestResult("Please enter a webhook URL first.");
       return;
     }
-    try {
-      const parsed = new URL(settings.webhook.url);
-      if (parsed.protocol !== "https:") {
-        setTestResult("Webhook URL must use HTTPS.");
-        return;
-      }
-    } catch {
-      setTestResult("Invalid URL format.");
+    // Phase 86 (R51-S1): use shared SSRF guard. Without isValidHttpsUrl
+    // a curious user could probe `https://10.0.0.1/admin` or AWS metadata
+    // via `https://attacker.example/redirect-to-169.254.169.254` from the
+    // settings UI, defeating the production webhook fire-path's guard.
+    if (!isValidHttpsUrl(settings.webhook.url)) {
+      setTestResult(
+        "Webhook URL must use HTTPS and point to a public host (no private IPs / loopback).",
+      );
       return;
     }
     setTestResult("Sending...");

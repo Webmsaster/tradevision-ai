@@ -23,49 +23,9 @@ import {
   clearAllSupabaseTrades,
 } from "@/utils/storage";
 
-// Phase 41 (R44-STO-H1): block private/loopback/link-local hosts so a
-// user-configured webhook URL can't be used to probe internal services
-// (cloud-metadata 169.254.169.254, localhost daemons, *.internal). The
-// fetch is browser-side so cross-origin reads are blocked already, but
-// the POST body still reaches the target's logs — block at the URL gate.
-function isPrivateHostname(host: string): boolean {
-  const h = host.toLowerCase();
-  if (h === "localhost" || h === "0.0.0.0") return true;
-  if (
-    h.endsWith(".local") ||
-    h.endsWith(".internal") ||
-    h.endsWith(".localhost")
-  )
-    return true;
-  // IPv4 literals
-  const v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (v4) {
-    // Phase 78: regex with 4 capture groups guarantees 5 entries.
-    const [a, b] = [parseInt(v4[1]!, 10), parseInt(v4[2]!, 10)];
-    if (a === 10) return true; // 10/8
-    if (a === 127) return true; // 127/8 loopback
-    if (a === 169 && b === 254) return true; // 169.254/16 link-local + AWS metadata
-    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16/12
-    if (a === 192 && b === 168) return true; // 192.168/16
-    if (a >= 224) return true; // multicast / reserved
-  }
-  // IPv6 literals (URL host strips brackets when bracketed)
-  if (h.startsWith("::") || h === "::1") return true;
-  if (h.startsWith("fc") || h.startsWith("fd")) return true; // fc00::/7 ULA
-  if (h.startsWith("fe80")) return true; // link-local
-  return false;
-}
-
-function isValidHttpsUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "https:") return false;
-    if (isPrivateHostname(parsed.hostname)) return false;
-    return true;
-  } catch {
-    return false;
-  }
-}
+// Phase 41 / Phase 86: SSRF guard moved to @/utils/urlSafety so the
+// settings "Test webhook" handler can share the exact same logic.
+import { isValidHttpsUrl } from "@/utils/urlSafety";
 
 // Fire webhook notification for trade events (best-effort, never blocks)
 function fireWebhook(
@@ -87,11 +47,14 @@ function fireWebhook(
           ? `Trade updated: ${trade?.pair} - PnL: $${trade?.pnl?.toFixed(2)}`
           : `Trade deleted: ${trade?.pair ?? "unknown"}`;
 
-    // Phase 41 (R44-STO-H2): strip screenshot from webhook payload. The
-    // base64 data URL can be up to 2 MB and inflates every notification —
-    // bandwidth waste, privacy leak (screenshot may show MT5 account
-    // numbers), and Discord/Slack reject oversized payloads.
-    const tradeForWebhook = trade ? { ...trade, screenshot: undefined } : trade;
+    // Phase 41 (R44-STO-H2) + Phase 86 (R51-S2): strip screenshot AND
+    // notes from webhook payload. Notes are user free-text that often
+    // contains PII (broker login hints, prop-firm credentials, chart-
+    // anchor passwords); screenshot is up to 2 MB base64. Both are
+    // unsafe to ship to a third-party endpoint by default.
+    const tradeForWebhook = trade
+      ? { ...trade, screenshot: undefined, notes: undefined }
+      : trade;
     const payload =
       wh.platform === "discord"
         ? { content: msg }

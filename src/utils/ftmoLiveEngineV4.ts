@@ -620,10 +620,16 @@ function resolveSizingFactor(
     }
   }
   // intradayDailyLossThrottle (soft tier).
+  // Phase 84 (R51-FTMO-4): use Math.min to cap-down, not multiply. Phase 11
+  // fixed this in the main engine (Engine Bug 12) but V4 had the original
+  // multiplicative form. With Kelly+timeBoost producing factor=4 and a
+  // softFactor=0.5, the multiplicative form yields 2.0 — STILL 2× baseline
+  // risk after the soft-loss tier triggers. The cap form yields 0.5 (true
+  // de-risk).
   if (cfg.intradayDailyLossThrottle) {
     const dayPnl = (state.equity - state.dayStart) / state.dayStart;
     if (dayPnl <= -cfg.intradayDailyLossThrottle.softLossThreshold) {
-      factor *= cfg.intradayDailyLossThrottle.softFactor;
+      factor = Math.min(factor, cfg.intradayDailyLossThrottle.softFactor);
     }
   }
   return factor;
@@ -896,7 +902,17 @@ export function pollLive(
 
   // 2. Day-rollover.
   const newDay = dayIndex(lastBar.openTime, state.challengeStartTs);
-  if (newDay > state.day) {
+  // Phase 84 (R51-FTMO-7): if newDay < state.day, the system clock or
+  // feed time-traveled backwards (DST-end one-hour repeat, NTP step-back,
+  // backfilled replay). Don't roll dayStart/dayPeak back — that would
+  // compare today's PnL against an older day's reference, masking real
+  // DL fails or tripping false ones. Log + skip the rollover; on the
+  // next forward-progressing bar the normal `>` branch will fire.
+  if (newDay < state.day) {
+    result.notes.push(
+      `time regression detected: newDay=${newDay} state.day=${state.day} — keeping current dayStart/dayPeak`,
+    );
+  } else if (newDay > state.day) {
     state.day = newDay;
     state.dayStart = state.equity;
     // Phase 36 (R44-V4-7): set dayPeak to -Infinity so the recompute at
@@ -1079,8 +1095,15 @@ export function pollLive(
       state.tradingDays.push(state.day);
     }
   }
+  // Phase 84 (R51-FTMO-1): require BOTH realised AND mark-to-market equity
+  // ≥ profitTarget before declaring pass. With only realised checked, a
+  // config sitting on +9% realised + −4% MTM unrealised would pass mid-
+  // stream even though the open position will close at a loss and drop
+  // the account below target. FTMO server-side measures end-of-day —
+  // mtmEquity is the better proxy for "would FTMO declare pass right now?"
   if (
     state.equity >= 1 + cfg.profitTarget &&
+    state.mtmEquity >= 1 + cfg.profitTarget &&
     state.tradingDays.length >= cfg.minTradingDays
   ) {
     state.stoppedReason = null;

@@ -543,7 +543,13 @@ async function runOneCheck(): Promise<DetectionResult> {
         "STXUSDT",
       ];
 
-  const allSymbols = ["ETHUSDT", "BTCUSDT", "SOLUSDT", ...extraSymbols];
+  // Phase 85 (R51-LIVE-1): de-dupe so a user-supplied FTMO_EXTRA_SYMBOLS
+  // overlap doesn't fetch the same symbol twice in parallel — the second
+  // result silently overwrote the first when both were `fulfilled`,
+  // potentially replacing a complete history with a partial retry.
+  const allSymbols = [
+    ...new Set(["ETHUSDT", "BTCUSDT", "SOLUSDT", ...extraSymbols]),
+  ];
   const settled = await Promise.allSettled(allSymbols.map(fetchOne));
   const candleMap: Record<string, import("../src/utils/indicators").Candle[]> =
     {};

@@ -3393,7 +3393,7 @@ const _pragueFmt =
         day: "2-digit",
       })
     : null;
-function pragueDay(ms: number): number {
+export function pragueDay(ms: number): number {
   if (_pragueFmt) {
     const yyyymmdd = _pragueFmt.format(new Date(ms)); // "YYYY-MM-DD"
     const [y, m, d] = yyyymmdd.split("-").map(Number);

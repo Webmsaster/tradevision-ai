@@ -12,6 +12,7 @@
  */
 import type { Candle } from "./indicators";
 import { atr } from "./indicators";
+import { pragueDay } from "./ftmoDaytrade24h";
 
 export interface DonchianAssetConfig {
   symbol: string;
@@ -176,8 +177,13 @@ export function runDonchianEngine(
   const closed: ClosedTrade[] = [];
   const tradingDaysSet = new Set<number>();
 
+  // Phase 83 (R51-FTMO-2): Prague day-key, matching main engine.
+  const ts0 = candleData[symbols[0]!]?.[0]?.closeTime ?? 0;
+  const ts0Day = pragueDay(ts0);
+
   for (let bar = 1; bar < maxBars; bar++) {
-    const dayIndex = Math.floor(bar / barsPerDay!);
+    const tsBar = candleData[symbols[0]!]?.[bar]?.closeTime ?? 0;
+    const dayIndex = pragueDay(tsBar) - ts0Day;
     if (dayIndex !== lastDayIndex) {
       dailyStartEquity = equity;
       frozenForDay = false;
@@ -194,7 +200,8 @@ export function runDonchianEngine(
             ? (exitPrice - pos.entryPrice) / pos.entryPrice
             : (pos.entryPrice - exitPrice) / pos.entryPrice;
         const effPnl = rawPnl * cfg.leverage * pos.riskFrac;
-        equity += effPnl;
+        // Phase 83 (R51-FTMO-3): compound to match main engine.
+        equity *= 1 + effPnl;
         closed.push({
           asset: pos.asset,
           direction: pos.direction,
@@ -234,7 +241,8 @@ export function runDonchianEngine(
             ? (exitPrice - pos.entryPrice) / pos.entryPrice
             : (pos.entryPrice - exitPrice) / pos.entryPrice;
         const effPnl = rawPnl * cfg.leverage * pos.riskFrac;
-        equity += effPnl;
+        // Phase 83 (R51-FTMO-3): compound to match main engine.
+        equity *= 1 + effPnl;
         closed.push({
           asset: pos.asset,
           direction: pos.direction,
@@ -313,7 +321,8 @@ export function runDonchianEngine(
         const totalCostFrac = ((pos!.costBp + 8) / 10000) * 2;
         const adjPnl = rawPnl - totalCostFrac;
         const effPnl = adjPnl * cfg.leverage * pos!.riskFrac;
-        equity += effPnl;
+        // Phase 83 (R51-FTMO-3): compound to match main engine.
+        equity *= 1 + effPnl;
         closed.push({
           asset: pos!.asset,
           direction: pos!.direction,
