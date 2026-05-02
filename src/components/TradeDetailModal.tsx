@@ -1,9 +1,14 @@
-'use client';
+"use client";
 
-import { useEffect } from 'react';
-import { Trade } from '@/types/trade';
-import { useFocusTrap } from '@/hooks/useFocusTrap';
-import { formatDetailDate, formatPrice, formatPercent, formatCurrency } from '@/utils/formatters';
+import { useEffect } from "react";
+import { Trade } from "@/types/trade";
+import { useFocusTrap } from "@/hooks/useFocusTrap";
+import {
+  formatDetailDate,
+  formatPrice,
+  formatPercent,
+  formatCurrency,
+} from "@/utils/formatters";
 
 interface TradeDetailModalProps {
   trade: Trade | null;
@@ -25,21 +30,25 @@ function formatHoldTime(entryDate: string, exitDate: string): string {
   return `${hours}h ${minutes}m`;
 }
 
-export default function TradeDetailModal({ trade, isOpen, onClose }: TradeDetailModalProps) {
+export default function TradeDetailModal({
+  trade,
+  isOpen,
+  onClose,
+}: TradeDetailModalProps) {
   // Escape key and body scroll lock
   useEffect(() => {
     if (!isOpen) return;
 
     const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === "Escape") onClose();
     };
 
-    document.addEventListener('keydown', handleEscape);
-    document.body.style.overflow = 'hidden';
+    document.addEventListener("keydown", handleEscape);
+    document.body.style.overflow = "hidden";
 
     return () => {
-      document.removeEventListener('keydown', handleEscape);
-      document.body.style.overflow = '';
+      document.removeEventListener("keydown", handleEscape);
+      document.body.style.overflow = "";
     };
   }, [isOpen, onClose]);
 
@@ -49,18 +58,41 @@ export default function TradeDetailModal({ trade, isOpen, onClose }: TradeDetail
     return null;
   }
 
-  const pnlColor = trade.pnl >= 0 ? 'var(--profit)' : 'var(--loss)';
+  const pnlColor = trade.pnl >= 0 ? "var(--profit)" : "var(--loss)";
 
   return (
-    <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="trade-detail-title">
-      <div className="modal-content" ref={focusTrapRef} onClick={(e) => e.stopPropagation()}>
+    // Phase 60 (R45-UI-L2): close only when the user actually CLICKED the
+    // overlay — not when a text-selection started inside the modal and
+    // released on the overlay. `onMouseDown` capture on overlay paired
+    // with `e.target === e.currentTarget` distinguishes the two.
+    <div
+      className="modal-overlay"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="trade-detail-title"
+    >
+      <div
+        className="modal-content"
+        ref={focusTrapRef}
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="trade-detail-header">
-          <span id="trade-detail-title" className="trade-detail-pair">{trade.pair}</span>
-          <span className={`trade-detail-direction ${trade.direction}`}>
-            {trade.direction === 'long' ? 'LONG' : 'SHORT'}
+          <span id="trade-detail-title" className="trade-detail-pair">
+            {trade.pair}
           </span>
-          <button className="trade-detail-close" onClick={onClose} title="Close" aria-label="Close">
+          <span className={`trade-detail-direction ${trade.direction}`}>
+            {trade.direction === "long" ? "LONG" : "SHORT"}
+          </span>
+          <button
+            className="trade-detail-close"
+            onClick={onClose}
+            title="Close"
+            aria-label="Close"
+          >
             &#10005;
           </button>
         </div>
@@ -72,11 +104,15 @@ export default function TradeDetailModal({ trade, isOpen, onClose }: TradeDetail
           {/* Row 1 */}
           <div className="trade-detail-item">
             <span className="trade-detail-item-label">Entry Price</span>
-            <span className="trade-detail-item-value">${formatPrice(trade.entryPrice)}</span>
+            <span className="trade-detail-item-value">
+              ${formatPrice(trade.entryPrice)}
+            </span>
           </div>
           <div className="trade-detail-item">
             <span className="trade-detail-item-label">Exit Price</span>
-            <span className="trade-detail-item-value">${formatPrice(trade.exitPrice)}</span>
+            <span className="trade-detail-item-value">
+              ${formatPrice(trade.exitPrice)}
+            </span>
           </div>
           <div className="trade-detail-item">
             <span className="trade-detail-item-label">Quantity</span>
@@ -86,11 +122,15 @@ export default function TradeDetailModal({ trade, isOpen, onClose }: TradeDetail
           {/* Row 2 */}
           <div className="trade-detail-item">
             <span className="trade-detail-item-label">Entry Date</span>
-            <span className="trade-detail-item-value">{formatDetailDate(trade.entryDate)}</span>
+            <span className="trade-detail-item-value">
+              {formatDetailDate(trade.entryDate)}
+            </span>
           </div>
           <div className="trade-detail-item">
             <span className="trade-detail-item-label">Exit Date</span>
-            <span className="trade-detail-item-value">{formatDetailDate(trade.exitDate)}</span>
+            <span className="trade-detail-item-value">
+              {formatDetailDate(trade.exitDate)}
+            </span>
           </div>
           <div className="trade-detail-item">
             <span className="trade-detail-item-label">Hold Time</span>
@@ -102,20 +142,30 @@ export default function TradeDetailModal({ trade, isOpen, onClose }: TradeDetail
           {/* Row 3 */}
           <div className="trade-detail-item">
             <span className="trade-detail-item-label">Leverage</span>
-            <span className="trade-detail-item-value">{trade.leverage ?? 1}x</span>
+            <span className="trade-detail-item-value">
+              {trade.leverage ?? 1}x
+            </span>
           </div>
           <div className="trade-detail-item">
             <span className="trade-detail-item-label">Fees</span>
-            <span className="trade-detail-item-value">${formatPrice(trade.fees)}</span>
+            <span className="trade-detail-item-value">
+              ${formatPrice(trade.fees)}
+            </span>
           </div>
           <div className="trade-detail-item">
             <span className="trade-detail-item-label">Strategy</span>
-            <span className="trade-detail-item-value">{trade.strategy || 'N/A'}</span>
+            <span className="trade-detail-item-value">
+              {trade.strategy || "N/A"}
+            </span>
           </div>
         </div>
 
         {/* Journal Entry Fields */}
-        {(trade.emotion || trade.confidence || trade.setupType || trade.timeframe || trade.marketCondition) && (
+        {(trade.emotion ||
+          trade.confidence ||
+          trade.setupType ||
+          trade.timeframe ||
+          trade.marketCondition) && (
           <>
             <div className="trade-detail-divider" />
             <div className="trade-detail-journal-title">Journal Entry</div>
@@ -124,13 +174,15 @@ export default function TradeDetailModal({ trade, isOpen, onClose }: TradeDetail
                 <div className="trade-detail-item">
                   <span className="trade-detail-item-label">Emotion</span>
                   <span className="trade-detail-item-value">
-                    <span className={`trade-detail-emotion trade-detail-emotion--${trade.emotion}`}>
-                      {trade.emotion === 'confident' && 'Confident'}
-                      {trade.emotion === 'neutral' && 'Neutral'}
-                      {trade.emotion === 'fearful' && 'Fearful'}
-                      {trade.emotion === 'greedy' && 'Greedy'}
-                      {trade.emotion === 'fomo' && 'FOMO'}
-                      {trade.emotion === 'revenge' && 'Revenge'}
+                    <span
+                      className={`trade-detail-emotion trade-detail-emotion--${trade.emotion}`}
+                    >
+                      {trade.emotion === "confident" && "Confident"}
+                      {trade.emotion === "neutral" && "Neutral"}
+                      {trade.emotion === "fearful" && "Fearful"}
+                      {trade.emotion === "greedy" && "Greedy"}
+                      {trade.emotion === "fomo" && "FOMO"}
+                      {trade.emotion === "revenge" && "Revenge"}
                     </span>
                   </span>
                 </div>
@@ -143,7 +195,7 @@ export default function TradeDetailModal({ trade, isOpen, onClose }: TradeDetail
                       {[1, 2, 3, 4, 5].map((level) => (
                         <span
                           key={level}
-                          className={`trade-detail-confidence-dot${level <= trade.confidence! ? ' active' : ''}`}
+                          className={`trade-detail-confidence-dot${level <= trade.confidence! ? " active" : ""}`}
                         />
                       ))}
                     </span>
@@ -153,19 +205,28 @@ export default function TradeDetailModal({ trade, isOpen, onClose }: TradeDetail
               {trade.setupType && (
                 <div className="trade-detail-item">
                   <span className="trade-detail-item-label">Setup Type</span>
-                  <span className="trade-detail-item-value">{trade.setupType}</span>
+                  <span className="trade-detail-item-value">
+                    {trade.setupType}
+                  </span>
                 </div>
               )}
               {trade.timeframe && (
                 <div className="trade-detail-item">
                   <span className="trade-detail-item-label">Timeframe</span>
-                  <span className="trade-detail-item-value">{trade.timeframe}</span>
+                  <span className="trade-detail-item-value">
+                    {trade.timeframe}
+                  </span>
                 </div>
               )}
               {trade.marketCondition && (
                 <div className="trade-detail-item">
-                  <span className="trade-detail-item-label">Market Condition</span>
-                  <span className="trade-detail-item-value" style={{ textTransform: 'capitalize' }}>
+                  <span className="trade-detail-item-label">
+                    Market Condition
+                  </span>
+                  <span
+                    className="trade-detail-item-value"
+                    style={{ textTransform: "capitalize" }}
+                  >
                     {trade.marketCondition}
                   </span>
                 </div>
@@ -177,7 +238,8 @@ export default function TradeDetailModal({ trade, isOpen, onClose }: TradeDetail
         {/* PnL Hero */}
         <div className="trade-detail-pnl">
           <div className="trade-detail-pnl-value" style={{ color: pnlColor }}>
-            {trade.pnl > 0 ? '+' : ''}{formatCurrency(trade.pnl)}
+            {trade.pnl > 0 ? "+" : ""}
+            {formatCurrency(trade.pnl)}
           </div>
           <div className="trade-detail-pnl-percent" style={{ color: pnlColor }}>
             {formatPercent(trade.pnlPercent)}
@@ -196,16 +258,30 @@ export default function TradeDetailModal({ trade, isOpen, onClose }: TradeDetail
         )}
 
         {/* Screenshot */}
-        {trade.screenshot && (
-          <div className="trade-detail-screenshot">
-            <div className="trade-detail-notes-label">Chart Screenshot</div>
-            <img
-              src={trade.screenshot}
-              alt={`${trade.pair} trade chart`}
-              style={{ maxWidth: '100%', borderRadius: '8px', marginTop: '8px', border: '1px solid rgba(255,255,255,0.1)' }}
-            />
-          </div>
-        )}
+        {/* Phase 60 (R45-UI-M3): only render if the URL is a safe image
+           data-URL or HTTPS — defends against a malicious row sneaking
+           in `javascript:` or `data:image/svg+xml` payloads. validateScreenshot
+           in storage.ts already filters on save, this is the second line. */}
+        {trade.screenshot &&
+          (/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(
+            trade.screenshot,
+          ) ||
+            /^https:\/\//i.test(trade.screenshot)) && (
+            <div className="trade-detail-screenshot">
+              <div className="trade-detail-notes-label">Chart Screenshot</div>
+              <img
+                src={trade.screenshot}
+                alt={`${trade.pair} trade chart`}
+                referrerPolicy="no-referrer"
+                style={{
+                  maxWidth: "100%",
+                  borderRadius: "8px",
+                  marginTop: "8px",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                }}
+              />
+            </div>
+          )}
 
         {/* Notes */}
         {trade.notes && (

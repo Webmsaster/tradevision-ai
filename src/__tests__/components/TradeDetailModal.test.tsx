@@ -83,7 +83,10 @@ describe("TradeDetailModal", () => {
     const { container } = render(
       <TradeDetailModal trade={makeTrade()} isOpen onClose={onClose} />,
     );
-    fireEvent.click(container.querySelector(".modal-overlay")!);
+    // Phase 60 (R45-UI-L2): overlay close moved from `onClick` to
+    // `onMouseDown` to avoid closing when text-selection released on
+    // the overlay; trigger the right event in the test.
+    fireEvent.mouseDown(container.querySelector(".modal-overlay")!);
     expect(onClose).toHaveBeenCalledOnce();
   });
 
@@ -92,7 +95,9 @@ describe("TradeDetailModal", () => {
     const { container } = render(
       <TradeDetailModal trade={makeTrade()} isOpen onClose={onClose} />,
     );
-    fireEvent.click(container.querySelector(".modal-content")!);
+    // Phase 60: overlay listens to mouseDown now; mouseDown on modal-content
+    // bubbles to overlay but `e.target !== e.currentTarget` so onClose stays.
+    fireEvent.mouseDown(container.querySelector(".modal-content")!);
     expect(onClose).not.toHaveBeenCalled();
   });
 
