@@ -65,13 +65,13 @@ export function detectLiveSignal(
   const btcEma10Arr = ema(btcCloses, 10);
   const btcEma15Arr = ema(btcCloses, 15);
   const lastIdx = btcCandles.length - 1;
-  const btcClose = btcCandles[lastIdx].close;
+  const btcClose = btcCandles[lastIdx]!.close;
   const btcEma10 = btcEma10Arr[lastIdx] ?? btcClose;
   const btcEma15 = btcEma15Arr[lastIdx] ?? btcClose;
   const btcMom24h =
     lastIdx >= 6
-      ? (btcClose - btcCandles[lastIdx - 6].close) /
-        btcCandles[lastIdx - 6].close
+      ? (btcClose - btcCandles[lastIdx - 6]!.close) /
+        btcCandles[lastIdx - 6]!.close
       : 0;
   const btcUptrend = btcClose > btcEma10 && btcEma10 > btcEma15;
   const btcBullMom = btcMom24h > 0.02;
@@ -94,9 +94,9 @@ export function detectLiveSignal(
     });
   }
   const last2Green =
-    b1.close > b0.close && b0.close > ethCandles[ethLastIdx - 2]?.close;
+    b1.close > b0.close && b0.close > ethCandles[ethLastIdx - 2]!?.close;
   const last2Red =
-    b1.close < b0.close && b0.close < ethCandles[ethLastIdx - 2]?.close;
+    b1.close < b0.close && b0.close < ethCandles[ethLastIdx - 2]!?.close;
 
   // iter212 MR-short: 2 green → short
   // iter213 MOM-long (invertDirection=true): 2 green → long

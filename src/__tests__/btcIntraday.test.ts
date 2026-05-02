@@ -192,8 +192,8 @@ describe("btcIntraday — mapFundingToBars", () => {
     }));
     const funding = [{ fundingTime: 2500, fundingRate: 0.0002 }];
     const r = mapFundingToBars(bars, funding);
-    expect(isNaN(r[0])).toBe(true);
-    expect(isNaN(r[1])).toBe(true);
+    expect(isNaN(r[0]!)).toBe(true);
+    expect(isNaN(r[1]!)).toBe(true);
     expect(r[2]).toBeCloseTo(0.0002, 6);
   });
 
@@ -213,7 +213,7 @@ describe("btcIntraday — mapFundingToBars", () => {
       { fundingTime: 350, fundingRate: 0.0003 },
     ];
     const r = mapFundingToBars(bars, funding);
-    expect(isNaN(r[0])).toBe(true); // before first event
+    expect(isNaN(r[0]!)).toBe(true); // before first event
     expect(r[1]).toBeCloseTo(0.0001, 6); // after first
     expect(r[2]).toBeCloseTo(0.0001, 6); // still first
     expect(r[3]).toBeCloseTo(0.0003, 6); // after second
@@ -345,9 +345,9 @@ describe("btcIntraday — live-signal helper", () => {
     // Overwrite the last 3 bars to be descending closes so M1_nDown fires
     // on bar length-2 (the last closed bar for live-signal purposes).
     const n = bars.length;
-    const p = bars[n - 4].close;
-    bars[n - 3] = mkCandle(bars[n - 3].openTime, p, p + 0.2, p - 2, p - 1);
-    bars[n - 2] = mkCandle(bars[n - 2].openTime, p - 1, p - 0.5, p - 3, p - 2);
+    const p = bars[n - 4]!.close;
+    bars[n - 3] = mkCandle(bars[n - 3]!.openTime, p, p + 0.2, p - 2, p - 1);
+    bars[n - 2] = mkCandle(bars[n - 2]!.openTime, p - 1, p - 0.5, p - 3, p - 2);
     // Live signal evaluates bar index n-2. Volume filter disabled so the
     // synthetic uniform-volume data doesn't suppress all signals.
     const sigs = getBtcIntradayLiveSignals(bars, {

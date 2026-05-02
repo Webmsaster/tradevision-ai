@@ -3232,13 +3232,13 @@ export function pickBestConfig(btcCandles: Candle[]): {
   const ema = (vals: number[], period: number): number => {
     const k = 2 / (period + 1);
     let e = vals.slice(0, period).reduce((s, v) => s + v, 0) / period;
-    for (let i = period; i < vals.length; i++) e = vals[i] * k + e * (1 - k);
+    for (let i = period; i < vals.length; i++) e = vals[i]! * k + e * (1 - k);
     return e;
   };
   const last = closes[closes.length - 1];
   const emaFast = ema(closes, 10);
   const emaSlow = ema(closes, 15);
-  const mom6 = (last - closes[closes.length - 6]) / closes[closes.length - 6];
+  const mom6 = (last - closes[closes.length - 6]!) / closes[closes.length - 6]!;
   const btcUptrend = last > emaFast && emaFast > emaSlow;
   const btcBullMom = mom6 > 0.02;
 
@@ -3424,13 +3424,13 @@ export function detectAsset(
   // BUGFIX 2026-04-28: lossStreak/cooldownUntilBar moved into direction loop
   // (was leaking between long/short — short trades got cooldown'd by long stops).
   const lsc = cfg.lossStreakCooldown;
-  const ts0 = candles[0].openTime;
+  const ts0 = candles[0]!.openTime;
   const cost = asset.costBp / 10000;
   // Derive bar duration from the data so 30m / 1h / 2h / 4h all report
   // accurate holdHours. (Used only for trade-record display, not logic.)
   const hoursPerBar =
     candles.length >= 2
-      ? (candles[1].openTime - candles[0].openTime) / 3_600_000
+      ? (candles[1]!.openTime - candles[0]!.openTime) / 3_600_000
       : 4;
 
   // Pre-compute RSI once per asset if filter configured.
@@ -3587,11 +3587,11 @@ export function detectAsset(
         let pHigh = -Infinity,
           pLow = Infinity;
         for (let k = i - donchianP; k < i; k++) {
-          if (candles[k].high > pHigh) pHigh = candles[k].high;
-          if (candles[k].low < pLow) pLow = candles[k].low;
+          if (candles[k]!.high > pHigh) pHigh = candles[k]!.high;
+          if (candles[k]!.low < pLow) pLow = candles[k]!.low;
         }
-        if (direction === "long" && candles[i].close <= pHigh) ok = false;
-        if (direction === "short" && candles[i].close >= pLow) ok = false;
+        if (direction === "long" && candles[i]!.close <= pHigh) ok = false;
+        if (direction === "short" && candles[i]!.close >= pLow) ok = false;
       } else if (bbKc) {
         // BB-KC Squeeze release: BB was inside KC for minSqueezeBars, now expands outside
         const bbP = bbKc.bbPeriod,
@@ -3602,17 +3602,17 @@ export function detectAsset(
         } else {
           // SMA + stddev for BB
           let sum = 0;
-          for (let k = i - bbP + 1; k <= i; k++) sum += candles[k].close;
+          for (let k = i - bbP + 1; k <= i; k++) sum += candles[k]!.close;
           const mean = sum / bbP;
           let varSum = 0;
           for (let k = i - bbP + 1; k <= i; k++)
-            varSum += (candles[k].close - mean) ** 2;
+            varSum += (candles[k]!.close - mean) ** 2;
           const stddev = Math.sqrt(varSum / bbP);
           const bbUpper = mean + bbKc.bbSigma * stddev;
           const bbLower = mean - bbKc.bbSigma * stddev;
           // KC center = SMA of close (kcP), bands = ±mult × ATR(kcP)
           let kcSum = 0;
-          for (let k = i - kcP + 1; k <= i; k++) kcSum += candles[k].close;
+          for (let k = i - kcP + 1; k <= i; k++) kcSum += candles[k]!.close;
           const kcCenter = kcSum / kcP;
           // True range over kcP bars
           let trSum = 0;
@@ -3636,16 +3636,16 @@ export function detectAsset(
           for (let k = i - bbKc.minSqueezeBars; k < i; k++) {
             // recompute at k
             let s2 = 0;
-            for (let j = k - bbP + 1; j <= k; j++) s2 += candles[j].close;
+            for (let j = k - bbP + 1; j <= k; j++) s2 += candles[j]!.close;
             const m2 = s2 / bbP;
             let v2 = 0;
             for (let j = k - bbP + 1; j <= k; j++)
-              v2 += (candles[j].close - m2) ** 2;
+              v2 += (candles[j]!.close - m2) ** 2;
             const sd2 = Math.sqrt(v2 / bbP);
             const bU = m2 + bbKc.bbSigma * sd2;
             const bL = m2 - bbKc.bbSigma * sd2;
             let kS = 0;
-            for (let j = k - kcP + 1; j <= k; j++) kS += candles[j].close;
+            for (let j = k - kcP + 1; j <= k; j++) kS += candles[j]!.close;
             const kC = kS / kcP;
             let tS = 0;
             for (let j = k - kcP + 1; j <= k; j++) {
@@ -3678,10 +3678,10 @@ export function detectAsset(
           sSum = 0,
           fSumPrev = 0,
           sSumPrev = 0;
-        for (let k = i - fast + 1; k <= i; k++) fSum += candles[k].close;
-        for (let k = i - slow + 1; k <= i; k++) sSum += candles[k].close;
-        for (let k = i - fast; k <= i - 1; k++) fSumPrev += candles[k].close;
-        for (let k = i - slow; k <= i - 1; k++) sSumPrev += candles[k].close;
+        for (let k = i - fast + 1; k <= i; k++) fSum += candles[k]!.close;
+        for (let k = i - slow + 1; k <= i; k++) sSum += candles[k]!.close;
+        for (let k = i - fast; k <= i - 1; k++) fSumPrev += candles[k]!.close;
+        for (let k = i - slow; k <= i - 1; k++) sSumPrev += candles[k]!.close;
         const fNow = fSum / fast,
           sNow = sSum / slow;
         const fPrev = fSumPrev / fast,
@@ -3696,8 +3696,8 @@ export function detectAsset(
           ok = false;
         } else {
           const ret =
-            (candles[i].close - candles[i - tsMom.lookbackBars].close) /
-            candles[i - tsMom.lookbackBars].close;
+            (candles[i]!.close - candles[i - tsMom.lookbackBars]!.close) /
+            candles[i - tsMom.lookbackBars]!.close;
           if (direction === "long" && ret < tsMom.threshold) ok = false;
           if (direction === "short" && ret > -tsMom.threshold) ok = false;
         }
@@ -3707,7 +3707,7 @@ export function detectAsset(
         let minRange = Infinity,
           narrowIdx = -1;
         for (let k = i - nr7.compressionBars; k < i; k++) {
-          const r = candles[k].high - candles[k].low;
+          const r = candles[k]!.high - candles[k]!.low;
           if (r < minRange) {
             minRange = r;
             narrowIdx = k;
@@ -3716,12 +3716,12 @@ export function detectAsset(
         if (narrowIdx < 0) ok = false;
         else if (
           direction === "long" &&
-          candles[i].close <= candles[narrowIdx].high
+          candles[i]!.close <= candles[narrowIdx]!.high
         )
           ok = false;
         else if (
           direction === "short" &&
-          candles[i].close >= candles[narrowIdx].low
+          candles[i]!.close >= candles[narrowIdx]!.low
         )
           ok = false;
       } else if (mrEntry) {
@@ -3735,16 +3735,16 @@ export function detectAsset(
             ok = false;
           } else {
             let sum = 0;
-            for (let k = i - bbP + 1; k <= i; k++) sum += candles[k].close;
+            for (let k = i - bbP + 1; k <= i; k++) sum += candles[k]!.close;
             const mean = sum / bbP;
             let varSum = 0;
             for (let k = i - bbP + 1; k <= i; k++)
-              varSum += (candles[k].close - mean) ** 2;
+              varSum += (candles[k]!.close - mean) ** 2;
             const sd = Math.sqrt(varSum / bbP);
             const lower = mean - mrEntry.bbSigma * sd;
             const rs = mrRsiSeries ? mrRsiSeries[i] : null;
             if (rs === null || rs === undefined) ok = false;
-            else if (candles[i].close >= lower) ok = false;
+            else if (candles[i]!.close >= lower) ok = false;
             else if (rs > mrEntry.rsiThresh) ok = false;
           }
         }
@@ -3760,9 +3760,9 @@ export function detectAsset(
           } else {
             let pHigh = -Infinity;
             for (let k = i - dp; k < i; k++) {
-              if (candles[k].high > pHigh) pHigh = candles[k].high;
+              if (candles[k]!.high > pHigh) pHigh = candles[k]!.high;
             }
-            if (candles[i].close <= pHigh) ok = false;
+            if (candles[i]!.close <= pHigh) ok = false;
             else {
               const atrNow = boAtrSeries ? boAtrSeries[i] : null;
               if (atrNow === null || atrNow === undefined) ok = false;
@@ -3789,11 +3789,11 @@ export function detectAsset(
         // Default: N consecutive close-comparison
         for (let k = 0; k < triggerBars; k++) {
           const longCmp = invert
-            ? candles[i - k].close <= candles[i - k - 1].close
-            : candles[i - k].close >= candles[i - k - 1].close;
+            ? candles[i - k]!.close <= candles[i - k - 1]!.close
+            : candles[i - k]!.close >= candles[i - k - 1]!.close;
           const shortCmp = invert
-            ? candles[i - k].close >= candles[i - k - 1].close
-            : candles[i - k].close <= candles[i - k - 1].close;
+            ? candles[i - k]!.close >= candles[i - k - 1]!.close
+            : candles[i - k]!.close <= candles[i - k - 1]!.close;
           const cmp = direction === "long" ? longCmp : shortCmp;
           if (cmp) {
             ok = false;
@@ -3822,7 +3822,7 @@ export function detectAsset(
       if (emaSeries && cfg.trendFilter) {
         const e = emaSeries[i];
         if (e === null || e === undefined) continue;
-        const price = candles[i].close;
+        const price = candles[i]!.close;
         const gateLongs =
           cfg.trendFilter.apply === "long" || cfg.trendFilter.apply === "both";
         const gateShorts =
@@ -3837,7 +3837,8 @@ export function detectAsset(
         const lb = cfg.htfTrendFilter.lookbackBars;
         if (i >= lb) {
           const change =
-            (candles[i].close - candles[i - lb].close) / candles[i - lb].close;
+            (candles[i]!.close - candles[i - lb]!.close) /
+            candles[i - lb]!.close;
           const thr = cfg.htfTrendFilter.threshold ?? 0;
           const gateLongs =
             cfg.htfTrendFilter.apply === "long" ||
@@ -3855,7 +3856,8 @@ export function detectAsset(
         const lb = cfg.htfTrendFilterAux.lookbackBars;
         if (i >= lb) {
           const change =
-            (candles[i].close - candles[i - lb].close) / candles[i - lb].close;
+            (candles[i]!.close - candles[i - lb]!.close) /
+            candles[i - lb]!.close;
           const thr = cfg.htfTrendFilterAux.threshold ?? 0;
           const gateLongs =
             cfg.htfTrendFilterAux.apply === "long" ||
@@ -3876,18 +3878,18 @@ export function detectAsset(
       if (cfg.allowedHoursUtc && cfg.allowedHoursUtc.length > 0) {
         const refTime =
           entryBar < candles.length
-            ? candles[entryBar].openTime
-            : candles[i].openTime +
-              (candles[i].closeTime - candles[i].openTime);
+            ? candles[entryBar]!.openTime
+            : candles[i]!.openTime +
+              (candles[i]!.closeTime - candles[i]!.openTime);
         const h = new Date(refTime).getUTCHours();
         if (!cfg.allowedHoursUtc.includes(h)) continue;
       }
       if (cfg.allowedDowsUtc && cfg.allowedDowsUtc.length > 0) {
         const refTime =
           entryBar < candles.length
-            ? candles[entryBar].openTime
-            : candles[i].openTime +
-              (candles[i].closeTime - candles[i].openTime);
+            ? candles[entryBar]!.openTime
+            : candles[i]!.openTime +
+              (candles[i]!.closeTime - candles[i]!.openTime);
         const d = new Date(refTime).getUTCDay();
         if (!cfg.allowedDowsUtc.includes(d)) continue;
       }
@@ -3906,7 +3908,7 @@ export function detectAsset(
       if (volAtrSeries && cfg.volatilityFilter) {
         const a = volAtrSeries[i];
         if (a === null || a === undefined) continue;
-        const frac = a / candles[i].close;
+        const frac = a / candles[i]!.close;
         if (
           cfg.volatilityFilter.minAtrFrac !== undefined &&
           frac < cfg.volatilityFilter.minAtrFrac
@@ -3945,9 +3947,9 @@ export function detectAsset(
         const period = cfg.volumeFilter.period;
         if (i >= period) {
           let sumV = 0;
-          for (let j = i - period; j < i; j++) sumV += candles[j].volume;
+          for (let j = i - period; j < i; j++) sumV += candles[j]!.volume;
           const avg = sumV / period;
-          if (avg > 0 && candles[i].volume / avg < cfg.volumeFilter.minRatio) {
+          if (avg > 0 && candles[i]!.volume / avg < cfg.volumeFilter.minRatio) {
             continue;
           }
         }
@@ -3976,7 +3978,7 @@ export function detectAsset(
         const eFast = crossEmaFast[i];
         const eSlow = crossEmaSlow[i];
         if (eFast !== null && eSlow !== null && crossAssetCandles[i]) {
-          const xPrice = crossAssetCandles[i].close;
+          const xPrice = crossAssetCandles[i]!.close;
           const crossUptrend = xPrice > eFast && eFast > eSlow;
           const crossDowntrend = xPrice < eFast && eFast < eSlow;
           if (
@@ -4001,8 +4003,8 @@ export function detectAsset(
           const back = i - crossFilter.momentumBars;
           if (back >= 0) {
             const rel =
-              (crossAssetCandles[i].close - crossAssetCandles[back].close) /
-              crossAssetCandles[back].close;
+              (crossAssetCandles[i]!.close - crossAssetCandles[back]!.close) /
+              crossAssetCandles[back]!.close;
             if (
               direction === "short" &&
               crossFilter.momSkipShortAbove !== undefined &&
@@ -4024,7 +4026,7 @@ export function detectAsset(
           const eFast = extra.fast[i];
           const eSlow = extra.slow[i];
           if (eFast === null || eSlow === null || !extra.candles[i]) continue;
-          const xPrice = extra.candles[i].close;
+          const xPrice = extra.candles[i]!.close;
           const crossUptrend = xPrice > eFast && eFast > eSlow;
           const crossDowntrend = xPrice < eFast && eFast < eSlow;
           if (
@@ -4052,7 +4054,7 @@ export function detectAsset(
 
       // Pullback-entry: wait for retrace from trigger close before entering
       if (asset.pullbackEntry) {
-        const triggerClose = candles[i].close;
+        const triggerClose = candles[i]!.close;
         const target =
           direction === "long"
             ? triggerClose * (1 - asset.pullbackEntry.pullbackPct)
@@ -4110,7 +4112,7 @@ export function detectAsset(
         const start = Math.max(1, i - va.period + 1);
         for (let k = start; k <= i; k++) {
           const c = candles[k];
-          const prev = candles[k - 1].close;
+          const prev = candles[k - 1]!.close;
           aSum += Math.max(
             c.high - c.low,
             Math.abs(c.high - prev),
@@ -4119,7 +4121,7 @@ export function detectAsset(
           aCount++;
         }
         if (aCount > 0) {
-          const realizedAtrFrac = aSum / aCount / candles[i].close;
+          const realizedAtrFrac = aSum / aCount / candles[i]!.close;
           if (realizedAtrFrac > 0) {
             const rawMult = realizedAtrFrac / va.targetVolFrac;
             const mult = Math.max(va.minMult, Math.min(va.maxMult, rawMult));
@@ -4150,7 +4152,7 @@ export function detectAsset(
       // configured.
       const mx = Math.min(ebIdx + holdBars, candles.length - 1);
       let exitBar = mx;
-      let exitPrice = candles[mx].close;
+      let exitPrice = candles[mx]!.close;
       let reason: "tp" | "stop" | "time" = "time";
       // Dynamic stop — break-even logic may tighten it after the bar
       // where unrealized gain crosses cfg.breakEven.threshold.
@@ -4345,10 +4347,10 @@ export function detectAsset(
               ? (bar.close - entry) / entry
               : (entry - bar.close) / entry;
           for (let lv = 0; lv < ptpLevels.length; lv++) {
-            if (!ptpLevelsHit[lv] && unrealized >= ptpLevels[lv].triggerPct) {
+            if (!ptpLevelsHit[lv] && unrealized >= ptpLevels[lv]!.triggerPct) {
               ptpLevelsHit[lv] = true;
               ptpLevelsRealizedPct +=
-                ptpLevels[lv].closeFraction * ptpLevels[lv].triggerPct;
+                ptpLevels[lv]!.closeFraction * ptpLevels[lv]!.triggerPct;
             }
           }
         }
@@ -4476,7 +4478,7 @@ export function detectAsset(
         // BUGFIX 2026-04-29 (R12 Agent 1 Bug 5): use Prague day so swap-charge
         // aligns with the same daily anchor the rest of the engine uses.
         const entryDay = pragueDay(eb.openTime);
-        const exitDay = pragueDay(candles[exitBar].closeTime);
+        const exitDay = pragueDay(candles[exitBar]!.closeTime);
         const overnightCrossings = Math.max(0, exitDay - entryDay);
         if (overnightCrossings > 0) {
           rawPnl -= (swapBp / 10000) * overnightCrossings;
@@ -4505,7 +4507,7 @@ export function detectAsset(
             let sumTr = 0;
             for (let k = start; k <= i; k++) {
               const c = candles[k];
-              const prev = candles[k - 1].close;
+              const prev = candles[k - 1]!.close;
               const tr = Math.max(
                 c.high - c.low,
                 Math.abs(c.high - prev),
@@ -4564,7 +4566,7 @@ export function detectAsset(
       // resolution. Previous fixed UTC+1 drifted by 1h during CEST (Apr-Oct,
       // ~7mo/yr) and mis-bucketed PnL near 22-23 UTC summer windows. Use
       // PRAGUE_DAY (computed via Intl) for accurate cuts.
-      const exitTimeMs = candles[exitBar].closeTime;
+      const exitTimeMs = candles[exitBar]!.closeTime;
       const day = pragueDay(exitTimeMs) - pragueDay(ts0);
       const entryDay = pragueDay(eb.openTime) - pragueDay(ts0);
       // BUGFIX 2026-04-29 (Agent 2 Bug 10): use ebIdx (actual entry bar after
@@ -4574,7 +4576,7 @@ export function detectAsset(
         symbol: asset.symbol,
         direction,
         entryTime: eb.openTime,
-        exitTime: candles[exitBar].closeTime,
+        exitTime: candles[exitBar]!.closeTime,
         entryPrice: entry,
         exitPrice,
         rawPnl,
@@ -4711,8 +4713,8 @@ export function runFtmoDaytrade24h(
     const alignsByTimestamp = (a: Candle[], b: Candle[]): boolean =>
       a.length === b.length &&
       a.length > 0 &&
-      a[0].openTime === b[0].openTime &&
-      a[a.length - 1].openTime === b[b.length - 1].openTime;
+      a[0]!.openTime === b[0]!.openTime &&
+      a[a.length - 1]!.openTime === b[b.length - 1]!.openTime;
     const crossForAsset =
       crossCandles && alignsByTimestamp(crossCandles, candles)
         ? crossCandles
@@ -4862,11 +4864,11 @@ export function runFtmoDaytrade24h(
       // find candle at entryTime (binary search would be faster but linear is fine)
       let idx = -1;
       for (let k = cs.length - 1; k >= 0; k--) {
-        if (cs[k].openTime === entryTime) {
+        if (cs[k]!.openTime === entryTime) {
           idx = k;
           break;
         }
-        if (cs[k].openTime < entryTime) break;
+        if (cs[k]!.openTime < entryTime) break;
       }
       if (idx < lb + 1) continue;
       // BUGFIX 2026-04-29 (Audit Bug 2): use signal-bar close (idx-1), not
@@ -4875,7 +4877,7 @@ export function runFtmoDaytrade24h(
       // computes momentum from previous closed bar; backtest must match.
       const sigIdx = idx - 1;
       const ret =
-        (cs[sigIdx].close - cs[sigIdx - lb].close) / cs[sigIdx - lb].close;
+        (cs[sigIdx]!.close - cs[sigIdx - lb]!.close) / cs[sigIdx - lb]!.close;
       ranked.push({ sym: asset.symbol, ret });
     }
     ranked.sort((a, b) => b.ret - a.ret);
@@ -5311,7 +5313,7 @@ export function runFtmoDaytrade24h(
     // wrong when target was hit early but no later trades executed.
     const baseDay =
       firstTargetHitDay ??
-      (executed.length > 0 ? executed[executed.length - 1].day : 0);
+      (executed.length > 0 ? executed[executed.length - 1]!.day : 0);
     const ping = finishPausedPass(baseDay);
     if (ping) return ping;
   }
@@ -5329,7 +5331,7 @@ export function runFtmoDaytrade24h(
     uniqueTradingDays: tradingDays.size,
     passDay:
       late && executed.length > 0
-        ? (firstTargetHitDay ?? executed[executed.length - 1].day) + 1
+        ? (firstTargetHitDay ?? executed[executed.length - 1]!.day) + 1
         : undefined,
     trades: executed,
     maxHoldHoursObserved: maxHold,

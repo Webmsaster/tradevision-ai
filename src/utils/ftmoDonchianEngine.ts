@@ -102,8 +102,8 @@ function donchianBands(
     let hi = -Infinity,
       lo = Infinity;
     for (let j = i - lookback; j < i; j++) {
-      if (candles[j].high > hi) hi = candles[j].high;
-      if (candles[j].low < lo) lo = candles[j].low;
+      if (candles[j]!.high > hi) hi = candles[j]!.high;
+      if (candles[j]!.low < lo) lo = candles[j]!.low;
     }
     upper[i] = hi;
     lower[i] = lo;
@@ -120,9 +120,9 @@ function ensembleVote(
   let longVotes = 0;
   let shortVotes = 0;
   for (const bands of allBands) {
-    if (Number.isFinite(bands.upper[bar]) && candle.close > bands.upper[bar])
+    if (Number.isFinite(bands.upper[bar]) && candle.close > bands.upper[bar]!)
       longVotes++;
-    if (Number.isFinite(bands.lower[bar]) && candle.close < bands.lower[bar])
+    if (Number.isFinite(bands.lower[bar]) && candle.close < bands.lower[bar]!)
       shortVotes++;
   }
   return { longVotes, shortVotes };
@@ -150,7 +150,7 @@ export function runDonchianEngine(
   const bandsData: Record<string, { upper: number[]; lower: number[] }[]> = {};
   const atrData: Record<string, (number | null)[]> = {};
   for (const a of cfg.assets) {
-    const c = candleData[a.sourceSymbol].slice(0, maxBars);
+    const c = candleData[a.sourceSymbol]!.slice(0, maxBars);
     bandsData[a.sourceSymbol] = a.lookbacks.map((lb) => donchianBands(c, lb));
     atrData[a.sourceSymbol] = atr(c, a.atrPeriod);
   }
@@ -188,7 +188,7 @@ export function runDonchianEngine(
 
     if (equity / dailyStartEquity - 1 <= -cfg.maxDailyLoss) {
       for (const pos of open) {
-        const exitPrice = candleData[pos.symbol][bar]?.close ?? pos.entryPrice;
+        const exitPrice = candleData[pos.symbol]![bar]?.close ?? pos.entryPrice;
         const rawPnl =
           pos.direction === "long"
             ? (exitPrice - pos.entryPrice) / pos.entryPrice
@@ -228,7 +228,7 @@ export function runDonchianEngine(
     if (cfg.pauseAtTargetReached && equity - 1 >= cfg.profitTarget) {
       targetReached = true;
       for (const pos of open) {
-        const exitPrice = candleData[pos.symbol][bar]?.close ?? pos.entryPrice;
+        const exitPrice = candleData[pos.symbol]![bar]?.close ?? pos.entryPrice;
         const rawPnl =
           pos.direction === "long"
             ? (exitPrice - pos.entryPrice) / pos.entryPrice
@@ -256,7 +256,7 @@ export function runDonchianEngine(
     // Manage open positions: chandelier trail, TP, SL, max_hold
     for (let i = open.length - 1; i >= 0; i--) {
       const pos = open[i];
-      const candle = candleData[pos.symbol][bar];
+      const candle = candleData[pos.symbol]![bar];
       const asset = cappedAssets.find((a) => a.symbol === pos.asset)!;
       if (!candle) continue;
       let exitReason: ClosedTrade["reason"] | null = null;
@@ -269,7 +269,7 @@ export function runDonchianEngine(
         pos.lowWaterMark = candle.low;
 
       // Update trailing stop with chandelier
-      const a = atrData[pos.symbol][bar];
+      const a = atrData[pos.symbol]![bar];
       if (a !== null && Number.isFinite(a)) {
         const trail =
           pos.direction === "long"
@@ -347,13 +347,13 @@ export function runDonchianEngine(
       if (open.length >= cfg.maxConcurrentTrades) break;
       if (open.some((p) => p.asset === asset.symbol)) continue;
 
-      const candle = candleData[asset.sourceSymbol][bar];
+      const candle = candleData[asset.sourceSymbol]![bar];
       const { longVotes, shortVotes } = ensembleVote(
         candle,
         bandsData[asset.sourceSymbol],
         bar,
       );
-      const a = atrData[asset.sourceSymbol][bar];
+      const a = atrData[asset.sourceSymbol]![bar];
       if (a === null || !Number.isFinite(a) || a <= 0) continue;
 
       if (asset.allowLong && longVotes >= asset.minVotes) {

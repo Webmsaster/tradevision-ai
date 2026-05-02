@@ -130,14 +130,14 @@ export function computeRollingZ(
     const start = Math.max(0, i - windowDays + 1);
     const window = out.slice(start, i + 1).map((s) => s.mvrv);
     if (window.length < 30) {
-      out[i].zScore = null;
+      out[i]!.zScore = null;
       continue;
     }
     const mean = window.reduce((s, v) => s + v, 0) / window.length;
     const variance =
       window.reduce((s, v) => s + (v - mean) * (v - mean), 0) / window.length;
     const std = Math.sqrt(variance);
-    out[i].zScore = std > 0 ? (out[i].mvrv - mean) / std : 0;
+    out[i]!.zScore = std > 0 ? (out[i]!.mvrv - mean) / std : 0;
   }
   return out;
 }
@@ -171,7 +171,7 @@ export function computeExpandingZ(samples: MvrvSample[]): MvrvSample[] {
         const mean = sumMcap / haveMcap;
         const variance = sumSqMcap / haveMcap - mean * mean;
         const std = Math.sqrt(Math.max(0, variance));
-        out[i].zScore = std > 0 ? (mcap - rcap) / std : 0;
+        out[i]!.zScore = std > 0 ? (mcap - rcap) / std : 0;
         continue;
       }
     }
@@ -180,13 +180,13 @@ export function computeExpandingZ(samples: MvrvSample[]): MvrvSample[] {
     sumSqR += s.mvrv * s.mvrv;
     const n = i + 1;
     if (n < 365) {
-      out[i].zScore = null;
+      out[i]!.zScore = null;
       continue;
     }
     const mean = sumR / n;
     const variance = sumSqR / n - mean * mean;
     const std = Math.sqrt(Math.max(0, variance));
-    out[i].zScore = std > 0 ? (s.mvrv - mean) / std : 0;
+    out[i]!.zScore = std > 0 ? (s.mvrv - mean) / std : 0;
   }
   return out;
 }
@@ -207,7 +207,7 @@ export function runMvrvBacktest(
   for (let i = 0; i < withZ.length; i++) {
     const s = withZ[i];
     if (s.price === undefined) {
-      equity.push(equity[equity.length - 1]);
+      equity.push(equity[equity.length - 1]!);
       continue;
     }
 
@@ -224,7 +224,7 @@ export function runMvrvBacktest(
         inPosition = true;
         entryIdx = i;
       }
-      equity.push(equity[equity.length - 1]);
+      equity.push(equity[equity.length - 1]!);
       continue;
     }
 
@@ -232,9 +232,9 @@ export function runMvrvBacktest(
     const prevPrice = withZ[i - 1]?.price;
     if (prevPrice && s.price) {
       const dailyRet = s.price / prevPrice - 1;
-      equity.push(equity[equity.length - 1] * (1 + dailyRet));
+      equity.push(equity[equity.length - 1]! * (1 + dailyRet));
     } else {
-      equity.push(equity[equity.length - 1]);
+      equity.push(equity[equity.length - 1]!);
     }
 
     // Exit at the euphoria top.
@@ -293,7 +293,7 @@ export function runMvrvBacktest(
     0,
   );
   const totalDays =
-    (withZ[withZ.length - 1]?.time - withZ[0]?.time) / 86400000 || 1;
+    (withZ[withZ.length - 1]!?.time - withZ[0]!?.time) / 86400000 || 1;
   const timeInMarket = Math.min(1, tradesDays / totalDays);
 
   const currentZ = withZ[withZ.length - 1]?.zScore ?? null;

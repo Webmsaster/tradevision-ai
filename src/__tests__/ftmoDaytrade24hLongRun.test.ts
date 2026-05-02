@@ -177,7 +177,7 @@ function runRollingChallenges(
     const endBar = (startDay + windowDays) * barsPerDay;
     const slice: Record<string, Candle[]> = {};
     for (const sym of Object.keys(candlesBySymbol)) {
-      const src = candlesBySymbol[sym].slice(startBar, endBar);
+      const src = candlesBySymbol[sym]!.slice(startBar, endBar);
       slice[sym] = rebaseTimestamps(src, startBar);
     }
     results.push(runFtmoDaytrade24h(slice));

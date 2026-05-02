@@ -137,12 +137,12 @@ describe("mapCSVToTrades", () => {
 
     const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic);
     expect(trades).toHaveLength(1);
-    expect(trades[0].pair).toBe("BTC/USDT");
-    expect(trades[0].direction).toBe("long");
-    expect(trades[0].entryPrice).toBe(50000);
-    expect(trades[0].exitPrice).toBe(52000);
-    expect(trades[0].quantity).toBe(0.1);
-    expect(trades[0].pnl).toBe(195); // (52000-50000)*0.1*1 - 5
+    expect(trades[0]!.pair).toBe("BTC/USDT");
+    expect(trades[0]!.direction).toBe("long");
+    expect(trades[0]!.entryPrice).toBe(50000);
+    expect(trades[0]!.exitPrice).toBe(52000);
+    expect(trades[0]!.quantity).toBe(0.1);
+    expect(trades[0]!.pnl).toBe(195); // (52000-50000)*0.1*1 - 5
   });
 
   it("filters out rows with missing essential fields", () => {
@@ -190,7 +190,7 @@ describe("mapCSVToTrades", () => {
     ];
 
     const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic);
-    expect(trades[0].direction).toBe("long");
+    expect(trades[0]!.direction).toBe("long");
   });
 
   it("maps sell/buy to short/long", () => {
@@ -220,8 +220,8 @@ describe("mapCSVToTrades", () => {
     ];
 
     const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic);
-    expect(trades[0].direction).toBe("short");
-    expect(trades[1].direction).toBe("long");
+    expect(trades[0]!.direction).toBe("short");
+    expect(trades[1]!.direction).toBe("long");
   });
 });
 
@@ -279,7 +279,7 @@ describe("mapCSVToTrades - CSV injection protection", () => {
       },
     ];
     const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic);
-    expect(trades[0].pair).toBe("CMD()");
+    expect(trades[0]!.pair).toBe("CMD()");
   });
 
   it("sanitizes direction field", () => {
@@ -297,7 +297,7 @@ describe("mapCSVToTrades - CSV injection protection", () => {
       },
     ];
     const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic);
-    expect(trades[0].direction).toBe("long");
+    expect(trades[0]!.direction).toBe("long");
   });
 });
 

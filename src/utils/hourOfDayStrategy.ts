@@ -74,7 +74,7 @@ export function computeHourStats(candles: Candle[]): HourStat[] {
     if (prev.close <= 0) continue;
     const ret = (cur.close - prev.close) / prev.close;
     const hour = new Date(cur.openTime).getUTCHours();
-    buckets[hour].returns.push(ret);
+    buckets[hour]!.returns.push(ret);
   }
 
   return buckets.map((b) => {
@@ -192,7 +192,7 @@ export function runHourOfDayStrategy(
 
   // Max DD on the compounded equity curve
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1;
   let maxDd = 0;
   for (const e of equity) {

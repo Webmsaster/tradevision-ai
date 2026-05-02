@@ -155,12 +155,12 @@ export function runCohortRotationBacktest(
     let exitIdx = i + 1 + cfg.holdBars;
     if (exitIdx >= aligned.length) exitIdx = aligned.length - 1;
     let exitReason: CohortRotationTrade["exitReason"] = "time";
-    let btcExit = aligned[exitIdx].bnbBtc.close;
-    let ethExit = aligned[exitIdx].bnbEth.close;
+    let btcExit = aligned[exitIdx]!.bnbBtc.close;
+    let ethExit = aligned[exitIdx]!.bnbEth.close;
 
     for (let j = i + 2; j <= exitIdx; j++) {
-      const bbar = aligned[j].bnbBtc;
-      const ebar = aligned[j].bnbEth;
+      const bbar = aligned[j]!.bnbBtc;
+      const ebar = aligned[j]!.bnbEth;
       const btcRet = (bbar.close - btcEntry) / btcEntry;
       const ethRet = (ebar.close - ethEntry) / ethEntry;
       const spreadPnl =
@@ -192,7 +192,7 @@ export function runCohortRotationBacktest(
     const netPnlPct = (longLegCost.netPnlPct + shortLegCost.netPnlPct) / 2;
     trades.push({
       entryTime: entryBar.time,
-      exitTime: aligned[exitIdx].time,
+      exitTime: aligned[exitIdx]!.time,
       direction,
       btcEntry,
       btcExit,
@@ -223,13 +223,13 @@ export function runCohortRotationBacktest(
   const sd = Math.sqrt(v2);
   const periodDays =
     trades.length > 0
-      ? (trades[trades.length - 1].exitTime - trades[0].entryTime) / 86400000
+      ? (trades[trades.length - 1]!.exitTime - trades[0]!.entryTime) / 86400000
       : 30;
   const perYear = periodDays > 0 ? (trades.length / periodDays) * 365 : 0;
   const sharpe = sd > 0 ? (m / sd) * Math.sqrt(perYear) : 0;
 
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {

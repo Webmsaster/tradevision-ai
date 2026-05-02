@@ -77,7 +77,7 @@ export async function fetchFundingHistory(
     }
     if (fresh.length === 0) break;
     all.push(...fresh);
-    const newestInBatch = rows[rows.length - 1].fundingTime;
+    const newestInBatch = rows[rows.length - 1]!.fundingTime;
     if (newestInBatch <= startTime) break;
     startTime = newestInBatch + 1;
   }
@@ -124,7 +124,7 @@ export async function fetchRecentFunding(
     }
     if (fresh.length === 0) break;
     all.push(...fresh);
-    const oldestInBatch = rows[0].fundingTime;
+    const oldestInBatch = rows[0]!.fundingTime;
     if (endTime !== undefined && oldestInBatch >= endTime) break;
     endTime = oldestInBatch - 1;
   }

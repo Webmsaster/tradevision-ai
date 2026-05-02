@@ -111,7 +111,7 @@ export function detectNDownLongSignals(
   if (!cfg.enableLong) return [];
   const out: FtmoDaytradeV2Trade[] = [];
   if (candles.length < cfg.triggerBars + 2) return out;
-  const ts0 = candles[0].openTime;
+  const ts0 = candles[0]!.openTime;
   const costs = cfg.costs ?? MAKER_COSTS;
   const barsPerHour = 4;
   let cooldown = -1;
@@ -120,7 +120,7 @@ export function detectNDownLongSignals(
     if (i < cooldown) continue;
     let ok = true;
     for (let k = 0; k < cfg.triggerBars; k++) {
-      if (candles[i - k].close >= candles[i - k - 1].close) {
+      if (candles[i - k]!.close >= candles[i - k - 1]!.close) {
         ok = false;
         break;
       }
@@ -134,7 +134,7 @@ export function detectNDownLongSignals(
     const stop = entry * (1 - cfg.stopPct);
     const mx = Math.min(i + 1 + cfg.holdBars, candles.length - 1);
     let exitBar = mx;
-    let exitPrice = candles[mx].close;
+    let exitPrice = candles[mx]!.close;
     let reason: "tp" | "stop" | "time" = "time";
     for (let j = i + 2; j <= mx; j++) {
       const bar = candles[j];
@@ -166,7 +166,7 @@ export function detectNDownLongSignals(
     out.push({
       direction: "long",
       entryTime: eb.openTime,
-      exitTime: candles[exitBar].closeTime,
+      exitTime: candles[exitBar]!.closeTime,
       entryPrice: entry,
       exitPrice,
       rawPnl,
@@ -187,7 +187,7 @@ export function detectNUpShortSignals(
   if (!cfg.enableShort) return [];
   const out: FtmoDaytradeV2Trade[] = [];
   if (candles.length < cfg.triggerBars + 2) return out;
-  const ts0 = candles[0].openTime;
+  const ts0 = candles[0]!.openTime;
   const costs = cfg.costs ?? MAKER_COSTS;
   const barsPerHour = 4;
   let cooldown = -1;
@@ -196,7 +196,7 @@ export function detectNUpShortSignals(
     if (i < cooldown) continue;
     let ok = true;
     for (let k = 0; k < cfg.triggerBars; k++) {
-      if (candles[i - k].close <= candles[i - k - 1].close) {
+      if (candles[i - k]!.close <= candles[i - k - 1]!.close) {
         ok = false;
         break;
       }
@@ -210,7 +210,7 @@ export function detectNUpShortSignals(
     const stop = entry * (1 + cfg.stopPct);
     const mx = Math.min(i + 1 + cfg.holdBars, candles.length - 1);
     let exitBar = mx;
-    let exitPrice = candles[mx].close;
+    let exitPrice = candles[mx]!.close;
     let reason: "tp" | "stop" | "time" = "time";
     for (let j = i + 2; j <= mx; j++) {
       const bar = candles[j];
@@ -242,7 +242,7 @@ export function detectNUpShortSignals(
     out.push({
       direction: "short",
       entryTime: eb.openTime,
-      exitTime: candles[exitBar].closeTime,
+      exitTime: candles[exitBar]!.closeTime,
       entryPrice: entry,
       exitPrice,
       rawPnl,

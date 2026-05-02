@@ -123,7 +123,7 @@ export function runFundingCarryBacktest(
         longConsec = 0;
         shortConsec = 0;
       }
-      equity.push(equity[equity.length - 1]);
+      equity.push(equity[equity.length - 1]!);
       continue;
     }
 
@@ -148,7 +148,7 @@ export function runFundingCarryBacktest(
       const ann = periods > 0 ? (net / periods) * 3 * 365 : 0;
       trades.push({
         symbol,
-        openTime: sorted[posStart].fundingTime,
+        openTime: sorted[posStart]!.fundingTime,
         closeTime: ev.fundingTime,
         periods,
         grossCarryPct: posCarry,
@@ -157,14 +157,14 @@ export function runFundingCarryBacktest(
         annualisedPct: ann,
         side: inPosition,
       });
-      equity.push(equity[equity.length - 1] * (1 + net));
+      equity.push(equity[equity.length - 1]! * (1 + net));
       inPosition = null;
       posStart = -1;
       posCarry = 0;
       longConsec = 0;
       shortConsec = 0;
     } else {
-      equity.push(equity[equity.length - 1] * (1 + perPeriodCarry));
+      equity.push(equity[equity.length - 1]! * (1 + perPeriodCarry));
     }
   }
 
@@ -240,7 +240,7 @@ export async function fetchAndBacktestCarry(
     if (fresh.length === 0) break;
     all.unshift(...fresh);
     // Go one ms earlier than the oldest row of THIS batch
-    const oldest = rows[0].fundingTime;
+    const oldest = rows[0]!.fundingTime;
     endTime = oldest - 1;
   }
 

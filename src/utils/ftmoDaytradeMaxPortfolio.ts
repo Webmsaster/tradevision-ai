@@ -147,7 +147,7 @@ function detectAsset(
 ): MaxPortfolioTrade[] {
   const out: MaxPortfolioTrade[] = [];
   if (candles.length < triggerBars + 2) return out;
-  const ts0 = candles[0].openTime;
+  const ts0 = candles[0]!.openTime;
   const barsPerHour = 4;
 
   for (const direction of ["long", "short"] as const) {
@@ -158,8 +158,8 @@ function detectAsset(
       for (let k = 0; k < triggerBars; k++) {
         const cmp =
           direction === "long"
-            ? candles[i - k].close >= candles[i - k - 1].close
-            : candles[i - k].close <= candles[i - k - 1].close;
+            ? candles[i - k]!.close >= candles[i - k - 1]!.close
+            : candles[i - k]!.close <= candles[i - k - 1]!.close;
         if (cmp) {
           ok = false;
           break;
@@ -180,7 +180,7 @@ function detectAsset(
           : entry * (1 + asset.stopPct);
       const mx = Math.min(i + 1 + asset.holdBars, candles.length - 1);
       let exitBar = mx;
-      let exitPrice = candles[mx].close;
+      let exitPrice = candles[mx]!.close;
       let reason: "tp" | "stop" | "time" = "time";
       for (let j = i + 2; j <= mx; j++) {
         const bar = candles[j];
@@ -228,7 +228,7 @@ function detectAsset(
         symbol: asset.symbol,
         direction,
         entryTime: eb.openTime,
-        exitTime: candles[exitBar].closeTime,
+        exitTime: candles[exitBar]!.closeTime,
         entryPrice: entry,
         exitPrice,
         rawPnl,

@@ -32,15 +32,15 @@ export default function DayOfWeekHeatmap({ trades }: DayOfWeekHeatmapProps) {
     const buckets: Trade[][] = Array.from({ length: 7 }, () => []);
     for (const trade of trades) {
       const d = new Date(trade.exitDate).getDay();
-      buckets[d].push(trade);
+      buckets[d]!.push(trade);
     }
     return buckets.map((bucket, i) => {
       const count = bucket.length;
       const totalPnl = bucket.reduce((s, t) => s + t.pnl, 0);
       const wins = bucket.filter((t) => t.pnl > 0).length;
       return {
-        label: DAY_FULL[i],
-        shortLabel: DAY_LABELS[i],
+        label: DAY_FULL[i]!,
+        shortLabel: DAY_LABELS[i]!,
         count,
         totalPnl,
         avgPnl: count > 0 ? totalPnl / count : 0,

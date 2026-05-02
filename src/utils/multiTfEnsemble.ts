@@ -166,10 +166,10 @@ export function aggregateEnsembleEntries(
         r = arr.length;
       while (l < r) {
         const m = (l + r) >>> 1;
-        if (arr[m] < lo) l = m + 1;
+        if (arr[m]! < lo) l = m + 1;
         else r = m;
       }
-      return l < arr.length && arr[l] < hi;
+      return l < arr.length && arr[l]! < hi;
     };
     let cooldownUntil = -Infinity;
     for (const t of thirtyMinGrid) {

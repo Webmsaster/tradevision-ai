@@ -177,7 +177,7 @@ export default function LivePage() {
   }, [snapshot, consensus, gatedAction]);
 
   const priceNow =
-    candles.length > 0 ? candles[candles.length - 1].close : null;
+    candles.length > 0 ? candles[candles.length - 1]!.close : null;
 
   // ---------- Deep analysis layer ----------
   const analysis = useMemo(() => {
@@ -311,8 +311,8 @@ export default function LivePage() {
 
   const priceChange =
     candles.length > 1
-      ? ((candles[candles.length - 1].close - candles[0].close) /
-          candles[0].close) *
+      ? ((candles[candles.length - 1]!.close - candles[0]!.close) /
+          candles[0]!.close) *
         100
       : 0;
 

@@ -79,8 +79,8 @@ describe("adaptiveSizing — portfolio map", () => {
       "vol-spike-1h",
     ]);
     for (const k of Object.keys(map)) {
-      expect(map[k].usedLive).toBe(false);
-      expect(map[k].liveN).toBe(0);
+      expect(map[k]!.usedLive).toBe(false);
+      expect(map[k]!.liveN).toBe(0);
     }
   });
 });

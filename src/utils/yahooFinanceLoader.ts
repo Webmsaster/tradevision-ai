@@ -94,13 +94,13 @@ export async function loadYahooHistory({
     interval === "60m" ? 3600 : interval === "1d" ? 86400 : 604800;
 
   for (let i = 0; i < timestamp.length; i++) {
-    const o = q.open[i],
-      h = q.high[i],
-      l = q.low[i],
-      c = q.close[i],
-      v = q.volume[i];
+    const o = q.open[i]!,
+      h = q.high[i]!,
+      l = q.low[i]!,
+      c = q.close[i]!,
+      v = q.volume[i]!;
     if (o === null || h === null || l === null || c === null) continue;
-    const openTime = timestamp[i] * 1000;
+    const openTime = timestamp[i]! * 1000;
     out.push({
       openTime,
       closeTime: openTime + barSeconds * 1000 - 1,

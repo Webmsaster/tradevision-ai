@@ -227,10 +227,10 @@ export function breakoutStrategy(
   let highest = -Infinity;
   let lowest = Infinity;
   for (let j = lookbackStart; j < i; j++) {
-    if (candles[j].high > highest) highest = candles[j].high;
-    if (candles[j].low < lowest) lowest = candles[j].low;
+    if (candles[j]!.high > highest) highest = candles[j]!.high;
+    if (candles[j]!.low < lowest) lowest = candles[j]!.low;
   }
-  const priceNow = candles[i].close;
+  const priceNow = candles[i]!.close;
   const atrNow = atrArr[i];
   if (atrNow === null) return flatDecision("breakout");
 

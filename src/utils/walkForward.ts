@@ -220,7 +220,7 @@ export function runWalkForwardHourOfDay(
         viaTaker,
       });
       winReturn *= 1 + pnl;
-      equity.push(equity[equity.length - 1] * (1 + pnl));
+      equity.push(equity[equity.length - 1]! * (1 + pnl));
     }
 
     const winRets = windowTrades.map((t) => t.netPnlPct);
@@ -232,10 +232,10 @@ export function runWalkForwardHourOfDay(
     const winSharpe = std > 0 ? (m / std) * Math.sqrt(8760) : 0;
 
     windows.push({
-      trainStartTime: trainSlice[0].openTime,
-      trainEndTime: trainSlice[trainSlice.length - 1].closeTime,
-      testStartTime: testSlice[0].openTime,
-      testEndTime: testSlice[testSlice.length - 1].closeTime,
+      trainStartTime: trainSlice[0]!.openTime,
+      trainEndTime: trainSlice[trainSlice.length - 1]!.closeTime,
+      testStartTime: testSlice[0]!.openTime,
+      testEndTime: testSlice[testSlice.length - 1]!.closeTime,
       longHours,
       shortHours,
       trades: windowTrades.length,

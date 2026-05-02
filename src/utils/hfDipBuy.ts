@@ -189,7 +189,7 @@ export function runHfDipBuy(
         btcI = i;
       } else {
         for (let k = btcCandles.length - 1; k >= 0; k--) {
-          if (btcCandles[k].openTime <= cur.openTime) {
+          if (btcCandles[k]!.openTime <= cur.openTime) {
             btcI = k;
             break;
           }
@@ -200,12 +200,12 @@ export function runHfDipBuy(
         btcCloses.slice(btcI - cfg.btcMacroHtf, btcI),
         cfg.btcMacroHtf,
       );
-      if (btcCandles[btcI].close <= btcSma) continue;
+      if (btcCandles[btcI]!.close <= btcSma) continue;
     }
 
     let allRed = true;
     for (let k = 0; k < cfg.nBarsDown; k++) {
-      if (candles[i - k].close >= candles[i - k - 1].close) {
+      if (candles[i - k]!.close >= candles[i - k - 1]!.close) {
         allRed = false;
         break;
       }
@@ -226,7 +226,7 @@ export function runHfDipBuy(
     const mx = Math.min(i + 1 + cfg.holdBars, candles.length - 1);
     let tp1Hit = false;
     let tp1Bar = -1;
-    let l2P = candles[mx].close;
+    let l2P = candles[mx]!.close;
     let l2B = mx;
     let exitReason: DipBuyTrade["exitReason"] = "time";
     for (let j = i + 2; j <= mx; j++) {
@@ -295,7 +295,7 @@ export function runHfDipBuy(
     trades.push({
       sym,
       entryTime: eb.openTime,
-      exitTime: candles[l2B].closeTime,
+      exitTime: candles[l2B]!.closeTime,
       entry,
       tp1Hit,
       totalPnl,

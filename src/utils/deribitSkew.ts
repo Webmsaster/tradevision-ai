@@ -102,9 +102,9 @@ export async function fetchDeribitSkew(): Promise<DeribitSkewSnapshot> {
   function expiryMs(exp: string): number {
     const m = exp.match(/^(\d{1,2})([A-Z]{3})(\d{2})$/);
     if (!m) return 0;
-    const day = parseInt(m[1]);
+    const day = parseInt(m[1]!);
     const mon = monthMap[m[2]] ?? 0;
-    const year = 2000 + parseInt(m[3]);
+    const year = 2000 + parseInt(m[3]!);
     return Date.UTC(year, mon, day, 8);
   }
 

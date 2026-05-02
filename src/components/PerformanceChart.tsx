@@ -97,7 +97,7 @@ function DistributionTooltip({
     <div className="perf-tooltip">
       <div className="perf-tooltip-label">{label}</div>
       <div className="perf-tooltip-value">
-        {payload[0].value} trade{payload[0].value !== 1 ? "s" : ""}
+        {payload[0]!.value} trade{payload[0]!.value !== 1 ? "s" : ""}
       </div>
     </div>
   );
@@ -105,7 +105,7 @@ function DistributionTooltip({
 
 function PieTooltip({ active, payload }: PieTooltipProps) {
   if (!active || !payload?.length) return null;
-  const d = payload[0].payload;
+  const d = payload[0]!.payload;
   return (
     <div className="perf-tooltip">
       <div className="perf-tooltip-label">{d.name}</div>
@@ -118,7 +118,7 @@ function PieTooltip({ active, payload }: PieTooltipProps) {
 
 function TimeTooltip({ active, payload, label, green, red }: TimeTooltipProps) {
   if (!active || !payload?.length) return null;
-  const d = payload[0].payload;
+  const d = payload[0]!.payload;
   return (
     <div className="perf-tooltip">
       <div className="perf-tooltip-label">{label}</div>
@@ -138,7 +138,7 @@ function TimeTooltip({ active, payload, label, green, red }: TimeTooltipProps) {
 
 function PairTooltip({ active, payload, green, red }: PairTooltipProps) {
   if (!active || !payload?.length) return null;
-  const d = payload[0].payload;
+  const d = payload[0]!.payload;
   return (
     <div className="perf-tooltip">
       <div className="perf-tooltip-label">{d.pair}</div>
@@ -230,11 +230,11 @@ function buildDistributionData(trades: Trade[]): BucketDatum[] {
   // Create buckets
   const buckets: BucketDatum[] = [];
   // Below min boundary
-  if (min < allBounds[0]) {
+  if (min < allBounds[0]!) {
     buckets.push({
-      label: `< ${fmt(allBounds[0])}`,
+      label: `< ${fmt(allBounds[0]!)}`,
       count: 0,
-      isPositive: allBounds[0] >= 0,
+      isPositive: allBounds[0]! >= 0,
     });
   }
   for (let i = 0; i < allBounds.length - 1; i++) {
@@ -247,7 +247,7 @@ function buildDistributionData(trades: Trade[]): BucketDatum[] {
     });
   }
   // Above max boundary
-  if (max >= allBounds[allBounds.length - 1]) {
+  if (max >= allBounds[allBounds.length - 1]!) {
     const last = allBounds[allBounds.length - 1];
     buckets.push({ label: `> ${fmt(last)}`, count: 0, isPositive: last >= 0 });
   }
@@ -256,15 +256,15 @@ function buildDistributionData(trades: Trade[]): BucketDatum[] {
   for (const pnl of pnls) {
     let placed = false;
     // Check below-min bucket
-    if (buckets.length > 0 && min < allBounds[0] && pnl < allBounds[0]) {
-      buckets[0].count++;
+    if (buckets.length > 0 && min < allBounds[0]! && pnl < allBounds[0]!) {
+      buckets[0]!.count++;
       placed = true;
     }
     if (!placed) {
-      const offset = min < allBounds[0] ? 1 : 0;
+      const offset = min < allBounds[0]! ? 1 : 0;
       for (let i = 0; i < allBounds.length - 1; i++) {
-        if (pnl >= allBounds[i] && pnl < allBounds[i + 1]) {
-          buckets[i + offset].count++;
+        if (pnl >= allBounds[i]! && pnl < allBounds[i + 1]!) {
+          buckets[i + offset]!.count++;
           placed = true;
           break;
         }
@@ -272,13 +272,13 @@ function buildDistributionData(trades: Trade[]): BucketDatum[] {
     }
     if (!placed) {
       // Falls in the last (above-max) bucket
-      buckets[buckets.length - 1].count++;
+      buckets[buckets.length - 1]!.count++;
     }
   }
 
   // Remove empty edge buckets
-  while (buckets.length > 0 && buckets[0].count === 0) buckets.shift();
-  while (buckets.length > 0 && buckets[buckets.length - 1].count === 0)
+  while (buckets.length > 0 && buckets[0]!.count === 0) buckets.shift();
+  while (buckets.length > 0 && buckets[buckets.length - 1]!.count === 0)
     buckets.pop();
 
   return buckets;

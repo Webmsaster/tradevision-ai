@@ -51,7 +51,7 @@ export function addEtfFlowEntry(
   const all = loadEtfFlowHistory();
   const existing = all.findIndex((e) => e.date === date);
   if (existing >= 0) {
-    all[existing].netFlowUsd = netFlowUsd;
+    all[existing]!.netFlowUsd = netFlowUsd;
   } else {
     all.push({ date, netFlowUsd });
   }
@@ -112,7 +112,7 @@ export function parseEtfFlowPaste(raw: string): EtfFlowEntry[] {
       .match(/^(\d{4}-\d{2}-\d{2})[\s,\t]+(-?[\d,.]+)\s*([MmBb]?)/);
     if (!m) continue;
     const date = m[1];
-    let value = parseFloat(m[2].replace(/,/g, ""));
+    let value = parseFloat(m[2]!.replace(/,/g, ""));
     const suffix = (m[3] ?? "").toLowerCase();
     if (suffix === "b") value *= 1_000_000_000;
     else if (suffix === "m" || Math.abs(value) < 1_000_000) value *= 1_000_000;

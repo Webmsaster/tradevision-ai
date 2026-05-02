@@ -220,7 +220,7 @@ export function atrPercentile(
     .slice(-lookback)
     .filter((v): v is number => v !== null);
   if (slice.length < 20) return null;
-  const current = slice[slice.length - 1];
+  const current = slice[slice.length - 1]!;
   const smaller = slice.filter((v) => v < current).length;
   return smaller / slice.length;
 }

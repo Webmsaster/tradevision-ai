@@ -174,7 +174,7 @@ export async function loadBinanceHistory({
     candles.unshift(...fresh);
 
     // Next page: ask for candles older than the oldest we now have
-    const oldestOpen = batch[0].openTime;
+    const oldestOpen = batch[0]!.openTime;
     endTime = oldestOpen - tfMs;
 
     // Binance returned fewer than pageSize → we hit the start of listed data

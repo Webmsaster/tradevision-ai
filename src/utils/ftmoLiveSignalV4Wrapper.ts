@@ -72,9 +72,9 @@ function buildAligned(
   // Trim to common-openTime intersection so V4 engine's "latest bar"
   // assumption holds: every asset's last candle must share openTime.
   const arrs = Object.values(out);
-  const common = new Set(arrs[0].map((c) => c.openTime));
+  const common = new Set(arrs[0]!.map((c) => c.openTime));
   for (let i = 1; i < arrs.length; i++) {
-    const seen = new Set(arrs[i].map((c) => c.openTime));
+    const seen = new Set(arrs[i]!.map((c) => c.openTime));
     for (const t of [...common]) if (!seen.has(t)) common.delete(t);
   }
   const aligned: Record<string, Candle[]> = {};
@@ -175,8 +175,8 @@ export function detectLiveSignalsV4(
         : undefined;
       const barDurMs =
         refCandlesForBar && refCandlesForBar.length >= 2
-          ? refCandlesForBar[refCandlesForBar.length - 1].openTime -
-            refCandlesForBar[refCandlesForBar.length - 2].openTime
+          ? refCandlesForBar[refCandlesForBar.length - 1]!.openTime -
+            refCandlesForBar[refCandlesForBar.length - 2]!.openTime
           : 30 * 60_000;
       // Phase 33 (Audit Bug 6): cold-start guard. lastBarOpenTime=0 would
       // make graceCutoff negative → all phantoms survive forever.

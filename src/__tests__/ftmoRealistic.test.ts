@@ -112,8 +112,8 @@ describe("ftmoRealistic — runner", () => {
     expect(r.trades.length).toBeGreaterThanOrEqual(1);
     // Real pnl should be less than raw 8% due to cost
     if (r.trades.length > 0) {
-      expect(r.trades[0].rawPnl).toBeLessThan(0.08);
-      expect(r.trades[0].rawPnl).toBeGreaterThan(0.07);
+      expect(r.trades[0]!.rawPnl).toBeLessThan(0.08);
+      expect(r.trades[0]!.rawPnl).toBeGreaterThan(0.07);
     }
   });
 });

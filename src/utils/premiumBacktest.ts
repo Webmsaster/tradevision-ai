@@ -124,10 +124,10 @@ export function runPremiumBacktest(
     let exitIdx = i + 1 + config.holdBars;
     if (exitIdx >= aligned.length) exitIdx = aligned.length - 1;
     let exitReason: PremiumTrade["exitReason"] = "time";
-    let exitPrice = aligned[exitIdx].bnb.close;
+    let exitPrice = aligned[exitIdx]!.bnb.close;
 
     for (let j = i + 2; j <= exitIdx; j++) {
-      const bar = aligned[j].bnb;
+      const bar = aligned[j]!.bnb;
       if (direction === "long" && bar.low <= stopLevel) {
         exitIdx = j;
         exitPrice = stopLevel;
@@ -151,7 +151,7 @@ export function runPremiumBacktest(
     });
     trades.push({
       entryTime: entryBar.time,
-      exitTime: aligned[exitIdx].time,
+      exitTime: aligned[exitIdx]!.time,
       direction,
       entry,
       exit: exitPrice,
@@ -180,13 +180,13 @@ export function runPremiumBacktest(
   const sd = Math.sqrt(v);
   const periodDays =
     trades.length > 0
-      ? (trades[trades.length - 1].exitTime - trades[0].entryTime) / 86400000
+      ? (trades[trades.length - 1]!.exitTime - trades[0]!.entryTime) / 86400000
       : 30;
   const perYear = periodDays > 0 ? (trades.length / periodDays) * 365 : 0;
   const sharpe = sd > 0 ? (m / sd) * Math.sqrt(perYear) : 0;
 
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {

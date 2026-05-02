@@ -127,17 +127,17 @@ export function correlationMatrix(returns: number[][]): number[][] {
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
       if (i === j) {
-        out[i][j] = 1;
+        out[i]![j] = 1;
         continue;
       }
-      const len = Math.min(returns[i].length, returns[j].length);
+      const len = Math.min(returns[i]!.length, returns[j]!.length);
       let num = 0;
       for (let k = 0; k < len; k++) {
-        num += (returns[i][k] - means[i]) * (returns[j][k] - means[j]);
+        num += (returns[i]![k] - means[i]!) * (returns[j]![k] - means[j]!);
       }
       num /= Math.max(1, len);
-      const denom = stds[i] * stds[j];
-      out[i][j] = denom > 0 ? num / denom : 0;
+      const denom = stds[i]! * stds[j]!;
+      out[i]![j] = denom > 0 ? num / denom : 0;
     }
   }
   return out;
@@ -193,19 +193,19 @@ export function allocate(
     if (valid.length <= 1) return 0;
     let sum = 0;
     for (let j = 0; j < valid.length; j++) {
-      if (i !== j) sum += Math.abs(corr[i][j]);
+      if (i !== j) sum += Math.abs(corr[i]![j]);
     }
     return sum / (valid.length - 1);
   });
   const haircutWeights = weights.map(
-    (w, i) => w * (1 - config.correlationHaircut * avgCorr[i]),
+    (w, i) => w * (1 - config.correlationHaircut * avgCorr[i]!),
   );
 
   // Quarter-Kelly cap per strategy
   const kellyCaps = valid.map((m) =>
     config.useQuarterKellyCap ? Math.max(0, m.quarterKelly) : Infinity,
   );
-  const afterKelly = haircutWeights.map((w, i) => Math.min(w, kellyCaps[i]));
+  const afterKelly = haircutWeights.map((w, i) => Math.min(w, kellyCaps[i]!));
 
   // Portfolio stdev (simple: sqrt(w' Σ w) using corr + stds)
   const n = valid.length;
@@ -213,11 +213,11 @@ export function allocate(
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
       portVar +=
-        afterKelly[i] *
-        afterKelly[j] *
-        valid[i].stdDevPct *
-        valid[j].stdDevPct *
-        corr[i][j];
+        afterKelly[i]! *
+        afterKelly[j]! *
+        valid[i]!.stdDevPct *
+        valid[j]!.stdDevPct *
+        corr[i]![j];
     }
   }
   const portStd = Math.sqrt(Math.max(0, portVar));

@@ -101,7 +101,7 @@ export function runLeadLagBacktest(
     const btcEntry = entryBar.a.close;
 
     let exitIdx = Math.min(i + 1 + config.holdBarsMax, pairs.length - 1);
-    let exitPrice = pairs[exitIdx].b.close;
+    let exitPrice = pairs[exitIdx]!.b.close;
     let exitReason: LeadLagTrade["exitReason"] = "time";
 
     for (
@@ -127,7 +127,7 @@ export function runLeadLagBacktest(
       }
     }
 
-    const holdHours = (pairs[exitIdx].time - entryBar.time) / (60 * 60 * 1000);
+    const holdHours = (pairs[exitIdx]!.time - entryBar.time) / (60 * 60 * 1000);
     const cost = applyCosts({
       entry,
       exit: exitPrice,
@@ -139,7 +139,7 @@ export function runLeadLagBacktest(
       altSymbol,
       triggerTime: curr.time,
       entryTime: entryBar.time,
-      exitTime: pairs[exitIdx].time,
+      exitTime: pairs[exitIdx]!.time,
       btc1hReturn: btcRet,
       altReturnAtTrigger: altRet,
       entry,
@@ -169,13 +169,13 @@ export function runLeadLagBacktest(
   // Annualise from sample
   const periodDays =
     trades.length > 0
-      ? (trades[trades.length - 1].exitTime - trades[0].entryTime) / 86400000
+      ? (trades[trades.length - 1]!.exitTime - trades[0]!.entryTime) / 86400000
       : 30;
   const perYear = periodDays > 0 ? (trades.length / periodDays) * 365 : 0;
   const sharpe = std > 0 ? (m / std) * Math.sqrt(perYear) : 0;
 
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {

@@ -43,7 +43,7 @@ export async function fetchUsdtSupplyHistory(
   const out: SupplySample[] = [];
   for (let i = 0; i < rows.length; i++) {
     const [ts, mcap] = rows[i];
-    const prev = i > 0 ? rows[i - 1][1] : mcap;
+    const prev = i > 0 ? rows[i - 1]![1] : mcap;
     const delta = mcap - prev;
     const deltaPct = prev > 0 ? delta / prev : 0;
     out.push({
@@ -128,14 +128,14 @@ export function runSupplyBacktest(
       continue;
 
     const direction: "long" | "short" = fireLong ? "long" : "short";
-    const entry = sortedBtc[entryIdx].open;
+    const entry = sortedBtc[entryIdx]!.open;
     const stopLevel =
       direction === "long"
         ? entry * (1 - config.stopPct)
         : entry * (1 + config.stopPct);
     let exitIdx = entryIdx + config.holdBars;
     let exitReason: SupplyTrade["exitReason"] = "time";
-    let exitPrice = sortedBtc[exitIdx].close;
+    let exitPrice = sortedBtc[exitIdx]!.close;
     for (let j = entryIdx + 1; j <= exitIdx; j++) {
       const bar = sortedBtc[j];
       if (direction === "long" && bar.low <= stopLevel) {
@@ -160,8 +160,8 @@ export function runSupplyBacktest(
       config: costs,
     });
     trades.push({
-      entryTime: sortedBtc[entryIdx].openTime,
-      exitTime: sortedBtc[exitIdx].closeTime,
+      entryTime: sortedBtc[entryIdx]!.openTime,
+      exitTime: sortedBtc[exitIdx]!.closeTime,
       direction,
       entry,
       exit: exitPrice,
@@ -185,13 +185,13 @@ export function runSupplyBacktest(
   const sd = Math.sqrt(v);
   const periodDays =
     trades.length > 0
-      ? (trades[trades.length - 1].exitTime - trades[0].entryTime) / 86400000
+      ? (trades[trades.length - 1]!.exitTime - trades[0]!.entryTime) / 86400000
       : 365;
   const perYear = periodDays > 0 ? (trades.length / periodDays) * 365 : 0;
   const sharpe = sd > 0 ? (m / sd) * Math.sqrt(perYear) : 0;
 
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {

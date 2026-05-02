@@ -149,12 +149,12 @@ export function runBtcFlashDaytrade(
 
   for (let i = cfg.dropBars + 1; i < candles.length - 1; i++) {
     if (i < cooldown) continue;
-    const prev = candles[i - cfg.dropBars].close;
-    const cur = candles[i].close;
+    const prev = candles[i - cfg.dropBars]!.close;
+    const cur = candles[i]!.close;
     if (prev <= 0) continue;
     const drop = (cur - prev) / prev;
     if (drop > -cfg.dropPct) continue;
-    if (cur <= candles[i - 1].close) continue; // require green rebound bar
+    if (cur <= candles[i - 1]!.close) continue; // require green rebound bar
 
     const eb = candles[i + 1];
     if (!eb) break;
@@ -164,7 +164,7 @@ export function runBtcFlashDaytrade(
     const mx = Math.min(i + 1 + cfg.holdBars, candles.length - 1);
 
     let exitBar = mx;
-    let exitPrice = candles[mx].close;
+    let exitPrice = candles[mx]!.close;
     let reason: "tp" | "stop" | "time" = "time";
     for (let j = i + 2; j <= mx; j++) {
       const bar = candles[j];
@@ -202,7 +202,7 @@ export function runBtcFlashDaytrade(
 
     trades.push({
       entryTime: eb.openTime,
-      exitTime: candles[exitBar].closeTime,
+      exitTime: candles[exitBar]!.closeTime,
       entry,
       exit: exitPrice,
       rawPnl,

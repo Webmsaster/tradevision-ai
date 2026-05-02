@@ -416,8 +416,8 @@ describe("generateAllInsights", () => {
     ];
     const insights = generateAllInsights(trades);
     for (let i = 1; i < insights.length; i++) {
-      expect(insights[i - 1].severity).toBeGreaterThanOrEqual(
-        insights[i].severity,
+      expect(insights[i - 1]!.severity).toBeGreaterThanOrEqual(
+        insights[i]!.severity,
       );
     }
   });

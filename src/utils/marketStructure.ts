@@ -133,12 +133,12 @@ export function findPivots(
     let isHigh = true;
     let isLow = true;
     for (let j = 1; j <= left; j++) {
-      if (candles[i - j].high >= c.high) isHigh = false;
-      if (candles[i - j].low <= c.low) isLow = false;
+      if (candles[i - j]!.high >= c.high) isHigh = false;
+      if (candles[i - j]!.low <= c.low) isLow = false;
     }
     for (let j = 1; j <= right; j++) {
-      if (candles[i + j].high >= c.high) isHigh = false;
-      if (candles[i + j].low <= c.low) isLow = false;
+      if (candles[i + j]!.high >= c.high) isHigh = false;
+      if (candles[i + j]!.low <= c.low) isLow = false;
     }
     if (isHigh)
       pivots.push({
@@ -464,7 +464,7 @@ export function computeBaseRate(
     const slice = candles.slice(0, i + 1);
     const pivots = findPivots(slice, 3, 3);
     const structure = analyzeMarketStructure(slice, pivots);
-    const priceHere = slice[slice.length - 1].close;
+    const priceHere = slice[slice.length - 1]!.close;
     const atrHere = atrArr[i];
     if (!atrHere) continue;
 

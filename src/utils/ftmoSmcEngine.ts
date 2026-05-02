@@ -99,8 +99,8 @@ function isBullishFvgEntry(c: Candle[], i: number, lookback: number): boolean {
   if (i < 2) return false;
   // Look for FVG within lookback window — first detect it, then check still unfilled
   for (let j = Math.max(2, i - lookback); j <= i; j++) {
-    const fvgBottom = c[j - 2].high;
-    const fvgTop = c[j].low;
+    const fvgBottom = c[j - 2]!.high;
+    const fvgTop = c[j]!.low;
     if (fvgTop <= fvgBottom) continue; // no FVG
     // Is current bar entering this gap from above?
     const currentBar = c[i];
@@ -119,8 +119,8 @@ function isBullishFvgEntry(c: Candle[], i: number, lookback: number): boolean {
 function isBearishFvgEntry(c: Candle[], i: number, lookback: number): boolean {
   if (i < 2) return false;
   for (let j = Math.max(2, i - lookback); j <= i; j++) {
-    const fvgTop = c[j - 2].low;
-    const fvgBottom = c[j].high;
+    const fvgTop = c[j - 2]!.low;
+    const fvgBottom = c[j]!.high;
     if (fvgBottom >= fvgTop) continue;
     const currentBar = c[i];
     if (
@@ -144,7 +144,7 @@ function isBullishSweep(
   if (i < lookback) return false;
   let recentLow = Infinity;
   for (let j = i - lookback; j < i; j++)
-    recentLow = Math.min(recentLow, c[j].low);
+    recentLow = Math.min(recentLow, c[j]!.low);
   const cur = c[i];
   const sweepDepth = (recentLow - cur.low) / recentLow;
   if (sweepDepth < wickPct) return false; // wick must dip below by wickPct
@@ -161,7 +161,7 @@ function isBearishSweep(
   if (i < lookback) return false;
   let recentHigh = -Infinity;
   for (let j = i - lookback; j < i; j++)
-    recentHigh = Math.max(recentHigh, c[j].high);
+    recentHigh = Math.max(recentHigh, c[j]!.high);
   const cur = c[i];
   const sweepDepth = (cur.high - recentHigh) / recentHigh;
   if (sweepDepth < wickPct) return false;
@@ -177,12 +177,12 @@ function isBullishOb(
 ): boolean {
   // Look at last 5 bars: was there a strong bullish move?
   if (i < 5 || atrVal <= 0) return false;
-  const move = c[i].close - c[i - 4].close;
+  const move = c[i]!.close - c[i - 4]!.close;
   const strongMove = atrVal * strongMoveMult;
   if (move < strongMove) return false;
   // Find the last bearish candle in the move's start zone
   // Simple proxy: bar[i-4] should be bearish (close < open) and bar[i-3..i] should be net bullish
-  return c[i - 4].close < c[i - 4].open && c[i].close > c[i - 4].high;
+  return c[i - 4]!.close < c[i - 4]!.open && c[i]!.close > c[i - 4]!.high;
 }
 
 function isBearishOb(
@@ -192,10 +192,10 @@ function isBearishOb(
   strongMoveMult: number,
 ): boolean {
   if (i < 5 || atrVal <= 0) return false;
-  const move = c[i - 4].close - c[i].close;
+  const move = c[i - 4]!.close - c[i]!.close;
   const strongMove = atrVal * strongMoveMult;
   if (move < strongMove) return false;
-  return c[i - 4].close > c[i - 4].open && c[i].close < c[i - 4].low;
+  return c[i - 4]!.close > c[i - 4]!.open && c[i]!.close < c[i - 4]!.low;
 }
 
 export function runSmcEngine(
@@ -219,7 +219,7 @@ export function runSmcEngine(
   const atrData: Record<string, (number | null)[]> = {};
   for (const a of cfg.assets)
     atrData[a.sourceSymbol] = atr(
-      candleData[a.sourceSymbol].slice(0, maxBars),
+      candleData[a.sourceSymbol]!.slice(0, maxBars),
       14,
     );
 
@@ -254,7 +254,7 @@ export function runSmcEngine(
 
     if (equity / dailyStartEquity - 1 <= -cfg.maxDailyLoss) {
       for (const pos of open) {
-        const exitPrice = candleData[pos.symbol][bar]?.close ?? pos.entryPrice;
+        const exitPrice = candleData[pos.symbol]![bar]?.close ?? pos.entryPrice;
         const rawPnl =
           pos.direction === "long"
             ? (exitPrice - pos.entryPrice) / pos.entryPrice
@@ -293,7 +293,7 @@ export function runSmcEngine(
     if (cfg.pauseAtTargetReached && equity - 1 >= cfg.profitTarget) {
       targetReached = true;
       for (const pos of open) {
-        const exitPrice = candleData[pos.symbol][bar]?.close ?? pos.entryPrice;
+        const exitPrice = candleData[pos.symbol]![bar]?.close ?? pos.entryPrice;
         const rawPnl =
           pos.direction === "long"
             ? (exitPrice - pos.entryPrice) / pos.entryPrice
@@ -322,7 +322,7 @@ export function runSmcEngine(
     // Manage open positions
     for (let i = open.length - 1; i >= 0; i--) {
       const pos = open[i];
-      const candle = candleData[pos.symbol][bar];
+      const candle = candleData[pos.symbol]![bar];
       const asset = cappedAssets.find((a) => a.symbol === pos.asset)!;
       if (!candle) continue;
       let exitReason: ClosedTrade["reason"] | null = null;
@@ -389,7 +389,7 @@ export function runSmcEngine(
       if (open.length >= cfg.maxConcurrentTrades) break;
       if (open.some((p) => p.asset === asset.symbol)) continue;
       const c = candleData[asset.sourceSymbol];
-      const a = atrData[asset.sourceSymbol][bar];
+      const a = atrData[asset.sourceSymbol]![bar];
       if (a === null || !Number.isFinite(a) || a <= 0) continue;
 
       let entrySignal: {
@@ -430,7 +430,7 @@ export function runSmcEngine(
 
       if (!entrySignal) continue;
 
-      const entryPrice = c[bar].close;
+      const entryPrice = c[bar]!.close;
       const stopDist = a * asset.atrStopMult;
       const tpDist = a * asset.atrTpMult;
       const stopPrice =

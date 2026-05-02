@@ -10,7 +10,7 @@ function makeCandles(): Candle[] {
   const stepMs = 2 * 60 * 60 * 1000;
   let t = Date.UTC(2026, 0, 1, 0, 0, 0);
   for (let i = 0; i < 60; i++) {
-    const open = i === 0 ? 100 : out[i - 1].close;
+    const open = i === 0 ? 100 : out[i - 1]!.close;
     const close = i === 1 ? 101 : open;
     const high = i === 2 ? 112 : Math.max(open, close) + 0.1;
     const low = Math.min(open, close) - 0.1;

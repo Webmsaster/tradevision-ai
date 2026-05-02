@@ -54,8 +54,8 @@ describe("saveTrades / loadTrades", () => {
     saveTrades(trades);
     const loaded = loadTrades();
     expect(loaded).toHaveLength(2);
-    expect(loaded[0].pair).toBe("BTC/USDT");
-    expect(loaded[1].pair).toBe("ETH/USDT");
+    expect(loaded[0]!.pair).toBe("BTC/USDT");
+    expect(loaded[1]!.pair).toBe("ETH/USDT");
   });
 
   it("returns empty array when no data stored", () => {
@@ -81,17 +81,17 @@ describe("saveTrades / loadTrades", () => {
     ]);
     const loaded = loadTrades();
     expect(loaded).toHaveLength(1);
-    expect(loaded[0].id).toBe("test-1");
+    expect(loaded[0]!.id).toBe("test-1");
   });
 
   it("separates screenshots to a separate key", () => {
     const trades = [makeTrade({ screenshot: "data:image/png;base64,abc123" })];
     saveTrades(trades);
 
-    const tradesData = JSON.parse(store["trading-journal-trades"]);
+    const tradesData = JSON.parse(store["trading-journal-trades"]!);
     expect(tradesData[0].screenshot).toBeUndefined();
 
-    const screenshots = JSON.parse(store["trading-journal-screenshots"]);
+    const screenshots = JSON.parse(store["trading-journal-screenshots"]!);
     expect(screenshots["test-1"]).toBe("data:image/png;base64,abc123");
   });
 
@@ -101,7 +101,7 @@ describe("saveTrades / loadTrades", () => {
       "test-1": "data:image/png;base64,abc",
     });
     const loaded = loadTrades();
-    expect(loaded[0].screenshot).toBe("data:image/png;base64,abc");
+    expect(loaded[0]!.screenshot).toBe("data:image/png;base64,abc");
   });
 });
 
@@ -123,7 +123,7 @@ describe("updateTrade", () => {
   it("updates an existing trade by id", () => {
     addTrade(makeTrade({ id: "a", pair: "BTC/USDT" }));
     const result = updateTrade(makeTrade({ id: "a", pair: "ETH/USDT" }));
-    expect(result[0].pair).toBe("ETH/USDT");
+    expect(result[0]!.pair).toBe("ETH/USDT");
   });
 
   it("does nothing if trade id not found", () => {
@@ -132,7 +132,7 @@ describe("updateTrade", () => {
       makeTrade({ id: "non-existent", pair: "SOL/USDT" }),
     );
     expect(result).toHaveLength(1);
-    expect(result[0].id).toBe("a");
+    expect(result[0]!.id).toBe("a");
   });
 });
 
@@ -142,7 +142,7 @@ describe("deleteTrade", () => {
     addTrade(makeTrade({ id: "b" }));
     const result = deleteTrade("a");
     expect(result).toHaveLength(1);
-    expect(result[0].id).toBe("b");
+    expect(result[0]!.id).toBe("b");
   });
 
   it("returns unchanged array if id not found", () => {
@@ -186,7 +186,7 @@ describe("importFromJSON", () => {
     const file = makeFile(JSON.stringify(trades));
     const result = await importFromJSON(file);
     expect(result).toHaveLength(1);
-    expect(result[0].pair).toBe("BTC/USDT");
+    expect(result[0]!.pair).toBe("BTC/USDT");
   });
 
   it("imports trades from a wrapped format", async () => {
@@ -216,8 +216,8 @@ describe("importFromJSON", () => {
     const file = makeFile(JSON.stringify(wrapper));
     const result = await importFromJSON(file);
     expect(result).toHaveLength(2);
-    expect(result[0].id).toBe(fresh);
-    expect(result[1].id).toBe("fresh-2");
+    expect(result[0]!.id).toBe(fresh);
+    expect(result[1]!.id).toBe("fresh-2");
   });
 
   it("preserves screenshot data from JSON backup entries", async () => {
@@ -231,7 +231,7 @@ describe("importFromJSON", () => {
     const file = makeFile(JSON.stringify(wrapper));
     const result = await importFromJSON(file);
     expect(result).toHaveLength(1);
-    expect(result[0].screenshot).toBe("data:image/png;base64,abc123");
+    expect(result[0]!.screenshot).toBe("data:image/png;base64,abc123");
   });
 
   it("rejects files with no valid trades", async () => {

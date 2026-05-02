@@ -146,15 +146,15 @@ function median(arr: number[]): number {
   if (arr.length === 0) return 0;
   const s = [...arr].sort((a, b) => a - b);
   const m = Math.floor(s.length / 2);
-  return s.length % 2 === 0 ? (s[m - 1] + s[m]) / 2 : s[m];
+  return s.length % 2 === 0 ? (s[m - 1]! + s[m]!) / 2 : s[m];
 }
 
 function stdReturns(closes: number[]): number {
   if (closes.length < 3) return 0;
   const r: number[] = [];
   for (let i = 1; i < closes.length; i++) {
-    if (closes[i - 1] <= 0) continue;
-    r.push((closes[i] - closes[i - 1]) / closes[i - 1]);
+    if (closes[i - 1]! <= 0) continue;
+    r.push((closes[i]! - closes[i - 1]!) / closes[i - 1]!);
   }
   if (r.length === 0) return 0;
   const m = r.reduce((s, v) => s + v, 0) / r.length;
@@ -177,7 +177,7 @@ function passesFilters(
   ret: number,
 ): boolean {
   if (cfg.avoidHoursUtc.length) {
-    const h = new Date(candles[i].openTime).getUTCHours();
+    const h = new Date(candles[i]!.openTime).getUTCHours();
     if (cfg.avoidHoursUtc.includes(h)) return false;
   }
 
@@ -186,7 +186,7 @@ function passesFilters(
       .slice(Math.max(0, i - 23), i + 1)
       .map((c) => c.close);
     const smaVal = smaOf(closes, 24);
-    const alignedLong = candles[i].close > smaVal;
+    const alignedLong = candles[i]!.close > smaVal;
     if (direction === "long" && !alignedLong) return false;
     if (direction === "short" && alignedLong) return false;
   }
@@ -264,7 +264,7 @@ export function runHighWrScaleOut(
     const maxExit = Math.min(i + 1 + cfg.holdBars, candles.length - 1);
     let tp1Hit = false;
     let tp1HitBar = -1;
-    let leg2ExitPrice = candles[maxExit].close;
+    let leg2ExitPrice = candles[maxExit]!.close;
     let leg2ExitBar = maxExit;
     let exitReason: HighWrTrade["exitReason"] = "time";
 
@@ -354,7 +354,7 @@ export function runHighWrScaleOut(
     const totalPnl = 0.5 * leg1Pnl + 0.5 * leg2Pnl;
     trades.push({
       entryTime: entryBar.openTime,
-      exitTime: candles[leg2ExitBar].openTime,
+      exitTime: candles[leg2ExitBar]!.openTime,
       direction,
       entry,
       tp1Hit,
@@ -382,13 +382,13 @@ export function runHighWrScaleOut(
   const sd = Math.sqrt(v);
   const periodDays =
     trades.length > 0
-      ? (trades[trades.length - 1].exitTime - trades[0].entryTime) / 86400000
+      ? (trades[trades.length - 1]!.exitTime - trades[0]!.entryTime) / 86400000
       : 30;
   const perYear = periodDays > 0 ? (trades.length / periodDays) * 365 : 0;
   const sharpe = sd > 0 ? (m / sd) * Math.sqrt(perYear) : 0;
 
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {

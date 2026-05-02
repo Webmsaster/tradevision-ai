@@ -215,10 +215,10 @@ describe("calculateEquityCurve", () => {
     ];
     const curve = calculateEquityCurve(trades);
     expect(curve).toHaveLength(2);
-    expect(curve[0].equity).toBe(10);
-    expect(curve[0].drawdown).toBe(0);
-    expect(curve[1].equity).toBe(5);
-    expect(curve[1].drawdown).toBe(5);
+    expect(curve[0]!.equity).toBe(10);
+    expect(curve[0]!.drawdown).toBe(0);
+    expect(curve[1]!.equity).toBe(5);
+    expect(curve[1]!.drawdown).toBe(5);
   });
 });
 

@@ -3573,7 +3573,7 @@ function PortfolioEquityPanel() {
       try {
         const { classifyRegimes } = await import("@/utils/regimeClassifier");
         const btcFunding = fundingBySymbol["BTCUSDT"] ?? [];
-        const btcWindows = classifyRegimes(candlesByH["BTCUSDT"], btcFunding);
+        const btcWindows = classifyRegimes(candlesByH["BTCUSDT"]!, btcFunding);
         // Map each daily return to its BTC regime
         const buckets = new Map<string, { sum: number; count: number }>();
         for (const dr of ens.dailyReturns) {
@@ -4366,9 +4366,9 @@ function StrategyBreakdown({ trades }: { trades: BacktestReport["trades"] }) {
   for (const t of trades) {
     if (!byStrat[t.strategy])
       byStrat[t.strategy] = { n: 0, wins: 0, totalPct: 0 };
-    byStrat[t.strategy].n++;
-    if (t.netPnlPct > 0) byStrat[t.strategy].wins++;
-    byStrat[t.strategy].totalPct += t.netPnlPct;
+    byStrat[t.strategy]!.n++;
+    if (t.netPnlPct > 0) byStrat[t.strategy]!.wins++;
+    byStrat[t.strategy]!.totalPct += t.netPnlPct;
   }
   const entries = Object.entries(byStrat);
   if (entries.length === 0)

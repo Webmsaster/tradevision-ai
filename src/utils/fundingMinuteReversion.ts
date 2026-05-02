@@ -68,10 +68,10 @@ function indexOfCandleAt(
     hi = candles.length - 1;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
-    if (candles[mid].closeTime < ts) lo = mid + 1;
+    if (candles[mid]!.closeTime < ts) lo = mid + 1;
     else hi = mid;
   }
-  return Math.abs(candles[lo]?.closeTime - ts) <= tolMs ? lo : -1;
+  return Math.abs(candles[lo]!?.closeTime - ts) <= tolMs ? lo : -1;
 }
 
 export function runFundingMinuteBacktest(
@@ -147,7 +147,7 @@ export function runFundingMinuteBacktest(
       entry,
       exit: exitPrice,
       entryTime: entryBar.closeTime,
-      exitTime: sortedCandles[actualExitIdx].closeTime,
+      exitTime: sortedCandles[actualExitIdx]!.closeTime,
       netPnlPct: cost.netPnlPct,
       exitReason,
     });
@@ -169,12 +169,12 @@ export function runFundingMinuteBacktest(
   const std = Math.sqrt(varR);
   const periodDays =
     trades.length > 0
-      ? (trades[trades.length - 1].exitTime - trades[0].entryTime) / 86400000
+      ? (trades[trades.length - 1]!.exitTime - trades[0]!.entryTime) / 86400000
       : 30;
   const perYear = periodDays > 0 ? (trades.length / periodDays) * 365 : 0;
   const sharpe = std > 0 ? (m / std) * Math.sqrt(perYear) : 0;
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {

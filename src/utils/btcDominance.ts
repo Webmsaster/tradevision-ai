@@ -68,8 +68,8 @@ export function classifyDominance(
   const d = snap.btcDominancePct;
   let trend: DominanceRegime["trend"] = "unknown";
   if (history.length >= 3) {
-    const first = history[0].btcDominancePct;
-    const last = history[history.length - 1].btcDominancePct;
+    const first = history[0]!.btcDominancePct;
+    const last = history[history.length - 1]!.btcDominancePct;
     const delta = last - first;
     if (delta > 0.5) trend = "rising";
     else if (delta < -0.5) trend = "falling";

@@ -260,7 +260,7 @@ export function analyzeCandles(
 
   // --- ATR-based SL/TP ---
   let levels: SignalLevels | null = null;
-  const entry = candles[last].close;
+  const entry = candles[last]!.close;
   if (atrNow !== null && atrNow > 0 && action !== "flat") {
     const slDistance = atrNow * cfg.stopLossAtrMultiple;
     const tpDistance = atrNow * cfg.takeProfitAtrMultiple;
@@ -277,7 +277,7 @@ export function analyzeCandles(
   }
 
   return {
-    time: candles[last].closeTime,
+    time: candles[last]!.closeTime,
     price: entry,
     action,
     strength,
@@ -370,7 +370,7 @@ export function backtest(
     const window = candles.slice(0, i + 1);
     const snap = analyzeCandles(window, { config: cfg });
     if (!snap) continue;
-    const currentPrice = candles[i].close;
+    const currentPrice = candles[i]!.close;
 
     if (open) {
       const shouldClose =
@@ -384,7 +384,7 @@ export function backtest(
         const pnlR = open.slDistance > 0 ? pnlPrice / open.slDistance : 0;
         trades.push({
           openTime: open.openTime,
-          closeTime: candles[i].closeTime,
+          closeTime: candles[i]!.closeTime,
           direction: open.direction,
           entry: open.entry,
           exit: currentPrice,
@@ -403,7 +403,7 @@ export function backtest(
         direction: snap.action,
         entry: snap.levels.entry,
         slDistance: Math.abs(snap.levels.entry - snap.levels.stopLoss),
-        openTime: candles[i].closeTime,
+        openTime: candles[i]!.closeTime,
       };
     }
   }

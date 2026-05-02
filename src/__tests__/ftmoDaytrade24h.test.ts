@@ -37,11 +37,11 @@ describe("ftmoDaytrade24h — config", () => {
 
   it("iter212: pyramid r=5 + BTC EMA10/15 + momentum 6bar filter", () => {
     expect(FTMO_DAYTRADE_24H_CONFIG.assets.length).toBe(2);
-    expect(FTMO_DAYTRADE_24H_CONFIG.assets[0].sourceSymbol).toBe("ETHUSDT");
-    expect(FTMO_DAYTRADE_24H_CONFIG.assets[1].sourceSymbol).toBe("ETHUSDT");
-    expect(FTMO_DAYTRADE_24H_CONFIG.assets[0].riskFrac).toBeCloseTo(1.0, 2);
-    expect(FTMO_DAYTRADE_24H_CONFIG.assets[1].riskFrac).toBeCloseTo(5.0, 2);
-    expect(FTMO_DAYTRADE_24H_CONFIG.assets[1].minEquityGain).toBeCloseTo(
+    expect(FTMO_DAYTRADE_24H_CONFIG.assets[0]!.sourceSymbol).toBe("ETHUSDT");
+    expect(FTMO_DAYTRADE_24H_CONFIG.assets[1]!.sourceSymbol).toBe("ETHUSDT");
+    expect(FTMO_DAYTRADE_24H_CONFIG.assets[0]!.riskFrac).toBeCloseTo(1.0, 2);
+    expect(FTMO_DAYTRADE_24H_CONFIG.assets[1]!.riskFrac).toBeCloseTo(5.0, 2);
+    expect(FTMO_DAYTRADE_24H_CONFIG.assets[1]!.minEquityGain).toBeCloseTo(
       0.015,
       3,
     );
@@ -68,7 +68,7 @@ describe("ftmoDaytrade24h — config", () => {
   });
 
   it("ETH cost at 30 bp (realistic taker)", () => {
-    expect(FTMO_DAYTRADE_24H_CONFIG.assets[0].costBp).toBe(30);
+    expect(FTMO_DAYTRADE_24H_CONFIG.assets[0]!.costBp).toBe(30);
   });
 
   it("FTMO rules", () => {
@@ -136,7 +136,7 @@ describe("ftmoDaytrade24h — stats (iter212 full-history 50%+)", () => {
     ]);
     expect(FTMO_DAYTRADE_24H_STATS.regimeSpread).toBeLessThan(0.35);
     expect(FTMO_DAYTRADE_24H_CONFIG.assets.length).toBe(2);
-    expect(FTMO_DAYTRADE_24H_CONFIG.assets[1].minEquityGain).toBeCloseTo(
+    expect(FTMO_DAYTRADE_24H_CONFIG.assets[1]!.minEquityGain).toBeCloseTo(
       0.015,
       3,
     );

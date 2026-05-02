@@ -96,10 +96,10 @@ describe("ftmoHybrid — signal detection", () => {
 
     const signals = detectFlashSignals(candles, "flash15");
     expect(signals.length).toBeGreaterThanOrEqual(1);
-    expect(signals[0].direction).toBe("long");
-    expect(signals[0].type).toBe("flash15");
+    expect(signals[0]!.direction).toBe("long");
+    expect(signals[0]!.type).toBe("flash15");
     // Raw pnl should be positive since we hit TP (+10%)
-    expect(signals[0].rawPnl).toBeGreaterThan(0.05);
+    expect(signals[0]!.rawPnl).toBeGreaterThan(0.05);
   });
 
   it("detects pumpShort pump + red rejection", () => {
@@ -125,9 +125,9 @@ describe("ftmoHybrid — signal detection", () => {
 
     const signals = detectPumpShortSignals(candles);
     expect(signals.length).toBeGreaterThanOrEqual(1);
-    expect(signals[0].direction).toBe("short");
-    expect(signals[0].type).toBe("pumpShort");
-    expect(signals[0].rawPnl).toBeGreaterThan(0.05);
+    expect(signals[0]!.direction).toBe("short");
+    expect(signals[0]!.type).toBe("pumpShort");
+    expect(signals[0]!.rawPnl).toBeGreaterThan(0.05);
   });
 });
 

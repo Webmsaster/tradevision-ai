@@ -179,7 +179,7 @@ export async function fetchOkxLongHistory(
       }
     }
     if (freshAdded === 0) break;
-    after = batch[0].openTime; // oldest → pagination backwards
+    after = batch[0]!.openTime; // oldest → pagination backwards
     await new Promise((r) => setTimeout(r, 250));
   }
   return all.sort((a, b) => a.openTime - b.openTime);

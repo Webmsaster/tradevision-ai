@@ -104,7 +104,7 @@ describe("Live detector reads CFG fields correctly", () => {
   it("synthetic candle generator returns valid OHLC", () => {
     const c = makeCandles(50);
     expect(c.length).toBe(50);
-    expect(c[0].openTime).toBeLessThan(c[49].openTime);
+    expect(c[0]!.openTime).toBeLessThan(c[49]!.openTime);
     for (const bar of c) {
       expect(bar.high).toBeGreaterThanOrEqual(bar.low);
       expect(bar.high).toBeGreaterThanOrEqual(bar.open);

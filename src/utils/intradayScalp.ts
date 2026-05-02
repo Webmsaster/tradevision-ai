@@ -57,15 +57,15 @@ function median(arr: number[]): number {
   if (arr.length === 0) return 0;
   const s = [...arr].sort((a, b) => a - b);
   const m = Math.floor(s.length / 2);
-  return s.length % 2 === 0 ? (s[m - 1] + s[m]) / 2 : s[m];
+  return s.length % 2 === 0 ? (s[m - 1]! + s[m]!) / 2 : s[m];
 }
 
 function stdReturns(closes: number[]): number {
   if (closes.length < 3) return 0;
   const r: number[] = [];
   for (let i = 1; i < closes.length; i++) {
-    if (closes[i - 1] <= 0) continue;
-    r.push((closes[i] - closes[i - 1]) / closes[i - 1]);
+    if (closes[i - 1]! <= 0) continue;
+    r.push((closes[i]! - closes[i - 1]!) / closes[i - 1]!);
   }
   if (r.length === 0) return 0;
   const m = r.reduce((s, v) => s + v, 0) / r.length;
@@ -122,7 +122,7 @@ export function runIntradayScalp(
     let exitIdx = i + 1 + cfg.holdBars;
     if (exitIdx >= candles.length) exitIdx = candles.length - 1;
     let exitReason: ScalpTrade["exitReason"] = "time";
-    let exitPrice = candles[exitIdx].close;
+    let exitPrice = candles[exitIdx]!.close;
 
     for (let j = i + 2; j <= exitIdx; j++) {
       const bar = candles[j];
@@ -166,7 +166,7 @@ export function runIntradayScalp(
     totalHoldBars += exitIdx - (i + 1);
     trades.push({
       entryTime: entryBar.openTime,
-      exitTime: candles[exitIdx].openTime,
+      exitTime: candles[exitIdx]!.openTime,
       direction,
       entry,
       exit: exitPrice,
@@ -192,13 +192,13 @@ export function runIntradayScalp(
   const sd = Math.sqrt(v);
   const periodDays =
     trades.length > 0
-      ? (trades[trades.length - 1].exitTime - trades[0].entryTime) / 86400000
+      ? (trades[trades.length - 1]!.exitTime - trades[0]!.entryTime) / 86400000
       : 30;
   const perYear = periodDays > 0 ? (trades.length / periodDays) * 365 : 0;
   const sharpe = sd > 0 ? (m / sd) * Math.sqrt(perYear) : 0;
 
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {

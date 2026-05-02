@@ -89,7 +89,7 @@ describe("hfDipBuy — driver behavior", () => {
       bars.push(mkCandle(t, 100 + i, 101 + i, 99 + i, 100.5 + i));
     }
     // 3 red bars (close-lower) — pullback
-    const base = bars[bars.length - 1].close;
+    const base = bars[bars.length - 1]!.close;
     for (let k = 0; k < 3; k++) {
       const t = 1_700_000_000_000 + (48 + k) * 3600_000;
       const open = base - k * 0.5;
@@ -106,7 +106,7 @@ describe("hfDipBuy — driver behavior", () => {
     }
     const r = runHfDipBuy(bars, { ...HF_DIP_BUY_CONFIG, avoidHoursUtc: [] });
     expect(r.trades.length).toBeGreaterThan(0);
-    expect(r.trades[0].tp1Hit).toBe(true);
+    expect(r.trades[0]!.tp1Hit).toBe(true);
   });
 
   it("portfolio evaluator aggregates without throwing", () => {

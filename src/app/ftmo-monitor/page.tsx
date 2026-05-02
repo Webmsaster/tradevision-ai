@@ -688,8 +688,8 @@ function EquityChart({
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     })
     .join(" ");
-  const first = history[0].equity_usd;
-  const last = history[history.length - 1].equity_usd;
+  const first = history[0]!.equity_usd;
+  const last = history[history.length - 1]!.equity_usd;
   const isUp = last >= first;
   const stroke = isUp ? "#10b981" : "#ef4444";
   const fill = isUp ? "rgba(16, 185, 129, 0.15)" : "rgba(239, 68, 68, 0.15)";
@@ -714,14 +714,17 @@ function EquityChart({
       </svg>
       <div className="flex justify-between text-xs text-txt/60 mt-2">
         <span>
-          {new Date(history[0].ts).toISOString().slice(0, 16).replace("T", " ")}
+          {new Date(history[0]!.ts)
+            .toISOString()
+            .slice(0, 16)
+            .replace("T", " ")}
           Z
         </span>
         <span>
           ${min.toLocaleString()} – ${max.toLocaleString()}
         </span>
         <span>
-          {new Date(history[history.length - 1].ts)
+          {new Date(history[history.length - 1]!.ts)
             .toISOString()
             .slice(0, 16)
             .replace("T", " ")}

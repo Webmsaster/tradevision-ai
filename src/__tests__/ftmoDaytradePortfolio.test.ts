@@ -31,10 +31,10 @@ function mkCandle(
 describe("ftmoDaytradePortfolio — config", () => {
   it("portfolio has BTC and ETH with 50% risk each", () => {
     expect(FTMO_PORTFOLIO_CONFIG.assets.length).toBe(2);
-    expect(FTMO_PORTFOLIO_CONFIG.assets[0].symbol).toBe("BTCUSDT");
-    expect(FTMO_PORTFOLIO_CONFIG.assets[1].symbol).toBe("ETHUSDT");
-    expect(FTMO_PORTFOLIO_CONFIG.assets[0].riskFrac).toBeCloseTo(0.5, 5);
-    expect(FTMO_PORTFOLIO_CONFIG.assets[1].riskFrac).toBeCloseTo(0.5, 5);
+    expect(FTMO_PORTFOLIO_CONFIG.assets[0]!.symbol).toBe("BTCUSDT");
+    expect(FTMO_PORTFOLIO_CONFIG.assets[1]!.symbol).toBe("ETHUSDT");
+    expect(FTMO_PORTFOLIO_CONFIG.assets[0]!.riskFrac).toBeCloseTo(0.5, 5);
+    expect(FTMO_PORTFOLIO_CONFIG.assets[1]!.riskFrac).toBeCloseTo(0.5, 5);
     expect(FTMO_PORTFOLIO_CONFIG.leverage).toBe(2);
     expect(FTMO_PORTFOLIO_CONFIG.triggerBars).toBe(2);
   });

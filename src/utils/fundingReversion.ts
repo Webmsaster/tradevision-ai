@@ -91,7 +91,7 @@ function indexOfCandleBefore(candles: Candle[], ts: number): number {
     ans = -1;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
-    if (candles[mid].closeTime < ts) {
+    if (candles[mid]!.closeTime < ts) {
       ans = mid;
       lo = mid + 1;
     } else {
@@ -241,8 +241,8 @@ export function runFundingReversionBacktest(
   // Annualisation: estimate trades/year from sample
   const periodDays =
     returns.length > 0 && sortedFunding.length > 1
-      ? (sortedFunding[sortedFunding.length - 1].fundingTime -
-          sortedFunding[0].fundingTime) /
+      ? (sortedFunding[sortedFunding.length - 1]!.fundingTime -
+          sortedFunding[0]!.fundingTime) /
         (24 * 60 * 60 * 1000)
       : 365;
   const tradesPerYear =
@@ -250,7 +250,7 @@ export function runFundingReversionBacktest(
   const sharpe = std > 0 ? (mean / std) * Math.sqrt(tradesPerYear) : 0;
 
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {

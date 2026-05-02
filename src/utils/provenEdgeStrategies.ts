@@ -101,15 +101,15 @@ export function donchianLongOnlyStrategy(
   // Entry channel: highest high of the previous entryPeriod bars (exclusive)
   let entryHigh = -Infinity;
   for (let j = i - dc.entryPeriod; j < i; j++) {
-    if (candles[j].high > entryHigh) entryHigh = candles[j].high;
+    if (candles[j]!.high > entryHigh) entryHigh = candles[j]!.high;
   }
   // Exit channel: lowest low of the previous exitPeriod bars (exclusive)
   let exitLow = Infinity;
   for (let j = i - dc.exitPeriod; j < i; j++) {
-    if (candles[j].low < exitLow) exitLow = candles[j].low;
+    if (candles[j]!.low < exitLow) exitLow = candles[j]!.low;
   }
 
-  const priceNow = candles[i].close;
+  const priceNow = candles[i]!.close;
   const atrArr = atr(candles, 14);
   const atrNow = atrArr[i];
   if (atrNow === null) return flat();
@@ -168,8 +168,8 @@ export function momentumStrategy(
 ): StrategyDecision {
   if (candles.length < mc.lookbackBars + 5) return flat();
   const i = candles.length - 1;
-  const priceNow = candles[i].close;
-  const priceBack = candles[i - mc.lookbackBars].close;
+  const priceNow = candles[i]!.close;
+  const priceBack = candles[i - mc.lookbackBars]!.close;
   const roc = (priceNow - priceBack) / priceBack;
   const atrArr = atr(candles, 14);
   const atrNow = atrArr[i];

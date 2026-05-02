@@ -68,8 +68,8 @@ export function orbStrategy(
   const today = dayKey(last.closeTime);
   const todayCandles: Candle[] = [];
   for (let i = candles.length - 1; i >= 0; i--) {
-    if (dayKey(candles[i].closeTime) !== today) break;
-    todayCandles.unshift(candles[i]);
+    if (dayKey(candles[i]!.closeTime) !== today) break;
+    todayCandles.unshift(candles[i]!);
   }
   if (todayCandles.length < cfg.rangeBars + 1)
     return flatDecision(["Opening range not yet complete"]);
@@ -144,7 +144,7 @@ export function vwapReversionStrategy(
   const atrNow = atrArr[atrArr.length - 1];
   if (atrNow === null) return flatDecision();
 
-  const priceNow = candles[candles.length - 1].close;
+  const priceNow = candles[candles.length - 1]!.close;
   const stop = atrNow * cfg.stopAtrMult;
 
   if (priceNow < v.lower2) {

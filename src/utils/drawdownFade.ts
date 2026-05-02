@@ -86,7 +86,7 @@ export function runDrawdownFade(
     let exitIdx = i + 1 + cfg.holdBars;
     if (exitIdx >= candles.length) exitIdx = candles.length - 1;
     let exitReason: DdFadeTrade["exitReason"] = "time";
-    let exitPrice = candles[exitIdx].close;
+    let exitPrice = candles[exitIdx]!.close;
 
     for (let j = i + 2; j <= exitIdx; j++) {
       const bar = candles[j];
@@ -113,7 +113,7 @@ export function runDrawdownFade(
     });
     trades.push({
       entryTime: entryBar.openTime,
-      exitTime: candles[exitIdx].openTime,
+      exitTime: candles[exitIdx]!.openTime,
       direction,
       entry,
       exit: exitPrice,
@@ -140,13 +140,13 @@ export function runDrawdownFade(
   const sd = Math.sqrt(v);
   const periodDays =
     trades.length > 0
-      ? (trades[trades.length - 1].exitTime - trades[0].entryTime) / 86400000
+      ? (trades[trades.length - 1]!.exitTime - trades[0]!.entryTime) / 86400000
       : 30;
   const perYear = periodDays > 0 ? (trades.length / periodDays) * 365 : 0;
   const sharpe = sd > 0 ? (m / sd) * Math.sqrt(perYear) : 0;
 
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {

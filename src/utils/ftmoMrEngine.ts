@@ -116,7 +116,7 @@ export function runMrEngine(
   const rsiData: Record<string, (number | null)[]> = {};
   for (const a of cfg.assets) {
     rsiData[a.sourceSymbol] = rsi(
-      candleData[a.sourceSymbol].slice(0, maxBars).map((c) => c.close),
+      candleData[a.sourceSymbol]!.slice(0, maxBars).map((c) => c.close),
       a.rsiPeriod,
     );
   }
@@ -170,7 +170,7 @@ export function runMrEngine(
       for (const pos of open) {
         const _asset = cappedAssets.find((a) => a.symbol === pos.asset)!;
         void _asset;
-        const exitPrice = candleData[pos.symbol][bar]?.close ?? pos.entryPrice;
+        const exitPrice = candleData[pos.symbol]![bar]?.close ?? pos.entryPrice;
         const rawPnl =
           pos.direction === "long"
             ? (exitPrice - pos.entryPrice) / pos.entryPrice
@@ -214,7 +214,7 @@ export function runMrEngine(
       targetReached = true;
       // Force close all & wait for minTradingDays
       for (const pos of open) {
-        const exitPrice = candleData[pos.symbol][bar]?.close ?? pos.entryPrice;
+        const exitPrice = candleData[pos.symbol]![bar]?.close ?? pos.entryPrice;
         const rawPnl =
           pos.direction === "long"
             ? (exitPrice - pos.entryPrice) / pos.entryPrice
@@ -243,7 +243,7 @@ export function runMrEngine(
     for (let i = open.length - 1; i >= 0; i--) {
       const pos = open[i];
       const asset = cappedAssets.find((a) => a.symbol === pos.asset)!;
-      const candle = candleData[pos.symbol][bar];
+      const candle = candleData[pos.symbol]![bar];
       if (!candle) continue;
 
       let exitReason: ClosedTrade["reason"] | null = null;
@@ -257,7 +257,7 @@ export function runMrEngine(
           exitReason = "tp";
           exitPrice = pos.tpPrice;
         } else {
-          const r = rsiData[pos.symbol][bar];
+          const r = rsiData[pos.symbol]![bar];
           if (r !== null && r >= asset.rsiNeutral) {
             exitReason = "rsi_revert";
             exitPrice = candle.close;
@@ -274,7 +274,7 @@ export function runMrEngine(
           exitReason = "tp";
           exitPrice = pos.tpPrice;
         } else {
-          const r = rsiData[pos.symbol][bar];
+          const r = rsiData[pos.symbol]![bar];
           if (r !== null && r <= asset.rsiNeutral) {
             exitReason = "rsi_revert";
             exitPrice = candle.close;
@@ -334,8 +334,8 @@ export function runMrEngine(
       // Skip if already open on this asset
       if (open.some((p) => p.asset === asset.symbol)) continue;
 
-      const r = rsiData[asset.sourceSymbol][bar];
-      const rPrev = rsiData[asset.sourceSymbol][bar - 1];
+      const r = rsiData[asset.sourceSymbol]![bar];
+      const rPrev = rsiData[asset.sourceSymbol]![bar - 1];
       if (r === null || rPrev === null) continue;
 
       // Long entry: oversold then RSI crosses back above oversold threshold
@@ -344,7 +344,7 @@ export function runMrEngine(
         rPrev <= asset.rsiOversold &&
         r > asset.rsiOversold
       ) {
-        const entryPrice = candleData[asset.sourceSymbol][bar].close;
+        const entryPrice = candleData[asset.sourceSymbol]![bar].close;
         open.push({
           asset: asset.symbol,
           symbol: asset.sourceSymbol,
@@ -368,7 +368,7 @@ export function runMrEngine(
         rPrev >= asset.rsiOverbought &&
         r < asset.rsiOverbought
       ) {
-        const entryPrice = candleData[asset.sourceSymbol][bar].close;
+        const entryPrice = candleData[asset.sourceSymbol]![bar].close;
         open.push({
           asset: asset.symbol,
           symbol: asset.sourceSymbol,

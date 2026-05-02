@@ -201,11 +201,11 @@ export function detectOverleverageAfterWins(trades: Trade[]): AIInsight | null {
     // Phase 21 (AI Bug 4): skip if any trade in the streak OR the current
     // trade has no leverage recorded (mixed spot/margin). Spot trades default
     // to 1x and falsely flagged as 'low leverage' against 2x margin trades.
-    if (sorted[i].leverage == null || streak.some((t) => t.leverage == null))
+    if (sorted[i]!.leverage == null || streak.some((t) => t.leverage == null))
       continue;
     const avgStreakLeverage =
       streak.reduce((sum, t) => sum + (t.leverage ?? 1), 0) / streak.length;
-    const nextLeverage = sorted[i].leverage ?? 1;
+    const nextLeverage = sorted[i]!.leverage ?? 1;
 
     if (avgStreakLeverage > 0 && nextLeverage > avgStreakLeverage * 1.5) {
       const increasePercent = Math.round(
@@ -218,11 +218,11 @@ export function detectOverleverageAfterWins(trades: Trade[]): AIInsight | null {
         title: "Overleveraging After Winning Streak",
         description:
           `After ${streak.length} consecutive wins, you increased your leverage by ${increasePercent}% ` +
-          `(from an average of ${avgStreakLeverage.toFixed(1)}x to ${nextLeverage}x on ${sorted[i].pair}). ` +
+          `(from an average of ${avgStreakLeverage.toFixed(1)}x to ${nextLeverage}x on ${sorted[i]!.pair}). ` +
           `Winning streaks can create overconfidence, leading to outsized risk when the streak inevitably ends. ` +
           `Keep your leverage consistent regardless of recent results to protect against large drawdowns.`,
         severity: 7,
-        relatedTrades: [...streak.map((t) => t.id), sorted[i].id],
+        relatedTrades: [...streak.map((t) => t.id), sorted[i]!.id],
         category: "overleverage",
       };
     }
@@ -291,7 +291,7 @@ export function detectTiltPattern(trades: Trade[]): AIInsight | null {
   let runningPnl = 0;
 
   for (let i = 0; i < sorted.length - 5; i++) {
-    runningPnl += sorted[i].pnl;
+    runningPnl += sorted[i]!.pnl;
     if (runningPnl > peak) {
       peak = runningPnl;
     }
@@ -322,7 +322,7 @@ export function detectTiltPattern(trades: Trade[]): AIInsight | null {
             `by the desire to recover quickly. Consider implementing a mandatory cool-down period after drawdowns ` +
             `exceeding 5%, or switch to paper trading until you regain composure.`,
           severity: 9,
-          relatedTrades: [sorted[i].id, ...next5.map((t) => t.id)],
+          relatedTrades: [sorted[i]!.id, ...next5.map((t) => t.id)],
           category: "tilt",
         };
       }
@@ -347,10 +347,10 @@ export function detectConsistentPair(trades: Trade[]): AIInsight | null {
     if (!pairStats[trade.pair]) {
       pairStats[trade.pair] = { total: 0, wins: 0, totalPnl: 0, tradeIds: [] };
     }
-    pairStats[trade.pair].total++;
-    if (trade.pnl > 0) pairStats[trade.pair].wins++;
-    pairStats[trade.pair].totalPnl += trade.pnl;
-    pairStats[trade.pair].tradeIds.push(trade.id);
+    pairStats[trade.pair]!.total++;
+    if (trade.pnl > 0) pairStats[trade.pair]!.wins++;
+    pairStats[trade.pair]!.totalPnl += trade.pnl;
+    pairStats[trade.pair]!.tradeIds.push(trade.id);
   }
 
   let bestPair: string | null = null;
@@ -648,7 +648,7 @@ export function detectPairSwitching(trades: Trade[]): AIInsight | null {
 
   let switches = 0;
   for (let i = 1; i < sorted.length; i++) {
-    if (sorted[i].pair !== sorted[i - 1].pair) {
+    if (sorted[i]!.pair !== sorted[i - 1]!.pair) {
       switches++;
     }
   }

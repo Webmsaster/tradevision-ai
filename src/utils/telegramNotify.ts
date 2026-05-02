@@ -97,7 +97,7 @@ function safeTruncateHtml(text: string, maxLen: number): string {
   const tagRe = /<\/?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*?(\/)?>/g;
   let m: RegExpExecArray | null;
   while ((m = tagRe.exec(body)) !== null) {
-    const tag = m[1].toLowerCase();
+    const tag = m[1]!.toLowerCase();
     const isClose = m[0].startsWith("</");
     const isSelf = m[2] === "/";
     if (isSelf) continue;

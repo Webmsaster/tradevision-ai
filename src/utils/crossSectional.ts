@@ -81,7 +81,9 @@ function alignSeries(byCandles: Record<string, Candle[]>): {
   const symbols = Object.keys(byCandles);
   if (symbols.length === 0) return { symbols, matrix: [], times: [] };
   // Intersect openTime keys
-  const sets = symbols.map((s) => new Set(byCandles[s].map((c) => c.openTime)));
+  const sets = symbols.map(
+    (s) => new Set(byCandles[s]!.map((c) => c.openTime)),
+  );
   const sharedTimes = [...sets[0]]
     .filter((t) => sets.every((s) => s.has(t)))
     .sort((a, b) => a - b);
@@ -89,7 +91,7 @@ function alignSeries(byCandles: Record<string, Candle[]>): {
   for (const t of sharedTimes) {
     const row: number[] = [];
     for (const s of symbols) {
-      const c = byCandles[s].find((c) => c.openTime === t);
+      const c = byCandles[s]!.find((c) => c.openTime === t);
       row.push(c!.close);
     }
     matrix.push(row);
@@ -135,8 +137,8 @@ export function runCrossSectionalRotation({
     const refIdx = i - config.skipLastBars;
     const baseIdx = refIdx - config.lookbackBars;
     const rocs = symbols.map((s, sIdx) => {
-      const ref = matrix[refIdx][sIdx];
-      const base = matrix[baseIdx][sIdx];
+      const ref = matrix[refIdx]![sIdx];
+      const base = matrix[baseIdx]![sIdx];
       return { symbol: s, idx: sIdx, roc: base > 0 ? ref / base - 1 : 0 };
     });
     rocs.sort((a, b) => b.roc - a.roc);
@@ -158,7 +160,7 @@ export function runCrossSectionalRotation({
 
     if (currentHold && needToSwitch) {
       // Close current hold
-      const exitPrice = matrix[i][currentHold.symbolIdx];
+      const exitPrice = matrix[i]![currentHold.symbolIdx];
       const holdingHours = (i - currentHold.openBar) * hoursPerBar;
       const cost = applyCosts({
         entry: currentHold.entry,
@@ -181,7 +183,7 @@ export function runCrossSectionalRotation({
     }
 
     if (!currentHold && shouldHold) {
-      const entry = matrix[i][shouldHold.idx];
+      const entry = matrix[i]![shouldHold.idx];
       currentHold = {
         symbol: shouldHold.symbol,
         symbolIdx: shouldHold.idx,
@@ -196,7 +198,7 @@ export function runCrossSectionalRotation({
 
   if (currentHold) {
     const lastBar = matrix.length - 1;
-    const exitPrice = matrix[lastBar][currentHold.symbolIdx];
+    const exitPrice = matrix[lastBar]![currentHold.symbolIdx];
     const holdingHours = (lastBar - currentHold.openBar) * hoursPerBar;
     const cost = applyCosts({
       entry: currentHold.entry,

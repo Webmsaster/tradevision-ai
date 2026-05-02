@@ -320,7 +320,7 @@ export function calculatePerformanceByDayOfWeek(
     const wins = dayTrades.filter((t) => t.pnl > 0).length;
 
     result.push({
-      label: dayNames[day],
+      label: dayNames[day]!,
       trades: dayTrades.length,
       winRate: (wins / dayTrades.length) * 100,
       avgPnl: totalPnl / dayTrades.length,
@@ -427,15 +427,15 @@ export function calculateAllStats(trades: Trade[]): TradeStats {
 
   const totalPnl = trades.reduce((sum, t) => sum + t.pnl, 0);
 
-  // Find best and worst trades by PnL
+  // Find best and worst trades by PnL (caller guards trades.length > 0)
   const bestTrade = trades.reduce<Trade>(
     (best, t) => (t.pnl > best.pnl ? t : best),
-    trades[0],
+    trades[0]!,
   );
 
   const worstTrade = trades.reduce<Trade>(
     (worst, t) => (t.pnl < worst.pnl ? t : worst),
-    trades[0],
+    trades[0]!,
   );
 
   return {

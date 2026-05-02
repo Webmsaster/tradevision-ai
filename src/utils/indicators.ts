@@ -20,10 +20,10 @@ export function sma(values: number[], period: number): (number | null)[] {
   const out: (number | null)[] = new Array(values.length).fill(null);
   if (period <= 0 || values.length < period) return out;
   let sum = 0;
-  for (let i = 0; i < period; i++) sum += values[i];
+  for (let i = 0; i < period; i++) sum += values[i]!;
   out[period - 1] = sum / period;
   for (let i = period; i < values.length; i++) {
-    sum += values[i] - values[i - period];
+    sum += values[i]! - values[i - period]!;
     out[i] = sum / period;
   }
   return out;
@@ -35,12 +35,12 @@ export function ema(values: number[], period: number): (number | null)[] {
 
   const k = 2 / (period + 1);
   let seed = 0;
-  for (let i = 0; i < period; i++) seed += values[i];
+  for (let i = 0; i < period; i++) seed += values[i]!;
   let prev = seed / period;
   out[period - 1] = prev;
 
   for (let i = period; i < values.length; i++) {
-    prev = values[i] * k + prev * (1 - k);
+    prev = values[i]! * k + prev * (1 - k);
     out[i] = prev;
   }
   return out;
@@ -59,7 +59,7 @@ export function rsi(values: number[], period = 14): (number | null)[] {
   let gainSum = 0;
   let lossSum = 0;
   for (let i = 1; i <= period; i++) {
-    const change = values[i] - values[i - 1];
+    const change = values[i]! - values[i - 1]!;
     if (change >= 0) gainSum += change;
     else lossSum -= change;
   }
@@ -68,7 +68,7 @@ export function rsi(values: number[], period = 14): (number | null)[] {
   out[period] = rsiFromAvgs(avgGain, avgLoss);
 
   for (let i = period + 1; i < values.length; i++) {
-    const change = values[i] - values[i - 1];
+    const change = values[i]! - values[i - 1]!;
     const gain = change > 0 ? change : 0;
     const loss = change < 0 ? -change : 0;
     avgGain = (avgGain * (period - 1) + gain) / period;
@@ -162,9 +162,9 @@ export function adx(candles: Candle[], period = 14): AdxOutput {
   let plusDmSum = 0;
   let minusDmSum = 0;
   for (let i = 1; i <= period; i++) {
-    trSum += tr[i];
-    plusDmSum += plusDm[i];
-    minusDmSum += minusDm[i];
+    trSum += tr[i]!;
+    plusDmSum += plusDm[i]!;
+    minusDmSum += minusDm[i]!;
   }
 
   const plusDiArr: (number | null)[] = new Array(n).fill(null);
@@ -182,9 +182,9 @@ export function adx(candles: Candle[], period = 14): AdxOutput {
   dxArr.push(firstDx);
 
   for (let i = period + 1; i < n; i++) {
-    trSum = trSum - trSum / period + tr[i];
-    plusDmSum = plusDmSum - plusDmSum / period + plusDm[i];
-    minusDmSum = minusDmSum - minusDmSum / period + minusDm[i];
+    trSum = trSum - trSum / period + tr[i]!;
+    plusDmSum = plusDmSum - plusDmSum / period + plusDm[i]!;
+    minusDmSum = minusDmSum - minusDmSum / period + minusDm[i]!;
     const plusDi = trSum === 0 ? 0 : (plusDmSum / trSum) * 100;
     const minusDi = trSum === 0 ? 0 : (minusDmSum / trSum) * 100;
     plusDiArr[i] = plusDi;
@@ -203,7 +203,7 @@ export function adx(candles: Candle[], period = 14): AdxOutput {
     let adxVal = dxArr.slice(0, period).reduce((s, v) => s + v, 0) / period;
     adxArr[2 * period - 1] = adxVal;
     for (let i = period; i < dxArr.length; i++) {
-      adxVal = (adxVal * (period - 1) + dxArr[i]) / period;
+      adxVal = (adxVal * (period - 1) + dxArr[i]!) / period;
       adxArr[period + i] = adxVal;
     }
   }
@@ -221,7 +221,7 @@ export function choppiness(candles: Candle[], period = 14): (number | null)[] {
   if (candles.length <= period) return out;
   const tr: number[] = candles.map((c, i) => {
     if (i === 0) return c.high - c.low;
-    const prevClose = candles[i - 1].close;
+    const prevClose = candles[i - 1]!.close;
     return Math.max(
       c.high - c.low,
       Math.abs(c.high - prevClose),
@@ -234,9 +234,9 @@ export function choppiness(candles: Candle[], period = 14): (number | null)[] {
       maxH = -Infinity,
       minL = Infinity;
     for (let j = i - period + 1; j <= i; j++) {
-      sumTr += tr[j];
-      if (candles[j].high > maxH) maxH = candles[j].high;
-      if (candles[j].low < minL) minL = candles[j].low;
+      sumTr += tr[j]!;
+      if (candles[j]!.high > maxH) maxH = candles[j]!.high;
+      if (candles[j]!.low < minL) minL = candles[j]!.low;
     }
     const range = maxH - minL;
     if (range > 0) {
@@ -255,7 +255,7 @@ export function atr(candles: Candle[], period = 14): (number | null)[] {
 
   const tr: number[] = candles.map((c, i) => {
     if (i === 0) return c.high - c.low;
-    const prevClose = candles[i - 1].close;
+    const prevClose = candles[i - 1]!.close;
     return Math.max(
       c.high - c.low,
       Math.abs(c.high - prevClose),
@@ -264,12 +264,12 @@ export function atr(candles: Candle[], period = 14): (number | null)[] {
   });
 
   let sum = 0;
-  for (let i = 1; i <= period; i++) sum += tr[i];
+  for (let i = 1; i <= period; i++) sum += tr[i]!;
   let prev = sum / period;
   out[period] = prev;
 
   for (let i = period + 1; i < candles.length; i++) {
-    prev = (prev * (period - 1) + tr[i]) / period;
+    prev = (prev * (period - 1) + tr[i]!) / period;
     out[i] = prev;
   }
 

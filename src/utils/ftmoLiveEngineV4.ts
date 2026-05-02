@@ -859,7 +859,7 @@ export function pollLive(
   // (one asset 30s ahead) silently corrupt the idempotency guard.
   const lastBarTimes = assetKeys.map((k) => {
     const arr = candlesByAsset[k];
-    return arr[arr.length - 1].openTime;
+    return arr[arr.length - 1]!.openTime;
   });
   const minLastBar = Math.min(...lastBarTimes);
   const maxLastBar = Math.max(...lastBarTimes);
@@ -872,7 +872,8 @@ export function pollLive(
   const refKey =
     assetKeys.find(
       (k) =>
-        candlesByAsset[k][candlesByAsset[k].length - 1].openTime === minLastBar,
+        candlesByAsset[k]![candlesByAsset[k]!.length - 1].openTime ===
+        minLastBar,
     ) ?? assetKeys[0];
   const refCandles = candlesByAsset[refKey];
   const lastBar = refCandles[refCandles.length - 1];
@@ -937,7 +938,7 @@ export function pollLive(
     if (!candle) {
       // Closest bar ≤ lastBar.openTime (feed lagging → use last available).
       for (let j = cs.length - 1; j >= 0; j--) {
-        if (cs[j].openTime <= lastBar.openTime) {
+        if (cs[j]!.openTime <= lastBar.openTime) {
           candle = cs[j];
           break;
         }
@@ -1026,8 +1027,8 @@ export function pollLive(
     let chosen = findCandleAtTime(c, lastBar.openTime);
     if (!chosen) {
       for (let j = c.length - 1; j >= 0; j--) {
-        if (c[j].openTime <= lastBar.openTime) {
-          chosen = c[j];
+        if (c[j]!.openTime <= lastBar.openTime) {
+          chosen = c[j]!;
           break;
         }
       }
@@ -1407,13 +1408,13 @@ export function simulate(
     // Build per-tick candle slices ending at index i (live polling convention).
     const sliceByAsset: Record<string, Candle[]> = {};
     for (const k of Object.keys(alignedCandles)) {
-      sliceByAsset[k] = alignedCandles[k].slice(0, i + 1);
+      sliceByAsset[k] = alignedCandles[k]!.slice(0, i + 1);
     }
     // Build sliced ATR series (must align with sliced candles — same length).
     const slicedAtr: Record<string, (number | null)[]> = {};
     if (cfg.chandelierExit) {
       for (const k of Object.keys(atrSeriesByAsset)) {
-        slicedAtr[k] = atrSeriesByAsset[k].slice(0, i + 1);
+        slicedAtr[k] = atrSeriesByAsset[k]!.slice(0, i + 1);
       }
     }
     const r = pollLive(state, sliceByAsset, cfg, slicedAtr);

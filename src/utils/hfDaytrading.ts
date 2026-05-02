@@ -291,15 +291,15 @@ function median(a: number[]): number {
   if (a.length === 0) return 0;
   const s = [...a].sort((x, y) => x - y);
   const m = Math.floor(s.length / 2);
-  return s.length % 2 === 0 ? (s[m - 1] + s[m]) / 2 : s[m];
+  return s.length % 2 === 0 ? (s[m - 1]! + s[m]!) / 2 : s[m];
 }
 
 function stdReturns(c: number[]): number {
   if (c.length < 3) return 0;
   const r: number[] = [];
   for (let i = 1; i < c.length; i++) {
-    if (c[i - 1] <= 0) continue;
-    r.push((c[i] - c[i - 1]) / c[i - 1]);
+    if (c[i - 1]! <= 0) continue;
+    r.push((c[i]! - c[i - 1]!) / c[i - 1]!);
   }
   if (r.length === 0) return 0;
   const m = r.reduce((s, v) => s + v, 0) / r.length;
@@ -334,7 +334,7 @@ function passesFilters(
   candles1h?: Candle[],
 ): boolean {
   if (cfg.avoidHoursUtc && cfg.avoidHoursUtc.length > 0) {
-    const h = new Date(candles[i].openTime).getUTCHours();
+    const h = new Date(candles[i]!.openTime).getUTCHours();
     if (cfg.avoidHoursUtc.includes(h)) return false;
   }
   if (cfg.htfTrend) {
@@ -342,7 +342,7 @@ function passesFilters(
       .slice(Math.max(0, i - 47), i + 1)
       .map((c) => c.close);
     const sma48 = smaOf(closes);
-    const alignedLong = candles[i].close > sma48;
+    const alignedLong = candles[i]!.close > sma48;
     if (direction === "long" && !alignedLong) return false;
     if (direction === "short" && alignedLong) return false;
   }
@@ -361,7 +361,7 @@ function passesFilters(
   // Iter79: 1h timeframe confluence (opt-in) — require the containing 1h bar
   // to be aligned with its 24-bar SMA in the same direction as the trade
   if (cfg.require1hConfluence && candles1h && candles1h.length >= 24) {
-    const c1h = findContaining1h(candles[i], candles1h);
+    const c1h = findContaining1h(candles[i]!, candles1h);
     if (!c1h) return false;
     const idx1h = candles1h.indexOf(c1h);
     if (idx1h < 24) return false;
@@ -425,7 +425,7 @@ export function runHfDaytrading(
     const mx = Math.min(i + 1 + cfg.holdBars, candles.length - 1);
     let tp1Hit = false;
     let tp1Bar = -1;
-    let l2P = candles[mx].close;
+    let l2P = candles[mx]!.close;
     let l2B = mx;
     let exitReason: HfTrade["exitReason"] = "time";
 
@@ -508,7 +508,7 @@ export function runHfDaytrading(
     const total = 0.5 * leg1 + 0.5 * leg2;
     trades.push({
       entryTime: eb.openTime,
-      exitTime: candles[l2B].openTime,
+      exitTime: candles[l2B]!.openTime,
       direction,
       entry,
       tp1Hit,

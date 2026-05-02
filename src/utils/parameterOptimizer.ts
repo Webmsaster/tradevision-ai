@@ -89,7 +89,7 @@ export async function optimizeParameters({
 
   const results: ParameterResult[] = [];
   for (let idx = 0; idx < combos.length; idx++) {
-    const config = combos[idx];
+    const config = combos[idx]!;
     const trainReport = runAdvancedBacktest({
       candles: trainCandles,
       timeframe,

@@ -765,13 +765,13 @@ export function detectLiveSignalsV231(
   const btcEmaFastArr = ema(btcCloses, fastP);
   const btcEmaSlowArr = ema(btcCloses, slowP);
   const lastIdx = btcCandles.length - 1;
-  const btcClose = btcCandles[lastIdx].close;
+  const btcClose = btcCandles[lastIdx]!.close;
   const btcEma10 = btcEmaFastArr[lastIdx] ?? btcClose; // kept name for backwards-compat
   const btcEma15 = btcEmaSlowArr[lastIdx] ?? btcClose;
   const btcMom24h =
     lastIdx >= momBars
-      ? (btcClose - btcCandles[lastIdx - momBars].close) /
-        btcCandles[lastIdx - momBars].close
+      ? (btcClose - btcCandles[lastIdx - momBars]!.close) /
+        btcCandles[lastIdx - momBars]!.close
       : 0;
   const btcUptrend = btcClose > btcEma10 && btcEma10 > btcEma15;
   const btcBullMom = btcMom24h > momThr;
@@ -924,7 +924,7 @@ export function detectLiveSignalsV231(
     const STOP_LIKE_THRESHOLD = -0.001;
     let streak = 0;
     for (let i = account.recentPnls.length - 1; i >= 0; i--) {
-      if (account.recentPnls[i] <= STOP_LIKE_THRESHOLD) streak++;
+      if (account.recentPnls[i]! <= STOP_LIKE_THRESHOLD) streak++;
       else break;
     }
     if (streak >= afterLosses) {
@@ -1037,8 +1037,8 @@ export function detectLiveSignalsV231(
       const lb = CFG.htfTrendFilter.lookbackBars;
       const thr = CFG.htfTrendFilter.threshold ?? 0;
       if (a.candles.length > lb) {
-        const last = a.candles[a.candles.length - 1].close;
-        const back = a.candles[a.candles.length - 1 - lb].close;
+        const last = a.candles[a.candles.length - 1]!.close;
+        const back = a.candles[a.candles.length - 1 - lb]!.close;
         const change = (last - back) / back;
         const gateLongs =
           CFG.htfTrendFilter.apply === "long" ||
@@ -1067,8 +1067,8 @@ export function detectLiveSignalsV231(
       const lb = CFG.htfTrendFilterAux.lookbackBars;
       const thr = CFG.htfTrendFilterAux.threshold ?? 0;
       if (a.candles.length > lb) {
-        const last = a.candles[a.candles.length - 1].close;
-        const back = a.candles[a.candles.length - 1 - lb].close;
+        const last = a.candles[a.candles.length - 1]!.close;
+        const back = a.candles[a.candles.length - 1 - lb]!.close;
         const change = (last - back) / back;
         const gateLongs =
           CFG.htfTrendFilterAux.apply === "long" ||
@@ -1289,7 +1289,7 @@ function detectBullSignals(
   const b0 = ethCandles[ethLastIdx - 1];
   const b1 = ethCandles[ethLastIdx];
   const last2Green =
-    b1.close > b0.close && b0.close > ethCandles[ethLastIdx - 2]?.close;
+    b1.close > b0.close && b0.close > ethCandles[ethLastIdx - 2]!?.close;
   if (!last2Green) {
     result.notes.push("No 2-green sequence → no BULL signal");
     return result;

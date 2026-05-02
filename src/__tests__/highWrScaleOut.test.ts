@@ -79,7 +79,7 @@ describe("highWrScaleOut", () => {
   it("reports filter failures as a list when spike triggers but filter blocks", () => {
     // Force-avoid current hour so filter will block
     const bars = makeSpikeBars();
-    const currentH = new Date(bars[bars.length - 1].openTime).getUTCHours();
+    const currentH = new Date(bars[bars.length - 1]!.openTime).getUTCHours();
     const cfg = {
       ...HIGH_WR_SUI_MOM_CONFIG,
       avoidHoursUtc: [currentH],

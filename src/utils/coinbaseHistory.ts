@@ -89,7 +89,7 @@ export async function fetchCoinbaseLongHistory(
     }
     if (batch.length === 0) break;
     all.unshift(...batch);
-    end = new Date(batch[0].openTime - 1);
+    end = new Date(batch[0]!.openTime - 1);
     // Be kind: 350ms between calls for longer walks
     await new Promise((r) => setTimeout(r, 350));
   }
