@@ -9,7 +9,12 @@
  */
 
 function isPrivateHostname(host: string): boolean {
-  const h = host.toLowerCase();
+  // Round 54 audit fix: `new URL("https://[fe80::1]/").hostname` returns
+  // "[fe80::1]" WITH brackets in Node, so the IPv6 startsWith() checks
+  // below were silently dead. Strip brackets first; also lower-case for
+  // the .local/.internal/.localhost suffix checks.
+  let h = host.toLowerCase();
+  if (h.startsWith("[") && h.endsWith("]")) h = h.slice(1, -1);
   if (h === "localhost" || h === "0.0.0.0") return true;
   if (
     h.endsWith(".local") ||
@@ -29,8 +34,21 @@ function isPrivateHostname(host: string): boolean {
     if (a === 192 && b === 168) return true; // 192.168/16
     if (a >= 224) return true; // multicast / reserved
   }
-  // IPv6 literals
-  if (h.startsWith("::") || h === "::1") return true;
+  // IPv6 literals — explicit forms
+  if (h === "::1" || h === "::") return true;
+  // IPv4-mapped IPv6: Node's URL constructor compresses dotted form into
+  // hex, so "::ffff:127.0.0.1" arrives as "::ffff:7f00:1". Decode either
+  // shape to a dotted IPv4 string and recurse.
+  const v4Mapped = h.match(
+    /^::ffff:(?:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/,
+  );
+  if (v4Mapped) {
+    if (v4Mapped[1]) return isPrivateHostname(v4Mapped[1]);
+    const hi = parseInt(v4Mapped[2]!, 16);
+    const lo = parseInt(v4Mapped[3]!, 16);
+    const dotted = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+    return isPrivateHostname(dotted);
+  }
   if (h.startsWith("fc") || h.startsWith("fd")) return true; // fc00::/7 ULA
   if (h.startsWith("fe80")) return true; // link-local
   return false;

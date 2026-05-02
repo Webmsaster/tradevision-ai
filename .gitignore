@@ -55,6 +55,7 @@ lh-*.json
 
 # FTMO bot runtime artifacts
 /ftmo-state/
+/ftmo-state-*/
 paper-trade-log.json
 signal-alerts.log
 # Phase 12: signal-alerts dedup state — runtime-only
@@ -65,6 +66,13 @@ scripts/exploratory/
 
 # Forex long-history cache (regenerable from Yahoo daily endpoint)
 scripts/cache_forex/
+scripts/cache_forex_2h/
+
+# Crypto long-history bake-off cache (regenerable from Binance, ~236MB)
+scripts/cache_bakeoff/
+
+# Test coverage reports
+coverage/
 
 # Overnight sweep results
 scripts/overnight_results/

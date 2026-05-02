@@ -221,6 +221,14 @@ const CFG_REGISTRY: Record<string, CfgRegistryEntry> = {
     cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4,
     label: "TREND_2H_V5_QUARTZ_LITE_R28_V4",
   },
+  "2h-trend-v5-quartz-lite-r28-v5": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V5,
+    label: "TREND_2H_V5_QUARTZ_LITE_R28_V5",
+  },
+  "2h-trend-v5-quartz-lite-r28-v6": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+    label: "TREND_2H_V5_QUARTZ_LITE_R28_V6",
+  },
   "2h-trend-v5-quartz-lite-r28-v3": {
     cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V3,
     label: "TREND_2H_V5_QUARTZ_LITE_R28_V3",
@@ -497,6 +505,14 @@ const CFG_REGISTRY: Record<string, CfgRegistryEntry> = {
   "2h-trend-v5-quartz-lite-r28-v4engine": {
     cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4,
     label: "V5_QUARTZ_LITE_R28_V4 (engine v4)",
+  },
+  "2h-trend-v5-quartz-lite-r28-v5-v4engine": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V5,
+    label: "V5_QUARTZ_LITE_R28_V5 (engine v4)",
+  },
+  "2h-trend-v5-quartz-lite-r28-v6-v4engine": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+    label: "V5_QUARTZ_LITE_R28_V6 (engine v4)",
   },
   "2h-trend-breakout-v1": {
     cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_BREAKOUT_V1,

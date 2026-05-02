@@ -11,7 +11,14 @@ function generateId(): string {
 // appeared inline 6× across detectors with drift risk if a tie-breaker
 // was added in only one place.
 function compareByExitDate(a: Trade, b: Trade): number {
-  return new Date(a.exitDate).getTime() - new Date(b.exitDate).getTime();
+  // Round 54 audit: deterministic tie-breakers (entryDate then id) so
+  // streak-based detectors (revenge, tilt, overleverage, pair-switch)
+  // produce reproducible insights when trades share an exit timestamp.
+  const e = new Date(a.exitDate).getTime() - new Date(b.exitDate).getTime();
+  if (e !== 0) return e;
+  const en = new Date(a.entryDate).getTime() - new Date(b.entryDate).getTime();
+  if (en !== 0) return en;
+  return a.id.localeCompare(b.id);
 }
 
 function getHoldTimeMs(trade: Trade): number {

@@ -28,6 +28,8 @@ import {
 import { detectLiveSignalsV4 } from "../src/utils/ftmoLiveSignalV4Wrapper";
 import {
   FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V5,
+  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
   FTMO_DAYTRADE_24H_CONFIG_BREAKOUT_V1,
 } from "../src/utils/ftmoDaytrade24h";
 import { formatLiveCapsLabel } from "../src/utils/ftmoLiveCaps";
@@ -78,6 +80,10 @@ const TF_DISPATCH: Record<string, TfTag> = {
   "2h-trend-v5-quartz-lite-r28-v3": "30m",
   "2h-trend-v5-quartz-lite-r28-v4": "30m",
   "2h-trend-v5-quartz-lite-r28-v4engine": "30m",
+  "2h-trend-v5-quartz-lite-r28-v5": "30m",
+  "2h-trend-v5-quartz-lite-r28-v5-v4engine": "30m",
+  "2h-trend-v5-quartz-lite-r28-v6": "30m",
+  "2h-trend-v5-quartz-lite-r28-v6-v4engine": "30m",
   "2h-trend-breakout-v1": "30m",
   "2h-trend-v5-quartz-step2": "30m",
   "2h-trend-v5-topaz": "30m",
@@ -594,16 +600,30 @@ async function runOneCheck(): Promise<DetectionResult> {
   // Selector convention: FTMO_TF ends with "-v4engine" OR is "2h-trend-breakout-v1"
   // (Breakout always runs on V4-Engine because polling V231 doesn't know breakoutEntry).
   const isBreakoutV1 = process.env.FTMO_TF === "2h-trend-breakout-v1";
+  const isR28V5 =
+    process.env.FTMO_TF === "2h-trend-v5-quartz-lite-r28-v5-v4engine";
+  const isR28V6 =
+    process.env.FTMO_TF === "2h-trend-v5-quartz-lite-r28-v6-v4engine";
   const useV4Engine =
     (process.env.FTMO_TF ?? "").endsWith("-v4engine") || isBreakoutV1;
   let result: DetectionResult;
   if (useV4Engine) {
-    // For now two cfgs supported via v4engine — extend mapping here
+    // For now four cfgs supported via v4engine — extend mapping here
     // as more configs are validated under V4 persistent-state semantics.
     const v4Cfg = isBreakoutV1
       ? FTMO_DAYTRADE_24H_CONFIG_BREAKOUT_V1
-      : FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4;
-    const v4Label = isBreakoutV1 ? "BREAKOUT_V1" : "V5_QUARTZ_LITE_R28_V4";
+      : isR28V6
+        ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6
+        : isR28V5
+          ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V5
+          : FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4;
+    const v4Label = isBreakoutV1
+      ? "BREAKOUT_V1"
+      : isR28V6
+        ? "V5_QUARTZ_LITE_R28_V6"
+        : isR28V5
+          ? "V5_QUARTZ_LITE_R28_V5"
+          : "V5_QUARTZ_LITE_R28_V4";
     const fullCandleMap: Record<
       string,
       import("../src/utils/indicators").Candle[]

@@ -32,6 +32,14 @@ ORDER_TIME_GTC = 0
 ORDER_FILLING_IOC = 2
 TRADE_RETCODE_DONE = 10009
 DEAL_ENTRY_OUT = 1
+TIMEFRAME_M1 = 1
+TIMEFRAME_M5 = 5
+TIMEFRAME_M15 = 15
+TIMEFRAME_M30 = 30
+TIMEFRAME_H1 = 60
+TIMEFRAME_H2 = 120
+TIMEFRAME_H4 = 240
+TIMEFRAME_D1 = 1440
 
 # Binance symbol mapping for price feed
 BINANCE_MAP = {
@@ -248,6 +256,38 @@ def history_deals_get(from_dt: datetime, to_dt: datetime) -> tuple:
     to_ts = int(to_dt.timestamp())
     deals = [d for d in _STATE["deals"] if from_ts <= d.time <= to_ts]
     return tuple(deals)
+
+
+def copy_rates_from_pos(symbol: str, timeframe: int, start_pos: int, count: int):
+    """
+    Mock implementation: returns synthetic OHLC bars for the symbol using
+    a flat-line + tiny noise around the current Binance price. Used by
+    regime-classifier in ftmo_executor for live regime detection — in tests
+    we just need it to return *something* valid-shaped (a list of dicts with
+    'close' key) so the classifier's defensive guards don't trip.
+    """
+    import math
+    info = symbol_info(symbol)
+    if info is None:
+        return None
+    base = info.bid if info.bid > 0 else 1.0
+    bars = []
+    for i in range(count):
+        # Tiny deterministic wiggle so realised vol > 0 but trend ~ 0.
+        wig = (math.sin(i * 0.13) * 0.001) * base
+        bars.append(
+            {
+                "time": int(time.time()) - (count - i) * timeframe * 60,
+                "open": base + wig,
+                "high": base + abs(wig) + 0.0005 * base,
+                "low": base - abs(wig) - 0.0005 * base,
+                "close": base + wig,
+                "tick_volume": 1000,
+                "spread": 1,
+                "real_volume": 0,
+            }
+        )
+    return bars
 
 
 def order_send(request: dict) -> OrderResult | None:

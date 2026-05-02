@@ -148,11 +148,19 @@ def test_handle_daily_reset_first_write():
 
 def test_handle_daily_reset_same_day_returns_cached():
     import ftmo_executor as exe
-    from datetime import datetime, timezone
+    from datetime import datetime, timezone, timedelta
+    try:
+        from zoneinfo import ZoneInfo
+        prague_tz = ZoneInfo("Europe/Prague")
+    except ImportError:
+        prague_tz = timezone(timedelta(hours=1))
     with tempfile.TemporaryDirectory() as td:
         exe.STATE_DIR = Path(td)
         exe.DAILY_STATE_PATH = Path(td) / "daily-reset.json"
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        exe.EXECUTOR_LOG_PATH = Path(td) / "executor-log.jsonl"
+        # Use Prague-TZ date so the cached-day check matches handle_daily_reset's
+        # internal Prague-anchored boundary (UTC vs Prague drifts ±2h around midnight).
+        today = datetime.now(prague_tz).strftime("%Y-%m-%d")
         (Path(td) / "daily-reset.json").write_text(json.dumps({
             "date": today,
             "equity_at_day_start_usd": 98000.0,
@@ -254,6 +262,7 @@ def test_mock_mt5_symbol_info_returns_bid_ask():
     # May be None if Binance fetch failed in offline test env — skip gracefully
     if info is None:
         pytest.skip("Binance fetch unavailable in this test environment")
+    assert info is not None  # narrow for Pyright (skip raises but it can't tell)
     assert info.bid > 0
     assert info.ask > info.bid
     mt5.shutdown()
@@ -265,6 +274,7 @@ def test_mock_mt5_place_and_close_short():
     info = mt5.symbol_info("ETHUSD")
     if info is None:
         pytest.skip("Binance fetch unavailable")
+    assert info is not None  # narrow for Pyright
     # Open short
     res = mt5.order_send({
         "action": mt5.TRADE_ACTION_DEAL,
@@ -279,6 +289,7 @@ def test_mock_mt5_place_and_close_short():
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     })
+    assert res is not None
     assert res.retcode == mt5.TRADE_RETCODE_DONE
     ticket = res.order
 
@@ -298,6 +309,7 @@ def test_mock_mt5_place_and_close_short():
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     })
+    assert close_res is not None
     assert close_res.retcode == mt5.TRADE_RETCODE_DONE
     positions_after = mt5.positions_get()
     assert not any(p.ticket == ticket for p in positions_after)
@@ -440,6 +452,384 @@ def test_update_challenge_peak_persists_within_same_challenge():
         exe.update_challenge_peak(105_000.0)
         peak = exe.update_challenge_peak(103_000.0)
         assert peak == 105_000.0
+
+
+# ============================================================================
+# Regime-Gate (Round 52) — pre-filter entries by BTC market regime
+# ============================================================================
+def test_regime_gate_disabled_returns_none():
+    import ftmo_executor as exe
+    exe.REGIME_GATE_ENABLED = False
+    assert exe.check_regime_gate_block() is None
+
+
+def test_regime_gate_blocks_trend_down():
+    import ftmo_executor as exe
+    exe.REGIME_GATE_ENABLED = True
+    exe.REGIME_GATE_BLOCK = {"trend-down"}
+    exe._REGIME_CACHE["ts"] = 9_999_999_999  # far future, no recompute
+    exe._REGIME_CACHE["regime"] = "trend-down"
+    blocker = exe.check_regime_gate_block()
+    assert blocker is not None
+    assert "trend-down" in blocker
+    exe.REGIME_GATE_ENABLED = False
+
+
+def test_regime_gate_passes_trend_up():
+    import ftmo_executor as exe
+    exe.REGIME_GATE_ENABLED = True
+    exe.REGIME_GATE_BLOCK = {"trend-down"}
+    exe._REGIME_CACHE["ts"] = 9_999_999_999
+    exe._REGIME_CACHE["regime"] = "trend-up"
+    assert exe.check_regime_gate_block() is None
+    exe.REGIME_GATE_ENABLED = False
+
+
+def test_regime_gate_classification_returns_known_label():
+    import ftmo_executor as exe
+    exe._REGIME_CACHE["ts"] = 0
+    exe._REGIME_CACHE["regime"] = None
+    regime = exe.classify_btc_regime()
+    assert regime in {"trend-up", "trend-down", "chop", "high-vol", "calm", None}
+
+
+def test_regime_gate_fails_open_when_classifier_returns_none():
+    import ftmo_executor as exe
+    exe.REGIME_GATE_ENABLED = True
+    exe.REGIME_GATE_BLOCK = {"trend-down"}
+    exe._REGIME_CACHE["ts"] = 9_999_999_999
+    exe._REGIME_CACHE["regime"] = None
+    # Need to ensure classify_btc_regime also returns None — override symbol
+    # to something unresolvable so MT5 path returns None.
+    saved_btc = exe.REGIME_GATE_BTC_SYMBOL
+    exe.REGIME_GATE_BTC_SYMBOL = "NOSUCH"
+    assert exe.check_regime_gate_block() is None
+    exe.REGIME_GATE_BTC_SYMBOL = saved_btc
+    exe.REGIME_GATE_ENABLED = False
+
+
+# ============================================================================
+# Slippage modeling (Round 53) — close V4-Engine → Live drift
+# ============================================================================
+class FakeSpreadSymbolInfo(FakeSymbolInfo):
+    """SymbolInfo variant that exposes broker-reported spread (in points)."""
+    def __init__(self, ask=2001.0, bid=1999.0, spread=10, point=0.01, **kwargs):
+        super().__init__(ask=ask, bid=bid, point=point, **kwargs)
+        self.spread = spread  # 10 points × 0.01 = 0.10 price units
+
+
+def test_slippage_helper_long_entry_pays_more():
+    """Long entry slips price UPWARD (paid more than ask)."""
+    import ftmo_executor as exe
+    exe.SLIPPAGE_DISABLED = False
+    exe.SLIPPAGE_ENTRY_SPREADS = 1.5
+    info = FakeSpreadSymbolInfo(ask=2001.0, bid=1999.0, spread=10, point=0.01)
+    # slip_unit = 10 * 0.01 = 0.10; entry_delta = 0.10 * 1.5 = 0.15
+    slipped = exe._apply_slippage(2001.0, "long", "entry", info)
+    assert abs(slipped - 2001.15) < 1e-6, f"expected 2001.15, got {slipped}"
+    # Stop-out long: price already gapping DOWN → fill lower
+    exe.SLIPPAGE_STOP_SPREADS = 3.0
+    stop_slipped = exe._apply_slippage(2000.0, "long", "stop_out", info)
+    assert abs(stop_slipped - (2000.0 - 0.30)) < 1e-6, f"expected 1999.70, got {stop_slipped}"
+
+
+def test_slippage_helper_short_entry_receives_less():
+    """Short entry slips price DOWNWARD (received less than bid)."""
+    import ftmo_executor as exe
+    exe.SLIPPAGE_DISABLED = False
+    exe.SLIPPAGE_ENTRY_SPREADS = 1.5
+    exe.SLIPPAGE_STOP_SPREADS = 3.0
+    info = FakeSpreadSymbolInfo(ask=2001.0, bid=1999.0, spread=10, point=0.01)
+    # slip_unit = 0.10; entry_delta = 0.15
+    slipped = exe._apply_slippage(1999.0, "short", "entry", info)
+    assert abs(slipped - (1999.0 - 0.15)) < 1e-6, f"expected 1998.85, got {slipped}"
+    # Short stop-out: price gapping UP → bought back higher
+    stop_slipped = exe._apply_slippage(2000.0, "short", "stop_out", info)
+    assert abs(stop_slipped - (2000.0 + 0.30)) < 1e-6, f"expected 2000.30, got {stop_slipped}"
+
+
+def test_slippage_disabled_returns_input_unchanged():
+    """SLIPPAGE_DISABLED=True bypasses all slippage."""
+    import ftmo_executor as exe
+    exe.SLIPPAGE_DISABLED = True
+    info = FakeSpreadSymbolInfo(ask=2001.0, bid=1999.0, spread=10, point=0.01)
+    for direction in ("long", "short"):
+        for action in ("entry", "stop_out", "tp", "ptp"):
+            assert exe._apply_slippage(2000.0, direction, action, info) == 2000.0
+    # TP and PTP are limit orders → never slip even when slippage enabled
+    exe.SLIPPAGE_DISABLED = False
+    assert exe._apply_slippage(2000.0, "long", "tp", info) == 2000.0
+    assert exe._apply_slippage(2000.0, "short", "ptp", info) == 2000.0
+
+
+def test_place_market_order_long_fill_price_includes_slippage(monkeypatch):
+    """Integration: place_market_order long produces fill > theoretical ask."""
+    import ftmo_executor as exe
+    exe.SLIPPAGE_DISABLED = False
+    exe.SLIPPAGE_ENTRY_SPREADS = 1.5
+    exe._SYMBOL_CACHE.clear()
+
+    info = FakeSpreadSymbolInfo(
+        ask=2001.0, bid=1999.0, spread=20, point=0.01,
+        tick_size=0.01, tick_value=0.01,
+        volume_min=0.01, volume_max=100.0, volume_step=0.01,
+    )
+    monkeypatch.setattr(exe.mt5, "symbol_info", lambda s: info)
+    monkeypatch.setattr(exe.mt5, "symbol_select", lambda s, e: True)
+
+    captured = {}
+
+    class FakeRes:
+        def __init__(self, price):
+            self.retcode = exe.mt5.TRADE_RETCODE_DONE
+            self.order = 12345
+            self.price = price
+            self.comment = ""
+
+    def fake_send(req):
+        captured["request"] = req
+        # Real MT5 would echo back the broker fill — return 0.0 so the
+        # executor falls back to its own slipped fill price (covers both
+        # paths in the OrderResult construction).
+        return FakeRes(0.0)
+
+    monkeypatch.setattr(exe.mt5, "order_send", fake_send)
+
+    # Resolve binance symbol via the explicit map (BTCUSDT → BTCUSD)
+    res = exe.place_market_order(
+        binance_symbol="BTCUSDT",
+        direction="long",
+        risk_frac=0.01,
+        stop_pct=0.01,
+        tp_pct=0.02,
+        account_equity=100000.0,
+        comment="slip_test",
+    )
+    assert res.ok, f"order failed: {res.error}"
+    # slip_unit = 20 * 0.01 = 0.20; long entry delta = 0.20 * 1.5 = 0.30
+    expected_fill = 2001.0 + 0.30
+    assert res.entry_price is not None
+    assert abs(res.entry_price - expected_fill) < 1e-6, (
+        f"fill_price {res.entry_price} != expected {expected_fill} "
+        f"(theoretical ask was 2001.0, slippage should make it worse)"
+    )
+    # The order_send request should also carry the slipped price, not raw ask
+    assert abs(captured["request"]["price"] - expected_fill) < 1e-6
+    # And SL/TP stay relative to the THEORETICAL ask (2001.0), not slipped
+    assert abs(captured["request"]["sl"] - 2001.0 * 0.99) < 1e-6
+    assert abs(captured["request"]["tp"] - 2001.0 * 1.02) < 1e-6
+
+
+# ============================================================================
+# News-Blackout (Round 53)
+# ============================================================================
+def test_news_blackout_disabled_returns_none():
+    import ftmo_executor as exe
+    exe.NEWS_BLACKOUT_ENABLED = False
+    assert exe.check_news_blackout() is None
+
+
+def test_news_blackout_active_during_fomc_window_via_helper():
+    from news_blackout import is_blackout_window
+    from datetime import datetime, timezone
+    fake_now = datetime(2026, 4, 29, 18, 5, tzinfo=timezone.utc)
+    blocked, reason = is_blackout_window(fake_now, 30, 60)
+    assert blocked is True
+    assert reason is not None and "FOMC" in reason
+
+
+def test_news_blackout_outside_window_passes():
+    from news_blackout import is_blackout_window
+    from datetime import datetime, timezone
+    safe_now = datetime(2026, 4, 22, 9, 0, tzinfo=timezone.utc)
+    blocked, _ = is_blackout_window(safe_now, 30, 60)
+    assert blocked is False
+
+
+def test_news_blackout_30min_before_cpi_triggers_boundary():
+    from news_blackout import is_blackout_window
+    from datetime import datetime, timezone
+    pre_now = datetime(2026, 5, 13, 12, 0, tzinfo=timezone.utc)
+    blocked, reason = is_blackout_window(pre_now, 30, 60)
+    assert blocked is True
+    assert reason is not None and "CPI" in reason
+
+
+# ============================================================================
+# News-Blackout live API feed (Round 53+)
+# ============================================================================
+def _reset_news_module_state():
+    """Force re-import-style state reset so each test starts clean."""
+    import news_blackout as nb
+    nb._EVENTS_CACHE = None
+
+
+def test_news_refresh_no_api_key_returns_zero(monkeypatch, tmp_path):
+    monkeypatch.delenv("NEWS_API_KEY", raising=False)
+    monkeypatch.delenv("NEWS_API_DISABLED", raising=False)
+    _reset_news_module_state()
+    from news_blackout import refresh_from_api
+    cache = tmp_path / "news-cache.json"
+    assert refresh_from_api(cache_path=cache, force=True) == 0
+    assert not cache.exists()
+
+
+def test_news_refresh_writes_cache_on_success(monkeypatch, tmp_path):
+    monkeypatch.setenv("NEWS_API_KEY", "fake-token-for-test")
+    monkeypatch.delenv("NEWS_API_DISABLED", raising=False)
+    _reset_news_module_state()
+
+    payload = {
+        "economicCalendar": [
+            {
+                "country": "US",
+                "event": "FOMC Statement",
+                "impact": "high",
+                "time": "2026-06-17 18:00:00",
+            },
+            {
+                "country": "US",
+                "event": "Consumer Price Index (CPI)",
+                "impact": "high",
+                "time": "2026-06-12 12:30:00",
+            },
+            {
+                "country": "US",
+                "event": "Nonfarm Payrolls",
+                "impact": "high",
+                "time": "2026-06-05 12:30:00",
+            },
+            # Filtered out: low impact
+            {
+                "country": "US",
+                "event": "CPI Flash",
+                "impact": "low",
+                "time": "2026-06-20 12:30:00",
+            },
+            # Filtered out: non-US
+            {
+                "country": "DE",
+                "event": "ECB Rate Decision",
+                "impact": "high",
+                "time": "2026-06-18 12:00:00",
+            },
+            # Filtered out: no keyword match
+            {
+                "country": "US",
+                "event": "Building Permits",
+                "impact": "high",
+                "time": "2026-06-19 12:30:00",
+            },
+        ]
+    }
+
+    class FakeResponse:
+        def __init__(self, body: bytes):
+            self._body = body
+        def read(self):
+            return self._body
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    captured: dict = {}
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url if hasattr(req, "full_url") else str(req)
+        captured["timeout"] = timeout
+        return FakeResponse(json.dumps(payload).encode("utf-8"))
+
+    import news_blackout as nb
+    monkeypatch.setattr(nb.urllib.request, "urlopen", fake_urlopen)
+
+    cache = tmp_path / "news-cache.json"
+    n = nb.refresh_from_api(cache_path=cache, force=True)
+    assert n == 3, f"expected 3 filtered events, got {n}"
+    assert cache.exists()
+    assert captured["timeout"] == 10
+    assert "fake-token-for-test" in captured["url"]
+
+    written = json.loads(cache.read_text(encoding="utf-8"))
+    labels = sorted(e["label"] for e in written)
+    assert labels == ["CPI", "FOMC", "NFP"]
+    # ISO strings round-trip cleanly
+    for e in written:
+        from datetime import datetime
+        datetime.fromisoformat(e["iso"])
+
+
+def test_news_refresh_respects_ttl(monkeypatch, tmp_path):
+    monkeypatch.setenv("NEWS_API_KEY", "fake-token")
+    monkeypatch.delenv("NEWS_API_DISABLED", raising=False)
+    _reset_news_module_state()
+
+    cache = tmp_path / "news-cache.json"
+    cache.write_text(json.dumps([{"iso": "2026-06-17T18:00:00+00:00", "label": "FOMC"}]))
+
+    call_count = {"n": 0}
+    def fake_urlopen(req, timeout=None):
+        call_count["n"] += 1
+        raise AssertionError("urlopen must NOT be called when cache is fresh")
+
+    import news_blackout as nb
+    monkeypatch.setattr(nb.urllib.request, "urlopen", fake_urlopen)
+
+    # Fresh cache (just written) → no fetch
+    result = nb.refresh_from_api(cache_path=cache, force=False)
+    assert result == 0
+    assert call_count["n"] == 0
+
+    # force=True bypasses TTL
+    payload = {"economicCalendar": []}
+    class FakeResponse:
+        def read(self):
+            return json.dumps(payload).encode("utf-8")
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+    monkeypatch.setattr(nb.urllib.request, "urlopen", lambda req, timeout=None: FakeResponse())
+    result_forced = nb.refresh_from_api(cache_path=cache, force=True)
+    assert result_forced == 0  # empty payload, but the fetch did happen
+
+
+def test_news_events_prefers_cache_over_hardcoded(monkeypatch, tmp_path):
+    monkeypatch.delenv("NEWS_API_DISABLED", raising=False)
+    monkeypatch.setenv("NEWS_CACHE_PATH", str(tmp_path / "news-cache.json"))
+    _reset_news_module_state()
+
+    custom = [{"iso": "2027-01-15T13:30:00+00:00", "label": "CPI"}]
+    (tmp_path / "news-cache.json").write_text(json.dumps(custom))
+
+    import news_blackout as nb
+    events = nb._events()
+    assert len(events) == 1
+    assert events[0][1] == "CPI"
+    assert events[0][0].year == 2027
+
+
+def test_news_events_falls_back_to_hardcoded_on_corrupt_cache(monkeypatch, tmp_path):
+    monkeypatch.delenv("NEWS_API_DISABLED", raising=False)
+    monkeypatch.setenv("NEWS_CACHE_PATH", str(tmp_path / "news-cache.json"))
+    _reset_news_module_state()
+
+    # Garbage JSON
+    (tmp_path / "news-cache.json").write_text("{not valid json")
+
+    import news_blackout as nb
+    events = nb._events()
+    # Falls back to HIGH_IMPACT_EVENTS_2026 (48 entries: 8 FOMC + 12 CPI + 12 NFP + 12 PPI + 4 GDP)
+    assert len(events) == len(nb.HIGH_IMPACT_EVENTS_2026)
+
+
+def test_news_refresh_disabled_env_returns_zero(monkeypatch, tmp_path):
+    monkeypatch.setenv("NEWS_API_DISABLED", "true")
+    monkeypatch.setenv("NEWS_API_KEY", "should-be-ignored")
+    _reset_news_module_state()
+    from news_blackout import refresh_from_api
+    cache = tmp_path / "news-cache.json"
+    assert refresh_from_api(cache_path=cache, force=True) == 0
+    assert not cache.exists()
 
 
 if __name__ == "__main__":

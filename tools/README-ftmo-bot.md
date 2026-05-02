@@ -140,6 +140,79 @@ Alle Logs in `C:\tradevision-ai\ftmo-state\`:
 Get-Content ftmo-state\executor-log.jsonl -Wait -Tail 20
 ```
 
+## Drift Dashboard (`/dashboard/drift`)
+
+Real-time visualisation of **live equity vs the R28_V5 backtest expectation**.
+Surfaces drift early so you can see whether the live bot is tracking,
+overperforming or underperforming the simulated trajectory.
+
+### Start
+
+The dashboard is part of the Next.js app and is gated behind the same
+`FTMO_MONITOR_ENABLED` flag as the legacy `/ftmo-monitor` page:
+
+```powershell
+# from the project root, with bot writing to ./ftmo-state*/
+$env:FTMO_MONITOR_ENABLED="1"
+$env:FTMO_START_BALANCE="100000"   # optional, default 100k
+npm run dev
+# → open http://localhost:3000/dashboard/drift
+```
+
+### Multi-account
+
+If the bot writes to a TF-specific directory like
+`ftmo-state-2h-trend-v5-quartz-lite-r28-v5-v4engine/`, point the dashboard
+at it via the `?ftmo_tf=` query param:
+
+```
+http://localhost:3000/dashboard/drift?ftmo_tf=2h-trend-v5-quartz-lite-r28-v5-v4engine
+```
+
+The TF picker in the header auto-discovers all `ftmo-state-*/` directories
+under the project root and lets you switch between them without editing the URL.
+
+### What it shows
+
+| Section          | Source                                                            |
+| ---------------- | ----------------------------------------------------------------- |
+| Header chip      | `account.json` + R28_V5 reference                                 |
+| Equity card      | `account.json` + `peak-state.json` + `daily-reset.json`           |
+| Drift indicator  | live `equity` ÷ R28_V5 median curve                               |
+| Equity chart     | `executor-log.jsonl` daily anchors + backtest p10/p50/p90 band    |
+| Daily P&L bars   | day-anchor diffs from `executor-log.jsonl`                        |
+| Active positions | `open-positions.json`                                             |
+| Recent events    | last 20 `executor-log.jsonl` entries                              |
+| Health checks    | heartbeat ≤ 5min · MT5 errors · Telegram fails · signal feed ≤ 6h |
+
+### Endpoints
+
+- `GET /dashboard/drift[?ftmo_tf=<slug>]` — page (auto-refresh every 30s)
+- `GET /api/drift-data[?ftmo_tf=<slug>]` — JSON payload feeding the page
+
+### Security
+
+- **Read-only.** The dashboard never writes to state files.
+- **Path-injection guard.** `ftmo_tf` slug is validated against
+  `^[a-z0-9][a-z0-9-]{0,63}$` and the resolved path must stay under `cwd`.
+- **No absolute paths in responses.** Only the relative state-dir name is
+  returned (information-disclosure mitigation).
+- **404 in production.** `FTMO_MONITOR_ENABLED` must be explicitly set to
+  expose either the page or the API. Leave the flag unset on Vercel etc.
+
+### Backtest reference (hardcoded)
+
+The expected band is a heuristic envelope derived from the R28_V5 V4-Engine
+champion (memory: `project_round52_r28v5_winrate_boost.md`):
+
+- 58.82% pass-rate · median pass day **4** · p90 pass day **7**
+- median curve: linear from 0% on day 0 to **+10% on day 4**, then plateau
+- p90 band: hits +10% by ~day 2.5, then plateau
+- p10 band: drifts toward -2..-4% by day 7
+
+If you re-bake the champion to a new config, edit `BACKTEST_REF` in
+`src/app/api/drift-data/route.ts`.
+
 ## Kill-Switch (Notfall)
 
 Wenn Bot spinnt oder du sofort alles schließen willst:

@@ -431,6 +431,223 @@ def check_daily_peak_trail_block(current_equity_usd: float) -> Optional[str]:
     return None
 
 
+# Regime-Gate (Round 52): pre-filter entries based on BTC market regime.
+# Backtest analysis (5.55y / 136 windows / R28_V4 / V4 Live Engine) found:
+#   trend-up:    69.23% pass-rate (13 windows)
+#   chop:        54.10% pass-rate (61 windows)
+#   high-vol:    47.83% pass-rate (46 windows)
+#   trend-down:  31.25% pass-rate (16 windows)  ← BLOCK BY DEFAULT
+#
+# Skipping `trend-down` regimes alone lifts pass-rate from 50.74% → 53.33%
+# (+2.6pp). Skipping `trend-down + high-vol` → 56.76% (+6pp) but blocks
+# 45% of windows (long wait between challenges).
+#
+# Default block-list = {trend-down}. Configurable via env:
+#   REGIME_GATE_ENABLED=true
+#   REGIME_GATE_BLOCK="trend-down,high-vol"
+#   REGIME_GATE_BTC_SYMBOL="BTCUSD" (broker-resolved automatically if unset)
+REGIME_GATE_ENABLED = os.getenv("REGIME_GATE_ENABLED", "false").lower() == "true"
+REGIME_GATE_BLOCK = set(
+    s.strip()
+    for s in os.getenv("REGIME_GATE_BLOCK", "trend-down").split(",")
+    if s.strip()
+)
+REGIME_GATE_BTC_SYMBOL = os.getenv("REGIME_GATE_BTC_SYMBOL", "")
+# Cache regime classification — recompute at most every 30 min so we don't
+# hammer MT5 history copy on every signal tick.
+_REGIME_CACHE: dict = {"ts": 0, "regime": None}
+
+
+def classify_btc_regime() -> Optional[str]:
+    """
+    Classify the last 168h (7d) BTC market regime using MT5 H1 bars.
+    Returns one of {"trend-up", "trend-down", "chop", "high-vol", "calm"} or
+    None if data is unavailable. Result is cached for 30 minutes.
+
+    Mirrors scripts/_regimeAnalysisR28V4.test.ts so live and backtest agree.
+    """
+    now = datetime.now(timezone.utc).timestamp()
+    if now - _REGIME_CACHE["ts"] < 1800 and _REGIME_CACHE["regime"] is not None:
+        return _REGIME_CACHE["regime"]
+    btc_sym = REGIME_GATE_BTC_SYMBOL or _resolve_broker_symbol("BTCUSDT")
+    if not btc_sym:
+        log_event("regime_classify_skip", reason="no btc symbol")
+        return None
+    try:
+        # H1 × 168 bars = 7 days
+        rates = mt5.copy_rates_from_pos(btc_sym, mt5.TIMEFRAME_H1, 0, 168)
+        if rates is None or len(rates) < 100:
+            log_event("regime_classify_skip", reason="insufficient bars",
+                      bars=len(rates) if rates is not None else 0)
+            return None
+        closes = [float(r["close"]) for r in rates]
+        first, last = closes[0], closes[-1]
+        if first <= 0:
+            return None
+        trend = (last - first) / first
+        # Annualised realised vol from log-returns
+        import math as _m
+        rets = []
+        for i in range(1, len(closes)):
+            if closes[i - 1] > 0 and closes[i] > 0:
+                rets.append(_m.log(closes[i] / closes[i - 1]))
+        if not rets:
+            return None
+        mean = sum(rets) / len(rets)
+        var = sum((r - mean) ** 2 for r in rets) / max(1, len(rets))
+        stdev = _m.sqrt(var)
+        # H1 bars → 24*365 per year
+        annual_vol = stdev * _m.sqrt(24 * 365)
+        regime: str
+        if annual_vol >= 0.6:
+            regime = "high-vol"
+        elif abs(trend) <= 0.02 and annual_vol < 0.15:
+            regime = "calm"
+        elif trend > 0.05:
+            regime = "trend-up"
+        elif trend < -0.05:
+            regime = "trend-down"
+        else:
+            regime = "chop"
+        _REGIME_CACHE["ts"] = now
+        _REGIME_CACHE["regime"] = regime
+        log_event("regime_classified", regime=regime,
+                  trend_pct=round(trend * 100, 2),
+                  annual_vol_pct=round(annual_vol * 100, 2))
+        return regime
+    except Exception as e:
+        log_event("regime_classify_error", error=str(e))
+        return None
+
+
+def check_regime_gate_block() -> Optional[str]:
+    """
+    Returns blocker reason if current BTC regime is in the block-list,
+    else None. Disabled by default (REGIME_GATE_ENABLED=false).
+    """
+    if not REGIME_GATE_ENABLED:
+        return None
+    regime = classify_btc_regime()
+    if regime is None:
+        return None  # fail-open: don't block on classification failure
+    if regime in REGIME_GATE_BLOCK:
+        return f"regime_gate: BTC regime '{regime}' is in block-list (low historical pass-rate)"
+    return None
+
+
+# Macro news-blackout (Round 53): block entries around high-impact USD
+# events (FOMC, CPI, NFP, PPI, GDP). Crypto vol spikes around these
+# consistently tag SLs and burn the 5% daily-loss cap. Default OFF —
+# enable with NEWS_BLACKOUT_ENABLED=true. Window is
+# [-NEWS_BLACKOUT_MIN_BEFORE, +NEWS_BLACKOUT_MIN_AFTER] minutes around
+# each release. See tools/news_blackout.py for the hardcoded 2026 schedule.
+NEWS_BLACKOUT_ENABLED = os.getenv("NEWS_BLACKOUT_ENABLED", "false").lower() == "true"
+NEWS_BLACKOUT_MIN_BEFORE = int(os.getenv("NEWS_BLACKOUT_MIN_BEFORE", "30"))
+NEWS_BLACKOUT_MIN_AFTER = int(os.getenv("NEWS_BLACKOUT_MIN_AFTER", "60"))
+
+
+def check_news_blackout() -> Optional[str]:
+    """
+    Returns blocker reason if we are currently inside a macro-news
+    blackout window, else None. Wraps tools/news_blackout.py. Disabled
+    by default (NEWS_BLACKOUT_ENABLED=false).
+    """
+    if not NEWS_BLACKOUT_ENABLED:
+        return None
+    try:
+        from news_blackout import is_blackout_window  # type: ignore
+    except Exception as exc:
+        log_event("news_blackout_import_failed", error=str(exc))
+        return None
+    blocked, reason = is_blackout_window(
+        datetime.now(timezone.utc),
+        blackout_minutes_before=NEWS_BLACKOUT_MIN_BEFORE,
+        blackout_minutes_after=NEWS_BLACKOUT_MIN_AFTER,
+    )
+    return f"news_blackout: {reason}" if blocked else None
+
+
+# Realistic slippage modeling (Round 53): close V4-Engine → Live drift.
+#
+# V4 Live Engine assumes idealized fills at exact bar prices. Real MT5
+# execution has fixed + variable spread, ~50-200 ms order roundtrip latency,
+# partial fills in thin markets, and worse fill on stop-out (price already
+# moving against you when SL triggers).
+#
+# Slippage unit = symbol_info.spread × symbol_info.point (broker spread in
+# price units). Configurable via env:
+#   SLIPPAGE_DISABLED=true   → bypass entirely (use for parity tests)
+#   SLIPPAGE_ENTRY_SPREADS=1.5 (default) — entry fills 1-2 spreads worse
+#   SLIPPAGE_STOP_SPREADS=3.0  (default) — stop-out fills 2-4 spreads worse
+# TP/PTP are limit orders → neutral (fill at exact price or not at all).
+SLIPPAGE_DISABLED = os.getenv("SLIPPAGE_DISABLED", "false").lower() == "true"
+SLIPPAGE_ENTRY_SPREADS = float(os.getenv("SLIPPAGE_ENTRY_SPREADS", "1.5"))
+SLIPPAGE_STOP_SPREADS = float(os.getenv("SLIPPAGE_STOP_SPREADS", "3.0"))
+
+
+def _apply_slippage(
+    price: float,
+    direction: str,
+    action: str,
+    symbol_info: Any,
+) -> float:
+    """
+    Worsen `price` by a realistic slippage amount (symbol spread × N).
+
+    Args:
+        price: input fill price (mid / bid / ask)
+        direction: "long" or "short" — determines which way "worse" goes
+        action: "entry" | "stop_out" | "tp" | "ptp"
+        symbol_info: MT5 SymbolInfo (uses .spread × .point as unit)
+
+    Returns:
+        Slipped price. Long entry → higher (paid more); short entry → lower
+        (received less). Stop-out is symmetric (always worse for the trader).
+        TP/PTP are limit orders and never slip — return price unchanged.
+    """
+    if SLIPPAGE_DISABLED:
+        return price
+    if action in ("tp", "ptp"):
+        return price  # limit orders fill at exact price or not at all
+
+    if action == "entry":
+        spreads = SLIPPAGE_ENTRY_SPREADS
+    elif action == "stop_out":
+        spreads = SLIPPAGE_STOP_SPREADS
+    else:
+        return price  # unknown action → no-op (safe default)
+
+    # Slippage unit = broker-reported spread (in points) × point size.
+    # Some brokers / mocks expose `spread` (int, in points), some don't.
+    point = float(getattr(symbol_info, "point", 0.0) or 0.0)
+    raw_spread = getattr(symbol_info, "spread", None)
+    if raw_spread is None or point <= 0:
+        # Fallback: derive from bid/ask gap when broker doesn't report spread.
+        bid = float(getattr(symbol_info, "bid", 0.0) or 0.0)
+        ask = float(getattr(symbol_info, "ask", 0.0) or 0.0)
+        if ask > bid > 0:
+            slip_unit = (ask - bid)
+        else:
+            return price  # can't model → fail-open (parity with old behavior)
+    else:
+        slip_unit = float(raw_spread) * point
+
+    delta = slip_unit * spreads
+    if direction == "long":
+        # Long pays more on entry / sells lower on stop-out → both worse via +/-
+        if action == "entry":
+            return price + delta  # paid more (ask creep)
+        else:  # stop_out
+            return price - delta  # sold lower (price already gapping down)
+    elif direction == "short":
+        if action == "entry":
+            return price - delta  # received less (bid creep)
+        else:  # stop_out
+            return price + delta  # bought back higher (price gapping up)
+    else:
+        return price  # unknown direction → no-op
+
+
 # Round 35: peakDrawdownThrottle persistent state for R28_V2/V3/V4 sizing.
 # Engine ftmoDaytrade24h.ts:4983-4988 scales risk by `factor` when equity
 # is `fromPeak` below all-time challenge peak. Without persistent state,
@@ -829,19 +1046,26 @@ def place_market_order(
     else:
         return OrderResult(False, None, f"unknown direction {direction}", lot, None)
 
+    # Round 53: realistic slippage on entry. SL/TP stay relative to the
+    # theoretical mid (engine planned them that way) — only the order
+    # `price` and the reported fill move. This mirrors real MT5 behavior:
+    # the trader's stop-distance plan is preserved, but the actual fill
+    # is 1-2 spreads worse than the quoted ask/bid.
+    fill_price = _apply_slippage(entry_price, direction, "entry", info)
+
     # Margin pre-check — ask MT5 to validate the order. If margin would
     # exceed free_margin, halve the lot until it fits or hit volume_min.
     # This stops the "retcode=10019 No money" cascade dead.
-    lot = _fit_lot_to_margin(ftmo_symbol, order_type, lot, entry_price, stop_price, tp_price, info)
+    lot = _fit_lot_to_margin(ftmo_symbol, order_type, lot, fill_price, stop_price, tp_price, info)
     if lot <= 0:
-        return OrderResult(False, None, "no lot size fits free margin", None, entry_price)
+        return OrderResult(False, None, "no lot size fits free margin", None, fill_price)
 
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": ftmo_symbol,
         "volume": lot,
         "type": order_type,
-        "price": entry_price,
+        "price": fill_price,
         "sl": stop_price,
         "tp": tp_price,
         "deviation": 20,
@@ -852,10 +1076,13 @@ def place_market_order(
     }
     result = mt5.order_send(request)
     if result is None:
-        return OrderResult(False, None, "order_send returned None", lot, entry_price)
+        return OrderResult(False, None, "order_send returned None", lot, fill_price)
     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        return OrderResult(False, None, f"retcode={result.retcode} {getattr(result, 'comment', '')}", lot, entry_price)
-    return OrderResult(True, result.order, None, lot, result.price)
+        return OrderResult(False, None, f"retcode={result.retcode} {getattr(result, 'comment', '')}", lot, fill_price)
+    # Prefer the broker-reported fill (real MT5) when available, else fall
+    # back to our slipped price (mock or no-fill-price retcode).
+    reported = getattr(result, "price", 0.0) or 0.0
+    return OrderResult(True, result.order, None, lot, reported if reported > 0 else fill_price)
 
 
 def _fit_lot_to_margin(
@@ -1174,6 +1401,33 @@ def process_pending_signals() -> None:
             tg_send(f"🛡️ <b>Day-Peak Trail Block</b>\n{sig['assetSymbol']}\n{html_escape(dpt_block)}")
             executed["executions"].append({
                 "signal": sig, "result": "dpt_blocked", "reason": dpt_block,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+            continue
+
+        # Regime-Gate (Round 52): block entries during low-pass-rate market
+        # regimes. Default blocks BTC trend-down (31% pass-rate vs 50% avg).
+        # Disabled by default; enable via REGIME_GATE_ENABLED=true. Cached
+        # 30 min so it costs ~zero per-signal.
+        rg_block = check_regime_gate_block()
+        if rg_block:
+            log_event("regime_gate_block", asset=sig["assetSymbol"], reason=rg_block)
+            tg_send(f"📉 <b>Regime Gate Block</b>\n{sig['assetSymbol']}\n{html_escape(rg_block)}")
+            executed["executions"].append({
+                "signal": sig, "result": "regime_blocked", "reason": rg_block,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+            continue
+
+        # News-Blackout (Round 53): block entries around high-impact USD
+        # macro events (FOMC, CPI, NFP, PPI, GDP). Disabled by default;
+        # enable via NEWS_BLACKOUT_ENABLED=true.
+        news_block = check_news_blackout()
+        if news_block:
+            log_event("news_blackout_block", asset=sig["assetSymbol"], reason=news_block)
+            tg_send(f"📰 <b>News-Blackout</b>\n{sig['assetSymbol']}\n{html_escape(news_block)}")
+            executed["executions"].append({
+                "signal": sig, "result": "news_blackout", "reason": news_block,
                 "ts": datetime.now(timezone.utc).isoformat(),
             })
             continue

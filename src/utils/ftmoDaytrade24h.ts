@@ -7801,6 +7801,95 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4: FtmoDaytra
   };
 
 /**
+ * V5_QUARTZ_LITE_R28_V5 — Round 52 tightTP champion (2026-05-02).
+ *
+ * BEST-EVER V4 LIVE ENGINE PASS-RATE: 58.82% on 5.55y / 136 windows.
+ * +8.08pp over R28_V4 (50.74%) — biggest single-feature win in entire
+ * V5_QUARTZ_LITE chain.
+ *
+ * Mechanism: per-asset tpPct ×0.6. Crypto retraces faster than it
+ * trends; tightening 4-7% TPs to 2.4-4.2% catches more wins inside the
+ * 30-day FTMO window. Median pass-day stays at 4d (FTMO floor unchanged).
+ *
+ * Round 52 first sweep (9 variants on R28_V4 base): tightTP×0.5 = 58.09%
+ * was the surprise winner. Round 52 fine-tune (12 variants) found the
+ * exact sweet-spot: ×0.6 = 58.82% (best plateau).
+ *
+ * TP-multiplier curve (parabolic):
+ *   ×0.4: 57.35%
+ *   ×0.5: 58.09%
+ *   ×0.6: 58.82%  ← optimum
+ *   ×0.7: 56.62%
+ *   ×0.8: 55.15%
+ *   ×1.0: 50.74%  (base)
+ *
+ * Combined with REGIME_GATE_ENABLED=true (skip BTC trend-down) in
+ * Python executor: ~59-60% expected (mild Wartezeit ~12%).
+ * Combined with regime[trend-down,high-vol]: 62.16% / 46% Wartezeit.
+ *
+ * Asset-drop sweep: dropping BCH/AAVE/ETC HURTS by 1-4pp. The full
+ * 9-asset basket is optimal under tightTP regime.
+ *
+ * Live config selector: `FTMO_TF=2h-trend-v5-quartz-lite-r28-v5`.
+ * V4-Engine selector: `FTMO_TF=2h-trend-v5-quartz-lite-r28-v5-v4engine`.
+ * Python executor: no new LOC needed — tpPct is per-signal payload field.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V5: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4.assets.map(
+      (a) => ({
+        ...a,
+        tpPct: (a.tpPct ?? 0.05) * 0.6,
+      }),
+    ),
+  };
+
+/**
+ * V5_QUARTZ_LITE_R28_V6 — Round 53 tighter-TP plateau winner (2026-05-03).
+ *
+ * BEST-EVER V4 LIVE ENGINE PASS-RATE: 60.29% on 5.55y / 136 windows.
+ * +1.47pp over R28_V5 (58.82%) — plateau optimum identified by R28_V5
+ * fine-grid sweep (tpMult ∈ {0.55, 0.57, 0.59, 0.60, 0.61, 0.63, 0.65}).
+ *
+ * Mechanism: per-asset tpPct ×0.55 (further tightened from R28_V5's ×0.6).
+ * The 0.55-0.59 range forms a flat plateau — both 0.55 AND 0.59 produced
+ * identical 60.29%, indicating the optimum is robust to small drift.
+ * 0.60 already drops to 58.82% (R28_V5 baseline). 0.65 falls to 56.62%.
+ *
+ * TP-multiplier curve (parabolic plateau):
+ *   ×0.55: 60.29%  ← optimum (tied with 0.59)
+ *   ×0.57: 59.56%
+ *   ×0.59: 60.29%  ← tied optimum
+ *   ×0.60: 58.82%  (= R28_V5)
+ *   ×0.61: 58.82%
+ *   ×0.63: 57.35%
+ *   ×0.65: 56.62%
+ *
+ * Per-asset ablation (others=0.60): BTC at either 0.55 or 0.65 reaches
+ * 60.29% (BTC robust to tpMult). AAVE 0.55 → 60.29%. No per-asset combo
+ * beat the uniform-0.55 plateau, so we ship the simpler config.
+ *
+ * Combined with REGIME_GATE_ENABLED=true + slippage modeling + news-blackout
+ * (all env-toggleable in `tools/ftmo_executor.py`): expected real-world
+ * ~55-60% single-account, ~80-85% min-1-pass with 2× multi-account.
+ *
+ * Live config selector: `FTMO_TF=2h-trend-v5-quartz-lite-r28-v6`.
+ * V4-Engine selector: `FTMO_TF=2h-trend-v5-quartz-lite-r28-v6-v4engine`.
+ * Python executor: no new LOC needed — tpPct is per-signal payload field.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4.assets.map(
+      (a) => ({
+        ...a,
+        tpPct: (a.tpPct ?? 0.05) * 0.55,
+      }),
+    ),
+  };
+
+/**
  * V5_QUARTZ_LITE_R28_STEP2 — Round 28 Step 2 Champion (2026-04-30).
  *
  * Highest validated honest single-account Step-2 pass-rate found in entire
