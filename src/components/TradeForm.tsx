@@ -579,6 +579,20 @@ export default function TradeForm({
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (!file) return;
+                    // Phase 44 (R44-UI-3-mid): reject SVG explicitly. Browser
+                    // parses SVG-DOM during img.onload (no script-execution,
+                    // but unwanted DOM cost), and our re-encode-to-JPEG path
+                    // disarms scripts only after parse. Cheap to block.
+                    if (
+                      !file.type.startsWith("image/") ||
+                      file.type === "image/svg+xml"
+                    ) {
+                      setErrors((prev) => ({
+                        ...prev,
+                        screenshot: "Only PNG/JPEG/WebP images are supported",
+                      }));
+                      return;
+                    }
                     if (file.size > 5 * 1024 * 1024) {
                       setErrors((prev) => ({
                         ...prev,
@@ -590,24 +604,41 @@ export default function TradeForm({
                       const { screenshot: _, ...rest } = prev;
                       return rest;
                     });
-                    // Compress image: resize to max 800px wide and convert to JPEG
+                    // Phase 44 (R44-UI-1): hold the ObjectURL in a separate
+                    // variable so onload AND onerror revoke the same URL.
+                    // Was reading `img.src` inside the load-handler which
+                    // is fine for success but leaked on decode failure.
+                    const objectUrl = URL.createObjectURL(file);
                     const img = new Image();
                     img.onload = () => {
-                      const MAX_WIDTH = 800;
-                      const scale =
-                        img.width > MAX_WIDTH ? MAX_WIDTH / img.width : 1;
-                      const canvas = document.createElement("canvas");
-                      canvas.width = img.width * scale;
-                      canvas.height = img.height * scale;
-                      const ctx = canvas.getContext("2d");
-                      if (ctx) {
-                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                        const compressed = canvas.toDataURL("image/jpeg", 0.6);
-                        setScreenshot(compressed);
+                      try {
+                        const MAX_WIDTH = 800;
+                        const scale =
+                          img.width > MAX_WIDTH ? MAX_WIDTH / img.width : 1;
+                        const canvas = document.createElement("canvas");
+                        canvas.width = img.width * scale;
+                        canvas.height = img.height * scale;
+                        const ctx = canvas.getContext("2d");
+                        if (ctx) {
+                          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                          const compressed = canvas.toDataURL(
+                            "image/jpeg",
+                            0.6,
+                          );
+                          setScreenshot(compressed);
+                        }
+                      } finally {
+                        URL.revokeObjectURL(objectUrl);
                       }
-                      URL.revokeObjectURL(img.src);
                     };
-                    img.src = URL.createObjectURL(file);
+                    img.onerror = () => {
+                      URL.revokeObjectURL(objectUrl);
+                      setErrors((prev) => ({
+                        ...prev,
+                        screenshot: "Could not decode image",
+                      }));
+                    };
+                    img.src = objectUrl;
                   }}
                 />
               )}
