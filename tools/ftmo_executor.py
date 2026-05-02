@@ -56,9 +56,17 @@ from telegram_notify import tg_send, html_escape  # type: ignore
 # Config — via env vars
 # =============================================================================
 _FTMO_TF = os.environ.get("FTMO_TF", "1h")
-STATE_DIR = Path(
-    os.environ.get("FTMO_STATE_DIR", f"./ftmo-state-{_FTMO_TF}")
-)
+# Phase 73 (R44-V4-Bug 1): per-account state isolation. Two bots on the
+# same TF / strategy but different FTMO accounts must NOT share state
+# files. FTMO_STATE_DIR (explicit) wins, else use ACCOUNT_ID suffix
+# when set, else legacy ftmo-state-{TF} for backward compat.
+_FTMO_ACCOUNT_ID = os.environ.get("FTMO_ACCOUNT_ID", "").strip()
+if os.environ.get("FTMO_STATE_DIR"):
+    STATE_DIR = Path(os.environ["FTMO_STATE_DIR"])
+elif _FTMO_ACCOUNT_ID:
+    STATE_DIR = Path(f"./ftmo-state-{_FTMO_TF}-{_FTMO_ACCOUNT_ID}")
+else:
+    STATE_DIR = Path(f"./ftmo-state-{_FTMO_TF}")
 POLL_INTERVAL_SEC = 30
 RECONNECT_BACKOFF_SEC = 10
 CHALLENGE_START_BALANCE = float(os.environ.get("FTMO_START_BALANCE", "100000"))

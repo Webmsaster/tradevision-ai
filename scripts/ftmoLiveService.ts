@@ -126,9 +126,23 @@ const TF_HOURS =
 // BUGFIX 2026-04-28 (Round 16): per-FTMO_TF state-dir prevents Step 1 / Step 2
 // collision (V5 + V5_STEP2 both mapped to TF=2h, same state dir → Step 2 inherited
 // Step 1's pause-state → bot stuck in pause).
+// Phase 73 (R44-V4-Bug 1): per-account state-dir isolation. Without
+// FTMO_ACCOUNT_ID two bots running the same TF + strategy on different
+// FTMO accounts would share state files (peak / pause / kelly window /
+// open positions) — phantom-position cross-pollination.
+//
+// FTMO_STATE_DIR (explicit) wins, then ftmo-state-${TF}-${ACCOUNT_ID},
+// then the legacy ftmo-state-${TF} fallback (single-account installs
+// keep working unchanged).
+const FTMO_ACCOUNT_ID = process.env.FTMO_ACCOUNT_ID;
 const STATE_DIR =
   process.env.FTMO_STATE_DIR ??
-  path.join(process.cwd(), `ftmo-state-${process.env.FTMO_TF ?? TF}`);
+  (FTMO_ACCOUNT_ID
+    ? path.join(
+        process.cwd(),
+        `ftmo-state-${process.env.FTMO_TF ?? TF}-${FTMO_ACCOUNT_ID}`,
+      )
+    : path.join(process.cwd(), `ftmo-state-${process.env.FTMO_TF ?? TF}`));
 const PENDING_PATH = path.join(STATE_DIR, "pending-signals.json");
 const EXECUTED_PATH = path.join(STATE_DIR, "executed-signals.json");
 const ACCOUNT_PATH = path.join(STATE_DIR, "account.json");
