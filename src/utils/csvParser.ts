@@ -14,8 +14,9 @@ export function parseCSVFile(
     Papa.parse<Record<string, string>>(file, {
       header: true,
       skipEmptyLines: true,
-      // Strip UTF-8 BOM (﻿) and whitespace from headers — Excel-exported
+      // Strip UTF-8 BOM (U+FEFF) and whitespace from headers — Excel-exported
       // CSVs frequently include a BOM that breaks column matching.
+      // eslint-disable-next-line no-irregular-whitespace
       transformHeader: (h) => h.replace(/^﻿/, "").trim(),
       complete(results) {
         resolve(results);

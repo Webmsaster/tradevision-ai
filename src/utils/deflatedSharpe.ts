@@ -75,7 +75,7 @@ function normalInvCdf(p: number): number {
   ];
   const pLow = 0.02425;
   const pHigh = 1 - pLow;
-  let q: number, r: number;
+  let q: number;
   if (p < pLow) {
     q = Math.sqrt(-2 * Math.log(p));
     return (
@@ -91,7 +91,7 @@ function normalInvCdf(p: number): number {
     );
   }
   q = p - 0.5;
-  r = q * q;
+  const r = q * q;
   return (
     ((((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) *
       q) /

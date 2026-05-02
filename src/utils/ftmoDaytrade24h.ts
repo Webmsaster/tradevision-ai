@@ -4650,7 +4650,7 @@ export function runFtmoDaytrade24h(
     // Default false is allowed (legacy backwards compat) but must be set
     // explicitly on the config so reviewers see the intent. Live FTMO
     // configs (V236+) all set this to true.
-    // eslint-disable-next-line no-console
+
     console.warn(
       "[ftmoDaytrade24h] cfg.pauseAtTargetReached not set explicitly — using legacy default false. New live configs should set this explicitly (true for FTMO-realistic, false for raw backtest).",
     );

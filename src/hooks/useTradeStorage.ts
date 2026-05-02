@@ -218,9 +218,14 @@ export function useTradeStorage() {
         console.error("Cloud load failed, falling back to local:", err);
         setAllTrades(loadTrades());
       } finally {
-        if (cancelled) return;
-        hasLoadedInitialDataRef.current = true;
-        setIsLoading(false);
+        // Phase 66 (ESLint no-unsafe-finally): finally is reached on both
+        // success and error paths; cancelled is the only signal we care
+        // about here. Skip state updates instead of returning from finally
+        // (which would override the outer try/catch resolution).
+        if (!cancelled) {
+          hasLoadedInitialDataRef.current = true;
+          setIsLoading(false);
+        }
       }
     }
 
