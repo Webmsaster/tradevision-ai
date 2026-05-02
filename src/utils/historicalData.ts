@@ -98,8 +98,22 @@ export async function loadBinanceHistory({
   let endTime: number | undefined = undefined;
 
   const cap = maxPages && maxPages > 0 ? maxPages : 30;
+  // Phase 70 (R45-API-7): hard total-budget across ALL pages + retries.
+  // Per-fetch already had AbortSignal.timeout(15s) but with 30 pages × up
+  // to 3 retries × up to 60s retry-after wait, the worst-case total
+  // could exceed Vercel's function timeout. 90s upper bound here keeps
+  // a single loadBinanceHistory call from dragging the whole route down.
+  const TOTAL_BUDGET_MS = 90_000;
+  const startedAt = Date.now();
+
   // Hard cap on iterations as a safety net
   for (let page = 0; page < cap && candles.length < targetCount; page++) {
+    if (Date.now() - startedAt > TOTAL_BUDGET_MS) {
+      console.warn(
+        `[loadBinanceHistory] total-budget exceeded (${TOTAL_BUDGET_MS}ms) — returning ${candles.length} of ${targetCount} target candles`,
+      );
+      break;
+    }
     const url = new URL("https://api.binance.com/api/v3/klines");
     url.searchParams.set("symbol", symbol.toUpperCase());
     url.searchParams.set("interval", timeframe);
