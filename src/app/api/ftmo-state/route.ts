@@ -4,7 +4,7 @@
  * Reads from FTMO_STATE_DIR (or ./ftmo-state by default). Used by the
  * /ftmo-monitor dashboard page.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import * as path from "node:path";
 import { NextResponse } from "next/server";
@@ -20,10 +20,23 @@ function getStateDir() {
   return process.env.FTMO_STATE_DIR ?? join(process.cwd(), "ftmo-state");
 }
 
+// Phase 62 (R45-API-5): cap state-file reads at 1 MB so a corrupted /
+// runaway-write state file can't blow the API response (and the Node
+// memory of the function instance) up to multi-megabyte. State files
+// in normal operation are ~1-50 KB.
+const STATE_FILE_MAX_BYTES = 1_000_000;
+
 function readJson<T = unknown>(name: string, fallback: T): T {
   const p = join(getStateDir(), name);
   if (!existsSync(p)) return fallback;
   try {
+    const stat = statSync(p);
+    if (stat.size > STATE_FILE_MAX_BYTES) {
+      console.error(
+        `[ftmo-state] ${name} too large (${stat.size}B > ${STATE_FILE_MAX_BYTES}B) — using fallback`,
+      );
+      return fallback;
+    }
     return JSON.parse(readFileSync(p, "utf8")) as T;
   } catch {
     return fallback;
@@ -34,6 +47,14 @@ function readJsonl(name: string, maxEntries = 100): unknown[] {
   const p = join(getStateDir(), name);
   if (!existsSync(p)) return [];
   try {
+    const stat = statSync(p);
+    if (stat.size > STATE_FILE_MAX_BYTES * 10) {
+      // JSONL logs grow naturally — give them 10× headroom, but still cap.
+      console.error(
+        `[ftmo-state] ${name} too large (${stat.size}B) — returning empty`,
+      );
+      return [];
+    }
     const lines = readFileSync(p, "utf8").trim().split("\n");
     return lines
       .slice(-maxEntries)

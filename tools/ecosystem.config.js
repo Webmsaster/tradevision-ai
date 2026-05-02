@@ -20,8 +20,12 @@
  */
 const path = require("path");
 
-// Edit this once to switch the bot between 1h/2h/4h:
-const TF = process.env.FTMO_TF || "1h"; // "1h" | "2h" | "4h"
+// Phase 62 (R45-CFG-5): default updated to the current production
+// champion (V4-engine route — V5_QUARTZ_LITE_R28_V4). Was "1h" which
+// pointed to a stale config; an operator running `pm2 start` without
+// FTMO_TF would unknowingly run a different strategy than the one
+// claimed in CLAUDE.md / docs.
+const TF = process.env.FTMO_TF || "2h-trend-v5-quartz-lite-r28-v4engine";
 const STATE_DIR = path.resolve(__dirname, "..", `ftmo-state-${TF}`);
 const REPO_ROOT = path.resolve(__dirname, "..");
 
@@ -80,7 +84,8 @@ module.exports = {
         FTMO_BNB_SYMBOL: "BNBUSD",
         FTMO_ADA_SYMBOL: "ADAUSD",
         FTMO_DOGE_SYMBOL: "DOGEUSD",
-        FTMO_AVAX_SYMBOL: "AVAUSD",
+        // Phase 62 (R45-CFG-Low): typo fix `AVAUSD` → `AVAXUSD`.
+        FTMO_AVAX_SYMBOL: "AVAXUSD",
       },
       autorestart: true,
       max_restarts: 50,
