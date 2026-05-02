@@ -71,9 +71,9 @@ export function computeHourStats(candles: Candle[]): HourStat[] {
   for (let i = 1; i < candles.length; i++) {
     const prev = candles[i - 1];
     const cur = candles[i];
-    if (prev.close <= 0) continue;
-    const ret = (cur.close - prev.close) / prev.close;
-    const hour = new Date(cur.openTime).getUTCHours();
+    if (prev!.close <= 0) continue;
+    const ret = (cur!.close - prev!.close) / prev!.close;
+    const hour = new Date(cur!.openTime).getUTCHours();
     buckets[hour]!.returns.push(ret);
   }
 
@@ -146,15 +146,15 @@ export function runHourOfDayStrategy(
   // That's a 1-hour directional bet; costs paid once (entry+exit).
   for (let i = 0; i < candles.length; i++) {
     const bar = candles[i];
-    const hour = new Date(bar.openTime).getUTCHours();
+    const hour = new Date(bar!.openTime).getUTCHours();
     const isLong = longSet.has(hour);
     const isShort = shortSet.has(hour);
     if (!isLong && !isShort) continue;
 
     const direction = isLong ? "long" : "short";
     const cost = applyCosts({
-      entry: bar.open,
-      exit: bar.close,
+      entry: bar!.open,
+      exit: bar!.close,
       direction,
       holdingHours: 1,
       config: costs,
@@ -162,10 +162,10 @@ export function runHourOfDayStrategy(
     const trade: HourTrade = {
       hourUtc: hour,
       direction,
-      entry: bar.open,
-      exit: bar.close,
-      entryTime: bar.openTime,
-      exitTime: bar.closeTime,
+      entry: bar!.open,
+      exit: bar!.close,
+      entryTime: bar!.openTime,
+      exitTime: bar!.closeTime,
       grossPnlPct: cost.grossPnlPct,
       netPnlPct: cost.netPnlPct,
     };

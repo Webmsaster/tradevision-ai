@@ -94,11 +94,11 @@ export async function loadYahooHistory({
     interval === "60m" ? 3600 : interval === "1d" ? 86400 : 604800;
 
   for (let i = 0; i < timestamp.length; i++) {
-    const o = q.open[i]!,
-      h = q.high[i]!,
-      l = q.low[i]!,
-      c = q.close[i]!,
-      v = q.volume[i]!;
+    const o = q!.open[i]!,
+      h = q!.high[i]!,
+      l = q!.low[i]!,
+      c = q!.close[i]!,
+      v = q!.volume[i]!;
     if (o === null || h === null || l === null || c === null) continue;
     const openTime = timestamp[i]! * 1000;
     out.push({
@@ -135,12 +135,12 @@ export function aggregateTo4h(candles1h: Candle[]): Candle[] {
       volume += c.volume;
     }
     out.push({
-      openTime: first.openTime,
-      closeTime: last.closeTime,
-      open: first.open,
+      openTime: first!.openTime,
+      closeTime: last!.closeTime,
+      open: first!.open,
       high,
       low,
-      close: last.close,
+      close: last!.close,
       volume,
       isFinal: true,
     });

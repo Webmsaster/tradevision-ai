@@ -133,7 +133,7 @@ export function runFundingReversionBacktest(
       direction = isExtremePos ? "long" : "short";
     } else if (config.mode === "regime-aware") {
       const smaNow = smaArr[entryIdx];
-      const priceAboveSma = smaNow !== null && entryBar.close > smaNow;
+      const priceAboveSma = smaNow !== null && entryBar!.close > smaNow!;
       if (priceAboveSma) {
         // Bull regime: continuation (go with funding)
         direction = isExtremePos ? "long" : "short";
@@ -145,8 +145,8 @@ export function runFundingReversionBacktest(
       // Classical reversion
       direction = isExtremePos ? "short" : "long";
     }
-    const entry = entryBar.close;
-    const entryTime = entryBar.closeTime;
+    const entry = entryBar!.close;
+    const entryTime = entryBar!.closeTime;
 
     let exitIdx = entryIdx + config.holdBars;
     let exitReason: ReversionTrade["exitReason"] = "time";
@@ -154,10 +154,10 @@ export function runFundingReversionBacktest(
     // Walk bars forward checking stop/TP
     for (let j = entryIdx + 1; j <= entryIdx + config.holdBars; j++) {
       const bar = sortedCandles[j];
-      const longPnl = (bar.high - entry) / entry;
-      const shortPnl = (entry - bar.low) / entry;
-      const adverseLong = (entry - bar.low) / entry;
-      const adverseShort = (bar.high - entry) / entry;
+      const longPnl = (bar!.high - entry) / entry;
+      const shortPnl = (entry - bar!.low) / entry;
+      const adverseLong = (entry - bar!.low) / entry;
+      const adverseShort = (bar!.high - entry) / entry;
 
       if (direction === "long") {
         if (adverseLong >= config.stopPct) {
@@ -185,7 +185,7 @@ export function runFundingReversionBacktest(
     }
 
     const exitBar = sortedCandles[exitIdx];
-    let exitPrice = exitBar.close;
+    let exitPrice = exitBar!.close;
     if (exitReason === "stop") {
       exitPrice =
         direction === "long"
@@ -198,7 +198,7 @@ export function runFundingReversionBacktest(
           : entry * (1 - config.targetPct);
     }
     const holdingHours =
-      (exitBar.closeTime - entryBar.closeTime) / (60 * 60 * 1000);
+      (exitBar!.closeTime - entryBar!.closeTime) / (60 * 60 * 1000);
     const cost = applyCosts({
       entry,
       exit: exitPrice,
@@ -213,7 +213,7 @@ export function runFundingReversionBacktest(
       entry,
       exit: exitPrice,
       entryTime,
-      exitTime: exitBar.closeTime,
+      exitTime: exitBar!.closeTime,
       exitReason,
       holdingHours,
       grossPnlPct: cost.grossPnlPct,

@@ -871,7 +871,7 @@ export function detectLiveSignalsV231(
   const tfHours = cfgTfMs / 3600_000;
   const ethLastIdx = ethCandles.length - 1;
   const b1 = ethCandles[ethLastIdx];
-  const entryOpenTime = b1.openTime + tfHours * 3600_000;
+  const entryOpenTime = b1!.openTime + tfHours * 3600_000;
   const entryHour = new Date(entryOpenTime).getUTCHours();
   // Default allowed hours by bar-cadence (overridable via CFG.allowedHoursUtc).
   // Sub-2h timeframes get all 24 hours; 2h gets every-other-hour; 4h gets the
@@ -1119,7 +1119,7 @@ export function detectLiveSignalsV231(
 
     // Build signal — honor per-asset stop/tp/hold overrides + atrStop floor.
     const last = a.candles[a.candles.length - 1];
-    const entryPrice = last.close;
+    const entryPrice = last!.close;
     const baseStopPct = a.stopPctOverride ?? CFG.stopPct;
     let stopPct = baseStopPct;
     const tpPct = a.tpPctOverride ?? CFG.tpPct;
@@ -1191,7 +1191,7 @@ export function detectLiveSignalsV231(
       sizingFactor: factor,
       maxHoldHours,
       maxHoldUntil: entryOpenTime + maxHoldHours * 3600_000,
-      signalBarClose: last.closeTime,
+      signalBarClose: last!.closeTime,
       reasons: [
         `${a.triggerBars}-${invert ? "green→LONG" : "green→SHORT"} pattern on ${a.source}`,
         `equity gate OK (need +${(a.minEqGain * 100).toFixed(1)}%)`,
@@ -1289,13 +1289,13 @@ function detectBullSignals(
   const b0 = ethCandles[ethLastIdx - 1];
   const b1 = ethCandles[ethLastIdx];
   const last2Green =
-    b1.close > b0.close && b0.close > ethCandles[ethLastIdx - 2]!?.close;
+    b1!.close > b0!.close && b0!.close > ethCandles[ethLastIdx - 2]!?.close;
   if (!last2Green) {
     result.notes.push("No 2-green sequence → no BULL signal");
     return result;
   }
 
-  const entryOpenTime = b1.openTime + tfHours * 3600_000;
+  const entryOpenTime = b1!.openTime + tfHours * 3600_000;
   if (isNewsBlackout(entryOpenTime, newsEvents, NEWS_BLACKOUT_MINUTES)) {
     result.notes.push("News blackout");
     return result;
@@ -1303,13 +1303,13 @@ function detectBullSignals(
 
   const tpPct = BULL.tpPct;
   const stopPct = BULL.stopPct;
-  const entryPrice = b1.close;
+  const entryPrice = b1!.close;
   const stopPrice = entryPrice * (1 - stopPct); // long: stop below
   const tpPrice = entryPrice * (1 + tpPct); // long: TP above
   const maxHoldHours = (BULL.holdBars + 1) * tfHours; // bugfix 2026-04-28: backtest parity
   const baseAsset = BULL.assets[0];
   // Live risk = baseRisk × factor, capped at LIVE_MAX_RISK_FRAC (no leverage multiplier).
-  const rawRiskFrac = baseAsset.riskFrac * factor;
+  const rawRiskFrac = baseAsset!.riskFrac * factor;
   const effectiveRiskFrac = Math.min(rawRiskFrac, LIVE_MAX_RISK_FRAC);
 
   // Long-stop safety cap.
@@ -1334,17 +1334,17 @@ function detectBullSignals(
     sizingFactor: factor,
     maxHoldHours,
     maxHoldUntil: entryOpenTime + maxHoldHours * 3600_000,
-    signalBarClose: b1.closeTime,
+    signalBarClose: b1!.closeTime,
     reasons: [
       "BULL regime: 2-green momentum continuation",
-      `sizing: baseRisk=${baseAsset.riskFrac} × factor=${factor.toFixed(3)} = ${rawRiskFrac.toFixed(4)} → live cap ${effectiveRiskFrac.toFixed(4)}`,
+      `sizing: baseRisk=${baseAsset!.riskFrac} × factor=${factor.toFixed(3)} = ${rawRiskFrac.toFixed(4)} → live cap ${effectiveRiskFrac.toFixed(4)}`,
     ],
   });
 
   // Bull pyramid (ETH-BULL-PYRAMID) when equity ahead by 1.5%+
   if (account.equity - 1 >= 0.015) {
     const pyr = BULL.assets[1];
-    const pyrRawRisk = pyr.riskFrac * factor;
+    const pyrRawRisk = pyr!.riskFrac * factor;
     const pyrEffRisk = Math.min(pyrRawRisk, LIVE_MAX_RISK_FRAC);
     result.signals.push({
       assetSymbol: "ETH-BULL-PYRAMID",
@@ -1360,10 +1360,10 @@ function detectBullSignals(
       sizingFactor: factor,
       maxHoldHours,
       maxHoldUntil: entryOpenTime + maxHoldHours * 3600_000,
-      signalBarClose: b1.closeTime,
+      signalBarClose: b1!.closeTime,
       reasons: [
         "BULL pyramid fires at +1.5% equity",
-        `sizing: baseRisk=${pyr.riskFrac} × factor=${factor.toFixed(3)} = ${pyrRawRisk.toFixed(4)} → live cap ${pyrEffRisk.toFixed(4)}`,
+        `sizing: baseRisk=${pyr!.riskFrac} × factor=${factor.toFixed(3)} = ${pyrRawRisk.toFixed(4)} → live cap ${pyrEffRisk.toFixed(4)}`,
       ],
     });
   }

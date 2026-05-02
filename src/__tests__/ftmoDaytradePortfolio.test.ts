@@ -41,12 +41,12 @@ describe("ftmoDaytradePortfolio — config", () => {
 
   it("asset configs match shipped V3 params", () => {
     const [btc, eth] = FTMO_PORTFOLIO_CONFIG.assets;
-    expect(btc.tpPct).toBeCloseTo(0.012, 5);
-    expect(btc.stopPct).toBeCloseTo(0.001, 5);
-    expect(eth.tpPct).toBeCloseTo(0.01, 5);
-    expect(eth.stopPct).toBeCloseTo(0.0015, 5);
-    expect(btc.holdBars).toBe(12);
-    expect(eth.holdBars).toBe(12);
+    expect(btc!.tpPct).toBeCloseTo(0.012, 5);
+    expect(btc!.stopPct).toBeCloseTo(0.001, 5);
+    expect(eth!.tpPct).toBeCloseTo(0.01, 5);
+    expect(eth!.stopPct).toBeCloseTo(0.0015, 5);
+    expect(btc!.holdBars).toBe(12);
+    expect(eth!.holdBars).toBe(12);
   });
 
   it("FTMO rules encoded", () => {

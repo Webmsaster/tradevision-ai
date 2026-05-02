@@ -178,7 +178,7 @@ export function computeJournalStats(entries: SignalEntry[]): JournalStats {
   }
   for (const key of Object.keys(byStrategy)) {
     const s = byStrategy[key];
-    s.meanPct = s.n > 0 ? s.meanPct / s.n : 0;
+    s!.meanPct = s!.n > 0 ? s!.meanPct / s!.n : 0;
     const stratRets = completed
       .filter((e) => e.strategy === key)
       .map((e) => e.actualPnlPct ?? 0);
@@ -188,7 +188,7 @@ export function computeJournalStats(entries: SignalEntry[]): JournalStats {
       stratRets.reduce((a, b) => a + (b - m) * (b - m), 0) /
       Math.max(1, stratRets.length);
     const sd = Math.sqrt(v);
-    s.sharpe = sd > 0 ? (m / sd) * Math.sqrt(250) : 0;
+    s!.sharpe = sd > 0 ? (m / sd) * Math.sqrt(250) : 0;
   }
 
   return {

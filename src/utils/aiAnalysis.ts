@@ -46,12 +46,12 @@ export function detectRevengeTrade(trades: Trade[]): AIInsight | null {
     const prev2 = sorted[i - 1];
     const current = sorted[i];
 
-    if (prev1.pnl < 0 && prev2.pnl < 0) {
+    if (prev1!.pnl < 0 && prev2!.pnl < 0) {
       const prevAvgSize =
-        (prev1.quantity * prev1.entryPrice +
-          prev2.quantity * prev2.entryPrice) /
+        (prev1!.quantity * prev1!.entryPrice +
+          prev2!.quantity * prev2!.entryPrice) /
         2;
-      const currentSize = current.quantity * current.entryPrice;
+      const currentSize = current!.quantity * current!.entryPrice;
 
       // Guard against zero-cost reference (corrupt data, cash positions).
       // Without this, increasePercent becomes Infinity → "increased by Infinity%".
@@ -66,12 +66,12 @@ export function detectRevengeTrade(trades: Trade[]): AIInsight | null {
           type: "warning",
           title: "Revenge Trading Detected",
           description:
-            `After consecutive losses on ${prev1.pair} (${prev1.pnl.toFixed(2)}) and ${prev2.pair} (${prev2.pnl.toFixed(2)}), ` +
-            `your position size increased by ${increasePercent}% on your next trade (${current.pair}). ` +
+            `After consecutive losses on ${prev1!.pair} (${prev1!.pnl.toFixed(2)}) and ${prev2!.pair} (${prev2!.pnl.toFixed(2)}), ` +
+            `your position size increased by ${increasePercent}% on your next trade (${current!.pair}). ` +
             `This pattern of increasing size after losses is a hallmark of revenge trading and often leads to even larger drawdowns. ` +
             `Consider stepping away after consecutive losses or enforcing a fixed position-sizing rule.`,
           severity: 8,
-          relatedTrades: [prev1.id, prev2.id, current.id],
+          relatedTrades: [prev1!.id, prev2!.id, current!.id],
           category: "revenge-trading",
         };
       }
@@ -154,9 +154,9 @@ export function detectTimePatterns(trades: Trade[]): AIInsight | null {
   for (const hourStr of Object.keys(hourStats)) {
     const hour = Number(hourStr);
     const stats = hourStats[hour];
-    if (stats.total < 3) continue;
+    if (stats!.total < 3) continue;
 
-    const winRate = stats.wins / stats.total;
+    const winRate = stats!.wins / stats!.total;
     if (winRate < worstWinRate) {
       worstWinRate = winRate;
       worstHour = hour;
@@ -174,12 +174,12 @@ export function detectTimePatterns(trades: Trade[]): AIInsight | null {
     type: "warning",
     title: "Poor Performance at Specific Time",
     description:
-      `Your trades between ${hourLabel} have a win rate of only ${winRatePercent}% across ${stats.total} trades. ` +
+      `Your trades between ${hourLabel} have a win rate of only ${winRatePercent}% across ${stats!.total} trades. ` +
       `This is significantly below a healthy threshold. This time slot may coincide with low liquidity, ` +
       `high volatility events, or a period when your focus and decision-making are impaired. ` +
       `Consider avoiding trading during this hour or reducing your position size.`,
     severity: 5,
-    relatedTrades: stats.tradeIds.slice(0, 10),
+    relatedTrades: stats!.tradeIds.slice(0, 10),
     category: "time-patterns",
   };
 }
@@ -194,17 +194,17 @@ export function detectOverleverageAfterWins(trades: Trade[]): AIInsight | null {
 
   for (let i = 3; i < sorted.length; i++) {
     const streak = [sorted[i - 3], sorted[i - 2], sorted[i - 1]];
-    const allWins = streak.every((t) => t.pnl > 0);
+    const allWins = streak.every((t) => t!.pnl > 0);
 
     if (!allWins) continue;
 
     // Phase 21 (AI Bug 4): skip if any trade in the streak OR the current
     // trade has no leverage recorded (mixed spot/margin). Spot trades default
     // to 1x and falsely flagged as 'low leverage' against 2x margin trades.
-    if (sorted[i]!.leverage == null || streak.some((t) => t.leverage == null))
+    if (sorted[i]!.leverage == null || streak.some((t) => t!.leverage == null))
       continue;
     const avgStreakLeverage =
-      streak.reduce((sum, t) => sum + (t.leverage ?? 1), 0) / streak.length;
+      streak.reduce((sum, t) => sum + (t!.leverage ?? 1), 0) / streak.length;
     const nextLeverage = sorted[i]!.leverage ?? 1;
 
     if (avgStreakLeverage > 0 && nextLeverage > avgStreakLeverage * 1.5) {
@@ -222,7 +222,7 @@ export function detectOverleverageAfterWins(trades: Trade[]): AIInsight | null {
           `Winning streaks can create overconfidence, leading to outsized risk when the streak inevitably ends. ` +
           `Keep your leverage consistent regardless of recent results to protect against large drawdowns.`,
         severity: 7,
-        relatedTrades: [...streak.map((t) => t.id), sorted[i]!.id],
+        relatedTrades: [...streak.map((t) => t!.id), sorted[i]!.id],
         category: "overleverage",
       };
     }
@@ -358,12 +358,12 @@ export function detectConsistentPair(trades: Trade[]): AIInsight | null {
 
   for (const pair of Object.keys(pairStats)) {
     const stats = pairStats[pair];
-    if (stats.total < 5) continue;
+    if (stats!.total < 5) continue;
     // Phase 21 (AI Bug 6): a 'positive' pair must actually be profitable
     // and >50% WR. Without this we flagged unprofitable pairs as
     // 'Strong Performance' just because they were the LEAST bad.
-    if (stats.totalPnl <= 0) continue;
-    const winRate = stats.wins / stats.total;
+    if (stats!.totalPnl <= 0) continue;
+    const winRate = stats!.wins / stats!.total;
     if (winRate < 0.5) continue;
     if (winRate > bestWinRate) {
       bestWinRate = winRate;
@@ -381,12 +381,12 @@ export function detectConsistentPair(trades: Trade[]): AIInsight | null {
     type: "positive",
     title: "Strong Performance on a Consistent Pair",
     description:
-      `${bestPair} is your best performing pair with a ${winRatePercent}% win rate across ${stats.total} trades ` +
-      `and a total P&L of $${stats.totalPnl.toFixed(2)}. Your edge on this pair is clear and consistent. ` +
+      `${bestPair} is your best performing pair with a ${winRatePercent}% win rate across ${stats!.total} trades ` +
+      `and a total P&L of $${stats!.totalPnl.toFixed(2)}. Your edge on this pair is clear and consistent. ` +
       `Consider allocating more of your trading capital and focus to ${bestPair}, as your strategy appears ` +
       `well-suited to its price action and liquidity profile.`,
     severity: 3,
-    relatedTrades: stats.tradeIds.slice(0, 10),
+    relatedTrades: stats!.tradeIds.slice(0, 10),
     category: "strength",
   };
 }
@@ -480,8 +480,8 @@ export function detectOvertrading(trades: Trade[]): AIInsight | null {
 
   for (const day of Object.keys(dayStats)) {
     const stats = dayStats[day];
-    if (stats.total > 5) {
-      const winRate = stats.wins / stats.total;
+    if (stats!.total > 5) {
+      const winRate = stats!.wins / stats!.total;
       if (winRate < 0.4) {
         const winRatePercent = Math.round(winRate * 100);
 
@@ -490,10 +490,10 @@ export function detectOvertrading(trades: Trade[]): AIInsight | null {
           type: "warning",
           title: "Overtrading Detected",
           description:
-            `You placed ${stats.total} trades on ${day} with only ${winRatePercent}% win rate. ` +
+            `You placed ${stats!.total} trades on ${day} with only ${winRatePercent}% win rate. ` +
             `High-frequency trading often leads to poor decision making.`,
           severity: 7,
-          relatedTrades: stats.tradeIds.slice(0, 10),
+          relatedTrades: stats!.tradeIds.slice(0, 10),
           category: "overtrading",
         };
       }
@@ -864,29 +864,29 @@ export function detectDayOfWeekBias(trades: Trade[]): AIInsight | null {
   dayAvgs.sort((a, b) => b.avg - a.avg);
   const best = dayAvgs[0];
   const worst = dayAvgs[dayAvgs.length - 1];
-  const spread = best.avg - worst.avg;
+  const spread = best!.avg - worst!.avg;
 
   // Require a non-trivial spread and one side clearly negative or best clearly positive
-  if (spread < Math.max(Math.abs(best.avg), Math.abs(worst.avg)) * 0.5)
+  if (spread < Math.max(Math.abs(best!.avg), Math.abs(worst!.avg)) * 0.5)
     return null;
-  if (best.avg <= 0 && worst.avg >= 0) return null;
+  if (best!.avg <= 0 && worst!.avg >= 0) return null;
 
-  const isWarning = worst.avg < 0 && Math.abs(worst.avg) > best.avg;
+  const isWarning = worst!.avg < 0 && Math.abs(worst!.avg) > best!.avg;
 
   return {
     id: generateId(),
     type: isWarning ? "warning" : "positive",
     title: isWarning
-      ? `${DAYS[worst.day]}s Are Costing You`
-      : `${DAYS[best.day]}s Are Your Best Day`,
+      ? `${DAYS[worst!.day]}s Are Costing You`
+      : `${DAYS[best!.day]}s Are Your Best Day`,
     description:
-      `${DAYS[best.day]}s average ${best.avg >= 0 ? "+" : ""}${best.avg.toFixed(2)} PnL across ${best.trades.length} trades, ` +
-      `while ${DAYS[worst.day]}s average ${worst.avg >= 0 ? "+" : ""}${worst.avg.toFixed(2)} across ${worst.trades.length}. ` +
+      `${DAYS[best!.day]}s average ${best!.avg >= 0 ? "+" : ""}${best!.avg.toFixed(2)} PnL across ${best!.trades.length} trades, ` +
+      `while ${DAYS[worst!.day]}s average ${worst!.avg >= 0 ? "+" : ""}${worst!.avg.toFixed(2)} across ${worst!.trades.length}. ` +
       (isWarning
-        ? `Consider skipping ${DAYS[worst.day]}s or investigating why that day underperforms.`
-        : `You might double down on ${DAYS[best.day]}s and thin out activity on weaker days.`),
+        ? `Consider skipping ${DAYS[worst!.day]}s or investigating why that day underperforms.`
+        : `You might double down on ${DAYS[best!.day]}s and thin out activity on weaker days.`),
     severity: isWarning ? 6 : 3,
-    relatedTrades: (isWarning ? worst.trades : best.trades)
+    relatedTrades: (isWarning ? worst!.trades : best!.trades)
       .slice(0, 10)
       .map((t) => t.id),
     category: "day-of-week-bias",

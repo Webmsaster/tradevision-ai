@@ -57,19 +57,19 @@ export function goldenCrossStrategy(
   const atrNow = atrArr[i];
   if (fastNow === null || slowNow === null || atrNow === null) return flat();
 
-  if (fastNow > slowNow) {
+  if (fastNow! > slowNow!) {
     return {
       action: "long",
       strategy: "trend-follow",
-      stopDistance: atrNow * gc.stopAtrMult,
-      targetDistance: atrNow * 999, // no take-profit; let the cross exit
+      stopDistance: atrNow! * gc.stopAtrMult,
+      targetDistance: atrNow! * 999, // no take-profit; let the cross exit
       notes: [
-        `Golden cross active: ${gc.fastPeriod}-SMA ${fastNow.toFixed(2)} > ${gc.slowPeriod}-SMA ${slowNow.toFixed(2)}`,
+        `Golden cross active: ${gc.fastPeriod}-SMA ${fastNow!.toFixed(2)} > ${gc.slowPeriod}-SMA ${slowNow!.toFixed(2)}`,
       ],
     };
   }
   return flat([
-    `Death cross: ${gc.fastPeriod}-SMA ${fastNow.toFixed(2)} ≤ ${gc.slowPeriod}-SMA ${slowNow.toFixed(2)} — stay flat`,
+    `Death cross: ${gc.fastPeriod}-SMA ${fastNow!.toFixed(2)} ≤ ${gc.slowPeriod}-SMA ${slowNow!.toFixed(2)} — stay flat`,
   ]);
 }
 
@@ -122,8 +122,8 @@ export function donchianLongOnlyStrategy(
     return {
       action: "long",
       strategy: "breakout",
-      stopDistance: atrNow * dc.stopAtrMult,
-      targetDistance: atrNow * 999,
+      stopDistance: atrNow! * dc.stopAtrMult,
+      targetDistance: atrNow! * 999,
       notes: [
         `Donchian ${dc.entryPeriod}-bar breakout: price ${priceNow.toFixed(2)} > channel high ${entryHigh.toFixed(2)}`,
       ],
@@ -134,8 +134,8 @@ export function donchianLongOnlyStrategy(
     return {
       action: "long",
       strategy: "breakout",
-      stopDistance: atrNow * dc.stopAtrMult,
-      targetDistance: atrNow * 999,
+      stopDistance: atrNow! * dc.stopAtrMult,
+      targetDistance: atrNow! * 999,
       notes: [
         `Holding Donchian long: price ${priceNow.toFixed(2)} > ${dc.exitPeriod}-bar low ${exitLow.toFixed(2)}`,
       ],
@@ -179,8 +179,8 @@ export function momentumStrategy(
     return {
       action: "long",
       strategy: "trend-follow",
-      stopDistance: atrNow * mc.stopAtrMult,
-      targetDistance: atrNow * 999,
+      stopDistance: atrNow! * mc.stopAtrMult,
+      targetDistance: atrNow! * 999,
       notes: [
         `Momentum long: ${mc.lookbackBars}-bar ROC ${(roc * 100).toFixed(1)}% > ${(mc.minRoc * 100).toFixed(1)}% threshold`,
       ],

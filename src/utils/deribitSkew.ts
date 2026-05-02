@@ -117,7 +117,7 @@ export async function fetchDeribitSkew(): Promise<DeribitSkewSnapshot> {
     throw new Error("No Deribit expiry >1 day away");
   }
   const chosen = expiryCandidates[0];
-  const list = chosen.list;
+  const list = chosen!.list;
 
   // Underlying from first row
   const spot = list[0]?.underlying_price ?? 0;
@@ -184,7 +184,7 @@ export async function fetchDeribitSkew(): Promise<DeribitSkewSnapshot> {
 
   return {
     capturedAt: Date.now(),
-    expiry: chosen.exp,
+    expiry: chosen!.exp,
     spotEstimate: spot,
     call25dIv: callIv,
     put25dIv: putIv,

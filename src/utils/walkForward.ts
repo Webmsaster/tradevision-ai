@@ -161,7 +161,7 @@ export function runWalkForwardHourOfDay(
       const smaNow = smaArr[globalIdx];
       if (smaNow === null) continue;
       const bar = testSlice[i];
-      const hour = new Date(bar.openTime).getUTCHours();
+      const hour = new Date(bar!.openTime).getUTCHours();
 
       // Skip funding-settle hours if configured (wider spreads, toxic flow)
       if (
@@ -176,7 +176,7 @@ export function runWalkForwardHourOfDay(
         continue;
       }
 
-      const above = bar.close > smaNow;
+      const above = bar!.close > smaNow!;
       const isLong = longSet.has(hour) && above;
       const isShort = !config.longOnly && shortSet.has(hour) && !above;
       if (!isLong && !isShort) continue;
@@ -190,8 +190,8 @@ export function runWalkForwardHourOfDay(
       const adversePenalty = (config.adverseSelectionBps ?? 0) / 10_000;
       if (filled) {
         const cost = applyCosts({
-          entry: bar.open,
-          exit: bar.close,
+          entry: bar!.open,
+          exit: bar!.close,
           direction,
           holdingHours: 1,
           config: costs,
@@ -200,8 +200,8 @@ export function runWalkForwardHourOfDay(
         pnl = cost.netPnlPct - adversePenalty;
       } else if (config.fallbackToTaker) {
         const cost = applyCosts({
-          entry: bar.open,
-          exit: bar.close,
+          entry: bar!.open,
+          exit: bar!.close,
           direction,
           holdingHours: 1,
           config: takerCosts,
@@ -212,7 +212,7 @@ export function runWalkForwardHourOfDay(
         continue; // skip the trade
       }
       windowTrades.push({
-        time: bar.openTime,
+        time: bar!.openTime,
         hour,
         direction,
         netPnlPct: pnl,

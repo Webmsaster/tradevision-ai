@@ -161,8 +161,8 @@ export function computeExpandingZ(samples: MvrvSample[]): MvrvSample[] {
   let sumSqR = 0;
   for (let i = 0; i < out.length; i++) {
     const s = out[i];
-    const mcap = s.marketCapUsd;
-    const rcap = s.realizedCapUsd;
+    const mcap = s!.marketCapUsd;
+    const rcap = s!.realizedCapUsd;
     if (mcap !== undefined && rcap !== undefined) {
       sumMcap += mcap;
       sumSqMcap += mcap * mcap;
@@ -176,8 +176,8 @@ export function computeExpandingZ(samples: MvrvSample[]): MvrvSample[] {
       }
     }
     // Fallback: ratio-based Z (used when MCap data missing)
-    sumR += s.mvrv;
-    sumSqR += s.mvrv * s.mvrv;
+    sumR += s!.mvrv;
+    sumSqR += s!.mvrv * s!.mvrv;
     const n = i + 1;
     if (n < 365) {
       out[i]!.zScore = null;
@@ -186,7 +186,7 @@ export function computeExpandingZ(samples: MvrvSample[]): MvrvSample[] {
     const mean = sumR / n;
     const variance = sumSqR / n - mean * mean;
     const std = Math.sqrt(Math.max(0, variance));
-    out[i]!.zScore = std > 0 ? (s.mvrv - mean) / std : 0;
+    out[i]!.zScore = std > 0 ? (s!.mvrv - mean) / std : 0;
   }
   return out;
 }
@@ -206,13 +206,13 @@ export function runMvrvBacktest(
 
   for (let i = 0; i < withZ.length; i++) {
     const s = withZ[i];
-    if (s.price === undefined) {
+    if (s!.price === undefined) {
       equity.push(equity[equity.length - 1]!);
       continue;
     }
 
     // Lift cooldown once MVRV has cooled back to a moderate level.
-    if (postTopCooldown && s.mvrv < config.ratioReEntryBelow) {
+    if (postTopCooldown && s!.mvrv < config.ratioReEntryBelow) {
       postTopCooldown = false;
     }
 
@@ -220,7 +220,7 @@ export function runMvrvBacktest(
       // Enter long when ratio is below the overheat threshold and cooldown
       // is inactive. Deep capitulation (ratio < 1) is NOT an exit — the
       // research treats it as the best buying window.
-      if (!postTopCooldown && s.mvrv < config.ratioTop) {
+      if (!postTopCooldown && s!.mvrv < config.ratioTop) {
         inPosition = true;
         entryIdx = i;
       }
@@ -230,25 +230,25 @@ export function runMvrvBacktest(
 
     // Daily-return update while held
     const prevPrice = withZ[i - 1]?.price;
-    if (prevPrice && s.price) {
-      const dailyRet = s.price / prevPrice - 1;
+    if (prevPrice && s!.price) {
+      const dailyRet = s!.price / prevPrice - 1;
       equity.push(equity[equity.length - 1]! * (1 + dailyRet));
     } else {
       equity.push(equity[equity.length - 1]!);
     }
 
     // Exit at the euphoria top.
-    if (s.mvrv >= config.ratioTop) {
+    if (s!.mvrv >= config.ratioTop) {
       const entry = withZ[entryIdx];
-      if (entry.price && s.price && entry.price > 0) {
+      if (entry!.price && s!.price && entry!.price > 0) {
         trades.push({
-          openTime: entry.time,
-          closeTime: s.time,
-          entryPrice: entry.price,
-          exitPrice: s.price,
-          entryZ: entry.mvrv,
-          exitZ: s.mvrv,
-          netReturnPct: s.price / entry.price - 1,
+          openTime: entry!.time,
+          closeTime: s!.time,
+          entryPrice: entry!.price,
+          exitPrice: s!.price,
+          entryZ: entry!.mvrv,
+          exitZ: s!.mvrv,
+          netReturnPct: s!.price / entry!.price - 1,
         });
       }
       inPosition = false;
@@ -261,15 +261,15 @@ export function runMvrvBacktest(
   if (inPosition && entryIdx >= 0) {
     const entry = withZ[entryIdx];
     const last = withZ[withZ.length - 1];
-    if (entry.price && last.price && entry.price > 0) {
+    if (entry!.price && last!.price && entry!.price > 0) {
       trades.push({
-        openTime: entry.time,
-        closeTime: last.time,
-        entryPrice: entry.price,
-        exitPrice: last.price,
-        entryZ: entry.mvrv,
-        exitZ: last.mvrv,
-        netReturnPct: last.price / entry.price - 1,
+        openTime: entry!.time,
+        closeTime: last!.time,
+        entryPrice: entry!.price,
+        exitPrice: last!.price,
+        entryZ: entry!.mvrv,
+        exitZ: last!.mvrv,
+        netReturnPct: last!.price / entry!.price - 1,
       });
     }
   }

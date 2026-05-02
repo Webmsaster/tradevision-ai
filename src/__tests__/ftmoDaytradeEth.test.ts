@@ -152,7 +152,7 @@ describe("ftmoDaytradeEth — runner", () => {
     expect(sigs.length).toBeGreaterThanOrEqual(1);
     const s = sigs[0];
     // effPnl ≈ rawPnl × 2 × 0.6 = rawPnl × 1.2
-    const ratio = s.effPnl / s.rawPnl;
+    const ratio = s!.effPnl / s!.rawPnl;
     expect(ratio).toBeCloseTo(1.2, 1);
   });
 });

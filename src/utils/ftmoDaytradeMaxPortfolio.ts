@@ -185,26 +185,26 @@ function detectAsset(
       for (let j = i + 2; j <= mx; j++) {
         const bar = candles[j];
         if (direction === "long") {
-          if (bar.low <= stop) {
+          if (bar!.low <= stop) {
             exitBar = j;
             exitPrice = stop;
             reason = "stop";
             break;
           }
-          if (bar.high >= tp) {
+          if (bar!.high >= tp) {
             exitBar = j;
             exitPrice = tp;
             reason = "tp";
             break;
           }
         } else {
-          if (bar.high >= stop) {
+          if (bar!.high >= stop) {
             exitBar = j;
             exitPrice = stop;
             reason = "stop";
             break;
           }
-          if (bar.low <= tp) {
+          if (bar!.low <= tp) {
             exitBar = j;
             exitPrice = tp;
             reason = "tp";

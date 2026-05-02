@@ -462,8 +462,8 @@ function findCandleAtTime(arr: Candle[], targetTime: number): Candle | null {
   // 0-2 bars ahead of `targetTime`.
   for (let i = arr.length - 1; i >= 0; i--) {
     const c = arr[i];
-    if (c.openTime === targetTime) return c;
-    if (c.openTime < targetTime) break; // sorted asc → no earlier match equals target
+    if (c!.openTime === targetTime) return c;
+    if (c!.openTime < targetTime) break; // sorted asc → no earlier match equals target
   }
   return null;
 }
@@ -692,14 +692,14 @@ function processPositionExit(
       const lvl = cfg.partialTakeProfitLevels[pos.ptpLevelIdx];
       const triggerPrice =
         pos.direction === "long"
-          ? pos.entryPrice * (1 + lvl.triggerPct)
-          : pos.entryPrice * (1 - lvl.triggerPct);
+          ? pos.entryPrice * (1 + lvl!.triggerPct)
+          : pos.entryPrice * (1 - lvl!.triggerPct);
       const lvlHit =
         pos.direction === "long"
           ? candle.high >= triggerPrice
           : candle.low <= triggerPrice;
       if (!lvlHit) break;
-      pos.ptpLevelsRealized += lvl.closeFraction * lvl.triggerPct;
+      pos.ptpLevelsRealized += lvl!.closeFraction * lvl!.triggerPct;
       pos.ptpLevelIdx++;
     }
   }
@@ -859,7 +859,7 @@ export function pollLive(
   // (one asset 30s ahead) silently corrupt the idempotency guard.
   const lastBarTimes = assetKeys.map((k) => {
     const arr = candlesByAsset[k];
-    return arr[arr.length - 1]!.openTime;
+    return arr![arr!.length - 1]!.openTime;
   });
   const minLastBar = Math.min(...lastBarTimes);
   const maxLastBar = Math.max(...lastBarTimes);
@@ -927,7 +927,7 @@ export function pollLive(
   // 3. Process exits FIRST (using current bar's HLC).
   for (let i = state.openPositions.length - 1; i >= 0; i--) {
     const pos = state.openPositions[i];
-    const cs = candlesByAsset[pos.sourceSymbol];
+    const cs = candlesByAsset[pos!.sourceSymbol];
     if (!cs) continue;
     // Phase 36 (R44-V4-6): pick the candle that matches lastBar.openTime,
     // not array-end. When the position's feed runs ahead of the reference
@@ -948,12 +948,12 @@ export function pollLive(
     let atrAtBar: number | null = null;
     if (cfg.chandelierExit) {
       const series =
-        atrSeriesByAsset?.[pos.sourceSymbol] ??
+        atrSeriesByAsset?.[pos!.sourceSymbol] ??
         atr(cs, cfg.chandelierExit.period);
       const v = series[series.length - 1];
       if (v != null) atrAtBar = v;
     }
-    const assetCfg = cfg.assets.find((a) => a.symbol === pos.symbol);
+    const assetCfg = cfg.assets.find((a) => a.symbol === pos!.symbol);
     const holdBars = assetCfg?.holdBars ?? cfg.holdBars;
     const exit = processPositionExit(
       pos,
@@ -968,28 +968,28 @@ export function pollLive(
       void rawPnl;
       state.equity *= 1 + effPnl;
       const closed: ClosedTradeV4 = {
-        ticketId: pos.ticketId,
-        symbol: pos.symbol,
-        direction: pos.direction,
-        entryTime: pos.entryTime,
+        ticketId: pos!.ticketId,
+        symbol: pos!.symbol,
+        direction: pos!.direction,
+        entryTime: pos!.entryTime,
         exitTime: lastBar.openTime,
-        entryPrice: pos.entryPrice,
+        entryPrice: pos!.entryPrice,
         exitPrice: exit.exitPrice,
         rawPnl,
         effPnl,
         exitReason: exit.reason,
         day: state.day,
-        entryDay: dayIndex(pos.entryTime, state.challengeStartTs),
+        entryDay: dayIndex(pos!.entryTime, state.challengeStartTs),
       };
       state.closedTrades.push(closed);
       state.openPositions.splice(i, 1);
       result.decision.closes.push({
-        ticketId: pos.ticketId,
+        ticketId: pos!.ticketId,
         exitPrice: exit.exitPrice,
         exitReason: exit.reason,
       });
       // Loss-streak tracking + Kelly buffer.
-      const k = lsKey(pos.symbol, pos.direction);
+      const k = lsKey(pos!.symbol, pos!.direction);
       const ls = state.lossStreakByAssetDir[k] ?? {
         streak: 0,
         cdUntilBarsSeen: -1,
@@ -1023,12 +1023,12 @@ export function pollLive(
   const closesBySource: Record<string, number> = {};
   for (const k of assetKeys) {
     const c = candlesByAsset[k];
-    if (c.length === 0) continue;
+    if (c!.length === 0) continue;
     let chosen = findCandleAtTime(c, lastBar.openTime);
     if (!chosen) {
-      for (let j = c.length - 1; j >= 0; j--) {
-        if (c[j]!.openTime <= lastBar.openTime) {
-          chosen = c[j]!;
+      for (let j = c!.length - 1; j >= 0; j--) {
+        if (c![j]!.openTime <= lastBar.openTime) {
+          chosen = c![j]!;
           break;
         }
       }

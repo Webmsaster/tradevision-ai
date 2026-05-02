@@ -32,24 +32,24 @@ describe("ftmoRealisticMax — config", () => {
   it("BTC+ETH combined 50% risk each", () => {
     expect(FTMO_REALISTIC_MAX_CONFIG.assets.length).toBe(2);
     const [btc, eth] = FTMO_REALISTIC_MAX_CONFIG.assets;
-    expect(btc.symbol).toBe("BTCUSDT");
-    expect(eth.symbol).toBe("ETHUSDT");
-    expect(btc.riskFrac).toBeCloseTo(0.5, 5);
-    expect(eth.riskFrac).toBeCloseTo(0.5, 5);
+    expect(btc!.symbol).toBe("BTCUSDT");
+    expect(eth!.symbol).toBe("ETHUSDT");
+    expect(btc!.riskFrac).toBeCloseTo(0.5, 5);
+    expect(eth!.riskFrac).toBeCloseTo(0.5, 5);
   });
 
   it("realistic costs encoded", () => {
     const [btc, eth] = FTMO_REALISTIC_MAX_CONFIG.assets;
-    expect(btc.costBp).toBe(40);
-    expect(eth.costBp).toBe(30);
+    expect(btc!.costBp).toBe(40);
+    expect(eth!.costBp).toBe(30);
   });
 
   it("asymmetric TPs (BTC 8%, ETH 12%)", () => {
     const [btc, eth] = FTMO_REALISTIC_MAX_CONFIG.assets;
-    expect(btc.tpPct).toBeCloseTo(0.08, 5);
-    expect(eth.tpPct).toBeCloseTo(0.12, 5);
-    expect(btc.stopPct).toBeCloseTo(0.02, 5);
-    expect(eth.stopPct).toBeCloseTo(0.02, 5);
+    expect(btc!.tpPct).toBeCloseTo(0.08, 5);
+    expect(eth!.tpPct).toBeCloseTo(0.12, 5);
+    expect(btc!.stopPct).toBeCloseTo(0.02, 5);
+    expect(eth!.stopPct).toBeCloseTo(0.02, 5);
   });
 
   it("20-day hold (swing not daytrade)", () => {

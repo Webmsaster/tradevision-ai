@@ -3238,15 +3238,16 @@ export function pickBestConfig(btcCandles: Candle[]): {
   const last = closes[closes.length - 1];
   const emaFast = ema(closes, 10);
   const emaSlow = ema(closes, 15);
-  const mom6 = (last - closes[closes.length - 6]!) / closes[closes.length - 6]!;
-  const btcUptrend = last > emaFast && emaFast > emaSlow;
+  const mom6 =
+    (last! - closes[closes.length - 6]!) / closes[closes.length - 6]!;
+  const btcUptrend = last! > emaFast && emaFast > emaSlow;
   const btcBullMom = mom6 > 0.02;
 
   if (btcUptrend && btcBullMom) {
     return {
       cfg: FTMO_DAYTRADE_24H_CONFIG_BULL,
       regime: "BULL",
-      reason: `BTC in uptrend (close=${last.toFixed(0)} > EMA10=${emaFast.toFixed(0)} > EMA15=${emaSlow.toFixed(0)}) AND 24h mom +${(mom6 * 100).toFixed(2)}% > +2%`,
+      reason: `BTC in uptrend (close=${last!.toFixed(0)} > EMA10=${emaFast.toFixed(0)} > EMA15=${emaSlow.toFixed(0)}) AND 24h mom +${(mom6 * 100).toFixed(2)}% > +2%`,
     };
   }
   return {
@@ -3397,7 +3398,7 @@ function pragueDay(ms: number): number {
     const yyyymmdd = _pragueFmt.format(new Date(ms)); // "YYYY-MM-DD"
     const [y, m, d] = yyyymmdd.split("-").map(Number);
     // Day-index since epoch using UTC of (Prague-Y/M/D 00:00 as if UTC).
-    return Math.floor(Date.UTC(y, m - 1, d) / (24 * 3600 * 1000));
+    return Math.floor(Date.UTC(y, m! - 1, d) / (24 * 3600 * 1000));
   }
   // Fallback: fixed UTC+1 (legacy behavior, ~0.3-0.6pp drift in summer).
   return Math.floor((ms + 3600 * 1000) / (24 * 3600 * 1000));
@@ -3620,9 +3621,9 @@ export function detectAsset(
             const c = candles[k];
             const prev = candles[k - 1] ?? candles[k];
             trSum += Math.max(
-              c.high - c.low,
-              Math.abs(c.high - prev.close),
-              Math.abs(c.low - prev.close),
+              c!.high - c!.low,
+              Math.abs(c!.high - prev!.close),
+              Math.abs(c!.low - prev!.close),
             );
           }
           const kcAtr = trSum / kcP;
@@ -3652,9 +3653,9 @@ export function detectAsset(
               const cj = candles[j];
               const pj = candles[j - 1] ?? candles[j];
               tS += Math.max(
-                cj.high - cj.low,
-                Math.abs(cj.high - pj.close),
-                Math.abs(cj.low - pj.close),
+                cj!.high - cj!.low,
+                Math.abs(cj!.high - pj!.close),
+                Math.abs(cj!.low - pj!.close),
               );
             }
             const kA = tS / kcP;
@@ -3979,8 +3980,8 @@ export function detectAsset(
         const eSlow = crossEmaSlow[i];
         if (eFast !== null && eSlow !== null && crossAssetCandles[i]) {
           const xPrice = crossAssetCandles[i]!.close;
-          const crossUptrend = xPrice > eFast && eFast > eSlow;
-          const crossDowntrend = xPrice < eFast && eFast < eSlow;
+          const crossUptrend = xPrice > eFast! && eFast! > eSlow!;
+          const crossDowntrend = xPrice < eFast! && eFast! < eSlow!;
           if (
             direction === "short" &&
             crossFilter.skipShortsIfSecondaryUptrend &&
@@ -4027,8 +4028,8 @@ export function detectAsset(
           const eSlow = extra.slow[i];
           if (eFast === null || eSlow === null || !extra.candles[i]) continue;
           const xPrice = extra.candles[i]!.close;
-          const crossUptrend = xPrice > eFast && eFast > eSlow;
-          const crossDowntrend = xPrice < eFast && eFast < eSlow;
+          const crossUptrend = xPrice > eFast! && eFast! > eSlow!;
+          const crossDowntrend = xPrice < eFast! && eFast! < eSlow!;
           if (
             direction === "short" &&
             extra.f.skipShortsIfSecondaryUptrend &&
@@ -4068,13 +4069,13 @@ export function detectAsset(
           const wb = candles[i + k];
           // For long: did price dip to target?
           // For short: did price rally to target?
-          if (direction === "long" && wb.low <= target) {
+          if (direction === "long" && wb!.low <= target) {
             eb = candles[i + k]; // entry on this bar (use as eb)
             ebIdx = i + k;
             entered = true;
             break;
           }
-          if (direction === "short" && wb.high >= target) {
+          if (direction === "short" && wb!.high >= target) {
             eb = candles[i + k];
             ebIdx = i + k;
             entered = true;
@@ -4088,7 +4089,7 @@ export function detectAsset(
       if (cfg.newsFilter) {
         if (
           isNewsBlackout(
-            eb.openTime,
+            eb!.openTime,
             cfg.newsFilter.events,
             cfg.newsFilter.bufferMinutes,
           )
@@ -4096,7 +4097,7 @@ export function detectAsset(
           continue;
         }
       }
-      const entry = eb.open;
+      const entry = eb!.open;
       const entryEff =
         direction === "long" ? entry * (1 + cost / 2) : entry * (1 - cost / 2);
 
@@ -4114,9 +4115,9 @@ export function detectAsset(
           const c = candles[k];
           const prev = candles[k - 1]!.close;
           aSum += Math.max(
-            c.high - c.low,
-            Math.abs(c.high - prev),
-            Math.abs(c.low - prev),
+            c!.high - c!.low,
+            Math.abs(c!.high - prev),
+            Math.abs(c!.low - prev),
           );
           aCount++;
         }
@@ -4211,17 +4212,17 @@ export function detectAsset(
               : entry * (1 - ptp.triggerPct);
           const ptpHit =
             direction === "long"
-              ? bar.high >= triggerPrice
-              : bar.low <= triggerPrice;
+              ? bar!.high >= triggerPrice
+              : bar!.low <= triggerPrice;
           // Stop also hit this bar?
           const stopHit =
-            direction === "long" ? bar.low <= dynStop : bar.high >= dynStop;
+            direction === "long" ? bar!.low <= dynStop : bar!.high >= dynStop;
           // Gap exception: if bar opens already favorable past PTP trigger,
           // PTP definitely fired first (no wick required).
           const gapPastPtp =
             direction === "long"
-              ? bar.open >= triggerPrice
-              : bar.open <= triggerPrice;
+              ? bar!.open >= triggerPrice
+              : bar!.open <= triggerPrice;
           // Conservative: PTP only fires when stop did NOT hit, OR a gap
           // already passed the trigger before any wick down to stop.
           if (ptpHit && (!stopHit || gapPastPtp)) {
@@ -4250,7 +4251,7 @@ export function detectAsset(
             beActive = true;
             // Also reset chandelier reference to current bar so the trail
             // anchors at PTP-fire price, not pre-PTP high (Bug B).
-            chanBestClose = bar.close;
+            chanBestClose = bar!.close;
             chanArmed = false;
           }
         }
@@ -4260,18 +4261,18 @@ export function detectAsset(
         // gapped PAST tp on the favorable side, TP was hit first physically.
         // Now: gap-past-TP wins; otherwise still conservative stop-first.
         if (direction === "long") {
-          const stopHit = bar.low <= dynStop;
-          const tpHit = bar.high >= tp;
-          const gapPastTp = bar.open >= tp;
+          const stopHit = bar!.low <= dynStop;
+          const tpHit = bar!.high >= tp;
+          const gapPastTp = bar!.open >= tp;
           if (tpHit && gapPastTp) {
             exitBar = j;
-            exitPrice = bar.open; // gap-up fills at open
+            exitPrice = bar!.open; // gap-up fills at open
             reason = "tp";
             break;
           }
           if (stopHit) {
             exitBar = j;
-            exitPrice = bar.open < dynStop ? bar.open : dynStop;
+            exitPrice = bar!.open < dynStop ? bar!.open : dynStop;
             reason = "stop";
             break;
           }
@@ -4282,18 +4283,18 @@ export function detectAsset(
             break;
           }
         } else {
-          const stopHit = bar.high >= dynStop;
-          const tpHit = bar.low <= tp;
-          const gapPastTp = bar.open <= tp;
+          const stopHit = bar!.high >= dynStop;
+          const tpHit = bar!.low <= tp;
+          const gapPastTp = bar!.open <= tp;
           if (tpHit && gapPastTp) {
             exitBar = j;
-            exitPrice = bar.open;
+            exitPrice = bar!.open;
             reason = "tp";
             break;
           }
           if (stopHit) {
             exitBar = j;
-            exitPrice = bar.open > dynStop ? bar.open : dynStop;
+            exitPrice = bar!.open > dynStop ? bar!.open : dynStop;
             reason = "stop";
             break;
           }
@@ -4309,8 +4310,8 @@ export function detectAsset(
         if (beTh !== undefined && !beActive) {
           const unrealized =
             direction === "long"
-              ? (bar.close - entry) / entry
-              : (entry - bar.close) / entry;
+              ? (bar!.close - entry) / entry
+              : (entry - bar!.close) / entry;
           if (unrealized >= beTh) {
             // Bug-Audit Phase 4 (Engine Bug 1): BE stop must offset cost so
             // a stop-out at BE realises ~0 PnL. Without `+ cost` for long /
@@ -4332,8 +4333,8 @@ export function detectAsset(
         if (ptp && !ptpTriggered) {
           const unrealized =
             direction === "long"
-              ? (bar.close - entry) / entry
-              : (entry - bar.close) / entry;
+              ? (bar!.close - entry) / entry
+              : (entry - bar!.close) / entry;
           if (unrealized >= ptp.triggerPct) {
             ptpTriggered = true;
             // Lock in closeFraction × triggerPct as realized partial gain
@@ -4344,8 +4345,8 @@ export function detectAsset(
         if (ptpLevels && ptpLevels.length > 0) {
           const unrealized =
             direction === "long"
-              ? (bar.close - entry) / entry
-              : (entry - bar.close) / entry;
+              ? (bar!.close - entry) / entry
+              : (entry - bar!.close) / entry;
           for (let lv = 0; lv < ptpLevels.length; lv++) {
             if (!ptpLevelsHit[lv] && unrealized >= ptpLevels[lv]!.triggerPct) {
               ptpLevelsHit[lv] = true;
@@ -4358,19 +4359,19 @@ export function detectAsset(
         if (trail) {
           const unrealized =
             direction === "long"
-              ? (bar.close - entry) / entry
-              : (entry - bar.close) / entry;
+              ? (bar!.close - entry) / entry
+              : (entry - bar!.close) / entry;
           if (!trailActive && unrealized >= trail.activatePct) {
             trailActive = true;
-            trailPeak = bar.close;
+            trailPeak = bar!.close;
           }
           if (trailActive) {
             if (direction === "long") {
-              if (bar.close > trailPeak) trailPeak = bar.close;
+              if (bar!.close > trailPeak) trailPeak = bar!.close;
               const trailStop = trailPeak * (1 - trail.trailPct);
               if (trailStop > dynStop) dynStop = trailStop;
             } else {
-              if (bar.close < trailPeak) trailPeak = bar.close;
+              if (bar!.close < trailPeak) trailPeak = bar!.close;
               const trailStop = trailPeak * (1 + trail.trailPct);
               if (trailStop < dynStop) dynStop = trailStop;
             }
@@ -4384,16 +4385,16 @@ export function detectAsset(
           if (a !== null && a !== undefined) {
             const unrealized =
               direction === "long"
-                ? (bar.close - entry) / entry
-                : (entry - bar.close) / entry;
+                ? (bar!.close - entry) / entry
+                : (entry - bar!.close) / entry;
             if (unrealized >= chanMinMoveAbs) {
               chanArmed = true;
               if (direction === "long") {
-                if (chanBestClose === null || bar.close > chanBestClose)
-                  chanBestClose = bar.close;
+                if (chanBestClose === null || bar!.close > chanBestClose)
+                  chanBestClose = bar!.close;
               } else {
-                if (chanBestClose === null || bar.close < chanBestClose)
-                  chanBestClose = bar.close;
+                if (chanBestClose === null || bar!.close < chanBestClose)
+                  chanBestClose = bar!.close;
               }
             }
             if (chanArmed && chanBestClose !== null) {
@@ -4416,8 +4417,8 @@ export function detectAsset(
         if (timeExit) {
           const unrealized =
             direction === "long"
-              ? (bar.close - entry) / entry
-              : (entry - bar.close) / entry;
+              ? (bar!.close - entry) / entry
+              : (entry - bar!.close) / entry;
           if (unrealized >= minGainAbs) everReachedMinGain = true;
           // BUGFIX 2026-04-29 (Audit Bug C): barsHeld must measure from
           // ACTUAL entry bar (ebIdx), not signal bar (i+1). With pullbackEntry,
@@ -4426,7 +4427,7 @@ export function detectAsset(
           const barsHeld = j - ebIdx;
           if (barsHeld >= timeExit.maxBarsWithoutGain && !everReachedMinGain) {
             exitBar = j;
-            exitPrice = bar.close;
+            exitPrice = bar!.close;
             reason = "time";
             break;
           }
@@ -4477,7 +4478,7 @@ export function detectAsset(
       if (swapBp > 0) {
         // BUGFIX 2026-04-29 (R12 Agent 1 Bug 5): use Prague day so swap-charge
         // aligns with the same daily anchor the rest of the engine uses.
-        const entryDay = pragueDay(eb.openTime);
+        const entryDay = pragueDay(eb!.openTime);
         const exitDay = pragueDay(candles[exitBar]!.closeTime);
         const overnightCrossings = Math.max(0, exitDay - entryDay);
         if (overnightCrossings > 0) {
@@ -4509,9 +4510,9 @@ export function detectAsset(
               const c = candles[k];
               const prev = candles[k - 1]!.close;
               const tr = Math.max(
-                c.high - c.low,
-                Math.abs(c.high - prev),
-                Math.abs(c.low - prev),
+                c!.high - c!.low,
+                Math.abs(c!.high - prev),
+                Math.abs(c!.low - prev),
               );
               sumTr += tr;
             }
@@ -4568,14 +4569,14 @@ export function detectAsset(
       // PRAGUE_DAY (computed via Intl) for accurate cuts.
       const exitTimeMs = candles[exitBar]!.closeTime;
       const day = pragueDay(exitTimeMs) - pragueDay(ts0);
-      const entryDay = pragueDay(eb.openTime) - pragueDay(ts0);
+      const entryDay = pragueDay(eb!.openTime) - pragueDay(ts0);
       // BUGFIX 2026-04-29 (Agent 2 Bug 10): use ebIdx (actual entry bar after
       // pullback) not i+1. Cosmetic — display only — but ETA stats were off.
       const holdHours = (exitBar - ebIdx) * hoursPerBar;
       out.push({
         symbol: asset.symbol,
         direction,
-        entryTime: eb.openTime,
+        entryTime: eb!.openTime,
         exitTime: candles[exitBar]!.closeTime,
         entryPrice: entry,
         exitPrice,

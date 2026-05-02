@@ -441,9 +441,9 @@ function executeLong(
   const costs = cfg.costs ?? MAKER_COSTS;
   for (let j = i + 2; j <= mx; j++) {
     const bar = candles[j];
-    const sH = bar.low <= sL;
-    const t1 = bar.high >= tp1L;
-    const t2 = bar.high >= tp2L;
+    const sH = bar!.low <= sL;
+    const t1 = bar!.high >= tp1L;
+    const t2 = bar!.high >= tp2L;
     if (!tp1Hit) {
       if (sH) {
         l2B = j;
@@ -464,13 +464,13 @@ function executeLong(
         continue;
       }
     } else {
-      if (bar.low <= sL) {
+      if (bar!.low <= sL) {
         l2B = j;
         l2P = sL;
         reason = "breakeven";
         break;
       }
-      if (bar.high >= tp2L) {
+      if (bar!.high >= tp2L) {
         l2B = j;
         l2P = tp2L;
         reason = "tp2";
@@ -588,7 +588,7 @@ export function runBtcIntraday(
   const macroMask: boolean[] = new Array(candles.length).fill(false);
   for (let i = cfg.macro30dBars; i < candles.length; i++) {
     const past = closes[i - cfg.macro30dBars];
-    if (past > 0) macroMask[i]! = (closes[i]! - past) / past > 0;
+    if (past! > 0) macroMask[i]! = (closes[i]! - past!) / past! > 0;
   }
   // Volume filter (iter133). Precompute the median for speed.
   const volumeMult = cfg.volumeMult ?? 0;
@@ -714,7 +714,7 @@ export function getBtcIntradayLiveSignals(
   const sma = smaLast(closes.slice(i - cfg.htfLen, i), cfg.htfLen);
   const trendOk = candles[i]!.close > sma;
   const past = closes[i - cfg.macro30dBars];
-  const macroOk = past > 0 && (closes[i]! - past) / past > 0;
+  const macroOk = past! > 0 && (closes[i]! - past!) / past! > 0;
   const hr = new Date(candles[i]!.openTime).getUTCHours();
   if ((cfg.avoidHoursUtc ?? []).includes(hr)) return [];
   const volumeMult = cfg.volumeMult ?? 0;

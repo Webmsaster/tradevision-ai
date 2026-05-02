@@ -65,8 +65,8 @@ export function runDrawdownFade(
   for (let i = cfg.windowBars; i < candles.length - cfg.holdBars - 1; i++) {
     const cur = candles[i];
     const back = candles[i - cfg.windowBars];
-    if (back.close <= 0) continue;
-    const cumRet = (cur.close - back.close) / back.close;
+    if (back!.close <= 0) continue;
+    const cumRet = (cur!.close - back!.close) / back!.close;
 
     let direction: "long" | "short" | null = null;
     if (cumRet <= -cfg.dropThresholdPct && !cfg.shortOnly) direction = "long";
@@ -90,13 +90,13 @@ export function runDrawdownFade(
 
     for (let j = i + 2; j <= exitIdx; j++) {
       const bar = candles[j];
-      if (direction === "long" && bar.low <= stopLevel) {
+      if (direction === "long" && bar!.low <= stopLevel) {
         exitIdx = j;
         exitPrice = stopLevel;
         exitReason = "stop";
         break;
       }
-      if (direction === "short" && bar.high >= stopLevel) {
+      if (direction === "short" && bar!.high >= stopLevel) {
         exitIdx = j;
         exitPrice = stopLevel;
         exitReason = "stop";

@@ -103,7 +103,7 @@ export function runFundingCarryBacktest(
 
     if (inPosition === null) {
       // Track consecutive streaks in both directions
-      if (ev.fundingRate > config.entryThreshold) {
+      if (ev!.fundingRate > config.entryThreshold) {
         longConsec++;
         shortConsec = 0;
         if (longConsec >= config.consecutiveEntryPeriods) {
@@ -111,7 +111,7 @@ export function runFundingCarryBacktest(
           posStart = i;
           posCarry = 0;
         }
-      } else if (ev.fundingRate < -config.entryThreshold) {
+      } else if (ev!.fundingRate < -config.entryThreshold) {
         shortConsec++;
         longConsec = 0;
         if (shortConsec >= config.consecutiveEntryPeriods) {
@@ -131,15 +131,15 @@ export function runFundingCarryBacktest(
     // long-basis (short-perp+long-spot) → earns ev.fundingRate (positive when funding>0)
     // short-basis (long-perp+short-spot) → earns -ev.fundingRate (positive when funding<0)
     const perPeriodCarry =
-      inPosition === "long-basis" ? ev.fundingRate : -ev.fundingRate;
+      inPosition === "long-basis" ? ev!.fundingRate : -ev!.fundingRate;
     posCarry += perPeriodCarry;
     periodsInTrade++;
 
     // Exit when funding leaves the favourable zone
     const shouldExit =
       inPosition === "long-basis"
-        ? ev.fundingRate < config.exitThreshold
-        : ev.fundingRate > -config.exitThreshold;
+        ? ev!.fundingRate < config.exitThreshold
+        : ev!.fundingRate > -config.exitThreshold;
 
     if (shouldExit || i === sorted.length - 1) {
       const fees = config.perLegFee * 4;
@@ -149,7 +149,7 @@ export function runFundingCarryBacktest(
       trades.push({
         symbol,
         openTime: sorted[posStart]!.fundingTime,
-        closeTime: ev.fundingTime,
+        closeTime: ev!.fundingTime,
         periods,
         grossCarryPct: posCarry,
         feesPct: fees,

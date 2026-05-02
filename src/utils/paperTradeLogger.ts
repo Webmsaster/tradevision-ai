@@ -177,7 +177,7 @@ export function advancePosition(
   // Time stop?
   if (nowMs >= holdDeadlineMs && bars.length > 0) {
     const last = bars[bars.length - 1];
-    return closeAt(position, last, last.close, "time", costs);
+    return closeAt(position, last, last!.close, "time", costs);
   }
   return null;
 }

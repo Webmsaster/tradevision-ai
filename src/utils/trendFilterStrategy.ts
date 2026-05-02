@@ -73,15 +73,15 @@ export function trendFilterStrategy(
 
   // Long as long as we're above SMA — the backtest engine will hold until the
   // stop (wide ATR trail) or until the strategy reports flat next bar.
-  if (priceNow > smaNow) {
+  if (priceNow! > smaNow!) {
     return {
       action: "long",
       strategy: "trend-follow",
-      stopDistance: atrNow * filterCfg.stopAtrMult,
-      targetDistance: atrNow * filterCfg.targetAtrMult,
+      stopDistance: atrNow! * filterCfg.stopAtrMult,
+      targetDistance: atrNow! * filterCfg.targetAtrMult,
       notes: [
-        `Price ${priceNow.toFixed(2)} above ${filterCfg.smaPeriod}-SMA ${smaNow.toFixed(2)} — bull regime`,
-        pricePrev <= smaPrev
+        `Price ${priceNow!.toFixed(2)} above ${filterCfg.smaPeriod}-SMA ${smaNow!.toFixed(2)} — bull regime`,
+        pricePrev! <= smaPrev!
           ? "Just crossed above SMA (entry)"
           : "Trend continues",
       ],
@@ -94,7 +94,7 @@ export function trendFilterStrategy(
     stopDistance: null,
     targetDistance: null,
     notes: [
-      `Price ${priceNow.toFixed(2)} below ${filterCfg.smaPeriod}-SMA ${smaNow.toFixed(2)} — stay in cash`,
+      `Price ${priceNow!.toFixed(2)} below ${filterCfg.smaPeriod}-SMA ${smaNow!.toFixed(2)} — stay in cash`,
     ],
   };
 }

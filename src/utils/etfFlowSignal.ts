@@ -73,27 +73,27 @@ export function computeEtfFlowSignal(
   let reason: string;
   let action: string;
 
-  if (latest.netFlowUsd > thresholdUsd && prev.netFlowUsd > thresholdUsd) {
+  if (latest!.netFlowUsd > thresholdUsd && prev!.netFlowUsd > thresholdUsd) {
     signal = "long";
-    reason = `2 consecutive days > +$${(thresholdUsd / 1e6).toFixed(0)}M (${(prev.netFlowUsd / 1e6).toFixed(0)}M → ${(latest.netFlowUsd / 1e6).toFixed(0)}M)`;
+    reason = `2 consecutive days > +$${(thresholdUsd / 1e6).toFixed(0)}M (${(prev!.netFlowUsd / 1e6).toFixed(0)}M → ${(latest!.netFlowUsd / 1e6).toFixed(0)}M)`;
     action = `Long BTC at next-day open, exit 24h later. Target +1.5%, stop -1%.`;
   } else if (
-    latest.netFlowUsd < -thresholdUsd &&
-    prev.netFlowUsd < -thresholdUsd
+    latest!.netFlowUsd < -thresholdUsd &&
+    prev!.netFlowUsd < -thresholdUsd
   ) {
     signal = "short";
-    reason = `2 consecutive days < -$${(thresholdUsd / 1e6).toFixed(0)}M (${(prev.netFlowUsd / 1e6).toFixed(0)}M → ${(latest.netFlowUsd / 1e6).toFixed(0)}M)`;
+    reason = `2 consecutive days < -$${(thresholdUsd / 1e6).toFixed(0)}M (${(prev!.netFlowUsd / 1e6).toFixed(0)}M → ${(latest!.netFlowUsd / 1e6).toFixed(0)}M)`;
     action = `Short BTC at next-day open, exit 24h later. Target -1.5%, stop +1%.`;
   } else {
-    reason = `Latest ${(latest.netFlowUsd / 1e6).toFixed(0)}M + prev ${(prev.netFlowUsd / 1e6).toFixed(0)}M — no 2-day confirmation in either direction`;
+    reason = `Latest ${(latest!.netFlowUsd / 1e6).toFixed(0)}M + prev ${(prev!.netFlowUsd / 1e6).toFixed(0)}M — no 2-day confirmation in either direction`;
     action = `No trade — wait for 2 consecutive days above ±$${(thresholdUsd / 1e6).toFixed(0)}M`;
   }
 
   return {
-    latestDate: latest.date,
-    prevDate: prev.date,
-    latestFlow: latest.netFlowUsd,
-    prevFlow: prev.netFlowUsd,
+    latestDate: latest!.date,
+    prevDate: prev!.date,
+    latestFlow: latest!.netFlowUsd,
+    prevFlow: prev!.netFlowUsd,
     signal,
     reason,
     action,

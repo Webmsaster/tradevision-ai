@@ -157,11 +157,11 @@ export function runOiTakerBacktest(
   while (i < aligned.length - config.holdBarsMax) {
     const d = oiDeltas[i];
     const sigma = sigmas[i];
-    if (sigma <= 0) {
+    if (sigma! <= 0) {
       i++;
       continue;
     }
-    const z = (d - means[i]!) / sigma;
+    const z = (d! - means[i]!) / sigma!;
     const tr = takerRatios[i];
     const price = aligned[i]!.candle.close;
     const vw = vwap[i];
@@ -169,14 +169,14 @@ export function runOiTakerBacktest(
     let direction: "long" | "short" | null = null;
     if (
       z > config.oiSigmaThreshold &&
-      tr > config.longTakerRatio &&
-      price > vw
+      tr! > config.longTakerRatio &&
+      price > vw!
     ) {
       direction = "long";
     } else if (
       z > config.oiSigmaThreshold &&
-      tr < config.shortTakerRatio &&
-      price < vw
+      tr! < config.shortTakerRatio &&
+      price < vw!
     ) {
       direction = "short";
     }

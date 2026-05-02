@@ -80,13 +80,13 @@ export async function fetchHyperliquidFunding(): Promise<HlFundingSnapshot> {
   const snap: HlFundingSnapshot = { capturedAt: Date.now() };
   for (let i = 0; i < universe.length; i++) {
     const u = universe[i];
-    if (u.isDelisted) continue;
-    const key = wanted[u.name];
+    if (u!.isDelisted) continue;
+    const key = wanted[u!.name];
     if (!key) continue;
     const c = ctxs[i];
     if (!c) continue;
     const f1h = parseFloat(c.funding);
-    const sym = u.name as HlAssetSnapshot["symbol"];
+    const sym = u!.name as HlAssetSnapshot["symbol"];
     const asset: HlAssetSnapshot = {
       symbol: sym,
       funding1h: f1h,

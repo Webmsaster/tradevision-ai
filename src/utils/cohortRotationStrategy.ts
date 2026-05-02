@@ -129,10 +129,10 @@ export function runCohortRotationBacktest(
 
   for (let i = 0; i < aligned.length - cfg.holdBars - 1; i++) {
     const row = aligned[i];
-    if (row.spread > cfg.minSpreadPct) {
+    if (row!.spread > cfg.minSpreadPct) {
       posStreak++;
       negStreak = 0;
-    } else if (row.spread < -cfg.minSpreadPct) {
+    } else if (row!.spread < -cfg.minSpreadPct) {
       negStreak++;
       posStreak = 0;
     } else {
@@ -198,7 +198,7 @@ export function runCohortRotationBacktest(
       btcExit,
       ethEntry,
       ethExit,
-      triggerSpread: row.spread,
+      triggerSpread: row!.spread,
       netPnlPct,
       exitReason,
     });

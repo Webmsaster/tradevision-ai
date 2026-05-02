@@ -278,7 +278,7 @@ export function runEnsembleEquityLoop(
     const candles = thirtyMinByAsset[entry.sourceSymbol];
     if (!candles) continue;
     const idxMap = idxByAsset[entry.sourceSymbol];
-    const startIdx = idxMap.get(entry.entryTime);
+    const startIdx = idxMap!.get(entry.entryTime);
     if (startIdx === undefined) continue;
     // Resolve SL/TP using asset-cfg (clamped by liveCaps.maxStopPct)
     const stopPct = Math.min(entry.assetCfg.stopPct ?? cfg.stopPct, stopPctCap);
@@ -297,23 +297,23 @@ export function runEnsembleEquityLoop(
     const endIdx = Math.min(candles.length - 1, startIdx + holdBars30m);
     for (let i = startIdx + 1; i <= endIdx; i++) {
       const c = candles[i];
-      if (c.low <= stopPrice) {
+      if (c!.low <= stopPrice) {
         exitPrice = stopPrice;
-        exitTime = c.openTime;
+        exitTime = c!.openTime;
         exitReason = "stop";
         break;
       }
-      if (c.high >= tpPrice) {
+      if (c!.high >= tpPrice) {
         exitPrice = tpPrice;
-        exitTime = c.openTime;
+        exitTime = c!.openTime;
         exitReason = "tp";
         break;
       }
     }
     if (exitPrice === null) {
       const c = candles[endIdx] ?? candles[candles.length - 1];
-      exitPrice = c.close;
-      exitTime = c.openTime;
+      exitPrice = c!.close;
+      exitTime = c!.openTime;
       exitReason = "time";
     }
     const rawPnl = (exitPrice - entryPrice) / entryPrice;

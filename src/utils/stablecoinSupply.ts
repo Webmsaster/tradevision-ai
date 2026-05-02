@@ -138,13 +138,13 @@ export function runSupplyBacktest(
     let exitPrice = sortedBtc[exitIdx]!.close;
     for (let j = entryIdx + 1; j <= exitIdx; j++) {
       const bar = sortedBtc[j];
-      if (direction === "long" && bar.low <= stopLevel) {
+      if (direction === "long" && bar!.low <= stopLevel) {
         exitIdx = j;
         exitPrice = stopLevel;
         exitReason = "stop";
         break;
       }
-      if (direction === "short" && bar.high >= stopLevel) {
+      if (direction === "short" && bar!.high >= stopLevel) {
         exitIdx = j;
         exitPrice = stopLevel;
         exitReason = "stop";

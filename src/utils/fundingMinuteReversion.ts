@@ -108,7 +108,7 @@ export function runFundingMinuteBacktest(
     //   negative funding (shorts pay) → shorts buy pre-settle → we SHORT
     const direction: "long" | "short" = ev.fundingRate > 0 ? "long" : "short";
 
-    const entry = entryBar.close;
+    const entry = entryBar!.close;
     const stopLevel =
       direction === "long"
         ? entry * (1 - config.stopPct)
@@ -116,16 +116,16 @@ export function runFundingMinuteBacktest(
 
     let exitReason: FundingMinuteTrade["exitReason"] = "time";
     let actualExitIdx = exitIdx;
-    let exitPrice = exitBar.close;
+    let exitPrice = exitBar!.close;
     for (let j = entryIdx + 1; j <= exitIdx; j++) {
       const bar = sortedCandles[j];
-      if (direction === "long" && bar.low <= stopLevel) {
+      if (direction === "long" && bar!.low <= stopLevel) {
         actualExitIdx = j;
         exitPrice = stopLevel;
         exitReason = "stop";
         break;
       }
-      if (direction === "short" && bar.high >= stopLevel) {
+      if (direction === "short" && bar!.high >= stopLevel) {
         actualExitIdx = j;
         exitPrice = stopLevel;
         exitReason = "stop";
@@ -146,7 +146,7 @@ export function runFundingMinuteBacktest(
       direction,
       entry,
       exit: exitPrice,
-      entryTime: entryBar.closeTime,
+      entryTime: entryBar!.closeTime,
       exitTime: sortedCandles[actualExitIdx]!.closeTime,
       netPnlPct: cost.netPnlPct,
       exitReason,

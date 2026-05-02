@@ -110,7 +110,7 @@ export function runMrEngine(
     };
   }
   const barsPerDay = BARS_PER_DAY[cfg.timeframe];
-  const maxBars = Math.min(n, cfg.maxDays * barsPerDay);
+  const maxBars = Math.min(n, cfg.maxDays * barsPerDay!);
 
   // Pre-compute RSI for each asset
   const rsiData: Record<string, (number | null)[]> = {};
@@ -154,7 +154,7 @@ export function runMrEngine(
   void _pendingShortConfirm;
 
   for (let bar = 1; bar < maxBars; bar++) {
-    const dayIndex = Math.floor(bar / barsPerDay);
+    const dayIndex = Math.floor(bar / barsPerDay!);
     if (dayIndex !== lastDayIndex) {
       // New day — reset daily-loss counter
       dailyStartEquity = equity;
@@ -242,43 +242,43 @@ export function runMrEngine(
     // Manage open positions
     for (let i = open.length - 1; i >= 0; i--) {
       const pos = open[i];
-      const asset = cappedAssets.find((a) => a.symbol === pos.asset)!;
-      const candle = candleData[pos.symbol]![bar];
+      const asset = cappedAssets.find((a) => a.symbol === pos!.asset)!;
+      const candle = candleData[pos!.symbol]![bar];
       if (!candle) continue;
 
       let exitReason: ClosedTrade["reason"] | null = null;
       let exitPrice = candle.close;
 
-      if (pos.direction === "long") {
-        if (candle.low <= pos.stopPrice) {
+      if (pos!.direction === "long") {
+        if (candle.low <= pos!.stopPrice) {
           exitReason = "sl";
-          exitPrice = pos.stopPrice;
-        } else if (candle.high >= pos.tpPrice) {
+          exitPrice = pos!.stopPrice;
+        } else if (candle.high >= pos!.tpPrice) {
           exitReason = "tp";
-          exitPrice = pos.tpPrice;
+          exitPrice = pos!.tpPrice;
         } else {
-          const r = rsiData[pos.symbol]![bar];
-          if (r !== null && r >= asset.rsiNeutral) {
+          const r = rsiData[pos!.symbol]![bar];
+          if (r !== null && r! >= asset.rsiNeutral) {
             exitReason = "rsi_revert";
             exitPrice = candle.close;
-          } else if (bar - pos.entryBar >= asset.holdBars) {
+          } else if (bar - pos!.entryBar >= asset.holdBars) {
             exitReason = "max_hold";
             exitPrice = candle.close;
           }
         }
       } else {
-        if (candle.high >= pos.stopPrice) {
+        if (candle.high >= pos!.stopPrice) {
           exitReason = "sl";
-          exitPrice = pos.stopPrice;
-        } else if (candle.low <= pos.tpPrice) {
+          exitPrice = pos!.stopPrice;
+        } else if (candle.low <= pos!.tpPrice) {
           exitReason = "tp";
-          exitPrice = pos.tpPrice;
+          exitPrice = pos!.tpPrice;
         } else {
-          const r = rsiData[pos.symbol]![bar];
-          if (r !== null && r <= asset.rsiNeutral) {
+          const r = rsiData[pos!.symbol]![bar];
+          if (r !== null && r! <= asset.rsiNeutral) {
             exitReason = "rsi_revert";
             exitPrice = candle.close;
-          } else if (bar - pos.entryBar >= asset.holdBars) {
+          } else if (bar - pos!.entryBar >= asset.holdBars) {
             exitReason = "max_hold";
             exitPrice = candle.close;
           }
@@ -287,23 +287,23 @@ export function runMrEngine(
 
       if (exitReason) {
         const rawPnl =
-          pos.direction === "long"
-            ? (exitPrice - pos.entryPrice) / pos.entryPrice
-            : (pos.entryPrice - exitPrice) / pos.entryPrice;
+          pos!.direction === "long"
+            ? (exitPrice - pos!.entryPrice) / pos!.entryPrice
+            : (pos!.entryPrice - exitPrice) / pos!.entryPrice;
         // Cost adjustment
         const totalCostFrac =
-          ((pos.costBp + asset.slippageBp) / 10000) * 2 +
-          (pos.swapBpPerDay / 10000) *
-            Math.max(1, Math.floor((bar - pos.entryBar) / barsPerDay));
+          ((pos!.costBp + asset.slippageBp) / 10000) * 2 +
+          (pos!.swapBpPerDay / 10000) *
+            Math.max(1, Math.floor((bar - pos!.entryBar) / barsPerDay!));
         const adjPnl = rawPnl - totalCostFrac;
-        const effPnl = adjPnl * cfg.leverage * pos.riskFrac;
+        const effPnl = adjPnl * cfg.leverage * pos!.riskFrac;
         equity += effPnl;
         closed.push({
-          asset: pos.asset,
-          direction: pos.direction,
-          entryBar: pos.entryBar,
+          asset: pos!.asset,
+          direction: pos!.direction,
+          entryBar: pos!.entryBar,
           exitBar: bar,
-          entryPrice: pos.entryPrice,
+          entryPrice: pos!.entryPrice,
           exitPrice,
           reason: exitReason,
           pnlPct: rawPnl,
@@ -341,8 +341,8 @@ export function runMrEngine(
       // Long entry: oversold then RSI crosses back above oversold threshold
       if (
         asset.allowLong &&
-        rPrev <= asset.rsiOversold &&
-        r > asset.rsiOversold
+        rPrev! <= asset.rsiOversold &&
+        r! > asset.rsiOversold
       ) {
         const entryPrice = candleData[asset.sourceSymbol]![bar].close;
         open.push({
@@ -365,8 +365,8 @@ export function runMrEngine(
       // Short entry: overbought then RSI crosses back below overbought
       if (
         asset.allowShort &&
-        rPrev >= asset.rsiOverbought &&
-        r < asset.rsiOverbought
+        rPrev! >= asset.rsiOverbought &&
+        r! < asset.rsiOverbought
       ) {
         const entryPrice = candleData[asset.sourceSymbol]![bar].close;
         open.push({

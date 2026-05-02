@@ -318,7 +318,7 @@ function smaOf(vals: number[]): number {
 function findContaining1h(bar15m: Candle, candles1h: Candle[]): Candle | null {
   for (let i = candles1h.length - 1; i >= 0; i--) {
     const c = candles1h[i];
-    if (c.openTime <= bar15m.openTime && bar15m.openTime <= c.closeTime) {
+    if (c!.openTime <= bar15m.openTime && bar15m.openTime <= c!.closeTime) {
       return c;
     }
   }
@@ -385,15 +385,15 @@ export function runHfDaytrading(
   for (let i = cfg.lookback; i < candles.length - cfg.holdBars - 1; i++) {
     const cur = candles[i];
     const prev = candles[i - 1];
-    if (prev.close <= 0) continue;
+    if (prev!.close <= 0) continue;
     const w = candles.slice(i - cfg.lookback, i);
     const mv = median(w.map((c) => c.volume));
     if (mv <= 0) continue;
-    const vZ = cur.volume / mv;
+    const vZ = cur!.volume / mv;
     if (vZ < cfg.volMult) continue;
     const sd = stdReturns(w.map((c) => c.close));
     if (sd <= 0) continue;
-    const ret = (cur.close - prev.close) / prev.close;
+    const ret = (cur!.close - prev!.close) / prev!.close;
     const pZ = Math.abs(ret) / sd;
     if (pZ < cfg.priceZ) continue;
 
@@ -431,9 +431,9 @@ export function runHfDaytrading(
 
     for (let j = i + 2; j <= mx; j++) {
       const bar = candles[j];
-      const sH = direction === "long" ? bar.low <= sL : bar.high >= sL;
-      const t1R = direction === "long" ? bar.high >= tp1L : bar.low <= tp1L;
-      const t2R = direction === "long" ? bar.high >= tp2L : bar.low <= tp2L;
+      const sH = direction === "long" ? bar!.low <= sL : bar!.high >= sL;
+      const t1R = direction === "long" ? bar!.high >= tp1L : bar!.low <= tp1L;
+      const t2R = direction === "long" ? bar!.high >= tp2L : bar!.low <= tp2L;
       if (!tp1Hit) {
         if (t1R && sH) {
           l2B = j;
@@ -460,8 +460,8 @@ export function runHfDaytrading(
           continue;
         }
       } else {
-        const sH2 = direction === "long" ? bar.low <= sL : bar.high >= sL;
-        const t22 = direction === "long" ? bar.high >= tp2L : bar.low <= tp2L;
+        const sH2 = direction === "long" ? bar!.low <= sL : bar!.high >= sL;
+        const t22 = direction === "long" ? bar!.high >= tp2L : bar!.low <= tp2L;
         if (t22 && sH2) {
           l2B = j;
           l2P = sL;
@@ -585,7 +585,7 @@ export function evaluateHfDaytrading(
   const i = candles.length - 1;
   const cur = candles[i];
   const prev = candles[i - 1];
-  if (prev.close <= 0) {
+  if (prev!.close <= 0) {
     return {
       ...base,
       active: false,
@@ -596,9 +596,9 @@ export function evaluateHfDaytrading(
   }
   const w = candles.slice(i - cfg.lookback, i);
   const mv = median(w.map((c) => c.volume));
-  const vZ = mv > 0 ? cur.volume / mv : 0;
+  const vZ = mv > 0 ? cur!.volume / mv : 0;
   const sd = stdReturns(w.map((c) => c.close));
-  const ret = (cur.close - prev.close) / prev.close;
+  const ret = (cur!.close - prev!.close) / prev!.close;
   const pZ = sd > 0 ? Math.abs(ret) / sd : 0;
   if (vZ < cfg.volMult || pZ < cfg.priceZ) {
     return {
@@ -619,7 +619,7 @@ export function evaluateHfDaytrading(
         : "short";
   const filtersFailed: string[] = [];
   if (cfg.avoidHoursUtc && cfg.avoidHoursUtc.length > 0) {
-    const h = new Date(cur.openTime).getUTCHours();
+    const h = new Date(cur!.openTime).getUTCHours();
     if (cfg.avoidHoursUtc.includes(h))
       filtersFailed.push(`hour ${h} UTC (avoid)`);
   }
@@ -627,7 +627,7 @@ export function evaluateHfDaytrading(
     const sma48 = smaOf(
       candles.slice(Math.max(0, i - 47), i + 1).map((c) => c.close),
     );
-    const alignedLong = cur.close > sma48;
+    const alignedLong = cur!.close > sma48;
     if (direction === "long" && !alignedLong) filtersFailed.push("HTF trend");
     if (direction === "short" && alignedLong) filtersFailed.push("HTF trend");
   }
@@ -677,7 +677,7 @@ export function evaluateHfDaytrading(
       reason: `Spike detected but filter(s) failed: ${filtersFailed.join(", ")}`,
     };
   }
-  const entry = cur.close;
+  const entry = cur!.close;
   const tp1 =
     direction === "long" ? entry * (1 + cfg.tp1Pct) : entry * (1 - cfg.tp1Pct);
   const tp2 =
@@ -686,7 +686,7 @@ export function evaluateHfDaytrading(
     direction === "long"
       ? entry * (1 - cfg.stopPct)
       : entry * (1 + cfg.stopPct);
-  const holdUntil = cur.closeTime + cfg.holdBars * 15 * 60 * 1000;
+  const holdUntil = cur!.closeTime + cfg.holdBars * 15 * 60 * 1000;
   return {
     ...base,
     active: true,

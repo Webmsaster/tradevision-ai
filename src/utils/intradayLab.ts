@@ -97,10 +97,10 @@ export function computeHourDowMatrix(candles: Candle[]): HourDowBucket[] {
     for (let h = 0; h < 24; h++) {
       const key = dow * 24 + h;
       const rs = buckets[key];
-      const n = rs.length;
-      const mean = n > 0 ? rs.reduce((s, v) => s + v, 0) / n : 0;
+      const n = rs!.length;
+      const mean = n > 0 ? rs!.reduce((s, v) => s + v, 0) / n : 0;
       const varr =
-        n > 0 ? rs.reduce((s, v) => s + (v - mean) * (v - mean), 0) / n : 0;
+        n > 0 ? rs!.reduce((s, v) => s + (v - mean) * (v - mean), 0) / n : 0;
       const std = Math.sqrt(varr);
       const tStat = std > 0 ? (mean * Math.sqrt(n)) / std : 0;
       out.push({
@@ -109,7 +109,7 @@ export function computeHourDowMatrix(candles: Candle[]): HourDowBucket[] {
         n,
         mean,
         tStat,
-        winRate: n > 0 ? rs.filter((r) => r > 0).length / n : 0,
+        winRate: n > 0 ? rs!.filter((r) => r > 0).length / n : 0,
       });
     }
   }
@@ -150,15 +150,15 @@ export function runHourDowStrategy(
   const returns: number[] = [];
   for (let i = 0; i < candles.length; i++) {
     const bar = candles[i];
-    const d = new Date(bar.openTime);
+    const d = new Date(bar!.openTime);
     const key = d.getUTCDay() * 24 + d.getUTCHours();
     const isLong = longKeys.has(key);
     const isShort = shortKeys.has(key);
     if (!isLong && !isShort) continue;
     const direction: "long" | "short" = isLong ? "long" : "short";
     const cost = applyCosts({
-      entry: bar.open,
-      exit: bar.close,
+      entry: bar!.open,
+      exit: bar!.close,
       direction,
       holdingHours: 1,
       config: costs,
@@ -246,15 +246,15 @@ export function runTrendFilteredHourStrategy(
     const smaNow = smaArr[i];
     if (smaNow === null) continue;
     const bar = candles[i];
-    const hour = new Date(bar.openTime).getUTCHours();
-    const uptrend = bar.close > smaNow;
+    const hour = new Date(bar!.openTime).getUTCHours();
+    const uptrend = bar!.close > smaNow!;
     const isLong = longSet.has(hour) && uptrend;
     const isShort = !config.longOnly && shortSet.has(hour) && !uptrend;
     if (!isLong && !isShort) continue;
     const direction: "long" | "short" = isLong ? "long" : "short";
     const cost = applyCosts({
-      entry: bar.open,
-      exit: bar.close,
+      entry: bar!.open,
+      exit: bar!.close,
       direction,
       holdingHours: 1,
       config: costs,
@@ -291,16 +291,16 @@ export function runVolFilteredHourStrategy(
     const a = atrArr[i];
     if (a === null) continue;
     const bar = candles[i];
-    const atrPct = a / bar.close;
+    const atrPct = a! / bar!.close;
     if (atrPct < config.minAtrPct || atrPct > config.maxAtrPct) continue;
-    const hour = new Date(bar.openTime).getUTCHours();
+    const hour = new Date(bar!.openTime).getUTCHours();
     const isLong = longSet.has(hour);
     const isShort = shortSet.has(hour);
     if (!isLong && !isShort) continue;
     const direction: "long" | "short" = isLong ? "long" : "short";
     const cost = applyCosts({
-      entry: bar.open,
-      exit: bar.close,
+      entry: bar!.open,
+      exit: bar!.close,
       direction,
       holdingHours: 1,
       config: costs,
@@ -402,8 +402,8 @@ export function runSpreadStrategy(
         // Approximation: pnl ≈ (exitRatio - entryRatio) / entryRatio
         const gross =
           open.dir === "long-ratio"
-            ? (exitRatio - open.entry) / open.entry
-            : (open.entry - exitRatio) / open.entry;
+            ? (exitRatio! - open.entry) / open.entry
+            : (open.entry - exitRatio!) / open.entry;
         // 2 legs × 2 sides = 4 cost events
         const fees = costs.takerFee * 4;
         const slip = (costs.slippageBps / 10_000) * 4;
@@ -710,13 +710,13 @@ export function runTakerImbalance(
 
   for (let i = 0; i < candles.length - config.holdBars; i++) {
     const c = candles[i];
-    if (c.volume <= 0 || c.takerBuyVolume === undefined) continue;
-    const imbalance = c.takerBuyVolume / c.volume;
+    if (c!.volume <= 0 || c!.takerBuyVolume === undefined) continue;
+    const imbalance = c!.takerBuyVolume / c!.volume;
     if (imbalance <= config.imbalanceThreshold) continue;
-    const barReturn = (c.close - c.open) / c.open;
+    const barReturn = (c!.close - c!.open) / c!.open;
     if (Math.abs(barReturn) > config.maxBarReturn) continue;
 
-    const entry = c.close;
+    const entry = c!.close;
     const target = entry * (1 + config.targetPct);
     const stop = entry * (1 - config.stopPct);
     let exitIdx = i + config.holdBars;
@@ -744,7 +744,7 @@ export function runTakerImbalance(
       config: costs,
     });
     trades.push({
-      entryTime: c.closeTime,
+      entryTime: c!.closeTime,
       exitTime: candles[exitIdx]!.closeTime,
       entry,
       exit: exitPrice,

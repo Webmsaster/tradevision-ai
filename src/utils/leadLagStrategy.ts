@@ -88,8 +88,8 @@ export function runLeadLagBacktest(
   for (let i = 1; i < pairs.length - config.holdBarsMax; i++) {
     const prev = pairs[i - 1];
     const curr = pairs[i];
-    const btcRet = (curr.a.close - prev.a.close) / prev.a.close;
-    const altRet = (curr.b.close - prev.b.close) / prev.b.close;
+    const btcRet = (curr!.a.close - prev!.a.close) / prev!.a.close;
+    const altRet = (curr!.b.close - prev!.b.close) / prev!.b.close;
     if (btcRet < config.btcThresholdPct) continue;
     if (altRet > config.altMaxMovePct) continue;
 
@@ -111,15 +111,15 @@ export function runLeadLagBacktest(
     ) {
       const bar = pairs[j];
       // BTC reversal
-      const btcFromEntry = (bar.a.close - btcEntry) / btcEntry;
+      const btcFromEntry = (bar!.a.close - btcEntry) / btcEntry;
       if (btcFromEntry <= -config.stopPctBtcReversal) {
         exitIdx = j;
-        exitPrice = bar.b.close;
+        exitPrice = bar!.b.close;
         exitReason = "btc-reversal";
         break;
       }
       // Target hit
-      if (bar.b.high >= target) {
+      if (bar!.b.high >= target) {
         exitIdx = j;
         exitPrice = target;
         exitReason = "target";
@@ -137,7 +137,7 @@ export function runLeadLagBacktest(
     });
     trades.push({
       altSymbol,
-      triggerTime: curr.time,
+      triggerTime: curr!.time,
       entryTime: entryBar.time,
       exitTime: pairs[exitIdx]!.time,
       btc1hReturn: btcRet,

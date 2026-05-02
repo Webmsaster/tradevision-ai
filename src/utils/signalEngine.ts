@@ -117,28 +117,28 @@ export function analyzeCandles(
   // --- Regime detection via ADX ---
   let regime: MarketRegime = "unknown";
   if (adxNow !== null) {
-    regime = adxNow >= cfg.adxTrendThreshold ? "trending" : "ranging";
+    regime = adxNow! >= cfg.adxTrendThreshold ? "trending" : "ranging";
   }
 
   // --- EMA crossover/state ---
   const emaFastAbove =
-    emaFastNow !== null && emaSlowNow !== null && emaFastNow > emaSlowNow;
+    emaFastNow !== null && emaSlowNow !== null && emaFastNow! > emaSlowNow!;
   const emaFastBelow =
-    emaFastNow !== null && emaSlowNow !== null && emaFastNow < emaSlowNow;
+    emaFastNow !== null && emaSlowNow !== null && emaFastNow! < emaSlowNow!;
   const crossUp =
     emaFastPrev !== null &&
     emaSlowPrev !== null &&
     emaFastNow !== null &&
     emaSlowNow !== null &&
-    emaFastPrev <= emaSlowPrev &&
-    emaFastNow > emaSlowNow;
+    emaFastPrev! <= emaSlowPrev! &&
+    emaFastNow! > emaSlowNow!;
   const crossDown =
     emaFastPrev !== null &&
     emaSlowPrev !== null &&
     emaFastNow !== null &&
     emaSlowNow !== null &&
-    emaFastPrev >= emaSlowPrev &&
-    emaFastNow < emaSlowNow;
+    emaFastPrev! >= emaSlowPrev! &&
+    emaFastNow! < emaSlowNow!;
 
   if (crossUp) {
     longScore += 3;
@@ -161,17 +161,17 @@ export function analyzeCandles(
 
   // --- RSI trend confirmation ---
   if (rsiNow !== null) {
-    if (rsiNow >= 55) {
+    if (rsiNow! >= 55) {
       longScore += 2;
-      reasons.push(`RSI ${rsiNow.toFixed(1)} bullish (>50)`);
-    } else if (rsiNow <= 45) {
+      reasons.push(`RSI ${rsiNow!.toFixed(1)} bullish (>50)`);
+    } else if (rsiNow! <= 45) {
       shortScore += 2;
-      reasons.push(`RSI ${rsiNow.toFixed(1)} bearish (<50)`);
+      reasons.push(`RSI ${rsiNow!.toFixed(1)} bearish (<50)`);
     }
-    if (rsiNow > cfg.rsiOverbought)
-      reasons.push(`RSI ${rsiNow.toFixed(1)} overbought — exhaustion risk`);
-    else if (rsiNow < cfg.rsiOversold)
-      reasons.push(`RSI ${rsiNow.toFixed(1)} oversold — exhaustion risk`);
+    if (rsiNow! > cfg.rsiOverbought)
+      reasons.push(`RSI ${rsiNow!.toFixed(1)} overbought — exhaustion risk`);
+    else if (rsiNow! < cfg.rsiOversold)
+      reasons.push(`RSI ${rsiNow!.toFixed(1)} oversold — exhaustion risk`);
   }
 
   // --- MACD momentum ---
@@ -181,26 +181,26 @@ export function analyzeCandles(
     macdHistNow !== null &&
     macdHistPrev !== null
   ) {
-    if (macdNow > macdSignalNow && macdHistNow > macdHistPrev) {
+    if (macdNow! > macdSignalNow! && macdHistNow! > macdHistPrev!) {
       longScore += 2;
       reasons.push(`MACD bullish, histogram rising`);
-    } else if (macdNow < macdSignalNow && macdHistNow < macdHistPrev) {
+    } else if (macdNow! < macdSignalNow! && macdHistNow! < macdHistPrev!) {
       shortScore += 2;
       reasons.push(`MACD bearish, histogram falling`);
     }
   }
 
   // --- Volume filter (confirms conviction) ---
-  if (volAvg !== null && volAvg > 0 && volNow > volAvg * 1.2) {
+  if (volAvg !== null && volAvg! > 0 && volNow! > volAvg! * 1.2) {
     if (longScore > shortScore) {
       longScore += 1;
       reasons.push(
-        `Volume ${((volNow / volAvg) * 100 - 100).toFixed(0)}% above avg`,
+        `Volume ${((volNow! / volAvg!) * 100 - 100).toFixed(0)}% above avg`,
       );
     } else if (shortScore > longScore) {
       shortScore += 1;
       reasons.push(
-        `Volume ${((volNow / volAvg) * 100 - 100).toFixed(0)}% above avg`,
+        `Volume ${((volNow! / volAvg!) * 100 - 100).toFixed(0)}% above avg`,
       );
     }
   }
@@ -261,9 +261,9 @@ export function analyzeCandles(
   // --- ATR-based SL/TP ---
   let levels: SignalLevels | null = null;
   const entry = candles[last]!.close;
-  if (atrNow !== null && atrNow > 0 && action !== "flat") {
-    const slDistance = atrNow * cfg.stopLossAtrMultiple;
-    const tpDistance = atrNow * cfg.takeProfitAtrMultiple;
+  if (atrNow !== null && atrNow! > 0 && action !== "flat") {
+    const slDistance = atrNow! * cfg.stopLossAtrMultiple;
+    const tpDistance = atrNow! * cfg.takeProfitAtrMultiple;
     const stopLoss =
       action === "long" ? entry - slDistance : entry + slDistance;
     const takeProfit =
@@ -492,7 +492,7 @@ export function monteCarloBacktest(
     let maxDd = 0;
     for (let i = 0; i < rs.length; i++) {
       const pick = rs[Math.floor(rand() * rs.length)];
-      equity += pick;
+      equity += pick!;
       if (equity > peak) peak = equity;
       const dd = peak - equity;
       if (dd > maxDd) maxDd = dd;

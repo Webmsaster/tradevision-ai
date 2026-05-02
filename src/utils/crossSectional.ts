@@ -139,7 +139,7 @@ export function runCrossSectionalRotation({
     const rocs = symbols.map((s, sIdx) => {
       const ref = matrix[refIdx]![sIdx];
       const base = matrix[baseIdx]![sIdx];
-      return { symbol: s, idx: sIdx, roc: base > 0 ? ref / base - 1 : 0 };
+      return { symbol: s, idx: sIdx, roc: base! > 0 ? ref! / base! - 1 : 0 };
     });
     rocs.sort((a, b) => b.roc - a.roc);
     rankings.push({
@@ -149,14 +149,14 @@ export function runCrossSectionalRotation({
 
     // Only hold if top asset has positive momentum (absolute filter)
     const topAsset = rocs[0];
-    const shouldHold = topAsset.roc > 0 ? topAsset : null;
+    const shouldHold = topAsset!.roc > 0 ? topAsset : null;
 
     // If not rebalancing every bar, only switch on week boundary (already
     // implicit if candles are weekly)
     const needToSwitch =
       !currentHold ||
       shouldHold === null ||
-      currentHold.symbol !== shouldHold.symbol;
+      currentHold.symbol !== shouldHold!.symbol;
 
     if (currentHold && needToSwitch) {
       // Close current hold

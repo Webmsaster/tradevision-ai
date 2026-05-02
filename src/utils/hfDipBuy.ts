@@ -180,7 +180,7 @@ export function runHfDipBuy(
   for (let i = start; i < candles.length - cfg.holdBars - 1; i++) {
     const cur = candles[i];
     const sma = smaLast(closes.slice(i - cfg.htfLen, i), cfg.htfLen);
-    if (cur.close <= sma) continue;
+    if (cur!.close <= sma) continue;
 
     if (cfg.btcMacroHtf > 0 && btcCandles && btcCandles.length > 0) {
       // Align by openTime; fallback to index-aligned if same length
@@ -189,7 +189,7 @@ export function runHfDipBuy(
         btcI = i;
       } else {
         for (let k = btcCandles.length - 1; k >= 0; k--) {
-          if (btcCandles[k]!.openTime <= cur.openTime) {
+          if (btcCandles[k]!.openTime <= cur!.openTime) {
             btcI = k;
             break;
           }
@@ -213,7 +213,7 @@ export function runHfDipBuy(
     if (!allRed) continue;
 
     if (cfg.avoidHoursUtc && cfg.avoidHoursUtc.length > 0) {
-      const h = new Date(cur.openTime).getUTCHours();
+      const h = new Date(cur!.openTime).getUTCHours();
       if (cfg.avoidHoursUtc.includes(h)) continue;
     }
 
@@ -231,9 +231,9 @@ export function runHfDipBuy(
     let exitReason: DipBuyTrade["exitReason"] = "time";
     for (let j = i + 2; j <= mx; j++) {
       const bar = candles[j];
-      const sH = bar.low <= sL;
-      const t1 = bar.high >= tp1L;
-      const t2 = bar.high >= tp2L;
+      const sH = bar!.low <= sL;
+      const t1 = bar!.high >= tp1L;
+      const t2 = bar!.high >= tp2L;
       if (!tp1Hit) {
         if ((t1 && sH) || sH) {
           l2B = j;
@@ -254,8 +254,8 @@ export function runHfDipBuy(
           continue;
         }
       } else {
-        const s2 = bar.low <= sL;
-        const t22 = bar.high >= tp2L;
+        const s2 = bar!.low <= sL;
+        const t22 = bar!.high >= tp2L;
         if ((t22 && s2) || s2) {
           l2B = j;
           l2P = sL;

@@ -98,16 +98,16 @@ export function runVolumeSpikeFade(
   for (let i = cfg.lookback; i < candles.length - cfg.holdBars - 1; i++) {
     const cur = candles[i];
     const prev = candles[i - 1];
-    if (prev.close <= 0) continue;
+    if (prev!.close <= 0) continue;
     const window = candles.slice(i - cfg.lookback, i);
     const medVol = median(window.map((c) => c.volume));
     if (medVol <= 0) continue;
-    const vZ = cur.volume / medVol;
+    const vZ = cur!.volume / medVol;
     if (vZ < cfg.volMult) continue;
 
     const sd = stdReturns(window.map((c) => c.close));
     if (sd <= 0) continue;
-    const ret = (cur.close - prev.close) / prev.close;
+    const ret = (cur!.close - prev!.close) / prev!.close;
     const pZ = Math.abs(ret) / sd;
     if (pZ < cfg.priceZ) continue;
     signalsFired++;
@@ -139,13 +139,13 @@ export function runVolumeSpikeFade(
 
     for (let j = i + 2; j <= exitIdx; j++) {
       const bar = candles[j];
-      if (direction === "long" && bar.low <= stopLevel) {
+      if (direction === "long" && bar!.low <= stopLevel) {
         exitIdx = j;
         exitPrice = stopLevel;
         exitReason = "stop";
         break;
       }
-      if (direction === "short" && bar.high >= stopLevel) {
+      if (direction === "short" && bar!.high >= stopLevel) {
         exitIdx = j;
         exitPrice = stopLevel;
         exitReason = "stop";

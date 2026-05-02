@@ -105,9 +105,9 @@ function isBullishFvgEntry(c: Candle[], i: number, lookback: number): boolean {
     // Is current bar entering this gap from above?
     const currentBar = c[i];
     if (
-      currentBar.low <= fvgTop &&
-      currentBar.low >= fvgBottom &&
-      currentBar.close > fvgBottom
+      currentBar!.low <= fvgTop &&
+      currentBar!.low >= fvgBottom &&
+      currentBar!.close > fvgBottom
     ) {
       // entering FVG zone from above + closing inside or above → bullish entry
       return true;
@@ -124,9 +124,9 @@ function isBearishFvgEntry(c: Candle[], i: number, lookback: number): boolean {
     if (fvgBottom >= fvgTop) continue;
     const currentBar = c[i];
     if (
-      currentBar.high >= fvgBottom &&
-      currentBar.high <= fvgTop &&
-      currentBar.close < fvgTop
+      currentBar!.high >= fvgBottom &&
+      currentBar!.high <= fvgTop &&
+      currentBar!.close < fvgTop
     ) {
       return true;
     }
@@ -146,10 +146,10 @@ function isBullishSweep(
   for (let j = i - lookback; j < i; j++)
     recentLow = Math.min(recentLow, c[j]!.low);
   const cur = c[i];
-  const sweepDepth = (recentLow - cur.low) / recentLow;
+  const sweepDepth = (recentLow - cur!.low) / recentLow;
   if (sweepDepth < wickPct) return false; // wick must dip below by wickPct
   // Close back above recentLow
-  return cur.close > recentLow;
+  return cur!.close > recentLow;
 }
 
 function isBearishSweep(
@@ -163,9 +163,9 @@ function isBearishSweep(
   for (let j = i - lookback; j < i; j++)
     recentHigh = Math.max(recentHigh, c[j]!.high);
   const cur = c[i];
-  const sweepDepth = (cur.high - recentHigh) / recentHigh;
+  const sweepDepth = (cur!.high - recentHigh) / recentHigh;
   if (sweepDepth < wickPct) return false;
-  return cur.close < recentHigh;
+  return cur!.close < recentHigh;
 }
 
 /** Order Block: last bearish candle before a strong bullish move (= bullish OB) */
@@ -214,7 +214,7 @@ export function runSmcEngine(
       tradingDays: 0,
     };
   const barsPerDay = BARS_PER_DAY[cfg.timeframe];
-  const maxBars = Math.min(n, cfg.maxDays * barsPerDay);
+  const maxBars = Math.min(n, cfg.maxDays * barsPerDay!);
 
   const atrData: Record<string, (number | null)[]> = {};
   for (const a of cfg.assets)
@@ -244,7 +244,7 @@ export function runSmcEngine(
   const tradingDaysSet = new Set<number>();
 
   for (let bar = 5; bar < maxBars; bar++) {
-    const dayIndex = Math.floor(bar / barsPerDay);
+    const dayIndex = Math.floor(bar / barsPerDay!);
     if (dayIndex !== lastDayIndex) {
       dailyStartEquity = equity;
       frozenForDay = false;
@@ -322,50 +322,50 @@ export function runSmcEngine(
     // Manage open positions
     for (let i = open.length - 1; i >= 0; i--) {
       const pos = open[i];
-      const candle = candleData[pos.symbol]![bar];
-      const asset = cappedAssets.find((a) => a.symbol === pos.asset)!;
+      const candle = candleData[pos!.symbol]![bar];
+      const asset = cappedAssets.find((a) => a.symbol === pos!.asset)!;
       if (!candle) continue;
       let exitReason: ClosedTrade["reason"] | null = null;
       let exitPrice = candle.close;
-      if (pos.direction === "long") {
-        if (candle.low <= pos.stopPrice) {
+      if (pos!.direction === "long") {
+        if (candle.low <= pos!.stopPrice) {
           exitReason = "sl";
-          exitPrice = pos.stopPrice;
-        } else if (candle.high >= pos.tpPrice) {
+          exitPrice = pos!.stopPrice;
+        } else if (candle.high >= pos!.tpPrice) {
           exitReason = "tp";
-          exitPrice = pos.tpPrice;
-        } else if (bar - pos.entryBar >= asset.holdBars) {
+          exitPrice = pos!.tpPrice;
+        } else if (bar - pos!.entryBar >= asset.holdBars) {
           exitReason = "max_hold";
         }
       } else {
-        if (candle.high >= pos.stopPrice) {
+        if (candle.high >= pos!.stopPrice) {
           exitReason = "sl";
-          exitPrice = pos.stopPrice;
-        } else if (candle.low <= pos.tpPrice) {
+          exitPrice = pos!.stopPrice;
+        } else if (candle.low <= pos!.tpPrice) {
           exitReason = "tp";
-          exitPrice = pos.tpPrice;
-        } else if (bar - pos.entryBar >= asset.holdBars) {
+          exitPrice = pos!.tpPrice;
+        } else if (bar - pos!.entryBar >= asset.holdBars) {
           exitReason = "max_hold";
         }
       }
       if (exitReason) {
         const rawPnl =
-          pos.direction === "long"
-            ? (exitPrice - pos.entryPrice) / pos.entryPrice
-            : (pos.entryPrice - exitPrice) / pos.entryPrice;
-        const totalCostFrac = ((pos.costBp + 8) / 10000) * 2;
+          pos!.direction === "long"
+            ? (exitPrice - pos!.entryPrice) / pos!.entryPrice
+            : (pos!.entryPrice - exitPrice) / pos!.entryPrice;
+        const totalCostFrac = ((pos!.costBp + 8) / 10000) * 2;
         const adjPnl = rawPnl - totalCostFrac;
-        const effPnl = adjPnl * cfg.leverage * pos.riskFrac;
+        const effPnl = adjPnl * cfg.leverage * pos!.riskFrac;
         equity += effPnl;
         closed.push({
-          asset: pos.asset,
-          direction: pos.direction,
-          entryBar: pos.entryBar,
+          asset: pos!.asset,
+          direction: pos!.direction,
+          entryBar: pos!.entryBar,
           exitBar: bar,
-          entryPrice: pos.entryPrice,
+          entryPrice: pos!.entryPrice,
           exitPrice,
           reason: exitReason,
-          setup: pos.setup,
+          setup: pos!.setup,
           pnlPct: rawPnl,
           effPnl,
           day: dayIndex,
@@ -390,7 +390,7 @@ export function runSmcEngine(
       if (open.some((p) => p.asset === asset.symbol)) continue;
       const c = candleData[asset.sourceSymbol];
       const a = atrData[asset.sourceSymbol]![bar];
-      if (a === null || !Number.isFinite(a) || a <= 0) continue;
+      if (a === null || !Number.isFinite(a) || a! <= 0) continue;
 
       let entrySignal: {
         dir: "long" | "short";
@@ -430,9 +430,9 @@ export function runSmcEngine(
 
       if (!entrySignal) continue;
 
-      const entryPrice = c[bar]!.close;
-      const stopDist = a * asset.atrStopMult;
-      const tpDist = a * asset.atrTpMult;
+      const entryPrice = c![bar]!.close;
+      const stopDist = a! * asset.atrStopMult;
+      const tpDist = a! * asset.atrTpMult;
       const stopPrice =
         entrySignal.dir === "long"
           ? entryPrice - stopDist

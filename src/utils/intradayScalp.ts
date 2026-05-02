@@ -88,15 +88,15 @@ export function runIntradayScalp(
   for (let i = cfg.lookback; i < candles.length - cfg.holdBars - 1; i++) {
     const cur = candles[i];
     const prev = candles[i - 1];
-    if (prev.close <= 0) continue;
+    if (prev!.close <= 0) continue;
     const window = candles.slice(i - cfg.lookback, i);
     const medVol = median(window.map((c) => c.volume));
     if (medVol <= 0) continue;
-    const vZ = cur.volume / medVol;
+    const vZ = cur!.volume / medVol;
     if (vZ < cfg.volMult) continue;
     const sd = stdReturns(window.map((c) => c.close));
     if (sd <= 0) continue;
-    const ret = (cur.close - prev.close) / prev.close;
+    const ret = (cur!.close - prev!.close) / prev!.close;
     const pZ = Math.abs(ret) / sd;
     if (pZ < cfg.priceZ) continue;
     signalsFired++;
@@ -129,9 +129,9 @@ export function runIntradayScalp(
       // For tie-breaking when both TP and Stop hit in same bar, use the one
       // closer to bar.open (more conservative — assumes adverse fill order).
       const tpHit =
-        direction === "long" ? bar.high >= tpLevel : bar.low <= tpLevel;
+        direction === "long" ? bar!.high >= tpLevel : bar!.low <= tpLevel;
       const stopHit =
-        direction === "long" ? bar.low <= stopLevel : bar.high >= stopLevel;
+        direction === "long" ? bar!.low <= stopLevel : bar!.high >= stopLevel;
       if (tpHit && stopHit) {
         // Worst case: assume stop fired first (more conservative)
         exitIdx = j;

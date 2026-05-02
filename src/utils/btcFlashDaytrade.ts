@@ -168,13 +168,13 @@ export function runBtcFlashDaytrade(
     let reason: "tp" | "stop" | "time" = "time";
     for (let j = i + 2; j <= mx; j++) {
       const bar = candles[j];
-      if (bar.low <= stop) {
+      if (bar!.low <= stop) {
         exitBar = j;
         exitPrice = stop;
         reason = "stop";
         break;
       }
-      if (bar.high >= tp) {
+      if (bar!.high >= tp) {
         exitBar = j;
         exitPrice = tp;
         reason = "tp";

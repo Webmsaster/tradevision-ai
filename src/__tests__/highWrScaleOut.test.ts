@@ -34,13 +34,13 @@ function makeSpikeBars(): Candle[] {
   const bars = makeFlatBars(55);
   const last = bars[bars.length - 1];
   bars.push({
-    openTime: last.closeTime + 1,
-    open: last.close,
-    high: last.close * 1.03,
-    low: last.close * 0.998,
-    close: last.close * 1.028,
+    openTime: last!.closeTime + 1,
+    open: last!.close,
+    high: last!.close * 1.03,
+    low: last!.close * 0.998,
+    close: last!.close * 1.028,
     volume: 50_000, // 50× the baseline volume
-    closeTime: last.closeTime + 3_600_000,
+    closeTime: last!.closeTime + 3_600_000,
     isFinal: true,
   });
   return bars;

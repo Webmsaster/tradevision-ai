@@ -172,13 +172,13 @@ export function detectFlashSignals(
     let exitReason: "tp" | "stop" | "time" = "time";
     for (let j = i + 2; j <= mx; j++) {
       const bar = candles[j];
-      if (bar.low <= stop) {
+      if (bar!.low <= stop) {
         exitBar = j;
         exitPrice = stop;
         exitReason = "stop";
         break;
       }
-      if (bar.high >= tp) {
+      if (bar!.high >= tp) {
         exitBar = j;
         exitPrice = tp;
         exitReason = "tp";
@@ -247,13 +247,13 @@ export function detectPumpShortSignals(
     let exitReason: "tp" | "stop" | "time" = "time";
     for (let j = i + 2; j <= mx; j++) {
       const bar = candles[j];
-      if (bar.high >= stop) {
+      if (bar!.high >= stop) {
         exitBar = j;
         exitPrice = stop;
         exitReason = "stop";
         break;
       }
-      if (bar.low <= tp) {
+      if (bar!.low <= tp) {
         exitBar = j;
         exitPrice = tp;
         exitReason = "tp";

@@ -146,14 +146,14 @@ export function adx(candles: Candle[], period = 14): AdxOutput {
   for (let i = 1; i < n; i++) {
     const c = candles[i];
     const p = candles[i - 1];
-    const upMove = c.high - p.high;
-    const downMove = p.low - c.low;
+    const upMove = c!.high - p!.high;
+    const downMove = p!.low - c!.low;
     plusDm[i] = upMove > downMove && upMove > 0 ? upMove : 0;
     minusDm[i] = downMove > upMove && downMove > 0 ? downMove : 0;
     tr[i] = Math.max(
-      c.high - c.low,
-      Math.abs(c.high - p.close),
-      Math.abs(c.low - p.close),
+      c!.high - c!.low,
+      Math.abs(c!.high - p!.close),
+      Math.abs(c!.low - p!.close),
     );
   }
 

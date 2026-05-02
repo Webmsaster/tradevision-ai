@@ -1529,11 +1529,12 @@ export default function ResearchPage() {
                   {winners.length > 1 ? "S" : ""} CONFIRMED
                 </h2>
                 <p>
-                  Best: <strong>{best.symbol}</strong>{" "}
-                  <strong>{best.timeframe}</strong> <strong>{best.mode}</strong>{" "}
-                  · {fmtPct(best.totalReturnPct)} return · Sharpe{" "}
-                  {fmtNum(best.sharpe)} · PF {fmtNum(best.profitFactor)} · MaxDD{" "}
-                  {fmtPct(best.maxDrawdownPct)} · {best.trades} trades.
+                  Best: <strong>{best!.symbol}</strong>{" "}
+                  <strong>{best!.timeframe}</strong>{" "}
+                  <strong>{best!.mode}</strong> · {fmtPct(best!.totalReturnPct)}{" "}
+                  return · Sharpe {fmtNum(best!.sharpe)} · PF{" "}
+                  {fmtNum(best!.profitFactor)} · MaxDD{" "}
+                  {fmtPct(best!.maxDrawdownPct)} · {best!.trades} trades.
                   Long-only trend-filter style; expect low trade frequency and
                   long holds. Paper-trade before risking capital.
                 </p>

@@ -121,7 +121,7 @@ export function correlationMatrix(returns: number[][]): number[][] {
   const stds = returns.map((r, i) => {
     const m = means[i];
     const v =
-      r.reduce((a, b) => a + (b - m) * (b - m), 0) / Math.max(1, r.length);
+      r.reduce((a, b) => a + (b - m!) * (b - m!), 0) / Math.max(1, r.length);
     return Math.sqrt(v);
   });
   for (let i = 0; i < n; i++) {

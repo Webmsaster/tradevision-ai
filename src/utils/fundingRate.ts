@@ -148,18 +148,18 @@ export function analyzeFunding(events: FundingEvent[]): FundingSnapshot | null {
   const variance =
     rates.reduce((s, v) => s + (v - mean) * (v - mean), 0) / rates.length;
   const stdDev = Math.sqrt(variance);
-  const zScore = stdDev > 0 ? (latest.fundingRate - mean) / stdDev : 0;
+  const zScore = stdDev > 0 ? (latest!.fundingRate - mean) / stdDev : 0;
 
   // Binance perpetual settles funding every 8h → 3 times per day → 1095 per year
-  const annualisedPct = latest.fundingRate * 3 * 365 * 100;
+  const annualisedPct = latest!.fundingRate * 3 * 365 * 100;
 
   let regime: FundingSnapshot["regime"];
-  if (latest.fundingRate > 0.0003 || zScore > 2.5)
+  if (latest!.fundingRate > 0.0003 || zScore > 2.5)
     regime = "extreme-long-crowded";
-  else if (latest.fundingRate > 0.0001 || zScore > 1) regime = "long-crowded";
-  else if (latest.fundingRate < -0.0003 || zScore < -2.5)
+  else if (latest!.fundingRate > 0.0001 || zScore > 1) regime = "long-crowded";
+  else if (latest!.fundingRate < -0.0003 || zScore < -2.5)
     regime = "extreme-short-crowded";
-  else if (latest.fundingRate < -0.0001 || zScore < -1)
+  else if (latest!.fundingRate < -0.0001 || zScore < -1)
     regime = "short-crowded";
   else regime = "neutral";
 

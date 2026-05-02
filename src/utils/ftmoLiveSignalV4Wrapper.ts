@@ -276,7 +276,7 @@ export function detectLiveSignalsV4(
   const btc = aligned["BTCUSDT"];
   if (btc && btc.length > 0) {
     const last = btc[btc.length - 1];
-    result.btc.close = last.close;
+    result.btc.close = last!.close;
   }
 
   let poll;

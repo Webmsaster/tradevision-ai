@@ -44,38 +44,38 @@ describe("volumeSpikeSignal", () => {
     // Inflate last bar: 5× volume, +3% close
     const last = bars[bars.length - 1];
     const prev = bars[bars.length - 2];
-    last.volume = 1000 * 6;
-    last.close = prev.close * 1.03;
-    last.high = last.close * 1.001;
-    last.low = prev.close;
+    last!.volume = 1000 * 6;
+    last!.close = prev!.close * 1.03;
+    last!.high = last!.close * 1.001;
+    last!.low = prev!.close;
     const snap = evaluateVolumeSpikeSignal("SOLUSDT", bars, SOL_FADE_CONFIG);
     expect(snap.active).toBe(true);
     expect(snap.direction).toBe("short");
-    expect(snap.entry).toBeCloseTo(last.close, 5);
-    expect(snap.stop).toBeGreaterThan(last.close); // stop above for short
-    expect(snap.exitAt).toBe(last.closeTime + 4 * 60 * 60 * 1000);
+    expect(snap.entry).toBeCloseTo(last!.close, 5);
+    expect(snap.stop).toBeGreaterThan(last!.close); // stop above for short
+    expect(snap.exitAt).toBe(last!.closeTime + 4 * 60 * 60 * 1000);
   });
 
   it("fires LONG when last bar is down + volume + price spike (fade mode)", () => {
     const bars = makeBars(60);
     const last = bars[bars.length - 1];
     const prev = bars[bars.length - 2];
-    last.volume = 1000 * 6;
-    last.close = prev.close * 0.97;
-    last.high = prev.close;
-    last.low = last.close * 0.999;
+    last!.volume = 1000 * 6;
+    last!.close = prev!.close * 0.97;
+    last!.high = prev!.close;
+    last!.low = last!.close * 0.999;
     const snap = evaluateVolumeSpikeSignal("SOLUSDT", bars, SOL_FADE_CONFIG);
     expect(snap.active).toBe(true);
     expect(snap.direction).toBe("long");
-    expect(snap.stop).toBeLessThan(last.close);
+    expect(snap.stop).toBeLessThan(last!.close);
   });
 
   it("momentum mode flips direction", () => {
     const bars = makeBars(60);
     const last = bars[bars.length - 1];
     const prev = bars[bars.length - 2];
-    last.volume = 1000 * 6;
-    last.close = prev.close * 1.03;
+    last!.volume = 1000 * 6;
+    last!.close = prev!.close * 1.03;
     const snap = evaluateVolumeSpikeSignal("SOLUSDT", bars, {
       ...SOL_FADE_CONFIG,
       mode: "momentum",

@@ -133,24 +133,24 @@ export function findPivots(
     let isHigh = true;
     let isLow = true;
     for (let j = 1; j <= left; j++) {
-      if (candles[i - j]!.high >= c.high) isHigh = false;
-      if (candles[i - j]!.low <= c.low) isLow = false;
+      if (candles[i - j]!.high >= c!.high) isHigh = false;
+      if (candles[i - j]!.low <= c!.low) isLow = false;
     }
     for (let j = 1; j <= right; j++) {
-      if (candles[i + j]!.high >= c.high) isHigh = false;
-      if (candles[i + j]!.low <= c.low) isLow = false;
+      if (candles[i + j]!.high >= c!.high) isHigh = false;
+      if (candles[i + j]!.low <= c!.low) isLow = false;
     }
     if (isHigh)
       pivots.push({
         index: i,
-        price: c.high,
+        price: c!.high,
         type: "high",
         strength: left + right,
       });
     if (isLow)
       pivots.push({
         index: i,
-        price: c.low,
+        price: c!.low,
         type: "low",
         strength: left + right,
       });
@@ -492,20 +492,20 @@ export function computeBaseRate(
     for (let j = i + 1; j < Math.min(i + 60, candles.length); j++) {
       const c = candles[j];
       if (signalAction === "long") {
-        if (c.low <= sl) {
+        if (c!.low <= sl) {
           outcome = -1;
           break;
         }
-        if (c.high >= tp) {
+        if (c!.high >= tp) {
           outcome = 1.5;
           break;
         }
       } else {
-        if (c.high >= sl) {
+        if (c!.high >= sl) {
           outcome = -1;
           break;
         }
-        if (c.low <= tp) {
+        if (c!.low <= tp) {
           outcome = 1.5;
           break;
         }

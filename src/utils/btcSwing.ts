@@ -434,13 +434,13 @@ function executeLong(
   let reason: BtcSwingTrade["exitReason"] = "time";
   for (let j = i + 2; j <= mx; j++) {
     const bar = candles[j];
-    if (bar.low <= stop) {
+    if (bar!.low <= stop) {
       exitBar = j;
       exitPrice = stop;
       reason = "stop";
       break;
     }
-    if (bar.high >= tp) {
+    if (bar!.high >= tp) {
       exitBar = j;
       exitPrice = tp;
       reason = "tp";
@@ -490,7 +490,7 @@ export function runBtcSwing(
   const macroMask: boolean[] = new Array(candles.length).fill(false);
   for (let i = cfg.macroBars; i < candles.length; i++) {
     const past = closes[i - cfg.macroBars];
-    if (past > 0) macroMask[i]! = (closes[i]! - past) / past > 0;
+    if (past! > 0) macroMask[i]! = (closes[i]! - past!) / past! > 0;
   }
 
   const open: { exitBar: number; mech: BtcSwingMechanic }[] = [];

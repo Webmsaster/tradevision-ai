@@ -146,10 +146,10 @@ export function runConfluenceBacktest(
 
   for (let i = 0; i < aligned.length - cfg.holdBars; i++) {
     const row = aligned[i];
-    if (row.premium > cfg.minPremiumPct) {
+    if (row!.premium > cfg.minPremiumPct) {
       posStreak++;
       negStreak = 0;
-    } else if (row.premium < -cfg.minPremiumPct) {
+    } else if (row!.premium < -cfg.minPremiumPct) {
       negStreak++;
       posStreak = 0;
     } else {
@@ -163,7 +163,7 @@ export function runConfluenceBacktest(
     if (!fireLong && !fireShort) continue;
     signalsFired++;
     const direction: "long" | "short" = fireLong ? "long" : "short";
-    const score = computeConfluence(row.premium, row.basis);
+    const score = computeConfluence(row!.premium, row!.basis);
 
     if (!passesFilter(cfg, direction, score)) {
       // Filter rejected — reset streaks and skip
@@ -215,8 +215,8 @@ export function runConfluenceBacktest(
       direction,
       entry,
       exit: exitPrice,
-      triggerPremium: row.premium,
-      triggerBasis: row.basis,
+      triggerPremium: row!.premium,
+      triggerBasis: row!.basis,
       triggerScore: score,
       netPnlPct: cost.netPnlPct,
       exitReason,

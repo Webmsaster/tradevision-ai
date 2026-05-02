@@ -94,10 +94,10 @@ export function runPremiumBacktest(
 
   for (let i = 0; i < aligned.length - config.holdBars; i++) {
     const row = aligned[i];
-    if (row.premium > config.minPremiumPct) {
+    if (row!.premium > config.minPremiumPct) {
       posStreak++;
       negStreak = 0;
-    } else if (row.premium < -config.minPremiumPct) {
+    } else if (row!.premium < -config.minPremiumPct) {
       negStreak++;
       posStreak = 0;
     } else {
@@ -155,7 +155,7 @@ export function runPremiumBacktest(
       direction,
       entry,
       exit: exitPrice,
-      triggerPremium: row.premium,
+      triggerPremium: row!.premium,
       netPnlPct: cost.netPnlPct,
       exitReason,
     });

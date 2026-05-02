@@ -110,10 +110,10 @@ export function runFundingContrarianBacktest(
 
   for (let i = 0; i < sortedFunding.length; i++) {
     const ev = sortedFunding[i];
-    if (ev.fundingRate > config.fundingPosThreshold) {
+    if (ev!.fundingRate > config.fundingPosThreshold) {
       posStreak++;
       negStreak = 0;
-    } else if (ev.fundingRate < -config.fundingNegThreshold) {
+    } else if (ev!.fundingRate < -config.fundingNegThreshold) {
       negStreak++;
       posStreak = 0;
     } else {
@@ -127,7 +127,7 @@ export function runFundingContrarianBacktest(
     if (!fireLong && !fireShort) continue;
 
     // Confirm with L/S ratio
-    const ls = closestLs(sortedLs, ev.fundingTime, 2 * 60 * 60 * 1000);
+    const ls = closestLs(sortedLs, ev!.fundingTime, 2 * 60 * 60 * 1000);
     if (!ls) continue;
     if (fireShort && ls.longShortRatio < config.longShortLongCrowded) continue;
     if (fireLong && ls.longShortRatio > config.longShortShortCrowded) continue;
@@ -137,7 +137,7 @@ export function runFundingContrarianBacktest(
 
     // Entry bar: candle immediately after funding settle
     const entryIdx = sortedCandles.findIndex(
-      (c) => c.openTime >= ev.fundingTime,
+      (c) => c.openTime >= ev!.fundingTime,
     );
     if (entryIdx < 0 || entryIdx + config.holdBarsMax >= sortedCandles.length)
       continue;
@@ -160,9 +160,9 @@ export function runFundingContrarianBacktest(
       j++
     ) {
       const fj = sortedFunding[j];
-      if (Math.abs(fj.fundingRate) < config.exitFundingBelow) {
+      if (Math.abs(fj!.fundingRate) < config.exitFundingBelow) {
         const barIdx = sortedCandles.findIndex(
-          (c) => c.openTime >= fj.fundingTime,
+          (c) => c.openTime >= fj!.fundingTime,
         );
         if (barIdx > entryIdx) {
           exitIdx = barIdx;
@@ -176,13 +176,13 @@ export function runFundingContrarianBacktest(
     // Also check stop
     for (let j = entryIdx + 1; j <= exitIdx; j++) {
       const bar = sortedCandles[j];
-      if (direction === "long" && bar.low <= stopLevel) {
+      if (direction === "long" && bar!.low <= stopLevel) {
         exitIdx = j;
         exitPrice = stopLevel;
         exitReason = "stop";
         break;
       }
-      if (direction === "short" && bar.high >= stopLevel) {
+      if (direction === "short" && bar!.high >= stopLevel) {
         exitIdx = j;
         exitPrice = stopLevel;
         exitReason = "stop";
@@ -206,7 +206,7 @@ export function runFundingContrarianBacktest(
       direction,
       entry,
       exit: exitPrice,
-      triggeringFunding: ev.fundingRate,
+      triggeringFunding: ev!.fundingRate,
       triggeringLsRatio: ls.longShortRatio,
       netPnlPct: cost.netPnlPct,
       exitReason,

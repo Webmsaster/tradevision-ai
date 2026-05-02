@@ -144,7 +144,7 @@ export function runDonchianEngine(
       tradingDays: 0,
     };
   const barsPerDay = BARS_PER_DAY[cfg.timeframe];
-  const maxBars = Math.min(n, cfg.maxDays * barsPerDay);
+  const maxBars = Math.min(n, cfg.maxDays * barsPerDay!);
 
   // Pre-compute Donchian bands and ATR for each asset
   const bandsData: Record<string, { upper: number[]; lower: number[] }[]> = {};
@@ -177,7 +177,7 @@ export function runDonchianEngine(
   const tradingDaysSet = new Set<number>();
 
   for (let bar = 1; bar < maxBars; bar++) {
-    const dayIndex = Math.floor(bar / barsPerDay);
+    const dayIndex = Math.floor(bar / barsPerDay!);
     if (dayIndex !== lastDayIndex) {
       dailyStartEquity = equity;
       frozenForDay = false;
@@ -256,50 +256,50 @@ export function runDonchianEngine(
     // Manage open positions: chandelier trail, TP, SL, max_hold
     for (let i = open.length - 1; i >= 0; i--) {
       const pos = open[i];
-      const candle = candleData[pos.symbol]![bar];
-      const asset = cappedAssets.find((a) => a.symbol === pos.asset)!;
+      const candle = candleData[pos!.symbol]![bar];
+      const asset = cappedAssets.find((a) => a.symbol === pos!.asset)!;
       if (!candle) continue;
       let exitReason: ClosedTrade["reason"] | null = null;
       let exitPrice = candle.close;
 
       // Update high/low water marks for chandelier
-      if (pos.direction === "long" && candle.high > pos.highWaterMark)
-        pos.highWaterMark = candle.high;
-      if (pos.direction === "short" && candle.low < pos.lowWaterMark)
-        pos.lowWaterMark = candle.low;
+      if (pos!.direction === "long" && candle.high > pos!.highWaterMark)
+        pos!.highWaterMark = candle.high;
+      if (pos!.direction === "short" && candle.low < pos!.lowWaterMark)
+        pos!.lowWaterMark = candle.low;
 
       // Update trailing stop with chandelier
-      const a = atrData[pos.symbol]![bar];
+      const a = atrData[pos!.symbol]![bar];
       if (a !== null && Number.isFinite(a)) {
         const trail =
-          pos.direction === "long"
-            ? pos.highWaterMark - a * pos.atrStopMult
-            : pos.lowWaterMark + a * pos.atrStopMult;
-        if (pos.direction === "long" && trail > pos.stopPrice)
-          pos.stopPrice = trail;
-        if (pos.direction === "short" && trail < pos.stopPrice)
-          pos.stopPrice = trail;
+          pos!.direction === "long"
+            ? pos!.highWaterMark - a! * pos!.atrStopMult
+            : pos!.lowWaterMark + a! * pos!.atrStopMult;
+        if (pos!.direction === "long" && trail > pos!.stopPrice)
+          pos!.stopPrice = trail;
+        if (pos!.direction === "short" && trail < pos!.stopPrice)
+          pos!.stopPrice = trail;
       }
 
-      if (pos.direction === "long") {
-        if (candle.low <= pos.stopPrice) {
+      if (pos!.direction === "long") {
+        if (candle.low <= pos!.stopPrice) {
           exitReason = "trail";
-          exitPrice = pos.stopPrice;
-        } else if (candle.high >= pos.tpPrice) {
+          exitPrice = pos!.stopPrice;
+        } else if (candle.high >= pos!.tpPrice) {
           exitReason = "tp";
-          exitPrice = pos.tpPrice;
-        } else if (bar - pos.entryBar >= asset.holdBars) {
+          exitPrice = pos!.tpPrice;
+        } else if (bar - pos!.entryBar >= asset.holdBars) {
           exitReason = "max_hold";
           exitPrice = candle.close;
         }
       } else {
-        if (candle.high >= pos.stopPrice) {
+        if (candle.high >= pos!.stopPrice) {
           exitReason = "trail";
-          exitPrice = pos.stopPrice;
-        } else if (candle.low <= pos.tpPrice) {
+          exitPrice = pos!.stopPrice;
+        } else if (candle.low <= pos!.tpPrice) {
           exitReason = "tp";
-          exitPrice = pos.tpPrice;
-        } else if (bar - pos.entryBar >= asset.holdBars) {
+          exitPrice = pos!.tpPrice;
+        } else if (bar - pos!.entryBar >= asset.holdBars) {
           exitReason = "max_hold";
           exitPrice = candle.close;
         }
@@ -307,19 +307,19 @@ export function runDonchianEngine(
 
       if (exitReason) {
         const rawPnl =
-          pos.direction === "long"
-            ? (exitPrice - pos.entryPrice) / pos.entryPrice
-            : (pos.entryPrice - exitPrice) / pos.entryPrice;
-        const totalCostFrac = ((pos.costBp + 8) / 10000) * 2;
+          pos!.direction === "long"
+            ? (exitPrice - pos!.entryPrice) / pos!.entryPrice
+            : (pos!.entryPrice - exitPrice) / pos!.entryPrice;
+        const totalCostFrac = ((pos!.costBp + 8) / 10000) * 2;
         const adjPnl = rawPnl - totalCostFrac;
-        const effPnl = adjPnl * cfg.leverage * pos.riskFrac;
+        const effPnl = adjPnl * cfg.leverage * pos!.riskFrac;
         equity += effPnl;
         closed.push({
-          asset: pos.asset,
-          direction: pos.direction,
-          entryBar: pos.entryBar,
+          asset: pos!.asset,
+          direction: pos!.direction,
+          entryBar: pos!.entryBar,
           exitBar: bar,
-          entryPrice: pos.entryPrice,
+          entryPrice: pos!.entryPrice,
           exitPrice,
           reason: exitReason,
           pnlPct: rawPnl,
@@ -354,12 +354,12 @@ export function runDonchianEngine(
         bar,
       );
       const a = atrData[asset.sourceSymbol]![bar];
-      if (a === null || !Number.isFinite(a) || a <= 0) continue;
+      if (a === null || !Number.isFinite(a) || a! <= 0) continue;
 
       if (asset.allowLong && longVotes >= asset.minVotes) {
-        const entryPrice = candle.close;
-        const stopPrice = entryPrice - a * asset.atrStopMult;
-        const tpPrice = entryPrice + a * asset.tpAtrMult;
+        const entryPrice = candle!.close;
+        const stopPrice = entryPrice - a! * asset.atrStopMult;
+        const tpPrice = entryPrice + a! * asset.tpAtrMult;
         const stopPct = (entryPrice - stopPrice) / entryPrice;
         if (cfg.liveCaps && stopPct > cfg.liveCaps.maxStopPct) continue; // skip if stop too wide
         open.push({
@@ -382,9 +382,9 @@ export function runDonchianEngine(
       }
 
       if (asset.allowShort && shortVotes >= asset.minVotes) {
-        const entryPrice = candle.close;
-        const stopPrice = entryPrice + a * asset.atrStopMult;
-        const tpPrice = entryPrice - a * asset.tpAtrMult;
+        const entryPrice = candle!.close;
+        const stopPrice = entryPrice + a! * asset.atrStopMult;
+        const tpPrice = entryPrice - a! * asset.tpAtrMult;
         const stopPct = (stopPrice - entryPrice) / entryPrice;
         if (cfg.liveCaps && stopPct > cfg.liveCaps.maxStopPct) continue;
         open.push({

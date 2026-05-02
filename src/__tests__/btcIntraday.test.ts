@@ -140,7 +140,7 @@ describe("btcIntraday — config invariants", () => {
       BTC_INTRADAY_STATS.executionSensitivity[
         BTC_INTRADAY_STATS.executionSensitivity.length - 1
       ];
-    expect(worst.sharpe).toBeLessThan(1);
+    expect(worst!.sharpe).toBeLessThan(1);
     // TAKER 0 slippage should still be profitable
     const takerClean = BTC_INTRADAY_STATS.executionSensitivity.find((s) =>
       s.scenario.includes("TAKER 0.04% fee, 0 slippage"),
