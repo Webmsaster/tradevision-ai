@@ -453,6 +453,55 @@ const CFG_REGISTRY: Record<string, CfgRegistryEntry> = {
     cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_LIVE_4H_V1,
     label: "LIVE_4H_V1",
   },
+  // Phase 37 (R44-V231-1, R44-V231-3): explicit V2 + V4-engine tags so
+  // FTMO_TF strings TF_DISPATCH knows about ALSO resolve in V231 — without
+  // these the module-load fallback warning fired even when V4 engine
+  // bypassed V231 (`useV4Engine` flag), and Telegram labels read "V261"
+  // instead of the actually-running cfg.
+  "15m-live-v2": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_LIVE_15M_V2,
+    label: "LIVE_15M_V2",
+  },
+  "30m-live-v2": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_LIVE_30M_V2,
+    label: "LIVE_30M_V2",
+  },
+  "1h-live-v2": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_LIVE_1H_V2,
+    label: "LIVE_1H_V2",
+  },
+  "2h-live-v2": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_LIVE_2H_V2,
+    label: "LIVE_2H_V2",
+  },
+  "4h-live-v2": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_LIVE_4H_V2,
+    label: "LIVE_4H_V2",
+  },
+  "5m-live-v2": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_LIVE_5M_V2,
+    label: "LIVE_5M_V2",
+  },
+  "5m-live-v3": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_LIVE_5M_V3,
+    label: "LIVE_5M_V3",
+  },
+  "15m-live-v3": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_LIVE_15M_V3,
+    label: "LIVE_15M_V3",
+  },
+  // V4-engine tags — execution bypasses V231 via `useV4Engine` flag in
+  // ftmoLiveService, but V231 module-load still evaluates the FTMO_TF
+  // string, and renderDetection() reads CFG_LABEL for Telegram alerts.
+  // Map them to the underlying cfg so labels render the real strategy.
+  "2h-trend-v5-quartz-lite-r28-v4engine": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4,
+    label: "V5_QUARTZ_LITE_R28_V4 (engine v4)",
+  },
+  "2h-trend-breakout-v1": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_BREAKOUT_V1,
+    label: "BREAKOUT_V1 (engine v4)",
+  },
   // LEGACY no-cap (rollback only — these die at 0% under live caps)
   "15m": { cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_V16_15M_OPT, label: "V16" },
   "30m-turbo": {

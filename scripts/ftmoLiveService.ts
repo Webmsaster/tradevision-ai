@@ -496,8 +496,10 @@ async function runOneCheck(): Promise<DetectionResult> {
   // V5 baseline: ETH, BTC, SOL, BNB, ADA, AVAX, LTC, BCH, LINK + DOGE.
   // Phase 13 (Strategy Configs Bug 1): default extras now cover ALL active
   // V5-family baskets. R28 needs {ETC, XRP, AAVE}, V5_QUARTZ adds {INJ,
-  // RUNE, SAND}, V5_OBSIDIAN+ adds ARB. Without these the live bot silently
-  // loaded only 6/9 (or 9/15) configured assets → wrong strategy.
+  // RUNE, SAND}, V5_OBSIDIAN+ adds ARB.
+  // Phase 37 (R44-CFG-2): also include {DOT, TRX, ALGO, NEAR, ATOM, STX}
+  // for V5_SAPPHIR/EMERALD/PEARL/OPAL/AGATE/JADE basket — without these
+  // the live bot silently loaded 14/20 assets when running these tags.
   // Override with FTMO_EXTRA_SYMBOLS=... to narrow.
   const extraSymbols = process.env.FTMO_EXTRA_SYMBOLS
     ? process.env.FTMO_EXTRA_SYMBOLS.split(",")
@@ -518,6 +520,13 @@ async function runOneCheck(): Promise<DetectionResult> {
         "RUNEUSDT",
         "SANDUSDT",
         "ARBUSDT",
+        // V5_SAPPHIR..V5_JADE 18-20 asset basket:
+        "DOTUSDT",
+        "TRXUSDT",
+        "ALGOUSDT",
+        "NEARUSDT",
+        "ATOMUSDT",
+        "STXUSDT",
       ];
 
   const allSymbols = ["ETHUSDT", "BTCUSDT", "SOLUSDT", ...extraSymbols];

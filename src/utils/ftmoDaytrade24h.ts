@@ -5593,6 +5593,12 @@ export const FTMO_DAYTRADE_24H_CONFIG_LIVE_4H_V1: FtmoDaytrade24hConfig = {
  */
 export const FTMO_DAYTRADE_24H_CONFIG_LIVE_5M_V1: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT,
+  // Phase 37 (R44-CFG-1): override timeframe — V12_30M_OPT sets "30m" via
+  // spread but holdBars=7200 / atrStop p14 / chandelier p168 are tuned to
+  // 5m bars. Without this override, Phase 34's CFG.timeframe-driven live
+  // poll cadence ran a 5m strategy at 30m polling → strategy degraded
+  // silently while the FTMO_TF=5m-live tag suggested 5m execution.
+  timeframe: "5m",
   holdBars: 7200,
   atrStop: { period: 14, stopMult: 4 },
   lossStreakCooldown: { afterLosses: 2, cooldownBars: 600 },
