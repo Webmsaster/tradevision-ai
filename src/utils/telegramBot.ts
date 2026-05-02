@@ -112,12 +112,21 @@ async function pollLoop(cfg: TelegramConfig, ctx: TelegramCommandHandlerCtx) {
         await sleep(backoff);
         continue;
       }
-      consecutiveErrors = 0;
       const body = (await resp.json()) as { ok: boolean; result: TgUpdate[] };
       if (!body.ok || !body.result) {
-        await sleep(5000);
+        // Phase 38 (R44-LIVE-H3): treat HTTP 200 + body.ok===false as a
+        // soft error (e.g. quota throttle, malformed update). Was resetting
+        // consecutiveErrors above unconditionally → at-permanent-soft-fail
+        // the loop spun every 5s with no exponential backoff or alert.
+        consecutiveErrors++;
+        const backoff = Math.min(
+          60_000,
+          5_000 * Math.pow(2, Math.min(consecutiveErrors - 1, 3)),
+        );
+        await sleep(backoff);
         continue;
       }
+      consecutiveErrors = 0;
       let updatedId = false;
       for (const upd of body.result) {
         if (upd.update_id > lastUpdateId) {
@@ -434,7 +443,14 @@ function setControls(stateDir: string, update: Partial<BotControls>) {
 /**
  * Blocking-ish exclusive lock on bot-controls.json. Wraps the shared sync
  * lock from `processLock.ts`. Telegram callbacks must always make progress,
- * so `staleMs: 0` → after 2s force-claim regardless of holder mtime.
+ * but should NOT preempt Python's R-M-W mid-update.
+ *
+ * Phase 38 (R44-LIVE-C3): was `staleMs: 0` (force-claim after 2s
+ * unconditionally) which silently overwrote in-flight Python writes to
+ * controls.json. Now `staleMs: 5000` — wait up to 5s before stealing,
+ * matching the upper bound of Python's typical R-M-W round-trip.
+ * Token-based unlink in processLock.ts also prevents Python's release-
+ * after-timeout from removing our claim.
  *
  * Phase 34: was a copy of the Python `_file_lock`; unified into
  * src/utils/processLock.ts.
@@ -442,8 +458,8 @@ function setControls(stateDir: string, update: Partial<BotControls>) {
 function withControlsLock(stateDir: string, fn: () => void): void {
   const lockPath = path.join(stateDir, "bot-controls.lock");
   withFileLockSync(lockPath, fn, {
-    timeoutMs: 2_000,
-    staleMs: 0,
+    timeoutMs: 5_000,
+    staleMs: 5_000,
     backoffMs: 5,
   });
 }

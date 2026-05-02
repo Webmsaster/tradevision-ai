@@ -6,14 +6,22 @@
  * `withControlsLock` in src/utils/telegramBot.ts, `_file_lock` in
  * tools/ftmo_executor.py). Mirror Python impl: tools/process_lock.py.
  *
+ * Phase 38 (R44-LIVE-C1/C2): token-based unlink — without a token check,
+ * a long-running holder whose lock got stale-claimed by another process
+ * would unlink THEIR fresh lock on its way out, leaving two simultaneous
+ * holders. We now write `pid:randomToken` at acquire time and verify the
+ * token matches before unlink. Mismatch = our lock was stolen — leave the
+ * new holder alone.
+ *
  * Both async and sync variants are exposed because the bot stack mixes
  * async pollers (signal service) with sync handlers (Telegram callback
- * dispatch). The lock semantics are identical:
+ * dispatch). Lock semantics:
  *   1. Try `openSync(lockPath, "wx")` → succeeds iff no holder
- *   2. On EEXIST: wait `backoffMs` and retry
- *   3. After `timeoutMs`: if lock-file mtime ≥ `staleMs` old, force-claim
+ *   2. Write `pid:token` to claim
+ *   3. On EEXIST: wait `backoffMs` and retry
+ *   4. After `timeoutMs`: if lock-file mtime ≥ `staleMs` old, force-claim
  *      (assume crashed holder); else throw timeout error
- *   4. On exit: unlink lock-file
+ *   5. On exit: read lock-file, unlink ONLY if our token still owns it
  *
  * `staleMs = 0` means "always recover after timeout" — used by callers
  * that prefer "force-progress over fail-loud" (e.g. Telegram bot, where
@@ -27,8 +35,8 @@ export interface FileLockOptions {
   timeoutMs?: number;
   /**
    * If the lock file's mtime is older than this when timeout fires,
-   * force-claim it (assume crashed holder). Default 30000ms.
-   * Set to 0 for unconditional force-claim after timeout.
+   * force-claim it (assume crashed holder). Default 30000ms (async) /
+   * 5000ms (sync). Set to 0 for unconditional force-claim after timeout.
    */
   staleMs?: number;
   /** Backoff between acquisition attempts. */
@@ -36,7 +44,28 @@ export interface FileLockOptions {
 }
 
 const DEFAULT_ASYNC_OPTS = { timeoutMs: 5000, staleMs: 30_000, backoffMs: 50 };
-const DEFAULT_SYNC_OPTS = { timeoutMs: 2000, staleMs: 0, backoffMs: 5 };
+// Phase 38 (R44-LIVE-M3): default staleMs raised from 0 → 5000 so callers
+// that don't opt into force-progress don't unconditionally claim foreign
+// locks after their (small) timeout. Telegram bot still passes staleMs:0
+// explicitly via withControlsLock.
+const DEFAULT_SYNC_OPTS = { timeoutMs: 2000, staleMs: 5000, backoffMs: 5 };
+
+function makeToken(): string {
+  // Cheap unique-enough token: pid + millis + random.
+  return `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function safeReleaseLock(lockPath: string, ourToken: string): void {
+  try {
+    const held = fs.readFileSync(lockPath, "utf-8");
+    if (held === ourToken) {
+      fs.unlinkSync(lockPath);
+    }
+    // else: another process force-claimed our lock — leave their token alone.
+  } catch {
+    /* lock-file already gone — nothing to release */
+  }
+}
 
 export async function withFileLock<T>(
   lockPath: string,
@@ -48,11 +77,12 @@ export async function withFileLock<T>(
   const backoffMs = opts.backoffMs ?? DEFAULT_ASYNC_OPTS.backoffMs;
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   const start = Date.now();
+  const ourToken = makeToken();
   let fd: number | null = null;
   while (true) {
     try {
       fd = fs.openSync(lockPath, "wx");
-      fs.writeSync(fd, String(process.pid));
+      fs.writeSync(fd, ourToken);
       break;
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
@@ -77,11 +107,7 @@ export async function withFileLock<T>(
     return await fn();
   } finally {
     if (fd !== null) fs.closeSync(fd);
-    try {
-      fs.unlinkSync(lockPath);
-    } catch {
-      /* ignore */
-    }
+    safeReleaseLock(lockPath, ourToken);
   }
 }
 
@@ -95,23 +121,20 @@ export function withFileLockSync<T>(
   const backoffMs = opts.backoffMs ?? DEFAULT_SYNC_OPTS.backoffMs;
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   const start = Date.now();
+  const ourToken = makeToken();
   while (true) {
     let fd: number | null = null;
     try {
       fd = fs.openSync(lockPath, "wx");
       try {
-        fs.writeSync(fd, String(process.pid));
+        fs.writeSync(fd, ourToken);
       } finally {
         fs.closeSync(fd);
       }
       try {
         return fn();
       } finally {
-        try {
-          fs.unlinkSync(lockPath);
-        } catch {
-          /* ignore */
-        }
+        safeReleaseLock(lockPath, ourToken);
       }
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
