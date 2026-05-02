@@ -1,4 +1,9 @@
 {
+  // Phase 65 (R45-CFG-6): considered enabling `noUncheckedIndexedAccess`
+  // and `exactOptionalPropertyTypes`. The first surfaces 7500+ errors
+  // across the heavy array-indexed engine/indicator code — would need
+  // its own multi-day refactor with careful per-loop guards. Deferred
+  // until that scope is justified.
   "compilerOptions": {
     "target": "ES2017",
     "lib": ["dom", "dom.iterable", "esnext"],
