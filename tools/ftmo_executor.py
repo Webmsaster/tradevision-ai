@@ -445,34 +445,42 @@ def update_challenge_peak(current_equity_usd: float) -> float:
 
     Mirrors engine line 5055: `peak = max(peak, equity)`, but persistent.
     Returns the current challenge-peak.
-    """
-    raw = read_json(CHALLENGE_PEAK_PATH, None)
-    needs_seed = (
-        raw is None
-        or raw.get("started_at") != CHALLENGE_START_DATE
-        or float(raw.get("peak_equity_usd") or 0.0) <= 0
-    )
-    if needs_seed:
-        seeded = {
-            "peak_equity_usd": float(current_equity_usd),
-            "last_update_ts": datetime.now(timezone.utc).isoformat(),
-            "started_at": CHALLENGE_START_DATE,
-        }
-        write_json(CHALLENGE_PEAK_PATH, seeded)
-        log_event(
-            "challenge_peak_seeded",
-            started_at=CHALLENGE_START_DATE,
-            peak=current_equity_usd,
-        )
-        return float(current_equity_usd)
 
-    prev_peak = float(raw["peak_equity_usd"])
-    if current_equity_usd > prev_peak:
-        raw["peak_equity_usd"] = float(current_equity_usd)
-        raw["last_update_ts"] = datetime.now(timezone.utc).isoformat()
-        write_json(CHALLENGE_PEAK_PATH, raw)
-        return float(current_equity_usd)
-    return prev_peak
+    Phase 39 (R44-V231-2): wraps the read-modify-write under file_lock so
+    concurrent invocations (e.g. multiple polling cycles, sync_account
+    helper) don't lose updates. Without the lock, both could read peak=110,
+    A see current=115 + write 115, B see current=112 + write 112 → corrupted
+    peak that under-throttles peakDrawdownThrottle.
+    """
+    lock_path = CHALLENGE_PEAK_PATH.with_suffix(".lock")
+    with _file_lock(lock_path, timeout_sec=5.0, stale_sec=10.0):
+        raw = read_json(CHALLENGE_PEAK_PATH, None)
+        needs_seed = (
+            raw is None
+            or raw.get("started_at") != CHALLENGE_START_DATE
+            or float(raw.get("peak_equity_usd") or 0.0) <= 0
+        )
+        if needs_seed:
+            seeded = {
+                "peak_equity_usd": float(current_equity_usd),
+                "last_update_ts": datetime.now(timezone.utc).isoformat(),
+                "started_at": CHALLENGE_START_DATE,
+            }
+            write_json(CHALLENGE_PEAK_PATH, seeded)
+            log_event(
+                "challenge_peak_seeded",
+                started_at=CHALLENGE_START_DATE,
+                peak=current_equity_usd,
+            )
+            return float(current_equity_usd)
+
+        prev_peak = float(raw["peak_equity_usd"])
+        if current_equity_usd > prev_peak:
+            raw["peak_equity_usd"] = float(current_equity_usd)
+            raw["last_update_ts"] = datetime.now(timezone.utc).isoformat()
+            write_json(CHALLENGE_PEAK_PATH, raw)
+            return float(current_equity_usd)
+        return prev_peak
 
 
 def get_challenge_day() -> int:
@@ -1214,6 +1222,11 @@ def process_pending_signals() -> None:
                 "sourceSymbol": sig["sourceSymbol"],
                 "direction": direction,
                 "lot": result.lot,
+                # Phase 39 (R44-PY-1): preserve ORIGINAL volume for partial-TP
+                # multi-level math. Without this, every level's `frac` was
+                # applied to the SHRINKING current volume, so 30% + 40% closed
+                # 30% + 0.7×40% = 58% instead of the engine's 70%.
+                "original_lot": result.lot,
                 "entry_price": result.entry_price,
                 "stop_price": sig["stopPrice"],
                 "tp_price": sig["tpPrice"],
@@ -1539,6 +1552,11 @@ def _apply_partial_tp_levels(pos: dict) -> dict:
         if direction == "long"
         else (entry_price - peak) / entry_price
     )
+    # Phase 39 (R44-PY-1): closeFraction is fraction of ORIGINAL volume,
+    # not current. Without this, after a 30% partial fired, a subsequent
+    # 40% level would close 0.7×40%=28% of the *current* volume = 19.6%
+    # of original, instead of the engine's 40% of original.
+    original_lot = float(pos.get("original_lot") or p.volume)
     for idx, lv in enumerate(levels):
         if done[idx]:
             continue
@@ -1546,7 +1564,11 @@ def _apply_partial_tp_levels(pos: dict) -> dict:
         frac = float(lv.get("closeFraction", 0))
         if unrealized < trigger or frac <= 0:
             continue
-        close_lot = float(p.volume) * frac
+        close_lot = original_lot * frac
+        # Cap at currently-held volume — broker rejects close > position.
+        close_lot = min(close_lot, float(p.volume))
+        if close_lot <= 0:
+            continue
         if _close_partial_lot(pos["ticket"], close_lot, f"ptpL{idx}"):
             done[idx] = True
             log_event("partial_tp_level_fired", ticket=pos["ticket"],
