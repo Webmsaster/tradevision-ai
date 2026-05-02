@@ -5,6 +5,14 @@ function generateId(): string {
   return `insight-${uuidv4()}`;
 }
 
+// Phase 61 (R45-CC-M2): hoisted helper. The pattern
+// `(a, b) => new Date(a.exitDate).getTime() - new Date(b.exitDate).getTime()`
+// appeared inline 6× across detectors with drift risk if a tie-breaker
+// was added in only one place.
+function compareByExitDate(a: Trade, b: Trade): number {
+  return new Date(a.exitDate).getTime() - new Date(b.exitDate).getTime();
+}
+
 function getHoldTimeMs(trade: Trade): number {
   return Math.max(
     0,
@@ -30,9 +38,7 @@ function getDayOfWeek(dateStr: string): number {
 export function detectRevengeTrade(trades: Trade[]): AIInsight | null {
   if (trades.length < 3) return null;
 
-  const sorted = [...trades].sort(
-    (a, b) => new Date(a.exitDate).getTime() - new Date(b.exitDate).getTime(),
-  );
+  const sorted = [...trades].sort(compareByExitDate);
 
   for (let i = 2; i < sorted.length; i++) {
     const prev1 = sorted[i - 2];
@@ -183,9 +189,7 @@ export function detectTimePatterns(trades: Trade[]): AIInsight | null {
 export function detectOverleverageAfterWins(trades: Trade[]): AIInsight | null {
   if (trades.length < 4) return null;
 
-  const sorted = [...trades].sort(
-    (a, b) => new Date(a.exitDate).getTime() - new Date(b.exitDate).getTime(),
-  );
+  const sorted = [...trades].sort(compareByExitDate);
 
   for (let i = 3; i < sorted.length; i++) {
     const streak = [sorted[i - 3], sorted[i - 2], sorted[i - 1]];
@@ -279,9 +283,7 @@ export function detectLossAversion(trades: Trade[]): AIInsight | null {
 export function detectTiltPattern(trades: Trade[]): AIInsight | null {
   if (trades.length < 6) return null;
 
-  const sorted = [...trades].sort(
-    (a, b) => new Date(a.exitDate).getTime() - new Date(b.exitDate).getTime(),
-  );
+  const sorted = [...trades].sort(compareByExitDate);
 
   // Calculate running equity curve to identify drawdown periods
   let peak = 0;
@@ -563,9 +565,7 @@ export function detectImprovingPerformance(trades: Trade[]): AIInsight | null {
   // on virtually any 6-trade dataset by chance.
   if (trades.length < 20) return null;
 
-  const sorted = [...trades].sort(
-    (a, b) => new Date(a.exitDate).getTime() - new Date(b.exitDate).getTime(),
-  );
+  const sorted = [...trades].sort(compareByExitDate);
 
   const midpoint = Math.floor(sorted.length / 2);
   const firstHalf = sorted.slice(0, midpoint);
@@ -603,9 +603,7 @@ export function detectDecliningPerformance(trades: Trade[]): AIInsight | null {
   // Phase 21 (AI Bug 7): see detectImprovingPerformance — same 20-min threshold.
   if (trades.length < 20) return null;
 
-  const sorted = [...trades].sort(
-    (a, b) => new Date(a.exitDate).getTime() - new Date(b.exitDate).getTime(),
-  );
+  const sorted = [...trades].sort(compareByExitDate);
 
   const midpoint = Math.floor(sorted.length / 2);
   const firstHalf = sorted.slice(0, midpoint);
@@ -645,9 +643,7 @@ export function detectDecliningPerformance(trades: Trade[]): AIInsight | null {
 export function detectPairSwitching(trades: Trade[]): AIInsight | null {
   if (trades.length < 10) return null;
 
-  const sorted = [...trades].sort(
-    (a, b) => new Date(a.exitDate).getTime() - new Date(b.exitDate).getTime(),
-  );
+  const sorted = [...trades].sort(compareByExitDate);
 
   let switches = 0;
   for (let i = 1; i < sorted.length; i++) {

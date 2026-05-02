@@ -468,18 +468,16 @@ export function importFromJSON(file: File): Promise<Trade[]> {
             // relatedTrades references when re-importing your own backup.
             // Phase 22 was too aggressive (regenerate ALL) which broke
             // every saved insight after a re-import.
+            // Phase 61 (R45-CC-M1): removed dead seenIds loop. Comment
+            // claimed "all ids are now freshly generated" but the map
+            // above only regenerates conflicting ids, not non-conflicts;
+            // either way the loop iterated without filtering. Pure dead
+            // code — kept just the conflict-rewrite map.
             const existingIds = new Set(loadTrades().map((t) => t.id));
             const deduped: Trade[] = (valid as Trade[]).map((trade) => ({
               ...trade,
               id: existingIds.has(trade.id) ? uuidv4() : trade.id,
             }));
-            // Legacy dedup loop (kept for symmetry — though all ids are now
-            // freshly generated so seenIds will always pass).
-            const seenIds = new Set<string>();
-            for (const trade of deduped) {
-              if (seenIds.has(trade.id)) continue;
-              seenIds.add(trade.id);
-            }
             resolve(deduped);
           }
           return;
