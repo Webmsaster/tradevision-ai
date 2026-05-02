@@ -14,7 +14,13 @@ permissions:
 
 jobs:
   dependabot-automerge:
-    if: github.actor == 'dependabot[bot]' && github.event.pull_request.draft == false
+    # Phase 48 (R45-CFG-2): pull_request_target gives the workflow access to
+    # repo secrets even on PRs from forks. Restrict to PRs originating from
+    # THIS repository to defeat any "spoof the bot name" supply-chain attack.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - name: Fetch Dependabot metadata

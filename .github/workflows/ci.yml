@@ -7,6 +7,12 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+# Phase 48 (R45-CFG-3): least-privilege default token. CI only needs to
+# read the repo + pull deps; default token granted `contents: write` and
+# more across all jobs.
+permissions:
+  contents: read
+
 jobs:
   security-audit:
     runs-on: ubuntu-latest

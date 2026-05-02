@@ -2,6 +2,9 @@
   "name": "ai-trading-journal",
   "version": "0.1.1",
   "private": true,
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "node ./node_modules/next/dist/bin/next dev",
     "build": "node ./node_modules/next/dist/bin/next build",
@@ -26,6 +29,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.2.5",
     "recharts": "^3.8.1",
+    "tsx": "^4.21.0",
     "uuid": "^13.0.0"
   },
   "lint-staged": {
