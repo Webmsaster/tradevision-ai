@@ -12,7 +12,12 @@ export default defineConfig({
     exclude: ["e2e/**", "node_modules/**", "scripts/**", ".claude/**"],
     coverage: {
       provider: "v8",
-      include: ["src/utils/**"],
+      // Phase 71 (R45-CFG-10): scoped to src/utils + the tested API
+      // routes (paths covered by unit tests today). Broader include
+      // (src/lib, all of src/app/api) is a follow-up — currently those
+      // paths are E2E-tested only and would drag the threshold below 70%.
+      include: ["src/utils/**", "src/app/api/ftmo-state/**"],
+      exclude: ["src/__tests__/**", "src/types/**"],
       thresholds: {
         lines: 70,
         functions: 70,
