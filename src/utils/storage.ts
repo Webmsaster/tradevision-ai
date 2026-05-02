@@ -132,6 +132,15 @@ export async function loadTradesFromSupabase(
   // Phase 22 (Storage Bug 9): paginate. Supabase default limit is 1000 rows;
   // power-users with backtest data can have 10k+ trades and were silently
   // losing the older 9k. Fetch in 1000-row pages until exhausted.
+  //
+  // Phase 47 (R45-DB-1): added `id` as a tie-breaker in the order. Without
+  // it, ties on `exit_date` (very common for bulk-imported backtest trades
+  // sharing the same second) yielded non-deterministic page boundaries —
+  // some rows got duplicated across pages, others skipped.
+  //
+  // Phase 47 (R45-CC-H1): on a mid-fetch error we now THROW instead of
+  // silent `break`. Returning a partially-loaded array poisoned downstream
+  // stats (winRate / drawdown / Sharpe) with no signal to the caller.
   const PAGE = 1000;
   const all: Trade[] = [];
   for (let from = 0; from < 100_000; from += PAGE) {
@@ -140,10 +149,13 @@ export async function loadTradesFromSupabase(
       .select("*")
       .eq("user_id", userId)
       .order("exit_date", { ascending: false })
+      .order("id", { ascending: false })
       .range(from, from + PAGE - 1);
     if (error) {
       console.error("Failed to load trades from Supabase:", error);
-      break;
+      throw new Error(
+        `loadTradesFromSupabase: page-fetch failed at offset ${from}: ${error.message}`,
+      );
     }
     if (!data || data.length === 0) break;
     for (const row of data) all.push(dbToTrade(row));
@@ -192,12 +204,24 @@ export async function saveBulkTradesToSupabase(
   trades: Trade[],
   userId: string,
 ): Promise<boolean> {
+  // Phase 47 (R45-DB-2): batch in 500-row chunks. Supabase pooler caps
+  // payloads around 4 MB; a single upsert of 50k+ trades from CSV import
+  // hit the cap and was rejected wholesale (no partial-success / no
+  // resume). Process in chunks and abort on the first failure — caller
+  // sees `false` and can show a clear error.
+  if (trades.length === 0) return true;
+  const CHUNK = 500;
   const rows = trades.map((t) => tradeToDb(t, userId));
-  const { error } = await supabase.from("trades").upsert(rows);
-
-  if (error) {
-    console.error("Failed to bulk save trades to Supabase:", error);
-    return false;
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const slice = rows.slice(i, i + CHUNK);
+    const { error } = await supabase.from("trades").upsert(slice);
+    if (error) {
+      console.error(
+        `Failed to bulk save trades to Supabase (chunk ${i / CHUNK}):`,
+        error,
+      );
+      return false;
+    }
   }
   return true;
 }
@@ -244,19 +268,29 @@ export function saveTrades(trades: Trade[]): void {
 
     localStorage.setItem(STORAGE_KEY, JSON.stringify(tradesWithoutScreenshots));
 
-    // Store screenshots separately; if quota is exceeded, trade data is still safe
-    if (Object.keys(screenshots).length > 0) {
-      try {
-        const existing = JSON.parse(
-          localStorage.getItem(SCREENSHOTS_KEY) || "{}",
-        );
-        localStorage.setItem(
-          SCREENSHOTS_KEY,
-          JSON.stringify({ ...existing, ...screenshots }),
-        );
-      } catch {
-        console.warn("Failed to save screenshots - storage quota may be full.");
+    // Phase 47 (R45-CC-H3): rebuild the screenshots map from the CURRENT
+    // trade ids on every save instead of merging. Was leaking — when a
+    // user deleted a trade, its screenshot remained in SCREENSHOTS_KEY
+    // forever (each up to 2MB); after ~10 deletions a user could hit
+    // localStorage quota with no live trade referencing the data.
+    try {
+      const tradeIds = new Set(trades.map((t) => t.id));
+      const existing = JSON.parse(
+        localStorage.getItem(SCREENSHOTS_KEY) || "{}",
+      ) as Record<string, string>;
+      const cleaned: Record<string, string> = {};
+      for (const [id, dataUrl] of Object.entries(existing)) {
+        if (tradeIds.has(id)) cleaned[id] = dataUrl;
       }
+      // Overlay any new/updated screenshots from this save.
+      Object.assign(cleaned, screenshots);
+      if (Object.keys(cleaned).length > 0) {
+        localStorage.setItem(SCREENSHOTS_KEY, JSON.stringify(cleaned));
+      } else {
+        localStorage.removeItem(SCREENSHOTS_KEY);
+      }
+    } catch {
+      console.warn("Failed to save screenshots - storage quota may be full.");
     }
   } catch (error) {
     console.error("Failed to save trades to localStorage:", error);
