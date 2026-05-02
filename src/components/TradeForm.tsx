@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo } from "react";
 import { Trade } from "@/types/trade";
 import { calculatePnl } from "@/utils/calculations";
 import { useFocusTrap } from "@/hooks/useFocusTrap";
+import { FILE_SIZE } from "@/lib/constants";
 
 interface TradeFormProps {
   isOpen: boolean;
@@ -593,7 +594,7 @@ export default function TradeForm({
                       }));
                       return;
                     }
-                    if (file.size > 5 * 1024 * 1024) {
+                    if (file.size > FILE_SIZE.IMAGE_UPLOAD_MAX) {
                       setErrors((prev) => ({
                         ...prev,
                         screenshot: "Image must be under 5 MB",

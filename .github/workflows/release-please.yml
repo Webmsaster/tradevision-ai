@@ -16,7 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Run release-please
-        uses: google-github-actions/release-please-action@v4
+        # Phase 93 (R51-S9): SHA-pinned third-party action (was @v4 floating).
+        uses: google-github-actions/release-please-action@e4dc86ba9405554aeba3c6bb2d169500e7d3b4ee # v4.1.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: .release-please-config.json

@@ -32,11 +32,16 @@ function isRateLimited(ip: string): boolean {
  */
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
-  // Best-effort IP (Vercel sets x-forwarded-for; behind other proxies
-  // pick the first comma-split entry).
+  // Phase 92 (R51-S6): prefer the platform-injected `x-vercel-forwarded-for`
+  // / `x-real-ip` because they're set BY the platform proxy, not user-
+  // controllable. Fall back to `x-forwarded-for` (which an attacker on a
+  // non-Vercel host could spoof to bypass the per-IP rate-limit). Final
+  // fallback uses a constant so unknown traffic still hits the same
+  // throttle bucket instead of getting a free pass.
   const ip =
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    request.headers.get("x-vercel-forwarded-for")?.split(",")[0]?.trim() ||
     request.headers.get("x-real-ip") ||
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
     "unknown";
   if (isRateLimited(ip)) {
     return new NextResponse("rate limited", { status: 429 });

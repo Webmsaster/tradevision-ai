@@ -68,7 +68,8 @@ jobs:
           NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
           NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder-key
       - name: Run Lighthouse CI performance assertions
-        uses: treosh/lighthouse-ci-action@v12
+        # Phase 93 (R51-S9): SHA-pinned third-party action (was @v12 floating).
+        uses: treosh/lighthouse-ci-action@3e7e23fb74242897f95c0ba9cabad3d0227b9b18 # v12.6.2
         with:
           configPath: ./.lighthouserc.json
           uploadArtifacts: true

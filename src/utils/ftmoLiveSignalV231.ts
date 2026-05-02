@@ -646,6 +646,18 @@ function computeSizingFactor(account: AccountState): {
     }
   }
 
+  // Phase 88 (R51-FTMO-5): hard-cap factor at 4× to mirror the backtest
+  // engine's `MAX_FACTOR = 4` (Phase B3 in main engine, Phase 35 in V4).
+  // Without it, a future cfg with timeBoost.factor=3 + kellySizing
+  // maxMult=2 would deliver 6× live while the backtest reported 4×.
+  const MAX_FACTOR = 4;
+  if (factor > MAX_FACTOR) {
+    notes.push(
+      `factor cap: ${factor.toFixed(3)} → ${MAX_FACTOR} (MAX_FACTOR safety)`,
+    );
+    factor = MAX_FACTOR;
+  }
+
   return { factor, notes };
 }
 

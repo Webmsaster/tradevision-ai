@@ -181,7 +181,11 @@ export function runMrEngine(
       for (const pos of open) {
         const _asset = cappedAssets.find((a) => a.symbol === pos.asset)!;
         void _asset;
-        const exitPrice = candleData[pos.symbol]![bar]?.close ?? pos.entryPrice;
+        // Phase 89 (R51-FTMO-6): skip force-close if no candle at this
+        // bar instead of faking PnL=0 at entry-price. Position carries.
+        const exitCandle = candleData[pos.symbol]?.[bar];
+        if (!exitCandle) continue;
+        const exitPrice = exitCandle.close;
         const rawPnl =
           pos.direction === "long"
             ? (exitPrice - pos.entryPrice) / pos.entryPrice
@@ -229,7 +233,11 @@ export function runMrEngine(
       targetReached = true;
       // Force close all & wait for minTradingDays
       for (const pos of open) {
-        const exitPrice = candleData[pos.symbol]![bar]?.close ?? pos.entryPrice;
+        // Phase 89 (R51-FTMO-6): skip force-close if no candle at this
+        // bar instead of faking PnL=0 at entry-price. Position carries.
+        const exitCandle = candleData[pos.symbol]?.[bar];
+        if (!exitCandle) continue;
+        const exitPrice = exitCandle.close;
         const rawPnl =
           pos.direction === "long"
             ? (exitPrice - pos.entryPrice) / pos.entryPrice

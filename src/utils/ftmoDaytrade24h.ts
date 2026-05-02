@@ -4639,6 +4639,53 @@ export function runFtmoDaytrade24h(
   // `htfTrendFilter.threshold`) fails LOUDLY rather than silently producing
   // a stale/optimistic backtest. We DON'T flip the type to required because
   // it would break ~119 historical configs; we enforce semantically here.
+  // Phase 90 (R51-FTMO-8): fail-fast for structurally invalid configs.
+  // Without these guards the engine silently produced 0 trades / wrong
+  // pass-rate (e.g. cfg.maxDays=0 → empty loop → returns time-fail with
+  // passed=false; cfg.assets=[] → no entries; leverage=0 → effPnl=0).
+  // Each unrecoverable bug masquerades as "strategy underperformed".
+  if (!Number.isFinite(cfg.maxDays) || cfg.maxDays <= 0) {
+    throw new Error(
+      `[ftmoDaytrade24h] cfg.maxDays must be > 0 (got ${cfg.maxDays}).`,
+    );
+  }
+  if (
+    !Number.isFinite(cfg.minTradingDays) ||
+    cfg.minTradingDays < 0 ||
+    cfg.minTradingDays > cfg.maxDays
+  ) {
+    throw new Error(
+      `[ftmoDaytrade24h] cfg.minTradingDays must be in [0, maxDays=${cfg.maxDays}] (got ${cfg.minTradingDays}).`,
+    );
+  }
+  if (!Array.isArray(cfg.assets) || cfg.assets.length === 0) {
+    throw new Error(
+      `[ftmoDaytrade24h] cfg.assets must be a non-empty array (got length ${cfg.assets?.length}).`,
+    );
+  }
+  if (!Number.isFinite(cfg.leverage) || cfg.leverage <= 0) {
+    throw new Error(
+      `[ftmoDaytrade24h] cfg.leverage must be > 0 (got ${cfg.leverage}).`,
+    );
+  }
+  if (cfg.liveCaps) {
+    if (
+      !Number.isFinite(cfg.liveCaps.maxStopPct) ||
+      cfg.liveCaps.maxStopPct <= 0
+    ) {
+      throw new Error(
+        `[ftmoDaytrade24h] cfg.liveCaps.maxStopPct must be > 0 (got ${cfg.liveCaps.maxStopPct}).`,
+      );
+    }
+    if (
+      !Number.isFinite(cfg.liveCaps.maxRiskFrac) ||
+      cfg.liveCaps.maxRiskFrac <= 0
+    ) {
+      throw new Error(
+        `[ftmoDaytrade24h] cfg.liveCaps.maxRiskFrac must be > 0 (got ${cfg.liveCaps.maxRiskFrac}).`,
+      );
+    }
+  }
   if (cfg.htfTrendFilter && cfg.htfTrendFilter.threshold === undefined) {
     throw new Error(
       "[ftmoDaytrade24h] Config defines htfTrendFilter but omits 'threshold' — must be explicit (e.g. 0.10). Implicit fallback to 0 hides the gate.",

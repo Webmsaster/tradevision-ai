@@ -194,7 +194,11 @@ export function runDonchianEngine(
 
     if (equity / dailyStartEquity - 1 <= -cfg.maxDailyLoss) {
       for (const pos of open) {
-        const exitPrice = candleData[pos.symbol]![bar]?.close ?? pos.entryPrice;
+        // Phase 89 (R51-FTMO-6): skip force-close if no candle at this
+        // bar instead of faking PnL=0 at entry-price. Position carries.
+        const exitCandle = candleData[pos.symbol]?.[bar];
+        if (!exitCandle) continue;
+        const exitPrice = exitCandle.close;
         const rawPnl =
           pos.direction === "long"
             ? (exitPrice - pos.entryPrice) / pos.entryPrice
@@ -235,7 +239,11 @@ export function runDonchianEngine(
     if (cfg.pauseAtTargetReached && equity - 1 >= cfg.profitTarget) {
       targetReached = true;
       for (const pos of open) {
-        const exitPrice = candleData[pos.symbol]![bar]?.close ?? pos.entryPrice;
+        // Phase 89 (R51-FTMO-6): skip force-close if no candle at this
+        // bar instead of faking PnL=0 at entry-price. Position carries.
+        const exitCandle = candleData[pos.symbol]?.[bar];
+        if (!exitCandle) continue;
+        const exitPrice = exitCandle.close;
         const rawPnl =
           pos.direction === "long"
             ? (exitPrice - pos.entryPrice) / pos.entryPrice

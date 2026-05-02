@@ -260,7 +260,13 @@ export function runSmcEngine(
 
     if (equity / dailyStartEquity - 1 <= -cfg.maxDailyLoss) {
       for (const pos of open) {
-        const exitPrice = candleData[pos.symbol]![bar]?.close ?? pos.entryPrice;
+        // Phase 89 (R51-FTMO-6): if the position's asset has no candle at
+        // this bar (feed misalignment), skip the force-close instead of
+        // falling back to entry-price (which fakes a PnL=0 close that a
+        // real trader could not execute). Position carries to next bar.
+        const exitCandle = candleData[pos.symbol]?.[bar];
+        if (!exitCandle) continue;
+        const exitPrice = exitCandle.close;
         const rawPnl =
           pos.direction === "long"
             ? (exitPrice - pos.entryPrice) / pos.entryPrice
@@ -300,7 +306,13 @@ export function runSmcEngine(
     if (cfg.pauseAtTargetReached && equity - 1 >= cfg.profitTarget) {
       targetReached = true;
       for (const pos of open) {
-        const exitPrice = candleData[pos.symbol]![bar]?.close ?? pos.entryPrice;
+        // Phase 89 (R51-FTMO-6): if the position's asset has no candle at
+        // this bar (feed misalignment), skip the force-close instead of
+        // falling back to entry-price (which fakes a PnL=0 close that a
+        // real trader could not execute). Position carries to next bar.
+        const exitCandle = candleData[pos.symbol]?.[bar];
+        if (!exitCandle) continue;
+        const exitPrice = exitCandle.close;
         const rawPnl =
           pos.direction === "long"
             ? (exitPrice - pos.entryPrice) / pos.entryPrice

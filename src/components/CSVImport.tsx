@@ -39,7 +39,9 @@ const PLATFORM_OPTIONS = [
   { value: "generic", label: "Generic" },
 ];
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+// Phase 94: re-exported via FILE_SIZE.JSON_IMPORT_MAX (kept name for callers).
+import { FILE_SIZE } from "@/lib/constants";
+const MAX_FILE_SIZE = FILE_SIZE.JSON_IMPORT_MAX;
 
 const EMPTY_MAPPING: CSVColumnMapping = {
   pair: "",
