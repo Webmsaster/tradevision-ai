@@ -304,7 +304,45 @@ export function loadState(stateDir: string, cfgLabel: string): FtmoLiveStateV4 {
       if (parsed === null || typeof parsed !== "object") {
         throw new Error("state file is not an object");
       }
-      const obj = parsed as Partial<FtmoLiveStateV4>;
+      const obj = parsed as Partial<FtmoLiveStateV4> & {
+        lossStreakByAssetDir?: Record<
+          string,
+          {
+            streak: number;
+            cdUntilBarIdx?: number;
+            cdUntilBarsSeen?: number;
+          }
+        >;
+      };
+      // Phase 56 (R45-5): in-place schema migration v1 → v2 BEFORE
+      // mismatch-backup. Phase 36 renamed lossStreakByAssetDir.cdUntilBarIdx
+      // to cdUntilBarsSeen and bumped SCHEMA_VERSION 1 → 2. Without an
+      // explicit migration, all live V4 bots lost their entire challenge
+      // state (peak / dayPeak / kelly / ping-days / cdUntil) on next deploy.
+      // Now we map the old field name to the new one and bump the version
+      // so the rest of the load path treats it as a v2 state.
+      if (
+        obj.schemaVersion === 1 &&
+        obj.cfgLabel === cfgLabel &&
+        obj.lossStreakByAssetDir
+      ) {
+        for (const k of Object.keys(obj.lossStreakByAssetDir)) {
+          const ls = obj.lossStreakByAssetDir[k];
+          if (ls && ls.cdUntilBarsSeen === undefined) {
+            // Old `cdUntilBarIdx` was relative to refCandles.length-1, which
+            // is non-monotonic across ticks. Conservative migration: clear
+            // any active cooldown (set to -1) so the next loss starts a
+            // fresh, correctly-anchored cooldown via state.barsSeen.
+            ls.cdUntilBarsSeen = -1;
+            delete (ls as { cdUntilBarIdx?: number }).cdUntilBarIdx;
+          }
+        }
+        obj.schemaVersion = SCHEMA_VERSION;
+        console.warn(
+          `[V4] in-place schema migration v1 → v${SCHEMA_VERSION} for ${cfgLabel} ` +
+            `(cdUntilBarIdx → cdUntilBarsSeen, active cooldowns reset)`,
+        );
+      }
       // Phase 14 (V4 Bug 9): on schema/cfg mismatch, BACK UP the old state
       // file before discarding. Without this, deploying a new version or
       // changing FTMO_TF wiped the entire challenge state silently — losing
