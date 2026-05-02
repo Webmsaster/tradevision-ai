@@ -1,21 +1,31 @@
-'use client';
-import { useState, useEffect, useMemo } from 'react';
-import { Trade } from '@/types/trade';
-import { exportToJSON, exportToCSV, importFromJSON } from '@/utils/storage';
-import { useTradeStorage } from '@/hooks/useTradeStorage';
-import CSVImport from '@/components/CSVImport';
-import ConfirmDialog from '@/components/ConfirmDialog';
+"use client";
+import { useState, useEffect, useMemo } from "react";
+import { Trade } from "@/types/trade";
+import { exportToJSON, exportToCSV, importFromJSON } from "@/utils/storage";
+import { useTradeStorage } from "@/hooks/useTradeStorage";
+import CSVImport from "@/components/CSVImport";
+import ConfirmDialog from "@/components/ConfirmDialog";
 
 export default function ImportPage() {
   const { trades, importTrades, clearAll, setAllTrades } = useTradeStorage();
-  const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [notification, setNotification] = useState<{
+    message: string;
+    type: "success" | "error";
+  } | null>(null);
   const [jsonFile, setJsonFile] = useState<File | null>(null);
-  const [jsonImportMode, setJsonImportMode] = useState<'merge' | 'replace'>('merge');
+  const [jsonImportMode, setJsonImportMode] = useState<"merge" | "replace">(
+    "merge",
+  );
   const [showReplaceConfirm, setShowReplaceConfirm] = useState(false);
-  const [pendingReplaceTrades, setPendingReplaceTrades] = useState<Trade[] | null>(null);
+  const [pendingReplaceTrades, setPendingReplaceTrades] = useState<
+    Trade[] | null
+  >(null);
 
   // Check if sample data is already loaded by looking for sample IDs
-  const sampleDataLoaded = useMemo(() => trades.some((t) => t.id.startsWith('sample-')), [trades]);
+  const sampleDataLoaded = useMemo(
+    () => trades.some((t) => t.id.startsWith("sample-")),
+    [trades],
+  );
 
   // Auto-dismiss notification after 3 seconds
   useEffect(() => {
@@ -32,8 +42,8 @@ export default function ImportPage() {
   async function handleCSVImport(newTrades: Trade[]) {
     const count = await importTrades(newTrades);
     setNotification({
-      message: `Successfully imported ${count} trade${count !== 1 ? 's' : ''} from CSV.`,
-      type: 'success',
+      message: `Successfully imported ${count} trade${count !== 1 ? "s" : ""} from CSV.`,
+      type: "success",
     });
   }
 
@@ -42,16 +52,18 @@ export default function ImportPage() {
   // ---------------------------------------------------------------------------
   function resetJsonFileInput() {
     setJsonFile(null);
-    const fileInput = document.getElementById('json-file-input') as HTMLInputElement | null;
-    if (fileInput) fileInput.value = '';
+    const fileInput = document.getElementById(
+      "json-file-input",
+    ) as HTMLInputElement | null;
+    if (fileInput) fileInput.value = "";
   }
 
   async function runMergeImport(importedTrades: Trade[]) {
     const count = await importTrades(importedTrades);
     resetJsonFileInput();
     setNotification({
-      message: `Merged ${count} new trade${count !== 1 ? 's' : ''} from JSON.`,
-      type: 'success',
+      message: `Merged ${count} new trade${count !== 1 ? "s" : ""} from JSON.`,
+      type: "success",
     });
   }
 
@@ -59,8 +71,8 @@ export default function ImportPage() {
     await setAllTrades(importedTrades);
     resetJsonFileInput();
     setNotification({
-      message: `Replaced existing data with ${importedTrades.length} trade${importedTrades.length !== 1 ? 's' : ''} from JSON.`,
-      type: 'success',
+      message: `Replaced existing data with ${importedTrades.length} trade${importedTrades.length !== 1 ? "s" : ""} from JSON.`,
+      type: "success",
     });
   }
 
@@ -69,8 +81,11 @@ export default function ImportPage() {
     try {
       await runReplaceImport(pendingReplaceTrades);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to replace data from JSON file.';
-      setNotification({ message, type: 'error' });
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Failed to replace data from JSON file.";
+      setNotification({ message, type: "error" });
     } finally {
       setPendingReplaceTrades(null);
       setShowReplaceConfirm(false);
@@ -84,11 +99,14 @@ export default function ImportPage() {
       const importedTrades = await importFromJSON(jsonFile);
 
       if (importedTrades.length === 0) {
-        setNotification({ message: 'The JSON file contains no trades.', type: 'error' });
+        setNotification({
+          message: "The JSON file contains no trades.",
+          type: "error",
+        });
         return;
       }
 
-      if (jsonImportMode === 'replace') {
+      if (jsonImportMode === "replace") {
         if (trades.length > 0) {
           setPendingReplaceTrades(importedTrades);
           setShowReplaceConfirm(true);
@@ -99,8 +117,9 @@ export default function ImportPage() {
         await runMergeImport(importedTrades);
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to import JSON file.';
-      setNotification({ message, type: 'error' });
+      const message =
+        error instanceof Error ? error.message : "Failed to import JSON file.";
+      setNotification({ message, type: "error" });
     }
   }
 
@@ -109,31 +128,37 @@ export default function ImportPage() {
   // ---------------------------------------------------------------------------
   function handleExportJSON() {
     if (trades.length === 0) {
-      setNotification({ message: 'No trades to export.', type: 'error' });
+      setNotification({ message: "No trades to export.", type: "error" });
       return;
     }
     exportToJSON(trades);
-    setNotification({ message: 'Trading data exported as JSON.', type: 'success' });
+    setNotification({
+      message: "Trading data exported as JSON.",
+      type: "success",
+    });
   }
 
-  function handleExportCSV() {
+  async function handleExportCSV() {
     if (trades.length === 0) {
-      setNotification({ message: 'No trades to export.', type: 'error' });
+      setNotification({ message: "No trades to export.", type: "error" });
       return;
     }
-    exportToCSV(trades);
-    setNotification({ message: 'Trading data exported as CSV.', type: 'success' });
+    await exportToCSV(trades);
+    setNotification({
+      message: "Trading data exported as CSV.",
+      type: "success",
+    });
   }
 
   // ---------------------------------------------------------------------------
   // Sample data handler
   // ---------------------------------------------------------------------------
   async function handleLoadSampleData() {
-    const { sampleTrades } = await import('@/data/sampleTrades');
+    const { sampleTrades } = await import("@/data/sampleTrades");
     const count = await importTrades(sampleTrades);
     setNotification({
-      message: `Loaded ${count} sample trade${count !== 1 ? 's' : ''}.`,
-      type: 'success',
+      message: `Loaded ${count} sample trade${count !== 1 ? "s" : ""}.`,
+      type: "success",
     });
   }
 
@@ -149,7 +174,10 @@ export default function ImportPage() {
   function confirmClearAll() {
     clearAll();
     setShowClearConfirm(false);
-    setNotification({ message: 'All trading data has been cleared.', type: 'success' });
+    setNotification({
+      message: "All trading data has been cleared.",
+      type: "success",
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -188,7 +216,9 @@ export default function ImportPage() {
               Restore trades from a previously exported JSON backup file.
             </p>
             <div className="import-json-input">
-              <label htmlFor="json-file-input" className="input-label">JSON file</label>
+              <label htmlFor="json-file-input" className="input-label">
+                JSON file
+              </label>
               <input
                 id="json-file-input"
                 type="file"
@@ -207,8 +237,8 @@ export default function ImportPage() {
                   type="radio"
                   name="json-import-mode"
                   value="merge"
-                  checked={jsonImportMode === 'merge'}
-                  onChange={() => setJsonImportMode('merge')}
+                  checked={jsonImportMode === "merge"}
+                  onChange={() => setJsonImportMode("merge")}
                 />
                 <span>Merge (keep existing trades)</span>
               </label>
@@ -217,8 +247,8 @@ export default function ImportPage() {
                   type="radio"
                   name="json-import-mode"
                   value="replace"
-                  checked={jsonImportMode === 'replace'}
-                  onChange={() => setJsonImportMode('replace')}
+                  checked={jsonImportMode === "replace"}
+                  onChange={() => setJsonImportMode("replace")}
                 />
                 <span>Replace all existing trades</span>
               </label>
@@ -228,7 +258,9 @@ export default function ImportPage() {
               disabled={!jsonFile}
               onClick={handleJSONImport}
             >
-              {jsonImportMode === 'replace' ? 'Replace with JSON' : 'Import JSON'}
+              {jsonImportMode === "replace"
+                ? "Replace with JSON"
+                : "Import JSON"}
             </button>
           </div>
         </div>
@@ -244,9 +276,10 @@ export default function ImportPage() {
               Download a backup of all your trading data.
             </p>
             <p className="import-trade-count">
-              You have <strong>{trades.length}</strong> trade{trades.length !== 1 ? 's' : ''}
+              You have <strong>{trades.length}</strong> trade
+              {trades.length !== 1 ? "s" : ""}
             </p>
-            <div style={{ display: 'flex', gap: '12px' }}>
+            <div style={{ display: "flex", gap: "12px" }}>
               <button className="btn btn-primary" onClick={handleExportJSON}>
                 Export as JSON
               </button>
@@ -280,7 +313,10 @@ export default function ImportPage() {
                 <span>Sample data loaded</span>
               </div>
             ) : (
-              <button className="btn btn-secondary" onClick={handleLoadSampleData}>
+              <button
+                className="btn btn-secondary"
+                onClick={handleLoadSampleData}
+              >
                 Load Sample Data
               </button>
             )}
@@ -290,7 +326,8 @@ export default function ImportPage() {
           <div className="glass-card import-card import-danger-zone">
             <h3 className="import-card-title">Danger Zone</h3>
             <p className="import-card-desc">
-              Permanently delete all trading data from your browser. This action cannot be undone.
+              Permanently delete all trading data from your browser. This action
+              cannot be undone.
             </p>
             <button className="btn btn-danger" onClick={handleClearAllData}>
               Clear All Data
@@ -311,7 +348,7 @@ export default function ImportPage() {
       <ConfirmDialog
         isOpen={showReplaceConfirm}
         title="Replace Existing Trades?"
-        message={`This will overwrite your current ${trades.length} trade${trades.length !== 1 ? 's' : ''} with the JSON backup. This action cannot be undone.`}
+        message={`This will overwrite your current ${trades.length} trade${trades.length !== 1 ? "s" : ""} with the JSON backup. This action cannot be undone.`}
         confirmLabel="Replace All"
         onConfirm={confirmReplaceImport}
         onCancel={() => {

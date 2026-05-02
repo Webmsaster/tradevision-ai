@@ -397,63 +397,17 @@ export function exportToJSON(trades: Trade[]): void {
 
 /**
  * Export trades as a downloadable CSV file.
- * Headers: Pair,Direction,Entry Price,Exit Price,Quantity,Leverage,Fees,PnL,PnL %,Entry Date,Exit Date,Strategy,Emotion,Notes
+ *
+ * Phase 55 (R45-CC-H2): delegates to `exportTradesToCsv` from csvExport.ts
+ * (the canonical exporter — 20 columns, full \r\n escape, UTF-8 BOM,
+ * `id` column included). The /import page used to call a 14-column
+ * exporter here while /trades used the 20-column one — same data, two
+ * different files. Now both routes produce the same CSV.
  */
-export function exportToCSV(trades: Trade[]): void {
+export async function exportToCSV(trades: Trade[]): Promise<void> {
   try {
-    const headers = [
-      "Pair",
-      "Direction",
-      "Entry Price",
-      "Exit Price",
-      "Quantity",
-      "Leverage",
-      "Fees",
-      "PnL",
-      "PnL %",
-      "Entry Date",
-      "Exit Date",
-      "Strategy",
-      "Emotion",
-      "Notes",
-    ];
-
-    const escapeCSV = (value: string): string => {
-      if (value.includes(",") || value.includes('"') || value.includes("\n")) {
-        return `"${value.replace(/"/g, '""')}"`;
-      }
-      return value;
-    };
-
-    const rows = trades.map((t) =>
-      [
-        escapeCSV(t.pair),
-        t.direction,
-        t.entryPrice.toString(),
-        t.exitPrice.toString(),
-        t.quantity.toString(),
-        t.leverage.toString(),
-        t.fees.toString(),
-        t.pnl.toFixed(2),
-        t.pnlPercent.toFixed(2),
-        t.entryDate,
-        t.exitDate,
-        escapeCSV(t.strategy ?? ""),
-        t.emotion ?? "",
-        escapeCSV(t.notes ?? ""),
-      ].join(","),
-    );
-
-    const csv = [headers.join(","), ...rows].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "trading-journal-export.csv";
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    const { exportTradesToCsv } = await import("@/utils/csvExport");
+    exportTradesToCsv(trades, "trading-journal-export");
   } catch (error) {
     console.error("Failed to export trades to CSV:", error);
   }
