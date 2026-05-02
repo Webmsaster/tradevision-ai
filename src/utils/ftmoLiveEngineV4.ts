@@ -914,6 +914,12 @@ export function pollLive(
     result.challengeEnded = true;
     result.passed = passed;
     if (!passed) result.failReason = "time";
+    // Phase 59 (R44-V4-13): increment barsSeen + lastBarOpenTime so a
+    // re-poll on the same bar is idempotent. Without this, a follow-up
+    // tick re-ran day-rollover and could overwrite stoppedReason="time"
+    // back to null when state.equity met the target post-end.
+    state.barsSeen += 1;
+    state.lastBarOpenTime = lastBar.openTime;
     return result;
   }
 
@@ -1276,8 +1282,12 @@ export function pollLive(
       if (cfg.liveCaps && effRisk > cfg.liveCaps.maxRiskFrac) {
         effRisk = cfg.liveCaps.maxRiskFrac;
       }
-      // Back-derive effRisk from live equity-loss cap, using FINAL stopPct.
-      const LIVE_LOSS_CAP = 0.04;
+      // Phase 59 (R44-V4-10): derive the live-loss cap from cfg.maxDailyLoss
+      // (×0.8 safety margin) instead of hardcoding 0.04. A 0.10-DL config
+      // was needlessly restricted to 4% per trade; a 0.03-DL config was
+      // not restrictive enough. Back-derive effRisk from this cap using
+      // the FINAL stopPct.
+      const LIVE_LOSS_CAP = (cfg.maxDailyLoss ?? 0.05) * 0.8;
       if (stopPct > 0 && cfg.leverage > 0) {
         const modelledLoss = effRisk * stopPct * cfg.leverage;
         if (modelledLoss > LIVE_LOSS_CAP) {
