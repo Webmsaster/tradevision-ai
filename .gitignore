@@ -37,6 +37,9 @@ next-env.d.ts
 # Claude Code local settings
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+.claude/worktrees/
+.claude/state/
+.codex
 
 # playwright
 /test-results/

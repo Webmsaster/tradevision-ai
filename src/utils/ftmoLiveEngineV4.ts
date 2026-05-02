@@ -289,15 +289,20 @@ export function loadState(stateDir: string, cfgLabel: string): FtmoLiveStateV4 {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const raw = fs.readFileSync(filePath, "utf-8");
-      const parsed = JSON.parse(raw) as Partial<FtmoLiveStateV4>;
+      const parsed = JSON.parse(raw) as unknown;
+      // Phase 35 (R44-V4-2): JSON.parse accepts primitives (e.g. `"foo"`,
+      // `42`, `null`) — without an object guard, downstream `parsed as
+      // FtmoLiveStateV4` returns a non-object that crashes the engine
+      // hours later. Treat non-objects as corrupt → backup + fresh state.
+      if (parsed === null || typeof parsed !== "object") {
+        throw new Error("state file is not an object");
+      }
+      const obj = parsed as Partial<FtmoLiveStateV4>;
       // Phase 14 (V4 Bug 9): on schema/cfg mismatch, BACK UP the old state
       // file before discarding. Without this, deploying a new version or
       // changing FTMO_TF wiped the entire challenge state silently — losing
       // peakDrawdown, pause state, ping-day records, kelly window, etc.
-      if (
-        parsed.schemaVersion !== SCHEMA_VERSION ||
-        parsed.cfgLabel !== cfgLabel
-      ) {
+      if (obj.schemaVersion !== SCHEMA_VERSION || obj.cfgLabel !== cfgLabel) {
         const backupPath = `${filePath}.backup.${Date.now()}`;
         try {
           fs.renameSync(filePath, backupPath);
@@ -306,14 +311,28 @@ export function loadState(stateDir: string, cfgLabel: string): FtmoLiveStateV4 {
         }
         console.error(
           `[V4] STATE MISMATCH — backed up to ${backupPath}. ` +
-            `Old: ${parsed.cfgLabel}/${parsed.schemaVersion}, ` +
+            `Old: ${obj.cfgLabel}/${obj.schemaVersion}, ` +
             `New: ${cfgLabel}/${SCHEMA_VERSION}`,
         );
         return initialState(cfgLabel);
       }
-      return parsed as FtmoLiveStateV4;
+      return obj as FtmoLiveStateV4;
     } catch (_err) {
       if (attempt === 0) continue; // retry once on transient parse error
+      // Phase 35 (R44-V4-1): on the SECOND attempt failing too, the file
+      // is genuinely corrupt — back it up before silently wiping. Without
+      // this branch, a single bad write erased the challenge state with
+      // no forensic trail.
+      try {
+        const corruptPath = `${filePath}.corrupt.${Date.now()}`;
+        fs.renameSync(filePath, corruptPath);
+        console.error(
+          `[V4] STATE CORRUPT — backed up to ${corruptPath}. ` +
+            `Reason: ${(_err as Error).message}`,
+        );
+      } catch {
+        /* file already gone — proceed with fresh state */
+      }
       return initialState(cfgLabel);
     }
   }
@@ -344,6 +363,7 @@ export function saveState(state: FtmoLiveStateV4, stateDir: string): void {
     state.kellyPnls = state.kellyPnls.slice(-500);
   }
   const json = JSON.stringify(state, null, 2);
+  let renamed = false;
   const fd = fs.openSync(tmpPath, "w");
   try {
     fs.writeSync(fd, json);
@@ -351,7 +371,36 @@ export function saveState(state: FtmoLiveStateV4, stateDir: string): void {
   } finally {
     fs.closeSync(fd);
   }
-  fs.renameSync(tmpPath, filePath);
+  try {
+    fs.renameSync(tmpPath, filePath);
+    renamed = true;
+    // Phase 35 (R44-V4-3): fsync the parent directory after rename to
+    // guarantee the rename is durable across power loss on ext4 / xfs.
+    // Without this, the tmp-file data was fsynced but the directory entry
+    // pointing to filePath could revert post-crash, losing the new state.
+    try {
+      const dirFd = fs.openSync(stateDir, "r");
+      try {
+        fs.fsyncSync(dirFd);
+      } finally {
+        fs.closeSync(dirFd);
+      }
+    } catch {
+      /* directory fsync unsupported on this fs — best-effort only */
+    }
+  } finally {
+    // Phase 35 (R44-V4-4): clean up orphaned tmpfile if rename never
+    // happened (write failed mid-way, or rename threw EXDEV across mount
+    // boundary). Without this, repeated failed writes piled up tmpfile
+    // corpses in the state-dir indefinitely.
+    if (!renamed) {
+      try {
+        fs.unlinkSync(tmpPath);
+      } catch {
+        /* tmpfile already gone — safe to ignore */
+      }
+    }
+  }
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────
