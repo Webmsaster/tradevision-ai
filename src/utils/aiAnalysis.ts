@@ -1,5 +1,6 @@
 import { Trade, AIInsight } from "@/types/trade";
 import { v4 as uuidv4 } from "uuid";
+import { DAYS_OF_WEEK } from "@/lib/constants";
 
 function generateId(): string {
   return `insight-${uuidv4()}`;
@@ -838,15 +839,7 @@ export function detectFeeDrag(trades: Trade[]): AIInsight | null {
 export function detectDayOfWeekBias(trades: Trade[]): AIInsight | null {
   if (trades.length < 10) return null;
 
-  const DAYS = [
-    "Sunday",
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-  ];
+  const DAYS = DAYS_OF_WEEK;
   const byDay: Record<number, Trade[]> = {};
   for (const t of trades) {
     // Phase 52 (R45-CC-H4): bucket by entry day to match the dashboard

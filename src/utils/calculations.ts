@@ -4,6 +4,7 @@ import type {
   EquityCurvePoint,
   PerformanceByTime,
 } from "@/types/trade";
+import { DAYS_OF_WEEK } from "@/lib/constants";
 
 /**
  * Calculate PnL and PnL percentage for a trade based on direction, prices,
@@ -291,16 +292,7 @@ export function calculatePerformanceByDayOfWeek(
 ): PerformanceByTime[] {
   if (trades.length === 0) return [];
 
-  const dayNames = [
-    "Sunday",
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-  ];
-
+  const dayNames = DAYS_OF_WEEK;
   const groups: Map<number, Trade[]> = new Map();
 
   // Phase 42 (R44-CALC-3): use UTC for time-of-week bucketing — Round 43
