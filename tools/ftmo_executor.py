@@ -2320,6 +2320,31 @@ def rebuild_open_positions_from_mt5() -> None:
     )
 
 
+def backfill_original_lot_on_boot() -> None:
+    """Phase 57 (R45-3): backfill `original_lot` on positions placed before
+    Phase 39 introduced the field.
+
+    Without backfill, `_apply_partial_tp_levels` falls back to current
+    `p.volume` for those positions — closing less than intended on
+    subsequent levels. Best-effort guess: current volume (correct if no
+    partial has fired yet; if a partial did fire we under-close, which
+    is the safe direction).
+    """
+    try:
+        existing = read_json(OPEN_POS_PATH, {"positions": []})
+        positions = existing.get("positions", [])
+        patched = 0
+        for pos in positions:
+            if "original_lot" not in pos:
+                pos["original_lot"] = float(pos.get("lot") or 0.0)
+                patched += 1
+        if patched > 0:
+            write_json(OPEN_POS_PATH, {"positions": positions})
+            log_event("backfill_original_lot_complete", patched=patched)
+    except Exception as e:
+        log_event("backfill_original_lot_failed", error=str(e))
+
+
 def acquire_singleton_or_exit() -> None:
     """Refuse to start when another executor is already running on this state dir.
 
@@ -2435,6 +2460,13 @@ def main_loop() -> None:
     # Round-7 #11: reconcile on-disk position state with MT5 truth on boot.
     # Critical when the executor restarts while trades are open.
     rebuild_open_positions_from_mt5()
+    # Phase 57 (R45-3): backfill `original_lot` on existing open positions
+    # placed before Phase 39. Without this, the partial-TP-levels math
+    # falls back to current `p.volume` for those positions, closing less
+    # than intended on subsequent levels. Best-effort guess: current
+    # volume (correct if no partial has fired yet; if a partial did fire
+    # we under-close — safe direction).
+    backfill_original_lot_on_boot()
 
     mode = "MOCK" if MOCK_MODE else "LIVE (MT5)"
     tg_send(
