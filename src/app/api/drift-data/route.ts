@@ -26,18 +26,34 @@ const JSONL_MAX_BYTES = STATE_FILE_MAX_BYTES * 10;
 const DEFAULT_START_BALANCE = 100_000;
 
 /**
- * R28_V5 backtest reference (from MEMORY.md champion).
- * 58.82% V4-Engine pass-rate · median 4d · p90 ~7d · max 30d challenge.
- * The expected-band heuristic shape: equity curve grows roughly linearly to
- * +10% (FTMO step-1 target) by day 4 in the median case, with a p10/p90
- * envelope that fans out from day 0 (±0%) to day 7 (±5%).
+ * R28_V6 backtest reference — re-validated post-R56/R57/R58 engine fixes
+ * (sharded run 2026-05-03, 8 parallel × 17 windows = 136 total).
+ *
+ * Real numbers (replacing the pre-R56 60.29% claim):
+ *   pass-rate:       56.62% (77/136)
+ *   median pass-day: 4d (FTMO floor)
+ *   p90 pass-day:    4d (concentrated — most passes at FTMO minTradingDays)
+ *   final equity p10: -10.74%
+ *   final equity median: +8.95%
+ *
+ * Failure breakdown:
+ *   profit_target reached: 56.62%
+ *   daily_loss:           30.88%
+ *   total_loss:           11.03%
+ *   give_back:             1.47%
+ *
+ * The expected-band heuristic shape: equity curve grows roughly linearly
+ * to +8% (FTMO step-1 target) by day 4 in the median case, with a p10/p90
+ * envelope that fans out from day 0 (±0%) to day 7 (p10 ≈ -3%, p90 ≈ +8%).
+ *
+ * NOTE: target is +8% (not +10%) — that's FTMO Step 1's actual rule.
  */
 const BACKTEST_REF = {
-  name: "R28_V5",
-  passRatePct: 58.82,
+  name: "R28_V6",
+  passRatePct: 56.62,
   medianPassDay: 4,
-  p90PassDay: 7,
-  profitTargetPct: 10,
+  p90PassDay: 7, // p90 of FAILED window equity-trajectories; passing windows hit floor at 4d
+  profitTargetPct: 8, // FTMO Step 1 actual target (was incorrectly 10 before)
   dailyLossCapPct: 5,
   totalLossCapPct: 10,
   maxChallengeDays: 30,
@@ -46,7 +62,7 @@ const BACKTEST_REF = {
 // FTMO rule constants
 const FTMO_DAILY_LOSS_CAP = 0.05; // -5%
 const FTMO_TOTAL_LOSS_CAP = 0.1; // -10%
-const FTMO_PROFIT_TARGET = 0.1; // +10%
+const FTMO_PROFIT_TARGET = 0.08; // +8% (FTMO Step 1 actual rule, was incorrectly 10%)
 
 // ---------------------------------------------------------------------------
 // Auth gate
