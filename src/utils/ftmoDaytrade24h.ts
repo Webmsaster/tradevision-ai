@@ -8019,7 +8019,13 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6: FtmoDaytra
     // PTP triggerPct=0.02 collapses to 2bps — non-deterministic in the V4 live
     // engine (PTP and TP can both fire on the same bar; ordering depends on
     // bar-traversal). Drop PTP triggerPct to 0.012 so it stays clearly below
-    // the tightened TPs (≥30% gap on every asset). closeFraction unchanged.
+    // the tightened TPs (≥30% gap on every asset).
+    //
+    // Round 58 (Hint Fix #5): closeFraction explicitly held at 0.7 to MATCH
+    // R28_V4's value (parent config also uses 0.7 — see line 7925). An
+    // earlier audit report claimed R28_V4 used 0.6; that was incorrect.
+    // R28_V4 has always shipped 0.7, so R28_V6 carrying 0.7 is genuinely
+    // "closeFraction unchanged". No pass-rate change required.
     partialTakeProfit: { triggerPct: 0.012, closeFraction: 0.7 },
   };
 

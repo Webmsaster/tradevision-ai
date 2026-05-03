@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   computeRiskState,
   evaluateEntry,
@@ -6,13 +6,16 @@ import {
 } from "@/utils/riskManagement";
 import type { ClosedTrade, PaperPosition } from "@/utils/paperTradeLogger";
 
+// Round 58 cleanup: deterministic ID counter (replaces Math.random()).
+let _idCounter = 0;
+
 function makeClosed(args: {
   exitTime: string;
   netPnlPct: number;
   symbol?: string;
 }): ClosedTrade {
   return {
-    id: Math.random().toString(),
+    id: `t-${++_idCounter}`,
     strategy: "hf-daytrading",
     symbol: args.symbol ?? "SUIUSDT",
     direction: "long",
@@ -32,7 +35,7 @@ function makeOpen(args: {
   id?: string;
 }): PaperPosition {
   return {
-    id: args.id ?? Math.random().toString(),
+    id: args.id ?? `p-${++_idCounter}`,
     strategy: "hf-daytrading",
     symbol: args.symbol,
     direction: args.direction,
@@ -46,6 +49,16 @@ function makeOpen(args: {
 }
 
 describe("riskManagement — state computation", () => {
+  // Round 58 cleanup: freeze time so Date.now()/new Date() fixtures are stable.
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T12:00:00Z"));
+    _idCounter = 0;
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("computes daily realised loss from today's closes only", () => {
     const today = new Date("2026-04-19T14:00:00Z");
     const state = computeRiskState({
@@ -79,6 +92,15 @@ describe("riskManagement — state computation", () => {
 });
 
 describe("riskManagement — entry evaluation", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T12:00:00Z"));
+    _idCounter = 0;
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("rejects entry when daily loss cap hit", () => {
     const state = computeRiskState({
       capital: 10000,

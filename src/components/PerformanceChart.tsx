@@ -569,10 +569,37 @@ export default function PerformanceChart({
       "by-pair": renderPairChart,
     };
 
+  // Round 58 a11y (WCAG 1.1.1): text alternative for the SVG chart.
+  // Builds a short summary describing the chart's key takeaways so
+  // screen-reader users get more than "graphic" announced.
+  let summary = "";
+  if (type === "pnl-distribution") {
+    summary = `${trades.length} trades distributed across ${distributionData.length} PnL buckets.`;
+  } else if (type === "win-loss-pie") {
+    const wins = pieData.find((d) => d.name === "Wins");
+    const losses = pieData.find((d) => d.name === "Losses");
+    summary = `${wins?.value ?? 0} wins (${wins?.percent.toFixed(1) ?? "0"}%) versus ${losses?.value ?? 0} losses.`;
+  } else if (type === "by-pair") {
+    const top = pairData[0];
+    const bot = pairData[pairData.length - 1];
+    summary = `Performance by pair across ${pairData.length} pairs. Best: ${top?.pair ?? "n/a"} ($${top?.totalPnl.toFixed(2) ?? "0"}). Worst: ${bot?.pair ?? "n/a"} ($${bot?.totalPnl.toFixed(2) ?? "0"}).`;
+  } else if ((type === "by-day" || type === "by-hour") && data) {
+    const totalTrades = data.reduce((acc, d) => acc + d.trades, 0);
+    const totalPnl = data.reduce((acc, d) => acc + d.totalPnl, 0);
+    summary = `${type === "by-day" ? "Daily" : "Hourly"} aggregation: ${totalTrades} trades totaling $${totalPnl.toFixed(2)} PnL.`;
+  }
+  const chartAriaLabel = `${TITLES[type]}: ${summary}`;
+
   return (
     <div className="performance-chart">
       <div className="performance-chart-title">{TITLES[type]}</div>
-      <div className="performance-chart-container">{chartMap[type]()}</div>
+      <div
+        className="performance-chart-container"
+        role="img"
+        aria-label={chartAriaLabel}
+      >
+        {chartMap[type]()}
+      </div>
     </div>
   );
 }

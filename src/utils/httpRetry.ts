@@ -124,19 +124,10 @@ export async function fetchJsonWithRetry<T>(
       return (await res.json()) as T;
     } catch (err) {
       lastErr = err;
-      // Errors thrown synchronously above for non-retryable HTTP statuses
-      // re-throw immediately (we already burned this attempt).
-      if (err instanceof Error && err.message.startsWith("HTTP ")) {
-        // Non-retryable HTTP error — propagate.
-        if (attempt === maxRetries) throw err;
-        const transient = /^HTTP (?:429|5\d\d) /.test(err.message) ?? false;
-        if (!transient) throw err;
-        await sleep(baseBackoff * 2 ** attempt);
-        continue;
-      }
-      if (!isRetryableNetworkError(err) || attempt === maxRetries) {
-        throw err;
-      }
+      // HTTP errors thrown above already exhausted retries (transient
+      // statuses `continue` directly inside the try-block); rethrow.
+      if (err instanceof Error && err.message.startsWith("HTTP ")) throw err;
+      if (!isRetryableNetworkError(err) || attempt === maxRetries) throw err;
       await sleep(baseBackoff * 2 ** attempt);
     }
   }

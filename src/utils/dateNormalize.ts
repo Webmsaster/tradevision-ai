@@ -142,54 +142,36 @@ export function normalizeDateToUTC(raw: unknown): DateNormalizeResult {
     return { iso: d.toISOString() };
   }
 
-  // -- Round 57 fix #1: explicit handling for MT4 / EU / US formats. ----
-
-  // MT4 export: yyyy.mm.dd HH:MM[:SS]
-  const mt4 = MT4_REGEX.exec(trimmed);
-  if (mt4) {
-    const [, y, m, d, h, mi, s] = mt4;
+  // -- Round 57 fix #1 / Round 58 (DRY): explicit handling for MT4 / EU / US.
+  // Shared logic across MT4 (ymd) and EU dot/dash (dmy) — the slash form
+  // needs ambiguity resolution and is handled separately below.
+  const fixedFormats: Array<{
+    re: RegExp;
+    order: "ymd" | "dmy";
+    warning: DateNormalizeWarning;
+  }> = [
+    { re: MT4_REGEX, order: "ymd", warning: "mt4-date-assumed-utc" },
+    { re: EU_DOT_REGEX, order: "dmy", warning: "eu-date-assumed-utc" },
+    { re: EU_DASH_REGEX, order: "dmy", warning: "eu-date-assumed-utc" },
+  ];
+  for (const { re, order, warning } of fixedFormats) {
+    const m = re.exec(trimmed);
+    if (!m) continue;
+    const [, p1, p2, p3, h, mi, s] = m;
+    // ymd: (y, m, d) — MT4. dmy: (d, m, y) — EU. Month is always p2.
+    const year = Number(order === "ymd" ? p1 : p3);
+    const month = Number(p2);
+    const day = Number(order === "ymd" ? p3 : p1);
     const iso = buildUTC(
-      Number(y),
-      Number(m),
-      Number(d),
+      year,
+      month,
+      day,
       h ? Number(h) : 0,
       mi ? Number(mi) : 0,
       s ? Number(s) : 0,
     );
     if (!iso) return { iso: null };
-    return { iso, warning: "mt4-date-assumed-utc" };
-  }
-
-  // EU dot-separated: dd.mm.yyyy
-  const euDot = EU_DOT_REGEX.exec(trimmed);
-  if (euDot) {
-    const [, d, m, y, h, mi, s] = euDot;
-    const iso = buildUTC(
-      Number(y),
-      Number(m),
-      Number(d),
-      h ? Number(h) : 0,
-      mi ? Number(mi) : 0,
-      s ? Number(s) : 0,
-    );
-    if (!iso) return { iso: null };
-    return { iso, warning: "eu-date-assumed-utc" };
-  }
-
-  // EU dash-separated: dd-mm-yyyy (yyyy-mm-dd handled above as ISO).
-  const euDash = EU_DASH_REGEX.exec(trimmed);
-  if (euDash) {
-    const [, d, m, y, h, mi, s] = euDash;
-    const iso = buildUTC(
-      Number(y),
-      Number(m),
-      Number(d),
-      h ? Number(h) : 0,
-      mi ? Number(mi) : 0,
-      s ? Number(s) : 0,
-    );
-    if (!iso) return { iso: null };
-    return { iso, warning: "eu-date-assumed-utc" };
+    return { iso, warning };
   }
 
   // Slash-separated: ambiguous dd/mm/yyyy vs mm/dd/yyyy.

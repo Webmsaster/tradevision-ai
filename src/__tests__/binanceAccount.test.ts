@@ -48,22 +48,23 @@ describe("binanceAccount — signing", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    // Defensive: ensure no env stubs leak between tests.
+    vi.unstubAllEnvs();
   });
 
   it("configFromEnv reads BINANCE_* environment variables", () => {
-    const prevKey = process.env.BINANCE_API_KEY;
-    const prevSecret = process.env.BINANCE_API_SECRET;
-    const prevTestnet = process.env.BINANCE_TESTNET;
-    process.env.BINANCE_API_KEY = "k";
-    process.env.BINANCE_API_SECRET = "s";
-    process.env.BINANCE_TESTNET = "1";
-    const c = configFromEnv();
-    expect(c.apiKey).toBe("k");
-    expect(c.apiSecret).toBe("s");
-    expect(c.testnet).toBe(true);
-    // restore
-    process.env.BINANCE_API_KEY = prevKey;
-    process.env.BINANCE_API_SECRET = prevSecret;
-    process.env.BINANCE_TESTNET = prevTestnet;
+    // Round 58 cleanup: use vi.stubEnv (auto-restored via afterEach) instead
+    // of manual process.env mutation. Prevents leakage to other tests.
+    vi.stubEnv("BINANCE_API_KEY", "k");
+    vi.stubEnv("BINANCE_API_SECRET", "s");
+    vi.stubEnv("BINANCE_TESTNET", "1");
+    try {
+      const c = configFromEnv();
+      expect(c.apiKey).toBe("k");
+      expect(c.apiSecret).toBe("s");
+      expect(c.testnet).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

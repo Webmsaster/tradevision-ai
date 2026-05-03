@@ -310,58 +310,66 @@ export default function TradeForm({
           <div className="trade-form-grid">
             {/* Pair */}
             <div className="form-group trade-form-full">
-              <label className="form-label">Pair *</label>
-              <input
-                type="text"
-                className={`form-input${errors.pair ? " error" : ""}`}
-                placeholder="BTC/USDT"
-                value={pair}
-                onChange={(e) => setPair(e.target.value)}
-              />
+              <label className="form-label">
+                Pair *
+                <input
+                  type="text"
+                  className={`form-input${errors.pair ? " error" : ""}`}
+                  placeholder="BTC/USDT"
+                  value={pair}
+                  onChange={(e) => setPair(e.target.value)}
+                />
+              </label>
               {errors.pair && <span className="form-error">{errors.pair}</span>}
             </div>
 
             {/* Direction */}
             <div className="form-group">
-              <label className="form-label">Direction *</label>
-              <select
-                className="form-input"
-                value={direction}
-                onChange={(e) =>
-                  setDirection(e.target.value as "long" | "short")
-                }
-              >
-                <option value="long">Long</option>
-                <option value="short">Short</option>
-              </select>
+              <label className="form-label">
+                Direction *
+                <select
+                  className="form-input"
+                  value={direction}
+                  onChange={(e) =>
+                    setDirection(e.target.value as "long" | "short")
+                  }
+                >
+                  <option value="long">Long</option>
+                  <option value="short">Short</option>
+                </select>
+              </label>
             </div>
 
             {/* Leverage */}
             <div className="form-group">
-              <label className="form-label">Leverage</label>
-              <input
-                type="number"
-                className="form-input"
-                placeholder="1"
-                min="1"
-                step="1"
-                value={leverage}
-                onChange={(e) => setLeverage(e.target.value)}
-              />
+              <label className="form-label">
+                Leverage
+                <input
+                  type="number"
+                  className="form-input"
+                  placeholder="1"
+                  min="1"
+                  step="1"
+                  value={leverage}
+                  onChange={(e) => setLeverage(e.target.value)}
+                />
+              </label>
             </div>
 
             {/* Entry Price */}
             <div className="form-group">
-              <label className="form-label">Entry Price *</label>
-              <input
-                type="number"
-                className={`form-input${errors.entryPrice ? " error" : ""}`}
-                placeholder="0.00"
-                min="0"
-                step="any"
-                value={entryPrice}
-                onChange={(e) => setEntryPrice(e.target.value)}
-              />
+              <label className="form-label">
+                Entry Price *
+                <input
+                  type="number"
+                  className={`form-input${errors.entryPrice ? " error" : ""}`}
+                  placeholder="0.00"
+                  min="0"
+                  step="any"
+                  value={entryPrice}
+                  onChange={(e) => setEntryPrice(e.target.value)}
+                />
+              </label>
               {errors.entryPrice && (
                 <span className="form-error">{errors.entryPrice}</span>
               )}
@@ -369,16 +377,18 @@ export default function TradeForm({
 
             {/* Exit Price */}
             <div className="form-group">
-              <label className="form-label">Exit Price *</label>
-              <input
-                type="number"
-                className={`form-input${errors.exitPrice ? " error" : ""}`}
-                placeholder="0.00"
-                min="0"
-                step="any"
-                value={exitPrice}
-                onChange={(e) => setExitPrice(e.target.value)}
-              />
+              <label className="form-label">
+                Exit Price *
+                <input
+                  type="number"
+                  className={`form-input${errors.exitPrice ? " error" : ""}`}
+                  placeholder="0.00"
+                  min="0"
+                  step="any"
+                  value={exitPrice}
+                  onChange={(e) => setExitPrice(e.target.value)}
+                />
+              </label>
               {errors.exitPrice && (
                 <span className="form-error">{errors.exitPrice}</span>
               )}
@@ -386,16 +396,18 @@ export default function TradeForm({
 
             {/* Quantity */}
             <div className="form-group">
-              <label className="form-label">Quantity *</label>
-              <input
-                type="number"
-                className={`form-input${errors.quantity ? " error" : ""}`}
-                placeholder="0.00"
-                min="0"
-                step="any"
-                value={quantity}
-                onChange={(e) => setQuantity(e.target.value)}
-              />
+              <label className="form-label">
+                Quantity *
+                <input
+                  type="number"
+                  className={`form-input${errors.quantity ? " error" : ""}`}
+                  placeholder="0.00"
+                  min="0"
+                  step="any"
+                  value={quantity}
+                  onChange={(e) => setQuantity(e.target.value)}
+                />
+              </label>
               {errors.quantity && (
                 <span className="form-error">{errors.quantity}</span>
               )}
@@ -403,27 +415,31 @@ export default function TradeForm({
 
             {/* Fees */}
             <div className="form-group">
-              <label className="form-label">Fees</label>
-              <input
-                type="number"
-                className="form-input"
-                placeholder="0.00"
-                min="0"
-                step="any"
-                value={fees}
-                onChange={(e) => setFees(e.target.value)}
-              />
+              <label className="form-label">
+                Fees
+                <input
+                  type="number"
+                  className="form-input"
+                  placeholder="0.00"
+                  min="0"
+                  step="any"
+                  value={fees}
+                  onChange={(e) => setFees(e.target.value)}
+                />
+              </label>
             </div>
 
             {/* Entry Date */}
             <div className="form-group">
-              <label className="form-label">Entry Date * (UTC)</label>
-              <input
-                type="datetime-local"
-                className={`form-input${errors.entryDate ? " error" : ""}`}
-                value={entryDate}
-                onChange={(e) => setEntryDate(e.target.value)}
-              />
+              <label className="form-label">
+                Entry Date * (UTC)
+                <input
+                  type="datetime-local"
+                  className={`form-input${errors.entryDate ? " error" : ""}`}
+                  value={entryDate}
+                  onChange={(e) => setEntryDate(e.target.value)}
+                />
+              </label>
               {errors.entryDate && (
                 <span className="form-error">{errors.entryDate}</span>
               )}
@@ -431,13 +447,15 @@ export default function TradeForm({
 
             {/* Exit Date */}
             <div className="form-group">
-              <label className="form-label">Exit Date * (UTC)</label>
-              <input
-                type="datetime-local"
-                className={`form-input${errors.exitDate ? " error" : ""}`}
-                value={exitDate}
-                onChange={(e) => setExitDate(e.target.value)}
-              />
+              <label className="form-label">
+                Exit Date * (UTC)
+                <input
+                  type="datetime-local"
+                  className={`form-input${errors.exitDate ? " error" : ""}`}
+                  value={exitDate}
+                  onChange={(e) => setExitDate(e.target.value)}
+                />
+              </label>
               {errors.exitDate && (
                 <span className="form-error">{errors.exitDate}</span>
               )}
@@ -457,38 +475,44 @@ export default function TradeForm({
 
             {/* Strategy */}
             <div className="form-group trade-form-full">
-              <label className="form-label">Strategy</label>
-              <input
-                type="text"
-                className="form-input"
-                placeholder="e.g. Breakout, Mean Reversion..."
-                value={strategy}
-                onChange={(e) => setStrategy(e.target.value)}
-              />
+              <label className="form-label">
+                Strategy
+                <input
+                  type="text"
+                  className="form-input"
+                  placeholder="e.g. Breakout, Mean Reversion..."
+                  value={strategy}
+                  onChange={(e) => setStrategy(e.target.value)}
+                />
+              </label>
             </div>
 
             {/* Tags */}
             <div className="form-group trade-form-full">
-              <label className="form-label">Tags</label>
-              <input
-                type="text"
-                className="form-input"
-                placeholder="Comma separated, e.g. scalp, news, momentum"
-                value={tags}
-                onChange={(e) => setTags(e.target.value)}
-              />
+              <label className="form-label">
+                Tags
+                <input
+                  type="text"
+                  className="form-input"
+                  placeholder="Comma separated, e.g. scalp, news, momentum"
+                  value={tags}
+                  onChange={(e) => setTags(e.target.value)}
+                />
+              </label>
             </div>
 
             {/* Notes */}
             <div className="form-group trade-form-full">
-              <label className="form-label">Notes</label>
-              <textarea
-                className="form-input"
-                rows={3}
-                placeholder="Trade rationale, observations..."
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-              />
+              <label className="form-label">
+                Notes
+                <textarea
+                  className="form-input"
+                  rows={3}
+                  placeholder="Trade rationale, observations..."
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                />
+              </label>
             </div>
 
             {/* Journal Entry Section */}
@@ -498,28 +522,38 @@ export default function TradeForm({
 
             {/* Emotion */}
             <div className="form-group">
-              <label className="form-label">Emotion</label>
-              <select
-                className="form-input"
-                value={emotion}
-                onChange={(e) =>
-                  setEmotion(e.target.value as Trade["emotion"] | "")
-                }
-              >
-                <option value="">Select emotion...</option>
-                <option value="confident">Confident</option>
-                <option value="neutral">Neutral</option>
-                <option value="fearful">Fearful</option>
-                <option value="greedy">Greedy</option>
-                <option value="fomo">FOMO</option>
-                <option value="revenge">Revenge</option>
-              </select>
+              <label className="form-label">
+                Emotion
+                <select
+                  className="form-input"
+                  value={emotion}
+                  onChange={(e) =>
+                    setEmotion(e.target.value as Trade["emotion"] | "")
+                  }
+                >
+                  <option value="">Select emotion...</option>
+                  <option value="confident">Confident</option>
+                  <option value="neutral">Neutral</option>
+                  <option value="fearful">Fearful</option>
+                  <option value="greedy">Greedy</option>
+                  <option value="fomo">FOMO</option>
+                  <option value="revenge">Revenge</option>
+                </select>
+              </label>
             </div>
 
             {/* Confidence */}
             <div className="form-group">
-              <label className="form-label">Confidence</label>
-              <div className="trade-form-confidence">
+              {/* Round 58 a11y: confidence is a button-group, label exposed
+                  via aria-labelledby on the role=group container. */}
+              <span className="form-label" id="confidence-label">
+                Confidence
+              </span>
+              <div
+                className="trade-form-confidence"
+                role="group"
+                aria-labelledby="confidence-label"
+              >
                 {[1, 2, 3, 4, 5].map((level) => (
                   <button
                     key={level}
@@ -529,6 +563,8 @@ export default function TradeForm({
                       setConfidence(level === confidence ? 0 : level)
                     }
                     title={`Confidence: ${level}/5`}
+                    aria-label={`Confidence level ${level} of 5`}
+                    aria-pressed={level <= confidence}
                   >
                     {level}
                   </button>
@@ -538,15 +574,17 @@ export default function TradeForm({
 
             {/* Setup Type */}
             <div className="form-group">
-              <label className="form-label">Setup Type</label>
-              <input
-                type="text"
-                className="form-input"
-                placeholder="e.g. breakout, pullback..."
-                list="setup-type-suggestions"
-                value={setupType}
-                onChange={(e) => setSetupType(e.target.value)}
-              />
+              <label className="form-label">
+                Setup Type
+                <input
+                  type="text"
+                  className="form-input"
+                  placeholder="e.g. breakout, pullback..."
+                  list="setup-type-suggestions"
+                  value={setupType}
+                  onChange={(e) => setSetupType(e.target.value)}
+                />
+              </label>
               <datalist id="setup-type-suggestions">
                 <option value="breakout" />
                 <option value="pullback" />
@@ -561,46 +599,50 @@ export default function TradeForm({
 
             {/* Timeframe */}
             <div className="form-group">
-              <label className="form-label">Timeframe</label>
-              <select
-                className="form-input"
-                value={timeframe}
-                onChange={(e) => setTimeframe(e.target.value)}
-              >
-                <option value="">Select timeframe...</option>
-                <option value="1m">1m</option>
-                <option value="5m">5m</option>
-                <option value="15m">15m</option>
-                <option value="30m">30m</option>
-                <option value="1h">1h</option>
-                <option value="4h">4h</option>
-                <option value="1d">1d</option>
-                <option value="1w">1w</option>
-              </select>
+              <label className="form-label">
+                Timeframe
+                <select
+                  className="form-input"
+                  value={timeframe}
+                  onChange={(e) => setTimeframe(e.target.value)}
+                >
+                  <option value="">Select timeframe...</option>
+                  <option value="1m">1m</option>
+                  <option value="5m">5m</option>
+                  <option value="15m">15m</option>
+                  <option value="30m">30m</option>
+                  <option value="1h">1h</option>
+                  <option value="4h">4h</option>
+                  <option value="1d">1d</option>
+                  <option value="1w">1w</option>
+                </select>
+              </label>
             </div>
 
             {/* Market Condition */}
             <div className="form-group trade-form-full">
-              <label className="form-label">Market Condition</label>
-              <select
-                className="form-input"
-                value={marketCondition}
-                onChange={(e) =>
-                  setMarketCondition(
-                    e.target.value as Trade["marketCondition"] | "",
-                  )
-                }
-              >
-                <option value="">Select condition...</option>
-                <option value="trending">Trending</option>
-                <option value="ranging">Ranging</option>
-                <option value="volatile">Volatile</option>
-                <option value="calm">Calm</option>
-              </select>
+              <label className="form-label">
+                Market Condition
+                <select
+                  className="form-input"
+                  value={marketCondition}
+                  onChange={(e) =>
+                    setMarketCondition(
+                      e.target.value as Trade["marketCondition"] | "",
+                    )
+                  }
+                >
+                  <option value="">Select condition...</option>
+                  <option value="trending">Trending</option>
+                  <option value="ranging">Ranging</option>
+                  <option value="volatile">Volatile</option>
+                  <option value="calm">Calm</option>
+                </select>
+              </label>
             </div>
             {/* Screenshot Upload */}
             <div className="form-group trade-form-full">
-              <label className="form-label">Chart Screenshot</label>
+              <span className="form-label">Chart Screenshot</span>
               {screenshot ? (
                 <div style={{ position: "relative", marginBottom: "8px" }}>
                   <img
@@ -627,6 +669,7 @@ export default function TradeForm({
                   type="file"
                   accept="image/*"
                   className="form-input"
+                  aria-label="Chart screenshot"
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (!file) return;

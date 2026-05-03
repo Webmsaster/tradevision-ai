@@ -63,18 +63,11 @@ describe("distributedRateLimit — Upstash REST path", () => {
     let calls = 0;
     globalThis.fetch = vi.fn(async () => {
       calls++;
-      // Round 56: pipeline now is [SET NX, INCR]. Result order matches.
-      // SET-NX returns "OK" or null, INCR returns the new counter value.
-      return new Response(
-        JSON.stringify([
-          { result: calls === 1 ? "OK" : null },
-          { result: calls },
-        ]),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        },
-      );
+      // Round 58: single EVAL command, response is { result: <count> }.
+      return new Response(JSON.stringify({ result: calls }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
     }) as typeof fetch;
 
     const opts = { maxHits: 2, windowMs: 60_000 };
@@ -106,43 +99,82 @@ describe("distributedRateLimit — Upstash REST path", () => {
     expect(await isRateLimited("fb2", "6.6.6.6", opts)).toBe(true);
   });
 
-  // Round 56 (Finding #1): TTL must be installed only on the first hit
-  // within a window. Otherwise sustained spam keeps refreshing the TTL
-  // and the key never expires — counter grows forever, fail-closed.
-  it("test_ttl_set_only_on_first_hit", async () => {
-    const seenCommands: string[][] = [];
+  // Round 58 (Critical Fix #1): atomicity regression. Upstash REST
+  // `/pipeline` runs commands SEQUENTIALLY, not as a transaction; the
+  // SET-NX + INCR shape had a TOCTOU window where the key could expire
+  // between the two commands and INCR would re-create it without TTL.
+  // Lua EVAL is atomic — verify we issue exactly one EVAL per call,
+  // never SET-NX or EXPIRE separately, and that the script body wires
+  // INCR + conditional EXPIRE in one indivisible operation.
+  it("uses single atomic EVAL — no separate SET-NX or EXPIRE commands", async () => {
+    const sentBodies: unknown[] = [];
     let counter = 0;
-    globalThis.fetch = vi.fn(async (_input: unknown, init?: RequestInit) => {
-      const body = init?.body ? JSON.parse(String(init.body)) : [];
-      // Capture the command array (each entry is [CMD, ...args]).
-      for (const cmd of body) seenCommands.push(cmd as string[]);
+    globalThis.fetch = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      sentBodies.push({ url, body });
       counter += 1;
-      // SET-NX returns "OK" only on the first call (key didn't exist),
-      // null afterwards. INCR returns the new count.
-      return new Response(
-        JSON.stringify([
-          { result: counter === 1 ? "OK" : null },
-          { result: counter },
-        ]),
-        { status: 200 },
-      );
+      // EVAL response shape: { result: <number> } on the `/` endpoint.
+      return new Response(JSON.stringify({ result: counter }), { status: 200 });
     }) as typeof fetch;
 
     const opts = { maxHits: 100, windowMs: 60_000 };
-    await isRateLimited("ttl-once", "7.7.7.7", opts);
-    await isRateLimited("ttl-once", "7.7.7.7", opts);
-    await isRateLimited("ttl-once", "7.7.7.7", opts);
+    await isRateLimited("atomic-eval", "7.7.7.7", opts);
+    await isRateLimited("atomic-eval", "7.7.7.7", opts);
+    await isRateLimited("atomic-eval", "7.7.7.7", opts);
 
-    // Across 3 calls we must have issued SET ... NX EX exactly 3 times
-    // (one per call — Upstash itself rejects the 2nd/3rd via NX).
-    // The CRITICAL property is that NO `EXPIRE` command appears — that
-    // would re-set TTL and reproduce the bug.
-    const setNxCalls = seenCommands.filter(
-      (c) => c[0] === "SET" && c.includes("NX") && c.includes("EX"),
-    );
-    const expireCalls = seenCommands.filter((c) => c[0] === "EXPIRE");
-    expect(setNxCalls.length).toBe(3); // one SET-NX per request
-    expect(expireCalls.length).toBe(0); // no TTL re-set
+    // 1 fetch per call. Each body is a single EVAL command (NOT a
+    // pipeline array of commands). No separate SET-NX or EXPIRE.
+    expect(sentBodies.length).toBe(3);
+    for (const sent of sentBodies) {
+      const s = sent as { url: string; body: unknown[] };
+      // Endpoint is `/`, not `/pipeline`.
+      expect(s.url.endsWith("/pipeline")).toBe(false);
+      expect(Array.isArray(s.body)).toBe(true);
+      // Single-command shape: ["EVAL", script, "1", key, ttl].
+      expect(s.body[0]).toBe("EVAL");
+      // Script wires INCR + conditional EXPIRE atomically.
+      expect(String(s.body[1])).toContain("INCR");
+      expect(String(s.body[1])).toContain("EXPIRE");
+      // Never a separate SET / EXPIRE issued at top level.
+      expect(s.body[0]).not.toBe("SET");
+      expect(s.body[0]).not.toBe("EXPIRE");
+    }
+  });
+
+  // Round 58: regression — first hit (key not yet existing) → EVAL
+  // returns 1, the EXPIRE branch inside the Lua script fires exactly
+  // once. Subsequent calls return N>1, EXPIRE branch is skipped.
+  // We can't observe the inner EXPIRE call from the outside (it's all
+  // inside Lua), but we can verify the return-value contract.
+  it("first hit returns 1 (key created); subsequent hits return N", async () => {
+    let counter = 0;
+    globalThis.fetch = vi.fn(async () => {
+      counter += 1;
+      return new Response(JSON.stringify({ result: counter }), { status: 200 });
+    }) as typeof fetch;
+
+    // maxHits high enough that no call is throttled.
+    const opts = { maxHits: 100, windowMs: 60_000 };
+    expect(await isRateLimited("eval-first", "8.8.8.8", opts)).toBe(false); // count=1 (created)
+    expect(await isRateLimited("eval-first", "8.8.8.8", opts)).toBe(false); // count=2
+    expect(await isRateLimited("eval-first", "8.8.8.8", opts)).toBe(false); // count=3
+    expect(counter).toBe(3);
+  });
+
+  // Round 58: regression — when the EVAL endpoint's response indicates
+  // a non-OK / non-numeric result, we return null (memory fallback).
+  it("falls back to memory when EVAL returns non-numeric result", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      // Invalid response shape — no { result: number } field.
+      return new Response(JSON.stringify({ result: { unexpected: true } }), {
+        status: 200,
+      });
+    }) as typeof fetch;
+
+    const opts = { maxHits: 1, windowMs: 60_000 };
+    expect(await isRateLimited("eval-bad-shape", "9.9.9.9", opts)).toBe(false);
+    expect(await isRateLimited("eval-bad-shape", "9.9.9.9", opts)).toBe(true);
   });
 
   it("logs once on Upstash auth failure (401/403)", async () => {

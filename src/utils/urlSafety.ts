@@ -37,8 +37,26 @@ export function isPrivateHostname(host: string): boolean {
     if (a === 192 && b === 168) return true; // 192.168/16
     if (a >= 224) return true; // multicast / reserved
   }
-  // IPv6 literals — explicit forms
+  // IPv6 literals — explicit forms.
   if (h === "::1" || h === "::") return true;
+  // Round 58 (Warning Fix #4): defensive regex against uncompressed
+  // IPv6 loopback. WHATWG URL canonicalizes `[0:0:0:0:0:0:0:1]` to
+  // `::1` in both modern Node and browsers, but if a future runtime
+  // (or polyfill, or hand-built input path) ever skips that
+  // canonicalization, a literal `0:0:0:0:0:0:0:1` would slip past the
+  // exact-string match above. Match any all-zeros prefix terminated by
+  // `1` (with optional leading zeros): "0:0:...:1" or "0:0::1" forms.
+  // Empty groups (the `::` shorthand) are pre-stripped in valid URL
+  // input — but the canonical form for these always begins/ends with
+  // a zero group followed by 1, so the regex is sufficient.
+  if (/^(0+:)+0*1$/.test(h)) return true; // "0:0:0:0:0:0:0:1", "0:0:1", etc.
+  // Mixed `::` shorthand expansion: `[0::1]` becomes "0::1" if not
+  // canonicalized (string contains an empty group via "::"). Match
+  // explicit "0::1", "0:0::1" etc.
+  if (/^(0+:)+:0*1$/.test(h)) return true;
+  // All-zeros wildcard: "0:0:0:0:0:0:0:0" or "0::" forms.
+  if (/^(0+:)+0+$/.test(h)) return true;
+  if (/^(0+:)+:$/.test(h)) return true;
   // IPv4-mapped IPv6: Node's URL constructor compresses dotted form into
   // hex, so "::ffff:127.0.0.1" arrives as "::ffff:7f00:1". Decode either
   // shape to a dotted IPv4 string and recurse.

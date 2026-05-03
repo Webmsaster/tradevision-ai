@@ -1500,6 +1500,67 @@ def test_reconcile_missing_positions_logs_offline_close(monkeypatch):
         assert t0["reason"] == "offline_close"
 
 
+# Round 58 (Critical Fix #3): reconcile_missing_positions must also pick up
+# Hedge-Mode close deals (DEAL_ENTRY_INOUT=2 = position-reversal, and
+# DEAL_ENTRY_OUT_BY=3 = close-by-opposite). Round 57 only matched
+# DEAL_ENTRY_OUT (=1) which is the Netting-Mode close — Hedge-Mode FTMO
+# accounts would silently lose every offline close, leaving phantom
+# tickets in open-positions.json and broken equity tracking.
+@pytest.mark.parametrize("close_entry_code,label", [
+    (2, "DEAL_ENTRY_INOUT"),  # Hedge-Mode reversal
+    (3, "DEAL_ENTRY_OUT_BY"),  # Hedge-Mode close-by-opposite
+])
+def test_reconcile_missing_positions_hedge_mode(monkeypatch, close_entry_code, label):
+    """Hedge-Mode brokers emit close deals with entry codes 2 or 3.
+    reconcile_missing_positions must capture both, not just OUT (=1)."""
+    import ftmo_executor as exe
+    with tempfile.TemporaryDirectory() as td:
+        exe.STATE_DIR = Path(td)
+        exe.OPEN_POS_PATH = Path(td) / "open-positions.json"
+        exe.OPEN_POS_PATH.write_text(json.dumps({"positions": [{
+            "ticket": 8888,
+            "signalAsset": "ETH-TREND",
+            "direction": "long",
+            "entry_price": 3000.0,
+        }]}))
+
+        # MT5: position absent (closed during offline window via Hedge close).
+        monkeypatch.setattr(exe.mt5, "positions_get", lambda *a, **k: [])
+
+        class FakeDeal:
+            def __init__(self, position_id, entry, price, time, profit):
+                self.position_id = position_id
+                self.entry = entry
+                self.price = price
+                self.time = time
+                self.profit = profit
+                self.magic = 231
+
+        deal_close = FakeDeal(
+            position_id=8888,
+            entry=close_entry_code,  # Hedge-Mode close
+            price=3100.0,
+            time=1714000000,
+            profit=100.0,
+        )
+        monkeypatch.setattr(exe.mt5, "history_deals_get", lambda *a, **k: [deal_close])
+        monkeypatch.setattr(exe, "tg_send", lambda *a, **k: None)
+
+        exe.reconcile_missing_positions()
+
+        offline_path = Path(td) / "closed-during-offline.json"
+        assert offline_path.exists(), (
+            f"{label} (code={close_entry_code}) was not captured — "
+            f"reconcile_missing_positions still ignores Hedge-Mode closes."
+        )
+        log = json.loads(offline_path.read_text())
+        assert len(log["trades"]) == 1
+        t0 = log["trades"][0]
+        assert t0["ticket"] == 8888
+        assert t0["exit_price"] == 3100.0
+        assert t0["profit_usd"] == 100.0
+
+
 # ============================================================================
 # Round 57 (2026-05-03): mt5_init_with_retry — FTMO_EXPECTED_LOGIN guard
 # ----------------------------------------------------------------------------

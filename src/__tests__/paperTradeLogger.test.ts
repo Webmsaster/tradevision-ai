@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   advancePosition,
   computeStats,
@@ -30,6 +30,15 @@ function bar(args: {
 }
 
 describe("paperTradeLogger", () => {
+  // Round 58 cleanup: freeze time so Date.now()-based fixtures are stable.
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T12:00:00Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("emptyState has no positions or trades", () => {
     const s = emptyState();
     expect(s.openPositions).toHaveLength(0);

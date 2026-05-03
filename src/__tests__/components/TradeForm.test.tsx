@@ -80,26 +80,28 @@ describe("TradeForm", () => {
   it("calls onClose when Cancel clicked", () => {
     render(<TradeForm {...defaultProps} />);
     fireEvent.click(screen.getByText("Cancel"));
-    expect(mockOnClose).toHaveBeenCalled();
+    // Round 58 cleanup: assert exact call count (was: bare toHaveBeenCalled).
+    expect(mockOnClose).toHaveBeenCalledTimes(1);
   });
 
   it("calls onClose when close button clicked", () => {
     render(<TradeForm {...defaultProps} />);
     fireEvent.click(screen.getByLabelText("Close"));
-    expect(mockOnClose).toHaveBeenCalled();
+    expect(mockOnClose).toHaveBeenCalledTimes(1);
   });
 
   it("calls onClose on Escape key", () => {
     render(<TradeForm {...defaultProps} />);
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(mockOnClose).toHaveBeenCalled();
+    expect(mockOnClose).toHaveBeenCalledTimes(1);
   });
 
   it("calls onClose when clicking overlay", () => {
     render(<TradeForm {...defaultProps} />);
     const overlay = document.querySelector(".modal-overlay");
-    if (overlay) fireEvent.click(overlay);
-    expect(mockOnClose).toHaveBeenCalled();
+    expect(overlay).not.toBeNull();
+    fireEvent.click(overlay!);
+    expect(mockOnClose).toHaveBeenCalledTimes(1);
   });
 
   it("does not close when clicking modal content", () => {
@@ -229,6 +231,33 @@ describe("TradeForm", () => {
     fireEvent.click(btn);
 
     expect(mockOnSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  // Round 58 a11y: label/input association via wrapping (WCAG 1.3.1).
+  // Without the wrap (or htmlFor/id) `getByLabelText` would throw. These
+  // tests guard against accidentally regressing the form's accessibility.
+  it("associates the Pair input with its label (a11y)", () => {
+    render(<TradeForm {...defaultProps} />);
+    const pairInput = screen.getByLabelText("Pair *") as HTMLInputElement;
+    expect(pairInput).toBeInTheDocument();
+    expect(pairInput.tagName).toBe("INPUT");
+  });
+
+  it("associates Entry/Exit Price + Quantity inputs with labels (a11y)", () => {
+    render(<TradeForm {...defaultProps} />);
+    expect(screen.getByLabelText("Entry Price *")).toBeInTheDocument();
+    expect(screen.getByLabelText("Exit Price *")).toBeInTheDocument();
+    expect(screen.getByLabelText("Quantity *")).toBeInTheDocument();
+    expect(screen.getByLabelText("Leverage")).toBeInTheDocument();
+    expect(screen.getByLabelText("Fees")).toBeInTheDocument();
+  });
+
+  it("associates Direction + Timeframe + Market Condition selects with labels (a11y)", () => {
+    render(<TradeForm {...defaultProps} />);
+    expect(screen.getByLabelText("Direction *")).toBeInTheDocument();
+    expect(screen.getByLabelText("Timeframe")).toBeInTheDocument();
+    expect(screen.getByLabelText("Market Condition")).toBeInTheDocument();
+    expect(screen.getByLabelText("Emotion")).toBeInTheDocument();
   });
 
   it("validates exit date must be after entry date", () => {

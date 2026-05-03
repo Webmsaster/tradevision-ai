@@ -188,9 +188,18 @@ export function useLiveCandles({
     return () => {
       cancelled = true;
       abort.abort();
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
+      // Round 58 Fix 3: avoid closing a WebSocket while it is still in
+      // CONNECTING state — that produces a half-opened TCP connection
+      // (server sees connect → immediate FIN). Defer close until the
+      // socket reaches OPEN by replacing onopen with an immediate close.
+      const ws = wsRef.current;
+      wsRef.current = null;
+      if (ws) {
+        if (ws.readyState === WebSocket.CONNECTING) {
+          ws.onopen = () => ws.close();
+        } else {
+          ws.close();
+        }
       }
     };
   }, [symbol, timeframe, history]);

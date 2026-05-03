@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import {
   filterNewsEvents,
   isNewsBlackout,
@@ -133,7 +134,9 @@ describe("forexFactoryNews — loadForexFactoryArchive (Round 57 Fix 2)", () => 
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `ff-archive-${Date.now()}-${Math.random()}`);
+    // Round 58 cleanup: deterministic-but-unique tmpDir name (replaces
+    // Date.now() + Math.random() — collision-safe across parallel runs).
+    tmpDir = join(tmpdir(), `ff-archive-${randomBytes(8).toString("hex")}`);
     mkdirSync(tmpDir, { recursive: true });
   });
 
@@ -183,7 +186,8 @@ describe("forexFactoryNews — loadForexFactoryNews disk cache (Round 57 Fix 2)"
   let originalEnv: string | undefined;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `ff-cache-${Date.now()}-${Math.random()}`);
+    // Round 58 cleanup: deterministic-but-unique tmpDir name.
+    tmpDir = join(tmpdir(), `ff-cache-${randomBytes(8).toString("hex")}`);
     mkdirSync(tmpDir, { recursive: true });
     cachePath = join(tmpDir, "ff_news_cache.json");
     originalEnv = process.env.FF_NEWS_CACHE;

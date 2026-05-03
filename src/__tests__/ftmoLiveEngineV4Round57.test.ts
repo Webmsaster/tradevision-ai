@@ -252,8 +252,9 @@ describe("ftmoLiveEngineV4 Round 57 V4-3 fixes", () => {
     const v2State = {
       schemaVersion: 2,
       cfgLabel: "test-fix4",
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      // Hardcoded epochs — fixture is time-independent.
+      createdAt: 1735689600000, // 2025-01-01 00:00:00 UTC
+      updatedAt: 1738367940000, // 2025-02-01 00:39:00 UTC
       lastBarOpenTime: 0,
       challengeStartTs: 0,
       equity: 1.0,
@@ -305,19 +306,44 @@ describe("ftmoLiveEngineV4 Round 57 V4-3 fixes", () => {
   });
 
   it("Fix 5: ping-day push uses dayIndex(lastBar.openTime, ...)", () => {
-    const src = fs.readFileSync(
-      path.resolve(__dirname, "..", "utils", "ftmoLiveEngineV4.ts"),
-      "utf-8",
-    );
-    // The ping-day book-keeping block must derive pingDay via dayIndex
-    // (matching the entry-side R56 fix), not push state.day directly.
-    const block = src.match(
-      /pausedAtTarget && state\.firstTargetHitDay !== null[\s\S]{0,400}tradingDays\.push\(pingDay\)/,
-    );
-    expect(block).not.toBeNull();
-    expect(block![0]).toMatch(
-      /const pingDay = dayIndex\(lastBar\.openTime, state\.challengeStartTs\)/,
-    );
+    // Behavior test: build a state in pause-mode (target already hit,
+    // pausedAtTarget=true) and force a poll on a bar 2 days into the
+    // challenge. Assert that state.tradingDays is updated with the
+    // dayIndex derived from lastBar.openTime — NOT state.day raw —
+    // matching the entry-side R56 dayIndex convention.
+    const startTs = Date.UTC(2026, 0, 1, 0, 0, 0);
+    // Bar 2 full days after challengeStart → dayIndex should be 2.
+    const lastBarTs = startTs + 2 * 24 * 3600_000 + 6 * 3600_000;
+
+    const cfg: FtmoDaytrade24hConfig = {
+      ...baseCfg,
+      maxDays: 30,
+      pauseAtTargetReached: true,
+    };
+
+    const state: FtmoLiveStateV4 = {
+      ...initialState("test-fix5-pingday"),
+      challengeStartTs: startTs,
+      // lastBarOpenTime far enough back that the new bar advances state.day.
+      lastBarOpenTime: startTs,
+      equity: 1.1,
+      mtmEquity: 1.1,
+      day: 1, // raw state.day before this poll
+      dayStart: 1.1,
+      dayPeak: 1.1,
+      challengePeak: 1.1,
+      barsSeen: 24,
+      tradingDays: [0, 1],
+      firstTargetHitDay: 1,
+      pausedAtTarget: true,
+    };
+
+    const candles = [mkCandle(lastBarTs, 100, 100, 100, 100)];
+    pollLive(state, { BTCUSDT: candles }, cfg);
+
+    // dayIndex derives day-2 from (lastBarTs - challengeStartTs) / 86400s.
+    // The push must use that derived day, so tradingDays must include 2.
+    expect(state.tradingDays).toContain(2);
   });
 
   it("Fix 6: kellyTier hysteresis suppresses flicker at boundary", () => {
@@ -392,6 +418,142 @@ describe("ftmoLiveEngineV4 Round 57 V4-3 fixes", () => {
     // Now we should DEFINITELY have stepped down to tier 1 (multiplier 1.0).
     expect(state.kellyTierIdx).toBe(1);
     expect(factor3).toBeCloseTo(1.0, 6);
+  });
+
+  // Round 58 (Critical Fix #2): force-close with missing candle for the
+  // position's source symbol must use lastKnownPrice (recorded during
+  // prior MTM polls), NOT entryPrice. Otherwise a winning trade gets
+  // booked at zero P&L, silently flipping pass→fail.
+  it("Round 58: force-close with missing symbol uses lastKnownPrice", () => {
+    const startTs = Date.UTC(2026, 0, 1, 0, 0, 0);
+    // First poll lands on day-0 (state.day starts at 0; we'll set
+    // lastBarOpenTime to startTs+1h so the day calc still resolves to 0).
+    const polledBarTs = startTs + 1 * 3600_000;
+    // End-of-window poll lands on day >= maxDays. maxDays=1 → second
+    // bar at 25h triggers force-close.
+    const finalBarTs = startTs + 25 * 3600_000;
+
+    // Position deeply in profit on entry; we'll record a +5% lastKnownPrice
+    // via a normal MTM poll, then drop the candle for the final bar.
+    const winningPos: OpenPositionV4 = {
+      ticketId: "BTC-NONE@1@long",
+      symbol: "BTC-NONE",
+      sourceSymbol: "BTCUSDT",
+      direction: "long",
+      entryTime: startTs,
+      entryPrice: 100,
+      initialStopPct: 0.02,
+      stopPrice: 98,
+      tpPrice: 110,
+      effRisk: 0.4,
+      entryBarIdx: 0,
+      highWatermark: 105,
+      beActive: false,
+      ptpTriggered: false,
+      ptpRealizedPct: 0,
+      ptpLevelIdx: 0,
+      ptpLevelsRealized: 0,
+      // No lastKnownPrice yet — first poll should set it via MTM.
+    };
+
+    const state: FtmoLiveStateV4 = {
+      ...initialState("test-r58-fix2"),
+      challengeStartTs: startTs,
+      lastBarOpenTime: startTs,
+      day: 0,
+      dayStart: 1.0,
+      dayPeak: 1.0,
+      challengePeak: 1.0,
+      barsSeen: 1,
+      tradingDays: [0],
+      openPositions: [winningPos],
+    };
+
+    // Poll 1: feed alive at +5%. Candle close=105 must populate
+    // pos.lastKnownPrice. Wide maxDays so end-of-window doesn't fire here.
+    const cfgWide: FtmoDaytrade24hConfig = { ...baseCfg, maxDays: 30 };
+    const c1 = mkCandle(polledBarTs, 105, 105, 105, 105);
+    pollLive(state, { BTCUSDT: [c1] }, cfgWide);
+    expect(state.openPositions[0]!.lastKnownPrice).toBe(105);
+
+    // Poll 2: end-of-window force-close, but the BTC feed went DARK
+    // (empty array → no candle for this asset on the final bar).
+    const cFinal = mkCandle(finalBarTs, 200, 200, 200, 200); // unrelated ref
+    const r = pollLive(
+      state,
+      // Pass an empty BTC feed — force-close branch must fall back.
+      // We still need at least one source emit a candle so pollLive
+      // can resolve a refKey/lastBar; use a different sourceSymbol-style
+      // entry to keep the position's BTCUSDT empty.
+      { BTCUSDT: [], REFFEED: [cFinal] },
+      { ...baseCfg, maxDays: 1 },
+    );
+
+    expect(r.challengeEnded).toBe(true);
+    expect(state.openPositions.length).toBe(0);
+    // CRITICAL: realised equity reflects the +5% from lastKnownPrice
+    // (not zero from entryPrice fallback). With effRisk*leverage=2.0,
+    // 5% rawPnl → +10% effective on equity → ~1.10 ≥ 1.08 target.
+    expect(state.equity).toBeGreaterThan(1.08);
+    expect(r.passed).toBe(true);
+    expect(r.failReason).not.toBe("feed_lost");
+  });
+
+  // Round 58 (Critical Fix #2 corollary): if the feed never emits a
+  // candle for this asset (lastKnownPrice never set), force-close still
+  // falls back to entryPrice (zero PnL) but result.failReason is set
+  // to "feed_lost" so the operator notices.
+  it("Round 58: force-close with no observed price ever marks feed_lost", () => {
+    const startTs = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const finalBarTs = startTs + 25 * 3600_000;
+
+    const dormantPos: OpenPositionV4 = {
+      ticketId: "BTC-NONE@1@long",
+      symbol: "BTC-NONE",
+      sourceSymbol: "BTCUSDT",
+      direction: "long",
+      entryTime: startTs,
+      entryPrice: 100,
+      initialStopPct: 0.02,
+      stopPrice: 98,
+      tpPrice: 110,
+      effRisk: 0.4,
+      entryBarIdx: 0,
+      highWatermark: 100,
+      beActive: false,
+      ptpTriggered: false,
+      ptpRealizedPct: 0,
+      ptpLevelIdx: 0,
+      ptpLevelsRealized: 0,
+      // lastKnownPrice intentionally absent — feed dead since entry.
+    };
+
+    // Pre-bumped equity so the feed_lost zero-PnL fallback alone can't
+    // pass; we want the failure mode to be reported as feed_lost.
+    const state: FtmoLiveStateV4 = {
+      ...initialState("test-r58-fix2-feedlost"),
+      challengeStartTs: startTs,
+      lastBarOpenTime: startTs,
+      equity: 1.0,
+      mtmEquity: 1.0,
+      day: 0,
+      dayStart: 1.0,
+      dayPeak: 1.0,
+      challengePeak: 1.0,
+      barsSeen: 1,
+      tradingDays: [0],
+      openPositions: [dormantPos],
+    };
+
+    const cFinal = mkCandle(finalBarTs, 200, 200, 200, 200);
+    const r = pollLive(
+      state,
+      { BTCUSDT: [], REFFEED: [cFinal] },
+      { ...baseCfg, maxDays: 1 },
+    );
+    expect(r.challengeEnded).toBe(true);
+    expect(r.passed).toBe(false);
+    expect(r.failReason).toBe("feed_lost");
   });
 
   it("Fix 2 (saveState parity): saveState still trims kellyPnls to 500", () => {

@@ -102,10 +102,23 @@ export default function EquityCurve({ data, height }: EquityCurveProps) {
   const latestEquity = data[data.length - 1]!.equity;
   const lineColor = latestEquity >= 0 ? colors.green : colors.red;
 
+  // Round 58 a11y (WCAG 1.1.1): provide a text-alternative summary for the
+  // SVG chart. Recharts SVG has no inherent alt text — screen readers see
+  // nothing without an aria-label on a wrapping role=img.
+  const maxDrawdown = data.reduce(
+    (acc, p) => Math.min(acc, p.drawdown ?? 0),
+    0,
+  );
+  const chartAriaLabel = `Equity curve: ${formatCurrency(latestEquity)} latest equity, ${formatCurrency(maxDrawdown)} max drawdown across ${data.length} data points.`;
+
   return (
     <div className="glass-card equity-curve">
       <h3 className="equity-curve-title">Equity Curve</h3>
-      <div className="equity-curve-chart">
+      <div
+        className="equity-curve-chart"
+        role="img"
+        aria-label={chartAriaLabel}
+      >
         <ResponsiveContainer width="100%" height={height || 350}>
           <AreaChart
             data={data}

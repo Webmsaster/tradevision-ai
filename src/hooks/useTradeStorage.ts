@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { Trade } from "@/types/trade";
 import { useAuth } from "@/lib/auth-context";
 import {
@@ -93,22 +94,60 @@ function getActiveAccountId(): string {
   return "default";
 }
 
+// Round 58 Fix 1: module-level in-flight Promise lock for retry-queue drain.
+// Without this, React StrictMode (dev) double-invokes the mount effect and
+// fires two parallel `saveBulkTradesToSupabase(... [])` drain calls — both
+// of which can re-upload the same pending retry-queue rows = duplicate
+// INSERTs. Multi-tab same problem. The lock dedups concurrent callers down
+// to a single network round-trip; the returned Promise is shared.
+//
+// Exported for tests (resetDrainLock + drainOnce). The lock is module-level
+// so it ALSO covers cross-tab races within one browser process.
+let drainInFlight: Promise<boolean> | null = null;
+export function _resetDrainLockForTests() {
+  drainInFlight = null;
+}
+function drainOnce(supabase: SupabaseClient, userId: string): Promise<boolean> {
+  if (drainInFlight) return drainInFlight;
+  drainInFlight = saveBulkTradesToSupabase(supabase, [], userId).finally(() => {
+    drainInFlight = null;
+  });
+  return drainInFlight;
+}
+
 export function useTradeStorage() {
   const { user, supabase } = useAuth();
   const [allTrades, setAllTrades] = useState<Trade[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [syncError, setSyncError] = useState<string | null>(null);
-  const [activeAccountId, setActiveAccountId] = useState("default");
+  // Round 58 Fix 2: lazy initializer reads localStorage SYNCHRONOUSLY on
+  // first render (client-only) so the very first paint already shows the
+  // correct account filter. Previous version used setState in an effect,
+  // which caused: (1) brief flicker — render under "default" then re-render
+  // with real account, (2) potential SSR/hydration mismatch since the
+  // server can't know localStorage. The `typeof window` guard keeps SSR
+  // safe by falling back to "default" on the server (the cross-tab and
+  // SETTINGS_CHANGED_EVENT listeners below still keep us in sync).
+  const [activeAccountId, setActiveAccountId] = useState<string>(() =>
+    typeof window !== "undefined" ? getActiveAccountId() : "default",
+  );
   const isCloud = !!user && !!supabase;
 
-  // Ref for allTrades so removeTrade callback stays stable
+  // Ref for allTrades so removeTrade callback stays stable.
+  // Round 58 Fix 7: keep ref in sync via useEffect rather than mutating
+  // during render. Mutating refs in the render body works for class-like
+  // semantics but breaks under React 18 concurrent rendering — a render
+  // can be discarded, leaving the ref ahead of the committed state.
   const allTradesRef = useRef(allTrades);
-  allTradesRef.current = allTrades;
+  useEffect(() => {
+    allTradesRef.current = allTrades;
+  }, [allTrades]);
   const hasLoadedInitialDataRef = useRef(false);
 
   // Listen for settings changes to update active account
+  // Round 58 Fix 2: removed redundant `setActiveAccountId(getActiveAccountId())`
+  // — initial value is now set via lazy useState initializer above.
   useEffect(() => {
-    setActiveAccountId(getActiveAccountId());
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail;
       if (detail?.activeAccountId) setActiveAccountId(detail.activeAccountId);
@@ -211,11 +250,12 @@ export function useTradeStorage() {
           // snapshot. If the drain fails (cloud still down), keep
           // local data — overwriting it with the cloud subset would
           // permanently lose the un-uploaded chunk.
-          const drained = await saveBulkTradesToSupabase(
-            supabase!,
-            [],
-            user!.id,
-          );
+          //
+          // Round 58 Fix 1: route through `drainOnce` so concurrent
+          // mounts (StrictMode dev double-invoke, multi-tab) coalesce
+          // into a single network round-trip instead of duplicate
+          // INSERTs.
+          const drained = await drainOnce(supabase!, user!.id);
           if (cancelled) return;
           if (!drained) {
             console.warn(

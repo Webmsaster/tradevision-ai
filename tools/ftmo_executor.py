@@ -2776,12 +2776,26 @@ def reconcile_missing_positions() -> None:
             deals = mt5.history_deals_get(since, until) or []
             # Filter to this position's closing deal. MT5 deal has
             # `position_id` linking to the original open ticket; the
-            # closing deal has entry==DEAL_ENTRY_OUT (1) and matching
-            # position_id.
+            # closing deal has entry in (DEAL_ENTRY_OUT, DEAL_ENTRY_INOUT,
+            # DEAL_ENTRY_OUT_BY) depending on broker mode.
+            #
+            # Round 58 (Critical Fix #3): Round 57 only matched
+            # DEAL_ENTRY_OUT (=1) which is the Netting-Mode close. FTMO
+            # accounts can also be Hedge-Mode where:
+            #   - DEAL_ENTRY_INOUT (=2) is a position-reversal (close +
+            #     open opposite, e.g. long → short via single deal).
+            #   - DEAL_ENTRY_OUT_BY (=3) is a "close by opposite position"
+            #     fill where one position is closed against another.
+            # Both produce a closing deal we must capture for reconcile.
+            close_entry_codes = (
+                getattr(mt5, "DEAL_ENTRY_OUT", 1),
+                getattr(mt5, "DEAL_ENTRY_INOUT", 2),
+                getattr(mt5, "DEAL_ENTRY_OUT_BY", 3),
+            )
             close_deals = [
                 d for d in deals
                 if getattr(d, "position_id", None) == ticket
-                and getattr(d, "entry", None) == getattr(mt5, "DEAL_ENTRY_OUT", 1)
+                and getattr(d, "entry", None) in close_entry_codes
             ]
             if not close_deals:
                 unreconciled.append({"ticket": ticket, "symbol": pos.get("signalAsset")})

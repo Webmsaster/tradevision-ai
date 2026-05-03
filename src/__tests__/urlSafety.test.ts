@@ -54,6 +54,18 @@ describe("isValidHttpsUrl — hostname blocks (loopback)", () => {
     expect(isValidHttpsUrl("https://[::]/")).toBe(false);
     expect(isValidHttpsUrl("https://[::ffff:127.0.0.1]/")).toBe(false);
   });
+
+  // Round 58 (Warning Fix #4): IPv6 uncompressed loopback bypass.
+  // Modern Node + browsers canonicalize these via WHATWG URL parsing,
+  // but the defensive regex in isPrivateHostname must still reject
+  // them in case a future runtime / polyfill / hand-built path skips
+  // canonicalization.
+  it("blocks IPv6 uncompressed loopback forms", () => {
+    expect(isValidHttpsUrl("https://[0:0:0:0:0:0:0:1]/")).toBe(false);
+    expect(isValidHttpsUrl("https://[::0001]/")).toBe(false);
+    expect(isValidHttpsUrl("https://[0::1]/")).toBe(false);
+    expect(isValidHttpsUrl("https://[0:0::1]/")).toBe(false);
+  });
 });
 
 describe("isValidHttpsUrl — RFC 1918 private ranges", () => {

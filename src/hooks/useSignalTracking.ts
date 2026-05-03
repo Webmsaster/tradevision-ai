@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { SignalSnapshot } from "@/utils/signalEngine";
 
 export interface TrackedSignal {
@@ -126,9 +126,18 @@ export function useSignalTracking({
     });
   }, [snapshot, symbol, timeframe, confidence]);
 
+  // Round 58 Fix 5: throttle price-driven re-evaluation via useDeferredValue.
+  // Price ticks can arrive 10-20×/sec on liquid pairs; the previous
+  // `[currentPrice]` dep iterated up to MAX_STORED (200) signals per tick,
+  // wasting CPU on the main thread. useDeferredValue lets React batch rapid
+  // updates into a single deferred run with the last-seen value — the
+  // semantics (eventually-consistent SL/TP detection) are preserved.
+  const deferredPrice = useDeferredValue(currentPrice);
+
   // Price-watcher: evaluate open positions
   useEffect(() => {
-    if (currentPrice === null) return;
+    if (deferredPrice === null) return;
+    const currentPrice = deferredPrice;
     const now = Date.now();
     setTracked((prev) => {
       let changed = false;
@@ -195,26 +204,34 @@ export function useSignalTracking({
       if (changed) persist(next);
       return changed ? next : prev;
     });
-  }, [currentPrice]);
+  }, [deferredPrice]);
 
-  const openCount = tracked.filter(
-    (t) => t.status === "open" && t.symbol === symbol,
-  ).length;
+  // Round 58 Fix 6: memoize derived counts so consumers that pass the
+  // hook results into stable-prop children don't re-render every time
+  // an unrelated piece of state changes.
+  const openCount = useMemo(
+    () =>
+      tracked.filter((t) => t.status === "open" && t.symbol === symbol).length,
+    [tracked, symbol],
+  );
 
-  // Consecutive losses today for current symbol
-  const startOfDay = new Date();
-  startOfDay.setHours(0, 0, 0, 0);
-  const todayClosed = tracked
-    .filter(
-      (t) => t.symbol === symbol && (t.status === "win" || t.status === "loss"),
-    )
-    .filter((t) => (t.closeTime ?? 0) >= startOfDay.getTime())
-    .sort((a, b) => (b.closeTime ?? 0) - (a.closeTime ?? 0));
-  let todayLossStreak = 0;
-  for (const t of todayClosed) {
-    if (t.status === "loss") todayLossStreak++;
-    else break;
-  }
+  const todayLossStreak = useMemo(() => {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const todayClosed = tracked
+      .filter(
+        (t) =>
+          t.symbol === symbol && (t.status === "win" || t.status === "loss"),
+      )
+      .filter((t) => (t.closeTime ?? 0) >= startOfDay.getTime())
+      .sort((a, b) => (b.closeTime ?? 0) - (a.closeTime ?? 0));
+    let streak = 0;
+    for (const t of todayClosed) {
+      if (t.status === "loss") streak++;
+      else break;
+    }
+    return streak;
+  }, [tracked, symbol]);
 
   const circuitBreakerActive = todayLossStreak >= 3;
 

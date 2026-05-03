@@ -154,6 +154,19 @@ export interface OpenPositionV4 {
   /** Multi-level PTP — index of next level to fire. */
   ptpLevelIdx: number;
   ptpLevelsRealized: number;
+  /**
+   * Round 58 (Critical Fix #2): most recently observed close price for
+   * this position's source symbol, updated on every poll where a candle
+   * is available. Used as a SAFE fallback when end-of-window force-close
+   * runs but no candle is available for this asset on the final bar
+   * (feed dropout, exchange halt, or symbol-resolver miss). Previously
+   * we fell back to `pos.entryPrice` → effPnl=0 → a +5% winning trade
+   * would be booked as zero P&L, silently flipping pass/fail outcomes.
+   *
+   * Optional for backwards compatibility with persisted v3 states that
+   * pre-date this field; absent → fallback chain reverts to entryPrice.
+   */
+  lastKnownPrice?: number;
 }
 
 export interface ClosedTradeV4 {
@@ -278,7 +291,7 @@ export interface PollResult {
   /** True if this poll concluded the challenge (passed or failed). */
   challengeEnded: boolean;
   passed: boolean;
-  failReason: "total_loss" | "daily_loss" | "time" | null;
+  failReason: "total_loss" | "daily_loss" | "time" | "feed_lost" | null;
 }
 
 // ─── State init / load / save ───────────────────────────────────────────
@@ -582,6 +595,10 @@ function computeMtmEquity(
   for (const pos of state.openPositions) {
     const price = pricesBySource[pos.sourceSymbol];
     if (price == null) continue;
+    // Round 58 (Critical Fix #2): track most recent observed close so
+    // end-of-window force-close has a safer fallback than entryPrice
+    // when the asset's candle is missing on the final bar.
+    pos.lastKnownPrice = price;
     let rawPnl =
       pos.direction === "long"
         ? (price - pos.entryPrice) / pos.entryPrice
@@ -1119,10 +1136,32 @@ export function pollLive(
           }
         }
       }
-      // Last-resort fallback: if no candle for this asset, use entryPrice
-      // (zero-PnL exit) — safer than skipping (which would leave the
-      // position dangling and over-state realised equity).
-      if (exitPrice == null) exitPrice = pos.entryPrice;
+      // Round 58 (Critical Fix #2): graceful fallback chain when no
+      // candle is available for this asset on the final bar (feed
+      // dropout, exchange halt). Previously we used pos.entryPrice
+      // unconditionally → effPnl=0, silently booking a winning trade
+      // as zero P&L and potentially flipping pass→fail. Order:
+      //   1. lastKnownPrice (most recent close observed during MTM
+      //      computation in any prior poll) — best estimate of where
+      //      the position was at the time the feed died.
+      //   2. entryPrice (zero-PnL) — last-resort, but we ALSO mark
+      //      result.failReason="feed_lost" so the operator notices.
+      // Prefer (1) when available; only fall through to (2) when the
+      // feed has been dead since entry (lastKnownPrice never set).
+      if (exitPrice == null) {
+        if (pos.lastKnownPrice != null) {
+          exitPrice = pos.lastKnownPrice;
+        } else {
+          exitPrice = pos.entryPrice;
+          // Mark feed-lost so the pass-check below records the failure
+          // mode explicitly. We only set this if the position has no
+          // observed price at all (feed never emitted for this asset).
+          // Don't clobber a result.failReason already set elsewhere.
+          if (!result.failReason) {
+            result.failReason = "feed_lost";
+          }
+        }
+      }
       const { rawPnl, effPnl } = computeEffPnl(pos, exitPrice, cfg);
       state.equity *= 1 + effPnl;
       const closed: ClosedTradeV4 = {
@@ -1166,7 +1205,13 @@ export function pollLive(
     state.stoppedReason = passed ? null : "time";
     result.challengeEnded = true;
     result.passed = passed;
-    if (!passed) result.failReason = "time";
+    // Round 58 (Critical Fix #2): preserve "feed_lost" if the force-close
+    // loop above could only fall back to entryPrice (no observed price
+    // at all). That mode is operationally distinct from a clean time-out
+    // — the operator should investigate the feed, not the strategy.
+    if (!passed && result.failReason !== "feed_lost") {
+      result.failReason = "time";
+    }
     // Phase 59 (R44-V4-13): increment barsSeen + lastBarOpenTime so a
     // re-poll on the same bar is idempotent. Without this, a follow-up
     // tick re-ran day-rollover and could overwrite stoppedReason="time"
@@ -1770,7 +1815,11 @@ export function simulate(
       }
       return {
         passed: false,
-        reason: r.failReason ?? "time",
+        // Round 58: feed_lost is a live-only failure mode; SimulateResult
+        // doesn't model it (the simulator always has full candle history),
+        // so we collapse it to "time" for backtest-equivalence reporting.
+        reason:
+          r.failReason && r.failReason !== "feed_lost" ? r.failReason : "time",
         finalEquityPct: state.equity - 1,
         trades: state.closedTrades,
         state,
