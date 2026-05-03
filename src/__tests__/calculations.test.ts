@@ -351,6 +351,28 @@ describe("calculateSharpeRatio", () => {
     // → 1.5/0.5 * sqrt(252) ≈ 47.62
     expect(s).toBeCloseTo(3 * Math.sqrt(252), 1);
   });
+
+  // Round 56 (R56-CAL-1): exit-date-span calc used `Math.max(...arr)` /
+  // `Math.min(...arr)` — spread of 50k+ items overflows V8's argument
+  // stack with `RangeError: Maximum call stack size exceeded`. The
+  // explicit reduce-loop must handle large arrays without throwing.
+  it("computes Sharpe over 50k trades without stack overflow", () => {
+    const N = 50_000;
+    const startMs = Date.UTC(2020, 0, 1);
+    const minute = 60_000;
+    const trades: Trade[] = Array.from({ length: N }, (_, i) =>
+      makeTrade({
+        id: `stress-${i}`,
+        pnl: i % 2 === 0 ? 5 : -3,
+        pnlPercent: i % 2 === 0 ? 1 : -0.5,
+        // Span ~5 years so years >= 0.1 and we exercise the explicit loop.
+        exitDate: new Date(startMs + i * minute).toISOString(),
+        entryDate: new Date(startMs + i * minute - 60 * minute).toISOString(),
+      }),
+    );
+    const s = calculateSharpeRatio(trades);
+    expect(Number.isFinite(s)).toBe(true);
+  });
 });
 
 describe("validateLeverage", () => {

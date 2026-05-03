@@ -54,4 +54,22 @@ describe("DayOfWeekHeatmap", () => {
       expect(screen.getByText(l)).toBeInTheDocument();
     }
   });
+
+  // Round 56 fix #2: bucket on getUTCDay so a Sunday 23:00 UTC trade is
+  // booked on Sunday for ALL users — previously getDay() shifted it to
+  // Monday for users east of UTC and Saturday for users west of UTC.
+  it("buckets trades by UTC day-of-week (not local TZ)", () => {
+    // 2026-01-04 is a Sunday in UTC.
+    const trades = [t({ exitDate: "2026-01-04T23:30:00Z", pnl: 42 })];
+    const { container } = render(<DayOfWeekHeatmap trades={trades} />);
+    // Find the Sun row by short label and check its sibling shows the PnL.
+    expect(screen.getByText("Sun")).toBeInTheDocument();
+    expect(screen.getByText(/\+\$42\.00/)).toBeInTheDocument();
+    // Other six days should be empty (em-dash).
+    const dashes = container.querySelectorAll(".weekly-pnl");
+    const dashCount = Array.from(dashes).filter(
+      (n) => n.textContent === "—",
+    ).length;
+    expect(dashCount).toBe(6);
+  });
 });

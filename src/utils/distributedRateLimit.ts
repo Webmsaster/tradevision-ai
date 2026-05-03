@@ -21,6 +21,12 @@
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX_HITS = 10;
 
+// Round 56 (Finding #5): named constants for Upstash transport budget.
+// Rate-limit must not delay the request path; we cap at a tight 800ms and
+// refuse to retry — a slow throttle is worse than a memory fallback.
+const UPSTASH_TIMEOUT_MS = 800;
+const UPSTASH_MAX_RETRIES = 0; // intentional: rate-limit must not delay
+
 // Per-instance fallback store; only used if no Upstash creds.
 const memoryHits = new Map<string, number[]>();
 
@@ -36,6 +42,21 @@ function warnOnceNoUpstash(): void {
   );
 }
 
+// Round 56 (Finding #6): auth-fail must be loud. If Upstash returns
+// 401/403 the entire shared limiter is silently broken and we fall back
+// to per-instance memory — exactly the footgun this module exists to
+// prevent. Log once-per-process so operators see it without spamming.
+let warnedUpstashAuth = false;
+function warnOnceUpstashAuth(status: number): void {
+  if (warnedUpstashAuth) return;
+  warnedUpstashAuth = true;
+  console.error(
+    `[rate-limit] Upstash auth failed (HTTP ${status}). Check ` +
+      `UPSTASH_REDIS_REST_TOKEN. Falling back to in-memory limiter — ` +
+      `effective rate = limit × N warm instances until fixed.`,
+  );
+}
+
 function getUpstashConfig(): { url: string; token: string } | null {
   const url = process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN;
@@ -48,18 +69,28 @@ function getUpstashConfig(): { url: string; token: string } | null {
  * post-increment count, or `null` on transport failure (caller should
  * then fall back to memory).
  *
- * Uses Upstash's pipeline endpoint to do INCR + EXPIRE atomically in a
- * single round-trip.
+ * Round 56 (Finding #1): pipeline now uses `SET key 0 NX EX ttl` followed
+ * by `INCR key`. The previous `INCR + EXPIRE` shape reset the TTL on
+ * EVERY call, so under sustained spam the key never expired and the
+ * counter only grew — fail-closed forever. With SET-NX, only the FIRST
+ * call within the window installs the TTL; subsequent INCRs let the key
+ * expire naturally on schedule. The SET stores "0" so the post-INCR
+ * count starts at 1, matching the previous return semantics.
+ *
+ * Uses Upstash's pipeline endpoint to keep this a single round-trip.
  */
 async function upstashIncr(
   cfg: { url: string; token: string },
   key: string,
   ttlSec: number,
 ): Promise<number | null> {
+  // Round 56 (Finding #5): named constants for clarity. We do not retry
+  // (UPSTASH_MAX_RETRIES = 0) — a delayed rate-limit defeats the point.
+  void UPSTASH_MAX_RETRIES; // referenced for documentation/lint
   try {
     // Pipeline body is JSON array of command-arrays.
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 800); // tight budget
+    const timer = setTimeout(() => ctrl.abort(), UPSTASH_TIMEOUT_MS);
     const resp = await fetch(`${cfg.url}/pipeline`, {
       method: "POST",
       headers: {
@@ -67,15 +98,24 @@ async function upstashIncr(
         "Content-Type": "application/json",
       },
       body: JSON.stringify([
+        // First-hit-only TTL install. NX = only set if not exists.
+        ["SET", key, "0", "NX", "EX", String(ttlSec)],
         ["INCR", key],
-        ["EXPIRE", key, String(ttlSec)],
       ]),
       signal: ctrl.signal,
     });
     clearTimeout(timer);
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      // Round 56 (Finding #6): loudly surface auth failures — silent
+      // fallback to memory defeats the whole point of this module.
+      if (resp.status === 401 || resp.status === 403) {
+        warnOnceUpstashAuth(resp.status);
+      }
+      return null;
+    }
     const body = (await resp.json()) as Array<{ result: number | string }>;
-    const incrResult = body[0]?.result;
+    // Pipeline returns results in command order: [0]=SET, [1]=INCR.
+    const incrResult = body[1]?.result;
     if (typeof incrResult === "number") return incrResult;
     if (typeof incrResult === "string") {
       const n = Number(incrResult);
@@ -144,5 +184,6 @@ export const __testInternals = {
   resetMemory: (): void => {
     memoryHits.clear();
     warnedNoUpstash = false;
+    warnedUpstashAuth = false;
   },
 };

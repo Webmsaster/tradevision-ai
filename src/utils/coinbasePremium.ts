@@ -19,6 +19,8 @@
  * auth. Public ticker is free and sufficient for live detection.
  */
 
+import { fetchJsonWithRetry } from "@/utils/httpRetry";
+
 const COINBASE_BTC_SPOT =
   "https://api.exchange.coinbase.com/products/BTC-USD/ticker";
 const BINANCE_BTC_SPOT =
@@ -35,14 +37,11 @@ export interface PremiumSnapshot {
 }
 
 export async function fetchCoinbasePremium(): Promise<PremiumSnapshot> {
-  const [cbRes, bnbRes] = await Promise.all([
-    fetch(COINBASE_BTC_SPOT),
-    fetch(BINANCE_BTC_SPOT),
+  // Round 56 (Fix 3): timeout + retry/backoff via shared helper.
+  const [cbJson, bnbJson] = await Promise.all([
+    fetchJsonWithRetry<{ price: string }>(COINBASE_BTC_SPOT),
+    fetchJsonWithRetry<{ price: string }>(BINANCE_BTC_SPOT),
   ]);
-  if (!cbRes.ok) throw new Error(`Coinbase fetch failed: ${cbRes.status}`);
-  if (!bnbRes.ok) throw new Error(`Binance fetch failed: ${bnbRes.status}`);
-  const cbJson = (await cbRes.json()) as { price: string };
-  const bnbJson = (await bnbRes.json()) as { price: string };
   const cb = parseFloat(cbJson.price);
   const bnb = parseFloat(bnbJson.price);
   const premium = bnb > 0 ? (cb - bnb) / bnb : 0;

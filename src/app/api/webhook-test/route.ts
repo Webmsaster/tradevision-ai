@@ -93,6 +93,13 @@ export async function POST(request: Request) {
   // where the hostname currently resolves to a private IP).
   // If the hostname is already a literal IP, lookup returns it as-is
   // (still safe — isValidHttpsUrl already rejected literal private IPs).
+  //
+  // Round 56 (Finding #2): we capture the FIRST validated address and
+  // fetch by IP below to defeat the TOCTOU window — without that, the
+  // subsequent `fetch(parsed.toString())` performs a SECOND DNS lookup
+  // and an attacker controlling the authoritative resolver can swap in
+  // a private IP for the request itself.
+  let safeIp: string | null = null;
   try {
     const addrs = await lookup(parsed.hostname, { all: true });
     for (const a of addrs) {
@@ -112,22 +119,50 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
+    safeIp = addrs[0]!.address;
   } catch (err) {
+    // Round 56 (Finding #3): the previous error message echoed
+    // `err.message` which on Node typically contains the failing
+    // hostname (e.g. `getaddrinfo ENOTFOUND attacker.tld`). That leaks
+    // the user-supplied URL host back into JSON, useful for a CSRF
+    // attacker probing internal DNS records. Return a generic message
+    // to the caller; the specific error is logged server-side.
+    console.error("[webhook-test] DNS lookup failed:", err);
     return NextResponse.json(
-      {
-        ok: false,
-        error: `DNS lookup failed: ${err instanceof Error ? err.message : "unknown"}`,
-      },
+      { ok: false, error: "DNS lookup failed." },
       { status: 400 },
     );
   }
 
   // 3+4. Send the test payload with manual redirects + tight timeout.
+  //
+  // Round 56 (Finding #2): rewrite the URL to use the validated IP so
+  // fetch does NOT perform a second DNS lookup (TOCTOU). We preserve
+  // the original hostname in the `Host` header so HTTP virtual-host
+  // routing still works. For HTTPS the TLS SNI/cert verification is
+  // driven by the URL hostname — fetch-by-IP would break TLS hostname
+  // matching. This is an accepted trade-off: a rebinding attacker would
+  // additionally need to obtain a valid certificate for the original
+  // hostname (mTLS-publickey-pinning is out of scope), which is
+  // implausible in the threat model this endpoint guards (operator
+  // typo'd webhook URL pointing into the cloud-VPC).
+  //
+  // For the IPv6 case the literal must be bracketed (`https://[::1]/`).
+  const isIpv6 = safeIp!.includes(":");
+  const ipHost = isIpv6 ? `[${safeIp}]` : safeIp!;
+  const ipUrl = new URL(parsed.toString());
+  ipUrl.hostname = ipHost;
   const startedAt = Date.now();
   try {
-    const resp = await fetch(parsed.toString(), {
+    const resp = await fetch(ipUrl.toString(), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        // Preserve the user-supplied hostname for vhost routing /
+        // cert-SNI logging. The fetch impl will set the SNI from the
+        // URL hostname (the IP) — see comment above.
+        Host: parsed.host,
+      },
       body: JSON.stringify(buildPayload(body?.platform)),
       redirect: "manual",
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),

@@ -41,6 +41,19 @@ describe("normalizeDateToUTC", () => {
     expect(normalizeDateToUTC(42).iso).toBeNull();
   });
 
+  // Round 56 fix #1: empty-string fallback explicitly returns null so
+  // CSV import can detect "missing date" cases without ambiguity.
+  it("handles empty string explicitly without warning", () => {
+    const r = normalizeDateToUTC("");
+    expect(r.iso).toBeNull();
+    expect(r.warning).toBeUndefined();
+  });
+
+  it("handles whitespace-only strings as empty (null)", () => {
+    expect(normalizeDateToUTC("   ").iso).toBeNull();
+    expect(normalizeDateToUTC("\t\n").iso).toBeNull();
+  });
+
   it("trims surrounding whitespace", () => {
     const result = normalizeDateToUTC("  2026-04-15T14:30:00Z  ");
     expect(result.iso).toBe("2026-04-15T14:30:00.000Z");

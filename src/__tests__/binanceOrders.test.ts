@@ -1,8 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   validateOrder,
   placeOrder,
   OrderBlockedError,
+  BinanceOrderTimeoutError,
   type OrderSafetyConfig,
   type PlaceOrderInput,
 } from "@/utils/binanceOrders";
@@ -155,5 +156,73 @@ describe("binanceOrders — placeOrder dry-run", () => {
     await expect(
       placeOrder({ ...baseOrder, notionalUsd: 5000 }, cfgTestnet, safeDefault),
     ).rejects.toThrow(/max \$1000/);
+  });
+});
+
+describe("binanceOrders — timeout (Round 56 Fix 1)", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    vi.restoreAllMocks();
+  });
+
+  const liveSafety: OrderSafetyConfig = {
+    ...safeDefault,
+    dryRun: false, // real HTTP path
+  };
+
+  it("throws BinanceOrderTimeoutError when fetch aborts via timeout — and does NOT retry", async () => {
+    let calls = 0;
+    globalThis.fetch = vi.fn(async () => {
+      calls++;
+      const err = new Error("aborted");
+      err.name = "TimeoutError";
+      throw err;
+    }) as unknown as typeof fetch;
+
+    const marketOrder: PlaceOrderInput = {
+      symbol: "SUIUSDT",
+      side: "BUY",
+      type: "MARKET",
+      quantity: 100,
+      notionalUsd: 200,
+      clientOrderId: "test-cid-42",
+    };
+
+    await expect(
+      placeOrder(marketOrder, cfgTestnet, liveSafety),
+    ).rejects.toBeInstanceOf(BinanceOrderTimeoutError);
+
+    // Critical: a MARKET order may already have been received by Binance,
+    // so the helper must NOT retry — exactly one HTTP attempt.
+    expect(calls).toBe(1);
+  });
+
+  it("BinanceOrderTimeoutError surfaces the clientOrderId for manual reconcile", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      const err = new Error("aborted");
+      err.name = "TimeoutError";
+      throw err;
+    }) as unknown as typeof fetch;
+
+    const order: PlaceOrderInput = {
+      symbol: "SUIUSDT",
+      side: "BUY",
+      type: "MARKET",
+      quantity: 100,
+      notionalUsd: 200,
+      clientOrderId: "reconcile-me-123",
+    };
+
+    try {
+      await placeOrder(order, cfgTestnet, liveSafety);
+      throw new Error("expected timeout error");
+    } catch (err) {
+      expect(err).toBeInstanceOf(BinanceOrderTimeoutError);
+      const e = err as BinanceOrderTimeoutError;
+      expect(e.clientOrderId).toBe("reconcile-me-123");
+      expect(e.path).toBe("/fapi/v1/order");
+      expect(e.message).toMatch(/manual reconcile/);
+    }
   });
 });

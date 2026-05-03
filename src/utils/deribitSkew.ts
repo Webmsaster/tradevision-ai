@@ -22,6 +22,7 @@
  */
 
 import type { PremiumSnapshot } from "@/utils/coinbasePremium";
+import { fetchJsonWithRetry } from "@/utils/httpRetry";
 
 const DERIBIT_URL =
   "https://www.deribit.com/api/v2/public/get_book_summary_by_currency";
@@ -64,9 +65,10 @@ export async function fetchDeribitSkew(): Promise<DeribitSkewSnapshot> {
   const url = new URL(DERIBIT_URL);
   url.searchParams.set("currency", "BTC");
   url.searchParams.set("kind", "option");
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`Deribit fetch failed: ${res.status}`);
-  const json = (await res.json()) as { result: RawOption[] };
+  // Round 56 (Fix 3): timeout + retry/backoff via shared helper.
+  const json = await fetchJsonWithRetry<{ result: RawOption[] }>(
+    url.toString(),
+  );
   const rows = json.result ?? [];
   if (rows.length === 0) {
     throw new Error("Deribit returned no option books");

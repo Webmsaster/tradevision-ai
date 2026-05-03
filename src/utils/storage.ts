@@ -11,6 +11,39 @@ import { STORAGE_KEY } from "@/lib/constants";
 // (orphan screenshot cleanup or screenshot upload).
 export const SCREENSHOTS_KEY = "trading-journal-screenshots";
 
+// Round 56 (R56-STO-1): quota-exceeded broadcast event. Listened to by
+// TradeForm/dashboard so the user gets a clear toast when localStorage
+// (~5MB on most browsers) overflows after attaching too many
+// screenshots — instead of trades silently failing to persist.
+export const QUOTA_EXCEEDED_EVENT = "tradevision:storage-quota-exceeded";
+
+function isQuotaError(e: unknown): boolean {
+  if (!e || typeof e !== "object") return false;
+  // Modern browsers throw a DOMException with name === 'QuotaExceededError'
+  // (or, on older WebKit, 'QUOTA_EXCEEDED_ERR'). Some Safari/Chrome combos
+  // also use `code === 22` or `code === 1014`.
+  const name = (e as { name?: string }).name ?? "";
+  const code = (e as { code?: number }).code ?? 0;
+  return (
+    name === "QuotaExceededError" ||
+    name === "QUOTA_EXCEEDED_ERR" ||
+    code === 22 ||
+    code === 1014
+  );
+}
+
+function broadcastQuotaExceeded(detail: {
+  tradeCount: number;
+  screenshotCount: number;
+}): void {
+  try {
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(new CustomEvent(QUOTA_EXCEEDED_EVENT, { detail }));
+  } catch {
+    /* CustomEvent may not exist in some test envs — silent no-op */
+  }
+}
+
 // Phase 7 (Storage Bug 7): screenshot data-URL safety. Reject anything that
 // isn't an image base64 data URL. Caps size at 2 MB to prevent DB-bloat.
 // Without this, javascript: / data:text/html URLs can flow through to <img
@@ -25,6 +58,35 @@ export function validateScreenshot(s: string | undefined): string | undefined {
   if (s.length > SCREENSHOT_MAX_BYTES * 1.4) return undefined;
   return s;
 }
+
+// Round 56 (Finding #4): tighten the soft-delete column-missing detection.
+// The previous check was `msg.includes("column")` which matched ANY error
+// mentioning a column (including unrelated NOT-NULL violations or check
+// constraints) and silently fell back to hard-delete — defeating the
+// soft-delete guarantee. Postgres / PostgREST report 42703 (undefined
+// column) for the case we actually want; we accept 42703 OR a tightly
+// matched message containing both "deleted_at" AND "does not exist".
+function isUndefinedDeletedAtColumn(error: unknown): boolean {
+  const e = error as { code?: string; message?: string } | undefined;
+  if (!e) return false;
+  if (e.code === "42703") return true;
+  const m = (e.message ?? "").toLowerCase();
+  return m.includes("deleted_at") && m.includes("does not exist");
+}
+
+// Round 56 (Finding #4): module-scope cache of the soft-delete capability.
+// Once any query has succeeded with the `deleted_at` filter we know the
+// column exists; we never fall back to hard-delete after that, even if a
+// later query throws an unrelated error that vaguely mentions a column.
+//   null  → unknown / probe on next call
+//   true  → column confirmed present (soft-delete only)
+//   false → confirmed absent (pre-migration DB → hard-delete)
+let softDeleteAvailable: boolean | null = null;
+
+// Test-only hook so the unit-test can reset the cache between cases.
+export const __resetSoftDeleteCacheForTest = (): void => {
+  softDeleteAvailable = null;
+};
 
 // Phase 7 (Storage Bug 6): NaN-safe numeric coercion at the boundary.
 // Number(null) === 0 (acceptable), Number('garbage') === NaN — propagates
@@ -182,7 +244,9 @@ export async function loadTradesFromSupabase(
   const PAGE = 1000;
   const SOFT_CAP = 1_000_000;
   const all: Trade[] = [];
-  let useSoftDeleteFilter = true;
+  // Round 56 (Finding #4): start from the cached capability if known.
+  // `null` → probe (try with filter, allow one retry without on 42703).
+  let useSoftDeleteFilter = softDeleteAvailable !== false;
   for (let from = 0; from < SOFT_CAP; from += PAGE) {
     let query = supabase.from("trades").select("*").eq("user_id", userId);
     if (useSoftDeleteFilter) query = query.is("deleted_at", null);
@@ -191,14 +255,12 @@ export async function loadTradesFromSupabase(
       .order("id", { ascending: false })
       .range(from, from + PAGE - 1);
     if (error) {
-      // Column-missing → retry once without the soft-delete filter so
-      // pre-migration databases continue to work.
-      const msg = (error.message ?? "").toLowerCase();
-      if (
-        useSoftDeleteFilter &&
-        (msg.includes("deleted_at") || msg.includes("column"))
-      ) {
+      // Round 56 (Finding #4): only retry on a true 42703 (undefined
+      // column) error. Other column-related errors (e.g. permission,
+      // type-cast, RLS) bubble up so we don't silently mask real bugs.
+      if (useSoftDeleteFilter && isUndefinedDeletedAtColumn(error)) {
         useSoftDeleteFilter = false;
+        softDeleteAvailable = false; // cache for the rest of the session
         from -= PAGE; // retry this offset
         continue;
       }
@@ -209,6 +271,12 @@ export async function loadTradesFromSupabase(
     }
     if (!data || data.length === 0) break;
     for (const row of data) all.push(dbToTrade(row));
+    // First successful query with the soft-delete filter promotes the
+    // cache to "confirmed present" — subsequent calls in this process
+    // skip the probe entirely.
+    if (useSoftDeleteFilter && softDeleteAvailable === null) {
+      softDeleteAvailable = true;
+    }
     if (data.length < PAGE) break;
     if (from + PAGE >= SOFT_CAP) {
       console.warn(
@@ -251,7 +319,24 @@ export async function deleteTradeFromSupabase(
   // convention (CLAUDE.md) is soft-delete. Falls back to hard-delete if
   // the deleted_at column doesn't exist (pre-migration DBs) so the client
   // continues working through the migration window.
+  //
+  // Round 56 (Finding #4): once the cache says the column is present we
+  // never fall back — a "column"-mentioning error from any other source
+  // would otherwise silently strip soft-delete semantics.
   const nowIso = new Date().toISOString();
+  if (softDeleteAvailable === false) {
+    // Confirmed pre-migration DB: hard-delete directly, skip the probe.
+    const hardDel = await supabase
+      .from("trades")
+      .delete()
+      .eq("id", tradeId)
+      .eq("user_id", userId);
+    if (hardDel.error) {
+      console.error("Failed to delete trade from Supabase:", hardDel.error);
+      return false;
+    }
+    return true;
+  }
   let updateQuery = supabase
     .from("trades")
     .update({ deleted_at: nowIso })
@@ -259,9 +344,9 @@ export async function deleteTradeFromSupabase(
     .eq("user_id", userId);
   let { error } = await updateQuery;
   if (error) {
-    const msg = (error.message ?? "").toLowerCase();
-    if (msg.includes("deleted_at") || msg.includes("column")) {
-      // Pre-migration DB: hard-delete.
+    if (softDeleteAvailable !== true && isUndefinedDeletedAtColumn(error)) {
+      // Pre-migration DB: hard-delete and remember.
+      softDeleteAvailable = false;
       const hardDel = await supabase
         .from("trades")
         .delete()
@@ -269,6 +354,8 @@ export async function deleteTradeFromSupabase(
         .eq("user_id", userId);
       error = hardDel.error;
     }
+  } else {
+    softDeleteAvailable = true;
   }
   if (error) {
     console.error("Failed to delete trade from Supabase:", error);
@@ -402,21 +489,38 @@ export async function clearAllSupabaseTrades(
 ): Promise<boolean> {
   // Phase 95 (R54-STO-7): soft-delete batch. Falls back to hard-delete
   // for pre-migration DBs.
+  //
+  // Round 56 (Finding #4): respect the cached capability so a transient
+  // unrelated column-error can't trick us into hard-deleting once we've
+  // already seen the soft-delete column work.
   const nowIso = new Date().toISOString();
+  if (softDeleteAvailable === false) {
+    const hardDel = await supabase
+      .from("trades")
+      .delete()
+      .eq("user_id", userId);
+    if (hardDel.error) {
+      console.error("Failed to clear trades from Supabase:", hardDel.error);
+      return false;
+    }
+    return true;
+  }
   let { error } = await supabase
     .from("trades")
     .update({ deleted_at: nowIso })
     .eq("user_id", userId)
     .is("deleted_at", null);
   if (error) {
-    const msg = (error.message ?? "").toLowerCase();
-    if (msg.includes("deleted_at") || msg.includes("column")) {
+    if (softDeleteAvailable !== true && isUndefinedDeletedAtColumn(error)) {
+      softDeleteAvailable = false;
       const hardDel = await supabase
         .from("trades")
         .delete()
         .eq("user_id", userId);
       error = hardDel.error;
     }
+  } else {
+    softDeleteAvailable = true;
   }
   if (error) {
     console.error("Failed to clear trades from Supabase:", error);
@@ -449,7 +553,29 @@ export function saveTrades(trades: Trade[]): void {
       return t;
     });
 
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(tradesWithoutScreenshots));
+    // Round 56 (R56-STO-1): isolate the trades-payload write so we can
+    // detect and signal QuotaExceededError. Previously a quota-overflow
+    // hit the outer catch which only logged to console — users had no
+    // way to know that subsequent trade edits were silently discarded.
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify(tradesWithoutScreenshots),
+      );
+    } catch (writeErr) {
+      if (isQuotaError(writeErr)) {
+        console.error(
+          "[storage] saveTrades: localStorage quota exceeded — trades not persisted. " +
+            "Reduce screenshot resolution or delete old screenshots to free space.",
+        );
+        broadcastQuotaExceeded({
+          tradeCount: trades.length,
+          screenshotCount: Object.keys(screenshots).length,
+        });
+        return;
+      }
+      throw writeErr;
+    }
 
     // Phase 47 (R45-CC-H3): rebuild the screenshots map from the CURRENT
     // trade ids on every save instead of merging. Was leaking — when a
@@ -498,8 +624,19 @@ export function saveTrades(trades: Trade[]): void {
       } else {
         localStorage.removeItem(SCREENSHOTS_KEY);
       }
-    } catch {
-      console.warn("Failed to save screenshots - storage quota may be full.");
+    } catch (err) {
+      // Round 56 (R56-STO-1): screenshots block exceeded quota. Trades
+      // already persisted above, so we keep going but broadcast so the
+      // UI can suggest deleting screenshots.
+      console.warn(
+        "[storage] Failed to save screenshots - storage quota may be full.",
+      );
+      if (isQuotaError(err)) {
+        broadcastQuotaExceeded({
+          tradeCount: trades.length,
+          screenshotCount: Object.keys(screenshots).length,
+        });
+      }
     }
   } catch (error) {
     console.error("Failed to save trades to localStorage:", error);

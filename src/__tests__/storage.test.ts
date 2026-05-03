@@ -11,6 +11,7 @@ import {
   loadTradesFromSupabase,
   saveBulkTradesToSupabase,
   deleteTradeFromSupabase,
+  __resetSoftDeleteCacheForTest,
 } from "@/utils/storage";
 import type { Trade } from "@/types/trade";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -40,6 +41,9 @@ const store: Record<string, string> = {};
 
 beforeEach(() => {
   Object.keys(store).forEach((key) => delete store[key]);
+  // Round 56 (Finding #4): reset module-scope soft-delete capability cache
+  // between tests so a previous test's failure doesn't latch the next.
+  __resetSoftDeleteCacheForTest();
 
   vi.stubGlobal("localStorage", {
     getItem: vi.fn((key: string) => store[key] ?? null),
@@ -106,6 +110,50 @@ describe("saveTrades / loadTrades", () => {
     });
     const loaded = loadTrades();
     expect(loaded[0]!.screenshot).toBe("data:image/png;base64,abc");
+  });
+
+  // Round 56 (R56-STO-1): a QuotaExceededError on the trades-payload
+  // write must broadcast the documented event so the UI can toast.
+  // Previously the outer catch swallowed it silently and trades stopped
+  // persisting with no signal to the user.
+  it("broadcasts QUOTA_EXCEEDED_EVENT on QuotaExceededError", async () => {
+    const events: Event[] = [];
+    const onQuota = (e: Event) => events.push(e);
+    // jsdom provides window/CustomEvent; addEventListener returns void.
+    window.addEventListener("tradevision:storage-quota-exceeded", onQuota);
+
+    // Stub localStorage.setItem to throw a DOMException-shaped quota error
+    // for the trades key only.
+    vi.stubGlobal("localStorage", {
+      getItem: vi.fn((key: string) => store[key] ?? null),
+      setItem: vi.fn((key: string, value: string) => {
+        if (key === "trading-journal-trades") {
+          const err = new Error("QuotaExceededError") as Error & {
+            name: string;
+            code: number;
+          };
+          err.name = "QuotaExceededError";
+          err.code = 22;
+          throw err;
+        }
+        store[key] = value;
+      }),
+      removeItem: vi.fn((key: string) => {
+        delete store[key];
+      }),
+    });
+
+    saveTrades([makeTrade()]);
+
+    expect(events.length).toBe(1);
+    const detail = (events[0] as CustomEvent).detail as {
+      tradeCount: number;
+      screenshotCount: number;
+    };
+    expect(detail.tradeCount).toBe(1);
+    expect(detail.screenshotCount).toBe(0);
+
+    window.removeEventListener("tradevision:storage-quota-exceeded", onQuota);
   });
 });
 

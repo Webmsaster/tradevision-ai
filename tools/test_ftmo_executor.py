@@ -1099,5 +1099,171 @@ def test_process_pending_signals_holds_lock_through_critical_section(monkeypatch
     )
 
 
+# ============================================================================
+# Round 56 audit fixes: Prague-TZ ping dates + UTC-aware history_deals_get
+#                       + invalid-fill-price rejection
+# ============================================================================
+def test_ping_date_uses_prague_tz_at_dst_boundary(monkeypatch, tmp_path):
+    """At UTC 22:30 in summer (UTC+2 → Prague is already 00:30 NEXT day),
+    the ping_dates entry must be the Prague-side day, NOT the UTC day.
+
+    Without the Prague-TZ fix the ping_dates entry uses the UTC date and
+    the daily-trading-day count is off by one — at the DST/midnight edge
+    the bot can fail to credit the 4th trading day on the FTMO server.
+    """
+    import ftmo_executor as exe
+
+    # Redirect state into tmp_path
+    exe.STATE_DIR = tmp_path
+    exe.PAUSE_STATE_PATH = tmp_path / "pause-state.json"
+    exe.PENDING_ORDERS_DIR = tmp_path / "pending-orders"
+
+    # Pre-seed pause state so the ping path is reachable.
+    exe.write_pause_state({
+        "target_hit": True,
+        "target_hit_date": "2026-07-14",  # Prague-day already credited
+        "ping_dates": [],
+        "passed": False,
+    })
+
+    # Freeze "now" to a UTC instant that is on the FOLLOWING Prague day.
+    # 2026-07-14 22:30:00Z → 2026-07-15 00:30:00 Europe/Prague (CEST, UTC+2).
+    from datetime import datetime as _dt, timezone as _tz
+    frozen_utc = _dt(2026, 7, 14, 22, 30, 0, tzinfo=_tz.utc)
+
+    class _FrozenDatetime(_dt):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                # naive — return frozen UTC stripped of tz
+                return frozen_utc.replace(tzinfo=None)
+            return frozen_utc.astimezone(tz)
+
+    monkeypatch.setattr(exe, "datetime", _FrozenDatetime)
+    # Force MOCK path so the function does NOT touch real MT5.
+    monkeypatch.setattr(exe, "MOCK_MODE", True)
+
+    exe.maybe_place_ping_trade()
+
+    state = exe.get_pause_state()
+    assert state["ping_dates"] == ["2026-07-15"], (
+        f"expected Prague-day '2026-07-15' (since UTC 22:30 in summer is "
+        f"already past Prague midnight), got {state['ping_dates']}"
+    )
+
+
+def test_history_deals_get_uses_utc_aware_datetime(monkeypatch):
+    """check_circuit_breaker must call history_deals_get with TZ-AWARE
+    datetimes. Naive datetimes cause broker-TZ ambiguity on real MT5
+    (the API interprets naive as broker-local on Windows, so the lookup
+    window misaligns from the trader-intended UTC window).
+    """
+    import ftmo_executor as exe
+
+    captured = {}
+
+    def fake_history_deals_get(start, end):
+        captured["start"] = start
+        captured["end"] = end
+        return tuple()
+
+    monkeypatch.setattr(exe.mt5, "history_deals_get", fake_history_deals_get)
+
+    exe.check_circuit_breaker()
+
+    assert "start" in captured, "history_deals_get was not called"
+    assert captured["start"].tzinfo is not None, (
+        f"history_deals_get start={captured['start']} is NAIVE — "
+        f"broker-TZ ambiguity bug"
+    )
+    assert captured["end"].tzinfo is not None, (
+        f"history_deals_get end={captured['end']} is NAIVE — "
+        f"broker-TZ ambiguity bug"
+    )
+
+
+def test_invalid_fill_price_rejects_order(monkeypatch):
+    """If slippage helper returns fill_price <= 0 (corrupt symbol_info,
+    bad bid/ask), the executor MUST reject the order with a clear error
+    instead of silently sizing with the theoretical stop_pct.
+    """
+    import ftmo_executor as exe
+
+    info = FakeSpreadSymbolInfo(
+        ask=2001.0, bid=1999.0, spread=20, point=0.01,
+        tick_size=0.01, tick_value=0.01,
+        volume_min=0.01, volume_max=100.0, volume_step=0.01,
+    )
+    monkeypatch.setattr(exe.mt5, "symbol_info", lambda s: info)
+    monkeypatch.setattr(exe.mt5, "symbol_select", lambda s, e: True)
+    exe._SYMBOL_CACHE.clear()
+
+    # Force the slippage helper to return a pathological fill price.
+    monkeypatch.setattr(exe, "_apply_slippage", lambda *a, **kw: 0.0)
+
+    sent = {"called": False}
+    monkeypatch.setattr(exe.mt5, "order_send", lambda req: sent.__setitem__("called", True))
+
+    res = exe.place_market_order(
+        binance_symbol="BTCUSDT",
+        direction="long",
+        risk_frac=0.01,
+        stop_pct=0.01,
+        tp_pct=0.02,
+        account_equity=100000.0,
+        comment="invalid_fill_test",
+    )
+    assert not res.ok, "order should have been rejected on fill_price <= 0"
+    assert res.error is not None and "invalid fill_price" in res.error, (
+        f"expected 'invalid fill_price' in error, got {res.error!r}"
+    )
+    assert sent["called"] is False, (
+        "mt5.order_send must NOT be called when fill_price is invalid"
+    )
+
+
+def test_excessive_slippage_rejects_order(monkeypatch):
+    """If post-slippage effective stop > 3× planned stop, reject the order
+    rather than silently shrinking the lot to volume_min."""
+    import ftmo_executor as exe
+
+    info = FakeSpreadSymbolInfo(
+        ask=2001.0, bid=1999.0, spread=20, point=0.01,
+        tick_size=0.01, tick_value=0.01,
+        volume_min=0.01, volume_max=100.0, volume_step=0.01,
+    )
+    monkeypatch.setattr(exe.mt5, "symbol_info", lambda s: info)
+    monkeypatch.setattr(exe.mt5, "symbol_select", lambda s, e: True)
+    exe._SYMBOL_CACHE.clear()
+
+    # Force slippage so large that fill is on the wrong side of the stop:
+    # planned stop_pct=0.01 → SL @ 2001.0 * 0.99 = 1980.99
+    # If fill = 1985.0 then eff_stop = (1985-1980.99)/1985 ≈ 0.0020 (small).
+    # Need a fill that pushes effective stop > 3 * 0.01 = 0.03 → eff
+    # stop_distance > 0.03 * fill ⇒ |fill − 1980.99| > 0.03 * fill.
+    # Pick fill = 2100 → eff_dist = 119.01 / 2100 ≈ 0.0567 > 0.03. PASS.
+    monkeypatch.setattr(exe, "_apply_slippage", lambda *a, **kw: 2100.0)
+
+    sent = {"called": False}
+    monkeypatch.setattr(exe.mt5, "order_send", lambda req: sent.__setitem__("called", True))
+
+    res = exe.place_market_order(
+        binance_symbol="BTCUSDT",
+        direction="long",
+        risk_frac=0.01,
+        stop_pct=0.01,
+        tp_pct=0.02,
+        account_equity=100000.0,
+        comment="excessive_slip_test",
+    )
+    assert not res.ok, "order should have been rejected on excessive slippage"
+    assert res.error is not None and "slippage too large" in res.error, (
+        f"expected 'slippage too large' in error, got {res.error!r}"
+    )
+    assert sent["called"] is False, (
+        "mt5.order_send must NOT be called when slippage is excessive"
+    )
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

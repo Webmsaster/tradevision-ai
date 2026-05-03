@@ -20,6 +20,7 @@
 
 import type { Candle } from "@/utils/indicators";
 import { applyCosts, DEFAULT_COSTS, type CostConfig } from "@/utils/costModel";
+import { fetchJsonWithRetry } from "@/utils/httpRetry";
 
 export interface SupplySample {
   timeMs: number;
@@ -36,9 +37,10 @@ export async function fetchUsdtSupplyHistory(
   );
   url.searchParams.set("vs_currency", "usd");
   url.searchParams.set("days", String(Math.min(days, 365)));
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`CoinGecko USDT fetch failed: ${res.status}`);
-  const json = (await res.json()) as { market_caps: [number, number][] };
+  // Round 56 (Fix 3): timeout + retry/backoff via shared helper.
+  const json = await fetchJsonWithRetry<{ market_caps: [number, number][] }>(
+    url.toString(),
+  );
   const rows = json.market_caps ?? [];
   const out: SupplySample[] = [];
   for (let i = 0; i < rows.length; i++) {

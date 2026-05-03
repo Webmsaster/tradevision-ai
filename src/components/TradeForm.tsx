@@ -13,7 +13,13 @@ interface TradeFormProps {
   editTrade?: Trade | null;
 }
 
-/** Convert an ISO date string to the `YYYY-MM-DDTHH:mm` format expected by datetime-local inputs. */
+/**
+ * Convert an ISO (UTC) date string to the `YYYY-MM-DDTHH:mm` format expected
+ * by datetime-local inputs. Round 56 fix #4: render UTC fields so the input
+ * shows the same wall-clock value that aiAnalysis / WeeklySummary /
+ * DayOfWeekHeatmap aggregate on. A small "Times stored as UTC" hint near
+ * the inputs tells the user explicitly.
+ */
 function toDatetimeLocal(iso: string): string {
   if (!iso) return "";
   const date = new Date(iso);
@@ -21,13 +27,20 @@ function toDatetimeLocal(iso: string): string {
   // 'NaN-NaN-NaNTNaN:NaN' in the form when entryDate was empty/corrupt.
   if (isNaN(date.getTime())) return "";
   const pad = (n: number) => n.toString().padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}T${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`;
 }
 
-/** Convert a `YYYY-MM-DDTHH:mm` value from a datetime-local input back to an ISO string. */
+/**
+ * Convert a `YYYY-MM-DDTHH:mm` value from a datetime-local input back to an
+ * ISO string. Round 56 fix #4: treat the input as UTC (since the displayed
+ * value is UTC by toDatetimeLocal above) by appending `Z`. Falls back to
+ * normalizeDateToUTC's naive-coercion path for safety.
+ */
 function fromDatetimeLocal(value: string): string {
   if (!value) return "";
-  const d = new Date(value);
+  // The input format is `YYYY-MM-DDTHH:mm` — treat as UTC explicitly.
+  const utcCandidate = `${value}:00Z`;
+  const d = new Date(utcCandidate);
   if (isNaN(d.getTime())) return "";
   return d.toISOString();
 }
@@ -404,7 +417,7 @@ export default function TradeForm({
 
             {/* Entry Date */}
             <div className="form-group">
-              <label className="form-label">Entry Date *</label>
+              <label className="form-label">Entry Date * (UTC)</label>
               <input
                 type="datetime-local"
                 className={`form-input${errors.entryDate ? " error" : ""}`}
@@ -418,7 +431,7 @@ export default function TradeForm({
 
             {/* Exit Date */}
             <div className="form-group">
-              <label className="form-label">Exit Date *</label>
+              <label className="form-label">Exit Date * (UTC)</label>
               <input
                 type="datetime-local"
                 className={`form-input${errors.exitDate ? " error" : ""}`}
@@ -428,6 +441,18 @@ export default function TradeForm({
               {errors.exitDate && (
                 <span className="form-error">{errors.exitDate}</span>
               )}
+            </div>
+            {/* Round 56 fix #4: explicit UTC hint so users know the
+                datetime-local input does NOT use their browser TZ. */}
+            <div
+              className="trade-form-full"
+              style={{
+                fontSize: "11px",
+                color: "var(--text-secondary)",
+                marginTop: "-4px",
+              }}
+            >
+              Times are stored and displayed in UTC.
             </div>
 
             {/* Strategy */}
@@ -647,8 +672,13 @@ export default function TradeForm({
                       try {
                         if (token.cancelled) return;
                         // Phase 85 (R51-UI-1): clamp BOTH dimensions.
-                        const MAX_WIDTH = 800;
-                        const MAX_HEIGHT = 800;
+                        // Round 56 (R56-STO-1): tighten compression
+                        // (800x800 q=0.6 → 600x600 q=0.5). Each screenshot
+                        // shrinks ~55%; with localStorage's 5 MB quota a
+                        // user can now keep ~30+ screenshots before
+                        // QuotaExceededError fires.
+                        const MAX_WIDTH = 600;
+                        const MAX_HEIGHT = 600;
                         const scale = Math.min(
                           1,
                           MAX_WIDTH / img.width,
@@ -662,7 +692,7 @@ export default function TradeForm({
                           ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                           const compressed = canvas.toDataURL(
                             "image/jpeg",
-                            0.6,
+                            0.5,
                           );
                           if (!token.cancelled) setScreenshot(compressed);
                         }

@@ -100,6 +100,24 @@ export function formatDailyReport(
   };
 }
 
+// Round 56 (Fix 4): match the convention in /api/webhook-test/route.ts —
+// 5s AbortSignal.timeout caps each webhook call so a hung Discord/Slack
+// endpoint can't stall the tick loop.
+const WEBHOOK_TIMEOUT_MS = 5_000;
+
+/**
+ * Strips path/query so logs only show the host (no leaked tokens). Falls
+ * back to a generic placeholder if the URL is unparseable.
+ */
+function redactWebhookUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return "<malformed-url>";
+  }
+}
+
 /**
  * POSTs a notification to a Discord webhook. Returns true on success.
  * Silent no-op if url is empty (lets the tick continue without error).
@@ -123,9 +141,26 @@ export async function sendDiscordWebhook(
           },
         ],
       }),
+      signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
     });
+    if (!res.ok) {
+      // Round 56 (Fix 6): surface non-2xx so silent failures show in logs.
+      console.warn(
+        "[paper-notify] discord webhook non-2xx:",
+        redactWebhookUrl(url),
+        res.status,
+      );
+    }
     return res.ok;
-  } catch {
+  } catch (err) {
+    // Round 56 (Fix 6): the previous bare catch{} swallowed all failures —
+    // including AbortSignal timeouts — so the user never knew a webhook
+    // was broken. Log host only (token is in the URL path/query).
+    console.warn(
+      "[paper-notify] discord webhook failed:",
+      redactWebhookUrl(url),
+      err instanceof Error ? err.message : err,
+    );
     return false;
   }
 }
@@ -152,9 +187,22 @@ export async function sendSlackWebhook(
           },
         ],
       }),
+      signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
     });
+    if (!res.ok) {
+      console.warn(
+        "[paper-notify] slack webhook non-2xx:",
+        redactWebhookUrl(url),
+        res.status,
+      );
+    }
     return res.ok;
-  } catch {
+  } catch (err) {
+    console.warn(
+      "[paper-notify] slack webhook failed:",
+      redactWebhookUrl(url),
+      err instanceof Error ? err.message : err,
+    );
     return false;
   }
 }

@@ -15,6 +15,7 @@ import {
   deleteTrade as deleteTradeLocal,
   clearAllData,
   SCREENSHOTS_KEY,
+  QUOTA_EXCEEDED_EVENT,
 } from "@/utils/storage";
 import {
   loadTradesFromSupabase,
@@ -63,10 +64,14 @@ function fireWebhook(
           ? { text: msg }
           : { event, message: msg, trade: tradeForWebhook };
 
+    // Round 56 (Fix 4): 5s AbortSignal.timeout matches /api/webhook-test
+    // convention — a hung user-supplied webhook URL can't block the trade
+    // CRUD path forever.
     fetch(wh.url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(5_000),
     }).catch((err) => {
       console.error("Webhook delivery failed:", err);
     }); // best-effort
@@ -165,6 +170,26 @@ export function useTradeStorage() {
     };
     window.addEventListener("storage", handler);
     return () => window.removeEventListener("storage", handler);
+  }, []);
+
+  // Round 56 (R56-STO-1): surface localStorage QuotaExceededError as a
+  // sync-error toast so the user sees something actionable instead of a
+  // silent drop. The event is dispatched from saveTrades when the
+  // browser refuses a write because the ~5 MB localStorage quota is
+  // saturated (typically: too many large screenshots).
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as
+        | { tradeCount?: number; screenshotCount?: number }
+        | undefined;
+      const screenshots = detail?.screenshotCount ?? 0;
+      setSyncError(
+        `Browser storage is full (5 MB limit reached, ${screenshots} screenshot(s) attached). ` +
+          `Recent edits may not have been saved locally. Delete some old screenshots to free space.`,
+      );
+    };
+    window.addEventListener(QUOTA_EXCEEDED_EVENT, handler);
+    return () => window.removeEventListener(QUOTA_EXCEEDED_EVENT, handler);
   }, []);
 
   // Load trades on mount and when auth state changes

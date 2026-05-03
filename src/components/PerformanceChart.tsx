@@ -410,7 +410,12 @@ export default function PerformanceChart({
           content={<DistributionTooltip />}
           cursor={{ fill: "rgba(255,255,255,0.04)" }}
         />
-        <Bar dataKey="count" radius={[4, 4, 0, 0]} maxBarSize={48}>
+        <Bar
+          dataKey="count"
+          radius={[4, 4, 0, 0]}
+          maxBarSize={48}
+          isAnimationActive={false}
+        >
           {distributionData.map((d, i) => (
             <Cell
               key={i}
@@ -436,6 +441,7 @@ export default function PerformanceChart({
           label={renderPieLabel}
           labelLine={false}
           strokeWidth={0}
+          isAnimationActive={false}
         >
           {pieData.map((d, i) => (
             <Cell key={i} fill={d.color} />
@@ -478,7 +484,12 @@ export default function PerformanceChart({
             }
             cursor={{ fill: "rgba(255,255,255,0.04)" }}
           />
-          <Bar dataKey="totalPnl" radius={[4, 4, 0, 0]} maxBarSize={48}>
+          <Bar
+            dataKey="totalPnl"
+            radius={[4, 4, 0, 0]}
+            maxBarSize={48}
+            isAnimationActive={false}
+          >
             {data.map((d, i) => (
               <Cell
                 key={i}
@@ -529,7 +540,12 @@ export default function PerformanceChart({
             }
             cursor={{ fill: "rgba(255,255,255,0.04)" }}
           />
-          <Bar dataKey="totalPnl" radius={[0, 4, 4, 0]} maxBarSize={28}>
+          <Bar
+            dataKey="totalPnl"
+            radius={[0, 4, 4, 0]}
+            maxBarSize={28}
+            isAnimationActive={false}
+          >
             {pairData.map((d, i) => (
               <Cell
                 key={i}

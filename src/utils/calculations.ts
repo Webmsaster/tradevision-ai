@@ -337,7 +337,17 @@ export function calculateSharpeRatio(trades: Trade[]): number {
 
   let annualisationFactor = Math.sqrt(252); // sensible default
   if (exitTimes.length >= 2) {
-    const spanMs = Math.max(...exitTimes) - Math.min(...exitTimes);
+    // Round 56 (R56-CAL-1): explicit min/max reduce instead of
+    // `Math.max(...arr)` / `Math.min(...arr)`. Spread of >~10k items can
+    // overflow the V8 argument stack on power-user backtest imports
+    // (50k+ trades) — `RangeError: Maximum call stack size exceeded`.
+    let mx = -Infinity;
+    let mn = Infinity;
+    for (const t of exitTimes) {
+      if (t > mx) mx = t;
+      if (t < mn) mn = t;
+    }
+    const spanMs = mx - mn;
     const years = spanMs / (365.25 * 24 * 60 * 60 * 1000);
     // Below ~36 days the inferred rate is too noisy; keep the default.
     if (years >= 0.1) {

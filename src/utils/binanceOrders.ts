@@ -31,6 +31,25 @@ export class OrderBlockedError extends Error {
   }
 }
 
+/**
+ * Thrown when a Binance order HTTP call times out. CRITICAL: the order MAY
+ * have been received and filled by Binance — callers must NOT retry blindly.
+ * Manual reconciliation against /fapi/v1/openOrders + /fapi/v1/userTrades is
+ * required.
+ */
+export class BinanceOrderTimeoutError extends Error {
+  readonly path: string;
+  readonly clientOrderId?: string;
+  constructor(path: string, clientOrderId?: string) {
+    super(
+      `Binance ${path} timed out after 10s — order status UNKNOWN, manual reconcile required (clientOrderId=${clientOrderId ?? "n/a"})`,
+    );
+    this.name = "BinanceOrderTimeoutError";
+    this.path = path;
+    this.clientOrderId = clientOrderId;
+  }
+}
+
 export interface PlaceOrderInput {
   symbol: string;
   side: "BUY" | "SELL";
@@ -133,6 +152,17 @@ function baseUrl(cfg: BinanceConfig): string {
   return cfg.testnet ? TESTNET : MAINNET;
 }
 
+// Round 56 (Fix 1, CRITICAL): bare `fetch()` blocked indefinitely if the
+// Binance endpoint hung. Order placement is the most critical path.
+// On timeout: do NOT retry — a MARKET order may already have been received.
+// Throw BinanceOrderTimeoutError so callers can manually reconcile.
+const ORDER_TIMEOUT_MS = 10_000;
+
+function isAbortTimeout(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.name === "TimeoutError" || err.name === "AbortError";
+}
+
 async function signedPost<T>(
   path: string,
   params: Record<string, string | number>,
@@ -143,10 +173,23 @@ async function signedPost<T>(
   }
   const qs = buildSignedQuery(params, cfg);
   const url = `${baseUrl(cfg)}${path}?${qs}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "X-MBX-APIKEY": cfg.apiKey },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "X-MBX-APIKEY": cfg.apiKey },
+      signal: AbortSignal.timeout(ORDER_TIMEOUT_MS),
+    });
+  } catch (err) {
+    if (isAbortTimeout(err)) {
+      const cid =
+        typeof params.newClientOrderId === "string"
+          ? params.newClientOrderId
+          : undefined;
+      throw new BinanceOrderTimeoutError(path, cid);
+    }
+    throw err;
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(
@@ -166,10 +209,23 @@ async function signedDelete<T>(
   }
   const qs = buildSignedQuery(params, cfg);
   const url = `${baseUrl(cfg)}${path}?${qs}`;
-  const res = await fetch(url, {
-    method: "DELETE",
-    headers: { "X-MBX-APIKEY": cfg.apiKey },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "DELETE",
+      headers: { "X-MBX-APIKEY": cfg.apiKey },
+      signal: AbortSignal.timeout(ORDER_TIMEOUT_MS),
+    });
+  } catch (err) {
+    if (isAbortTimeout(err)) {
+      const cid =
+        typeof params.origClientOrderId === "string"
+          ? params.origClientOrderId
+          : undefined;
+      throw new BinanceOrderTimeoutError(path, cid);
+    }
+    throw err;
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(

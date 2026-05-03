@@ -12,6 +12,7 @@
  * periodically and computing trend direction from the last N snapshots
  * captured during the session.
  */
+import { fetchJsonWithRetry } from "@/utils/httpRetry";
 
 export interface DominanceSnapshot {
   capturedAt: number;
@@ -41,9 +42,8 @@ interface RawGlobal {
 }
 
 export async function fetchDominance(): Promise<DominanceSnapshot> {
-  const res = await fetch(COINGECKO_GLOBAL);
-  if (!res.ok) throw new Error(`CoinGecko fetch failed: ${res.status}`);
-  const json = (await res.json()) as RawGlobal;
+  // Round 56 (Fix 3): timeout + retry/backoff via shared helper.
+  const json = await fetchJsonWithRetry<RawGlobal>(COINGECKO_GLOBAL);
   const d = json.data;
   return {
     capturedAt: Date.now(),

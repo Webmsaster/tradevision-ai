@@ -562,7 +562,11 @@ export function detectOvertrading(trades: Trade[]): AIInsight | null {
           type: "warning",
           title: "Overtrading Detected",
           description:
-            `You placed ${stats!.total} trades on ${day} with only ${winRatePercent}% win rate. ` +
+            // Round 56 (R56-AI-1): bucketing is UTC (engine consistency).
+            // Append "(UTC)" so a trader in a non-UTC TZ doesn't get
+            // confused when the day in the message disagrees with their
+            // local-time recollection of when they traded.
+            `You placed ${stats!.total} trades on ${day} (UTC) with only ${winRatePercent}% win rate. ` +
             `High-frequency trading often leads to poor decision making.`,
           severity: 7,
           relatedTrades: stats!.tradeIds.slice(0, 10),

@@ -31,7 +31,11 @@ export default function DayOfWeekHeatmap({ trades }: DayOfWeekHeatmapProps) {
   const data = useMemo<DayStat[]>(() => {
     const buckets: Trade[][] = Array.from({ length: 7 }, () => []);
     for (const trade of trades) {
-      const d = new Date(trade.exitDate).getDay();
+      // Round 56 fix #2: getUTCDay (was getDay) — match aiAnalysis.ts and
+      // the rest of the codebase, which all use UTC for day-of-week buckets.
+      // Local-TZ getDay() shifted Sunday-trades into Saturday for users
+      // east of UTC.
+      const d = new Date(trade.exitDate).getUTCDay();
       buckets[d]!.push(trade);
     }
     return buckets.map((bucket, i) => {

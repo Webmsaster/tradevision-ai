@@ -23,6 +23,7 @@
  */
 
 import { fetchFundingHistory, type FundingEvent } from "@/utils/fundingRate";
+import { fetchJsonWithRetry } from "@/utils/httpRetry";
 
 export interface CarryConfig {
   entryThreshold: number; // e.g. 0.0002 = 0.02%/8h (~22% annualised)
@@ -221,10 +222,10 @@ export async function fetchAndBacktestCarry(
     url.searchParams.set("symbol", symbol.toUpperCase());
     url.searchParams.set("limit", "1000");
     if (endTime !== undefined) url.searchParams.set("endTime", String(endTime));
-    const res = await fetch(url.toString());
-    if (!res.ok) throw new Error(`Binance funding fetch failed: ${res.status}`);
-    const rows: { fundingTime: number; fundingRate: string; symbol: string }[] =
-      await res.json();
+    // Round 56 (Fix 3): timeout + retry/backoff via shared helper.
+    const rows = await fetchJsonWithRetry<
+      { fundingTime: number; fundingRate: string; symbol: string }[]
+    >(url.toString());
     if (!rows || rows.length === 0) break;
     const fresh: FundingEvent[] = [];
     for (const r of rows) {

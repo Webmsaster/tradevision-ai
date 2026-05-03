@@ -37,10 +37,25 @@ export function ema(values: number[], period: number): (number | null)[] {
   let seed = 0;
   for (let i = 0; i < period; i++) seed += values[i]!;
   let prev = seed / period;
-  out[period - 1] = prev;
+  // Round 56 (R56-IND-1): a NaN in the seed window poisons every subsequent
+  // EMA value forever (NaN * anything = NaN). Surface the seed only when it
+  // is finite; otherwise hold null until the first finite recursive value.
+  out[period - 1] = Number.isFinite(prev) ? prev : null;
 
   for (let i = period; i < values.length; i++) {
-    prev = values[i]! * k + prev * (1 - k);
+    // Round 56 (R56-IND-1): NaN-guard. Hold previous value to self-heal
+    // instead of poisoning all downstream samples.
+    const v = values[i]!;
+    if (!Number.isFinite(v)) {
+      out[i] = Number.isFinite(prev) ? prev : null;
+      continue;
+    }
+    if (!Number.isFinite(prev)) {
+      // Re-seed from the first finite sample after a poisoned seed window.
+      prev = v;
+    } else {
+      prev = v * k + prev * (1 - k);
+    }
     out[i] = prev;
   }
   return out;
@@ -58,21 +73,47 @@ export function rsi(values: number[], period = 14): (number | null)[] {
 
   let gainSum = 0;
   let lossSum = 0;
+  let seedValid = true;
   for (let i = 1; i <= period; i++) {
-    const change = values[i]! - values[i - 1]!;
+    const a = values[i]!;
+    const b = values[i - 1]!;
+    if (!Number.isFinite(a) || !Number.isFinite(b)) {
+      // Round 56 (R56-IND-1): a single NaN in the seed window contaminates
+      // avgGain/avgLoss and freezes RSI at NaN forever. Mark the seed
+      // invalid and let the recursive loop self-heal once finite samples
+      // resume.
+      seedValid = false;
+      continue;
+    }
+    const change = a - b;
     if (change >= 0) gainSum += change;
     else lossSum -= change;
   }
   let avgGain = gainSum / period;
   let avgLoss = lossSum / period;
-  out[period] = rsiFromAvgs(avgGain, avgLoss);
+  out[period] = seedValid ? rsiFromAvgs(avgGain, avgLoss) : null;
 
   for (let i = period + 1; i < values.length; i++) {
-    const change = values[i]! - values[i - 1]!;
+    // Round 56 (R56-IND-1): if either sample is NaN, hold the previous
+    // RSI reading and skip Wilder smoothing for this bar.
+    const a = values[i]!;
+    const b = values[i - 1]!;
+    if (!Number.isFinite(a) || !Number.isFinite(b)) {
+      out[i] = out[i - 1] ?? null;
+      continue;
+    }
+    const change = a - b;
     const gain = change > 0 ? change : 0;
     const loss = change < 0 ? -change : 0;
-    avgGain = (avgGain * (period - 1) + gain) / period;
-    avgLoss = (avgLoss * (period - 1) + loss) / period;
+    if (!seedValid) {
+      // Re-seed Wilder averages from the first finite recursive bar.
+      avgGain = gain;
+      avgLoss = loss;
+      seedValid = true;
+    } else {
+      avgGain = (avgGain * (period - 1) + gain) / period;
+      avgLoss = (avgLoss * (period - 1) + loss) / period;
+    }
     out[i] = rsiFromAvgs(avgGain, avgLoss);
   }
 
@@ -85,6 +126,17 @@ export interface MacdOutput {
   histogram: (number | null)[];
 }
 
+/**
+ * Moving Average Convergence Divergence.
+ *
+ * NB: the signal line is seeded with an SMA(9) of the first 9 valid MACD
+ * values (because we delegate to `ema()` which always seeds with SMA over
+ * `period` samples). TradingView seeds its signal line with the first
+ * MACD value as a single-sample EMA carry. The two conventions disagree
+ * by ~0.1pp in the first ~10 bars after the slow-period (26) warmup;
+ * they converge afterwards. This is intentional — keep this convention
+ * stable across the codebase (signal-detector, AI insights, charts).
+ */
 export function macd(
   values: number[],
   fast = 12,
@@ -254,8 +306,18 @@ export function atr(candles: Candle[], period = 14): (number | null)[] {
   if (candles.length <= period) return out;
 
   const tr: number[] = candles.map((c, i) => {
-    if (i === 0) return c.high - c.low;
+    if (i === 0) {
+      const r = c.high - c.low;
+      return Number.isFinite(r) ? r : NaN;
+    }
     const prevClose = candles[i - 1]!.close;
+    if (
+      !Number.isFinite(c.high) ||
+      !Number.isFinite(c.low) ||
+      !Number.isFinite(prevClose)
+    ) {
+      return NaN;
+    }
     return Math.max(
       c.high - c.low,
       Math.abs(c.high - prevClose),
@@ -263,13 +325,33 @@ export function atr(candles: Candle[], period = 14): (number | null)[] {
     );
   });
 
+  // Round 56 (R56-IND-1): a single NaN TR (e.g. broken candle) used to
+  // poison every subsequent ATR sample via Wilder smoothing. Self-heal
+  // by holding the previous valid value when the current TR is NaN.
   let sum = 0;
-  for (let i = 1; i <= period; i++) sum += tr[i]!;
+  let seedValid = true;
+  for (let i = 1; i <= period; i++) {
+    if (!Number.isFinite(tr[i]!)) {
+      seedValid = false;
+      continue;
+    }
+    sum += tr[i]!;
+  }
   let prev = sum / period;
-  out[period] = prev;
+  out[period] = seedValid && Number.isFinite(prev) ? prev : null;
 
   for (let i = period + 1; i < candles.length; i++) {
-    prev = (prev * (period - 1) + tr[i]!) / period;
+    const t = tr[i]!;
+    if (!Number.isFinite(t)) {
+      out[i] = Number.isFinite(prev) ? prev : null;
+      continue;
+    }
+    if (!Number.isFinite(prev)) {
+      // Re-seed once a finite TR appears after a NaN-poisoned seed.
+      prev = t;
+    } else {
+      prev = (prev * (period - 1) + t) / period;
+    }
     out[i] = prev;
   }
 

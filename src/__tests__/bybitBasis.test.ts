@@ -13,25 +13,38 @@ type FetchMock = ReturnType<typeof vi.fn>;
 interface FakeResponse {
   ok: boolean;
   status: number;
+  statusText?: string;
   json: () => Promise<unknown>;
+  // Round 56 (Fix 3): bybitBasis now goes through fetchJsonWithRetry,
+  // which probes res.text() on non-ok and res.headers.get on 429.
+  text?: () => Promise<string>;
+  headers?: { get: (k: string) => string | null };
 }
 
 function makeOkResponse(price: number): FakeResponse {
   return {
     ok: true,
     status: 200,
+    statusText: "OK",
     json: async () => ({
       retCode: 0,
       result: { list: [{ lastPrice: String(price) }] },
     }),
+    text: async () => "",
+    headers: { get: () => null },
   };
 }
 
 function makeBadStatusResponse(): FakeResponse {
+  // 400-class non-retryable status keeps the test single-call (vs 503,
+  // which the retry helper would retry up to maxRetries times).
   return {
     ok: false,
-    status: 503,
+    status: 400,
+    statusText: "Bad Request",
     json: async () => ({}),
+    text: async () => "bad",
+    headers: { get: () => null },
   };
 }
 
@@ -39,7 +52,10 @@ function makeMalformedResponse(): FakeResponse {
   return {
     ok: true,
     status: 200,
+    statusText: "OK",
     json: async () => ({ retCode: 0, result: { list: [] } }),
+    text: async () => "",
+    headers: { get: () => null },
   };
 }
 
@@ -47,10 +63,13 @@ function makeBadRetCodeResponse(): FakeResponse {
   return {
     ok: true,
     status: 200,
+    statusText: "OK",
     json: async () => ({
       retCode: 10001,
       result: { list: [{ lastPrice: "100" }] },
     }),
+    text: async () => "",
+    headers: { get: () => null },
   };
 }
 
@@ -143,10 +162,11 @@ describe("bybitBasis — error paths", () => {
   });
 
   it("HTTP non-ok throws with status code", async () => {
+    // Round 56 (Fix 3): error message now flows through fetchJsonWithRetry
+    // and includes the literal HTTP status. 4xx is non-retryable so a
+    // single response stub is enough.
     stubFetchSequence([makeBadStatusResponse(), makeOkResponse(100)]);
-    await expect(fetchBybitBasis()).rejects.toThrow(
-      /Bybit .* fetch failed: 503/,
-    );
+    await expect(fetchBybitBasis()).rejects.toThrow(/HTTP 400/);
   });
 
   it("malformed payload (empty list) throws", async () => {

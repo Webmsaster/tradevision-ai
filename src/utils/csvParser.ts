@@ -60,6 +60,10 @@ export async function parseCSVFile(
     Papa.parse<Record<string, string>>(file, {
       header: true,
       skipEmptyLines: true,
+      // Round 56 fix #8: parse on a Web Worker so a 10MB+ CSV does not
+      // freeze the UI thread. PapaParse auto-spawns the worker on browser
+      // platforms; in tests/SSR the option is silently ignored.
+      worker: true,
       // Strip UTF-8 BOM (U+FEFF) and whitespace from headers — Excel-exported
       // CSVs frequently include a BOM that breaks column matching.
       // eslint-disable-next-line no-irregular-whitespace
@@ -233,15 +237,22 @@ export function mapCSVToTrades(
       }
 
       // Parse dates -----------------------------------------------------
-      // Empty value → fall back to "now" (caller didn't supply a date).
+      // Empty value → fall back to "now" (caller didn't supply a date),
+      // routed through normalizeDateToUTC for symmetry with non-empty path.
       // Non-empty but unparseable → drop the row (fail-loud, prevents stale
       // trades from being silently re-dated to the import time).
+      // Round 56 fix #1: empty fallback now uses normalizeDateToUTC, so all
+      // CSV-imported dates pass through the same UTC-coercion gate.
       const entryDateRaw = mapping.entryDate
         ? row[mapping.entryDate]?.trim()
         : "";
       let entryDate: string;
       if (!entryDateRaw) {
-        entryDate = new Date().toISOString();
+        const fallback = normalizeDateToUTC(new Date().toISOString()).iso;
+        // new Date().toISOString() always has Z → never null in practice,
+        // but the explicit null-check defends against future refactors.
+        if (!fallback) return null;
+        entryDate = fallback;
       } else {
         const parsed = safeISODate(entryDateRaw);
         if (!parsed) return null;
@@ -250,7 +261,9 @@ export function mapCSVToTrades(
       const exitDateRaw = mapping.exitDate ? row[mapping.exitDate]?.trim() : "";
       let exitDate: string;
       if (!exitDateRaw) {
-        exitDate = new Date().toISOString();
+        const fallback = normalizeDateToUTC(new Date().toISOString()).iso;
+        if (!fallback) return null;
+        exitDate = fallback;
       } else {
         const parsed = safeISODate(exitDateRaw);
         if (!parsed) return null;

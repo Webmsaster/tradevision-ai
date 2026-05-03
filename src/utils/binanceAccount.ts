@@ -65,6 +65,11 @@ export function buildSignedQuery(
   return `${qs}&signature=${signature}`;
 }
 
+// Round 56 (Fix 2, CRITICAL): bare fetch had no timeout — hangs blocked
+// the dashboard / signal loop. 8s is comfortably above Binance p99 (~1s)
+// while still failing fast if the endpoint stalls.
+const ACCOUNT_TIMEOUT_MS = 8_000;
+
 async function signedGet<T>(
   path: string,
   params: Record<string, string | number>,
@@ -79,6 +84,7 @@ async function signedGet<T>(
   const url = `${baseUrl(cfg)}${path}?${qs}`;
   const res = await fetch(url, {
     headers: { "X-MBX-APIKEY": cfg.apiKey },
+    signal: AbortSignal.timeout(ACCOUNT_TIMEOUT_MS),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -167,19 +173,62 @@ export interface AccountSnapshot {
   openPositions: OpenPosition[];
   fetchedAt: string;
   isTestnet: boolean;
+  /**
+   * True when the balance fetch failed but positions succeeded — the
+   * snapshot still contains positions but balance fields are zeroed.
+   * Round 56 (Fix 2): tolerate partial failure instead of fail-fast.
+   */
+  staleBalance?: boolean;
+  /** True when positions fetch failed but balance succeeded. */
+  stalePositions?: boolean;
 }
 
-/** One-shot aggregation for the dashboard. */
+/**
+ * One-shot aggregation for the dashboard.
+ *
+ * Round 56 (Fix 2): switched from `Promise.all` (fail-fast) to
+ * `Promise.allSettled` so a single Binance endpoint hiccup doesn't blank
+ * the entire dashboard. If both fail, the underlying error is rethrown so
+ * callers can surface it; otherwise the result includes a `staleBalance` /
+ * `stalePositions` flag.
+ */
 export async function snapshotAccount(
   cfg: BinanceConfig = configFromEnv(),
 ): Promise<AccountSnapshot> {
-  const [balances, positions] = await Promise.all([
+  const [balRes, posRes] = await Promise.allSettled([
     fetchAccountBalance(cfg),
     fetchOpenPositions(cfg),
   ]);
+
+  const balOk = balRes.status === "fulfilled";
+  const posOk = posRes.status === "fulfilled";
+
+  if (!balOk && !posOk) {
+    // Both failed — surface the balance error (more critical signal).
+    throw balRes.reason instanceof Error
+      ? balRes.reason
+      : new Error(String(balRes.reason));
+  }
+
+  if (!balOk) {
+    console.warn(
+      "[binanceAccount] balance fetch failed, returning partial snapshot:",
+      balRes.reason instanceof Error ? balRes.reason.message : balRes.reason,
+    );
+  }
+  if (!posOk) {
+    console.warn(
+      "[binanceAccount] positions fetch failed, returning partial snapshot:",
+      posRes.reason instanceof Error ? posRes.reason.message : posRes.reason,
+    );
+  }
+
+  const balances = balOk ? balRes.value : [];
+  const positions = posOk ? posRes.value : [];
   const usdt = balances.find((b) => b.asset === "USDT");
   const totalUpnl = positions.reduce((s, p) => s + p.unrealisedPnl, 0);
-  return {
+
+  const snap: AccountSnapshot = {
     usdtBalance: usdt?.balance ?? 0,
     usdtAvailable: usdt?.availableBalance ?? 0,
     totalUnrealisedPnl: totalUpnl,
@@ -187,4 +236,7 @@ export async function snapshotAccount(
     fetchedAt: new Date().toISOString(),
     isTestnet: cfg.testnet,
   };
+  if (!balOk) snap.staleBalance = true;
+  if (!posOk) snap.stalePositions = true;
+  return snap;
 }

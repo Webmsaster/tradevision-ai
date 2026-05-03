@@ -3768,9 +3768,15 @@ export function detectAsset(
               const atrNow = boAtrSeries ? boAtrSeries[i] : null;
               if (atrNow === null || atrNow === undefined) ok = false;
               else {
+                // BUGFIX 2026-05-03 (R56 audit Fix 5): use prior-bar window
+                // [i-volMaPeriod, i) so the MA does NOT include the current
+                // bar — otherwise the gate compares atrNow against an MA
+                // that already contains atrNow, biasing the ratio toward 1.
+                // Mirrors the Donchian convention `for (k=i-dp; k<i; ...)`
+                // a few lines above.
                 let aSum = 0;
                 let aCnt = 0;
-                for (let k = i - boEntry.volMaPeriod + 1; k <= i; k++) {
+                for (let k = i - boEntry.volMaPeriod; k < i; k++) {
                   const v = boAtrSeries ? boAtrSeries[k] : null;
                   if (v !== null && v !== undefined) {
                     aSum += v;
@@ -4151,7 +4157,25 @@ export function detectAsset(
       // ACTUAL entry bar (after pullback may have shifted it forward). Was
       // anchored to i+1 which gave pullback trades fewer hold bars than
       // configured.
-      const mx = Math.min(ebIdx + holdBars, candles.length - 1);
+      //
+      // BUGFIX 2026-05-03 (R56 audit Fix 6): also cap by challenge-end day.
+      // holdBars=1200 (some configs use 25-day max-hold) can extend past
+      // cfg.maxDays — meaning a trade entered on day 28 of a 30-day challenge
+      // could hold for 25 days, well past the challenge close-out. The runner
+      // would still consume the PnL even though the broker would force-close
+      // at challenge end. Bound exit to the last bar whose closeTime is on
+      // a Prague day-index strictly less than (challengeStartDay + maxDays).
+      let mx = Math.min(ebIdx + holdBars, candles.length - 1);
+      const challengeStartDay = pragueDay(ts0);
+      const challengeEndDay = challengeStartDay + cfg.maxDays;
+      // Walk back from mx until we find a bar still inside the window. This
+      // is O(barsPerDay) in the worst case (~12 for 2h, ~48 for 30m) so cheap.
+      while (
+        mx > ebIdx &&
+        pragueDay(candles[mx]!.closeTime) >= challengeEndDay
+      ) {
+        mx--;
+      }
       let exitBar = mx;
       let exitPrice = candles[mx]!.close;
       let reason: "tp" | "stop" | "time" = "time";
@@ -4485,6 +4509,50 @@ export function detectAsset(
           rawPnl -= (swapBp / 10000) * overnightCrossings;
         }
       }
+      // BUGFIX 2026-05-03 (R56 audit Fix 1): Funding-cost deduction from PnL.
+      // fundingRateFilter only filters entries — until now funding payments
+      // were never charged against the PnL even when fundingBySymbol was
+      // supplied. Configs that opt-in to the filter (V5_NOVA, R28 family)
+      // gained the filter benefit without paying the cost.
+      //
+      // Binance perp futures settle funding every 8h at 00:00, 08:00, 16:00 UTC.
+      // The fundingSeries is forward-filled per bar — each value represents the
+      // funding rate that would be paid if a position were held through that 8h
+      // bucket. Long pays positive funding, short receives; short pays negative
+      // funding, long receives. (Sign convention: rate>0 ⇒ long pays.)
+      //
+      // Walk every 8h settlement boundary in (entryTime, exitTime] and apply
+      // the funding rate sampled at the bar containing that boundary.
+      if (fundingSeries) {
+        const sign = direction === "long" ? +1 : -1;
+        const EIGHT_H = 8 * 3_600_000;
+        const exitTimeMs = candles[exitBar]!.closeTime;
+        // First settlement strictly after entry openTime.
+        let bucket = Math.floor(eb!.openTime / EIGHT_H + 1e-9) * EIGHT_H;
+        if (bucket <= eb!.openTime) bucket += EIGHT_H;
+        let sumFunding = 0;
+        // Cap iteration to avoid pathological infinite loops on bad data.
+        let safetyIter = 0;
+        const maxIter = candles.length + 8;
+        while (bucket <= exitTimeMs && safetyIter++ < maxIter) {
+          // Find the bar containing this settlement boundary. Bars are
+          // openTime-aligned at the bar duration; settlement falls within the
+          // bar [openTime, openTime + barDur).
+          // Use binary-ish lookup via index hint: bars are uniform-spaced.
+          const barIdx = Math.min(
+            candles.length - 1,
+            Math.max(0, Math.floor((bucket - ts0) / (hoursPerBar * 3_600_000))),
+          );
+          const f = fundingSeries[barIdx];
+          if (f !== null && f !== undefined && Number.isFinite(f)) {
+            sumFunding += f;
+          }
+          bucket += EIGHT_H;
+        }
+        if (sumFunding !== 0) {
+          rawPnl -= sign * sumFunding;
+        }
+      }
       // iter1h-035+ VOL-TARGETED SIZING (asset-level, applied at entry).
       // Multiplies effective risk by clamp(targetAtr/realizedAtr, min, max).
       // Larger position when realized vol < target (calm regime),
@@ -4704,6 +4772,26 @@ export function runFtmoDaytrade24h(
     console.warn(
       "[ftmoDaytrade24h] cfg.pauseAtTargetReached not set explicitly — using legacy default false. New live configs should set this explicitly (true for FTMO-realistic, false for raw backtest).",
     );
+  }
+  // BUGFIX 2026-05-03 (R56 audit Fix 3): warn when PTP triggerPct is too close
+  // to any asset's tpPct. In the V4 live engine PTP and TP can fire on the
+  // same bar (different price levels) — when the gap is < 40% the ordering
+  // becomes brittle / dependent on bar traversal direction.
+  if (cfg.partialTakeProfit) {
+    const ptpTrig = cfg.partialTakeProfit.triggerPct;
+    const tooClose = cfg.assets.filter((a) => {
+      const tp = a.tpPct ?? cfg.tpPct;
+      return tp > 0 && tp < ptpTrig * 1.4;
+    });
+    if (tooClose.length > 0) {
+      console.warn(
+        `[cfg-validate] partialTakeProfit.triggerPct (${ptpTrig}) is within 40% of tpPct on ${tooClose.length} asset(s): ${tooClose
+          .map((a) => `${a.symbol}=${a.tpPct ?? cfg.tpPct}`)
+          .join(
+            ", ",
+          )}. PTP/TP ordering becomes non-deterministic in the V4 live engine — widen the gap.`,
+      );
+    }
   }
   const all: Daytrade24hTrade[] = [];
   // BUGFIX 2026-04-29 (R13 cross-asset filter audit): validate filter periods
@@ -5237,7 +5325,15 @@ export function runFtmoDaytrade24h(
         const baseRisk = cfg.liveCaps
           ? Math.min(asset.riskFrac, cfg.liveCaps.maxRiskFrac)
           : Math.min(asset.riskFrac, 1.0);
-        effPnl = Math.max(t.rawPnl * cfg.leverage * effRisk, -baseRisk * 1.5);
+        // BUGFIX 2026-05-03 (R56 audit Fix 2): floor must scale with the same
+        // tradeVolMult that scales the upside. Previously the floor used
+        // `baseRisk × 1.5` while the upside was `... × effRisk` (which
+        // includes tradeVolMult). For low-vol-target assets (volMult>1)
+        // losses were CAPPED tighter than gains — for high-vol assets
+        // (volMult<1) losses were FATTER than upside. Both directions
+        // distort the loss profile vs. live execution.
+        const lossFloor = -baseRisk * (tradeVolMult ?? 1) * 1.5;
+        effPnl = Math.max(t.rawPnl * cfg.leverage * effRisk, lossFloor);
       }
     }
     // BUGFIX 2026-04-29 (Agent 8 Bug 10): final NaN/Infinity guard before
@@ -7887,6 +7983,13 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6: FtmoDaytra
         tpPct: (a.tpPct ?? 0.05) * 0.55,
       }),
     ),
+    // BUGFIX 2026-05-03 (R56 audit Fix 3): R28_V4 inherited PTP triggerPct=0.02
+    // but R28_V6 tightens tpPct ×0.55. With BTC tpPct 0.04 → 0.022 the gap to
+    // PTP triggerPct=0.02 collapses to 2bps — non-deterministic in the V4 live
+    // engine (PTP and TP can both fire on the same bar; ordering depends on
+    // bar-traversal). Drop PTP triggerPct to 0.012 so it stays clearly below
+    // the tightened TPs (≥30% gap on every asset). closeFraction unchanged.
+    partialTakeProfit: { triggerPct: 0.012, closeFraction: 0.7 },
   };
 
 /**

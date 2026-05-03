@@ -718,8 +718,17 @@ def get_challenge_day() -> int:
     if not CHALLENGE_START_DATE:
         return 0
     try:
-        start = datetime.fromisoformat(CHALLENGE_START_DATE).replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
+        # R56 audit fix: anchor challenge-day count to Prague midnight (FTMO
+        # server timezone), consistent with update_day_peak / handle_daily_reset.
+        # UTC anchoring drifts by 1-2h (DST-dependent) → off-by-one on the
+        # day-boundary against FTMO's own day-count.
+        try:
+            from zoneinfo import ZoneInfo
+            prague_tz = ZoneInfo("Europe/Prague")
+        except ImportError:
+            prague_tz = timezone(timedelta(hours=1))
+        start = datetime.fromisoformat(CHALLENGE_START_DATE).replace(tzinfo=prague_tz)
+        now = datetime.now(prague_tz)
         return max(0, (now - start).days)
     except Exception:
         return 0
@@ -1045,7 +1054,23 @@ def place_market_order(
     # `fill_price` and SL stays at `stop_price` → real loss-per-SL exceeds
     # the engine-planned `risk_frac` by the slippage delta. Sizing with the
     # effective distance keeps real loss = risk_frac on the fill.
-    effective_stop_pct = abs(fill_price - stop_price) / fill_price if fill_price > 0 else stop_pct
+    #
+    # R56 audit fix: previous code silently fell back to theoretical stop_pct
+    # when fill_price <= 0, AND silently let pathological slippage > 3× the
+    # planned stop collapse the position into volume_min. Both cases now
+    # reject the order with a clear error so the caller / TG-alert sees it.
+    if fill_price <= 0:
+        return OrderResult(False, None, f"invalid fill_price={fill_price}", None, None)
+    effective_stop_pct = abs(fill_price - stop_price) / fill_price
+    if effective_stop_pct > stop_pct * 3:
+        log_event("slippage_excessive", level="warn", planned=stop_pct, effective=effective_stop_pct)
+        return OrderResult(
+            False,
+            None,
+            f"slippage too large (eff_stop={effective_stop_pct:.4f} vs planned {stop_pct:.4f})",
+            None,
+            None,
+        )
     lot = compute_lot_size(info, risk_frac, effective_stop_pct, account_equity, direction)
     if lot <= 0:
         # BUGFIX 2026-04-28: Was silent. Now logs symbol-info dump so user can
@@ -1229,6 +1254,22 @@ def write_pause_state(state: dict) -> None:
     write_json(PAUSE_STATE_PATH, state)
 
 
+def _prague_today_str() -> str:
+    """Return today's date in Europe/Prague TZ as YYYY-MM-DD.
+
+    R56 audit fix: FTMO counts trading-days at Prague midnight (00:00 CET/CEST),
+    not UTC. Using UTC in summer (UTC+2) skews the day-boundary by 2h and can
+    swallow an entire trading day on the boundary.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        prague_tz = ZoneInfo("Europe/Prague")
+    except ImportError:
+        # Python <3.9 fallback — fixed CET offset (ignores DST).
+        prague_tz = timezone(timedelta(hours=1))
+    return datetime.now(prague_tz).strftime("%Y-%m-%d")
+
+
 def check_target_and_pause(current_equity: float) -> bool:
     """
     Returns True if pause is active (target hit, waiting for minTradingDays).
@@ -1241,7 +1282,8 @@ def check_target_and_pause(current_equity: float) -> bool:
         return True  # already passed, keep skipping
     target_equity = CHALLENGE_START_BALANCE * (1 + PROFIT_TARGET_PCT)
     if current_equity >= target_equity and not state["target_hit"]:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # R56 audit fix: use Prague-TZ date (FTMO trading-day anchor).
+        today = _prague_today_str()
         state["target_hit"] = True
         state["target_hit_date"] = today
         write_pause_state(state)
@@ -1261,7 +1303,8 @@ def maybe_place_ping_trade() -> None:
     state = get_pause_state()
     if not state["target_hit"] or state["passed"]:
         return
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # R56 audit fix: ping_dates are FTMO trading-days → Prague TZ, not UTC.
+    today = _prague_today_str()
     if today in state["ping_dates"]:
         return  # already pinged today
 
@@ -1270,14 +1313,21 @@ def maybe_place_ping_trade() -> None:
         state["ping_dates"].append(today)
     else:
         sym = SYMBOL_MAP.get(PING_SYMBOL_BINANCE, "ETHUSD")
+        # R56 audit fix: wrap order_send in idempotency-marker (write-ahead log)
+        # — same as the main signal path. If executor crashes between order_send
+        # and ping_dates.append, the marker lets reconcile_pending_order_markers
+        # detect the phantom long on next boot.
+        ping_marker = _write_ping_order_marker(today, sym)
         try:
             info = mt5.symbol_info(sym)
             if info is None:
                 log_event("ping_trade_failed", reason=f"symbol {sym} not found")
+                _clear_pending_order_marker(ping_marker)
                 return
             tick = mt5.symbol_info_tick(sym)
             if tick is None:
                 log_event("ping_trade_failed", reason="no tick data")
+                _clear_pending_order_marker(ping_marker)
                 return
             request_buy = {
                 "action": mt5.TRADE_ACTION_DEAL, "symbol": sym, "volume": PING_LOT_SIZE,
@@ -1287,6 +1337,7 @@ def maybe_place_ping_trade() -> None:
             result = mt5.order_send(request_buy)
             if result is None or getattr(result, "retcode", None) != mt5.TRADE_RETCODE_DONE:
                 log_event("ping_trade_failed", retcode=getattr(result, "retcode", None))
+                _clear_pending_order_marker(ping_marker)
                 return
             # Close immediately
             positions = mt5.positions_get(symbol=sym) or []
@@ -1304,8 +1355,13 @@ def maybe_place_ping_trade() -> None:
                     mt5.order_send(close_request)
             log_event("ping_trade_placed", date=today, symbol=sym, lot=PING_LOT_SIZE)
             state["ping_dates"].append(today)
+            # Clear marker AFTER state is durably mutated; reconcile-on-boot
+            # will re-queue / clean any orphan ping if we crash before this.
+            _clear_pending_order_marker(ping_marker)
         except Exception as e:
             log_event("ping_trade_exception", error=str(e))
+            # Leave the marker in place so boot-time reconcile can detect
+            # whether the order actually filled (via positions / history_deals).
             return
     write_pause_state(state)
 
@@ -2089,6 +2145,26 @@ def _clear_pending_order_marker(marker: Path) -> None:
         pass
 
 
+def _write_ping_order_marker(date_str: str, symbol: str) -> Path:
+    """R56 audit fix: write-ahead log marker for ping trades. Mirrors the
+    main-signal write-ahead-log idiom. Marker is keyed by date+symbol so a
+    crash mid-ping is detectable on next boot — without the marker, an
+    executor crash between mt5.order_send and ping_dates.append leaves a
+    phantom long with no recovery path."""
+    PENDING_ORDERS_DIR.mkdir(parents=True, exist_ok=True)
+    import hashlib
+    mid = "ping_" + hashlib.sha1(f"{date_str}|{symbol}".encode()).hexdigest()[:11]
+    marker = PENDING_ORDERS_DIR / f"{mid}.json"
+    write_json(marker, {
+        "id": mid,
+        "ping": True,
+        "date": date_str,
+        "symbol": symbol,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    })
+    return marker
+
+
 def reconcile_pending_order_markers() -> None:
     """BUGFIX 2026-04-28 (Round 13 Bug 1): on boot, check pending-orders/
     markers against MT5 actual positions. If MT5 has the order → mark
@@ -2114,9 +2190,12 @@ def reconcile_pending_order_markers() -> None:
     # already SL/TP'd before the reconcile runs. Without this we'd re-queue
     # signals that already filled-and-exited → duplicate trade on next pickup.
     try:
+        # R56 audit fix: use UTC-aware datetimes — naive datetime triggers
+        # broker-TZ ambiguity (MT5 interprets naive as broker-local on
+        # Windows, causing window misalignment when broker-TZ != system-TZ).
         recent_deals = mt5.history_deals_get(
-            datetime.fromtimestamp(time.time() - 60 * 60),
-            datetime.now(),
+            datetime.fromtimestamp(time.time() - 60 * 60, tz=timezone.utc),
+            datetime.now(timezone.utc),
         ) or []
         for d in recent_deals:
             if getattr(d, "magic", 0) == 231:
@@ -2248,7 +2327,11 @@ def sync_account_state() -> None:
     if total_pct <= tl_emergency_threshold:
         _emergency_close_all_positions(f"total_loss_imminent: {total_pct:.2%}")
 
-    deals = mt5.history_deals_get(datetime.fromtimestamp(time.time() - 30 * 86400), datetime.now())
+    # R56 audit fix: tz-aware datetimes for history_deals_get (broker-TZ safe).
+    deals = mt5.history_deals_get(
+        datetime.fromtimestamp(time.time() - 30 * 86400, tz=timezone.utc),
+        datetime.now(timezone.utc),
+    )
     recent_pnls: list[float] = []
     if deals:
         closes = [d for d in deals if d.magic == 231 and d.entry == mt5.DEAL_ENTRY_OUT]
@@ -2379,7 +2462,11 @@ def check_circuit_breaker() -> Optional[str]:
     Returns a block-reason string if the CB trips, else None.
     Also sends daily-DD warning via Telegram once per day if threshold exceeded.
     """
-    deals = mt5.history_deals_get(datetime.fromtimestamp(time.time() - 30 * 86400), datetime.now())
+    # R56 audit fix: tz-aware datetimes for history_deals_get (broker-TZ safe).
+    deals = mt5.history_deals_get(
+        datetime.fromtimestamp(time.time() - 30 * 86400, tz=timezone.utc),
+        datetime.now(timezone.utc),
+    )
     if not deals:
         return None
 
@@ -2493,7 +2580,11 @@ def check_consistency_rule() -> None:
     Scans last 60d of closed deals with magic=231, identifies largest winner,
     compares to total profit. If ratio exceeds warn threshold, sends Telegram.
     """
-    deals = mt5.history_deals_get(datetime.fromtimestamp(time.time() - 60 * 86400), datetime.now())
+    # R56 audit fix: tz-aware datetimes for history_deals_get (broker-TZ safe).
+    deals = mt5.history_deals_get(
+        datetime.fromtimestamp(time.time() - 60 * 86400, tz=timezone.utc),
+        datetime.now(timezone.utc),
+    )
     if not deals:
         return
     closes = [d for d in deals if d.magic == 231 and d.entry == mt5.DEAL_ENTRY_OUT]

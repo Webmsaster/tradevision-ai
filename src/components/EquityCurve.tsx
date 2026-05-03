@@ -153,6 +153,7 @@ export default function EquityCurve({ data, height }: EquityCurveProps) {
               stroke={lineColor}
               strokeWidth={2}
               fill={`url(#${equityGradientId})`}
+              isAnimationActive={false}
               activeDot={{
                 r: 5,
                 stroke: lineColor,
@@ -167,6 +168,7 @@ export default function EquityCurve({ data, height }: EquityCurveProps) {
               strokeWidth={1}
               strokeOpacity={0.4}
               fill={`url(#${drawdownGradientId})`}
+              isAnimationActive={false}
               activeDot={{
                 r: 3,
                 stroke: colors.red,

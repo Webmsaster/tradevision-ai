@@ -25,6 +25,8 @@
  * We convert HL funding to 8h equivalent (× 8) to compare directly.
  */
 
+import { fetchJsonWithRetry } from "@/utils/httpRetry";
+
 const HL_URL = "https://api.hyperliquid.xyz/info";
 
 export interface HlAssetSnapshot {
@@ -59,16 +61,16 @@ interface HlAssetCtx {
 }
 
 export async function fetchHyperliquidFunding(): Promise<HlFundingSnapshot> {
-  const res = await fetch(HL_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ type: "metaAndAssetCtxs" }),
+  // Round 56 (Fix 3): timeout + retry/backoff via shared helper.
+  const json = await fetchJsonWithRetry<
+    [{ universe: HlUniverseEntry[] }, HlAssetCtx[]]
+  >(HL_URL, {
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "metaAndAssetCtxs" }),
+    },
   });
-  if (!res.ok) throw new Error(`Hyperliquid fetch failed: ${res.status}`);
-  const json = (await res.json()) as [
-    { universe: HlUniverseEntry[] },
-    HlAssetCtx[],
-  ];
   const universe = json[0]?.universe ?? [];
   const ctxs = json[1] ?? [];
 

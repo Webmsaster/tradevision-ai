@@ -19,6 +19,7 @@
  * flat otherwise. We compute Z-score on a 2-year trailing window so the
  * signal adapts to the current cycle.
  */
+import { fetchJsonWithRetry } from "@/utils/httpRetry";
 
 export interface MvrvSample {
   time: number; // ms
@@ -101,9 +102,8 @@ export async function fetchMvrvHistory(): Promise<MvrvSample[]> {
   url.searchParams.set("frequency", "1d");
   url.searchParams.set("page_size", "10000");
   url.searchParams.set("pretty", "false");
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`Coinmetrics fetch failed: ${res.status}`);
-  const json = (await res.json()) as { data: RawMetric[] };
+  // Round 56 (Fix 3): timeout + retry/backoff via shared helper.
+  const json = await fetchJsonWithRetry<{ data: RawMetric[] }>(url.toString());
   const rows = json.data ?? [];
   const samples: MvrvSample[] = [];
   for (const r of rows) {

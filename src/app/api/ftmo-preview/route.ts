@@ -84,7 +84,11 @@ export async function GET() {
   }
 
   try {
-    const [eth, btc, sol] = await Promise.all([
+    // Round 56 (Fix 5): switched from Promise.all (fail-fast) to
+    // Promise.allSettled. ETH+BTC are required for the V231 detector;
+    // SOL is optional (the detector tolerates an empty array). A single
+    // SOL transient failure used to blank the entire preview.
+    const [ethRes, btcRes, solRes] = await Promise.allSettled([
       loadBinanceHistory({
         symbol: "ETHUSDT",
         timeframe: tf,
@@ -104,6 +108,31 @@ export async function GET() {
         maxPages: 2,
       }),
     ]);
+
+    if (ethRes.status === "rejected" || btcRes.status === "rejected") {
+      const failed = [
+        ethRes.status === "rejected" ? "ETHUSDT" : null,
+        btcRes.status === "rejected" ? "BTCUSDT" : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      console.error("[ftmo-preview] required candle fetch failed:", failed);
+      return NextResponse.json(
+        { error: "Upstream candle fetch failed" },
+        { status: 502 },
+      );
+    }
+    const eth = ethRes.value;
+    const btc = btcRes.value;
+    let sol: typeof eth = [];
+    if (solRes.status === "fulfilled") {
+      sol = solRes.value;
+    } else {
+      console.warn(
+        "[ftmo-preview] SOLUSDT optional fetch failed, continuing with empty array:",
+        solRes.reason instanceof Error ? solRes.reason.message : solRes.reason,
+      );
+    }
     const account = readAccount();
     const result = detectLiveSignalsV231(eth, btc, sol, account, []);
     const body = {

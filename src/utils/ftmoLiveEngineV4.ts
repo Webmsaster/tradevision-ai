@@ -1424,8 +1424,15 @@ export function pollLive(
           ptpLevelsRealized: 0,
         };
         state.openPositions.push(newPos);
-        if (!state.tradingDays.includes(state.day)) {
-          state.tradingDays.push(state.day);
+        // BUGFIX 2026-05-03 (R56 audit Fix 4): use entryDay derived from the
+        // matched signal's entryTime — NOT state.day. They are identical at
+        // the bar that fires entry (entryTime === lastBar.openTime), but
+        // computing from entryTime makes the "FTMO trading-day = day with an
+        // executed ENTRY" rule explicit. Mirrors sequential engine line 5347
+        // (`tradingDays.add(t.entryDay)`).
+        const entryDay = dayIndex(matched.entryTime, state.challengeStartTs);
+        if (!state.tradingDays.includes(entryDay)) {
+          state.tradingDays.push(entryDay);
         }
 
         result.decision.opens.push({

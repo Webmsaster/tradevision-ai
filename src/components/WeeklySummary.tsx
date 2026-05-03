@@ -1,6 +1,6 @@
-'use client';
-import { useMemo } from 'react';
-import { Trade } from '@/types/trade';
+"use client";
+import { useMemo } from "react";
+import { Trade } from "@/types/trade";
 
 interface WeeklySummaryProps {
   trades: Trade[];
@@ -16,30 +16,48 @@ interface WeekData {
   isCurrent: boolean;
 }
 
+// Round 56 fix #3: every date operation here is UTC. Mixing local-getter
+// (e.g. getMonth) with UTC-constructor (Date.UTC) shifted weeks by 1 in
+// the southern hemisphere on Saturday/Sunday boundaries.
 function getWeekNumber(date: Date): number {
-  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const d = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+  );
   const dayNum = d.getUTCDay() || 7;
   d.setUTCDate(d.getUTCDate() + 4 - dayNum);
   const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-  return Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+  return Math.ceil(((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
 }
 
 function getWeekStart(date: Date): Date {
-  const d = new Date(date);
-  const day = d.getDay();
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-  return new Date(d.setDate(diff));
+  // ISO-week starts on Monday (UTC).
+  const d = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+  );
+  const day = d.getUTCDay();
+  const diff = d.getUTCDate() - day + (day === 0 ? -6 : 1);
+  d.setUTCDate(diff);
+  return d;
 }
 
 function formatWeekLabel(weekStart: Date): string {
   const weekEnd = new Date(weekStart);
-  weekEnd.setDate(weekEnd.getDate() + 6);
+  weekEnd.setUTCDate(weekEnd.getUTCDate() + 6);
 
-  const startMonth = weekStart.toLocaleString('en-US', { month: 'short' });
-  const endMonth = weekEnd.toLocaleString('en-US', { month: 'short' });
+  // toLocaleString with timeZone:'UTC' so we read the same UTC fields the
+  // rest of this module operates on — no surprise "Apr/Mar" flips at
+  // midnight-UTC.
+  const startMonth = weekStart.toLocaleString("en-US", {
+    month: "short",
+    timeZone: "UTC",
+  });
+  const endMonth = weekEnd.toLocaleString("en-US", {
+    month: "short",
+    timeZone: "UTC",
+  });
 
-  const startDay = weekStart.getDate();
-  const endDay = weekEnd.getDate();
+  const startDay = weekStart.getUTCDate();
+  const endDay = weekEnd.getUTCDate();
 
   if (startMonth === endMonth) {
     return `${startMonth} ${startDay} - ${endDay}`;
@@ -53,15 +71,18 @@ export default function WeeklySummary({ trades }: WeeklySummaryProps) {
 
     const now = new Date();
     const currentWeek = getWeekNumber(now);
-    const currentYear = now.getFullYear();
+    const currentYear = now.getUTCFullYear();
 
-    // Group trades by year-week key using exitDate
-    const weekMap = new Map<string, { trades: Trade[]; weekStart: Date; year: number; week: number }>();
+    // Group trades by year-week key using exitDate (UTC throughout).
+    const weekMap = new Map<
+      string,
+      { trades: Trade[]; weekStart: Date; year: number; week: number }
+    >();
 
     trades.forEach((trade) => {
       const exitDate = new Date(trade.exitDate);
       const week = getWeekNumber(exitDate);
-      const year = exitDate.getFullYear();
+      const year = exitDate.getUTCFullYear();
       const key = `${year}-${week}`;
       const weekStart = getWeekStart(exitDate);
 
@@ -119,28 +140,29 @@ export default function WeeklySummary({ trades }: WeeklySummaryProps) {
           const barWidth = (Math.abs(week.totalPnl) / maxAbsPnl) * 100;
           const isProfit = week.totalPnl >= 0;
           const pnlFormatted = isProfit
-            ? `+$${Math.abs(week.totalPnl).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-            : `-$${Math.abs(week.totalPnl).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            ? `+$${Math.abs(week.totalPnl).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+            : `-$${Math.abs(week.totalPnl).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
           return (
             <div key={`${week.year}-${week.week}`}>
-              <div className={`weekly-row${week.isCurrent ? ' current' : ''}`}>
+              <div className={`weekly-row${week.isCurrent ? " current" : ""}`}>
                 <span className="weekly-label">{week.label}</span>
                 <div className="weekly-bar-track">
                   <div
-                    className={`weekly-bar-fill ${isProfit ? 'profit' : 'loss'}`}
+                    className={`weekly-bar-fill ${isProfit ? "profit" : "loss"}`}
                     style={{ width: `${barWidth}%` }}
                   />
                 </div>
                 <span
                   className="weekly-pnl"
-                  style={{ color: isProfit ? 'var(--profit)' : 'var(--loss)' }}
+                  style={{ color: isProfit ? "var(--profit)" : "var(--loss)" }}
                 >
                   {pnlFormatted}
                 </span>
               </div>
               <div className="weekly-meta">
-                {week.tradeCount} trade{week.tradeCount !== 1 ? 's' : ''} | {week.winRate.toFixed(0)}% win rate
+                {week.tradeCount} trade{week.tradeCount !== 1 ? "s" : ""} |{" "}
+                {week.winRate.toFixed(0)}% win rate
               </div>
             </div>
           );
