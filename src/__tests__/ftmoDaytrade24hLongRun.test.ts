@@ -139,7 +139,7 @@ function summarize(results: FtmoDaytrade24hResult[]): SimStats {
   passDays.sort((a, b) => a - b);
   const median =
     passDays.length > 0
-      ? passDays[Math.floor(passDays.length / 2)]
+      ? passDays[Math.floor(passDays.length / 2)]!
       : Number.NaN;
   const avgEq =
     results.reduce((s, r) => s + r.finalEquityPct, 0) / results.length;
@@ -177,7 +177,7 @@ function runRollingChallenges(
     const endBar = (startDay + windowDays) * barsPerDay;
     const slice: Record<string, Candle[]> = {};
     for (const sym of Object.keys(candlesBySymbol)) {
-      const src = candlesBySymbol[sym].slice(startBar, endBar);
+      const src = candlesBySymbol[sym]!.slice(startBar, endBar);
       slice[sym] = rebaseTimestamps(src, startBar);
     }
     results.push(runFtmoDaytrade24h(slice));
@@ -205,7 +205,7 @@ describe("ftmoDaytrade24h — LONG-RUN 1000+ day simulation", () => {
     const stats = summarize(results);
     expect(stats.windows).toBe(40);
     // Publish stats for human inspection via expect snapshot
-    // eslint-disable-next-line no-console
+
     console.log("[NON-OVERLAP 30d]", JSON.stringify(stats, null, 2));
     expect(stats.passRate).toBeGreaterThanOrEqual(0);
     expect(stats.passRate).toBeLessThanOrEqual(1);
@@ -215,7 +215,7 @@ describe("ftmoDaytrade24h — LONG-RUN 1000+ day simulation", () => {
     const results = runRollingChallenges(all, DAYS, 30, 5);
     const stats = summarize(results);
     expect(stats.windows).toBeGreaterThanOrEqual(200);
-    // eslint-disable-next-line no-console
+
     console.log("[ROLLING 5d step]", JSON.stringify(stats, null, 2));
   });
 

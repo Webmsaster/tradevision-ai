@@ -78,7 +78,7 @@ function closestLs(
     hi = lsSamples.length - 1;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
-    if (lsSamples[mid].time < ts) lo = mid + 1;
+    if (lsSamples[mid]!.time < ts) lo = mid + 1;
     else hi = mid;
   }
   const cand = lsSamples[lo];
@@ -110,10 +110,10 @@ export function runFundingContrarianBacktest(
 
   for (let i = 0; i < sortedFunding.length; i++) {
     const ev = sortedFunding[i];
-    if (ev.fundingRate > config.fundingPosThreshold) {
+    if (ev!.fundingRate > config.fundingPosThreshold) {
       posStreak++;
       negStreak = 0;
-    } else if (ev.fundingRate < -config.fundingNegThreshold) {
+    } else if (ev!.fundingRate < -config.fundingNegThreshold) {
       negStreak++;
       posStreak = 0;
     } else {
@@ -127,7 +127,7 @@ export function runFundingContrarianBacktest(
     if (!fireLong && !fireShort) continue;
 
     // Confirm with L/S ratio
-    const ls = closestLs(sortedLs, ev.fundingTime, 2 * 60 * 60 * 1000);
+    const ls = closestLs(sortedLs, ev!.fundingTime, 2 * 60 * 60 * 1000);
     if (!ls) continue;
     if (fireShort && ls.longShortRatio < config.longShortLongCrowded) continue;
     if (fireLong && ls.longShortRatio > config.longShortShortCrowded) continue;
@@ -137,12 +137,12 @@ export function runFundingContrarianBacktest(
 
     // Entry bar: candle immediately after funding settle
     const entryIdx = sortedCandles.findIndex(
-      (c) => c.openTime >= ev.fundingTime,
+      (c) => c.openTime >= ev!.fundingTime,
     );
     if (entryIdx < 0 || entryIdx + config.holdBarsMax >= sortedCandles.length)
       continue;
 
-    const entry = sortedCandles[entryIdx].open;
+    const entry = sortedCandles[entryIdx]!.open;
     const stopLevel =
       direction === "long"
         ? entry * (1 - config.stopPct)
@@ -150,23 +150,23 @@ export function runFundingContrarianBacktest(
 
     let exitIdx = entryIdx + config.holdBarsMax;
     let exitReason: FundingContrarianTrade["exitReason"] = "time";
-    let exitPrice = sortedCandles[exitIdx].close;
+    let exitPrice = sortedCandles[exitIdx]!.close;
 
     // Look for funding normalisation
     for (
       let j = i + 1;
       j < sortedFunding.length &&
-      sortedFunding[j].fundingTime < sortedCandles[exitIdx].closeTime;
+      sortedFunding[j]!.fundingTime < sortedCandles[exitIdx]!.closeTime;
       j++
     ) {
       const fj = sortedFunding[j];
-      if (Math.abs(fj.fundingRate) < config.exitFundingBelow) {
+      if (Math.abs(fj!.fundingRate) < config.exitFundingBelow) {
         const barIdx = sortedCandles.findIndex(
-          (c) => c.openTime >= fj.fundingTime,
+          (c) => c.openTime >= fj!.fundingTime,
         );
         if (barIdx > entryIdx) {
           exitIdx = barIdx;
-          exitPrice = sortedCandles[exitIdx].open;
+          exitPrice = sortedCandles[exitIdx]!.open;
           exitReason = "funding-normalised";
           break;
         }
@@ -176,13 +176,13 @@ export function runFundingContrarianBacktest(
     // Also check stop
     for (let j = entryIdx + 1; j <= exitIdx; j++) {
       const bar = sortedCandles[j];
-      if (direction === "long" && bar.low <= stopLevel) {
+      if (direction === "long" && bar!.low <= stopLevel) {
         exitIdx = j;
         exitPrice = stopLevel;
         exitReason = "stop";
         break;
       }
-      if (direction === "short" && bar.high >= stopLevel) {
+      if (direction === "short" && bar!.high >= stopLevel) {
         exitIdx = j;
         exitPrice = stopLevel;
         exitReason = "stop";
@@ -191,7 +191,7 @@ export function runFundingContrarianBacktest(
     }
 
     const holdHours =
-      (sortedCandles[exitIdx].closeTime - sortedCandles[entryIdx].openTime) /
+      (sortedCandles[exitIdx]!.closeTime - sortedCandles[entryIdx]!.openTime) /
       (60 * 60 * 1000);
     const cost = applyCosts({
       entry,
@@ -201,12 +201,12 @@ export function runFundingContrarianBacktest(
       config: costs,
     });
     trades.push({
-      entryTime: sortedCandles[entryIdx].openTime,
-      exitTime: sortedCandles[exitIdx].closeTime,
+      entryTime: sortedCandles[entryIdx]!.openTime,
+      exitTime: sortedCandles[exitIdx]!.closeTime,
       direction,
       entry,
       exit: exitPrice,
-      triggeringFunding: ev.fundingRate,
+      triggeringFunding: ev!.fundingRate,
       triggeringLsRatio: ls.longShortRatio,
       netPnlPct: cost.netPnlPct,
       exitReason,
@@ -232,13 +232,13 @@ export function runFundingContrarianBacktest(
   const std = Math.sqrt(varR);
   const periodDays =
     trades.length > 0
-      ? (trades[trades.length - 1].exitTime - trades[0].entryTime) / 86400000
+      ? (trades[trades.length - 1]!.exitTime - trades[0]!.entryTime) / 86400000
       : 30;
   const perYear = periodDays > 0 ? (trades.length / periodDays) * 365 : 0;
   const sharpe = std > 0 ? (m / std) * Math.sqrt(perYear) : 0;
 
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {

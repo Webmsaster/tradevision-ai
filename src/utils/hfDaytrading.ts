@@ -291,15 +291,15 @@ function median(a: number[]): number {
   if (a.length === 0) return 0;
   const s = [...a].sort((x, y) => x - y);
   const m = Math.floor(s.length / 2);
-  return s.length % 2 === 0 ? (s[m - 1] + s[m]) / 2 : s[m];
+  return s.length % 2 === 0 ? (s[m - 1]! + s[m]!) / 2 : s[m]!;
 }
 
 function stdReturns(c: number[]): number {
   if (c.length < 3) return 0;
   const r: number[] = [];
   for (let i = 1; i < c.length; i++) {
-    if (c[i - 1] <= 0) continue;
-    r.push((c[i] - c[i - 1]) / c[i - 1]);
+    if (c[i - 1]! <= 0) continue;
+    r.push((c[i]! - c[i - 1]!) / c[i - 1]!);
   }
   if (r.length === 0) return 0;
   const m = r.reduce((s, v) => s + v, 0) / r.length;
@@ -317,7 +317,7 @@ function smaOf(vals: number[]): number {
  */
 function findContaining1h(bar15m: Candle, candles1h: Candle[]): Candle | null {
   for (let i = candles1h.length - 1; i >= 0; i--) {
-    const c = candles1h[i];
+    const c = candles1h[i]!;
     if (c.openTime <= bar15m.openTime && bar15m.openTime <= c.closeTime) {
       return c;
     }
@@ -334,7 +334,7 @@ function passesFilters(
   candles1h?: Candle[],
 ): boolean {
   if (cfg.avoidHoursUtc && cfg.avoidHoursUtc.length > 0) {
-    const h = new Date(candles[i].openTime).getUTCHours();
+    const h = new Date(candles[i]!.openTime).getUTCHours();
     if (cfg.avoidHoursUtc.includes(h)) return false;
   }
   if (cfg.htfTrend) {
@@ -342,7 +342,7 @@ function passesFilters(
       .slice(Math.max(0, i - 47), i + 1)
       .map((c) => c.close);
     const sma48 = smaOf(closes);
-    const alignedLong = candles[i].close > sma48;
+    const alignedLong = candles[i]!.close > sma48;
     if (direction === "long" && !alignedLong) return false;
     if (direction === "short" && alignedLong) return false;
   }
@@ -361,7 +361,7 @@ function passesFilters(
   // Iter79: 1h timeframe confluence (opt-in) — require the containing 1h bar
   // to be aligned with its 24-bar SMA in the same direction as the trade
   if (cfg.require1hConfluence && candles1h && candles1h.length >= 24) {
-    const c1h = findContaining1h(candles[i], candles1h);
+    const c1h = findContaining1h(candles[i]!, candles1h);
     if (!c1h) return false;
     const idx1h = candles1h.indexOf(c1h);
     if (idx1h < 24) return false;
@@ -385,15 +385,15 @@ export function runHfDaytrading(
   for (let i = cfg.lookback; i < candles.length - cfg.holdBars - 1; i++) {
     const cur = candles[i];
     const prev = candles[i - 1];
-    if (prev.close <= 0) continue;
+    if (prev!.close <= 0) continue;
     const w = candles.slice(i - cfg.lookback, i);
     const mv = median(w.map((c) => c.volume));
     if (mv <= 0) continue;
-    const vZ = cur.volume / mv;
+    const vZ = cur!.volume / mv;
     if (vZ < cfg.volMult) continue;
     const sd = stdReturns(w.map((c) => c.close));
     if (sd <= 0) continue;
-    const ret = (cur.close - prev.close) / prev.close;
+    const ret = (cur!.close - prev!.close) / prev!.close;
     const pZ = Math.abs(ret) / sd;
     if (pZ < cfg.priceZ) continue;
 
@@ -425,15 +425,15 @@ export function runHfDaytrading(
     const mx = Math.min(i + 1 + cfg.holdBars, candles.length - 1);
     let tp1Hit = false;
     let tp1Bar = -1;
-    let l2P = candles[mx].close;
+    let l2P = candles[mx]!.close;
     let l2B = mx;
     let exitReason: HfTrade["exitReason"] = "time";
 
     for (let j = i + 2; j <= mx; j++) {
       const bar = candles[j];
-      const sH = direction === "long" ? bar.low <= sL : bar.high >= sL;
-      const t1R = direction === "long" ? bar.high >= tp1L : bar.low <= tp1L;
-      const t2R = direction === "long" ? bar.high >= tp2L : bar.low <= tp2L;
+      const sH = direction === "long" ? bar!.low <= sL : bar!.high >= sL;
+      const t1R = direction === "long" ? bar!.high >= tp1L : bar!.low <= tp1L;
+      const t2R = direction === "long" ? bar!.high >= tp2L : bar!.low <= tp2L;
       if (!tp1Hit) {
         if (t1R && sH) {
           l2B = j;
@@ -460,8 +460,8 @@ export function runHfDaytrading(
           continue;
         }
       } else {
-        const sH2 = direction === "long" ? bar.low <= sL : bar.high >= sL;
-        const t22 = direction === "long" ? bar.high >= tp2L : bar.low <= tp2L;
+        const sH2 = direction === "long" ? bar!.low <= sL : bar!.high >= sL;
+        const t22 = direction === "long" ? bar!.high >= tp2L : bar!.low <= tp2L;
         if (t22 && sH2) {
           l2B = j;
           l2P = sL;
@@ -508,7 +508,7 @@ export function runHfDaytrading(
     const total = 0.5 * leg1 + 0.5 * leg2;
     trades.push({
       entryTime: eb.openTime,
-      exitTime: candles[l2B].openTime,
+      exitTime: candles[l2B]!.openTime,
       direction,
       entry,
       tp1Hit,
@@ -583,8 +583,8 @@ export function evaluateHfDaytrading(
     };
   }
   const i = candles.length - 1;
-  const cur = candles[i];
-  const prev = candles[i - 1];
+  const cur = candles[i]!;
+  const prev = candles[i - 1]!;
   if (prev.close <= 0) {
     return {
       ...base,
@@ -596,9 +596,9 @@ export function evaluateHfDaytrading(
   }
   const w = candles.slice(i - cfg.lookback, i);
   const mv = median(w.map((c) => c.volume));
-  const vZ = mv > 0 ? cur.volume / mv : 0;
+  const vZ = mv > 0 ? cur!.volume / mv : 0;
   const sd = stdReturns(w.map((c) => c.close));
-  const ret = (cur.close - prev.close) / prev.close;
+  const ret = (cur!.close - prev!.close) / prev!.close;
   const pZ = sd > 0 ? Math.abs(ret) / sd : 0;
   if (vZ < cfg.volMult || pZ < cfg.priceZ) {
     return {
@@ -619,7 +619,7 @@ export function evaluateHfDaytrading(
         : "short";
   const filtersFailed: string[] = [];
   if (cfg.avoidHoursUtc && cfg.avoidHoursUtc.length > 0) {
-    const h = new Date(cur.openTime).getUTCHours();
+    const h = new Date(cur!.openTime).getUTCHours();
     if (cfg.avoidHoursUtc.includes(h))
       filtersFailed.push(`hour ${h} UTC (avoid)`);
   }
@@ -627,7 +627,7 @@ export function evaluateHfDaytrading(
     const sma48 = smaOf(
       candles.slice(Math.max(0, i - 47), i + 1).map((c) => c.close),
     );
-    const alignedLong = cur.close > sma48;
+    const alignedLong = cur!.close > sma48;
     if (direction === "long" && !alignedLong) filtersFailed.push("HTF trend");
     if (direction === "short" && alignedLong) filtersFailed.push("HTF trend");
   }
@@ -677,7 +677,7 @@ export function evaluateHfDaytrading(
       reason: `Spike detected but filter(s) failed: ${filtersFailed.join(", ")}`,
     };
   }
-  const entry = cur.close;
+  const entry = cur!.close;
   const tp1 =
     direction === "long" ? entry * (1 + cfg.tp1Pct) : entry * (1 - cfg.tp1Pct);
   const tp2 =
@@ -686,7 +686,7 @@ export function evaluateHfDaytrading(
     direction === "long"
       ? entry * (1 - cfg.stopPct)
       : entry * (1 + cfg.stopPct);
-  const holdUntil = cur.closeTime + cfg.holdBars * 15 * 60 * 1000;
+  const holdUntil = cur!.closeTime + cfg.holdBars * 15 * 60 * 1000;
   return {
     ...base,
     active: true,

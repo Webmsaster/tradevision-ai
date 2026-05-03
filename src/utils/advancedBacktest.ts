@@ -143,11 +143,11 @@ export function runAdvancedBacktest({
       // Check for SL / TP hit within this candle
       let exited: "tp" | "sl" | null = null;
       if (open.direction === "long") {
-        if (current.low <= open.stop) exited = "sl";
-        else if (current.high >= open.target) exited = "tp";
+        if (current!.low <= open.stop) exited = "sl";
+        else if (current!.high >= open.target) exited = "tp";
       } else {
-        if (current.high >= open.stop) exited = "sl";
-        else if (current.low <= open.target) exited = "tp";
+        if (current!.high >= open.stop) exited = "sl";
+        else if (current!.low <= open.target) exited = "tp";
       }
 
       if (exited) {
@@ -162,7 +162,7 @@ export function runAdvancedBacktest({
         });
         trades.push({
           openTime: open.openTime,
-          closeTime: current.closeTime,
+          closeTime: current!.closeTime,
           direction: open.direction,
           strategy: open.strategy,
           entry: open.entry,
@@ -189,7 +189,7 @@ export function runAdvancedBacktest({
           signalDecision.action === "flat" ||
           signalDecision.action !== open.direction;
         if (shouldFlipExit) {
-          const exitPrice = current.close;
+          const exitPrice = current!.close;
           const holdingHours = (i - open.openIndex) * hoursPerBar;
           const cost = applyCosts({
             entry: open.entry,
@@ -200,7 +200,7 @@ export function runAdvancedBacktest({
           });
           trades.push({
             openTime: open.openTime,
-            closeTime: current.closeTime,
+            closeTime: current!.closeTime,
             direction: open.direction,
             strategy: open.strategy,
             entry: open.entry,
@@ -226,7 +226,7 @@ export function runAdvancedBacktest({
         decision.stopDistance !== null &&
         decision.targetDistance !== null
       ) {
-        const entry = current.close;
+        const entry = current!.close;
         const stop =
           decision.action === "long"
             ? entry - decision.stopDistance
@@ -241,7 +241,7 @@ export function runAdvancedBacktest({
           entry,
           stop,
           target,
-          openTime: current.closeTime,
+          openTime: current!.closeTime,
           openIndex: i,
         };
       }
@@ -254,18 +254,18 @@ export function runAdvancedBacktest({
     const holdingHours = (candles.length - 1 - open.openIndex) * hoursPerBar;
     const cost = applyCosts({
       entry: open.entry,
-      exit: last.close,
+      exit: last!.close,
       direction: open.direction,
       holdingHours,
       config: costs,
     });
     trades.push({
       openTime: open.openTime,
-      closeTime: last.closeTime,
+      closeTime: last!.closeTime,
       direction: open.direction,
       strategy: open.strategy,
       entry: open.entry,
-      exit: last.close,
+      exit: last!.close,
       holdingHours,
       ...cost,
       exitReason: "end",

@@ -1,10 +1,10 @@
-import { render, screen, fireEvent } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import TradeForm from '@/components/TradeForm';
-import { Trade } from '@/types/trade';
+import { render, screen, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import TradeForm from "@/components/TradeForm";
+import { Trade } from "@/types/trade";
 
 // Mock useFocusTrap
-vi.mock('@/hooks/useFocusTrap', () => ({
+vi.mock("@/hooks/useFocusTrap", () => ({
   useFocusTrap: () => ({ current: null }),
 }));
 
@@ -18,169 +18,269 @@ const defaultProps = {
 };
 
 const editTrade: Trade = {
-  id: 'test-1',
-  pair: 'BTC/USDT',
-  direction: 'long',
+  id: "test-1",
+  pair: "BTC/USDT",
+  direction: "long",
   entryPrice: 40000,
   exitPrice: 42000,
   quantity: 1,
-  entryDate: '2026-01-01T10:00:00.000Z',
-  exitDate: '2026-01-02T10:00:00.000Z',
+  entryDate: "2026-01-01T10:00:00.000Z",
+  exitDate: "2026-01-02T10:00:00.000Z",
   pnl: 2000,
   pnlPercent: 5,
   fees: 10,
   leverage: 2,
-  notes: 'Test note',
-  tags: ['scalp', 'momentum'],
+  notes: "Test note",
+  tags: ["scalp", "momentum"],
 };
 
-describe('TradeForm', () => {
+describe("TradeForm", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('renders nothing when closed', () => {
-    const { container } = render(<TradeForm {...defaultProps} isOpen={false} />);
-    expect(container.innerHTML).toBe('');
+  it("renders nothing when closed", () => {
+    const { container } = render(
+      <TradeForm {...defaultProps} isOpen={false} />,
+    );
+    expect(container.innerHTML).toBe("");
   });
 
-  it('renders form when open', () => {
+  it("renders form when open", () => {
     render(<TradeForm {...defaultProps} />);
-    expect(screen.getByText('Add New Trade')).toBeInTheDocument();
+    expect(screen.getByText("Add New Trade")).toBeInTheDocument();
   });
 
   it('shows "Edit Trade" title when editing', () => {
     render(<TradeForm {...defaultProps} editTrade={editTrade} />);
-    expect(screen.getByText('Edit Trade')).toBeInTheDocument();
+    expect(screen.getByText("Edit Trade")).toBeInTheDocument();
   });
 
-  it('populates fields when editing', () => {
+  it("populates fields when editing", () => {
     render(<TradeForm {...defaultProps} editTrade={editTrade} />);
-    const pairInput = screen.getByPlaceholderText('BTC/USDT') as HTMLInputElement;
-    expect(pairInput.value).toBe('BTC/USDT');
+    const pairInput = screen.getByPlaceholderText(
+      "BTC/USDT",
+    ) as HTMLInputElement;
+    expect(pairInput.value).toBe("BTC/USDT");
   });
 
-  it('shows validation errors for empty required fields', () => {
+  it("shows validation errors for empty required fields", () => {
     render(<TradeForm {...defaultProps} />);
-    fireEvent.click(screen.getByText('Add Trade'));
-    expect(screen.getByText('Pair is required')).toBeInTheDocument();
-    expect(screen.getByText('Valid entry price is required')).toBeInTheDocument();
-    expect(screen.getByText('Valid exit price is required')).toBeInTheDocument();
-    expect(screen.getByText('Valid quantity is required')).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Add Trade"));
+    expect(screen.getByText("Pair is required")).toBeInTheDocument();
+    expect(
+      screen.getByText("Valid entry price is required"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Valid exit price is required"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Valid quantity is required")).toBeInTheDocument();
   });
 
-  it('calls onClose when Cancel clicked', () => {
+  it("calls onClose when Cancel clicked", () => {
     render(<TradeForm {...defaultProps} />);
-    fireEvent.click(screen.getByText('Cancel'));
-    expect(mockOnClose).toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Cancel"));
+    // Round 58 cleanup: assert exact call count (was: bare toHaveBeenCalled).
+    expect(mockOnClose).toHaveBeenCalledTimes(1);
   });
 
-  it('calls onClose when close button clicked', () => {
+  it("calls onClose when close button clicked", () => {
     render(<TradeForm {...defaultProps} />);
-    fireEvent.click(screen.getByLabelText('Close'));
-    expect(mockOnClose).toHaveBeenCalled();
+    fireEvent.click(screen.getByLabelText("Close"));
+    expect(mockOnClose).toHaveBeenCalledTimes(1);
   });
 
-  it('calls onClose on Escape key', () => {
+  it("calls onClose on Escape key", () => {
     render(<TradeForm {...defaultProps} />);
-    fireEvent.keyDown(document, { key: 'Escape' });
-    expect(mockOnClose).toHaveBeenCalled();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(mockOnClose).toHaveBeenCalledTimes(1);
   });
 
-  it('calls onClose when clicking overlay', () => {
+  it("calls onClose when clicking overlay", () => {
     render(<TradeForm {...defaultProps} />);
-    const overlay = document.querySelector('.modal-overlay');
-    if (overlay) fireEvent.click(overlay);
-    expect(mockOnClose).toHaveBeenCalled();
+    const overlay = document.querySelector(".modal-overlay");
+    expect(overlay).not.toBeNull();
+    fireEvent.click(overlay!);
+    expect(mockOnClose).toHaveBeenCalledTimes(1);
   });
 
-  it('does not close when clicking modal content', () => {
+  it("does not close when clicking modal content", () => {
     render(<TradeForm {...defaultProps} />);
-    const content = document.querySelector('.modal-content');
+    const content = document.querySelector(".modal-content");
     if (content) fireEvent.click(content);
     // onClose should only be called once from overlay propagation prevention
     expect(mockOnClose).not.toHaveBeenCalled();
   });
 
-  it('shows direction select with long/short options', () => {
+  it("shows direction select with long/short options", () => {
     render(<TradeForm {...defaultProps} />);
-    const options = screen.getAllByRole('option');
-    const optionTexts = options.map(o => o.textContent);
-    expect(optionTexts).toContain('Long');
-    expect(optionTexts).toContain('Short');
+    const options = screen.getAllByRole("option");
+    const optionTexts = options.map((o) => o.textContent);
+    expect(optionTexts).toContain("Long");
+    expect(optionTexts).toContain("Short");
   });
 
-  it('shows PnL preview when valid inputs are entered', () => {
+  it("shows PnL preview when valid inputs are entered", () => {
     render(<TradeForm {...defaultProps} />);
 
-    fireEvent.change(screen.getByPlaceholderText('BTC/USDT'), { target: { value: 'ETH/USDT' } });
-    const priceInputs = screen.getAllByPlaceholderText('0.00');
-    fireEvent.change(priceInputs[0], { target: { value: '100' } }); // entry
-    fireEvent.change(priceInputs[1], { target: { value: '110' } }); // exit
-    fireEvent.change(priceInputs[2], { target: { value: '10' } });  // quantity
+    fireEvent.change(screen.getByPlaceholderText("BTC/USDT"), {
+      target: { value: "ETH/USDT" },
+    });
+    const priceInputs = screen.getAllByPlaceholderText("0.00");
+    fireEvent.change(priceInputs[0]!, { target: { value: "100" } }); // entry
+    fireEvent.change(priceInputs[1]!, { target: { value: "110" } }); // exit
+    fireEvent.change(priceInputs[2]!, { target: { value: "10" } }); // quantity
 
-    expect(screen.getByText('Estimated PnL')).toBeInTheDocument();
+    expect(screen.getByText("Estimated PnL")).toBeInTheDocument();
   });
 
-  it('renders emotion select options', () => {
+  it("renders emotion select options", () => {
     render(<TradeForm {...defaultProps} />);
-    expect(screen.getByText('Select emotion...')).toBeInTheDocument();
-    expect(screen.getByText('Confident')).toBeInTheDocument();
-    expect(screen.getByText('FOMO')).toBeInTheDocument();
+    expect(screen.getByText("Select emotion...")).toBeInTheDocument();
+    expect(screen.getByText("Confident")).toBeInTheDocument();
+    expect(screen.getByText("FOMO")).toBeInTheDocument();
   });
 
-  it('renders confidence buttons', () => {
+  it("renders confidence buttons", () => {
     render(<TradeForm {...defaultProps} />);
     const buttons = screen.getAllByTitle(/Confidence: \d\/5/);
     expect(buttons).toHaveLength(5);
   });
 
-  it('renders timeframe options', () => {
+  it("renders timeframe options", () => {
     render(<TradeForm {...defaultProps} />);
-    expect(screen.getByText('Select timeframe...')).toBeInTheDocument();
-    expect(screen.getByText('1h')).toBeInTheDocument();
-    expect(screen.getByText('4h')).toBeInTheDocument();
+    expect(screen.getByText("Select timeframe...")).toBeInTheDocument();
+    expect(screen.getByText("1h")).toBeInTheDocument();
+    expect(screen.getByText("4h")).toBeInTheDocument();
   });
 
-  it('submits valid trade data', () => {
+  it("submits valid trade data", () => {
     render(<TradeForm {...defaultProps} />);
 
-    fireEvent.change(screen.getByPlaceholderText('BTC/USDT'), { target: { value: 'ETH/USDT' } });
-    const priceInputs = screen.getAllByPlaceholderText('0.00');
-    fireEvent.change(priceInputs[0], { target: { value: '100' } }); // entry
-    fireEvent.change(priceInputs[1], { target: { value: '110' } }); // exit
-    fireEvent.change(priceInputs[2], { target: { value: '10' } });  // quantity
+    fireEvent.change(screen.getByPlaceholderText("BTC/USDT"), {
+      target: { value: "ETH/USDT" },
+    });
+    const priceInputs = screen.getAllByPlaceholderText("0.00");
+    fireEvent.change(priceInputs[0]!, { target: { value: "100" } }); // entry
+    fireEvent.change(priceInputs[1]!, { target: { value: "110" } }); // exit
+    fireEvent.change(priceInputs[2]!, { target: { value: "10" } }); // quantity
 
     // Set dates
-    const dateInputs = document.querySelectorAll('input[type="datetime-local"]');
-    fireEvent.change(dateInputs[0], { target: { value: '2026-01-01T10:00' } });
-    fireEvent.change(dateInputs[1], { target: { value: '2026-01-02T10:00' } });
+    const dateInputs = document.querySelectorAll(
+      'input[type="datetime-local"]',
+    );
+    fireEvent.change(dateInputs[0]!, { target: { value: "2026-01-01T10:00" } });
+    fireEvent.change(dateInputs[1]!, { target: { value: "2026-01-02T10:00" } });
 
-    fireEvent.click(screen.getByText('Add Trade'));
+    fireEvent.click(screen.getByText("Add Trade"));
     expect(mockOnSubmit).toHaveBeenCalledTimes(1);
 
-    const submittedTrade = mockOnSubmit.mock.calls[0][0];
-    expect(submittedTrade.pair).toBe('ETH/USDT');
+    const submittedTrade = mockOnSubmit.mock.calls[0]![0];
+    expect(submittedTrade.pair).toBe("ETH/USDT");
     expect(submittedTrade.entryPrice).toBe(100);
     expect(submittedTrade.exitPrice).toBe(110);
     expect(submittedTrade.pnl).toBe(100);
   });
 
-  it('validates exit date must be after entry date', () => {
+  // Round 54 fix #2: re-render with a new editTrade object identity (same id)
+  // must NOT obliterate user input. Effect deps now key on editTrade?.id +
+  // isOpen, not the object reference.
+  it("does not reset user input when parent re-passes a same-id editTrade with new identity", () => {
+    const { rerender } = render(
+      <TradeForm {...defaultProps} editTrade={editTrade} />,
+    );
+    const pairInput = screen.getByPlaceholderText(
+      "BTC/USDT",
+    ) as HTMLInputElement;
+
+    // User types over the populated value.
+    fireEvent.change(pairInput, { target: { value: "ETH/USDT" } });
+    expect(pairInput.value).toBe("ETH/USDT");
+
+    // Parent re-renders with a brand-new object identity but same id (e.g. via spread).
+    rerender(<TradeForm {...defaultProps} editTrade={{ ...editTrade }} />);
+
+    const pairInputAfter = screen.getByPlaceholderText(
+      "BTC/USDT",
+    ) as HTMLInputElement;
+    expect(pairInputAfter.value).toBe("ETH/USDT");
+  });
+
+  // Round 54 fix #4: rapid double-click on the submit button must produce
+  // exactly one onSubmit call.
+  it("guards against double-submit (rapid double-click)", () => {
     render(<TradeForm {...defaultProps} />);
 
-    fireEvent.change(screen.getByPlaceholderText('BTC/USDT'), { target: { value: 'ETH/USDT' } });
-    const priceInputs = screen.getAllByPlaceholderText('0.00');
-    fireEvent.change(priceInputs[0], { target: { value: '100' } });
-    fireEvent.change(priceInputs[1], { target: { value: '110' } });
-    fireEvent.change(priceInputs[2], { target: { value: '10' } });
+    fireEvent.change(screen.getByPlaceholderText("BTC/USDT"), {
+      target: { value: "ETH/USDT" },
+    });
+    const priceInputs = screen.getAllByPlaceholderText("0.00");
+    fireEvent.change(priceInputs[0]!, { target: { value: "100" } });
+    fireEvent.change(priceInputs[1]!, { target: { value: "110" } });
+    fireEvent.change(priceInputs[2]!, { target: { value: "10" } });
 
-    const dateInputs = document.querySelectorAll('input[type="datetime-local"]');
-    fireEvent.change(dateInputs[0], { target: { value: '2026-01-02T10:00' } }); // entry after exit
-    fireEvent.change(dateInputs[1], { target: { value: '2026-01-01T10:00' } });
+    const dateInputs = document.querySelectorAll(
+      'input[type="datetime-local"]',
+    );
+    fireEvent.change(dateInputs[0]!, { target: { value: "2026-01-01T10:00" } });
+    fireEvent.change(dateInputs[1]!, { target: { value: "2026-01-02T10:00" } });
 
-    fireEvent.click(screen.getByText('Add Trade'));
-    expect(screen.getByText('Exit date must be after entry date')).toBeInTheDocument();
+    const btn = screen.getByText("Add Trade");
+    fireEvent.click(btn);
+    fireEvent.click(btn);
+    fireEvent.click(btn);
+
+    expect(mockOnSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  // Round 58 a11y: label/input association via wrapping (WCAG 1.3.1).
+  // Without the wrap (or htmlFor/id) `getByLabelText` would throw. These
+  // tests guard against accidentally regressing the form's accessibility.
+  it("associates the Pair input with its label (a11y)", () => {
+    render(<TradeForm {...defaultProps} />);
+    const pairInput = screen.getByLabelText("Pair *") as HTMLInputElement;
+    expect(pairInput).toBeInTheDocument();
+    expect(pairInput.tagName).toBe("INPUT");
+  });
+
+  it("associates Entry/Exit Price + Quantity inputs with labels (a11y)", () => {
+    render(<TradeForm {...defaultProps} />);
+    expect(screen.getByLabelText("Entry Price *")).toBeInTheDocument();
+    expect(screen.getByLabelText("Exit Price *")).toBeInTheDocument();
+    expect(screen.getByLabelText("Quantity *")).toBeInTheDocument();
+    expect(screen.getByLabelText("Leverage")).toBeInTheDocument();
+    expect(screen.getByLabelText("Fees")).toBeInTheDocument();
+  });
+
+  it("associates Direction + Timeframe + Market Condition selects with labels (a11y)", () => {
+    render(<TradeForm {...defaultProps} />);
+    expect(screen.getByLabelText("Direction *")).toBeInTheDocument();
+    expect(screen.getByLabelText("Timeframe")).toBeInTheDocument();
+    expect(screen.getByLabelText("Market Condition")).toBeInTheDocument();
+    expect(screen.getByLabelText("Emotion")).toBeInTheDocument();
+  });
+
+  it("validates exit date must be after entry date", () => {
+    render(<TradeForm {...defaultProps} />);
+
+    fireEvent.change(screen.getByPlaceholderText("BTC/USDT"), {
+      target: { value: "ETH/USDT" },
+    });
+    const priceInputs = screen.getAllByPlaceholderText("0.00");
+    fireEvent.change(priceInputs[0]!, { target: { value: "100" } });
+    fireEvent.change(priceInputs[1]!, { target: { value: "110" } });
+    fireEvent.change(priceInputs[2]!, { target: { value: "10" } });
+
+    const dateInputs = document.querySelectorAll(
+      'input[type="datetime-local"]',
+    );
+    fireEvent.change(dateInputs[0]!, { target: { value: "2026-01-02T10:00" } }); // entry after exit
+    fireEvent.change(dateInputs[1]!, { target: { value: "2026-01-01T10:00" } });
+
+    fireEvent.click(screen.getByText("Add Trade"));
+    expect(
+      screen.getByText("Exit date must be after entry date"),
+    ).toBeInTheDocument();
     expect(mockOnSubmit).not.toHaveBeenCalled();
   });
 });

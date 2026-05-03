@@ -95,8 +95,8 @@ describe("positionReconciliation — reconcile", () => {
       notionalsById: { id1: 200 },
     });
     expect(d.sizeMismatch).toHaveLength(1);
-    expect(d.sizeMismatch[0].paperQty).toBe(200);
-    expect(d.sizeMismatch[0].exchangeQty).toBe(150);
+    expect(d.sizeMismatch[0]!.paperQty).toBe(200);
+    expect(d.sizeMismatch[0]!.exchangeQty).toBe(150);
   });
 
   it("tolerates size mismatch ≤ 5%", () => {

@@ -106,7 +106,7 @@ function detectBi(
 ): FtmoDaytradeBtcV3Trade[] {
   const out: FtmoDaytradeBtcV3Trade[] = [];
   if (candles.length < cfg.triggerBars + 2) return out;
-  const ts0 = candles[0].openTime;
+  const ts0 = candles[0]!.openTime;
   const costs = cfg.costs ?? MAKER_COSTS;
   const barsPerHour = 4;
   let cooldown = -1;
@@ -117,8 +117,8 @@ function detectBi(
     for (let k = 0; k < cfg.triggerBars; k++) {
       const cmp =
         direction === "long"
-          ? candles[i - k].close >= candles[i - k - 1].close
-          : candles[i - k].close <= candles[i - k - 1].close;
+          ? candles[i - k]!.close >= candles[i - k - 1]!.close
+          : candles[i - k]!.close <= candles[i - k - 1]!.close;
       if (cmp) {
         ok = false;
         break;
@@ -137,31 +137,31 @@ function detectBi(
         : entry * (1 + cfg.stopPct);
     const mx = Math.min(i + 1 + cfg.holdBars, candles.length - 1);
     let exitBar = mx;
-    let exitPrice = candles[mx].close;
+    let exitPrice = candles[mx]!.close;
     let reason: "tp" | "stop" | "time" = "time";
     for (let j = i + 2; j <= mx; j++) {
       const bar = candles[j];
       if (direction === "long") {
-        if (bar.low <= stop) {
+        if (bar!.low <= stop) {
           exitBar = j;
           exitPrice = stop;
           reason = "stop";
           break;
         }
-        if (bar.high >= tp) {
+        if (bar!.high >= tp) {
           exitBar = j;
           exitPrice = tp;
           reason = "tp";
           break;
         }
       } else {
-        if (bar.high >= stop) {
+        if (bar!.high >= stop) {
           exitBar = j;
           exitPrice = stop;
           reason = "stop";
           break;
         }
-        if (bar.low <= tp) {
+        if (bar!.low <= tp) {
           exitBar = j;
           exitPrice = tp;
           reason = "tp";
@@ -184,7 +184,7 @@ function detectBi(
     out.push({
       direction,
       entryTime: eb.openTime,
-      exitTime: candles[exitBar].closeTime,
+      exitTime: candles[exitBar]!.closeTime,
       entryPrice: entry,
       exitPrice,
       rawPnl,

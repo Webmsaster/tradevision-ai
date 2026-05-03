@@ -21,10 +21,7 @@ import { loadBinanceHistory } from "@/utils/historicalData";
 import { computeHourStats } from "@/utils/hourOfDayStrategy";
 import { runWalkForwardHourOfDay } from "@/utils/walkForward";
 import { MAKER_COSTS } from "@/utils/intradayLab";
-import {
-  checkStrategyHealth,
-  type StrategyHealthReport,
-} from "@/utils/strategyHealth";
+import { checkStrategyHealth } from "@/utils/strategyHealth";
 import { classifyVolRegime, type VolRegimeBar } from "@/utils/volRegimeFilter";
 import {
   fetchCoinbasePremium,
@@ -73,7 +70,6 @@ import {
 import {
   evaluateHfDaytradingPortfolio,
   HF_DAYTRADING_ASSETS,
-  HF_DAYTRADING_CONFIG,
   type HfPortfolioSnapshot,
 } from "@/utils/hfDaytrading";
 import {
@@ -267,8 +263,8 @@ function computeChampionForSymbol(
   const closes = candles.map((c) => c.close);
   const smaArr = sma(closes, smaPeriodBars);
   const last = candles[candles.length - 1];
-  const smaNow = smaArr[smaArr.length - 1];
-  const aboveSma = smaNow !== null && last.close > smaNow;
+  const smaNow = smaArr[smaArr.length - 1] ?? null;
+  const aboveSma = smaNow !== null && last!.close > smaNow!;
   const now = new Date();
   const hour = now.getUTCHours();
 
@@ -277,11 +273,11 @@ function computeChampionForSymbol(
   const isFundingHour = hour === 0 || hour === 8 || hour === 16;
 
   let action: "long" | "short" | "flat" = "flat";
-  let reason = "";
+  let reason: string;
   let confidence: "high" | "medium" | "low" = "low";
   const warnings: string[] = [];
 
-  const strongAboveSma = smaNow !== null && last.close > smaNow * 1.005;
+  const strongAboveSma = smaNow !== null && last!.close > smaNow! * 1.005;
 
   if (inLong && aboveSma) {
     action = "long";
@@ -310,7 +306,7 @@ function computeChampionForSymbol(
   // Plan: entry at current price, 1h hold, target = current + expected hour-mean, stop 0.5%
   const hourStat = stats.find((s) => s.hourUtc === hour);
   const expectedMove = hourStat ? hourStat.meanReturnPct : 0;
-  const entryPrice = last.close;
+  const entryPrice = last!.close;
   let targetPrice: number | null = null;
   let stopPrice: number | null = null;
   // Expected edge in bps after realistic costs: hour-mean × 10000 minus
@@ -337,7 +333,7 @@ function computeChampionForSymbol(
     nowUtc: now.toISOString(),
     aboveSma,
     sma50Price: smaNow,
-    currentPrice: last.close,
+    currentPrice: last!.close,
     longHours,
     shortHours,
     action,
@@ -442,7 +438,7 @@ function computeMondaySignal(symbol: string, candles: Candle[]): MondaySignal {
     };
   }
   const last = candles[candles.length - 1];
-  const entry = last.close;
+  const entry = last!.close;
   const stop = entry * 0.98;
   const exitAt = new Date(now);
   if (isMondayEntry) {

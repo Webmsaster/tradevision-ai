@@ -87,8 +87,8 @@ describe("TradeTable", () => {
 
     const rows = screen.getAllByRole("row");
     // First row is header, second should be first sorted trade
-    const cells = rows[1].querySelectorAll("td");
-    expect(cells[1].textContent).toBe("BTC/USDT");
+    const cells = rows[1]!.querySelectorAll("td");
+    expect(cells[1]!.textContent).toBe("BTC/USDT");
   });
 
   it("toggles sort direction on second click", () => {
@@ -101,8 +101,8 @@ describe("TradeTable", () => {
     fireEvent.click(pairHeader);
 
     const rows = screen.getAllByRole("row");
-    const cells = rows[1].querySelectorAll("td");
-    expect(cells[1].textContent).toBe("SOL/USDT");
+    const cells = rows[1]!.querySelectorAll("td");
+    expect(cells[1]!.textContent).toBe("SOL/USDT");
   });
 
   it("supports keyboard sort (Enter key)", () => {
@@ -118,7 +118,7 @@ describe("TradeTable", () => {
     const onEdit = vi.fn();
     render(<TradeTable trades={sampleTrades} onEdit={onEdit} />);
     const editButtons = screen.getAllByTitle("Edit trade");
-    fireEvent.click(editButtons[0]);
+    fireEvent.click(editButtons[0]!);
     // Default sort is exitDate desc, so first row is the trade with latest exitDate (id: 2)
     expect(onEdit).toHaveBeenCalledWith(sampleTrades[1]);
   });
@@ -127,21 +127,21 @@ describe("TradeTable", () => {
     const onDelete = vi.fn();
     render(<TradeTable trades={sampleTrades} onDelete={onDelete} />);
     const deleteButtons = screen.getAllByTitle("Delete trade");
-    fireEvent.click(deleteButtons[0]);
-    expect(onDelete).toHaveBeenCalledWith(sampleTrades[1].id);
+    fireEvent.click(deleteButtons[0]!);
+    expect(onDelete).toHaveBeenCalledWith(sampleTrades[1]!.id);
   });
 
   it("opens detail modal on row click", () => {
     render(<TradeTable trades={sampleTrades} />);
     const rows = screen.getAllByRole("row");
-    fireEvent.click(rows[1]); // click first data row
+    fireEvent.click(rows[1]!); // click first data row
     expect(screen.getByTestId("trade-detail-modal")).toBeInTheDocument();
   });
 
   it("opens detail modal on row Enter key", () => {
     render(<TradeTable trades={sampleTrades} />);
     const rows = screen.getAllByRole("row");
-    fireEvent.keyDown(rows[1], { key: "Enter" });
+    fireEvent.keyDown(rows[1]!, { key: "Enter" });
     expect(screen.getByTestId("trade-detail-modal")).toBeInTheDocument();
   });
 

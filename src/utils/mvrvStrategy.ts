@@ -19,6 +19,7 @@
  * flat otherwise. We compute Z-score on a 2-year trailing window so the
  * signal adapts to the current cycle.
  */
+import { fetchJsonWithRetry } from "@/utils/httpRetry";
 
 export interface MvrvSample {
   time: number; // ms
@@ -101,9 +102,8 @@ export async function fetchMvrvHistory(): Promise<MvrvSample[]> {
   url.searchParams.set("frequency", "1d");
   url.searchParams.set("page_size", "10000");
   url.searchParams.set("pretty", "false");
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`Coinmetrics fetch failed: ${res.status}`);
-  const json = (await res.json()) as { data: RawMetric[] };
+  // Round 56 (Fix 3): timeout + retry/backoff via shared helper.
+  const json = await fetchJsonWithRetry<{ data: RawMetric[] }>(url.toString());
   const rows = json.data ?? [];
   const samples: MvrvSample[] = [];
   for (const r of rows) {
@@ -130,14 +130,14 @@ export function computeRollingZ(
     const start = Math.max(0, i - windowDays + 1);
     const window = out.slice(start, i + 1).map((s) => s.mvrv);
     if (window.length < 30) {
-      out[i].zScore = null;
+      out[i]!.zScore = null;
       continue;
     }
     const mean = window.reduce((s, v) => s + v, 0) / window.length;
     const variance =
       window.reduce((s, v) => s + (v - mean) * (v - mean), 0) / window.length;
     const std = Math.sqrt(variance);
-    out[i].zScore = std > 0 ? (out[i].mvrv - mean) / std : 0;
+    out[i]!.zScore = std > 0 ? (out[i]!.mvrv - mean) / std : 0;
   }
   return out;
 }
@@ -161,8 +161,8 @@ export function computeExpandingZ(samples: MvrvSample[]): MvrvSample[] {
   let sumSqR = 0;
   for (let i = 0; i < out.length; i++) {
     const s = out[i];
-    const mcap = s.marketCapUsd;
-    const rcap = s.realizedCapUsd;
+    const mcap = s!.marketCapUsd;
+    const rcap = s!.realizedCapUsd;
     if (mcap !== undefined && rcap !== undefined) {
       sumMcap += mcap;
       sumSqMcap += mcap * mcap;
@@ -171,22 +171,22 @@ export function computeExpandingZ(samples: MvrvSample[]): MvrvSample[] {
         const mean = sumMcap / haveMcap;
         const variance = sumSqMcap / haveMcap - mean * mean;
         const std = Math.sqrt(Math.max(0, variance));
-        out[i].zScore = std > 0 ? (mcap - rcap) / std : 0;
+        out[i]!.zScore = std > 0 ? (mcap - rcap) / std : 0;
         continue;
       }
     }
     // Fallback: ratio-based Z (used when MCap data missing)
-    sumR += s.mvrv;
-    sumSqR += s.mvrv * s.mvrv;
+    sumR += s!.mvrv;
+    sumSqR += s!.mvrv * s!.mvrv;
     const n = i + 1;
     if (n < 365) {
-      out[i].zScore = null;
+      out[i]!.zScore = null;
       continue;
     }
     const mean = sumR / n;
     const variance = sumSqR / n - mean * mean;
     const std = Math.sqrt(Math.max(0, variance));
-    out[i].zScore = std > 0 ? (s.mvrv - mean) / std : 0;
+    out[i]!.zScore = std > 0 ? (s!.mvrv - mean) / std : 0;
   }
   return out;
 }
@@ -206,13 +206,13 @@ export function runMvrvBacktest(
 
   for (let i = 0; i < withZ.length; i++) {
     const s = withZ[i];
-    if (s.price === undefined) {
-      equity.push(equity[equity.length - 1]);
+    if (s!.price === undefined) {
+      equity.push(equity[equity.length - 1]!);
       continue;
     }
 
     // Lift cooldown once MVRV has cooled back to a moderate level.
-    if (postTopCooldown && s.mvrv < config.ratioReEntryBelow) {
+    if (postTopCooldown && s!.mvrv < config.ratioReEntryBelow) {
       postTopCooldown = false;
     }
 
@@ -220,35 +220,35 @@ export function runMvrvBacktest(
       // Enter long when ratio is below the overheat threshold and cooldown
       // is inactive. Deep capitulation (ratio < 1) is NOT an exit — the
       // research treats it as the best buying window.
-      if (!postTopCooldown && s.mvrv < config.ratioTop) {
+      if (!postTopCooldown && s!.mvrv < config.ratioTop) {
         inPosition = true;
         entryIdx = i;
       }
-      equity.push(equity[equity.length - 1]);
+      equity.push(equity[equity.length - 1]!);
       continue;
     }
 
     // Daily-return update while held
     const prevPrice = withZ[i - 1]?.price;
-    if (prevPrice && s.price) {
-      const dailyRet = s.price / prevPrice - 1;
-      equity.push(equity[equity.length - 1] * (1 + dailyRet));
+    if (prevPrice && s!.price) {
+      const dailyRet = s!.price / prevPrice - 1;
+      equity.push(equity[equity.length - 1]! * (1 + dailyRet));
     } else {
-      equity.push(equity[equity.length - 1]);
+      equity.push(equity[equity.length - 1]!);
     }
 
     // Exit at the euphoria top.
-    if (s.mvrv >= config.ratioTop) {
+    if (s!.mvrv >= config.ratioTop) {
       const entry = withZ[entryIdx];
-      if (entry.price && s.price && entry.price > 0) {
+      if (entry!.price && s!.price && entry!.price > 0) {
         trades.push({
-          openTime: entry.time,
-          closeTime: s.time,
-          entryPrice: entry.price,
-          exitPrice: s.price,
-          entryZ: entry.mvrv,
-          exitZ: s.mvrv,
-          netReturnPct: s.price / entry.price - 1,
+          openTime: entry!.time,
+          closeTime: s!.time,
+          entryPrice: entry!.price,
+          exitPrice: s!.price,
+          entryZ: entry!.mvrv,
+          exitZ: s!.mvrv,
+          netReturnPct: s!.price / entry!.price - 1,
         });
       }
       inPosition = false;
@@ -261,15 +261,15 @@ export function runMvrvBacktest(
   if (inPosition && entryIdx >= 0) {
     const entry = withZ[entryIdx];
     const last = withZ[withZ.length - 1];
-    if (entry.price && last.price && entry.price > 0) {
+    if (entry!.price && last!.price && entry!.price > 0) {
       trades.push({
-        openTime: entry.time,
-        closeTime: last.time,
-        entryPrice: entry.price,
-        exitPrice: last.price,
-        entryZ: entry.mvrv,
-        exitZ: last.mvrv,
-        netReturnPct: last.price / entry.price - 1,
+        openTime: entry!.time,
+        closeTime: last!.time,
+        entryPrice: entry!.price,
+        exitPrice: last!.price,
+        entryZ: entry!.mvrv,
+        exitZ: last!.mvrv,
+        netReturnPct: last!.price / entry!.price - 1,
       });
     }
   }
@@ -293,7 +293,8 @@ export function runMvrvBacktest(
     0,
   );
   const totalDays =
-    (withZ[withZ.length - 1]?.time - withZ[0]?.time) / 86400000 || 1;
+    ((withZ[withZ.length - 1]?.time ?? 0) - (withZ[0]?.time ?? 0)) / 86400000 ||
+    1;
   const timeInMarket = Math.min(1, tradesDays / totalDays);
 
   const currentZ = withZ[withZ.length - 1]?.zScore ?? null;

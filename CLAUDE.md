@@ -62,7 +62,7 @@ All 17 pattern detectors run in the browser with no API calls. Logic is in `src/
 | Module                  | Purpose                                                 |
 | ----------------------- | ------------------------------------------------------- |
 | `utils/calculations.ts` | Trade statistics (win rate, PF, Sharpe, drawdown, etc.) |
-| `utils/aiAnalysis.ts`   | 13 pattern detectors for AI insights                    |
+| `utils/aiAnalysis.ts`   | 17 pattern detectors for AI insights                    |
 | `utils/csvParser.ts`    | CSV import with column mapping                          |
 | `utils/storage.ts`      | Dual storage abstraction (Supabase + localStorage)      |
 | `utils/formatters.ts`   | Number/date formatting helpers                          |
@@ -76,7 +76,17 @@ All 17 pattern detectors run in the browser with no API calls. Logic is in `src/
 - **E2E tests** (`e2e/`): Playwright against dev server — navigation, trade CRUD, CSV import, calculator, login flow
 - E2E helpers in `e2e/helpers.ts` (`loadSampleData`, `createTestTrade`, `gotoAndWaitForApp`)
 - **Strategy/FTMO tests** (`scripts/ftmo*.test.ts` and `scripts/exploratory/`): Heavy backtests run via vitest.
-  - **Active live config: `FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5`** (selected via `FTMO_TF=2h-trend-v5` env). 9 cryptos on 2h, 47% pass-rate (mathematically verified plateau via 35 audit rounds + 200000+ GA evaluations).
+  - **⚠️ Audit-pending champion (2026-04-29): `V5_ONYX`** (`FTMO_TF=2h-trend-v5-onyx`). Claimed 70.11% step=3d but audit found MAJOR overfit/recency-bias confounders. Engine bugs fixed (finishPausedPass off-by-one, MCT selection-bias). True OOS pass-rate likely 45-55% — re-validation in progress. **For production: prefer V5_TITANIUM (5.5y full history, 58.24% step=1d) until OOS confirms.**
+  - **Sister champions:**
+    - **`V5_RUBIN`** (`FTMO_TF=2h-trend-v5-rubin`): 64.40% step=3d / wr 86.72% / TL 0 (14 assets, smaller basket)
+    - **`V5_TOPAZ`** (`FTMO_TF=2h-trend-v5-topaz`): 63.86% step=3d / wr 86.45% / TL 0 (14 assets, V5_QUARTZ minus RUNE)
+    - **`V5_AMBER`** (`FTMO_TF=2h-trend-v5-amber`): **62.83% step=1d** / 61.14% step=3d / wr 81.74% / TL 2 — best step=1d anchor (high-N robust)
+    - All 30m timeframe, 3.04y / 1103 windows step=1d / 368 windows step=3d, live caps {maxStopPct: 0.05, maxRiskFrac: 0.4}.
+  - **Sister: V5_TITANIUM** (14 assets, 5.52y/1985w long-history sample): 58.24% step=1d / 58.16% step=3d / wr 75.76% / TL 0.25%. Use when longer-history validation matters more than the +2.32pp ARB boost.
+  - **Progression:** V5 (48.96%) → V5_PRO 53% → V5_GOLD 55% → V5_DIAMOND 56.5% → V5_PLATINUM 58.5% → V5_TITANIUM 58.2% (30m) → V5_OBSIDIAN 60.6% → V5_ZIRKON 61.6% → V5_AMBER 62.8%. **+15.93pp step=1d / +19.73pp winrate / TL -94%** vs V5 baseline.
+  - **Sister config: V5_PLATINUM 2h** (`FTMO_TF=2h-trend-v5-platinum`). 14 cryptos same basket, 2h-tuned per-asset TP. **58.46% step=3d / 54.13% step=1d / TL 0.60%**. Higher peak on 3d-anchor but less robust on 1d. Progression V5 → V5_PRO → V5_GOLD → V5_DIAMOND → V5_PLATINUM → V5_TITANIUM. **+9.50pp pass / -89% TL** vs V5 baseline.
+  - V5 family alt variants: V5_HIWIN (49.85%/wr 64.60% TP=4%), V5_FASTMAX (49.85%/wr 62% TP=6%), V5 legacy (48.96%/wr 62% TP=7%).
+  - **Legacy: `FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5`** (selected via `FTMO_TF=2h-trend-v5` env). 9 cryptos on 2h, 47-49% pass-rate (V5_PLATINUM supersedes).
   - **Step 2 config: `FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_STEP2`** (selected via `FTMO_TF=2h-trend-v5-step2`). Tuned for 5% target / 60d.
   - Top backtest configs (post-bugfix re-validated 2026-04-28): V12_30M_OPT 97.99% (1.71y), V12_TURBO 96.48%, V261_2H_OPT 95.98% (5.6y), V261 4h 94.17%. V12 family is fully live-deployable as of round 11 fix (PTP/chandelier/breakEven/timeExit implemented in Python executor).
   - Engine fields `pauseAtTargetReached: true` + `atrStop` + `liveCaps {maxStopPct: 0.05, maxRiskFrac: 0.4}` are mandatory for FTMO-realistic backtests. `minTradingDays: 4` (real FTMO 2-Step rule).

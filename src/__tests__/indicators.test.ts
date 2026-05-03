@@ -38,6 +38,23 @@ describe("ema", () => {
       expect(result[i]!).toBeGreaterThan(result[i - 1]!);
     }
   });
+
+  // Round 56 (R56-IND-1): a NaN sample used to poison every subsequent
+  // EMA value forever (NaN * anything = NaN). Verify self-heal.
+  it("self-heals after a single NaN sample", () => {
+    // Period 2 → seed window covers samples [0,1]; NaN at index 2 must
+    // not freeze every later value at NaN.
+    const result = ema([1, 2, NaN, 4, 5], 2);
+    expect(result[1]!).toBeCloseTo(1.5); // SMA seed of [1,2]
+    expect(Number.isFinite(result[3]!)).toBe(true);
+    expect(Number.isFinite(result[4]!)).toBe(true);
+    // After NaN we hold the previous valid (1.5) then recurse normally.
+    const k = 2 / (2 + 1);
+    const expected3 = 4 * k + 1.5 * (1 - k);
+    const expected4 = 5 * k + expected3 * (1 - k);
+    expect(result[3]!).toBeCloseTo(expected3);
+    expect(result[4]!).toBeCloseTo(expected4);
+  });
 });
 
 describe("rsi", () => {
@@ -69,6 +86,22 @@ describe("rsi", () => {
       if (v === null) continue;
       expect(v).toBeGreaterThanOrEqual(0);
       expect(v).toBeLessThanOrEqual(100);
+    }
+  });
+
+  // Round 56 (R56-IND-1): a NaN sample mid-stream must not freeze RSI at NaN.
+  it("self-heals after a single NaN sample", () => {
+    const len = 30;
+    const data: number[] = Array.from({ length: len }, (_, i) => 100 + i);
+    data[20] = NaN;
+    const result = rsi(data, 14);
+    // Bar with NaN holds the previous valid reading (no NaN propagation).
+    expect(Number.isFinite(result[20]!)).toBe(true);
+    // Subsequent bars remain finite and within bounds.
+    for (let i = 21; i < len; i++) {
+      expect(Number.isFinite(result[i]!)).toBe(true);
+      expect(result[i]!).toBeGreaterThanOrEqual(0);
+      expect(result[i]!).toBeLessThanOrEqual(100);
     }
   });
 });
@@ -162,5 +195,24 @@ describe("atr", () => {
     const result = atr(candles, 14);
     expect(result[14]).not.toBeNull();
     expect(result[14]!).toBeGreaterThan(0);
+  });
+
+  // Round 56 (R56-IND-1): a NaN OHLC value used to poison every later
+  // ATR sample via Wilder smoothing. Verify self-heal.
+  it("self-heals after a NaN OHLC sample", () => {
+    const candles: Candle[] = Array.from({ length: 30 }, (_, i) =>
+      candle(100 + i, 100 + i + 2, 100 + i - 1, 100 + i + 1, i * 60_000),
+    );
+    // Inject a broken candle at index 20.
+    candles[20] = candle(NaN, NaN, NaN, NaN, 20 * 60_000);
+    const result = atr(candles, 14);
+    // The broken bar holds the previous ATR (no NaN propagation).
+    expect(Number.isFinite(result[20]!)).toBe(true);
+    expect(result[20]!).toBeGreaterThan(0);
+    // Subsequent bars remain finite.
+    for (let i = 21; i < 30; i++) {
+      expect(Number.isFinite(result[i]!)).toBe(true);
+      expect(result[i]!).toBeGreaterThan(0);
+    }
   });
 });

@@ -1,17 +1,17 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { useAuth } from '@/lib/auth-context';
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useAuth } from "@/lib/auth-context";
 
 export default function LoginPage() {
   const router = useRouter();
   const { supabase, isLoading } = useAuth();
   const [isSignUp, setIsSignUp] = useState(false);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
 
   if (isLoading) {
@@ -38,17 +38,28 @@ export default function LoginPage() {
           </div>
           <div className="login-info">
             <p>
-              Supabase is not configured yet. The app is running in local-only mode
-              with localStorage. To enable authentication and cloud storage:
+              Supabase is not configured yet. The app is running in local-only
+              mode with localStorage. To enable authentication and cloud
+              storage:
             </p>
             <ol>
-              <li>Create a Supabase project at <strong>supabase.com</strong></li>
-              <li>Run the schema from <code>supabase/schema.sql</code></li>
-              <li>Copy <code>.env.local.example</code> to <code>.env.local</code> and add your keys</li>
+              <li>
+                Create a Supabase project at <strong>supabase.com</strong>
+              </li>
+              <li>
+                Run the schema from <code>supabase/schema.sql</code>
+              </li>
+              <li>
+                Copy <code>.env.local.example</code> to <code>.env.local</code>{" "}
+                and add your keys
+              </li>
               <li>Restart the dev server</li>
             </ol>
           </div>
-          <button className="btn btn-primary login-btn" onClick={() => router.push('/')}>
+          <button
+            className="btn btn-primary login-btn"
+            onClick={() => router.push("/")}
+          >
             Continue without account
           </button>
         </div>
@@ -58,8 +69,8 @@ export default function LoginPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setError('');
-    setMessage('');
+    setError("");
+    setMessage("");
     setLoading(true);
 
     try {
@@ -67,14 +78,36 @@ export default function LoginPage() {
       if (isSignUp) {
         const { error } = await supabase.auth.signUp({ email, password });
         if (error) throw error;
-        setMessage('Check your email for a confirmation link!');
+        setMessage("Check your email for a confirmation link!");
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
         if (error) throw error;
-        router.push('/');
+        router.push("/");
       }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      // Phase 92 (R51-S5): generic auth-error mapping prevents user
+      // enumeration via timing/text differences between "User already
+      // registered" and "Invalid login credentials". Round 54
+      // (Finding #4): removed the matching `console.warn(raw)` because
+      // it surfaced the raw Supabase auth-error string to anyone with
+      // DevTools open, defeating the enumeration mitigation. Any
+      // legitimate debugging happens server-side via Supabase logs.
+      const raw = err instanceof Error ? err.message : "An error occurred";
+      // Whitelist of safe-to-surface messages (non-enumerating).
+      if (/network|timeout|fetch failed|unable to connect/i.test(raw)) {
+        setError("Network error. Please check your connection and try again.");
+      } else if (/rate.?limit/i.test(raw)) {
+        setError("Too many attempts — please wait a moment and try again.");
+      } else if (isSignUp) {
+        setError(
+          "Could not create account. Please try a different email or password.",
+        );
+      } else {
+        setError("Invalid email or password.");
+      }
     } finally {
       setLoading(false);
     }
@@ -86,7 +119,7 @@ export default function LoginPage() {
         <div className="login-header">
           <h1 className="login-title">TradeVision AI</h1>
           <p className="login-subtitle">
-            {isSignUp ? 'Create your account' : 'Sign in to your account'}
+            {isSignUp ? "Create your account" : "Sign in to your account"}
           </p>
         </div>
 
@@ -124,23 +157,23 @@ export default function LoginPage() {
             className="btn btn-primary login-btn"
             disabled={loading}
           >
-            {loading ? 'Loading...' : isSignUp ? 'Sign Up' : 'Sign In'}
+            {loading ? "Loading..." : isSignUp ? "Sign Up" : "Sign In"}
           </button>
         </form>
 
         <div className="login-toggle">
           <span>
-            {isSignUp ? 'Already have an account?' : "Don't have an account?"}
+            {isSignUp ? "Already have an account?" : "Don't have an account?"}
           </span>
           <button
             className="login-toggle-btn"
             onClick={() => {
               setIsSignUp(!isSignUp);
-              setError('');
-              setMessage('');
+              setError("");
+              setMessage("");
             }}
           >
-            {isSignUp ? 'Sign In' : 'Sign Up'}
+            {isSignUp ? "Sign In" : "Sign Up"}
           </button>
         </div>
 
@@ -150,7 +183,7 @@ export default function LoginPage() {
 
         <button
           className="btn btn-ghost login-btn"
-          onClick={() => router.push('/')}
+          onClick={() => router.push("/")}
         >
           Continue without account
         </button>

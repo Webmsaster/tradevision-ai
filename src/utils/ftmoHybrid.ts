@@ -151,16 +151,16 @@ export function detectFlashSignals(
   const { dropBars, dropPct, tpPct, stopPct, holdBars } = def;
   const out: FtmoSignal[] = [];
   if (candles.length === 0) return out;
-  const ts0 = candles[startIdx]?.openTime ?? candles[0].openTime;
+  const ts0 = candles[startIdx]?.openTime ?? candles[0]!.openTime;
   const costs = FTMO_HYBRID_CONFIG.costs ?? MAKER_COSTS;
   let cooldown = -1;
   for (let i = Math.max(dropBars + 1, startIdx); i < candles.length - 1; i++) {
     if (i < cooldown) continue;
-    const prev = candles[i - dropBars].close;
-    const cur = candles[i].close;
+    const prev = candles[i - dropBars]!.close;
+    const cur = candles[i]!.close;
     if (prev <= 0) continue;
     if ((cur - prev) / prev > -dropPct) continue;
-    if (cur <= candles[i - 1].close) continue;
+    if (cur <= candles[i - 1]!.close) continue;
     const eb = candles[i + 1];
     if (!eb) break;
     const entry = eb.open;
@@ -168,17 +168,17 @@ export function detectFlashSignals(
     const stop = entry * (1 - stopPct);
     const mx = Math.min(i + 1 + holdBars, candles.length - 1);
     let exitBar = mx;
-    let exitPrice = candles[mx].close;
+    let exitPrice = candles[mx]!.close;
     let exitReason: "tp" | "stop" | "time" = "time";
     for (let j = i + 2; j <= mx; j++) {
       const bar = candles[j];
-      if (bar.low <= stop) {
+      if (bar!.low <= stop) {
         exitBar = j;
         exitPrice = stop;
         exitReason = "stop";
         break;
       }
-      if (bar.high >= tp) {
+      if (bar!.high >= tp) {
         exitBar = j;
         exitPrice = tp;
         exitReason = "tp";
@@ -197,7 +197,7 @@ export function detectFlashSignals(
       out.push({
         day,
         entryTime: eb.openTime,
-        exitTime: candles[exitBar].closeTime,
+        exitTime: candles[exitBar]!.closeTime,
         entryPrice: entry,
         exitPrice,
         rawPnl,
@@ -226,16 +226,16 @@ export function detectPumpShortSignals(
   } = def;
   const out: FtmoSignal[] = [];
   if (candles.length === 0) return out;
-  const ts0 = candles[startIdx]?.openTime ?? candles[0].openTime;
+  const ts0 = candles[startIdx]?.openTime ?? candles[0]!.openTime;
   const costs = FTMO_HYBRID_CONFIG.costs ?? MAKER_COSTS;
   let cooldown = -1;
   for (let i = Math.max(pumpBars + 1, startIdx); i < candles.length - 1; i++) {
     if (i < cooldown) continue;
-    const prev = candles[i - pumpBars].close;
-    const cur = candles[i].close;
+    const prev = candles[i - pumpBars]!.close;
+    const cur = candles[i]!.close;
     if (prev <= 0) continue;
     if ((cur - prev) / prev < pumpPct) continue;
-    if (cur >= candles[i - 1].close) continue;
+    if (cur >= candles[i - 1]!.close) continue;
     const eb = candles[i + 1];
     if (!eb) break;
     const entry = eb.open;
@@ -243,17 +243,17 @@ export function detectPumpShortSignals(
     const stop = entry * (1 + stopPct);
     const mx = Math.min(i + 1 + holdBars, candles.length - 1);
     let exitBar = mx;
-    let exitPrice = candles[mx].close;
+    let exitPrice = candles[mx]!.close;
     let exitReason: "tp" | "stop" | "time" = "time";
     for (let j = i + 2; j <= mx; j++) {
       const bar = candles[j];
-      if (bar.high >= stop) {
+      if (bar!.high >= stop) {
         exitBar = j;
         exitPrice = stop;
         exitReason = "stop";
         break;
       }
-      if (bar.low <= tp) {
+      if (bar!.low <= tp) {
         exitBar = j;
         exitPrice = tp;
         exitReason = "tp";
@@ -272,7 +272,7 @@ export function detectPumpShortSignals(
       out.push({
         day,
         entryTime: eb.openTime,
-        exitTime: candles[exitBar].closeTime,
+        exitTime: candles[exitBar]!.closeTime,
         entryPrice: entry,
         exitPrice,
         rawPnl,

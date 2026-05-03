@@ -34,3 +34,23 @@ updates:
     labels:
       - "dependencies"
       - "ci"
+
+  # Round 54: pip ecosystem for the FTMO Python bot (tools/*.py).
+  # Production code that drives MT5; needs CVE updates same as npm.
+  - package-ecosystem: "pip"
+    directory: "/tools"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:30"
+      timezone: "Europe/Vienna"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      prefix: "chore(deps-py)"
+    groups:
+      python-deps:
+        patterns:
+          - "*"

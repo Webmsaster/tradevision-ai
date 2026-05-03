@@ -115,15 +115,15 @@ export function trendFollowStrategy(
   if (fast === null || slow === null || atrNow === null)
     return flatDecision("trend-follow");
 
-  const stop = atrNow * cfg.stopAtrMult;
-  const target = atrNow * cfg.targetAtrMult;
+  const stop = atrNow! * cfg.stopAtrMult;
+  const target = atrNow! * cfg.targetAtrMult;
   const notes: string[] = [];
 
   if (
-    fast > slow &&
+    fast! > slow! &&
     histNow !== null &&
     histPrev !== null &&
-    histNow > histPrev
+    histNow! > histPrev!
   ) {
     notes.push("EMA fast > EMA slow, MACD hist rising");
     return {
@@ -135,10 +135,10 @@ export function trendFollowStrategy(
     };
   }
   if (
-    fast < slow &&
+    fast! < slow! &&
     histNow !== null &&
     histPrev !== null &&
-    histNow < histPrev
+    histNow! < histPrev!
   ) {
     notes.push("EMA fast < EMA slow, MACD hist falling");
     return {
@@ -182,30 +182,30 @@ export function meanReversionStrategy(
     return flatDecision("mean-reversion");
   }
 
-  const stop = atrNow * cfg.stopAtrMult;
+  const stop = atrNow! * cfg.stopAtrMult;
   // For mean reversion target the middle band, not 3×ATR
-  const targetLong = middle - priceNow;
-  const targetShort = priceNow - middle;
+  const targetLong = middle! - priceNow!;
+  const targetShort = priceNow! - middle!;
 
-  if (priceNow < lower && rsiNow < 30) {
+  if (priceNow! < lower! && rsiNow! < 30) {
     return {
       action: "long",
       strategy: "mean-reversion",
       stopDistance: stop,
-      targetDistance: Math.max(targetLong, atrNow),
+      targetDistance: Math.max(targetLong, atrNow!),
       notes: [
-        `Price below lower BB, RSI ${rsiNow.toFixed(1)} oversold — fade to mid`,
+        `Price below lower BB, RSI ${rsiNow!.toFixed(1)} oversold — fade to mid`,
       ],
     };
   }
-  if (priceNow > upper && rsiNow > 70) {
+  if (priceNow! > upper! && rsiNow! > 70) {
     return {
       action: "short",
       strategy: "mean-reversion",
       stopDistance: stop,
-      targetDistance: Math.max(targetShort, atrNow),
+      targetDistance: Math.max(targetShort, atrNow!),
       notes: [
-        `Price above upper BB, RSI ${rsiNow.toFixed(1)} overbought — fade to mid`,
+        `Price above upper BB, RSI ${rsiNow!.toFixed(1)} overbought — fade to mid`,
       ],
     };
   }
@@ -227,16 +227,16 @@ export function breakoutStrategy(
   let highest = -Infinity;
   let lowest = Infinity;
   for (let j = lookbackStart; j < i; j++) {
-    if (candles[j].high > highest) highest = candles[j].high;
-    if (candles[j].low < lowest) lowest = candles[j].low;
+    if (candles[j]!.high > highest) highest = candles[j]!.high;
+    if (candles[j]!.low < lowest) lowest = candles[j]!.low;
   }
-  const priceNow = candles[i].close;
+  const priceNow = candles[i]!.close;
   const atrNow = atrArr[i];
   if (atrNow === null) return flatDecision("breakout");
 
-  const stop = atrNow * cfg.stopAtrMult;
-  const target = atrNow * cfg.targetAtrMult;
-  const filter = atrNow * 0.2;
+  const stop = atrNow! * cfg.stopAtrMult;
+  const target = atrNow! * cfg.targetAtrMult;
+  const filter = atrNow! * 0.2;
 
   if (priceNow > highest + filter) {
     return {

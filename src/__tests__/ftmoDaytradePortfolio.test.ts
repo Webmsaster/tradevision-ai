@@ -31,22 +31,22 @@ function mkCandle(
 describe("ftmoDaytradePortfolio — config", () => {
   it("portfolio has BTC and ETH with 50% risk each", () => {
     expect(FTMO_PORTFOLIO_CONFIG.assets.length).toBe(2);
-    expect(FTMO_PORTFOLIO_CONFIG.assets[0].symbol).toBe("BTCUSDT");
-    expect(FTMO_PORTFOLIO_CONFIG.assets[1].symbol).toBe("ETHUSDT");
-    expect(FTMO_PORTFOLIO_CONFIG.assets[0].riskFrac).toBeCloseTo(0.5, 5);
-    expect(FTMO_PORTFOLIO_CONFIG.assets[1].riskFrac).toBeCloseTo(0.5, 5);
+    expect(FTMO_PORTFOLIO_CONFIG.assets[0]!.symbol).toBe("BTCUSDT");
+    expect(FTMO_PORTFOLIO_CONFIG.assets[1]!.symbol).toBe("ETHUSDT");
+    expect(FTMO_PORTFOLIO_CONFIG.assets[0]!.riskFrac).toBeCloseTo(0.5, 5);
+    expect(FTMO_PORTFOLIO_CONFIG.assets[1]!.riskFrac).toBeCloseTo(0.5, 5);
     expect(FTMO_PORTFOLIO_CONFIG.leverage).toBe(2);
     expect(FTMO_PORTFOLIO_CONFIG.triggerBars).toBe(2);
   });
 
   it("asset configs match shipped V3 params", () => {
     const [btc, eth] = FTMO_PORTFOLIO_CONFIG.assets;
-    expect(btc.tpPct).toBeCloseTo(0.012, 5);
-    expect(btc.stopPct).toBeCloseTo(0.001, 5);
-    expect(eth.tpPct).toBeCloseTo(0.01, 5);
-    expect(eth.stopPct).toBeCloseTo(0.0015, 5);
-    expect(btc.holdBars).toBe(12);
-    expect(eth.holdBars).toBe(12);
+    expect(btc!.tpPct).toBeCloseTo(0.012, 5);
+    expect(btc!.stopPct).toBeCloseTo(0.001, 5);
+    expect(eth!.tpPct).toBeCloseTo(0.01, 5);
+    expect(eth!.stopPct).toBeCloseTo(0.0015, 5);
+    expect(btc!.holdBars).toBe(12);
+    expect(eth!.holdBars).toBe(12);
   });
 
   it("FTMO rules encoded", () => {

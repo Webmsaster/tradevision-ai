@@ -140,6 +140,138 @@ Alle Logs in `C:\tradevision-ai\ftmo-state\`:
 Get-Content ftmo-state\executor-log.jsonl -Wait -Tail 20
 ```
 
+## Drift Dashboard (`/dashboard/drift`)
+
+Real-time visualisation of **live equity vs the R28_V5 backtest expectation**.
+Surfaces drift early so you can see whether the live bot is tracking,
+overperforming or underperforming the simulated trajectory.
+
+### Start
+
+The dashboard is part of the Next.js app and is gated behind the same
+`FTMO_MONITOR_ENABLED` flag as the legacy `/ftmo-monitor` page:
+
+```powershell
+# from the project root, with bot writing to ./ftmo-state*/
+$env:FTMO_MONITOR_ENABLED="1"
+$env:FTMO_START_BALANCE="100000"   # optional, default 100k
+npm run dev
+# → open http://localhost:3000/dashboard/drift
+```
+
+### Multi-account
+
+If the bot writes to a TF-specific directory like
+`ftmo-state-2h-trend-v5-quartz-lite-r28-v5-v4engine/`, point the dashboard
+at it via the `?ftmo_tf=` query param:
+
+```
+http://localhost:3000/dashboard/drift?ftmo_tf=2h-trend-v5-quartz-lite-r28-v5-v4engine
+```
+
+The TF picker in the header auto-discovers all `ftmo-state-*/` directories
+under the project root and lets you switch between them without editing the URL.
+
+#### Running 2-3 demo accounts in parallel (Round 57)
+
+Each account runs as its own executor process with isolated state and a
+unique `FTMO_ACCOUNT_ID`. Three deployment-blockers were closed in Round 57:
+
+**1. Per-account state isolation** (already in place — Phase 73 / Round 44):
+`FTMO_ACCOUNT_ID=<id>` causes `STATE_DIR` to become
+`ftmo-state-<TF>-<id>/` so two bots on the same TF never share files.
+
+**2. Per-account Telegram routing** (Round 57): set `FTMO_ACCOUNT_ID` and
+optionally provide independent bot/chat per account:
+
+```powershell
+# Account A (its own bot or shared bot, dedicated chat)
+$env:FTMO_ACCOUNT_ID            = "demo_A"
+$env:TELEGRAM_BOT_TOKEN_demo_A  = "1234:AAA..."     # optional
+$env:TELEGRAM_CHAT_ID_demo_A    = "111111111"
+$env:FTMO_TELEGRAM_BOT_MASTER   = "1"               # this account owns /pause /kill etc.
+
+# Account B (shared bot, dedicated chat)
+$env:FTMO_ACCOUNT_ID            = "demo_B"
+$env:TELEGRAM_BOT_TOKEN         = "1234:AAA..."     # falls back to shared
+$env:TELEGRAM_CHAT_ID_demo_B    = "222222222"
+# DO NOT set FTMO_TELEGRAM_BOT_MASTER on B — only one account can own
+# the long-poll loop or commands race between processes.
+```
+
+Resolution order for `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`:
+
+1. `TELEGRAM_BOT_TOKEN_<FTMO_ACCOUNT_ID>` (sanitised — non-`[A-Za-z0-9_]` chars become `_`)
+2. `TELEGRAM_BOT_TOKEN`
+
+Outgoing alerts are auto-prefixed with `[acct:<id>] ` so a shared chat with
+2-3 demos in it stays unambiguous.
+
+**3. MT5 account verification** (Round 57): set `FTMO_EXPECTED_LOGIN=<int>`
+on each process so the executor refuses to trade if it attaches to the wrong
+MT5 terminal. Required when running multiple MT5 installs side-by-side:
+
+```powershell
+# Account A
+$env:MT5_PATH               = "C:\FTMO_A\terminal64.exe"
+$env:FTMO_EXPECTED_LOGIN    = "12345678"
+# Account B
+$env:MT5_PATH               = "C:\FTMO_B\terminal64.exe"
+$env:FTMO_EXPECTED_LOGIN    = "23456789"
+```
+
+If `account_info().login` doesn't match `FTMO_EXPECTED_LOGIN`, the process
+logs `mt5_wrong_account`, sends a Telegram alert, and `sys.exit(2)` — PM2
+will keep restarting until the operator fixes the path. Skipping this is
+allowed for single-account setups (a one-line warning is logged so you
+notice on multi-account installs).
+
+**4. Drift dashboard auth** (Round 57): `/api/drift-data` now requires a
+Supabase session (or `FTMO_MONITOR_AUTH_BYPASS=1` for headless single-VPS
+setups) — without it any visitor that knows your slug could read live
+equity. The dashboard page already logs in, so legitimate use is unaffected.
+
+### What it shows
+
+| Section          | Source                                                            |
+| ---------------- | ----------------------------------------------------------------- |
+| Header chip      | `account.json` + R28_V5 reference                                 |
+| Equity card      | `account.json` + `peak-state.json` + `daily-reset.json`           |
+| Drift indicator  | live `equity` ÷ R28_V5 median curve                               |
+| Equity chart     | `executor-log.jsonl` daily anchors + backtest p10/p50/p90 band    |
+| Daily P&L bars   | day-anchor diffs from `executor-log.jsonl`                        |
+| Active positions | `open-positions.json`                                             |
+| Recent events    | last 20 `executor-log.jsonl` entries                              |
+| Health checks    | heartbeat ≤ 5min · MT5 errors · Telegram fails · signal feed ≤ 6h |
+
+### Endpoints
+
+- `GET /dashboard/drift[?ftmo_tf=<slug>]` — page (auto-refresh every 30s)
+- `GET /api/drift-data[?ftmo_tf=<slug>]` — JSON payload feeding the page
+
+### Security
+
+- **Read-only.** The dashboard never writes to state files.
+- **Path-injection guard.** `ftmo_tf` slug is validated against
+  `^[a-z0-9][a-z0-9-]{0,63}$` and the resolved path must stay under `cwd`.
+- **No absolute paths in responses.** Only the relative state-dir name is
+  returned (information-disclosure mitigation).
+- **404 in production.** `FTMO_MONITOR_ENABLED` must be explicitly set to
+  expose either the page or the API. Leave the flag unset on Vercel etc.
+
+### Backtest reference (hardcoded)
+
+The expected band is a heuristic envelope derived from the R28_V5 V4-Engine
+champion (memory: `project_round52_r28v5_winrate_boost.md`):
+
+- 58.82% pass-rate · median pass day **4** · p90 pass day **7**
+- median curve: linear from 0% on day 0 to **+10% on day 4**, then plateau
+- p90 band: hits +10% by ~day 2.5, then plateau
+- p10 band: drifts toward -2..-4% by day 7
+
+If you re-bake the champion to a new config, edit `BACKTEST_REF` in
+`src/app/api/drift-data/route.ts`.
+
 ## Kill-Switch (Notfall)
 
 Wenn Bot spinnt oder du sofort alles schließen willst:
@@ -314,9 +446,9 @@ npm install -g pm2 pm2-windows-startup
 # 2. Bot-Verzeichnis
 cd C:\tradevision-ai
 
-# 3. ENV-Variablen für Telegram in Session setzen (oder direkt in ecosystem.config.js editieren)
-$env:TELEGRAM_BOT_TOKEN = "8784347792:AAGOuLww-yTQIYs_ZsE1EbvnoZuBpXaGMtU"
-$env:TELEGRAM_CHAT_ID = "8794162768"
+# 3. ENV-Variablen für Telegram in Session setzen (NICHT mehr ins Repo committen!)
+$env:TELEGRAM_BOT_TOKEN = "<YOUR_BOT_TOKEN>"
+$env:TELEGRAM_CHAT_ID = "<YOUR_CHAT_ID>"
 
 # 4. Beide Services starten (default: 1h Variante = V7_1H_OPT)
 pm2 start tools/ecosystem.config.js

@@ -104,7 +104,7 @@ describe("ftmoDaytradeEth — signal detection", () => {
       candles.push(mkCandle(t0 + i * bar, 100, 100.5, 99.5, 100));
     const sigs = detectEthLongSignals(candles);
     expect(sigs.length).toBeGreaterThanOrEqual(1);
-    expect(sigs[0].direction).toBe("long");
+    expect(sigs[0]!.direction).toBe("long");
   });
 
   it("short fires on 2 consecutive green bars", () => {
@@ -121,7 +121,7 @@ describe("ftmoDaytradeEth — signal detection", () => {
       candles.push(mkCandle(t0 + i * bar, 99.5, 100, 99, 99.5));
     const sigs = detectEthShortSignals(candles);
     expect(sigs.length).toBeGreaterThanOrEqual(1);
-    expect(sigs[0].direction).toBe("short");
+    expect(sigs[0]!.direction).toBe("short");
   });
 });
 
@@ -152,7 +152,7 @@ describe("ftmoDaytradeEth — runner", () => {
     expect(sigs.length).toBeGreaterThanOrEqual(1);
     const s = sigs[0];
     // effPnl ≈ rawPnl × 2 × 0.6 = rawPnl × 1.2
-    const ratio = s.effPnl / s.rawPnl;
+    const ratio = s!.effPnl / s!.rawPnl;
     expect(ratio).toBeCloseTo(1.2, 1);
   });
 });

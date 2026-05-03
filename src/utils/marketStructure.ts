@@ -32,7 +32,15 @@ export function bollingerBands(
     middle[i] = mean;
     upper[i] = mean + sd * stdDevMult;
     lower[i] = mean - sd * stdDevMult;
-    widthPct[i] = mean > 0 ? ((sd * stdDevMult * 2) / mean) * 100 : 0;
+    // Phase 53 (R45-IND-1): use |mean| so the relative-width metric works
+    // for any input series (returns/PnL series can have mean ≤ 0). The
+    // previous `mean > 0` guard silently zeroed widthPct on negative-mean
+    // inputs — fine for prices but a latent bug for any future use on
+    // PnL/returns streams.
+    widthPct[i] =
+      Math.abs(mean) > 1e-12
+        ? ((sd * stdDevMult * 2) / Math.abs(mean)) * 100
+        : 0;
   }
 
   return { middle, upper, lower, widthPct };
@@ -49,6 +57,12 @@ export interface VwapPoint {
 /**
  * Running VWAP with 1σ/2σ bands, reset at UTC midnight so each trading day
  * gets its own volume-weighted reference price (standard intraday convention).
+ *
+ * Phase 53 (R45-IND-2): INTRADAY ONLY. For ≥1d source candles the per-day
+ * reset fires every bar, making vwap === typical price (single-bar
+ * accumulator) and bands collapse to zero — meaningless. Callers feeding
+ * daily/weekly series should use a different reference (anchored VWAP or
+ * price-only equivalent).
  */
 export function vwap(candles: Candle[]): VwapPoint[] {
   const out: VwapPoint[] = [];
@@ -119,24 +133,24 @@ export function findPivots(
     let isHigh = true;
     let isLow = true;
     for (let j = 1; j <= left; j++) {
-      if (candles[i - j].high >= c.high) isHigh = false;
-      if (candles[i - j].low <= c.low) isLow = false;
+      if (candles[i - j]!.high >= c!.high) isHigh = false;
+      if (candles[i - j]!.low <= c!.low) isLow = false;
     }
     for (let j = 1; j <= right; j++) {
-      if (candles[i + j].high >= c.high) isHigh = false;
-      if (candles[i + j].low <= c.low) isLow = false;
+      if (candles[i + j]!.high >= c!.high) isHigh = false;
+      if (candles[i + j]!.low <= c!.low) isLow = false;
     }
     if (isHigh)
       pivots.push({
         index: i,
-        price: c.high,
+        price: c!.high,
         type: "high",
         strength: left + right,
       });
     if (isLow)
       pivots.push({
         index: i,
-        price: c.low,
+        price: c!.low,
         type: "low",
         strength: left + right,
       });
@@ -450,7 +464,7 @@ export function computeBaseRate(
     const slice = candles.slice(0, i + 1);
     const pivots = findPivots(slice, 3, 3);
     const structure = analyzeMarketStructure(slice, pivots);
-    const priceHere = slice[slice.length - 1].close;
+    const priceHere = slice[slice.length - 1]!.close;
     const atrHere = atrArr[i];
     if (!atrHere) continue;
 
@@ -478,20 +492,20 @@ export function computeBaseRate(
     for (let j = i + 1; j < Math.min(i + 60, candles.length); j++) {
       const c = candles[j];
       if (signalAction === "long") {
-        if (c.low <= sl) {
+        if (c!.low <= sl) {
           outcome = -1;
           break;
         }
-        if (c.high >= tp) {
+        if (c!.high >= tp) {
           outcome = 1.5;
           break;
         }
       } else {
-        if (c.high >= sl) {
+        if (c!.high >= sl) {
           outcome = -1;
           break;
         }
-        if (c.low <= tp) {
+        if (c!.low <= tp) {
           outcome = 1.5;
           break;
         }

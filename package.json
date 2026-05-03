@@ -2,15 +2,21 @@
   "name": "ai-trading-journal",
   "version": "0.1.1",
   "private": true,
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "node ./node_modules/next/dist/bin/next dev",
     "build": "node ./node_modules/next/dist/bin/next build",
     "start": "node ./node_modules/next/dist/bin/next start",
     "test": "node ./node_modules/vitest/vitest.mjs run",
     "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit",
+    "typecheck:strict": "node ./node_modules/typescript/bin/tsc --noEmit -p tsconfig.strict.json",
     "test:watch": "node ./node_modules/vitest/vitest.mjs",
     "test:e2e": "node ./node_modules/@playwright/test/cli.js test",
     "test:e2e:ui": "node ./node_modules/@playwright/test/cli.js test --ui",
+    "lint": "node ./node_modules/eslint/bin/eslint.js src",
+    "lint:fix": "node ./node_modules/eslint/bin/eslint.js src --fix",
     "prepare": "husky",
     "paper:tick": "node ./node_modules/vitest/vitest.mjs run --config vitest.scripts.config.ts scripts/paperTradeTick.test.ts --reporter=verbose",
     "paper:report": "node ./node_modules/vitest/vitest.mjs run --config vitest.scripts.config.ts scripts/paperTradeReport.test.ts --reporter=verbose",
@@ -26,7 +32,8 @@
     "react": "^19.0.0",
     "react-dom": "^19.2.5",
     "recharts": "^3.8.1",
-    "uuid": "^13.0.0"
+    "tsx": "^4.21.0",
+    "uuid": "^14.0.0"
   },
   "lint-staged": {
     "*.{ts,tsx,json,md}": [
@@ -34,6 +41,7 @@
     ]
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.59.1",
     "@tailwindcss/postcss": "^4.2.2",
     "@testing-library/jest-dom": "^6.9.1",
@@ -45,6 +53,8 @@
     "@types/uuid": "^11.0.0",
     "@vitejs/plugin-react": "^6.0.1",
     "@vitest/coverage-v8": "^4.1.4",
+    "eslint": "^10.3.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "husky": "^9.1.7",
     "jsdom": "^29.0.2",
     "lint-staged": "^16.4.0",
@@ -52,6 +62,7 @@
     "prettier": "^3.8.2",
     "tailwindcss": "^4.2.1",
     "typescript": "^6.0.2",
+    "typescript-eslint": "^8.59.1",
     "vitest": "^4.0.18"
   }
 }

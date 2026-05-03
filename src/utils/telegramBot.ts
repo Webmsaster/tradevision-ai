@@ -16,6 +16,7 @@ import {
   htmlEscape,
   type TelegramConfig,
 } from "./telegramNotify";
+import { withFileLockSync } from "./processLock";
 
 export interface BotControls {
   paused: boolean;
@@ -29,9 +30,54 @@ export interface TelegramCommandHandlerCtx {
 }
 
 const POLL_TIMEOUT_SEC = 25;
-let lastUpdateId = 0;
+
+// BUGFIX 2026-04-28 (Round 27): lastUpdateId persisted per-stateDir to survive
+// restarts. Was a module-global, which on PM2 restart re-pulled the
+// last 24h of updates and re-fired stale /pause / /kill commands.
+function lastUpdateIdPath(stateDir: string): string {
+  return path.join(stateDir, "telegram-update-id.json");
+}
+
+function readLastUpdateId(stateDir: string): number {
+  try {
+    const p = lastUpdateIdPath(stateDir);
+    if (!fs.existsSync(p)) return 0;
+    const obj = JSON.parse(fs.readFileSync(p, "utf-8")) as { id?: number };
+    return Number.isFinite(obj.id) ? Number(obj.id) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeLastUpdateId(stateDir: string, id: number): void {
+  try {
+    fs.mkdirSync(stateDir, { recursive: true });
+    const p = lastUpdateIdPath(stateDir);
+    const tmp = `${p}.tmp.${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify({ id }));
+    fs.renameSync(tmp, p);
+  } catch (e) {
+    console.error(`[tg-bot] failed to persist lastUpdateId:`, e);
+  }
+}
 
 export async function startTelegramBot(ctx: TelegramCommandHandlerCtx) {
+  // Round 57: in a multi-account deployment all bots that share the same
+  // bot-token would race for `getUpdates` — only the first to poll receives
+  // each command. Solution: exactly one process is the master (set
+  // `FTMO_TELEGRAM_BOT_MASTER=1`), the rest skip the listener silently.
+  // If FTMO_ACCOUNT_ID is unset we assume single-account mode and run the
+  // listener unconditionally (legacy behaviour).
+  const acct = (process.env.FTMO_ACCOUNT_ID ?? "").trim();
+  const isMaster =
+    process.env.FTMO_TELEGRAM_BOT_MASTER === "1" ||
+    process.env.FTMO_TELEGRAM_BOT_MASTER === "true";
+  if (acct && !isMaster) {
+    console.log(
+      `[tg-bot] FTMO_ACCOUNT_ID=${acct} but FTMO_TELEGRAM_BOT_MASTER not set — command listener disabled (alerts still send)`,
+    );
+    return;
+  }
   const cfg = readTelegramConfig();
   if (!cfg) {
     console.log(
@@ -52,6 +98,7 @@ export async function startTelegramBot(ctx: TelegramCommandHandlerCtx) {
 async function pollLoop(cfg: TelegramConfig, ctx: TelegramCommandHandlerCtx) {
   // BUGFIX 2026-04-28 (Round 18): exp-backoff on consecutive errors.
   let consecutiveErrors = 0;
+  let lastUpdateId = readLastUpdateId(ctx.stateDir);
   while (true) {
     try {
       const url = `https://api.telegram.org/bot${cfg.token}/getUpdates?timeout=${POLL_TIMEOUT_SEC}&offset=${lastUpdateId + 1}`;
@@ -81,14 +128,27 @@ async function pollLoop(cfg: TelegramConfig, ctx: TelegramCommandHandlerCtx) {
         await sleep(backoff);
         continue;
       }
-      consecutiveErrors = 0;
       const body = (await resp.json()) as { ok: boolean; result: TgUpdate[] };
       if (!body.ok || !body.result) {
-        await sleep(5000);
+        // Phase 38 (R44-LIVE-H3): treat HTTP 200 + body.ok===false as a
+        // soft error (e.g. quota throttle, malformed update). Was resetting
+        // consecutiveErrors above unconditionally → at-permanent-soft-fail
+        // the loop spun every 5s with no exponential backoff or alert.
+        consecutiveErrors++;
+        const backoff = Math.min(
+          60_000,
+          5_000 * Math.pow(2, Math.min(consecutiveErrors - 1, 3)),
+        );
+        await sleep(backoff);
         continue;
       }
+      consecutiveErrors = 0;
+      let updatedId = false;
       for (const upd of body.result) {
-        lastUpdateId = Math.max(lastUpdateId, upd.update_id);
+        if (upd.update_id > lastUpdateId) {
+          lastUpdateId = upd.update_id;
+          updatedId = true;
+        }
         // BUGFIX 2026-04-28 (Round 18): also handle edited_message.
         const msg = upd.message ?? (upd as any).edited_message;
         if (msg?.text) {
@@ -99,6 +159,9 @@ async function pollLoop(cfg: TelegramConfig, ctx: TelegramCommandHandlerCtx) {
           }
         }
       }
+      // BUGFIX 2026-04-28 (Round 27): persist update-id between batches so
+      // restarts don't re-process old commands.
+      if (updatedId) writeLastUpdateId(ctx.stateDir, lastUpdateId);
     } catch (e) {
       // Don't dump full error (may include URL/token).
       const msg = e instanceof Error ? e.message : String(e);
@@ -120,9 +183,25 @@ async function handleCommand(
 ) {
   // Only respond to messages from configured chat ID
   if (String(msg.chat.id) !== cfg.chatId) return;
+  // Phase 23 (Auth Bug 2): optional user-id whitelist via env. If the chat
+  // is a group / channel, anyone in there could fire /kill. With a token
+  // leak this is the second line of defence.
+  const allowedUserIds = (process.env.TELEGRAM_ALLOWED_USER_IDS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (
+    allowedUserIds.length > 0 &&
+    !allowedUserIds.includes(String(msg.from?.id ?? ""))
+  ) {
+    console.warn(
+      `[tg-bot] denied cmd from unauthorized user id=${msg.from?.id}`,
+    );
+    return;
+  }
   const text = msg.text.trim();
   if (!text.startsWith("/")) return;
-  const cmd = text.split(/\s+/)[0].toLowerCase().split("@")[0]; // strip @botname
+  const cmd = text.split(/\s+/)[0]!.toLowerCase().split("@")[0]!; // strip @botname
   const from = msg.from?.username || msg.from?.first_name || "user";
   console.log(`[tg-bot] ${from}: ${cmd}`);
 
@@ -359,22 +438,46 @@ export function readControls(stateDir: string): BotControls {
 }
 
 function setControls(stateDir: string, update: Partial<BotControls>) {
-  // BUGFIX 2026-04-28 (Round 13 Bug 3): R-M-W race with Python executor
-  // (which also writes orderFailStreak/paused). Re-read just before write
-  // and merge — minimizes the window for lost-update. True atomicity would
-  // need filesystem flock, but this best-effort merge handles the common
-  // case where Python wrote in between our read and write.
-  const initial = readControls(stateDir);
-  const beforeWrite = readControls(stateDir);
-  // Take Python's recent additions (e.g. orderFailStreak) but apply our update.
-  const merged = { ...initial, ...beforeWrite, ...update };
-  const next = merged;
-  // BUGFIX 2026-04-28: PID-suffixed tmp prevents cross-process race
-  // (Node and Python both write to bot-controls.json — bare .tmp would clash).
-  const target = path.join(stateDir, CONTROLS_FILE);
-  const tmp = `${target}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, JSON.stringify(next, null, 2));
-  fs.renameSync(tmp, target);
+  // BUGFIX 2026-04-28 (Round 36 Bug 5/7): R-M-W under file lock matches
+  // Python's update_controls() helper. Was: re-read merge — best-effort
+  // only; Python's concurrent flag write between our read and rename
+  // could still be lost. Now: blocking flock around read+write so the
+  // two processes can't interleave their R-M-W on bot-controls.json.
+  withControlsLock(stateDir, () => {
+    const beforeWrite = readControls(stateDir) as BotControls & {
+      orderFailStreak?: number;
+      lastOrderFailError?: string;
+    };
+    const merged = { ...beforeWrite, ...update };
+    const target = path.join(stateDir, CONTROLS_FILE);
+    const tmp = `${target}.tmp.${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify(merged, null, 2));
+    fs.renameSync(tmp, target);
+  });
+}
+
+/**
+ * Blocking-ish exclusive lock on bot-controls.json. Wraps the shared sync
+ * lock from `processLock.ts`. Telegram callbacks must always make progress,
+ * but should NOT preempt Python's R-M-W mid-update.
+ *
+ * Phase 38 (R44-LIVE-C3): was `staleMs: 0` (force-claim after 2s
+ * unconditionally) which silently overwrote in-flight Python writes to
+ * controls.json. Now `staleMs: 5000` — wait up to 5s before stealing,
+ * matching the upper bound of Python's typical R-M-W round-trip.
+ * Token-based unlink in processLock.ts also prevents Python's release-
+ * after-timeout from removing our claim.
+ *
+ * Phase 34: was a copy of the Python `_file_lock`; unified into
+ * src/utils/processLock.ts.
+ */
+function withControlsLock(stateDir: string, fn: () => void): void {
+  const lockPath = path.join(stateDir, "bot-controls.lock");
+  withFileLockSync(lockPath, fn, {
+    timeoutMs: 5_000,
+    staleMs: 5_000,
+    backoffMs: 5,
+  });
 }
 
 // ---- IO ----

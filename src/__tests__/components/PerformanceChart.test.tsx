@@ -27,9 +27,15 @@ vi.mock("recharts", async () => {
   };
 });
 
+// Round 58 cleanup: deterministic counter ID (replaces Math.random()).
+let _idCounter = 0;
+beforeEach(() => {
+  _idCounter = 0;
+});
+
 function makeTrade(overrides: Partial<Trade> = {}): Trade {
   return {
-    id: Math.random().toString(36).slice(2),
+    id: `t-${++_idCounter}`,
     pair: "BTC/USDT",
     direction: "long",
     entryPrice: 100,

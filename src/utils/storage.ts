@@ -1,37 +1,181 @@
-import { Trade } from '@/types/trade';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import { Trade } from "@/types/trade";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { v4 as uuidv4 } from "uuid";
+// Phase 41 (R44-UI-2): single source of truth for the trades-localStorage
+// key. Cross-tab `storage` event listeners in useTradeStorage compare
+// against this same constant instead of a hardcoded string literal.
+import { STORAGE_KEY } from "@/lib/constants";
 
-const STORAGE_KEY = 'trading-journal-trades';
-const SCREENSHOTS_KEY = 'trading-journal-screenshots';
+// Phase 95 (R54-STO-4): exported so the cross-tab listener in
+// useTradeStorage can re-render when a sibling tab modifies screenshots
+// (orphan screenshot cleanup or screenshot upload).
+export const SCREENSHOTS_KEY = "trading-journal-screenshots";
+
+// Round 56 (R56-STO-1): quota-exceeded broadcast event. Listened to by
+// TradeForm/dashboard so the user gets a clear toast when localStorage
+// (~5MB on most browsers) overflows after attaching too many
+// screenshots — instead of trades silently failing to persist.
+export const QUOTA_EXCEEDED_EVENT = "tradevision:storage-quota-exceeded";
+
+function isQuotaError(e: unknown): boolean {
+  if (!e || typeof e !== "object") return false;
+  // Modern browsers throw a DOMException with name === 'QuotaExceededError'
+  // (or, on older WebKit, 'QUOTA_EXCEEDED_ERR'). Some Safari/Chrome combos
+  // also use `code === 22` or `code === 1014`.
+  const name = (e as { name?: string }).name ?? "";
+  const code = (e as { code?: number }).code ?? 0;
+  return (
+    name === "QuotaExceededError" ||
+    name === "QUOTA_EXCEEDED_ERR" ||
+    code === 22 ||
+    code === 1014
+  );
+}
+
+function broadcastQuotaExceeded(detail: {
+  tradeCount: number;
+  screenshotCount: number;
+}): void {
+  try {
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(new CustomEvent(QUOTA_EXCEEDED_EVENT, { detail }));
+  } catch {
+    /* CustomEvent may not exist in some test envs — silent no-op */
+  }
+}
+
+// Phase 7 (Storage Bug 7): screenshot data-URL safety. Reject anything that
+// isn't an image base64 data URL. Caps size at 2 MB to prevent DB-bloat.
+// Without this, javascript: / data:text/html URLs can flow through to <img
+// src> producing XSS, and unbounded base64 hoses Supabase storage.
+const SCREENSHOT_RE = /^data:image\/(png|jpe?g|webp|gif);base64,/i;
+const SCREENSHOT_MAX_BYTES = 2 * 1024 * 1024;
+
+export function validateScreenshot(s: string | undefined): string | undefined {
+  if (!s) return undefined;
+  if (!SCREENSHOT_RE.test(s)) return undefined;
+  // base64 length × 0.75 ≈ decoded bytes; allow 1.4× headroom
+  if (s.length > SCREENSHOT_MAX_BYTES * 1.4) return undefined;
+  return s;
+}
+
+// Round 56 (Finding #4): tighten the soft-delete column-missing detection.
+// The previous check was `msg.includes("column")` which matched ANY error
+// mentioning a column (including unrelated NOT-NULL violations or check
+// constraints) and silently fell back to hard-delete — defeating the
+// soft-delete guarantee. Postgres / PostgREST report 42703 (undefined
+// column) for the case we actually want; we accept 42703 OR a tightly
+// matched message containing both "deleted_at" AND "does not exist".
+function isUndefinedDeletedAtColumn(error: unknown): boolean {
+  const e = error as { code?: string; message?: string } | undefined;
+  if (!e) return false;
+  if (e.code === "42703") return true;
+  const m = (e.message ?? "").toLowerCase();
+  return m.includes("deleted_at") && m.includes("does not exist");
+}
+
+// Round 56 (Finding #4): module-scope cache of the soft-delete capability.
+// Once any query has succeeded with the `deleted_at` filter we know the
+// column exists; we never fall back to hard-delete after that, even if a
+// later query throws an unrelated error that vaguely mentions a column.
+//   null  → unknown / probe on next call
+//   true  → column confirmed present (soft-delete only)
+//   false → confirmed absent (pre-migration DB → hard-delete)
+let softDeleteAvailable: boolean | null = null;
+
+// Test-only hook so the unit-test can reset the cache between cases.
+export const __resetSoftDeleteCacheForTest = (): void => {
+  softDeleteAvailable = null;
+};
+
+// Phase 7 (Storage Bug 6): NaN-safe numeric coercion at the boundary.
+// Number(null) === 0 (acceptable), Number('garbage') === NaN — propagates
+// into stats and poisons winRate/sharpe.
+function num(v: unknown, fallback = 0): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+const ALLOWED_EMOTIONS = [
+  "confident",
+  "neutral",
+  "fearful",
+  "greedy",
+  "fomo",
+  "revenge",
+] as const;
+const ALLOWED_MARKET_CONDITIONS = [
+  "trending",
+  "ranging",
+  "volatile",
+  "calm",
+] as const;
 
 // ---------------------------------------------------------------------------
 // Helper: convert between DB snake_case and app camelCase
 // ---------------------------------------------------------------------------
 
+// Phase 95 (R54-STO-3): defensive type-guards for optional fields. Values
+// arriving from Supabase are typed `unknown` (a future schema-mismatch or
+// adversarial RLS bypass could feed garbage). Without guards, NaN
+// confidence and non-array tags propagate into stats / UI iterators.
+function strOrUndef(v: unknown): string | undefined {
+  return typeof v === "string" ? v : undefined;
+}
+function strOrEmpty(v: unknown): string {
+  return typeof v === "string" ? v : "";
+}
+function strArr(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((t): t is string => typeof t === "string");
+}
+function finiteOrUndef(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
 function dbToTrade(row: Record<string, unknown>): Trade {
+  // Phase 7 (Storage Bug 6): allow-list emotion / marketCondition; arbitrary
+  // strings from the DB cast straight to Trade['emotion'] would let a future
+  // dangerouslySetInnerHTML render unfiltered values.
+  const rawEmotion = strOrUndef(row.emotion);
+  const emotion =
+    rawEmotion && (ALLOWED_EMOTIONS as readonly string[]).includes(rawEmotion)
+      ? (rawEmotion as Trade["emotion"])
+      : undefined;
+  const rawMarket = strOrUndef(row.market_condition);
+  const marketCondition =
+    rawMarket &&
+    (ALLOWED_MARKET_CONDITIONS as readonly string[]).includes(rawMarket)
+      ? (rawMarket as Trade["marketCondition"])
+      : undefined;
+  const rawDirection = strOrUndef(row.direction);
+  const direction: "long" | "short" =
+    rawDirection === "short" ? "short" : "long";
+  const rawAccountId = strOrUndef(row.account_id);
   return {
-    id: row.id as string,
-    pair: row.pair as string,
-    direction: row.direction as 'long' | 'short',
-    entryPrice: Number(row.entry_price),
-    exitPrice: Number(row.exit_price),
-    quantity: Number(row.quantity),
-    entryDate: row.entry_date as string,
-    exitDate: row.exit_date as string,
-    pnl: Number(row.pnl),
-    pnlPercent: Number(row.pnl_percent),
-    fees: Number(row.fees),
-    leverage: Number(row.leverage),
-    notes: (row.notes as string) ?? '',
-    tags: (row.tags as string[]) ?? [],
-    strategy: row.strategy as string | undefined,
-    emotion: row.emotion as Trade['emotion'],
-    confidence: row.confidence as number | undefined,
-    setupType: row.setup_type as string | undefined,
-    timeframe: row.timeframe as string | undefined,
-    marketCondition: row.market_condition as Trade['marketCondition'],
-    screenshot: row.screenshot_url as string | undefined,
-    accountId: (row.account_id as string) ?? 'default',
+    id: strOrEmpty(row.id),
+    pair: strOrEmpty(row.pair),
+    direction,
+    entryPrice: num(row.entry_price),
+    exitPrice: num(row.exit_price),
+    quantity: num(row.quantity),
+    entryDate: strOrEmpty(row.entry_date),
+    exitDate: strOrEmpty(row.exit_date),
+    pnl: num(row.pnl),
+    pnlPercent: num(row.pnl_percent),
+    fees: num(row.fees),
+    leverage: num(row.leverage, 1),
+    notes: strOrEmpty(row.notes),
+    tags: strArr(row.tags),
+    strategy: strOrUndef(row.strategy),
+    emotion,
+    confidence: finiteOrUndef(row.confidence),
+    setupType: strOrUndef(row.setup_type),
+    timeframe: strOrUndef(row.timeframe),
+    marketCondition,
+    screenshot: validateScreenshot(strOrUndef(row.screenshot_url)),
+    accountId:
+      rawAccountId && rawAccountId.length > 0 ? rawAccountId : "default",
   };
 }
 
@@ -58,8 +202,10 @@ function tradeToDb(trade: Trade, userId: string) {
     setup_type: trade.setupType ?? null,
     timeframe: trade.timeframe ?? null,
     market_condition: trade.marketCondition ?? null,
-    screenshot_url: trade.screenshot ?? null,
-    account_id: trade.accountId ?? 'default',
+    // Phase 7: validate before persisting too — defense-in-depth so a
+    // tampered client cannot inject javascript:/data:text/html URLs.
+    screenshot_url: validateScreenshot(trade.screenshot) ?? null,
+    account_id: trade.accountId ?? "default",
   };
 }
 
@@ -69,33 +215,93 @@ function tradeToDb(trade: Trade, userId: string) {
 
 export async function loadTradesFromSupabase(
   supabase: SupabaseClient,
-  userId: string
+  userId: string,
 ): Promise<Trade[]> {
-  const { data, error } = await supabase
-    .from('trades')
-    .select('*')
-    .eq('user_id', userId)
-    .order('exit_date', { ascending: false });
-
-  if (error) {
-    console.error('Failed to load trades from Supabase:', error);
-    return [];
+  // Phase 22 (Storage Bug 9): paginate. Supabase default limit is 1000 rows;
+  // power-users with backtest data can have 10k+ trades and were silently
+  // losing the older 9k. Fetch in 1000-row pages until exhausted.
+  //
+  // Phase 47 (R45-DB-1): added `id` as a tie-breaker in the order. Without
+  // it, ties on `exit_date` (very common for bulk-imported backtest trades
+  // sharing the same second) yielded non-deterministic page boundaries —
+  // some rows got duplicated across pages, others skipped.
+  //
+  // Phase 47 (R45-CC-H1): on a mid-fetch error we now THROW instead of
+  // silent `break`. Returning a partially-loaded array poisoned downstream
+  // stats (winRate / drawdown / Sharpe) with no signal to the caller.
+  //
+  // Phase 95 (R54-STO-1): drop the 100_000-row hard cap. Power-users with
+  // multi-year backtest imports were silently losing the oldest trades when
+  // their cloud DB exceeded 100k rows. Loop until a partial page (<PAGE)
+  // signals end-of-result-set. A 1M soft-cap remains as a defensive guard
+  // against runaway result-sets — it logs a warning so the rare hit is
+  // observable instead of silent.
+  // Phase 95 (R54-STO-7): filter soft-deleted rows. `deleted_at is null`
+  // is a no-op for rows in DBs that haven't been migrated yet (the column
+  // simply doesn't exist there) — Supabase rejects the query with a
+  // "column does not exist" error. We catch that and retry without the
+  // filter so the client works against pre-migration deployments.
+  const PAGE = 1000;
+  const SOFT_CAP = 1_000_000;
+  const all: Trade[] = [];
+  // Round 56 (Finding #4): start from the cached capability if known.
+  // `null` → probe (try with filter, allow one retry without on 42703).
+  let useSoftDeleteFilter = softDeleteAvailable !== false;
+  for (let from = 0; from < SOFT_CAP; from += PAGE) {
+    let query = supabase.from("trades").select("*").eq("user_id", userId);
+    if (useSoftDeleteFilter) query = query.is("deleted_at", null);
+    const { data, error } = await query
+      .order("exit_date", { ascending: false })
+      .order("id", { ascending: false })
+      .range(from, from + PAGE - 1);
+    if (error) {
+      // Round 56 (Finding #4): only retry on a true 42703 (undefined
+      // column) error. Other column-related errors (e.g. permission,
+      // type-cast, RLS) bubble up so we don't silently mask real bugs.
+      if (useSoftDeleteFilter && isUndefinedDeletedAtColumn(error)) {
+        useSoftDeleteFilter = false;
+        softDeleteAvailable = false; // cache for the rest of the session
+        from -= PAGE; // retry this offset
+        continue;
+      }
+      console.error("Failed to load trades from Supabase:", error);
+      throw new Error(
+        `loadTradesFromSupabase: page-fetch failed at offset ${from}: ${error.message}`,
+      );
+    }
+    if (!data || data.length === 0) break;
+    for (const row of data) all.push(dbToTrade(row));
+    // First successful query with the soft-delete filter promotes the
+    // cache to "confirmed present" — subsequent calls in this process
+    // skip the probe entirely.
+    if (useSoftDeleteFilter && softDeleteAvailable === null) {
+      softDeleteAvailable = true;
+    }
+    if (data.length < PAGE) break;
+    if (from + PAGE >= SOFT_CAP) {
+      console.warn(
+        `[storage] hit ${SOFT_CAP.toLocaleString()} trade soft-cap, oldest trades may be missing`,
+      );
+    }
   }
-
-  return (data ?? []).map(dbToTrade);
+  return all;
 }
 
 export async function saveTradeToSupabase(
   supabase: SupabaseClient,
   trade: Trade,
-  userId: string
+  userId: string,
 ): Promise<boolean> {
+  // Phase 69 (R45-DB-M1): explicit onConflict on PK so the upsert path
+  // is unambiguous — supabase-js infers from the PK by default but
+  // future schema changes (e.g. composite PK on (user_id, id)) would
+  // silently change semantics.
   const { error } = await supabase
-    .from('trades')
-    .upsert(tradeToDb(trade, userId));
+    .from("trades")
+    .upsert(tradeToDb(trade, userId), { onConflict: "id" });
 
   if (error) {
-    console.error('Failed to save trade to Supabase:', error);
+    console.error("Failed to save trade to Supabase:", error);
     return false;
   }
   return true;
@@ -104,32 +310,174 @@ export async function saveTradeToSupabase(
 export async function deleteTradeFromSupabase(
   supabase: SupabaseClient,
   tradeId: string,
-  userId?: string
+  // Phase 33 (API Audit Bug 10): userId now REQUIRED. Was optional → callers
+  // could forget it and rely on RLS alone (no defense-in-depth). Always
+  // filter explicitly so a future RLS misconfig doesn't leak deletes.
+  userId: string,
 ): Promise<boolean> {
-  let query = supabase
-    .from('trades')
-    .delete()
-    .eq('id', tradeId);
-  if (userId) query = query.eq('user_id', userId);
-  const { error } = await query;
-
+  // Phase 95 (R54-STO-7): soft-delete instead of hard-delete. Project
+  // convention (CLAUDE.md) is soft-delete. Falls back to hard-delete if
+  // the deleted_at column doesn't exist (pre-migration DBs) so the client
+  // continues working through the migration window.
+  //
+  // Round 56 (Finding #4): once the cache says the column is present we
+  // never fall back — a "column"-mentioning error from any other source
+  // would otherwise silently strip soft-delete semantics.
+  const nowIso = new Date().toISOString();
+  if (softDeleteAvailable === false) {
+    // Confirmed pre-migration DB: hard-delete directly, skip the probe.
+    const hardDel = await supabase
+      .from("trades")
+      .delete()
+      .eq("id", tradeId)
+      .eq("user_id", userId);
+    if (hardDel.error) {
+      console.error("Failed to delete trade from Supabase:", hardDel.error);
+      return false;
+    }
+    return true;
+  }
+  let updateQuery = supabase
+    .from("trades")
+    .update({ deleted_at: nowIso })
+    .eq("id", tradeId)
+    .eq("user_id", userId);
+  let { error } = await updateQuery;
   if (error) {
-    console.error('Failed to delete trade from Supabase:', error);
+    if (softDeleteAvailable !== true && isUndefinedDeletedAtColumn(error)) {
+      // Pre-migration DB: hard-delete and remember.
+      softDeleteAvailable = false;
+      const hardDel = await supabase
+        .from("trades")
+        .delete()
+        .eq("id", tradeId)
+        .eq("user_id", userId);
+      error = hardDel.error;
+    }
+  } else {
+    softDeleteAvailable = true;
+  }
+  if (error) {
+    console.error("Failed to delete trade from Supabase:", error);
     return false;
   }
   return true;
 }
 
+// Phase 95 (R54-STO-2): retry-queue for bulk-upserts that fail mid-flight.
+// Trade IDs are UUIDs, upserts are idempotent → on the next save attempt
+// we drain the queue first (re-uploading rows from a previous partial
+// failure) before processing the new payload. Survives tab reloads via
+// localStorage.
+const BULK_RETRY_KEY = "sb-retry-queue";
+
+interface RetryEntry {
+  rows: Array<Record<string, unknown>>;
+  enqueuedAt: string;
+}
+
+function readRetryQueue(): RetryEntry[] {
+  try {
+    if (typeof window === "undefined") return [];
+    const raw = localStorage.getItem(BULK_RETRY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (e): e is RetryEntry =>
+        !!e && typeof e === "object" && Array.isArray(e.rows),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeRetryQueue(queue: RetryEntry[]): void {
+  try {
+    if (typeof window === "undefined") return;
+    if (queue.length === 0) {
+      localStorage.removeItem(BULK_RETRY_KEY);
+    } else {
+      localStorage.setItem(BULK_RETRY_KEY, JSON.stringify(queue));
+    }
+  } catch (err) {
+    console.warn("[storage] retry-queue persistence failed:", err);
+  }
+}
+
+function enqueueRetry(rows: Array<Record<string, unknown>>): void {
+  if (rows.length === 0) return;
+  const queue = readRetryQueue();
+  queue.push({ rows, enqueuedAt: new Date().toISOString() });
+  writeRetryQueue(queue);
+}
+
+async function uploadChunked(
+  supabase: SupabaseClient,
+  rows: Array<Record<string, unknown>>,
+  chunk: number,
+): Promise<{ ok: boolean; failedFromIndex: number | null }> {
+  for (let i = 0; i < rows.length; i += chunk) {
+    const slice = rows.slice(i, i + chunk);
+    const { error } = await supabase
+      .from("trades")
+      .upsert(slice, { onConflict: "id" });
+    if (error) {
+      console.error(
+        `Failed to bulk save trades to Supabase (chunk ${i / chunk}):`,
+        error,
+      );
+      return { ok: false, failedFromIndex: i };
+    }
+  }
+  return { ok: true, failedFromIndex: null };
+}
+
 export async function saveBulkTradesToSupabase(
   supabase: SupabaseClient,
   trades: Trade[],
-  userId: string
+  userId: string,
 ): Promise<boolean> {
-  const rows = trades.map((t) => tradeToDb(t, userId));
-  const { error } = await supabase.from('trades').upsert(rows);
+  // Phase 47 (R45-DB-2): batch in 500-row chunks. Supabase pooler caps
+  // payloads around 4 MB; a single upsert of 50k+ trades from CSV import
+  // hit the cap and was rejected wholesale.
+  //
+  // Phase 95 (R54-STO-2): drain retry-queue first, then upload current
+  // payload. On mid-flight failure we enqueue the un-uploaded slice
+  // (rows from the failing chunk onward) for the next call. UUID
+  // primary keys make the upsert idempotent — replaying succeeded
+  // chunks is safe.
+  const CHUNK = 500;
 
-  if (error) {
-    console.error('Failed to bulk save trades to Supabase:', error);
+  // 1) Drain queue from prior failed runs.
+  const pending = readRetryQueue();
+  if (pending.length > 0) {
+    const survived: RetryEntry[] = [];
+    for (const entry of pending) {
+      const result = await uploadChunked(supabase, entry.rows, CHUNK);
+      if (result.ok) continue;
+      // Re-enqueue everything from the failure point onward.
+      const remaining = entry.rows.slice(result.failedFromIndex ?? 0);
+      survived.push({ ...entry, rows: remaining });
+    }
+    writeRetryQueue(survived);
+    if (survived.length > 0) {
+      // Don't even attempt the new payload — surface failure to caller
+      // so they can keep their localStorage copy and retry later.
+      // Enqueue the new payload too so it isn't lost.
+      if (trades.length > 0) {
+        enqueueRetry(trades.map((t) => tradeToDb(t, userId)));
+      }
+      return false;
+    }
+  }
+
+  if (trades.length === 0) return true;
+  const rows = trades.map((t) => tradeToDb(t, userId));
+  const result = await uploadChunked(supabase, rows, CHUNK);
+  if (!result.ok) {
+    const remaining = rows.slice(result.failedFromIndex ?? 0);
+    enqueueRetry(remaining);
     return false;
   }
   return true;
@@ -137,15 +485,45 @@ export async function saveBulkTradesToSupabase(
 
 export async function clearAllSupabaseTrades(
   supabase: SupabaseClient,
-  userId: string
+  userId: string,
 ): Promise<boolean> {
-  const { error } = await supabase
-    .from('trades')
-    .delete()
-    .eq('user_id', userId);
-
+  // Phase 95 (R54-STO-7): soft-delete batch. Falls back to hard-delete
+  // for pre-migration DBs.
+  //
+  // Round 56 (Finding #4): respect the cached capability so a transient
+  // unrelated column-error can't trick us into hard-deleting once we've
+  // already seen the soft-delete column work.
+  const nowIso = new Date().toISOString();
+  if (softDeleteAvailable === false) {
+    const hardDel = await supabase
+      .from("trades")
+      .delete()
+      .eq("user_id", userId);
+    if (hardDel.error) {
+      console.error("Failed to clear trades from Supabase:", hardDel.error);
+      return false;
+    }
+    return true;
+  }
+  let { error } = await supabase
+    .from("trades")
+    .update({ deleted_at: nowIso })
+    .eq("user_id", userId)
+    .is("deleted_at", null);
   if (error) {
-    console.error('Failed to clear trades from Supabase:', error);
+    if (softDeleteAvailable !== true && isUndefinedDeletedAtColumn(error)) {
+      softDeleteAvailable = false;
+      const hardDel = await supabase
+        .from("trades")
+        .delete()
+        .eq("user_id", userId);
+      error = hardDel.error;
+    }
+  } else {
+    softDeleteAvailable = true;
+  }
+  if (error) {
+    console.error("Failed to clear trades from Supabase:", error);
     return false;
   }
   return true;
@@ -162,11 +540,11 @@ export async function clearAllSupabaseTrades(
  */
 export function saveTrades(trades: Trade[]): void {
   try {
-    if (typeof window === 'undefined') return;
+    if (typeof window === "undefined") return;
 
     // Separate screenshots from trade data
     const screenshots: Record<string, string> = {};
-    const tradesWithoutScreenshots = trades.map(t => {
+    const tradesWithoutScreenshots = trades.map((t) => {
       if (t.screenshot) {
         screenshots[t.id] = t.screenshot;
         const { screenshot: _, ...rest } = t;
@@ -175,19 +553,93 @@ export function saveTrades(trades: Trade[]): void {
       return t;
     });
 
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(tradesWithoutScreenshots));
+    // Round 56 (R56-STO-1): isolate the trades-payload write so we can
+    // detect and signal QuotaExceededError. Previously a quota-overflow
+    // hit the outer catch which only logged to console — users had no
+    // way to know that subsequent trade edits were silently discarded.
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify(tradesWithoutScreenshots),
+      );
+    } catch (writeErr) {
+      if (isQuotaError(writeErr)) {
+        console.error(
+          "[storage] saveTrades: localStorage quota exceeded — trades not persisted. " +
+            "Reduce screenshot resolution or delete old screenshots to free space.",
+        );
+        broadcastQuotaExceeded({
+          tradeCount: trades.length,
+          screenshotCount: Object.keys(screenshots).length,
+        });
+        return;
+      }
+      throw writeErr;
+    }
 
-    // Store screenshots separately; if quota is exceeded, trade data is still safe
-    if (Object.keys(screenshots).length > 0) {
+    // Phase 47 (R45-CC-H3): rebuild the screenshots map from the CURRENT
+    // trade ids on every save instead of merging. Was leaking — when a
+    // user deleted a trade, its screenshot remained in SCREENSHOTS_KEY
+    // forever (each up to 2MB); after ~10 deletions a user could hit
+    // localStorage quota with no live trade referencing the data.
+    //
+    // Phase 95 (R54-STO-4): tab-safe rebuild. Anchor the trade-id set
+    // on the *current* STORAGE_KEY content (which we just wrote),
+    // re-derived from `tradesWithoutScreenshots` plus any ids from
+    // OTHER tabs we haven't yet observed. The idempotent rebuild
+    // tolerates an interleaved write from a sibling tab — worst case
+    // we drop a screenshot that the sibling just attached, and the
+    // sibling's next save re-attaches it (saveTrades carries the
+    // screenshot in the trade payload).
+    try {
+      const tradeIds = new Set(trades.map((t) => t.id));
+      const existing = JSON.parse(
+        localStorage.getItem(SCREENSHOTS_KEY) || "{}",
+      ) as Record<string, string>;
+      // Re-read STORAGE_KEY (in case a sibling tab wrote between our
+      // setItem above and now) so we don't drop their trade ids.
       try {
-        const existing = JSON.parse(localStorage.getItem(SCREENSHOTS_KEY) || '{}');
-        localStorage.setItem(SCREENSHOTS_KEY, JSON.stringify({ ...existing, ...screenshots }));
+        const currentRaw = localStorage.getItem(STORAGE_KEY);
+        if (currentRaw) {
+          const currentTrades = JSON.parse(currentRaw);
+          if (Array.isArray(currentTrades)) {
+            for (const t of currentTrades) {
+              if (t && typeof t === "object" && typeof t.id === "string") {
+                tradeIds.add(t.id);
+              }
+            }
+          }
+        }
       } catch {
-        console.warn('Failed to save screenshots - storage quota may be full.');
+        /* ignore — fall back to our own trade-id set */
+      }
+      const cleaned: Record<string, string> = {};
+      for (const [id, dataUrl] of Object.entries(existing)) {
+        if (tradeIds.has(id)) cleaned[id] = dataUrl;
+      }
+      // Overlay any new/updated screenshots from this save.
+      Object.assign(cleaned, screenshots);
+      if (Object.keys(cleaned).length > 0) {
+        localStorage.setItem(SCREENSHOTS_KEY, JSON.stringify(cleaned));
+      } else {
+        localStorage.removeItem(SCREENSHOTS_KEY);
+      }
+    } catch (err) {
+      // Round 56 (R56-STO-1): screenshots block exceeded quota. Trades
+      // already persisted above, so we keep going but broadcast so the
+      // UI can suggest deleting screenshots.
+      console.warn(
+        "[storage] Failed to save screenshots - storage quota may be full.",
+      );
+      if (isQuotaError(err)) {
+        broadcastQuotaExceeded({
+          tradeCount: trades.length,
+          screenshotCount: Object.keys(screenshots).length,
+        });
       }
     }
   } catch (error) {
-    console.error('Failed to save trades to localStorage:', error);
+    console.error("Failed to save trades to localStorage:", error);
   }
 }
 
@@ -197,7 +649,7 @@ export function saveTrades(trades: Trade[]): void {
  */
 export function loadTrades(): Trade[] {
   try {
-    if (typeof window === 'undefined') {
+    if (typeof window === "undefined") {
       return [];
     }
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -212,21 +664,33 @@ export function loadTrades(): Trade[] {
     // Re-attach screenshots from separate store
     let screenshots: Record<string, string> = {};
     try {
-      screenshots = JSON.parse(localStorage.getItem(SCREENSHOTS_KEY) || '{}');
+      screenshots = JSON.parse(localStorage.getItem(SCREENSHOTS_KEY) || "{}");
     } catch (err) {
-      console.error('Failed to parse screenshots from localStorage:', err);
+      console.error("Failed to parse screenshots from localStorage:", err);
     }
 
-    return (parsed as unknown[])
-      .filter(isValidTrade)
-      .map(t => {
-        if (screenshots[t.id]) {
-          return { ...t, screenshot: screenshots[t.id] };
-        }
-        return t;
-      });
+    // Phase 95 (R54-STO-5): fail-closed on invalid rows — log a warning
+    // so corrupt entries are observable instead of silently dropped.
+    const arr = parsed as unknown[];
+    const valid: Trade[] = [];
+    let dropped = 0;
+    for (const row of arr) {
+      if (isValidTrade(row)) valid.push(row);
+      else dropped += 1;
+    }
+    if (dropped > 0) {
+      console.warn(
+        `[storage] loadTrades: dropped ${dropped} invalid row(s) of ${arr.length}`,
+      );
+    }
+    return valid.map((t) => {
+      if (screenshots[t.id]) {
+        return { ...t, screenshot: screenshots[t.id] };
+      }
+      return t;
+    });
   } catch (error) {
-    console.error('Failed to load trades from localStorage:', error);
+    console.error("Failed to load trades from localStorage:", error);
     return [];
   }
 }
@@ -272,103 +736,76 @@ export function exportToJSON(trades: Trade[]): void {
   try {
     const wrapper = {
       exportDate: new Date().toISOString(),
-      version: '1.0',
+      version: "1.0",
       trades,
     };
     const blob = new Blob([JSON.stringify(wrapper, null, 2)], {
-      type: 'application/json',
+      type: "application/json",
     });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
+    const link = document.createElement("a");
     link.href = url;
-    link.download = 'trading-journal-backup.json';
+    link.download = "trading-journal-backup.json";
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   } catch (error) {
-    console.error('Failed to export trades to JSON:', error);
+    console.error("Failed to export trades to JSON:", error);
   }
 }
 
 /**
  * Export trades as a downloadable CSV file.
- * Headers: Pair,Direction,Entry Price,Exit Price,Quantity,Leverage,Fees,PnL,PnL %,Entry Date,Exit Date,Strategy,Emotion,Notes
+ *
+ * Phase 55 (R45-CC-H2): delegates to `exportTradesToCsv` from csvExport.ts
+ * (the canonical exporter — 20 columns, full \r\n escape, UTF-8 BOM,
+ * `id` column included). The /import page used to call a 14-column
+ * exporter here while /trades used the 20-column one — same data, two
+ * different files. Now both routes produce the same CSV.
  */
-export function exportToCSV(trades: Trade[]): void {
+export async function exportToCSV(trades: Trade[]): Promise<void> {
   try {
-    const headers = [
-      'Pair',
-      'Direction',
-      'Entry Price',
-      'Exit Price',
-      'Quantity',
-      'Leverage',
-      'Fees',
-      'PnL',
-      'PnL %',
-      'Entry Date',
-      'Exit Date',
-      'Strategy',
-      'Emotion',
-      'Notes',
-    ];
-
-    const escapeCSV = (value: string): string => {
-      if (value.includes(',') || value.includes('"') || value.includes('\n')) {
-        return `"${value.replace(/"/g, '""')}"`;
-      }
-      return value;
-    };
-
-    const rows = trades.map((t) =>
-      [
-        escapeCSV(t.pair),
-        t.direction,
-        t.entryPrice.toString(),
-        t.exitPrice.toString(),
-        t.quantity.toString(),
-        t.leverage.toString(),
-        t.fees.toString(),
-        t.pnl.toFixed(2),
-        t.pnlPercent.toFixed(2),
-        t.entryDate,
-        t.exitDate,
-        escapeCSV(t.strategy ?? ''),
-        t.emotion ?? '',
-        escapeCSV(t.notes ?? ''),
-      ].join(',')
-    );
-
-    const csv = [headers.join(','), ...rows].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'trading-journal-export.csv';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    const { exportTradesToCsv } = await import("@/utils/csvExport");
+    exportTradesToCsv(trades, "trading-journal-export");
   } catch (error) {
-    console.error('Failed to export trades to CSV:', error);
+    console.error("Failed to export trades to CSV:", error);
   }
 }
 
 function isValidTrade(obj: unknown): obj is Trade {
-  if (!obj || typeof obj !== 'object') return false;
+  if (!obj || typeof obj !== "object") return false;
   const t = obj as Record<string, unknown>;
+  // Phase 95 (R54-STO-5): extended schema validation. tags must be a
+  // string-array (not a Map / object that would crash array-iterators
+  // downstream). accountId, when present, must be a string. All number
+  // fields must be finite (NaN poisons stats).
+  const tagsValid =
+    t.tags === undefined ||
+    (Array.isArray(t.tags) && t.tags.every((x) => typeof x === "string"));
+  const accountIdValid =
+    t.accountId === undefined || typeof t.accountId === "string";
   return (
-    typeof t.id === 'string' &&
-    typeof t.pair === 'string' &&
-    (t.direction === 'long' || t.direction === 'short') &&
-    typeof t.entryPrice === 'number' && t.entryPrice > 0 &&
-    typeof t.exitPrice === 'number' && t.exitPrice > 0 &&
-    typeof t.quantity === 'number' && t.quantity > 0 &&
-    typeof t.entryDate === 'string' &&
-    typeof t.exitDate === 'string' &&
-    typeof t.pnl === 'number' &&
-    typeof t.pnlPercent === 'number'
+    typeof t.id === "string" &&
+    typeof t.pair === "string" &&
+    (t.direction === "long" || t.direction === "short") &&
+    typeof t.entryPrice === "number" &&
+    Number.isFinite(t.entryPrice) &&
+    t.entryPrice > 0 &&
+    typeof t.exitPrice === "number" &&
+    Number.isFinite(t.exitPrice) &&
+    t.exitPrice > 0 &&
+    typeof t.quantity === "number" &&
+    Number.isFinite(t.quantity) &&
+    t.quantity > 0 &&
+    typeof t.entryDate === "string" &&
+    typeof t.exitDate === "string" &&
+    typeof t.pnl === "number" &&
+    Number.isFinite(t.pnl) &&
+    typeof t.pnlPercent === "number" &&
+    Number.isFinite(t.pnlPercent) &&
+    tagsValid &&
+    accountIdValid
   );
 }
 
@@ -380,7 +817,7 @@ export function importFromJSON(file: File): Promise<Trade[]> {
   const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
   return new Promise((resolve, reject) => {
     if (file.size > MAX_FILE_SIZE) {
-      reject(new Error('File too large. Maximum size is 10 MB.'));
+      reject(new Error("File too large. Maximum size is 10 MB."));
       return;
     }
 
@@ -393,37 +830,55 @@ export function importFromJSON(file: File): Promise<Trade[]> {
 
         const rawTrades = Array.isArray(parsed)
           ? parsed
-          : parsed && typeof parsed === 'object' && Array.isArray(parsed.trades)
+          : parsed && typeof parsed === "object" && Array.isArray(parsed.trades)
             ? parsed.trades
             : null;
 
         if (rawTrades) {
+          // Phase 95 (R54-STO-5): warn on invalid rows so corrupt
+          // backups don't fail silently.
           const valid = rawTrades.filter(isValidTrade);
+          const dropped = (rawTrades.length as number) - valid.length;
+          if (dropped > 0) {
+            console.warn(
+              `[storage] importFromJSON: skipped ${dropped} invalid row(s) of ${rawTrades.length}`,
+            );
+          }
           if (valid.length === 0) {
-            reject(new Error('No valid trades found in the file.'));
+            reject(new Error("No valid trades found in the file."));
           } else {
-            // Keep the first occurrence of each trade id to avoid duplicate imports
-            // from malformed backups.
-            const deduped: Trade[] = [];
-            const seenIds = new Set<string>();
-            for (const trade of valid) {
-              if (seenIds.has(trade.id)) continue;
-              seenIds.add(trade.id);
-              deduped.push(trade);
-            }
+            // Phase 30 (Storage Audit Bug 4): only re-generate UUIDs on
+            // CONFLICT with existing trades — preserves AIInsight
+            // relatedTrades references when re-importing your own backup.
+            // Phase 22 was too aggressive (regenerate ALL) which broke
+            // every saved insight after a re-import.
+            // Phase 61 (R45-CC-M1): removed dead seenIds loop. Comment
+            // claimed "all ids are now freshly generated" but the map
+            // above only regenerates conflicting ids, not non-conflicts;
+            // either way the loop iterated without filtering. Pure dead
+            // code — kept just the conflict-rewrite map.
+            const existingIds = new Set(loadTrades().map((t) => t.id));
+            const deduped: Trade[] = (valid as Trade[]).map((trade) => ({
+              ...trade,
+              id: existingIds.has(trade.id) ? uuidv4() : trade.id,
+            }));
             resolve(deduped);
           }
           return;
         }
 
-        reject(new Error('Invalid JSON structure: expected a Trade[] array or an object with a "trades" array.'));
+        reject(
+          new Error(
+            'Invalid JSON structure: expected a Trade[] array or an object with a "trades" array.',
+          ),
+        );
       } catch (error) {
-        reject(new Error('Failed to parse JSON file.'));
+        reject(new Error("Failed to parse JSON file.", { cause: error }));
       }
     };
 
     reader.onerror = () => {
-      reject(new Error('Failed to read file.'));
+      reject(new Error("Failed to read file."));
     };
 
     reader.readAsText(file);
@@ -435,12 +890,12 @@ export function importFromJSON(file: File): Promise<Trade[]> {
  */
 export function clearAllData(): void {
   try {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== "undefined") {
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem(SCREENSHOTS_KEY);
     }
   } catch (error) {
-    console.error('Failed to clear trade data from localStorage:', error);
+    console.error("Failed to clear trade data from localStorage:", error);
   }
 }
 
@@ -450,7 +905,7 @@ export function clearAllData(): void {
  */
 export function hasSavedData(): boolean {
   try {
-    if (typeof window === 'undefined') {
+    if (typeof window === "undefined") {
       return false;
     }
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -459,7 +914,7 @@ export function hasSavedData(): boolean {
     }
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) && parsed.length > 0;
-  } catch (error) {
+  } catch {
     return false;
   }
 }

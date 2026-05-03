@@ -78,7 +78,8 @@ jobs:
           env.SMOKE_ALERT_EMAIL_TO != '' &&
           env.SMOKE_ALERT_EMAIL_FROM != ''
         continue-on-error: true
-        uses: dawidd6/action-send-mail@v16
+        # Phase 93 (R51-S9): SHA-pinned third-party action (was @v16 floating).
+        uses: dawidd6/action-send-mail@42942bc2f8fba4e611b459a018967a6a7c78c68c # v17
         with:
           server_address: ${{ env.SMTP_SERVER }}
           server_port: 587

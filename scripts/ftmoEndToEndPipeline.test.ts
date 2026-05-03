@@ -92,7 +92,7 @@ describe("FTMO bot end-to-end pipeline", { timeout: 120_000 }, () => {
 
     // Invariants that must always hold
     expect(result.regime).toMatch(/BULL|BEAR_CHOP/);
-    expect(result.activeBotConfig).toMatch(/iter231|iter213-bull/);
+    expect(result.activeBotConfig).toMatch(/V\d+|iter213-bull/);
     expect(result.btc.close).toBeGreaterThan(0);
     expect(result.account).toEqual(account);
 

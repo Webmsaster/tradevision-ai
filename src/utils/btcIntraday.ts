@@ -359,7 +359,7 @@ function smaLast(v: number[], n: number): number {
 function medianLast(v: number[], n: number): number {
   if (v.length < n) return 0;
   const s = [...v.slice(-n)].sort((a, b) => a - b);
-  return s[Math.floor(s.length / 2)];
+  return s[Math.floor(s.length / 2)]!;
 }
 function maxLast(v: number[], n: number): number {
   const s = v.slice(-n);
@@ -372,16 +372,16 @@ function atrSeries(candles: Candle[], len: number): number[] {
   if (candles.length < len + 1) return out;
   const tr: number[] = new Array(candles.length).fill(0);
   for (let i = 1; i < candles.length; i++) {
-    const hi = candles[i].high;
-    const lo = candles[i].low;
-    const pc = candles[i - 1].close;
+    const hi = candles[i]!.high;
+    const lo = candles[i]!.low;
+    const pc = candles[i - 1]!.close;
     tr[i] = Math.max(hi - lo, Math.abs(hi - pc), Math.abs(lo - pc));
   }
   let sum = 0;
-  for (let i = 1; i <= len; i++) sum += tr[i];
+  for (let i = 1; i <= len; i++) sum += tr[i]!;
   out[len] = sum / len;
   for (let i = len + 1; i < candles.length; i++) {
-    out[i] = (out[i - 1] * (len - 1) + tr[i]) / len;
+    out[i] = (out[i - 1]! * (len - 1) + tr[i]!) / len;
   }
   return out;
 }
@@ -391,7 +391,7 @@ function rsiSeries(closes: number[], len: number): number[] {
   let gain = 0,
     loss = 0;
   for (let i = 1; i <= len; i++) {
-    const d = closes[i] - closes[i - 1];
+    const d = closes[i]! - closes[i - 1]!;
     if (d >= 0) gain += d;
     else loss += -d;
   }
@@ -399,7 +399,7 @@ function rsiSeries(closes: number[], len: number): number[] {
   loss /= len;
   out[len] = loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
   for (let i = len + 1; i < closes.length; i++) {
-    const d = closes[i] - closes[i - 1];
+    const d = closes[i]! - closes[i - 1]!;
     const g = d > 0 ? d : 0;
     const l = d < 0 ? -d : 0;
     gain = (gain * (len - 1) + g) / len;
@@ -435,15 +435,15 @@ function executeLong(
   const mx = Math.min(i + 1 + cfg.holdBars, candles.length - 1);
   let tp1Hit = false;
   let tp1Bar = -1;
-  let l2P = candles[mx].close;
+  let l2P = candles[mx]!.close;
   let l2B = mx;
   let reason: BtcIntradayTrade["exitReason"] = "time";
   const costs = cfg.costs ?? MAKER_COSTS;
   for (let j = i + 2; j <= mx; j++) {
     const bar = candles[j];
-    const sH = bar.low <= sL;
-    const t1 = bar.high >= tp1L;
-    const t2 = bar.high >= tp2L;
+    const sH = bar!.low <= sL;
+    const t1 = bar!.high >= tp1L;
+    const t2 = bar!.high >= tp2L;
     if (!tp1Hit) {
       if (sH) {
         l2B = j;
@@ -464,13 +464,13 @@ function executeLong(
         continue;
       }
     } else {
-      if (bar.low <= sL) {
+      if (bar!.low <= sL) {
         l2B = j;
         l2P = sL;
         reason = "breakeven";
         break;
       }
-      if (bar.high >= tp2L) {
+      if (bar!.high >= tp2L) {
         l2B = j;
         l2P = tp2L;
         reason = "tp2";
@@ -515,17 +515,17 @@ function fireMechanic(
   switch (m) {
     case "M1_nDown":
       if (i < 2) return false;
-      return closes[i] < closes[i - 1] && closes[i - 1] < closes[i - 2];
+      return closes[i]! < closes[i - 1]! && closes[i - 1]! < closes[i - 2]!;
     case "M4_rsi":
       if (i <= cfg.rsiLen) return false;
-      return r[i] <= cfg.rsiTh;
+      return r[i]! <= cfg.rsiTh;
     case "M5_breakout": {
       if (i < cfg.nHi + 1) return false;
-      return candles[i].close > maxLast(highs.slice(i - cfg.nHi, i), cfg.nHi);
+      return candles[i]!.close > maxLast(highs.slice(i - cfg.nHi, i), cfg.nHi);
     }
     case "M6_redBar": {
-      const o = candles[i].open;
-      const c = candles[i].close;
+      const o = candles[i]!.open;
+      const c = candles[i]!.close;
       if (o <= 0) return false;
       return (c - o) / o <= -cfg.redPct;
     }
@@ -548,9 +548,9 @@ export function mapFundingToBars(
   const sorted = [...funding].sort((a, b) => a.fundingTime - b.fundingTime);
   let j = 0;
   for (let i = 0; i < candles.length; i++) {
-    const t = candles[i].openTime;
-    while (j + 1 < sorted.length && sorted[j + 1].fundingTime <= t) j++;
-    if (sorted[j].fundingTime <= t) out[i] = sorted[j].fundingRate;
+    const t = candles[i]!.openTime;
+    while (j + 1 < sorted.length && sorted[j + 1]!.fundingTime <= t) j++;
+    if (sorted[j]!.fundingTime <= t) out[i] = sorted[j]!.fundingRate;
   }
   return out;
 }
@@ -583,12 +583,12 @@ export function runBtcIntraday(
   const trendMask: boolean[] = new Array(candles.length).fill(false);
   for (let i = cfg.htfLen; i < candles.length; i++) {
     const s = smaLast(closes.slice(i - cfg.htfLen, i), cfg.htfLen);
-    trendMask[i] = candles[i].close > s;
+    trendMask[i] = candles[i]!.close > s;
   }
   const macroMask: boolean[] = new Array(candles.length).fill(false);
   for (let i = cfg.macro30dBars; i < candles.length; i++) {
     const past = closes[i - cfg.macro30dBars];
-    if (past > 0) macroMask[i] = (closes[i] - past) / past > 0;
+    if (past! > 0) macroMask[i]! = (closes[i]! - past!) / past! > 0;
   }
   // Volume filter (iter133). Precompute the median for speed.
   const volumeMult = cfg.volumeMult ?? 0;
@@ -617,29 +617,30 @@ export function runBtcIntraday(
   for (let i = startIdx; i < candles.length - 1; i++) {
     // drop stale opens
     for (let k = openExits.length - 1; k >= 0; k--) {
-      if (openExits[k].exitBar < i) openExits.splice(k, 1);
+      if (openExits[k]!.exitBar < i) openExits.splice(k, 1);
     }
     if (openExits.length >= cfg.maxConcurrent) continue;
     if (!trendMask[i] || !macroMask[i]) continue;
-    const hr = new Date(candles[i].openTime).getUTCHours();
+    const hr = new Date(candles[i]!.openTime).getUTCHours();
     if (avoidSet.has(hr)) continue;
-    if (volumeMult > 0 && volumes[i] <= volumeMult * volumeMedian[i]) continue;
+    if (volumeMult > 0 && volumes[i]! <= volumeMult * volumeMedian[i]!)
+      continue;
 
     // iter142: funding-rate skip (only if rates were passed in)
     const fundingThreshold = cfg.fundingRateThreshold ?? 0;
     if (
       fundingThreshold > 0 &&
       fundingRatesPerBar &&
-      isFinite(fundingRatesPerBar[i]) &&
-      fundingRatesPerBar[i] > fundingThreshold
+      isFinite(fundingRatesPerBar[i]!) &&
+      fundingRatesPerBar[i]! > fundingThreshold
     )
       continue;
 
     // iter142: taker-buy ratio minimum
     const tbrMin = cfg.tbrMin ?? 0;
-    if (tbrMin > 0 && volumes[i] > 0) {
-      const takerBuy = candles[i].takerBuyVolume;
-      if (takerBuy !== undefined && takerBuy / volumes[i] < tbrMin) continue;
+    if (tbrMin > 0 && volumes[i]! > 0) {
+      const takerBuy = candles[i]!.takerBuyVolume;
+      if (takerBuy !== undefined && takerBuy / volumes[i]! < tbrMin) continue;
     }
 
     for (const m of mechs) {
@@ -649,9 +650,9 @@ export function runBtcIntraday(
       const r2 = executeLong(candles, i, cfg, atr[i]);
       if (!r2) continue;
       trades.push({
-        entryTime: candles[i + 1].openTime,
-        exitTime: candles[r2.exitBar].closeTime,
-        entry: candles[i + 1].open,
+        entryTime: candles[i + 1]!.openTime,
+        exitTime: candles[r2.exitBar]!.closeTime,
+        entry: candles[i + 1]!.open,
         mechanic: m,
         tp1Hit: r2.tp1Hit,
         pnl: r2.pnl,
@@ -711,17 +712,17 @@ export function getBtcIntradayLiveSignals(
   const i = candles.length - 2; // last closed bar with room for next-bar entry
   if (i < Math.max(cfg.htfLen, cfg.macro30dBars)) return [];
   const sma = smaLast(closes.slice(i - cfg.htfLen, i), cfg.htfLen);
-  const trendOk = candles[i].close > sma;
+  const trendOk = candles[i]!.close > sma;
   const past = closes[i - cfg.macro30dBars];
-  const macroOk = past > 0 && (closes[i] - past) / past > 0;
-  const hr = new Date(candles[i].openTime).getUTCHours();
+  const macroOk = past! > 0 && (closes[i]! - past!) / past! > 0;
+  const hr = new Date(candles[i]!.openTime).getUTCHours();
   if ((cfg.avoidHoursUtc ?? []).includes(hr)) return [];
   const volumeMult = cfg.volumeMult ?? 0;
   const volumeMedianLen = cfg.volumeMedianLen ?? 96;
   const volumeOk =
     volumeMult <= 0 ||
     (i >= volumeMedianLen &&
-      volumes[i] >
+      volumes[i]! >
         volumeMult *
           medianLast(volumes.slice(i - volumeMedianLen, i), volumeMedianLen));
   const out: BtcIntradayLiveSignal[] = [];
@@ -736,7 +737,7 @@ export function getBtcIntradayLiveSignals(
     if (fireMechanic(candles, closes, highs, r, i, m, cfg)) {
       out.push({
         barIndex: i,
-        barOpenTime: candles[i].openTime,
+        barOpenTime: candles[i]!.openTime,
         mechanic: m,
         trendOk,
         macroOk,

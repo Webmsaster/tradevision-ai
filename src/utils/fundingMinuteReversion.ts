@@ -68,10 +68,10 @@ function indexOfCandleAt(
     hi = candles.length - 1;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
-    if (candles[mid].closeTime < ts) lo = mid + 1;
+    if (candles[mid]!.closeTime < ts) lo = mid + 1;
     else hi = mid;
   }
-  return Math.abs(candles[lo]?.closeTime - ts) <= tolMs ? lo : -1;
+  return Math.abs((candles[lo]?.closeTime ?? 0) - ts) <= tolMs ? lo : -1;
 }
 
 export function runFundingMinuteBacktest(
@@ -108,7 +108,7 @@ export function runFundingMinuteBacktest(
     //   negative funding (shorts pay) → shorts buy pre-settle → we SHORT
     const direction: "long" | "short" = ev.fundingRate > 0 ? "long" : "short";
 
-    const entry = entryBar.close;
+    const entry = entryBar!.close;
     const stopLevel =
       direction === "long"
         ? entry * (1 - config.stopPct)
@@ -116,16 +116,16 @@ export function runFundingMinuteBacktest(
 
     let exitReason: FundingMinuteTrade["exitReason"] = "time";
     let actualExitIdx = exitIdx;
-    let exitPrice = exitBar.close;
+    let exitPrice = exitBar!.close;
     for (let j = entryIdx + 1; j <= exitIdx; j++) {
       const bar = sortedCandles[j];
-      if (direction === "long" && bar.low <= stopLevel) {
+      if (direction === "long" && bar!.low <= stopLevel) {
         actualExitIdx = j;
         exitPrice = stopLevel;
         exitReason = "stop";
         break;
       }
-      if (direction === "short" && bar.high >= stopLevel) {
+      if (direction === "short" && bar!.high >= stopLevel) {
         actualExitIdx = j;
         exitPrice = stopLevel;
         exitReason = "stop";
@@ -146,8 +146,8 @@ export function runFundingMinuteBacktest(
       direction,
       entry,
       exit: exitPrice,
-      entryTime: entryBar.closeTime,
-      exitTime: sortedCandles[actualExitIdx].closeTime,
+      entryTime: entryBar!.closeTime,
+      exitTime: sortedCandles[actualExitIdx]!.closeTime,
       netPnlPct: cost.netPnlPct,
       exitReason,
     });
@@ -169,12 +169,12 @@ export function runFundingMinuteBacktest(
   const std = Math.sqrt(varR);
   const periodDays =
     trades.length > 0
-      ? (trades[trades.length - 1].exitTime - trades[0].entryTime) / 86400000
+      ? (trades[trades.length - 1]!.exitTime - trades[0]!.entryTime) / 86400000
       : 30;
   const perYear = periodDays > 0 ? (trades.length / periodDays) * 365 : 0;
   const sharpe = std > 0 ? (m / std) * Math.sqrt(perYear) : 0;
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {

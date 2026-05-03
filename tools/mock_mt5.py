@@ -18,7 +18,7 @@ import json
 import time
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 # MT5 constants (partial — only what executor uses)
@@ -31,7 +31,18 @@ POSITION_TYPE_SELL = 1
 ORDER_TIME_GTC = 0
 ORDER_FILLING_IOC = 2
 TRADE_RETCODE_DONE = 10009
+DEAL_ENTRY_IN = 0
 DEAL_ENTRY_OUT = 1
+DEAL_ENTRY_INOUT = 2  # Hedge-Mode: position reverse (close + open opposite)
+DEAL_ENTRY_OUT_BY = 3  # Hedge-Mode: position close-by-opposite
+TIMEFRAME_M1 = 1
+TIMEFRAME_M5 = 5
+TIMEFRAME_M15 = 15
+TIMEFRAME_M30 = 30
+TIMEFRAME_H1 = 60
+TIMEFRAME_H2 = 120
+TIMEFRAME_H4 = 240
+TIMEFRAME_D1 = 1440
 
 # Binance symbol mapping for price feed
 BINANCE_MAP = {
@@ -120,6 +131,12 @@ class Position:
     comment: str
     time: int  # unix seconds
     max_hold_until: int  # ms (mock-only, not in real MT5)
+    # BUGFIX 2026-04-28 (Round 37 Bug 1): real mt5 returns positions with
+    # price_current; without this every _apply_trailing_stop /
+    # _apply_partial_tp / _apply_chandelier_stop / _apply_break_even /
+    # _apply_time_exit raised AttributeError in mock mode → silently
+    # skipped all position management in CI tests.
+    price_current: float = 0.0
 
 
 @dataclass
@@ -192,12 +209,49 @@ def symbol_info(symbol: str) -> SymbolInfo | None:
     )
 
 
-def positions_get(ticket: int | None = None) -> tuple:
+# BUGFIX 2026-04-28: parity with real mt5 module — Pyright now sees both
+# `symbol_info_tick` and the `symbol=` kwarg on `positions_get`.
+@dataclass
+class SymbolTick:
+    bid: float
+    ask: float
+    last: float
+    volume: int = 0
+    time: int = 0
+
+
+def symbol_info_tick(symbol: str) -> SymbolTick | None:
+    info = symbol_info(symbol)
+    if info is None:
+        return None
+    mid = (info.bid + info.ask) / 2
+    return SymbolTick(bid=info.bid, ask=info.ask, last=mid, time=int(datetime.now(timezone.utc).timestamp()))
+
+
+def positions_get(ticket: int | None = None, symbol: str | None = None, magic: int | None = None) -> tuple:
     _check_position_exits()
     if ticket is not None:
         p = _STATE["positions"].get(ticket)
-        return (p,) if p else ()
-    return tuple(_STATE["positions"].values())
+        if p is None:
+            return ()
+        _refresh_price_current(p)
+        return (p,)
+    out = list(_STATE["positions"].values())
+    if symbol is not None:
+        out = [p for p in out if getattr(p, "symbol", None) == symbol]
+    if magic is not None:
+        out = [p for p in out if getattr(p, "magic", None) == magic]
+    for p in out:
+        _refresh_price_current(p)
+    return tuple(out)
+
+
+def _refresh_price_current(p: Position) -> None:
+    """Populate price_current with the latest mid-quote so callers can read
+    `pos.price_current` like the real mt5 module returns."""
+    px = _get_price(p.symbol)
+    if px > 0:
+        p.price_current = px
 
 
 def history_deals_get(from_dt: datetime, to_dt: datetime) -> tuple:
@@ -205,6 +259,38 @@ def history_deals_get(from_dt: datetime, to_dt: datetime) -> tuple:
     to_ts = int(to_dt.timestamp())
     deals = [d for d in _STATE["deals"] if from_ts <= d.time <= to_ts]
     return tuple(deals)
+
+
+def copy_rates_from_pos(symbol: str, timeframe: int, start_pos: int, count: int):
+    """
+    Mock implementation: returns synthetic OHLC bars for the symbol using
+    a flat-line + tiny noise around the current Binance price. Used by
+    regime-classifier in ftmo_executor for live regime detection — in tests
+    we just need it to return *something* valid-shaped (a list of dicts with
+    'close' key) so the classifier's defensive guards don't trip.
+    """
+    import math
+    info = symbol_info(symbol)
+    if info is None:
+        return None
+    base = info.bid if info.bid > 0 else 1.0
+    bars = []
+    for i in range(count):
+        # Tiny deterministic wiggle so realised vol > 0 but trend ~ 0.
+        wig = (math.sin(i * 0.13) * 0.001) * base
+        bars.append(
+            {
+                "time": int(time.time()) - (count - i) * timeframe * 60,
+                "open": base + wig,
+                "high": base + abs(wig) + 0.0005 * base,
+                "low": base - abs(wig) - 0.0005 * base,
+                "close": base + wig,
+                "tick_volume": 1000,
+                "spread": 1,
+                "real_volume": 0,
+            }
+        )
+    return bars
 
 
 def order_send(request: dict) -> OrderResult | None:

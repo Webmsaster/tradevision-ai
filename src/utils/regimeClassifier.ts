@@ -58,8 +58,8 @@ function stdevLogRet(candles: Candle[]): number {
   if (candles.length < 2) return 0;
   const rets: number[] = [];
   for (let i = 1; i < candles.length; i++) {
-    if (candles[i - 1].close > 0 && candles[i].close > 0) {
-      rets.push(Math.log(candles[i].close / candles[i - 1].close));
+    if (candles[i - 1]!.close > 0 && candles[i]!.close > 0) {
+      rets.push(Math.log(candles[i]!.close / candles[i - 1]!.close));
     }
   }
   const mean = rets.reduce((a, b) => a + b, 0) / Math.max(1, rets.length);
@@ -83,12 +83,12 @@ export function classifyRegimes(
   let i = 0;
   while (i + config.windowHours < sortedCandles.length) {
     const window = sortedCandles.slice(i, i + config.windowHours);
-    const startTime = window[0].openTime;
-    const endTime = window[window.length - 1].closeTime;
+    const startTime = window[0]!.openTime;
+    const endTime = window[window.length - 1]!.closeTime;
 
     const realizedVol = stdevLogRet(window);
     const trend =
-      (window[window.length - 1].close - window[0].close) / window[0].close;
+      (window[window.length - 1]!.close - window[0]!.close) / window[0]!.close;
     const windowFunding = sortedFunding.filter(
       (f) => f.fundingTime >= startTime && f.fundingTime <= endTime,
     );
@@ -197,15 +197,15 @@ export function pnlByRegime(
       idx = -1;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
-      if (sortedW[mid].startTime > t.time) hi = mid - 1;
-      else if (sortedW[mid].endTime < t.time) lo = mid + 1;
+      if (sortedW[mid]!.startTime > t.time) hi = mid - 1;
+      else if (sortedW[mid]!.endTime < t.time) lo = mid + 1;
       else {
         idx = mid;
         break;
       }
     }
     if (idx < 0) continue;
-    const regime = sortedW[idx].regime;
+    const regime = sortedW[idx]!.regime;
     result[regime].n++;
     sums[regime] += t.pnlPct;
     result[regime].totalPct = sums[regime];

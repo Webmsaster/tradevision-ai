@@ -169,7 +169,18 @@ FTMO_CONSISTENCY_HARD_RATIO=0.42
 FTMO_NEWS_CLOSE_MINUTES=30
 "@
 Set-Content -Path $envPath -Value $envContent -Encoding UTF8
-Write-Ok "Wrote $envPath"
+
+# Phase 71 (R45-CFG-8): restrict ACL on .env.ftmo so the Telegram bot
+# token + other secrets are readable only by the installing user.
+# Without this, on a multi-user VPS any logged-in account with read
+# access to the install directory could cat the token.
+try {
+    icacls $envPath /inheritance:r /grant:r "${env:USERNAME}:F" /grant:r "SYSTEM:F" /grant:r "Administrators:F" 2>&1 | Out-Null
+    Write-Ok "Wrote $envPath (ACL: $($env:USERNAME) + SYSTEM + Admins only)"
+} catch {
+    Write-Warning "Could not restrict ACL on $envPath — verify multi-user safety manually"
+    Write-Ok "Wrote $envPath"
+}
 
 # Bootstrap launch scripts
 $launchNode = @"

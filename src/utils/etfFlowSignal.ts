@@ -51,7 +51,7 @@ export function addEtfFlowEntry(
   const all = loadEtfFlowHistory();
   const existing = all.findIndex((e) => e.date === date);
   if (existing >= 0) {
-    all[existing].netFlowUsd = netFlowUsd;
+    all[existing]!.netFlowUsd = netFlowUsd;
   } else {
     all.push({ date, netFlowUsd });
   }
@@ -73,27 +73,27 @@ export function computeEtfFlowSignal(
   let reason: string;
   let action: string;
 
-  if (latest.netFlowUsd > thresholdUsd && prev.netFlowUsd > thresholdUsd) {
+  if (latest!.netFlowUsd > thresholdUsd && prev!.netFlowUsd > thresholdUsd) {
     signal = "long";
-    reason = `2 consecutive days > +$${(thresholdUsd / 1e6).toFixed(0)}M (${(prev.netFlowUsd / 1e6).toFixed(0)}M → ${(latest.netFlowUsd / 1e6).toFixed(0)}M)`;
+    reason = `2 consecutive days > +$${(thresholdUsd / 1e6).toFixed(0)}M (${(prev!.netFlowUsd / 1e6).toFixed(0)}M → ${(latest!.netFlowUsd / 1e6).toFixed(0)}M)`;
     action = `Long BTC at next-day open, exit 24h later. Target +1.5%, stop -1%.`;
   } else if (
-    latest.netFlowUsd < -thresholdUsd &&
-    prev.netFlowUsd < -thresholdUsd
+    latest!.netFlowUsd < -thresholdUsd &&
+    prev!.netFlowUsd < -thresholdUsd
   ) {
     signal = "short";
-    reason = `2 consecutive days < -$${(thresholdUsd / 1e6).toFixed(0)}M (${(prev.netFlowUsd / 1e6).toFixed(0)}M → ${(latest.netFlowUsd / 1e6).toFixed(0)}M)`;
+    reason = `2 consecutive days < -$${(thresholdUsd / 1e6).toFixed(0)}M (${(prev!.netFlowUsd / 1e6).toFixed(0)}M → ${(latest!.netFlowUsd / 1e6).toFixed(0)}M)`;
     action = `Short BTC at next-day open, exit 24h later. Target -1.5%, stop +1%.`;
   } else {
-    reason = `Latest ${(latest.netFlowUsd / 1e6).toFixed(0)}M + prev ${(prev.netFlowUsd / 1e6).toFixed(0)}M — no 2-day confirmation in either direction`;
+    reason = `Latest ${(latest!.netFlowUsd / 1e6).toFixed(0)}M + prev ${(prev!.netFlowUsd / 1e6).toFixed(0)}M — no 2-day confirmation in either direction`;
     action = `No trade — wait for 2 consecutive days above ±$${(thresholdUsd / 1e6).toFixed(0)}M`;
   }
 
   return {
-    latestDate: latest.date,
-    prevDate: prev.date,
-    latestFlow: latest.netFlowUsd,
-    prevFlow: prev.netFlowUsd,
+    latestDate: latest!.date,
+    prevDate: prev!.date,
+    latestFlow: latest!.netFlowUsd,
+    prevFlow: prev!.netFlowUsd,
     signal,
     reason,
     action,
@@ -111,8 +111,8 @@ export function parseEtfFlowPaste(raw: string): EtfFlowEntry[] {
       .trim()
       .match(/^(\d{4}-\d{2}-\d{2})[\s,\t]+(-?[\d,.]+)\s*([MmBb]?)/);
     if (!m) continue;
-    const date = m[1];
-    let value = parseFloat(m[2].replace(/,/g, ""));
+    const date = m[1]!;
+    let value = parseFloat(m[2]!.replace(/,/g, ""));
     const suffix = (m[3] ?? "").toLowerCase();
     if (suffix === "b") value *= 1_000_000_000;
     else if (suffix === "m" || Math.abs(value) < 1_000_000) value *= 1_000_000;

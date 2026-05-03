@@ -83,11 +83,11 @@ export function computeMetrics({
   let maxDd = 0;
   let maxDdDuration = 0;
   for (let i = 0; i < equityCurve.length; i++) {
-    if (equityCurve[i] > peak) {
-      peak = equityCurve[i];
+    if (equityCurve[i]! > peak) {
+      peak = equityCurve[i]!;
       peakIdx = i;
     }
-    const dd = (peak - equityCurve[i]) / peak;
+    const dd = (peak - equityCurve[i]!) / peak;
     if (dd > maxDd) {
       maxDd = dd;
       maxDdDuration = i - peakIdx;

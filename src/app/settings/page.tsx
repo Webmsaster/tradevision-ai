@@ -5,6 +5,7 @@ import {
   SETTINGS_CHANGED_EVENT,
   SETTINGS_KEY as SETTINGS_STORAGE_KEY,
 } from "@/lib/constants";
+import { isValidHttpsUrl } from "@/utils/urlSafety";
 
 interface WebhookSettings {
   enabled: boolean;
@@ -155,41 +156,40 @@ export default function SettingsPage() {
       setTestResult("Please enter a webhook URL first.");
       return;
     }
-    try {
-      const parsed = new URL(settings.webhook.url);
-      if (parsed.protocol !== "https:") {
-        setTestResult("Webhook URL must use HTTPS.");
-        return;
-      }
-    } catch {
-      setTestResult("Invalid URL format.");
+    // Phase 86 (R51-S1): client-side string gate via isValidHttpsUrl.
+    // Round 54 (Finding #5): the actual fetch is now done server-side
+    // (`/api/webhook-test`) so we can DNS-resolve and reject hostnames
+    // that resolve to private IPs (DNS rebinding) and refuse 30x
+    // redirects. The client check stays as an early UX hint.
+    if (!isValidHttpsUrl(settings.webhook.url)) {
+      setTestResult(
+        "Webhook URL must use HTTPS and point to a public host (no private IPs / loopback).",
+      );
       return;
     }
     setTestResult("Sending...");
     try {
-      const payload =
-        settings.webhook.platform === "discord"
-          ? {
-              content:
-                "TradeVision AI - Test notification. Your webhook is working!",
-            }
-          : settings.webhook.platform === "telegram"
-            ? {
-                text: "TradeVision AI - Test notification. Your webhook is working!",
-              }
-            : { event: "test", message: "TradeVision AI - Test notification." };
-
-      const res = await fetch(settings.webhook.url, {
+      const res = await fetch("/api/webhook-test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          url: settings.webhook.url,
+          platform: settings.webhook.platform,
+        }),
       });
-
-      setTestResult(
-        res.ok
-          ? "Test sent successfully!"
-          : `Failed: ${res.status} ${res.statusText}`,
-      );
+      const data = (await res.json()) as {
+        ok: boolean;
+        status?: number;
+        latencyMs?: number;
+        error?: string;
+      };
+      if (data.ok) {
+        setTestResult(
+          `Test sent successfully! (${data.status ?? 200}, ${data.latencyMs ?? 0}ms)`,
+        );
+      } else {
+        setTestResult(`Failed: ${data.error ?? "Unknown error"}`);
+      }
     } catch (err) {
       setTestResult(
         `Error: ${err instanceof Error ? err.message : "Failed to send"}`,
@@ -217,7 +217,8 @@ export default function SettingsPage() {
       accounts: prev.accounts.filter((a) => a.id !== id),
       activeAccountId:
         prev.activeAccountId === id
-          ? prev.accounts[0].id
+          ? // Phase 78: at least the "default" account is always present.
+            (prev.accounts[0]?.id ?? "default")
           : prev.activeAccountId,
     }));
   }

@@ -12,6 +12,7 @@
  */
 
 import type { Candle } from "@/utils/indicators";
+import { fetchJsonWithRetry } from "@/utils/httpRetry";
 
 const OKX_BTC = "https://www.okx.com/api/v5/market/ticker?instId=BTC-USDT";
 const BINANCE_BTC_SPOT =
@@ -29,17 +30,11 @@ export interface OkxPremiumSnapshot {
 }
 
 export async function fetchOkxPremium(): Promise<OkxPremiumSnapshot> {
-  const [okxRes, bnbRes] = await Promise.all([
-    fetch(OKX_BTC),
-    fetch(BINANCE_BTC_SPOT),
+  // Round 56 (Fix 3): timeout + retry/backoff via shared helper.
+  const [okxJson, bnbJson] = await Promise.all([
+    fetchJsonWithRetry<{ code: string; data: { last: string }[] }>(OKX_BTC),
+    fetchJsonWithRetry<{ price: string }>(BINANCE_BTC_SPOT),
   ]);
-  if (!okxRes.ok) throw new Error(`OKX fetch failed: ${okxRes.status}`);
-  if (!bnbRes.ok) throw new Error(`Binance fetch failed: ${bnbRes.status}`);
-  const okxJson = (await okxRes.json()) as {
-    code: string;
-    data: { last: string }[];
-  };
-  const bnbJson = (await bnbRes.json()) as { price: string };
   if (okxJson.code !== "0" || !okxJson.data?.[0]) {
     throw new Error(`OKX response malformed`);
   }
@@ -158,7 +153,7 @@ export async function fetchOkxLongHistory(
   let after: number | undefined;
   const maxPages = Math.ceil(targetBars / 100) + 5;
   for (let page = 0; page < maxPages && all.length < targetBars; page++) {
-    let batch: Candle[] = [];
+    let batch: Candle[];
     try {
       batch = await fetchOkxCandles(instId, bar, 100, after);
     } catch {
@@ -179,7 +174,7 @@ export async function fetchOkxLongHistory(
       }
     }
     if (freshAdded === 0) break;
-    after = batch[0].openTime; // oldest → pagination backwards
+    after = batch[0]!.openTime; // oldest → pagination backwards
     await new Promise((r) => setTimeout(r, 250));
   }
   return all.sort((a, b) => a.openTime - b.openTime);

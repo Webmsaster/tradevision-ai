@@ -134,8 +134,8 @@ describe("btcFlashDaytrade — runner smoke tests", () => {
     expect(r.trades.length).toBeGreaterThanOrEqual(1);
     const t = r.trades[0];
     // 10× leverage on ~+10% gross = +100% effective (minus costs)
-    expect(t.effPnl).toBeGreaterThan(0.8);
-    expect(t.liquidated).toBe(false);
+    expect(t!.effPnl).toBeGreaterThan(0.8);
+    expect(t!.liquidated).toBe(false);
   });
 
   it("floors effective pnl at −1.0 on liquidation (never less)", () => {
@@ -159,8 +159,8 @@ describe("btcFlashDaytrade — runner smoke tests", () => {
     // With 50× lev and 2% stop: per-trade loss = 50 × (−2%) = −100% = liquidation
     if (r.trades.length > 0) {
       const t = r.trades[0];
-      expect(t.effPnl).toBeGreaterThanOrEqual(-1.0);
-      expect(t.effPnl).toBeLessThanOrEqual(0);
+      expect(t!.effPnl).toBeGreaterThanOrEqual(-1.0);
+      expect(t!.effPnl).toBeLessThanOrEqual(0);
     }
   });
 });

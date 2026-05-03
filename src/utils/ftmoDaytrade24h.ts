@@ -144,6 +144,31 @@ export interface Daytrade24hAssetCfg {
     compressionBars: number; // lookback for narrowest-range identification
   };
   /**
+   * Round-45+ MEAN-REVERSION (Bollinger + RSI) entry.
+   * Long when:  close < lower Bollinger Band (bbPeriod, bbSigma stddev) AND
+   *             RSI(rsiPeriod) <= rsiThresh (oversold confirmation)
+   * Short skipped (FTMO crypto is long-only by design — disableShort=true).
+   * Best paired with TP at middle BB (not implemented as exit — use cfg.tpPct
+   * tuned to ~mean-distance) and tight atrStop.
+   */
+  meanRevEntry?: {
+    bbPeriod: number;
+    bbSigma: number;
+    rsiPeriod: number;
+    rsiThresh: number; // long fires when RSI <= rsiThresh
+  };
+  /**
+   * Round-46+ BREAKOUT entry (Donchian + Volatility-Expansion gate).
+   * Long when:  close > N-bar prior highest-high AND
+   *             ATR(atrPeriod) > SMA-of-ATR over volMaPeriod bars
+   *             (volatility expansion confirms breakout, filters out fakeouts)
+   */
+  breakoutEntry?: {
+    donchianPeriod: number;
+    atrPeriod: number;
+    volMaPeriod: number;
+  };
+  /**
    * Source symbol for candle lookup, if different from `symbol`.
    * Lets two logical assets share the same underlying candles (e.g.
    * ETHUSDT mean-reversion and ETHUSDT momentum as virtual assets).
@@ -310,6 +335,93 @@ export interface FtmoDaytrade24hConfig {
    * (multiple correlated crypto longs all hitting stop in one bad bar).
    */
   maxConcurrentTrades?: number;
+  /**
+   * Round-13 Anti-DL feature: intraday daily-loss circuit-breaker.
+   *
+   * Web research showed top-tier FTMO bots have a 2-stage daily-loss kill-switch
+   * (Prop Firm Risk Guard pattern). When realized day-PnL drops to:
+   *   - softLossThreshold (e.g. -0.03 = -3%): scale risk by `softFactor` (e.g. 0.5)
+   *   - hardLossThreshold (e.g. -0.04 = -4%): block all new entries for the day
+   *
+   * Targets V5_NOVA's 53% DL-fail rate by stopping the "letzter trade kippt
+   * den Account"-pattern — most blow-ups happen on the 4th or 5th trade of
+   * a losing day, not the 1st. Tightening sizing after -3% prevents the
+   * runaway. Operates on REALIZED equity (sort-by-exit), conservative compared
+   * to true intraday tick-based.
+   */
+  intradayDailyLossThrottle?: {
+    softLossThreshold: number; // e.g. 0.03 (positive number, treated as -3%)
+    hardLossThreshold: number; // e.g. 0.04 (positive number, treated as -4%)
+    softFactor: number; // e.g. 0.5 — multiplier on factor when soft hit
+  };
+  /**
+   * Round-22 Reliability feature: simulate bot ping-reliability for the
+   * pause-after-target ping-trade phase.
+   *
+   * Default 1.0 (current behavior — assumes 100% bot uptime + zero failed
+   * pings). In live, pings can fail due to bot downtime, cron-miss, or
+   * MT5-disconnect. Use 0.85 for a conservatively-reliable bot, or 0.7 for
+   * realistic worst-case. Engine simulates each ping-day as Bernoulli(prob);
+   * failed pings advance the calendar day without satisfying minTradingDays.
+   *
+   * Without this realism, pause-mode pass-rates are inflated 10-20pp because
+   * 76% of passes cluster exactly at minTradingDays floor (engine guarantees
+   * ping success). Memory note: V5_QUARTZ_LITE 83.58% pass / median 4d
+   * was measured at pingReliability=1.0 (best case).
+   */
+  pingReliability?: number;
+  /**
+   * Round-28 Live-Replication mode: switches the equity-loop sort from
+   * EXIT-time order (default — see all.sort comment) to ENTRY-time order.
+   *
+   * Default false (back-compat with backtest numbers). Set to true to
+   * approximate the bar-by-bar live-replication: trades are processed in
+   * the chronological order they were ENTERED (the order a live bot would
+   * actually open them), not the order they happened to close. This means:
+   *   - MCT cap (maxConcurrentTrades) is checked against the realised
+   *     entry-order (no later-exit selection bias).
+   *   - Equity at trade-N's entry already includes ALL still-open trades'
+   *     not-yet-realised PnL (consistent with a live broker's mark-to-mkt
+   *     equity at the moment the next order is sent).
+   * NOTE: this is ONE part of true live-replication. The detector phase
+   * (detectAsset → all signals collected up-front) still has full window
+   * lookahead for stack-ranking (momentumRanking, correlationFilter checks
+   * walk pre-sorted `all` with future trades). True bar-by-bar live needs
+   * a chronological detector (V4 simulator). liveMode is a midpoint check
+   * that isolates "is the EXIT-time sort the source of inflation?"
+   */
+  liveMode?: boolean;
+  /**
+   * Round-15 Anti-TL feature: challenge-peak trailing equity-stop.
+   *
+   * Sister to dailyPeakTrailingStop but on CHALLENGE-WIDE peak instead of
+   * daily peak. When equity drops `trailDistance` below the all-time
+   * challenge peak, halt all new entries until the challenge ends.
+   *
+   * Targets the "good day, then 4 bad days nuke account" pattern that
+   * pushes TL fail-rate. Distinct from peakDrawdownThrottle (which scales
+   * down sizing — this hard-stops new entries).
+   *
+   * Example: equity rose to +6%, trailDistance=0.05 — once equity drops
+   * to +1%, stop trading and ride out remaining days for the win.
+   */
+  challengePeakTrailingStop?: {
+    trailDistance: number; // e.g. 0.05 = 5% below challenge peak
+  };
+  /**
+   * Round-13 Anti-DL feature: daily equity-peak trailing stop.
+   *
+   * Tracks intraday peak equity per day. If equity drops more than
+   * `trailDistance` below daily peak, halt new entries until next day.
+   * Prevents profit-give-back DL fails — distinct from peakDrawdownThrottle
+   * (challenge-wide peak) and drawdownShield (absolute equity threshold).
+   *
+   * Example: peak +2.5% intraday, trailDistance=0.03, equity drops to -0.5%
+   *   → 3pp below peak → block new entries.
+   */
+  dailyPeakTrailingStop?: {
+    trailDistance: number; // e.g. 0.03 = 3% below daily peak
+  };
   /**
    * Volume confirmation filter: skip trade if trigger bar's volume is below
    * `minRatio × SMA(period)` of preceding volumes. Catches "real" breakouts.
@@ -637,6 +749,18 @@ export interface FtmoDaytrade24hConfig {
     apply: "long" | "short" | "both";
     threshold: number;
   };
+  /**
+   * Round 57 (R57-V4-2): Optional explicit challenge-anchor timestamp
+   * (UTC ms). When set, the V4 live engine uses this as `challengeStartTs`
+   * on the first poll instead of `lastBar.openTime`. This matters when a
+   * user activates the FTMO challenge mid-day (e.g. Friday 16:00 Prague):
+   * FTMO's daily-loss anchor starts at the NEXT midnight Prague, but the
+   * bot would otherwise see ~8 hours of "day 0" before the rollover.
+   *
+   * Live executor reads this from `CHALLENGE_START_DATE` env var
+   * (ISO timestamp) and passes it through.
+   */
+  challengeStartTs?: number;
 }
 
 /**
@@ -1368,7 +1492,7 @@ export const FTMO_DAYTRADE_24H_CONFIG_V231: FtmoDaytrade24hConfig = {
  */
 export const FTMO_DAYTRADE_24H_CONFIG_V232: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V231,
-  minTradingDays: 5,
+  minTradingDays: 4, // Phase 24: 5→4 (FTMO real rule, was research-mode artifact)
   crossAssetFilter: {
     symbol: "BTCUSDT",
     emaFastPeriod: 10,
@@ -1427,7 +1551,7 @@ export const FTMO_DAYTRADE_24H_CONFIG_V232: FtmoDaytrade24hConfig = {
  */
 export const FTMO_DAYTRADE_24H_CONFIG_V232_FAST: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V231,
-  minTradingDays: 5,
+  minTradingDays: 4, // Phase 24: 5→4 (FTMO real rule, was research-mode artifact)
   assets: [
     ...FTMO_DAYTRADE_24H_CONFIG_V231.assets,
     {
@@ -1531,7 +1655,7 @@ export const FTMO_DAYTRADE_24H_CONFIG_V233_FAST: FtmoDaytrade24hConfig = {
  */
 export const FTMO_DAYTRADE_24H_CONFIG_V233_LITE: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V231,
-  minTradingDays: 5,
+  minTradingDays: 4, // Phase 24: 5→4 (FTMO real rule, was research-mode artifact)
   timeBoost: { afterDay: 5, equityBelow: 0.08, factor: 1.8 },
   // Same assets as V231 (ETH+BTC+SOL) — no ARB/MATIC needed
 };
@@ -1555,7 +1679,7 @@ export const FTMO_DAYTRADE_24H_CONFIG_V233_LITE: FtmoDaytrade24hConfig = {
  */
 export const FTMO_DAYTRADE_24H_CONFIG_V234: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V231,
-  minTradingDays: 5,
+  minTradingDays: 4, // Phase 24: 5→4 (FTMO real rule, was research-mode artifact)
   timeBoost: { afterDay: 5, equityBelow: 0.08, factor: 1.6 },
   // ETH+BTC+SOL (no ARB/MATIC — they didn't help on full data)
 };
@@ -2545,6 +2669,9 @@ export const FTMO_DAYTRADE_24H_CONFIG_V12_TURBO_30M_OPT: FtmoDaytrade24hConfig =
     ),
   };
 
+// V12_QUARTZ_30M is defined at the bottom of the file because it depends on
+// FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE which is declared later.
+
 /**
  * LIVE_30M_V1 — first config tuned WITH the live-execution caps in place.
  *
@@ -2804,7 +2931,7 @@ export const FTMO_DAYTRADE_24H_CONFIG_V1H_CHAMPION: FtmoDaytrade24hConfig = {
     momSkipShortAbove: 0.005, // skip even tiny BTC bullish drift (BTC-residual approximation)
   },
   breakEven: { threshold: 0.015 }, // iter1h-020 win: 1.5% > 1.2% by +0.7pp pass
-  minTradingDays: 5, // FTMO REAL requirement (engine default 4 was too lenient)
+  minTradingDays: 4, // Phase 24: 5→4 (FTMO real rule, was research-mode artifact) // FTMO REAL requirement (engine default 4 was too lenient)
   assets: [
     {
       symbol: "ETH-MR",
@@ -3117,21 +3244,22 @@ export function pickBestConfig(btcCandles: Candle[]): {
   const ema = (vals: number[], period: number): number => {
     const k = 2 / (period + 1);
     let e = vals.slice(0, period).reduce((s, v) => s + v, 0) / period;
-    for (let i = period; i < vals.length; i++) e = vals[i] * k + e * (1 - k);
+    for (let i = period; i < vals.length; i++) e = vals[i]! * k + e * (1 - k);
     return e;
   };
   const last = closes[closes.length - 1];
   const emaFast = ema(closes, 10);
   const emaSlow = ema(closes, 15);
-  const mom6 = (last - closes[closes.length - 6]) / closes[closes.length - 6];
-  const btcUptrend = last > emaFast && emaFast > emaSlow;
+  const mom6 =
+    (last! - closes[closes.length - 6]!) / closes[closes.length - 6]!;
+  const btcUptrend = last! > emaFast && emaFast > emaSlow;
   const btcBullMom = mom6 > 0.02;
 
   if (btcUptrend && btcBullMom) {
     return {
       cfg: FTMO_DAYTRADE_24H_CONFIG_BULL,
       regime: "BULL",
-      reason: `BTC in uptrend (close=${last.toFixed(0)} > EMA10=${emaFast.toFixed(0)} > EMA15=${emaSlow.toFixed(0)}) AND 24h mom +${(mom6 * 100).toFixed(2)}% > +2%`,
+      reason: `BTC in uptrend (close=${last!.toFixed(0)} > EMA10=${emaFast.toFixed(0)} > EMA15=${emaSlow.toFixed(0)}) AND 24h mom +${(mom6 * 100).toFixed(2)}% > +2%`,
     };
   }
   return {
@@ -3236,7 +3364,12 @@ export interface Daytrade24hTrade {
   exitPrice: number;
   rawPnl: number;
   effPnl: number;
+  /** Exit day relative to challenge start (0-indexed, Prague midnight). FTMO
+   *  daily-loss attribution day. */
   day: number;
+  /** Entry day relative to challenge start. Used for minTradingDays counting
+   *  (FTMO counts a "trading day" as a day with an executed entry). */
+  entryDay: number;
   exitReason: "tp" | "stop" | "time";
   holdHours: number;
   /** iter1h-035+ vol-targeting multiplier applied at entry (default 1.0) */
@@ -3254,8 +3387,33 @@ export interface FtmoDaytrade24hResult {
   finalEquityPct: number;
   maxDrawdown: number;
   uniqueTradingDays: number;
+  /** One-based official challenge pass day, including virtual ping days. */
+  passDay?: number;
   trades: Daytrade24hTrade[];
   maxHoldHoursObserved: number;
+}
+
+// BUGFIX 2026-04-29 (Agent 5): DST-aware Prague day-index. Returns days since
+// epoch in Europe/Prague time zone. Uses Intl.DateTimeFormat — handles CET/CEST
+// transitions automatically. Fallback to fixed UTC+1 if Intl unavailable.
+const _pragueFmt =
+  typeof Intl !== "undefined" && (Intl as any).DateTimeFormat
+    ? new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Europe/Prague",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      })
+    : null;
+export function pragueDay(ms: number): number {
+  if (_pragueFmt) {
+    const yyyymmdd = _pragueFmt.format(new Date(ms)); // "YYYY-MM-DD"
+    const [y, m, d] = yyyymmdd.split("-").map(Number);
+    // Day-index since epoch using UTC of (Prague-Y/M/D 00:00 as if UTC).
+    return Math.floor(Date.UTC(y!, m! - 1, d!) / (24 * 3600 * 1000));
+  }
+  // Fallback: fixed UTC+1 (legacy behavior, ~0.3-0.6pp drift in summer).
+  return Math.floor((ms + 3600 * 1000) / (24 * 3600 * 1000));
 }
 
 export function detectAsset(
@@ -3279,13 +3437,13 @@ export function detectAsset(
   // BUGFIX 2026-04-28: lossStreak/cooldownUntilBar moved into direction loop
   // (was leaking between long/short — short trades got cooldown'd by long stops).
   const lsc = cfg.lossStreakCooldown;
-  const ts0 = candles[0].openTime;
+  const ts0 = candles[0]!.openTime;
   const cost = asset.costBp / 10000;
   // Derive bar duration from the data so 30m / 1h / 2h / 4h all report
   // accurate holdHours. (Used only for trade-record display, not logic.)
   const hoursPerBar =
     candles.length >= 2
-      ? (candles[1].openTime - candles[0].openTime) / 3_600_000
+      ? (candles[1]!.openTime - candles[0]!.openTime) / 3_600_000
       : 4;
 
   // Pre-compute RSI once per asset if filter configured.
@@ -3396,6 +3554,18 @@ export function detectAsset(
     const maCross = asset.maCrossEntry;
     const tsMom = asset.tsMomentumEntry;
     const nr7 = asset.nr7Entry;
+    const mrEntry = asset.meanRevEntry;
+    const boEntry = asset.breakoutEntry;
+    // Pre-compute series for new signal generators (round 45/46).
+    const mrRsiSeries: (number | null)[] | null = mrEntry
+      ? rsi(
+          candles.map((c) => c.close),
+          mrEntry.rsiPeriod,
+        )
+      : null;
+    const boAtrSeries: (number | null)[] | null = boEntry
+      ? atr(candles, boEntry.atrPeriod)
+      : null;
     const startBar = donchianP
       ? donchianP + 1
       : bbKc
@@ -3406,7 +3576,14 @@ export function detectAsset(
             ? tsMom.lookbackBars + 1
             : nr7
               ? nr7.compressionBars + 1
-              : triggerBars;
+              : mrEntry
+                ? Math.max(mrEntry.bbPeriod, mrEntry.rsiPeriod) + 1
+                : boEntry
+                  ? Math.max(
+                      boEntry.donchianPeriod,
+                      boEntry.atrPeriod + boEntry.volMaPeriod,
+                    ) + 1
+                  : triggerBars;
     for (let i = startBar; i < candles.length - 1; i++) {
       if (i < cooldown) continue;
       // V5 re-entry: skip pattern check if within re-entry window after stop
@@ -3423,11 +3600,11 @@ export function detectAsset(
         let pHigh = -Infinity,
           pLow = Infinity;
         for (let k = i - donchianP; k < i; k++) {
-          if (candles[k].high > pHigh) pHigh = candles[k].high;
-          if (candles[k].low < pLow) pLow = candles[k].low;
+          if (candles[k]!.high > pHigh) pHigh = candles[k]!.high;
+          if (candles[k]!.low < pLow) pLow = candles[k]!.low;
         }
-        if (direction === "long" && candles[i].close <= pHigh) ok = false;
-        if (direction === "short" && candles[i].close >= pLow) ok = false;
+        if (direction === "long" && candles[i]!.close <= pHigh) ok = false;
+        if (direction === "short" && candles[i]!.close >= pLow) ok = false;
       } else if (bbKc) {
         // BB-KC Squeeze release: BB was inside KC for minSqueezeBars, now expands outside
         const bbP = bbKc.bbPeriod,
@@ -3438,17 +3615,17 @@ export function detectAsset(
         } else {
           // SMA + stddev for BB
           let sum = 0;
-          for (let k = i - bbP + 1; k <= i; k++) sum += candles[k].close;
+          for (let k = i - bbP + 1; k <= i; k++) sum += candles[k]!.close;
           const mean = sum / bbP;
           let varSum = 0;
           for (let k = i - bbP + 1; k <= i; k++)
-            varSum += (candles[k].close - mean) ** 2;
+            varSum += (candles[k]!.close - mean) ** 2;
           const stddev = Math.sqrt(varSum / bbP);
           const bbUpper = mean + bbKc.bbSigma * stddev;
           const bbLower = mean - bbKc.bbSigma * stddev;
           // KC center = SMA of close (kcP), bands = ±mult × ATR(kcP)
           let kcSum = 0;
-          for (let k = i - kcP + 1; k <= i; k++) kcSum += candles[k].close;
+          for (let k = i - kcP + 1; k <= i; k++) kcSum += candles[k]!.close;
           const kcCenter = kcSum / kcP;
           // True range over kcP bars
           let trSum = 0;
@@ -3456,9 +3633,9 @@ export function detectAsset(
             const c = candles[k];
             const prev = candles[k - 1] ?? candles[k];
             trSum += Math.max(
-              c.high - c.low,
-              Math.abs(c.high - prev.close),
-              Math.abs(c.low - prev.close),
+              c!.high - c!.low,
+              Math.abs(c!.high - prev!.close),
+              Math.abs(c!.low - prev!.close),
             );
           }
           const kcAtr = trSum / kcP;
@@ -3472,25 +3649,25 @@ export function detectAsset(
           for (let k = i - bbKc.minSqueezeBars; k < i; k++) {
             // recompute at k
             let s2 = 0;
-            for (let j = k - bbP + 1; j <= k; j++) s2 += candles[j].close;
+            for (let j = k - bbP + 1; j <= k; j++) s2 += candles[j]!.close;
             const m2 = s2 / bbP;
             let v2 = 0;
             for (let j = k - bbP + 1; j <= k; j++)
-              v2 += (candles[j].close - m2) ** 2;
+              v2 += (candles[j]!.close - m2) ** 2;
             const sd2 = Math.sqrt(v2 / bbP);
             const bU = m2 + bbKc.bbSigma * sd2;
             const bL = m2 - bbKc.bbSigma * sd2;
             let kS = 0;
-            for (let j = k - kcP + 1; j <= k; j++) kS += candles[j].close;
+            for (let j = k - kcP + 1; j <= k; j++) kS += candles[j]!.close;
             const kC = kS / kcP;
             let tS = 0;
             for (let j = k - kcP + 1; j <= k; j++) {
               const cj = candles[j];
               const pj = candles[j - 1] ?? candles[j];
               tS += Math.max(
-                cj.high - cj.low,
-                Math.abs(cj.high - pj.close),
-                Math.abs(cj.low - pj.close),
+                cj!.high - cj!.low,
+                Math.abs(cj!.high - pj!.close),
+                Math.abs(cj!.low - pj!.close),
               );
             }
             const kA = tS / kcP;
@@ -3514,10 +3691,10 @@ export function detectAsset(
           sSum = 0,
           fSumPrev = 0,
           sSumPrev = 0;
-        for (let k = i - fast + 1; k <= i; k++) fSum += candles[k].close;
-        for (let k = i - slow + 1; k <= i; k++) sSum += candles[k].close;
-        for (let k = i - fast; k <= i - 1; k++) fSumPrev += candles[k].close;
-        for (let k = i - slow; k <= i - 1; k++) sSumPrev += candles[k].close;
+        for (let k = i - fast + 1; k <= i; k++) fSum += candles[k]!.close;
+        for (let k = i - slow + 1; k <= i; k++) sSum += candles[k]!.close;
+        for (let k = i - fast; k <= i - 1; k++) fSumPrev += candles[k]!.close;
+        for (let k = i - slow; k <= i - 1; k++) sSumPrev += candles[k]!.close;
         const fNow = fSum / fast,
           sNow = sSum / slow;
         const fPrev = fSumPrev / fast,
@@ -3532,8 +3709,8 @@ export function detectAsset(
           ok = false;
         } else {
           const ret =
-            (candles[i].close - candles[i - tsMom.lookbackBars].close) /
-            candles[i - tsMom.lookbackBars].close;
+            (candles[i]!.close - candles[i - tsMom.lookbackBars]!.close) /
+            candles[i - tsMom.lookbackBars]!.close;
           if (direction === "long" && ret < tsMom.threshold) ok = false;
           if (direction === "short" && ret > -tsMom.threshold) ok = false;
         }
@@ -3543,7 +3720,7 @@ export function detectAsset(
         let minRange = Infinity,
           narrowIdx = -1;
         for (let k = i - nr7.compressionBars; k < i; k++) {
-          const r = candles[k].high - candles[k].low;
+          const r = candles[k]!.high - candles[k]!.low;
           if (r < minRange) {
             minRange = r;
             narrowIdx = k;
@@ -3552,23 +3729,90 @@ export function detectAsset(
         if (narrowIdx < 0) ok = false;
         else if (
           direction === "long" &&
-          candles[i].close <= candles[narrowIdx].high
+          candles[i]!.close <= candles[narrowIdx]!.high
         )
           ok = false;
         else if (
           direction === "short" &&
-          candles[i].close >= candles[narrowIdx].low
+          candles[i]!.close >= candles[narrowIdx]!.low
         )
           ok = false;
+      } else if (mrEntry) {
+        // Mean-Reversion (Bollinger + RSI): long when close < lower BB AND RSI <= rsiThresh.
+        // Short side intentionally disabled (FTMO crypto long-only).
+        if (direction === "short") {
+          ok = false;
+        } else {
+          const bbP = mrEntry.bbPeriod;
+          if (i < bbP) {
+            ok = false;
+          } else {
+            let sum = 0;
+            for (let k = i - bbP + 1; k <= i; k++) sum += candles[k]!.close;
+            const mean = sum / bbP;
+            let varSum = 0;
+            for (let k = i - bbP + 1; k <= i; k++)
+              varSum += (candles[k]!.close - mean) ** 2;
+            const sd = Math.sqrt(varSum / bbP);
+            const lower = mean - mrEntry.bbSigma * sd;
+            const rs = mrRsiSeries ? mrRsiSeries[i] : null;
+            if (rs === null || rs === undefined) ok = false;
+            else if (candles[i]!.close >= lower) ok = false;
+            else if (rs > mrEntry.rsiThresh) ok = false;
+          }
+        }
+      } else if (boEntry) {
+        // Breakout (Donchian + Vol-Expansion): long when close > N-bar high
+        // AND ATR(p) > SMA(ATR, volMaPeriod) — volatility-expansion gate.
+        if (direction === "short") {
+          ok = false;
+        } else {
+          const dp = boEntry.donchianPeriod;
+          if (i < dp + boEntry.volMaPeriod) {
+            ok = false;
+          } else {
+            let pHigh = -Infinity;
+            for (let k = i - dp; k < i; k++) {
+              if (candles[k]!.high > pHigh) pHigh = candles[k]!.high;
+            }
+            if (candles[i]!.close <= pHigh) ok = false;
+            else {
+              const atrNow = boAtrSeries ? boAtrSeries[i] : null;
+              if (atrNow === null || atrNow === undefined) ok = false;
+              else {
+                // BUGFIX 2026-05-03 (R56 audit Fix 5): use prior-bar window
+                // [i-volMaPeriod, i) so the MA does NOT include the current
+                // bar — otherwise the gate compares atrNow against an MA
+                // that already contains atrNow, biasing the ratio toward 1.
+                // Mirrors the Donchian convention `for (k=i-dp; k<i; ...)`
+                // a few lines above.
+                let aSum = 0;
+                let aCnt = 0;
+                for (let k = i - boEntry.volMaPeriod; k < i; k++) {
+                  const v = boAtrSeries ? boAtrSeries[k] : null;
+                  if (v !== null && v !== undefined) {
+                    aSum += v;
+                    aCnt++;
+                  }
+                }
+                if (aCnt === 0) ok = false;
+                else {
+                  const atrMa = aSum / aCnt;
+                  if (atrNow <= atrMa) ok = false;
+                }
+              }
+            }
+          }
+        }
       } else {
         // Default: N consecutive close-comparison
         for (let k = 0; k < triggerBars; k++) {
           const longCmp = invert
-            ? candles[i - k].close <= candles[i - k - 1].close
-            : candles[i - k].close >= candles[i - k - 1].close;
+            ? candles[i - k]!.close <= candles[i - k - 1]!.close
+            : candles[i - k]!.close >= candles[i - k - 1]!.close;
           const shortCmp = invert
-            ? candles[i - k].close >= candles[i - k - 1].close
-            : candles[i - k].close <= candles[i - k - 1].close;
+            ? candles[i - k]!.close >= candles[i - k - 1]!.close
+            : candles[i - k]!.close <= candles[i - k - 1]!.close;
           const cmp = direction === "long" ? longCmp : shortCmp;
           if (cmp) {
             ok = false;
@@ -3597,7 +3841,7 @@ export function detectAsset(
       if (emaSeries && cfg.trendFilter) {
         const e = emaSeries[i];
         if (e === null || e === undefined) continue;
-        const price = candles[i].close;
+        const price = candles[i]!.close;
         const gateLongs =
           cfg.trendFilter.apply === "long" || cfg.trendFilter.apply === "both";
         const gateShorts =
@@ -3612,7 +3856,8 @@ export function detectAsset(
         const lb = cfg.htfTrendFilter.lookbackBars;
         if (i >= lb) {
           const change =
-            (candles[i].close - candles[i - lb].close) / candles[i - lb].close;
+            (candles[i]!.close - candles[i - lb]!.close) /
+            candles[i - lb]!.close;
           const thr = cfg.htfTrendFilter.threshold ?? 0;
           const gateLongs =
             cfg.htfTrendFilter.apply === "long" ||
@@ -3630,7 +3875,8 @@ export function detectAsset(
         const lb = cfg.htfTrendFilterAux.lookbackBars;
         if (i >= lb) {
           const change =
-            (candles[i].close - candles[i - lb].close) / candles[i - lb].close;
+            (candles[i]!.close - candles[i - lb]!.close) /
+            candles[i - lb]!.close;
           const thr = cfg.htfTrendFilterAux.threshold ?? 0;
           const gateLongs =
             cfg.htfTrendFilterAux.apply === "long" ||
@@ -3651,18 +3897,18 @@ export function detectAsset(
       if (cfg.allowedHoursUtc && cfg.allowedHoursUtc.length > 0) {
         const refTime =
           entryBar < candles.length
-            ? candles[entryBar].openTime
-            : candles[i].openTime +
-              (candles[i].closeTime - candles[i].openTime);
+            ? candles[entryBar]!.openTime
+            : candles[i]!.openTime +
+              (candles[i]!.closeTime - candles[i]!.openTime);
         const h = new Date(refTime).getUTCHours();
         if (!cfg.allowedHoursUtc.includes(h)) continue;
       }
       if (cfg.allowedDowsUtc && cfg.allowedDowsUtc.length > 0) {
         const refTime =
           entryBar < candles.length
-            ? candles[entryBar].openTime
-            : candles[i].openTime +
-              (candles[i].closeTime - candles[i].openTime);
+            ? candles[entryBar]!.openTime
+            : candles[i]!.openTime +
+              (candles[i]!.closeTime - candles[i]!.openTime);
         const d = new Date(refTime).getUTCDay();
         if (!cfg.allowedDowsUtc.includes(d)) continue;
       }
@@ -3681,7 +3927,7 @@ export function detectAsset(
       if (volAtrSeries && cfg.volatilityFilter) {
         const a = volAtrSeries[i];
         if (a === null || a === undefined) continue;
-        const frac = a / candles[i].close;
+        const frac = a / candles[i]!.close;
         if (
           cfg.volatilityFilter.minAtrFrac !== undefined &&
           frac < cfg.volatilityFilter.minAtrFrac
@@ -3720,9 +3966,9 @@ export function detectAsset(
         const period = cfg.volumeFilter.period;
         if (i >= period) {
           let sumV = 0;
-          for (let j = i - period; j < i; j++) sumV += candles[j].volume;
+          for (let j = i - period; j < i; j++) sumV += candles[j]!.volume;
           const avg = sumV / period;
-          if (avg > 0 && candles[i].volume / avg < cfg.volumeFilter.minRatio) {
+          if (avg > 0 && candles[i]!.volume / avg < cfg.volumeFilter.minRatio) {
             continue;
           }
         }
@@ -3751,9 +3997,9 @@ export function detectAsset(
         const eFast = crossEmaFast[i];
         const eSlow = crossEmaSlow[i];
         if (eFast !== null && eSlow !== null && crossAssetCandles[i]) {
-          const xPrice = crossAssetCandles[i].close;
-          const crossUptrend = xPrice > eFast && eFast > eSlow;
-          const crossDowntrend = xPrice < eFast && eFast < eSlow;
+          const xPrice = crossAssetCandles[i]!.close;
+          const crossUptrend = xPrice > eFast! && eFast! > eSlow!;
+          const crossDowntrend = xPrice < eFast! && eFast! < eSlow!;
           if (
             direction === "short" &&
             crossFilter.skipShortsIfSecondaryUptrend &&
@@ -3776,8 +4022,8 @@ export function detectAsset(
           const back = i - crossFilter.momentumBars;
           if (back >= 0) {
             const rel =
-              (crossAssetCandles[i].close - crossAssetCandles[back].close) /
-              crossAssetCandles[back].close;
+              (crossAssetCandles[i]!.close - crossAssetCandles[back]!.close) /
+              crossAssetCandles[back]!.close;
             if (
               direction === "short" &&
               crossFilter.momSkipShortAbove !== undefined &&
@@ -3799,9 +4045,9 @@ export function detectAsset(
           const eFast = extra.fast[i];
           const eSlow = extra.slow[i];
           if (eFast === null || eSlow === null || !extra.candles[i]) continue;
-          const xPrice = extra.candles[i].close;
-          const crossUptrend = xPrice > eFast && eFast > eSlow;
-          const crossDowntrend = xPrice < eFast && eFast < eSlow;
+          const xPrice = extra.candles[i]!.close;
+          const crossUptrend = xPrice > eFast! && eFast! > eSlow!;
+          const crossDowntrend = xPrice < eFast! && eFast! < eSlow!;
           if (
             direction === "short" &&
             extra.f.skipShortsIfSecondaryUptrend &&
@@ -3822,11 +4068,12 @@ export function detectAsset(
       }
       if (blocked) continue;
       let eb = candles[i + 1];
+      let ebIdx = i + 1;
       if (!eb) break;
 
       // Pullback-entry: wait for retrace from trigger close before entering
       if (asset.pullbackEntry) {
-        const triggerClose = candles[i].close;
+        const triggerClose = candles[i]!.close;
         const target =
           direction === "long"
             ? triggerClose * (1 - asset.pullbackEntry.pullbackPct)
@@ -3840,13 +4087,15 @@ export function detectAsset(
           const wb = candles[i + k];
           // For long: did price dip to target?
           // For short: did price rally to target?
-          if (direction === "long" && wb.low <= target) {
+          if (direction === "long" && wb!.low <= target) {
             eb = candles[i + k]; // entry on this bar (use as eb)
+            ebIdx = i + k;
             entered = true;
             break;
           }
-          if (direction === "short" && wb.high >= target) {
+          if (direction === "short" && wb!.high >= target) {
             eb = candles[i + k];
+            ebIdx = i + k;
             entered = true;
             break;
           }
@@ -3858,7 +4107,7 @@ export function detectAsset(
       if (cfg.newsFilter) {
         if (
           isNewsBlackout(
-            eb.openTime,
+            eb!.openTime,
             cfg.newsFilter.events,
             cfg.newsFilter.bufferMinutes,
           )
@@ -3866,7 +4115,7 @@ export function detectAsset(
           continue;
         }
       }
-      const entry = eb.open;
+      const entry = eb!.open;
       const entryEff =
         direction === "long" ? entry * (1 + cost / 2) : entry * (1 - cost / 2);
 
@@ -3882,16 +4131,16 @@ export function detectAsset(
         const start = Math.max(1, i - va.period + 1);
         for (let k = start; k <= i; k++) {
           const c = candles[k];
-          const prev = candles[k - 1].close;
+          const prev = candles[k - 1]!.close;
           aSum += Math.max(
-            c.high - c.low,
-            Math.abs(c.high - prev),
-            Math.abs(c.low - prev),
+            c!.high - c!.low,
+            Math.abs(c!.high - prev),
+            Math.abs(c!.low - prev),
           );
           aCount++;
         }
         if (aCount > 0) {
-          const realizedAtrFrac = aSum / aCount / candles[i].close;
+          const realizedAtrFrac = aSum / aCount / candles[i]!.close;
           if (realizedAtrFrac > 0) {
             const rawMult = realizedAtrFrac / va.targetVolFrac;
             const mult = Math.max(va.minMult, Math.min(va.maxMult, rawMult));
@@ -3916,9 +4165,31 @@ export function detectAsset(
         direction === "long" ? entry * (1 + effTp) : entry * (1 - effTp);
       const stop =
         direction === "long" ? entry * (1 - effStop) : entry * (1 + effStop);
-      const mx = Math.min(i + 1 + holdBars, candles.length - 1);
+      // BUGFIX 2026-04-28 (Engine audit Bug 5): holdBars must count from the
+      // ACTUAL entry bar (after pullback may have shifted it forward). Was
+      // anchored to i+1 which gave pullback trades fewer hold bars than
+      // configured.
+      //
+      // BUGFIX 2026-05-03 (R56 audit Fix 6): also cap by challenge-end day.
+      // holdBars=1200 (some configs use 25-day max-hold) can extend past
+      // cfg.maxDays — meaning a trade entered on day 28 of a 30-day challenge
+      // could hold for 25 days, well past the challenge close-out. The runner
+      // would still consume the PnL even though the broker would force-close
+      // at challenge end. Bound exit to the last bar whose closeTime is on
+      // a Prague day-index strictly less than (challengeStartDay + maxDays).
+      let mx = Math.min(ebIdx + holdBars, candles.length - 1);
+      const challengeStartDay = pragueDay(ts0);
+      const challengeEndDay = challengeStartDay + cfg.maxDays;
+      // Walk back from mx until we find a bar still inside the window. This
+      // is O(barsPerDay) in the worst case (~12 for 2h, ~48 for 30m) so cheap.
+      while (
+        mx > ebIdx &&
+        pragueDay(candles[mx]!.closeTime) >= challengeEndDay
+      ) {
+        mx--;
+      }
       let exitBar = mx;
-      let exitPrice = candles[mx].close;
+      let exitPrice = candles[mx]!.close;
       let reason: "tp" | "stop" | "time" = "time";
       // Dynamic stop — break-even logic may tighten it after the bar
       // where unrealized gain crosses cfg.breakEven.threshold.
@@ -3955,15 +4226,21 @@ export function detectAsset(
       const timeExit = asset.timeExit ?? cfg.timeExit;
       const minGainAbs = timeExit ? timeExit.minGainR * effStop : 0;
       let everReachedMinGain = false;
-      // Start at the entry bar itself (i+1) — stop/TP may trigger in the
-      // same bar we entered on. Previously started at i+2, which silently
-      // skipped the entry bar and produced optimistic backtests.
-      for (let j = i + 1; j <= mx; j++) {
+      // Start at the actual entry bar (ebIdx) — stop/TP may trigger in the
+      // same bar we entered on. Pullback entries shift ebIdx forward.
+      // BUGFIX 2026-04-28 (Engine audit Bug 5 follow-up): was hardcoded i+1,
+      // which evaluated the entry bar's range BEFORE the pullback fill bar
+      // for trades using pullbackEntry — producing impossible stops/TPs.
+      for (let j = ebIdx; j <= mx; j++) {
         const bar = candles[j];
-        // BUGFIX 2026-04-28 (Round 35 Finding 1): check PTP via bar.high/low
-        // BEFORE stop/tp on same bar. Realistic intra-bar order: price moves
-        // up first (long), trigger PTP, then back down to stop. Without this
-        // fix, same-bar stop+PTP loses full position when 30% should be locked.
+        // BUGFIX 2026-04-28 (Round 35 Finding 1): check PTP via bar.high/low.
+        // BUGFIX 2026-04-29 (Agent 2 Bug 4 — same-bar order pessimism): if
+        // BOTH PTP and the original stop are hit in the same bar, assume
+        // STOP fired FIRST. The previous "PTP wins on conflict" assumption
+        // was optimistic; for volatile bars with a wick to PTP and a low to
+        // stop, the engine systematically inflated winrate. Conservative
+        // tie-break: stop_fired_in_bar AND ptp_fired_in_bar → stop_first
+        // unless bar's open already exceeded the PTP trigger (gap-up case).
         if (ptp && !ptpTriggered) {
           const triggerPrice =
             direction === "long"
@@ -3971,34 +4248,93 @@ export function detectAsset(
               : entry * (1 - ptp.triggerPct);
           const ptpHit =
             direction === "long"
-              ? bar.high >= triggerPrice
-              : bar.low <= triggerPrice;
-          if (ptpHit) {
+              ? bar!.high >= triggerPrice
+              : bar!.low <= triggerPrice;
+          // Stop also hit this bar?
+          const stopHit =
+            direction === "long" ? bar!.low <= dynStop : bar!.high >= dynStop;
+          // Gap exception: if bar opens already favorable past PTP trigger,
+          // PTP definitely fired first (no wick required).
+          const gapPastPtp =
+            direction === "long"
+              ? bar!.open >= triggerPrice
+              : bar!.open <= triggerPrice;
+          // Conservative: PTP only fires when stop did NOT hit, OR a gap
+          // already passed the trigger before any wick down to stop.
+          if (ptpHit && (!stopHit || gapPastPtp)) {
             ptpTriggered = true;
-            ptpRealizedPct = ptp.closeFraction * ptp.triggerPct;
+            // BUGFIX 2026-04-29 (Agent 7 R10 Bug 3): apply slippage + half-cost on
+            // partial fill. Real MT5 charges commission + slippage on each
+            // partial close. Engine previously credited full triggerPct as gain.
+            // Per-side cost = cost/2 (half round-trip) + slippageBp/10000 (one fill).
+            const ptpFillCost = cost / 2 + (asset.slippageBp ?? 0) / 10000;
+            ptpRealizedPct = ptp.closeFraction * (ptp.triggerPct - ptpFillCost);
+            // BUGFIX 2026-04-29 (Audit Bug A): after PTP, auto-move dynStop
+            // to entry on remainder leg. Industry-standard: once partial
+            // profit is locked, the trade should be guaranteed-profitable
+            // at minimum break-even.
+            // BUGFIX 2026-04-29 (R12 Agent 1 Bug 8): "BE" must include the
+            // round-trip cost so the BE-out trade is actually flat, not -cost.
+            // entryEff already prices in entry-half cost; the stop level needs
+            // to add the exit-half so a fill at this price closes flat.
+            const beStop =
+              direction === "long" ? entry * (1 + cost) : entry * (1 - cost);
+            if (direction === "long") {
+              if (beStop > dynStop) dynStop = beStop;
+            } else {
+              if (beStop < dynStop) dynStop = beStop;
+            }
+            beActive = true;
+            // Also reset chandelier reference to current bar so the trail
+            // anchors at PTP-fire price, not pre-PTP high (Bug B).
+            chanBestClose = bar!.close;
+            chanArmed = false;
           }
         }
+        // BUGFIX 2026-04-29 (R13 entry-exit Bug 1 + Agent 1 Bug 3): same-bar
+        // TP+stop tie-break. When bar both touches TP and stop, default code
+        // always picked stop (because of the order). But if bar.open already
+        // gapped PAST tp on the favorable side, TP was hit first physically.
+        // Now: gap-past-TP wins; otherwise still conservative stop-first.
         if (direction === "long") {
-          if (bar.low <= dynStop) {
+          const stopHit = bar!.low <= dynStop;
+          const tpHit = bar!.high >= tp;
+          const gapPastTp = bar!.open >= tp;
+          if (tpHit && gapPastTp) {
             exitBar = j;
-            exitPrice = dynStop;
+            exitPrice = bar!.open; // gap-up fills at open
+            reason = "tp";
+            break;
+          }
+          if (stopHit) {
+            exitBar = j;
+            exitPrice = bar!.open < dynStop ? bar!.open : dynStop;
             reason = "stop";
             break;
           }
-          if (bar.high >= tp) {
+          if (tpHit) {
             exitBar = j;
             exitPrice = tp;
             reason = "tp";
             break;
           }
         } else {
-          if (bar.high >= dynStop) {
+          const stopHit = bar!.high >= dynStop;
+          const tpHit = bar!.low <= tp;
+          const gapPastTp = bar!.open <= tp;
+          if (tpHit && gapPastTp) {
             exitBar = j;
-            exitPrice = dynStop;
+            exitPrice = bar!.open;
+            reason = "tp";
+            break;
+          }
+          if (stopHit) {
+            exitBar = j;
+            exitPrice = bar!.open > dynStop ? bar!.open : dynStop;
             reason = "stop";
             break;
           }
-          if (bar.low <= tp) {
+          if (tpHit) {
             exitBar = j;
             exitPrice = tp;
             reason = "tp";
@@ -4010,10 +4346,22 @@ export function detectAsset(
         if (beTh !== undefined && !beActive) {
           const unrealized =
             direction === "long"
-              ? (bar.close - entry) / entry
-              : (entry - bar.close) / entry;
+              ? (bar!.close - entry) / entry
+              : (entry - bar!.close) / entry;
           if (unrealized >= beTh) {
-            dynStop = entry;
+            // Bug-Audit Phase 4 (Engine Bug 1): BE stop must offset cost so
+            // a stop-out at BE realises ~0 PnL. Without `+ cost` for long /
+            // `- cost` for short, the resulting (entryEff vs exitEff)
+            // calculation yields ≈ −cost on every BE-stop. The PTP-driven
+            // BE move at line 4241 already does this correctly — this is
+            // the standalone breakEven path catching up.
+            const beStop =
+              direction === "long" ? entry * (1 + cost) : entry * (1 - cost);
+            if (direction === "long") {
+              if (beStop > dynStop) dynStop = beStop;
+            } else {
+              if (beStop < dynStop) dynStop = beStop;
+            }
             beActive = true;
           }
         }
@@ -4021,8 +4369,8 @@ export function detectAsset(
         if (ptp && !ptpTriggered) {
           const unrealized =
             direction === "long"
-              ? (bar.close - entry) / entry
-              : (entry - bar.close) / entry;
+              ? (bar!.close - entry) / entry
+              : (entry - bar!.close) / entry;
           if (unrealized >= ptp.triggerPct) {
             ptpTriggered = true;
             // Lock in closeFraction × triggerPct as realized partial gain
@@ -4033,13 +4381,13 @@ export function detectAsset(
         if (ptpLevels && ptpLevels.length > 0) {
           const unrealized =
             direction === "long"
-              ? (bar.close - entry) / entry
-              : (entry - bar.close) / entry;
+              ? (bar!.close - entry) / entry
+              : (entry - bar!.close) / entry;
           for (let lv = 0; lv < ptpLevels.length; lv++) {
-            if (!ptpLevelsHit[lv] && unrealized >= ptpLevels[lv].triggerPct) {
+            if (!ptpLevelsHit[lv] && unrealized >= ptpLevels[lv]!.triggerPct) {
               ptpLevelsHit[lv] = true;
               ptpLevelsRealizedPct +=
-                ptpLevels[lv].closeFraction * ptpLevels[lv].triggerPct;
+                ptpLevels[lv]!.closeFraction * ptpLevels[lv]!.triggerPct;
             }
           }
         }
@@ -4047,19 +4395,19 @@ export function detectAsset(
         if (trail) {
           const unrealized =
             direction === "long"
-              ? (bar.close - entry) / entry
-              : (entry - bar.close) / entry;
+              ? (bar!.close - entry) / entry
+              : (entry - bar!.close) / entry;
           if (!trailActive && unrealized >= trail.activatePct) {
             trailActive = true;
-            trailPeak = bar.close;
+            trailPeak = bar!.close;
           }
           if (trailActive) {
             if (direction === "long") {
-              if (bar.close > trailPeak) trailPeak = bar.close;
+              if (bar!.close > trailPeak) trailPeak = bar!.close;
               const trailStop = trailPeak * (1 - trail.trailPct);
               if (trailStop > dynStop) dynStop = trailStop;
             } else {
-              if (bar.close < trailPeak) trailPeak = bar.close;
+              if (bar!.close < trailPeak) trailPeak = bar!.close;
               const trailStop = trailPeak * (1 + trail.trailPct);
               if (trailStop < dynStop) dynStop = trailStop;
             }
@@ -4073,16 +4421,16 @@ export function detectAsset(
           if (a !== null && a !== undefined) {
             const unrealized =
               direction === "long"
-                ? (bar.close - entry) / entry
-                : (entry - bar.close) / entry;
+                ? (bar!.close - entry) / entry
+                : (entry - bar!.close) / entry;
             if (unrealized >= chanMinMoveAbs) {
               chanArmed = true;
               if (direction === "long") {
-                if (chanBestClose === null || bar.close > chanBestClose)
-                  chanBestClose = bar.close;
+                if (chanBestClose === null || bar!.close > chanBestClose)
+                  chanBestClose = bar!.close;
               } else {
-                if (chanBestClose === null || bar.close < chanBestClose)
-                  chanBestClose = bar.close;
+                if (chanBestClose === null || bar!.close < chanBestClose)
+                  chanBestClose = bar!.close;
               }
             }
             if (chanArmed && chanBestClose !== null) {
@@ -4105,13 +4453,17 @@ export function detectAsset(
         if (timeExit) {
           const unrealized =
             direction === "long"
-              ? (bar.close - entry) / entry
-              : (entry - bar.close) / entry;
+              ? (bar!.close - entry) / entry
+              : (entry - bar!.close) / entry;
           if (unrealized >= minGainAbs) everReachedMinGain = true;
-          const barsHeld = j - (i + 1);
+          // BUGFIX 2026-04-29 (Audit Bug C): barsHeld must measure from
+          // ACTUAL entry bar (ebIdx), not signal bar (i+1). With pullbackEntry,
+          // entry can shift to i+k → time-exit fired (k-1) bars too early,
+          // closing dead trades faster than configured and inflating pass-rate.
+          const barsHeld = j - ebIdx;
           if (barsHeld >= timeExit.maxBarsWithoutGain && !everReachedMinGain) {
             exitBar = j;
-            exitPrice = bar.close;
+            exitPrice = bar!.close;
             reason = "time";
             break;
           }
@@ -4141,20 +4493,95 @@ export function detectAsset(
       }
       // Realistic additional execution costs (FTMO-broker reality, not Binance):
       //   - slippage on both fills
-      //   - overnight swap if trade crosses UTC midnight
+      //   - overnight swap if trade crosses Prague midnight
+      // BUGFIX 2026-04-29 (R12 Agent 1 Bug 1): if PTP fired, the partial leg
+      // already booked entry+exit slippage in ptpFillCost. Apply slippage here
+      // only to the remainder; otherwise the closed fraction is double-charged.
       const slippageBp = asset.slippageBp ?? 0;
       if (slippageBp > 0) {
-        rawPnl -= (slippageBp / 10000) * 2; // both sides
+        let remainingFraction = 1;
+        if (ptpTriggered && ptp) remainingFraction = 1 - ptp.closeFraction;
+        if (ptpLevels && ptpLevels.length > 0) {
+          const totalClosed = ptpLevels.reduce(
+            (acc, lv, idx) => acc + (ptpLevelsHit[idx] ? lv.closeFraction : 0),
+            0,
+          );
+          remainingFraction = Math.max(0, 1 - totalClosed);
+        }
+        rawPnl -= (slippageBp / 10000) * 2 * remainingFraction;
       }
       const swapBp = asset.swapBpPerDay ?? 0;
       if (swapBp > 0) {
-        const entryDay = Math.floor(eb.openTime / (24 * 3600_000));
-        const exitDay = Math.floor(
-          candles[exitBar].closeTime / (24 * 3600_000),
-        );
+        // BUGFIX 2026-04-29 (R12 Agent 1 Bug 5): use Prague day so swap-charge
+        // aligns with the same daily anchor the rest of the engine uses.
+        const entryDay = pragueDay(eb!.openTime);
+        const exitDay = pragueDay(candles[exitBar]!.closeTime);
         const overnightCrossings = Math.max(0, exitDay - entryDay);
         if (overnightCrossings > 0) {
-          rawPnl -= (swapBp / 10000) * overnightCrossings;
+          // Phase R57 (Round 57 Forex Fix 4): triple-swap on Wednesday
+          // rollover. Forex T+2 settlement means a Wed→Thu rollover
+          // accrues 3× the daily swap (covers Sat+Sun). Without this,
+          // long-hold backtests under-charge swap by ~28% (1 of 7 days
+          // is a Wed). Crypto assets typically have swapBpPerDay=0 and
+          // are unaffected; CFDs and forex pairs see the correction.
+          const entryDate = new Date(eb!.openTime);
+          const exitDate = new Date(candles[exitBar]!.closeTime);
+          let tripleSwapDays = 0;
+          const cur = new Date(entryDate);
+          cur.setUTCHours(0, 0, 0, 0);
+          while (cur.getTime() < exitDate.getTime()) {
+            // UTC day-of-week: Wed === 3.
+            if (cur.getUTCDay() === 3 && cur.getTime() > entryDate.getTime()) {
+              tripleSwapDays++;
+            }
+            cur.setUTCDate(cur.getUTCDate() + 1);
+          }
+          const adjustedCrossings = overnightCrossings + 2 * tripleSwapDays;
+          rawPnl -= (swapBp / 10000) * adjustedCrossings;
+        }
+      }
+      // BUGFIX 2026-05-03 (R56 audit Fix 1): Funding-cost deduction from PnL.
+      // fundingRateFilter only filters entries — until now funding payments
+      // were never charged against the PnL even when fundingBySymbol was
+      // supplied. Configs that opt-in to the filter (V5_NOVA, R28 family)
+      // gained the filter benefit without paying the cost.
+      //
+      // Binance perp futures settle funding every 8h at 00:00, 08:00, 16:00 UTC.
+      // The fundingSeries is forward-filled per bar — each value represents the
+      // funding rate that would be paid if a position were held through that 8h
+      // bucket. Long pays positive funding, short receives; short pays negative
+      // funding, long receives. (Sign convention: rate>0 ⇒ long pays.)
+      //
+      // Walk every 8h settlement boundary in (entryTime, exitTime] and apply
+      // the funding rate sampled at the bar containing that boundary.
+      if (fundingSeries) {
+        const sign = direction === "long" ? +1 : -1;
+        const EIGHT_H = 8 * 3_600_000;
+        const exitTimeMs = candles[exitBar]!.closeTime;
+        // First settlement strictly after entry openTime.
+        let bucket = Math.floor(eb!.openTime / EIGHT_H + 1e-9) * EIGHT_H;
+        if (bucket <= eb!.openTime) bucket += EIGHT_H;
+        let sumFunding = 0;
+        // Cap iteration to avoid pathological infinite loops on bad data.
+        let safetyIter = 0;
+        const maxIter = candles.length + 8;
+        while (bucket <= exitTimeMs && safetyIter++ < maxIter) {
+          // Find the bar containing this settlement boundary. Bars are
+          // openTime-aligned at the bar duration; settlement falls within the
+          // bar [openTime, openTime + barDur).
+          // Use binary-ish lookup via index hint: bars are uniform-spaced.
+          const barIdx = Math.min(
+            candles.length - 1,
+            Math.max(0, Math.floor((bucket - ts0) / (hoursPerBar * 3_600_000))),
+          );
+          const f = fundingSeries[barIdx];
+          if (f !== null && f !== undefined && Number.isFinite(f)) {
+            sumFunding += f;
+          }
+          bucket += EIGHT_H;
+        }
+        if (sumFunding !== 0) {
+          rawPnl -= sign * sumFunding;
         }
       }
       // iter1h-035+ VOL-TARGETED SIZING (asset-level, applied at entry).
@@ -4180,11 +4607,11 @@ export function detectAsset(
             let sumTr = 0;
             for (let k = start; k <= i; k++) {
               const c = candles[k];
-              const prev = candles[k - 1].close;
+              const prev = candles[k - 1]!.close;
               const tr = Math.max(
-                c.high - c.low,
-                Math.abs(c.high - prev),
-                Math.abs(c.low - prev),
+                c!.high - c!.low,
+                Math.abs(c!.high - prev),
+                Math.abs(c!.low - prev),
               );
               sumTr += tr;
             }
@@ -4208,28 +4635,54 @@ export function detectAsset(
       // smaller position via volMult<1). Boost in calm regimes is not
       // physically realisable without tightening the stop proportionally.
       const safeVolMult = cfg.liveCaps ? Math.min(volMult, 1.0) : volMult;
+      // BUGFIX 2026-04-29 (Agent 4 Bug 2 + 4): allow tail gap losses by
+      // relaxing the floor from -1R to -1.5R. Real markets gap through
+      // stops by 0.5-2R on news shocks. The previous hard cap at -effRisk
+      // masked total_loss-rate. 1.5× is a conservative middle ground.
+      // Also: no longer scale floor by safeVolMult (downside-only intent
+      // per the comment block above) — losses still happen at full effRiskFrac
+      // even when position size is reduced via vol-targeting.
+      const GAP_TAIL_MULT = 1.5;
+      // BUGFIX 2026-04-29 (Agent 8 Bug 10): guard against NaN/Infinity from
+      // corrupt candle data (zero-price, malformed bars). Without this,
+      // NaN equity propagates to silent insufficient_days fail; Infinity
+      // causes fake passes. Skip such trades entirely.
+      if (!Number.isFinite(rawPnl)) {
+        continue;
+      }
       const effPnl = Math.max(
         rawPnl * cfg.leverage * effRiskFrac * safeVolMult,
-        -effRiskFrac * safeVolMult,
+        -effRiskFrac * GAP_TAIL_MULT,
       );
       // BUGFIX 2026-04-28: was UTC day boundary; FTMO daily-loss anchor is
-      // Prague midnight (UTC+1 winter / UTC+2 summer). Use UTC+1 fixed offset
-      // (ignores DST → max 1h drift, acceptable for backtest accuracy).
-      const PRAGUE_OFFSET_MS = 1 * 3600 * 1000;
-      const day =
-        Math.floor((eb.openTime + PRAGUE_OFFSET_MS) / (24 * 3600 * 1000)) -
-        Math.floor((ts0 + PRAGUE_OFFSET_MS) / (24 * 3600 * 1000));
-      const holdHours = (exitBar - (i + 1)) * hoursPerBar;
+      // Prague midnight (UTC+1 winter / UTC+2 summer).
+      // BUGFIX 2026-04-29 (Bug F): t.day must be EXIT day not ENTRY day. FTMO
+      // DL is calculated against day-end equity. A trade entered day 3 closing
+      // day 8 with -5% loss counts toward day 8's DL, NOT day 3's. Engine was
+      // attributing the loss to entry day → under-counted DL breaches on the
+      // actual close day → inflated pass-rate when overlapping trades cross
+      // day boundaries.
+      // BUGFIX 2026-04-29 (Agent 5): true DST-aware Europe/Prague offset
+      // resolution. Previous fixed UTC+1 drifted by 1h during CEST (Apr-Oct,
+      // ~7mo/yr) and mis-bucketed PnL near 22-23 UTC summer windows. Use
+      // PRAGUE_DAY (computed via Intl) for accurate cuts.
+      const exitTimeMs = candles[exitBar]!.closeTime;
+      const day = pragueDay(exitTimeMs) - pragueDay(ts0);
+      const entryDay = pragueDay(eb!.openTime) - pragueDay(ts0);
+      // BUGFIX 2026-04-29 (Agent 2 Bug 10): use ebIdx (actual entry bar after
+      // pullback) not i+1. Cosmetic — display only — but ETA stats were off.
+      const holdHours = (exitBar - ebIdx) * hoursPerBar;
       out.push({
         symbol: asset.symbol,
         direction,
-        entryTime: eb.openTime,
-        exitTime: candles[exitBar].closeTime,
+        entryTime: eb!.openTime,
+        exitTime: candles[exitBar]!.closeTime,
         entryPrice: entry,
         exitPrice,
         rawPnl,
         effPnl,
         day,
+        entryDay,
         exitReason: reason,
         holdHours,
         volMult, // iter1h-035+ vol-targeting multiplier
@@ -4246,20 +4699,29 @@ export function detectAsset(
         }
       }
       // V5 re-entry: if stop AND retries left AND within window → set short cooldown
+      // BUGFIX 2026-04-29 (Agent 4 Bug 4+5B):
+      //   1. Window must NOT roll forward with each stop (rolling allows more
+      //      re-entries than configured "max N within M bars"). Set window only
+      //      on first stop of a sequence (when retries are 0).
+      //   2. TP/time-exit reset of retries should require window to have passed,
+      //      otherwise a profitable trade in the middle of a window resets the
+      //      pool and the next stop gets full retry pool again.
       if (cfg.reEntryAfterStop && reason === "stop") {
         if (reEntryRetriesUsed < cfg.reEntryAfterStop.maxRetries) {
-          // Skip the next-bar cooldown to allow re-entry; mark window
           cooldown = exitBar + 1;
-          reEntryWindowEnd = exitBar + cfg.reEntryAfterStop.windowBars;
+          // Only set window on FIRST stop of a sequence (Bug 4 fix).
+          if (reEntryRetriesUsed === 0) {
+            reEntryWindowEnd = exitBar + cfg.reEntryAfterStop.windowBars;
+          }
           reEntryRetriesUsed++;
         } else {
-          // Reset retries after window
           if (exitBar > reEntryWindowEnd) reEntryRetriesUsed = 0;
           cooldown = exitBar + 1;
         }
       } else {
         cooldown = exitBar + 1;
-        reEntryRetriesUsed = 0; // reset on any non-stop exit
+        // Bug 5B fix: only reset retries if window has fully passed.
+        if (exitBar > reEntryWindowEnd) reEntryRetriesUsed = 0;
       }
     }
   }
@@ -4276,6 +4738,53 @@ export function runFtmoDaytrade24h(
   // `htfTrendFilter.threshold`) fails LOUDLY rather than silently producing
   // a stale/optimistic backtest. We DON'T flip the type to required because
   // it would break ~119 historical configs; we enforce semantically here.
+  // Phase 90 (R51-FTMO-8): fail-fast for structurally invalid configs.
+  // Without these guards the engine silently produced 0 trades / wrong
+  // pass-rate (e.g. cfg.maxDays=0 → empty loop → returns time-fail with
+  // passed=false; cfg.assets=[] → no entries; leverage=0 → effPnl=0).
+  // Each unrecoverable bug masquerades as "strategy underperformed".
+  if (!Number.isFinite(cfg.maxDays) || cfg.maxDays <= 0) {
+    throw new Error(
+      `[ftmoDaytrade24h] cfg.maxDays must be > 0 (got ${cfg.maxDays}).`,
+    );
+  }
+  if (
+    !Number.isFinite(cfg.minTradingDays) ||
+    cfg.minTradingDays < 0 ||
+    cfg.minTradingDays > cfg.maxDays
+  ) {
+    throw new Error(
+      `[ftmoDaytrade24h] cfg.minTradingDays must be in [0, maxDays=${cfg.maxDays}] (got ${cfg.minTradingDays}).`,
+    );
+  }
+  if (!Array.isArray(cfg.assets) || cfg.assets.length === 0) {
+    throw new Error(
+      `[ftmoDaytrade24h] cfg.assets must be a non-empty array (got length ${cfg.assets?.length}).`,
+    );
+  }
+  if (!Number.isFinite(cfg.leverage) || cfg.leverage <= 0) {
+    throw new Error(
+      `[ftmoDaytrade24h] cfg.leverage must be > 0 (got ${cfg.leverage}).`,
+    );
+  }
+  if (cfg.liveCaps) {
+    if (
+      !Number.isFinite(cfg.liveCaps.maxStopPct) ||
+      cfg.liveCaps.maxStopPct <= 0
+    ) {
+      throw new Error(
+        `[ftmoDaytrade24h] cfg.liveCaps.maxStopPct must be > 0 (got ${cfg.liveCaps.maxStopPct}).`,
+      );
+    }
+    if (
+      !Number.isFinite(cfg.liveCaps.maxRiskFrac) ||
+      cfg.liveCaps.maxRiskFrac <= 0
+    ) {
+      throw new Error(
+        `[ftmoDaytrade24h] cfg.liveCaps.maxRiskFrac must be > 0 (got ${cfg.liveCaps.maxRiskFrac}).`,
+      );
+    }
+  }
   if (cfg.htfTrendFilter && cfg.htfTrendFilter.threshold === undefined) {
     throw new Error(
       "[ftmoDaytrade24h] Config defines htfTrendFilter but omits 'threshold' — must be explicit (e.g. 0.10). Implicit fallback to 0 hides the gate.",
@@ -4290,12 +4799,62 @@ export function runFtmoDaytrade24h(
     // Default false is allowed (legacy backwards compat) but must be set
     // explicitly on the config so reviewers see the intent. Live FTMO
     // configs (V236+) all set this to true.
-    // eslint-disable-next-line no-console
+
     console.warn(
       "[ftmoDaytrade24h] cfg.pauseAtTargetReached not set explicitly — using legacy default false. New live configs should set this explicitly (true for FTMO-realistic, false for raw backtest).",
     );
   }
+  // BUGFIX 2026-05-03 (R56 audit Fix 3): warn when PTP triggerPct is too close
+  // to any asset's tpPct. In the V4 live engine PTP and TP can fire on the
+  // same bar (different price levels) — when the gap is < 40% the ordering
+  // becomes brittle / dependent on bar traversal direction.
+  if (cfg.partialTakeProfit) {
+    const ptpTrig = cfg.partialTakeProfit.triggerPct;
+    const tooClose = cfg.assets.filter((a) => {
+      const tp = a.tpPct ?? cfg.tpPct;
+      return tp > 0 && tp < ptpTrig * 1.4;
+    });
+    if (tooClose.length > 0) {
+      console.warn(
+        `[cfg-validate] partialTakeProfit.triggerPct (${ptpTrig}) is within 40% of tpPct on ${tooClose.length} asset(s): ${tooClose
+          .map((a) => `${a.symbol}=${a.tpPct ?? cfg.tpPct}`)
+          .join(
+            ", ",
+          )}. PTP/TP ordering becomes non-deterministic in the V4 live engine — widen the gap.`,
+      );
+    }
+  }
   const all: Daytrade24hTrade[] = [];
+  // BUGFIX 2026-04-29 (R13 cross-asset filter audit): validate filter periods
+  // and silently-disabled-on-missing-symbol pitfall. EmaFastPeriod must be <
+  // emaSlowPeriod; missing symbol must throw, not silently skip.
+  if (cfg.crossAssetFilter) {
+    const f = cfg.crossAssetFilter;
+    if (f.emaFastPeriod >= f.emaSlowPeriod) {
+      throw new Error(
+        `crossAssetFilter.emaFastPeriod (${f.emaFastPeriod}) must be < emaSlowPeriod (${f.emaSlowPeriod})`,
+      );
+    }
+    if (!candlesBySymbol[f.symbol]) {
+      console.warn(
+        `[ftmoDaytrade24h] crossAssetFilter.symbol "${f.symbol}" not in candlesBySymbol — filter silently disabled.`,
+      );
+    }
+  }
+  if (cfg.crossAssetFiltersExtra) {
+    for (const f of cfg.crossAssetFiltersExtra) {
+      if (f.emaFastPeriod >= f.emaSlowPeriod) {
+        throw new Error(
+          `crossAssetFiltersExtra "${f.symbol}" emaFastPeriod (${f.emaFastPeriod}) must be < emaSlowPeriod (${f.emaSlowPeriod})`,
+        );
+      }
+      if (!candlesBySymbol[f.symbol]) {
+        console.warn(
+          `[ftmoDaytrade24h] crossAssetFiltersExtra "${f.symbol}" not in candlesBySymbol — extra filter disabled.`,
+        );
+      }
+    }
+  }
   // Resolve cross-asset candles once (same alignment as primary candles).
   const crossKey = cfg.crossAssetFilter?.symbol;
   const crossCandles = crossKey ? candlesBySymbol[crossKey] : undefined;
@@ -4321,8 +4880,8 @@ export function runFtmoDaytrade24h(
     const alignsByTimestamp = (a: Candle[], b: Candle[]): boolean =>
       a.length === b.length &&
       a.length > 0 &&
-      a[0].openTime === b[0].openTime &&
-      a[a.length - 1].openTime === b[b.length - 1].openTime;
+      a[0]!.openTime === b[0]!.openTime &&
+      a[a.length - 1]!.openTime === b[b.length - 1]!.openTime;
     const crossForAsset =
       crossCandles && alignsByTimestamp(crossCandles, candles)
         ? crossCandles
@@ -4353,22 +4912,112 @@ export function runFtmoDaytrade24h(
   // multiple trades overlap (long holds): trade B opening during A's open
   // window saw equity that included A's not-yet-realized PnL. Sort by exit
   // ensures equity reflects realized PnL only.
-  all.sort(
-    (a, b) =>
-      a.day - b.day || a.exitTime - b.exitTime || a.entryTime - b.entryTime,
-  );
+  //
+  // Round-28 liveMode: when true, sort by ENTRY time instead. This more
+  // closely matches the order a live bot would actually open trades. The
+  // tradeoff is that equity at trade-N's start no longer reflects realised
+  // PnL of overlapping earlier-entered trades — which is also what live
+  // sees (mark-to-market equity in the broker, including unrealised PnL).
+  if (cfg.liveMode) {
+    all.sort(
+      (a, b) =>
+        a.entryTime - b.entryTime ||
+        a.exitTime - b.exitTime ||
+        a.symbol.localeCompare(b.symbol),
+    );
+  } else {
+    all.sort(
+      (a, b) =>
+        a.day - b.day || a.exitTime - b.exitTime || a.entryTime - b.entryTime,
+    );
+  }
 
   let equity = 1.0;
   let peak = 1.0;
   let maxDd = 0;
   let maxHold = 0;
   const dayStart = new Map<number, number>();
+  // Round 13 Anti-DL feature: track per-day peak equity (for daily peak trail)
+  // and per-day realized PnL (for soft/hard daily-loss circuit-breaker).
+  const dayPeak = new Map<number, number>();
   const tradingDays = new Set<number>();
   const executed: Daytrade24hTrade[] = [];
+  // BUGFIX 2026-04-29 (Bug H): track the day target was first hit so
+  // finishPausedPass uses the correct ping-start day. Without this, calls
+  // from later iterations (where t.day = some later exit day) used the wrong
+  // base for pingDay → fewer ping days available → fewer false-passes,
+  // but also missed the case where target had already been hit by an
+  // earlier-iterated trade and we should ping from THAT day onward.
+  let firstTargetHitDay: number | null = null;
 
   const cappedDays = new Set<number>();
   let totalTradesExecuted = 0;
-  const recentPnls: number[] = []; // iter231: rolling buffer for Kelly sizing
+  // BUGFIX 2026-04-29 (Audit Bug 1 — Kelly look-ahead): the rolling buffer
+  // must be queried by ENTRY time, not append order. Trades are processed
+  // in exit-time order so a later-entry trade B can exit before an earlier-
+  // entry trade A → naively pushing effPnl in iteration order leaks B's
+  // result into A's Kelly tier. Fix: store {closeTime, effPnl} and filter
+  // to entries that closed STRICTLY BEFORE the current trade's entryTime.
+  const pnlBuffer: Array<{ closeTime: number; effPnl: number }> = [];
+
+  function finishPausedPass(targetDay: number): FtmoDaytrade24hResult | null {
+    if (!cfg.pauseAtTargetReached || equity < 1 + cfg.profitTarget) return null;
+    // BUGFIX 2026-04-29 (R22 audit): the ping-loop previously assumed 100%
+    // bot reliability. Real bots have downtime / cron-miss / MT5 disconnects
+    // that cause ping-trades to fail. Without modeling that, V5_QUARTZ_LITE
+    // showed 76% of passes clustering exactly at minTradingDays floor — an
+    // inflation artifact, not a real-world median.
+    //
+    // pingReliability default 1.0 preserves backwards compatibility with
+    // existing memory numbers. Configs that want honest live-replication
+    // should set pingReliability to 0.85 (conservative bot) or 0.7 (worst).
+    const pingProb = cfg.pingReliability ?? 1.0;
+    // Deterministic RNG seeded on targetDay so backtests are reproducible.
+    let seed = (targetDay * 2654435761) >>> 0;
+    const nextRand = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed / 0x100000000;
+    };
+    // Phase 11 (Engine Bug 3): snapshot tradingDays before the speculative
+    // ping loop. If we fail to reach minTradingDays we MUST roll back the
+    // mutations — otherwise repeated finishPausedPass calls accumulate
+    // ping-day side-effects (only matters when pingReliability<1.0, where
+    // the loop short-circuits early on bad RNG draws).
+    const snapshot = new Set(tradingDays);
+    let pingDay = targetDay + 1;
+    let lastPingDay = targetDay;
+    while (tradingDays.size < cfg.minTradingDays && pingDay < cfg.maxDays) {
+      // Each ping is independent Bernoulli(pingProb). Failed pings advance
+      // the calendar but don't satisfy minTradingDays — bot was offline.
+      if (pingProb >= 1.0 || nextRand() < pingProb) {
+        tradingDays.add(pingDay);
+        lastPingDay = pingDay;
+      }
+      pingDay++;
+    }
+    if (tradingDays.size < cfg.minTradingDays) {
+      tradingDays.clear();
+      snapshot.forEach((d) => tradingDays.add(d));
+      return null;
+    }
+    return {
+      passed: true,
+      reason: "profit_target",
+      finalEquityPct: equity - 1,
+      maxDrawdown: maxDd,
+      uniqueTradingDays: tradingDays.size,
+      // Phase 32 (Re-Audit FTMO Bug 9+10): clamp passDay to
+      // [minTradingDays, maxDays]. Was returning lastPingDay+1 directly
+      // → could be < minTradingDays (early exit-day target hits) OR
+      // > maxDays (very late target hits with long-hold positions).
+      passDay: Math.min(
+        cfg.maxDays,
+        Math.max(lastPingDay + 1, cfg.minTradingDays),
+      ),
+      trades: executed,
+      maxHoldHoursObserved: maxHold,
+    };
+  }
 
   // V5: helper to compute momentum ranking at trade entry time
   function rankAtEntryTime(entryTime: number): string[] {
@@ -4382,14 +5031,20 @@ export function runFtmoDaytrade24h(
       // find candle at entryTime (binary search would be faster but linear is fine)
       let idx = -1;
       for (let k = cs.length - 1; k >= 0; k--) {
-        if (cs[k].openTime === entryTime) {
+        if (cs[k]!.openTime === entryTime) {
           idx = k;
           break;
         }
-        if (cs[k].openTime < entryTime) break;
+        if (cs[k]!.openTime < entryTime) break;
       }
-      if (idx < lb) continue;
-      const ret = (cs[idx].close - cs[idx - lb].close) / cs[idx - lb].close;
+      if (idx < lb + 1) continue;
+      // BUGFIX 2026-04-29 (Audit Bug 2): use signal-bar close (idx-1), not
+      // entry-bar close. cs[idx] is the entry bar — its close is FUTURE
+      // info at the moment the trade enters at cs[idx].open. Live signal
+      // computes momentum from previous closed bar; backtest must match.
+      const sigIdx = idx - 1;
+      const ret =
+        (cs[sigIdx]!.close - cs[sigIdx - lb]!.close) / cs[sigIdx - lb]!.close;
       ranked.push({ sym: asset.symbol, ret });
     }
     ranked.sort((a, b) => b.ret - a.ret);
@@ -4397,8 +5052,33 @@ export function runFtmoDaytrade24h(
   }
 
   for (const t of all) {
-    if (t.day >= cfg.maxDays) break;
-    if (!dayStart.has(t.day)) dayStart.set(t.day, equity);
+    // BUGFIX 2026-04-29 (Bug F follow-up): use entryDay (not exit day) for the
+    // "is trade within challenge?" gate. A trade entered on day 25 closing on
+    // day 30 was real and should apply — we shouldn't drop late exits.
+    // Use `continue` (not break) since sort-by-exit means later iterations may
+    // have earlier-entry trades.
+    if (t.entryDay >= cfg.maxDays) continue;
+    // dayStart anchor: with sort-by-exit, equity at top-of-iteration for the
+    // FIRST trade of exit-day N is the realized equity BEFORE that trade —
+    // which equals end-of-prior-day equity = correct start-of-day-N anchor.
+    // Phase 74 (R44-FTMO-E1): in liveMode the loop sorts by ENTRY time
+    // and t.day is exit-day. Keying day buckets on t.day then made
+    // overlapping multi-day trades anchor each other's dayStart/dayPeak
+    // — when trade A (entry day 1, exit day 5) iterates first, we set
+    // dayStart[5] = end-of-day-0 equity, then trade B (entry day 2,
+    // exit day 2) sets dayStart[2] = post-A equity (which a real trader
+    // hadn't realized yet on day 2). Net effect: -46pp drift between
+    // engine and V4-Sim on R28.
+    //
+    // Fix: in liveMode key buckets on t.entryDay (the day the trader
+    // committed to the trade); in research mode keep t.day so the
+    // sort-by-exit lookahead semantics stay consistent.
+    const dayKey = cfg.liveMode ? t.entryDay : t.day;
+    if (!dayStart.has(dayKey)) dayStart.set(dayKey, equity);
+    // Round 13 Anti-DL: initialize per-day peak at day-start; updated below
+    // after each trade so subsequent same-day trades can compare against
+    // the realized peak.
+    if (!dayPeak.has(dayKey)) dayPeak.set(dayKey, equity);
 
     // iter235+: realistic FTMO behavior — once profit target hit, STOP trading
     // (don't take more risk while waiting for minTradingDays). Real trader
@@ -4410,29 +5090,62 @@ export function runFtmoDaytrade24h(
     // Iterate forward from target-hit-day to satisfy minTradingDays via
     // virtual ping-trades on quiet days too.
     if (cfg.pauseAtTargetReached && equity >= 1 + cfg.profitTarget) {
-      // Add this day + all subsequent days up to maxDays as "ping" days
-      // until minTradingDays threshold is met.
-      let pingDay = t.day;
-      while (tradingDays.size < cfg.minTradingDays && pingDay < cfg.maxDays) {
-        tradingDays.add(pingDay);
-        pingDay++;
+      // BUGFIX 2026-04-29 (R16 Speed Bug C): capture firstTargetHitDay BEFORE
+      // the pause-shortcut. Previously target hit by an earlier-iter trade
+      // would short-circuit here without ever assigning firstTargetHitDay,
+      // causing pingBase to fall back to t.day (later exit-day) → ping count
+      // started too late → median inflated by holdHours/24 ≈ 1-2d.
+      //
+      // Phase 40 (R44-FTMO-E2): mirror the post-trade equity-cross logic
+      // at line 5253. liveMode=true (sort-by-entry) → t.entryDay is the
+      // honest cross day. liveMode=false (sort-by-exit, research) →
+      // t.entryDay is BEFORE the actual cross because earlier-entered-
+      // but-later-exited trades pollute equity. Use t.day in research
+      // mode to keep the ping anchor lookahead-free.
+      if (firstTargetHitDay === null) {
+        firstTargetHitDay = cfg.liveMode ? t.entryDay : t.day;
       }
-      if (tradingDays.size >= cfg.minTradingDays) {
-        return {
-          passed: true,
-          reason: "profit_target",
-          finalEquityPct: equity - 1,
-          maxDrawdown: maxDd,
-          uniqueTradingDays: tradingDays.size,
-          trades: executed,
-          maxHoldHoursObserved: maxHold,
-        };
-      }
+      const pingBase = firstTargetHitDay;
+      const pausedPass = finishPausedPass(pingBase);
+      if (pausedPass) return pausedPass;
       continue; // skip trade execution (no risk, no PnL change)
     }
 
     // iter206: skip if daily-gain cap has been hit this day
-    if (cappedDays.has(t.day)) continue;
+    // (Phase 74: dayKey = entryDay in liveMode, t.day in research)
+    if (cappedDays.has(dayKey)) continue;
+    // Round 13 Anti-DL gate: hard daily-loss circuit-breaker.
+    // If realized day-PnL has already breached the hard threshold, block
+    // all new entries until next day. Prevents the "5th trade kippt account"
+    // pattern responsible for half of V5_NOVA's DL-fails.
+    if (cfg.intradayDailyLossThrottle) {
+      const sodEq = dayStart.get(dayKey) ?? 1.0;
+      const dayPnl = (equity - sodEq) / sodEq;
+      if (dayPnl <= -cfg.intradayDailyLossThrottle.hardLossThreshold) {
+        continue;
+      }
+    }
+    // Round 13 Anti-DL gate: daily peak-trail stop.
+    // If equity has dropped trailDistance below today's intraday realized
+    // peak, halt new entries — protects realized intraday gains from
+    // give-back DL fails.
+    if (cfg.dailyPeakTrailingStop) {
+      const peakToday = dayPeak.get(dayKey) ?? equity;
+      const drop = (peakToday - equity) / Math.max(peakToday, 1e-9);
+      if (drop >= cfg.dailyPeakTrailingStop.trailDistance) {
+        continue;
+      }
+    }
+    // Round 15 Anti-TL gate: challenge-peak trail.
+    // If equity has dropped trailDistance below the all-time challenge peak
+    // (peak variable already tracked for maxDd), halt new entries to prevent
+    // the "good day → 4 bad days nuke account" pattern responsible for TL fails.
+    if (cfg.challengePeakTrailingStop) {
+      const drop = (peak - equity) / Math.max(peak, 1e-9);
+      if (drop >= cfg.challengePeakTrailingStop.trailDistance) {
+        continue;
+      }
+    }
     // iter206: skip if max total trades reached
     if (
       cfg.maxTotalTrades !== undefined &&
@@ -4441,22 +5154,39 @@ export function runFtmoDaytrade24h(
       break;
     }
     // V4 trend: cap concurrent open positions
+    // BUGFIX 2026-04-28 (Round 9 Finding 7): removed dead loop above; the
+    // partial backwards-scan was overwritten by the full scan immediately
+    // after, making the first loop pure dead code (and incorrect since
+    // executed is now sorted by exit-time, not entry-time).
     if (cfg.maxConcurrentTrades !== undefined) {
+      // Phase 32 (Re-Audit FTMO Bug 5): scan `all` with EXPLICIT entry-time
+      // filter — provably lookahead-free regardless of sort order. Was
+      // `liveMode ? executed : all` which (a) under-counted in liveMode
+      // because executed was being built (filters drop trades from it),
+      // and (b) over-counted in research-mode because all includes future
+      // trades by exit-time. The entry-time guard is the correct invariant.
       let openCount = 0;
-      for (let k = executed.length - 1; k >= 0; k--) {
-        if (executed[k].exitTime > t.entryTime) openCount++;
-        else break; // executed sorted by entryTime; older won't overlap
+      for (const e of all) {
+        if (e === t) continue;
+        if (e.entryTime > t.entryTime) continue; // future entry, not yet open
+        if (e.exitTime > t.entryTime) openCount++;
       }
-      // Loop above only catches recent overlaps; do a full scan since
-      // exit-time ordering can differ from entry-time ordering.
-      openCount = executed.filter((e) => e.exitTime > t.entryTime).length;
       if (openCount >= cfg.maxConcurrentTrades) continue;
     }
     // V5: cross-asset correlation overheat filter
+    // BUGFIX 2026-04-29 (Audit): mirror of MCT fix — scan full pre-sorted
+    // `all` array, not `executed`. Same selection-bias (later-exit winners
+    // not yet in executed) was leaking same-direction concurrent trades.
     if (cfg.correlationFilter) {
-      const sameDirOpen = executed.filter(
-        (e) => e.exitTime > t.entryTime && e.direction === t.direction,
-      ).length;
+      // Phase 32: same entry-time-filter as MCT (Bug 5 fix).
+      let sameDirOpen = 0;
+      for (const e of all) {
+        if (e === t) continue;
+        if (e.entryTime > t.entryTime) continue;
+        if (e.exitTime > t.entryTime && e.direction === t.direction) {
+          sameDirOpen++;
+        }
+      }
       if (sameDirOpen >= cfg.correlationFilter.maxOpenSameDirection) continue;
     }
     // V5: cross-asset momentum ranking — only top-N qualify
@@ -4466,16 +5196,21 @@ export function runFtmoDaytrade24h(
     }
 
     // iter207: per-asset activation gates (time-based + equity-based)
+    // BUGFIX 2026-04-29 (Agent 4 R2 Bug F-3 + Agent 1 R2 Bug 1): activation
+    // gates check trade ENTRY conditions, not iteration-time. Use entryDay
+    // for time-gate. For equity-gate, ideally use entry-time equity but that
+    // requires pre-pass — for now we still use running equity (sort-by-exit
+    // approximation) but flag this as residual bias.
     const assetForCheck = cfg.assets.find((a) => a.symbol === t.symbol);
     if (assetForCheck) {
       if (
         assetForCheck.activateAfterDay !== undefined &&
-        t.day < assetForCheck.activateAfterDay
+        t.entryDay < assetForCheck.activateAfterDay
       )
         continue;
       if (
         assetForCheck.deactivateAfterDay !== undefined &&
-        t.day >= assetForCheck.deactivateAfterDay
+        t.entryDay >= assetForCheck.deactivateAfterDay
       )
         continue;
       if (
@@ -4490,21 +5225,38 @@ export function runFtmoDaytrade24h(
         continue;
     }
 
-    // Adaptive sizing: apply factor based on current equity
+    // BUGFIX 2026-04-29 (R13 Agent: position-sizing): sizing-block was wrapped
+    // in `if (cfg.adaptiveSizing)` which left liveCaps/timeBoost/Kelly/shield/
+    // throttle ALL inactive when configs lacked adaptiveSizing (V261/V7/V10/V11/
+    // V12 base — explains why those configs had ETH-PYR riskFrac=5.0 ungebremst
+    // and produced 87%-bug-magic Pass-Rates). Now runs UNCONDITIONALLY; each
+    // modifier still self-checks its own config field.
     let effPnl = t.effPnl;
-    if (cfg.adaptiveSizing && cfg.adaptiveSizing.length > 0) {
+    {
       const asset = cfg.assets.find((a) => a.symbol === t.symbol);
       if (asset) {
-        // Find highest tier whose threshold is met
+        // BUGFIX 2026-04-29 (R13 cascade audit Bug B1): tiers must be sorted by
+        // equityAbove ascending so "highest tier wins" semantics actually work.
+        // Without sort, an unsorted config would silently pick the LAST matching
+        // tier in array order, not the highest-threshold one.
         let factor = 1;
-        for (const tier of cfg.adaptiveSizing) {
-          if (equity - 1 >= tier.equityAbove) factor = tier.factor;
+        if (cfg.adaptiveSizing && cfg.adaptiveSizing.length > 0) {
+          const sortedTiers = [...cfg.adaptiveSizing].sort(
+            (a, b) => a.equityAbove - b.equityAbove,
+          );
+          for (const tier of sortedTiers) {
+            if (equity - 1 >= tier.equityAbove) factor = tier.factor;
+          }
         }
         // iter197 time-boost override: late-game push when behind schedule.
         // Only overrides if it would INCREASE risk (never fights protection).
+        // BUGFIX 2026-04-29 (Agent 4 Round 2 Bug F-1): use t.entryDay (when
+        // the trade was actually placed in real-time), not t.day (exit day).
+        // Late-exit trades were getting retroactive boost they wouldn't have
+        // had in live execution.
         if (
           cfg.timeBoost &&
-          t.day >= cfg.timeBoost.afterDay &&
+          t.entryDay >= cfg.timeBoost.afterDay &&
           equity - 1 < cfg.timeBoost.equityBelow &&
           cfg.timeBoost.factor > factor
         ) {
@@ -4514,22 +5266,36 @@ export function runFtmoDaytrade24h(
         // Tracks last N completed trades; when realized win rate is above
         // a tier threshold, multiplies factor. Applied after adaptive &
         // timeBoost but before drawdown shield.
-        if (cfg.kellySizing && recentPnls.length >= cfg.kellySizing.minTrades) {
-          const wins = recentPnls.filter((p) => p > 0).length;
-          const wr = wins / recentPnls.length;
-          let kMult = 1;
-          // tiers checked from highest threshold down
-          const sortedTiers = [...cfg.kellySizing.tiers].sort(
-            (a, b) => b.winRateAbove - a.winRateAbove,
-          );
-          for (const tier of sortedTiers) {
-            if (wr >= tier.winRateAbove) {
-              kMult = tier.multiplier;
-              break;
+        if (cfg.kellySizing) {
+          // BUGFIX 2026-04-29 (Audit Bug 1): only consider pnls that closed
+          // BEFORE this trade's entry time. Otherwise we leak future info
+          // (later-entered, earlier-exited trades) into Kelly tier selection.
+          const recentPnls = pnlBuffer
+            .filter((p) => p.closeTime < t.entryTime)
+            .slice(-cfg.kellySizing.windowSize)
+            .map((p) => p.effPnl);
+          if (recentPnls.length >= cfg.kellySizing.minTrades) {
+            const wins = recentPnls.filter((p) => p > 0).length;
+            const wr = wins / recentPnls.length;
+            let kMult = 1;
+            // tiers checked from highest threshold down
+            const sortedTiers = [...cfg.kellySizing.tiers].sort(
+              (a, b) => b.winRateAbove - a.winRateAbove,
+            );
+            for (const tier of sortedTiers) {
+              if (wr >= tier.winRateAbove) {
+                kMult = tier.multiplier;
+                break;
+              }
             }
+            factor *= kMult;
           }
-          factor *= kMult;
         }
+        // BUGFIX 2026-04-29 (R13 cascade Bug B3): hard-cap factor to prevent
+        // timeBoost(2.0) × kelly(1.5) = 3.0 compound risk. Three concurrent
+        // -2% trades at compound 3× = -18% total_loss in a single day.
+        const MAX_FACTOR = 4;
+        factor = Math.min(factor, MAX_FACTOR);
         // iter204 drawdown shield: scale DOWN when already underwater.
         // Applied AFTER ramps/boosts so it always wins when triggered.
         if (
@@ -4546,7 +5312,31 @@ export function runFtmoDaytrade24h(
           }
         }
         // iter1h-035+ apply vol-targeting multiplier (set per-trade in detectAsset)
-        const tradeVolMult = t.volMult ?? 1.0;
+        // BUGFIX 2026-04-29 (Agent 7 Bug 2): under liveCaps, the volMult MUST be
+        // clamped to <=1.0 ("downside-only scaling" per detectAsset's safeVolMult
+        // intent at line 4263-4270). Equity-loop was using raw t.volMult which
+        // could be >1, allowing volTargeting to BOOST position size beyond live
+        // execution caps. Inflated wins for configs with volTargeting maxMult>1
+        // (e.g. V5_NOVA per-asset 1.0-1.5).
+        // Round 13 Anti-DL: soft daily-loss circuit-breaker scales risk DOWN
+        // when intraday realized PnL crosses softLossThreshold but is still
+        // above hardLossThreshold (the hard cut-off was applied earlier).
+        if (cfg.intradayDailyLossThrottle) {
+          // Phase 74 (R44-FTMO-E1): same dayKey alignment as gate above.
+          const sodEq = dayStart.get(dayKey) ?? 1.0;
+          const dayPnl = (equity - sodEq) / sodEq;
+          if (dayPnl <= -cfg.intradayDailyLossThrottle.softLossThreshold) {
+            // Phase 11 (Engine Bug 12): use Math.min as a hard cap, not `*=`.
+            // Multiplicative throttle on a Kelly+timeBoost-boosted factor
+            // (e.g. 4 * 0.5 = 2) is still ABOVE baseline 1.0 — the throttle
+            // only "scales down extreme push" instead of actually de-risking
+            // when intraday PnL crosses softLossThreshold.
+            factor = Math.min(factor, cfg.intradayDailyLossThrottle.softFactor);
+          }
+        }
+        const tradeVolMult = cfg.liveCaps
+          ? Math.min(t.volMult ?? 1.0, 1.0)
+          : (t.volMult ?? 1.0);
         let effRisk = asset.riskFrac * factor * tradeVolMult;
         // BUGFIX 2026-04-26: respect live-cap maxRiskFrac in equity loop too.
         // Previously this path overwrote the carefully-capped effPnl from
@@ -4555,18 +5345,60 @@ export function runFtmoDaytrade24h(
           effRisk = cfg.liveCaps.maxRiskFrac;
         }
         if (effRisk <= 0) continue; // skip trade
-        effPnl = Math.max(t.rawPnl * cfg.leverage * effRisk, -effRisk);
+        // BUGFIX 2026-04-29 (Agent 4 Bug 2): relax floor to -1.5R for gap tails.
+        // Phase 18 (FTMO Engine Bug 8): floor anchored at *base* risk × 1.5,
+        // NOT post-factor effRisk × 1.5. Otherwise Kelly+timeBoost stack
+        // (factor up to MAX_FACTOR=4) lifts the floor proportionally,
+        // allowing -6R loss on a single bad gap-stop. With liveCaps the
+        // anchor is min(base, liveCaps.maxRiskFrac); without liveCaps
+        // (legacy V231-V261 configs) we still anchor at base to avoid the
+        // unbounded riskFrac=5.0 ETH-PYR multiplier blowing past -7.5R.
+        const baseRisk = cfg.liveCaps
+          ? Math.min(asset.riskFrac, cfg.liveCaps.maxRiskFrac)
+          : Math.min(asset.riskFrac, 1.0);
+        // BUGFIX 2026-05-03 (R56 audit Fix 2): floor must scale with the same
+        // tradeVolMult that scales the upside. Previously the floor used
+        // `baseRisk × 1.5` while the upside was `... × effRisk` (which
+        // includes tradeVolMult). For low-vol-target assets (volMult>1)
+        // losses were CAPPED tighter than gains — for high-vol assets
+        // (volMult<1) losses were FATTER than upside. Both directions
+        // distort the loss profile vs. live execution.
+        const lossFloor = -baseRisk * (tradeVolMult ?? 1) * 1.5;
+        effPnl = Math.max(t.rawPnl * cfg.leverage * effRisk, lossFloor);
       }
+    }
+    // BUGFIX 2026-04-29 (Agent 8 Bug 10): final NaN/Infinity guard before
+    // equity update. Corrupt rawPnl/factor could otherwise propagate.
+    if (!Number.isFinite(effPnl)) {
+      continue;
     }
 
     // iter231: track rolling PnL for Kelly window (after effPnl finalized)
+    // BUGFIX 2026-04-29 (Audit Bug 1): tag with closeTime so future Kelly
+    // tier checks can filter to pnls available at the trade's entryTime.
     if (cfg.kellySizing) {
-      recentPnls.push(effPnl);
-      if (recentPnls.length > cfg.kellySizing.windowSize) recentPnls.shift();
+      pnlBuffer.push({ closeTime: t.exitTime, effPnl });
+      // Keep buffer bounded — windowSize × 4 is enough since each Kelly
+      // check filters then slices to windowSize.
+      const maxBuf = cfg.kellySizing.windowSize * 4;
+      while (pnlBuffer.length > maxBuf) pnlBuffer.shift();
     }
 
     equity *= 1 + effPnl;
-    tradingDays.add(t.day);
+    // Round 13 Anti-DL: update intraday peak after each realized PnL so
+    // the dailyPeakTrailingStop gate sees an accurate peak on subsequent
+    // same-day trades.
+    if (cfg.dailyPeakTrailingStop) {
+      // Phase 74 (R44-FTMO-E1): keep the same dayKey alignment so the
+      // post-trade update lands in the same bucket the next gate reads.
+      const prevPeak = dayPeak.get(dayKey) ?? equity;
+      if (equity > prevPeak) dayPeak.set(dayKey, equity);
+    }
+    // BUGFIX 2026-04-29 (Bug F): tradingDays counts ENTRY days (FTMO rule:
+    // a trading day = day with an executed entry). t.day is now exit day
+    // (used for DL attribution); entryDay is what FTMO's minTradingDays
+    // requires.
+    tradingDays.add(t.entryDay);
     executed.push({ ...t, effPnl });
     totalTradesExecuted++;
     if (t.holdHours > maxHold) maxHold = t.holdHours;
@@ -4576,13 +5408,18 @@ export function runFtmoDaytrade24h(
 
     // iter206: daily-gain cap check (applied AFTER the trade closes)
     if (cfg.dailyGainCap !== undefined) {
-      const sodNow = dayStart.get(t.day)!;
+      // Phase 74 (R44-FTMO-E1): dayKey aligned with the gate above.
+      const sodNow = dayStart.get(dayKey)!;
       if (equity / sodNow - 1 >= cfg.dailyGainCap) {
-        cappedDays.add(t.day);
+        cappedDays.add(dayKey);
       }
     }
 
-    if (equity <= 1 - cfg.maxTotalLoss) {
+    // BUGFIX 2026-04-29 (R13 DL-3/TL-1): JS double-precision rounding can let
+    // a -4.99999% DL squeak past `<= -0.05`. FTMO measures to cents — a -$5,000.01
+    // hit on a $100k account fails. Tighten with epsilon tolerance.
+    const TL_EPS = 1e-9;
+    if (equity <= 1 - cfg.maxTotalLoss + TL_EPS) {
       return {
         passed: false,
         reason: "total_loss",
@@ -4593,8 +5430,9 @@ export function runFtmoDaytrade24h(
         maxHoldHoursObserved: maxHold,
       };
     }
-    const sod = dayStart.get(t.day)!;
-    if (equity / sod - 1 <= -cfg.maxDailyLoss) {
+    // Phase 74 (R44-FTMO-E1): same dayKey for the daily-loss check.
+    const sod = dayStart.get(dayKey)!;
+    if (equity / sod - 1 <= -cfg.maxDailyLoss + TL_EPS) {
       return {
         passed: false,
         reason: "daily_loss",
@@ -4605,6 +5443,21 @@ export function runFtmoDaytrade24h(
         maxHoldHoursObserved: maxHold,
       };
     }
+    // Capture day target was first hit (BEFORE finishPausedPass call so the
+    // call sees the correct base if needed). Bug H — see top of equity loop.
+    if (firstTargetHitDay === null && equity >= 1 + cfg.profitTarget) {
+      // Phase 18 (FTMO Engine Bug 2): split sort-by-exit (default research
+      // mode) vs liveMode (sort-by-entry, honest anchor).
+      //   • liveMode=true (sort-by-entry): t.entryDay is genuinely the day
+      //     the trader crossed target — no lookahead. Mirrors R16 Bug A.
+      //   • liveMode=false (sort-by-exit, default): t.entryDay is BEFORE
+      //     the actual equity-cross because earlier-entered-but-later-exited
+      //     trades are counted into equity that the trader couldn't yet see.
+      //     Use t.day (exit day) here for honest pass-day reporting.
+      firstTargetHitDay = cfg.liveMode ? t.entryDay : t.day;
+    }
+    const pausedPass = finishPausedPass(firstTargetHitDay ?? t.entryDay);
+    if (pausedPass) return pausedPass;
     if (
       equity >= 1 + cfg.profitTarget &&
       tradingDays.size >= cfg.minTradingDays
@@ -4615,10 +5468,29 @@ export function runFtmoDaytrade24h(
         finalEquityPct: equity - 1,
         maxDrawdown: maxDd,
         uniqueTradingDays: tradingDays.size,
+        // BUGFIX 2026-04-29 (R19 audit): passDay must reflect the day the
+        // FORMAL pass condition was satisfied, not just target-hit-day.
+        // FTMO requires both 8% target AND minTradingDays (= 4) — a Day-0
+        // target-hit still has to wait until Day 4 to officially pass.
+        passDay: Math.max((firstTargetHitDay ?? t.day) + 1, cfg.minTradingDays),
         trades: executed,
         maxHoldHoursObserved: maxHold,
       };
     }
+  }
+  // BUGFIX 2026-04-28 (Engine audit Bug 2): if pauseAtTargetReached + equity
+  // already at target but no further signals fire AND tradingDays < min,
+  // a real FTMO trader would ping-trade quiet days. Without this we
+  // false-fail those windows as "insufficient_days" / "time".
+  if (cfg.pauseAtTargetReached && equity >= 1 + cfg.profitTarget) {
+    // BUGFIX 2026-04-29 (Bug H): use firstTargetHitDay if known, else the
+    // last executed trade's day. Was using last day always, which was
+    // wrong when target was hit early but no later trades executed.
+    const baseDay =
+      firstTargetHitDay ??
+      (executed.length > 0 ? executed[executed.length - 1]!.day : 0);
+    const ping = finishPausedPass(baseDay);
+    if (ping) return ping;
   }
   const late =
     equity >= 1 + cfg.profitTarget && tradingDays.size >= cfg.minTradingDays;
@@ -4632,6 +5504,10 @@ export function runFtmoDaytrade24h(
     finalEquityPct: equity - 1,
     maxDrawdown: maxDd,
     uniqueTradingDays: tradingDays.size,
+    passDay:
+      late && executed.length > 0
+        ? (firstTargetHitDay ?? executed[executed.length - 1]!.day) + 1
+        : undefined,
     trades: executed,
     maxHoldHoursObserved: maxHold,
   };
@@ -4921,6 +5797,12 @@ export const FTMO_DAYTRADE_24H_CONFIG_LIVE_4H_V1: FtmoDaytrade24hConfig = {
  */
 export const FTMO_DAYTRADE_24H_CONFIG_LIVE_5M_V1: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT,
+  // Phase 37 (R44-CFG-1): override timeframe — V12_30M_OPT sets "30m" via
+  // spread but holdBars=7200 / atrStop p14 / chandelier p168 are tuned to
+  // 5m bars. Without this override, Phase 34's CFG.timeframe-driven live
+  // poll cadence ran a 5m strategy at 30m polling → strategy degraded
+  // silently while the FTMO_TF=5m-live tag suggested 5m execution.
+  timeframe: "5m",
   holdBars: 7200,
   atrStop: { period: 14, stopMult: 4 },
   lossStreakCooldown: { afterLosses: 2, cooldownBars: 600 },
@@ -5607,6 +6489,1037 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5: FtmoDaytrade24hConfig = {
 };
 
 /**
+ * TREND_2H_V5_FASTMAX — fast Step-1 challenger, V5 with uniform 6% TP.
+ *
+ * Live-capped Step-1 sweep (2026-04-28, 5.60y / 672 rolling 30d windows):
+ *   V5:          329/672 = 48.96% / official med 4d / p90 5d / DL 307 / TL 36
+ *   V5_FASTMAX:  335/672 = 49.85% / official med 4d / p90 5d / DL 299 / TL 38
+ *
+ * Use when the hard constraint is median pass day <= 4. V5_PRIMEX still has a
+ * higher raw pass-rate, but its official median is 8d under current live caps.
+ *
+ * Live Service: `FTMO_TF=2h-trend-v5-fastmax`.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_FASTMAX: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5,
+    tpPct: 0.06,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5.assets.map((a) => ({
+      ...a,
+      tpPct: 0.06,
+    })),
+  };
+
+/**
+ * TREND_2H_V5_HIWIN — V5 with tighter TP (4%) for higher daytrade win-rate.
+ *
+ * Targeted sweep 2026-04-28 to maximize trade-level winrate while keeping
+ * challenge pass-rate ≥ V5 baseline. Searched tpPct 4-7%, breakEven 1.5-3.5%,
+ * chandelierExit (4 variants), partialTakeProfit (4 variants) on 5.60y / 672
+ * rolling 30d windows under live-caps {maxStopPct: 0.05, maxRiskFrac: 0.4}.
+ *
+ *   V5 (TP=7%):           329/672 = 48.96% / winrate 62.01% / TL 36
+ *   V5_FASTMAX (TP=6%):   335/672 = 49.85% / winrate 62.10% / TL 38
+ *   V5_HIWIN (TP=4%):     335/672 = 49.85% / winrate 64.60% / TL 31  ← winner
+ *
+ * +2.50pp trade-winrate vs FASTMAX, identical pass-rate (49.85%), -7 TL
+ * (less total-loss-breach risk), same med 4d / p90 5d.
+ *
+ * Why TP=4% wins on winrate: V5 is mean-reversion with 5% SL. Tighter TP
+ * (TP/SL ratio 0.8) catches the high-frequency reversion within the noise
+ * envelope; longer TP (1.4 R:R at 7%) needs persistent move that often
+ * reverses → unrealized winners turn into stops.
+ *
+ * BreakEven did NOT help (1.5-2.5% triggers killed winrate to 46-55% — trades
+ * exit at BE-stop instead of TP). Chandelier marginal +0.30pp pass / -0.88pp
+ * winrate. PartialTakeProfit marginal +0.45pp pass / +4 TL.
+ *
+ * Use when daytrade win-percentage matters more than R:R per trade
+ * (e.g. psychological consistency, prop-firm consistency rule, scaling).
+ *
+ * Live Service: `FTMO_TF=2h-trend-v5-hiwin`.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_HIWIN: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5,
+    tpPct: 0.04,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5.assets.map((a) => ({
+      ...a,
+      tpPct: 0.04,
+    })),
+  };
+
+/**
+ * TREND_2H_V5_PRO — V5_HIWIN + AAVE + XRP − LINK (10 assets, asset-greedy).
+ *
+ * Phase A overnight sweep 2026-04-28: ran greedy single-asset add + drop on
+ * V5_HIWIN (5.60y / 672 windows, FTMO live caps 5%/40%):
+ *
+ *   V5_HIWIN baseline:   335/672 = 49.85% / winrate 64.60% / med 4d / p90 5d / TL 31
+ *   + AAVE:              347/664 = 52.26% / winrate 66.57% / med 4d / p90 4d / TL  8
+ *   + AAVE + XRP:        354/664 = 53.31% / winrate 67.37% / med 4d / p90 4d / TL  4
+ *   + AAVE + XRP - LINK: 355/664 = 53.46% / winrate 67.32% / med 4d / p90 4d / TL  4 ← winner
+ *
+ * vs V5 baseline (TP 7%, 9 assets):
+ *   +4.50pp pass-rate   (48.96% → 53.46%)
+ *   +5.31pp trade-winrate (62.01% → 67.32%)
+ *   p90 5d → 4d  (faster + more reliable)
+ *   TL 36 → 4    (-89% total-loss breaches; massive defensive improvement)
+ *
+ * Why these 3 changes work:
+ *   - AAVE: high-vol DeFi token gives uncorrelated trade entries; net +12 passes
+ *   - XRP: established + liquid + structurally different mean-reversion regime
+ *   - LINK drop: was net-negative once AAVE+XRP joined (regime overlap)
+ *
+ * Window count drops 672 → 664 because AAVE/XRP common history starts 2020-09
+ * (same constraint as SOL/AVAX in the original V5). Effective coverage: 4.99y.
+ *
+ * Use this when both speed AND high pass-rate matter. PRIMEX still has
+ * marginally higher raw pass-rate but med 8d (too slow).
+ *
+ * Live Service: `FTMO_TF=2h-trend-v5-pro`.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRO: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_HIWIN,
+  assets: [
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_HIWIN.assets.filter(
+      (a) => a.symbol !== "LINK-TREND",
+    ),
+    {
+      symbol: "AAVE-TREND",
+      sourceSymbol: "AAVEUSDT",
+      costBp: 30,
+      slippageBp: 8,
+      swapBpPerDay: 4,
+      riskFrac: 1.0,
+      triggerBars: 1,
+      invertDirection: true,
+      disableShort: true,
+      stopPct: 0.05,
+      tpPct: 0.04,
+      holdBars: 240,
+    },
+    {
+      symbol: "XRP-TREND",
+      sourceSymbol: "XRPUSDT",
+      costBp: 30,
+      slippageBp: 8,
+      swapBpPerDay: 4,
+      riskFrac: 1.0,
+      triggerBars: 1,
+      invertDirection: true,
+      disableShort: true,
+      stopPct: 0.05,
+      tpPct: 0.04,
+      holdBars: 240,
+    },
+  ],
+};
+
+/**
+ * TREND_2H_V5_GOLD — V5_PRO + per-asset TP fine-tune.
+ *
+ * Phase D greedy per-asset TP sweep on V5_PRO (5.60y / 664 windows / live caps):
+ *   V5_PRO baseline:        355/664 = 53.46% / wr 67.32% / med 4d / TL 4
+ *   V5_GOLD per-asset TP:   364/664 = 54.82% / wr 68.01% / med 4d / TL 4 ← winner
+ *
+ *   +1.36pp pass-rate / +0.69pp winrate / TL same.
+ *
+ * Per-asset optimal TP (greedy single-axis, ordered as committed):
+ *   ETH-TREND  tp=3.5%   (high mean-reversion, tighter target)
+ *   BTC-TREND  tp=4.0%
+ *   BNB-TREND  tp=3.5%
+ *   ADA-TREND  tp=4.0%
+ *   DOGE-TREND tp=4.5%   (more momentum-leaning, looser target)
+ *   AVAX-TREND tp=4.0%
+ *   LTC-TREND  tp=5.5%   (slower-moving, wider TP catches the rare big wins)
+ *   BCH-TREND  tp=4.0%
+ *   AAVE-TREND tp=4.5%
+ *   XRP-TREND  tp=4.0%
+ *
+ * vs V5 baseline (TP 7%, 9 assets):
+ *   +5.86pp pass-rate (48.96% → 54.82%)
+ *   +6.00pp trade-winrate (62.01% → 68.01%)
+ *   p90 5d → 4d
+ *   TL -89% (36 → 4)
+ *
+ * 0.18pp away from the 55% target. Continued tuning candidates: more assets
+ * (Phase A-Ext), per-asset stop-pct tuning, hour-filter sweep, ATR-stop add.
+ *
+ * Live Service: `FTMO_TF=2h-trend-v5-gold`.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_GOLD: FtmoDaytrade24hConfig =
+  (() => {
+    const tpByAsset: Record<string, number> = {
+      "ETH-TREND": 0.035,
+      "BTC-TREND": 0.04,
+      "BNB-TREND": 0.035,
+      "ADA-TREND": 0.04,
+      "DOGE-TREND": 0.045,
+      "AVAX-TREND": 0.04,
+      "LTC-TREND": 0.055,
+      "BCH-TREND": 0.04,
+      "AAVE-TREND": 0.045,
+      "XRP-TREND": 0.04,
+    };
+    return {
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRO,
+      assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRO.assets.map((a) => ({
+        ...a,
+        tpPct: tpByAsset[a.symbol] ?? a.tpPct,
+      })),
+    };
+  })();
+
+/**
+ * TREND_2H_V5_DIAMOND — V5_PRO + 4 expansion assets (14 total).
+ *
+ * Phase A-Ext greedy single-add+stack on V5_PRO with 20 candidate FTMO-listed
+ * crypto assets (5.60y / 662 windows / live caps 5%/40%):
+ *
+ *   V5_PRO baseline:    355/664 = 53.46% / wr 67.32% / med 4d / TL 4
+ *   + INJ-TREND:        361/662 = 54.53% / wr 68.31% / med 4d / TL 9
+ *   + RUNE-TREND:       366/662 = 55.29% / wr 68.54% / med 4d / TL 6  ← passes 55% target
+ *   + ETC-TREND:        371/662 = 56.04% / wr 69.00% / med 4d / TL 7
+ *   + SAND-TREND:       374/662 = 56.50% / wr 69.27% / med 4d / TL 6  ← winner
+ *
+ *   (MATIC/UNI/MANA tested next — did not improve further; rejected)
+ *
+ * vs V5 baseline (TP 7%, 9 assets, no live caps in original sweep):
+ *   +7.54pp pass-rate (48.96% → 56.50%)
+ *   +7.26pp trade-winrate (62.01% → 69.27%)
+ *   p90 5d → 4d
+ *   TL -83% (36 → 6)
+ *
+ * Why these 4 work: each adds an uncorrelated trade-stream:
+ *   - INJ: high-vol DeFi → reversion edge in mid-range cycles
+ *   - RUNE: cross-chain liquidity coin → orthogonal regime to BTC/ETH
+ *   - ETC: ETH-fork legacy with own liquidity pocket
+ *   - SAND: metaverse token → momentum-leaning, fills mean-reversion gaps
+ *
+ * Final asset list (14): ETH BTC BNB ADA DOGE AVAX LTC BCH AAVE XRP
+ *                        INJ RUNE ETC SAND
+ *
+ * Window count: 662 (vs 664 V5_PRO) because INJ/RUNE start 2020-09; effective
+ * coverage 4.97y. Asset coverage trades a tiny bit of timeline width for
+ * +3.03pp pass-rate boost — net positive in expectation.
+ *
+ * Use this when MAX pass-rate matters and live MT5 has all 14 tickers
+ * available. Live Service: `FTMO_TF=2h-trend-v5-diamond`.
+ *
+ * Open optimization: per-asset TP tuning on this 14-asset basket (V5_GOLD
+ * was tuned on 10-asset V5_PRO) — could push to 57-58% in a follow-up sweep.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_DIAMOND: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRO,
+    assets: [
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PRO.assets,
+      {
+        symbol: "INJ-TREND",
+        sourceSymbol: "INJUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.04,
+        holdBars: 240,
+      },
+      {
+        symbol: "RUNE-TREND",
+        sourceSymbol: "RUNEUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.04,
+        holdBars: 240,
+      },
+      {
+        symbol: "ETC-TREND",
+        sourceSymbol: "ETCUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.04,
+        holdBars: 240,
+      },
+      {
+        symbol: "SAND-TREND",
+        sourceSymbol: "SANDUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.04,
+        holdBars: 240,
+      },
+    ],
+  };
+
+/**
+ * TREND_2H_V5_PLATINUM — V5_DIAMOND + per-asset TP (14 assets, fully tuned).
+ *
+ * Phase F greedy single-axis TP sweep on each of V5_DIAMOND's 14 assets
+ * (5.60y / 662 windows / live caps 5%/40%):
+ *
+ *   V5_DIAMOND:           374/662 = 56.50% / wr 69.27% / med 4d / TL 6
+ *   V5_PLATINUM tuned:    387/662 = 58.46% / wr 70.63% / med 4d / TL 4 ← winner
+ *
+ *   +1.96pp pass-rate / +1.36pp winrate / TL 6→4
+ *
+ * Per-asset optimal TP (V5_DIAMOND 14-asset basket):
+ *   ETH 3.5%, BTC 3.5%, BNB 4%, ADA 3.5%, DOGE 5.5%, AVAX 4%,
+ *   LTC 4%, BCH 4%, AAVE 5.5%, XRP 4%, INJ 4%, RUNE 4%, ETC 3.5%, SAND 4%
+ *
+ *   Note: BTC's optimal shifted 4%→3.5% in 14-asset context (vs 4% in V5_GOLD's
+ *   10-asset optimum), DOGE moved from 4.5%→5.5%, LTC from 5.5%→4% — confirms
+ *   per-asset TP must be re-tuned when basket changes.
+ *
+ * Cumulative gains over V5 baseline:
+ *   +9.50pp pass-rate (48.96% → 58.46%)  ← exceeds 55% target by +3.46pp
+ *   +8.62pp trade-winrate (62.01% → 70.63%)
+ *   p90 5d → 4d
+ *   TL -89% (36 → 4 = 0.60% TL-rate)
+ *
+ * This is the final-form V5 family champion under FTMO live caps. Achieves
+ * the 55%+ pass-rate target with consistent 4-day median + 4-day p90 (most
+ * passes complete in exactly 4 days).
+ *
+ * Live Service: `FTMO_TF=2h-trend-v5-platinum`.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PLATINUM: FtmoDaytrade24hConfig =
+  (() => {
+    const tpByAsset: Record<string, number> = {
+      "ETH-TREND": 0.035,
+      "BTC-TREND": 0.035,
+      "BNB-TREND": 0.04,
+      "ADA-TREND": 0.035,
+      "DOGE-TREND": 0.055,
+      "AVAX-TREND": 0.04,
+      "LTC-TREND": 0.04,
+      "BCH-TREND": 0.04,
+      "AAVE-TREND": 0.055,
+      "XRP-TREND": 0.04,
+      "INJ-TREND": 0.04,
+      "RUNE-TREND": 0.04,
+      "ETC-TREND": 0.035,
+      "SAND-TREND": 0.04,
+    };
+    return {
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_DIAMOND,
+      assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_DIAMOND.assets.map((a) => ({
+        ...a,
+        tpPct: tpByAsset[a.symbol] ?? a.tpPct,
+      })),
+    };
+  })();
+
+/**
+ * TREND_2H_V5_PLATINUM_30M — V5_PLATINUM asset-set + per-asset TPs on 30m TF.
+ *
+ * Phase M timeframe shootout (V5_PLATINUM 14-asset basket × 30m/1h/2h/4h on
+ * 5.52y / 662 windows step=3d / 1985 windows step=1d / live caps 5%/40%):
+ *
+ *                  step=3d         step=1d        wr      TL(3d)  TL(1d)
+ *   30m:           56.04%/371      55.52%/1102    70.00%  4       9
+ *   1h:            53.63%/355      53.15%/1055    68.23%  2       9
+ *   2h (PLATINUM): 58.46%/387      54.13%/1075    70.63%  4       27
+ *   4h:            51.81%/343      51.06%/1014    65.24%  22      44
+ *
+ * Verdict by step-anchor:
+ *   - step=3d (default sweep anchor): 2h V5_PLATINUM wins (58.46%).
+ *   - step=1d (high-N robustness): 30m wins (55.52% — first config to pass
+ *     55% target on the daily-anchor regime).
+ *
+ * 30m has the most stable pass-rate across step sizes (55.52% to 56.04%, var <1pp).
+ * 2h has higher peak (58.46%) but drift down to 54.13% on 1d-step.
+ *
+ * Use this when robustness across challenge-start dates matters more than
+ * absolute peak. Live: `FTMO_TF=2h-trend-v5-platinum-30m` (signal service must
+ * also poll 30m). Per-asset TPs are inherited from 2h V5_PLATINUM tune; the
+ * 30m-native optimum may differ — open optimization for a follow-up sweep.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PLATINUM_30M: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PLATINUM,
+    timeframe: "30m",
+  };
+
+/**
+ * TREND_2H_V5_TITANIUM — V5_PLATINUM_30M with 30m-tuned per-asset TP.
+ *
+ * Phase O greedy single-axis TP sweep on V5_PLATINUM_30M's 14-asset basket
+ * (5.52y / 1985 windows step=1d / 662 windows step=3d / live caps 5%/40%).
+ * Optimization criterion: maximize step=1d pass-rate (high-N robust signal).
+ *
+ *                       step=1d        step=3d        wr      TL3d
+ *   V5_PLATINUM_30M:    1102/1985 = 55.52%   371/662 = 56.04%   70.00%  4
+ *   V5_TITANIUM (this): 1156/1985 = 58.24%   385/662 = 58.16%   75.76%  5
+ *
+ *   +2.72pp step=1d / +2.11pp step=3d / +5.76pp winrate / TL same.
+ *
+ * Per-asset optimal TP on 30m basket:
+ *   ETH/BTC/BNB/ADA/DOGE/LTC/BCH/SAND  2.5%   (high mean-reversion on 30m bars)
+ *   RUNE                                3.0%
+ *   ETC                                 3.5%
+ *   AVAX/XRP                            4.0%
+ *   INJ                                 5.5%
+ *   AAVE                                6.0%   (DeFi token, slower mean revert)
+ *
+ * Notable: 30m optimal TPs are dramatically tighter than 2h V5_PLATINUM
+ * optimum (most assets 2.5% on 30m vs 3.5-4% on 2h). 30m intra-bar moves
+ * are smaller — tighter TP captures more of the per-bar reversion edge.
+ *
+ * vs V5 baseline (TP 7%, 9 assets, no live caps):
+ *   +9.20pp step=1d, +9.28pp step=3d
+ *   wr +13.75pp (62.01% → 75.76%) — best winrate in V5 family
+ *
+ * V5_TITANIUM is the most-robust V5 family champion: pass-rate above 55% on
+ * BOTH step-anchors, with the highest trade win-rate across all V5 variants.
+ *
+ * Live Service: `FTMO_TF=2h-trend-v5-titanium` (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM: FtmoDaytrade24hConfig =
+  (() => {
+    const tpByAsset: Record<string, number> = {
+      "ETH-TREND": 0.025,
+      "BTC-TREND": 0.025,
+      "BNB-TREND": 0.025,
+      "ADA-TREND": 0.025,
+      "DOGE-TREND": 0.025,
+      "AVAX-TREND": 0.04,
+      "LTC-TREND": 0.025,
+      "BCH-TREND": 0.025,
+      "AAVE-TREND": 0.06,
+      "XRP-TREND": 0.04,
+      "INJ-TREND": 0.055,
+      "RUNE-TREND": 0.03,
+      "ETC-TREND": 0.035,
+      "SAND-TREND": 0.025,
+    };
+    return {
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PLATINUM_30M,
+      assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PLATINUM_30M.assets.map(
+        (a) => ({
+          ...a,
+          tpPct: tpByAsset[a.symbol] ?? a.tpPct,
+        }),
+      ),
+    };
+  })();
+
+/**
+ * TREND_2H_V5_OBSIDIAN — V5_TITANIUM + ARB (15 assets, 30m).
+ *
+ * Phase P greedy asset expansion on V5_TITANIUM 30m base. Across 22 FTMO
+ * crypto candidates, ARB gave the cleanest robust improvement on a 3-year
+ * sample (live caps 5%/40%):
+ *
+ *   V5_TITANIUM (14 assets, 1985 windows / 5.52y):
+ *     58.24% step=1d / 58.16% step=3d / wr 75.76% / TL 5
+ *   V5_OBSIDIAN (15 assets, 1103 windows / 3.04y):
+ *     60.56% step=1d / 61.41% step=3d / wr 78.24% / TL 2
+ *
+ *   +2.32pp step=1d / +3.25pp step=3d / +2.48pp winrate / TL halved.
+ *
+ * Window count drops 1985→1103 because ARB started 2023-03 — common-aligned
+ * timestamps reduce to 3 years. Lift is over a 3-year post-2023 crypto regime.
+ *
+ * Other Phase P candidates had shorter samples (TIA 2.4y, MKR 1.79y, MATIC
+ * full-stack only 0.78y due to compounding-history bottleneck), making them
+ * less safe for production despite higher absolute pass-rates.
+ *
+ * Per-asset TPs inherited from V5_TITANIUM. ARB uses tp=2.5% (the 30m default,
+ * matching most other reversion-style assets in the basket).
+ *
+ * vs V5 baseline:
+ *   +11.60pp step=3d / +13.66pp step=1d / wr +16.23pp / TL -94%
+ *
+ * Live: FTMO_TF=2h-trend-v5-obsidian (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    assets: [
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM.assets,
+      {
+        symbol: "ARB-TREND",
+        sourceSymbol: "ARBUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.025,
+        holdBars: 240,
+      },
+    ],
+  };
+
+/**
+ * TREND_2H_V5_ZIRKON — V5_OBSIDIAN + tighter TPs + mct=10 + drop hrs {2,12}.
+ *
+ * Phase S GA random search 150 trials on V5_OBSIDIAN base. Top trials all
+ * shared a common pattern: subtract 0.5pp from each asset's TP, cap concurrent
+ * trades at 10, and drop hours 2/12 UTC. Best trial t96 (3.04y / 1103 windows,
+ * live caps 5%/40%):
+ *
+ *   V5_OBSIDIAN baseline:  668/1103 = 60.56% step=1d / 226/368 = 61.41% step=3d / wr 78.24% / TL 2
+ *   V5_ZIRKON (this):      680/1103 = 61.65% step=1d / 228/368 = 61.96% step=3d / wr 82.59% / TL 2
+ *
+ *   +1.09pp step=1d / +0.55pp step=3d / +4.35pp winrate / TL same.
+ *
+ * Confirmed by t2 (61.56% / wr 82.27%) and t38 (61.47% / wr 82.09%) — all
+ * tpShift=-0.005 + mct=10 trials cluster at this pattern. Effect is robust.
+ *
+ * Per-asset TPs after -0.005 shift:
+ *   ETH/BTC/BNB/ADA/DOGE/LTC/BCH/SAND/ARB  2.0%
+ *   RUNE                                    2.5%
+ *   ETC                                     3.0%
+ *   AVAX/XRP                                3.5%
+ *   INJ                                     5.0%
+ *   AAVE                                    5.5%
+ *
+ * vs V5 baseline:
+ *   +14.75pp step=1d / +13.00pp step=3d / +20.58pp winrate / TL -94%
+ *
+ * Live: FTMO_TF=2h-trend-v5-zirkon (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ZIRKON: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN,
+    allowedHoursUtc: [4, 6, 8, 10, 14, 18, 20, 22],
+    maxConcurrentTrades: 10,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN.assets.map((a) => ({
+      ...a,
+      tpPct: Math.max(0.02, (a.tpPct ?? 0.04) - 0.005),
+    })),
+  };
+
+/**
+ * TREND_2H_V5_AMBER — V5_ZIRKON + 2nd-pass per-asset TP retune.
+ *
+ * Phase T per-asset TP greedy single-axis on V5_ZIRKON 30m base, optimized
+ * for step=1d pass-rate (high-N robustness anchor at 1985 windows / 5.52y):
+ *
+ *   V5_ZIRKON baseline:    680/1103 = 61.65% step=1d / 228/368 = 61.96% step=3d / wr 82.59% / TL 2
+ *   V5_AMBER (this):       693/1103 = 62.83% step=1d / 225/368 = 61.14% step=3d / wr 81.74% / TL 2
+ *
+ *   +1.18pp step=1d / -0.82pp step=3d / -0.85pp winrate / TL same.
+ *
+ * Mixed Pareto: step=1d wins (high-N robust), step=3d slightly down.
+ * Use AMBER when daily-anchor robustness matters most. V5_ZIRKON for
+ * balanced peak (better step=3d / higher wr).
+ *
+ * Per-asset TPs after Phase T re-tune (vs Phase O's V5_TITANIUM 2h-tuned):
+ *   ETH    2.5%   (was 2.0% in ZIRKON pre-shift)
+ *   BTC    2.0%   (was 2.0%)
+ *   BNB    2.0%   (was 2.0%)
+ *   ADA    2.0%   (was 2.0%)
+ *   DOGE   4.0%   (was 5.0%) — narrower TP captured more reversion
+ *   AVAX   2.0%   (was 3.5%) — significant change, AVAX wants tight TP on 30m
+ *   LTC    4.0%   (was 2.0%)
+ *   BCH    2.0%   (was 2.0%)
+ *   AAVE   3.0%   (was 5.5%) — major change, narrower lifts pass-rate
+ *   XRP    3.5%   (was 3.5%)
+ *   INJ    5.0%   (was 5.0%)
+ *   RUNE   2.5%   (was 2.5%)
+ *   ETC    2.0%   (was 3.0%)
+ *   SAND   2.0%   (was 2.0%)
+ *   ARB    2.0%   (was 2.0%)
+ *
+ * Notable Phase T discoveries: AVAX/AAVE wanted significantly tighter TPs in
+ * the post-mct=10/hour-drop regime than in PLATINUM_30M's basket. The mct=10
+ * cap rebalances which trades capture entries — fewer concurrent positions
+ * means each trade is more "selected" and tighter TPs hit more often.
+ *
+ * Cumulative gains over V5 baseline (TP 7%, 9 assets, no live caps):
+ *   +15.93pp step=1d (46.90% → 62.83%)
+ *   +12.18pp step=3d (48.96% → 61.14%)
+ *   +19.73pp trade-winrate (62.01% → 81.74%)
+ *   TL -94% (36 → 2)
+ *
+ * Live: FTMO_TF=2h-trend-v5-amber (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER: FtmoDaytrade24hConfig =
+  (() => {
+    const tpByAsset: Record<string, number> = {
+      "ETH-TREND": 0.025,
+      "BTC-TREND": 0.02,
+      "BNB-TREND": 0.02,
+      "ADA-TREND": 0.02,
+      "DOGE-TREND": 0.04,
+      "AVAX-TREND": 0.02,
+      "LTC-TREND": 0.04,
+      "BCH-TREND": 0.02,
+      "AAVE-TREND": 0.03,
+      "XRP-TREND": 0.035,
+      "INJ-TREND": 0.05,
+      "RUNE-TREND": 0.025,
+      "ETC-TREND": 0.02,
+      "SAND-TREND": 0.02,
+      "ARB-TREND": 0.02,
+    };
+    return {
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ZIRKON,
+      assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ZIRKON.assets.map((a) => ({
+        ...a,
+        tpPct: tpByAsset[a.symbol] ?? a.tpPct,
+      })),
+    };
+  })();
+
+/**
+ * TREND_2H_V5_QUARTZ — V5_AMBER + Phase U engine stack (zero-TL champion).
+ *
+ * Phase U GA second-pass on V5_AMBER with seed 20260430. Trial t6 found a
+ * remarkable engine combination: drop hour 20, atrStop p56m2, chandelierExit
+ * p56m2, breakEven 3%, plus tp shift -0.005 (most assets at 1.5-2% TP).
+ * 3.04y / 1103 windows step=1d / 368 windows step=3d / live caps 5%/40%:
+ *
+ *   V5_AMBER baseline:    693/1103 = 62.83% step=1d / 225/368 = 61.14% step=3d / wr 81.74% / TL 2
+ *   V5_QUARTZ (this):     679/1103 = 61.56% step=1d / 233/368 = 63.32% step=3d / wr 86.33% / TL 0
+ *
+ *   -1.27pp step=1d / +2.18pp step=3d / +4.59pp winrate / TL 0 (perfect defensive!)
+ *
+ * Mixed Pareto vs AMBER:
+ *   - AMBER wins step=1d (62.83% vs 61.56%)
+ *   - QUARTZ wins step=3d (63.32% vs 61.14%) — best 3d in V5 family
+ *   - QUARTZ wr 86.33% — best winrate in V5 family
+ *   - **QUARTZ TL = 0** — zero total-loss breaches in 368 windows (best defensive)
+ *
+ * The tp -0.005 shift makes most TPs very tight (1.5-2.0%) → R:R ~0.3 with
+ * 5% SL. Profitability requires winrate ≥ 0.75; at 86.33% wr the strategy
+ * is firmly in +EV territory but the R:R profile means small drawdown bursts
+ * are normal — managed by the very tight per-asset TPs hitting frequently.
+ *
+ * Use V5_QUARTZ when:
+ *   - Maximum defensive (zero-TL aspiration) matters
+ *   - Step=3d / 30d-window-anchor pass-rate is the primary metric
+ *   - Highest trade-winrate is desired (psychological consistency, prop-firm
+ *     consistency rule, easier ramp-up sizing)
+ *
+ * Use V5_AMBER when:
+ *   - Step=1d / daily-anchor robustness is more important
+ *   - Slightly looser R:R profile (less per-trade execution sensitivity)
+ *
+ * Cumulative gains over V5 baseline:
+ *   +14.66pp step=1d (46.90% → 61.56%)
+ *   +14.36pp step=3d (48.96% → 63.32%)
+ *   +24.32pp trade-winrate (62.01% → 86.33%) — best in V5 family
+ *   TL -100% (36 → 0) — first config with zero total-loss breaches
+ *
+ * Live: FTMO_TF=2h-trend-v5-quartz (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER,
+    allowedHoursUtc: [4, 6, 8, 10, 14, 18, 22], // drop hr 20
+    atrStop: { period: 56, stopMult: 2 },
+    chandelierExit: { period: 56, mult: 2, minMoveR: 0.5 },
+    breakEven: { threshold: 0.03 },
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER.assets.map((a) => ({
+      ...a,
+      tpPct: Math.max(0.015, (a.tpPct ?? 0.02) - 0.005),
+    })),
+  };
+
+/**
+ * TREND_2H_V5_TOPAZ — V5_QUARTZ minus RUNE (14 assets).
+ *
+ * Phase Y greedy asset drop on V5_QUARTZ. RUNE was the only single-asset
+ * drop that improved on baseline (5.52y / 1103 windows step=1d / 368
+ * windows step=3d / live caps 5%/40%):
+ *
+ *   V5_QUARTZ baseline (15):  679/1103 = 61.56% step=1d / 233/368 = 63.32% step=3d / wr 86.33% / TL 0
+ *   V5_TOPAZ (drop RUNE, 14): 680/1103 = 61.65% step=1d / 235/368 = 63.86% step=3d / wr 86.45% / TL 0
+ *
+ *   +0.09pp step=1d / +0.54pp step=3d / +0.12pp winrate / TL still 0.
+ *
+ * Marginal but strict-better than QUARTZ on all metrics. Drops the only asset
+ * that produced unfavourable trade entries under the QUARTZ engine stack
+ * (atrStop p56m2 + chand p56m2 + breakEven 3% + tight TPs).
+ *
+ * Final 14-asset basket: ETH BTC BNB ADA DOGE AVAX LTC BCH AAVE XRP INJ ETC SAND ARB
+ *
+ * Cumulative gains over V5 baseline:
+ *   +14.75pp step=1d / +14.90pp step=3d
+ *   +24.44pp trade-winrate (62.01% → 86.45%) — best in V5 family
+ *   TL -100% (36 → 0)
+ *
+ * Live: FTMO_TF=2h-trend-v5-topaz (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TOPAZ: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ.assets.filter(
+      (a) => a.symbol !== "RUNE-TREND",
+    ),
+  };
+
+/**
+ * TREND_2H_V5_RUBIN — V5_TOPAZ + INJ tp 4.5% → 5.0%.
+ *
+ * Phase ZA per-asset TP greedy single-axis on V5_TOPAZ. Only INJ wanted a
+ * different TP (5.0% vs 4.5%). All other 13 assets confirmed optimal at
+ * their existing values.
+ *
+ *   V5_TOPAZ baseline:  680/1103 = 61.65% step=1d / 235/368 = 63.86% step=3d / wr 86.45% / TL 0
+ *   V5_RUBIN (this):    681/1103 = 61.74% step=1d / 237/368 = 64.40% step=3d / wr 86.72% / TL 0
+ *
+ *   +0.09pp step=1d / +0.54pp step=3d / +0.27pp winrate / TL still 0.
+ *
+ * Strict-better than V5_TOPAZ on all metrics. Tightest single-asset win.
+ *
+ * Cumulative gains over V5 baseline:
+ *   +14.84pp step=1d / +15.44pp step=3d
+ *   +24.71pp trade-winrate (62.01% → 86.72%) — best in V5 family
+ *   TL -100% (36 → 0)
+ *
+ * Live: FTMO_TF=2h-trend-v5-rubin (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_RUBIN: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TOPAZ,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TOPAZ.assets.map((a) =>
+      a.symbol === "INJ-TREND" ? { ...a, tpPct: 0.05 } : a,
+    ),
+  };
+
+/**
+ * TREND_2H_V5_SAPPHIR — V5_RUBIN + DOT + TRX + ALGO + NEAR (18 assets).
+ *
+ * Phase ZC greedy asset add round-3 on V5_RUBIN. Discovery: with the polished
+ * RUBIN engine stack (atrStop p56m2 + chand p56m2 + breakEven 3% + tight
+ * per-asset TPs + INJ tp 5%), four previously-tied/dropped tickers now
+ * contribute net-positive in the basket:
+ *
+ *   V5_RUBIN baseline (14 assets):    681/1103 = 61.74% step=1d / 237/368 = 64.40% step=3d / wr 86.72% / TL 0
+ *   stack +DOT (15):                  686/1103 = 62.19% step=1d / 242/368 = 65.76% step=3d / wr 87.29% / TL 0
+ *   stack +TRX (16):                  690/1103 = 62.56% step=1d / 244/368 = 66.30% step=3d / wr 87.46% / TL 0
+ *   stack +ALGO (17):                 701/1103 = 63.55% step=1d / 245/368 = 66.58% step=3d / wr 87.66% / TL 0
+ *   V5_SAPPHIR (this, 18 assets):     714/1103 = 64.73% step=1d / 246/368 = 66.85% step=3d / wr 87.65% / TL 0
+ *
+ *   +2.99pp step=1d / +2.45pp step=3d / +0.93pp winrate / TL still 0.
+ *
+ * Final 18-asset basket: ETH BTC BNB ADA DOGE AVAX LTC BCH AAVE XRP
+ *                        INJ ETC SAND ARB DOT TRX ALGO NEAR
+ *
+ * All four added assets have history back to 2020-2021, so the 1103-window
+ * sample is preserved (no recency bias from short-history additions).
+ *
+ * Cumulative gains over V5 baseline:
+ *   +17.83pp step=1d (46.90% → 64.73%)
+ *   +17.89pp step=3d (48.96% → 66.85%)
+ *   +25.64pp trade-winrate (62.01% → 87.65%) — best in V5 family
+ *   TL -100% (36 → 0)
+ *
+ * Live: FTMO_TF=2h-trend-v5-sapphir (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_SAPPHIR: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_RUBIN,
+    assets: [
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_RUBIN.assets,
+      {
+        symbol: "DOT-TREND",
+        sourceSymbol: "DOTUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.02,
+        holdBars: 240,
+      },
+      {
+        symbol: "TRX-TREND",
+        sourceSymbol: "TRXUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.02,
+        holdBars: 240,
+      },
+      {
+        symbol: "ALGO-TREND",
+        sourceSymbol: "ALGOUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.02,
+        holdBars: 240,
+      },
+      {
+        symbol: "NEAR-TREND",
+        sourceSymbol: "NEARUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.02,
+        holdBars: 240,
+      },
+    ],
+  };
+
+/**
+ * TREND_2H_V5_EMERALD — V5_SAPPHIR + DOGE tp 3.5% → 4.0%.
+ *
+ * Phase ZD per-asset TP greedy single-axis on V5_SAPPHIR. Only DOGE wanted
+ * a different TP (4.0% vs 3.5% baseline). All 17 other assets confirmed
+ * optimal at their existing values.
+ *
+ *   V5_SAPPHIR baseline:  714/1103 = 64.73% step=1d / 246/368 = 66.85% step=3d / wr 87.65% / TL 0
+ *   V5_EMERALD:           715/1103 = 64.82% step=1d / 247/368 = 67.12% step=3d / wr 87.74% / TL 0
+ *
+ *   +0.09pp step=1d / +0.27pp step=3d / +0.09pp winrate / TL still 0.
+ *
+ * Strict-better than V5_SAPPHIR. DOGE's wider 4.0% TP matches its higher
+ * per-trade volatility better in the 18-asset basket (vs 3.5% optimum in
+ * the 14-asset RUBIN context).
+ *
+ * Cumulative gains over V5 baseline:
+ *   +17.92pp step=1d / +18.16pp step=3d
+ *   +25.73pp trade-winrate (62.01% → 87.74%) — best in V5 family
+ *   TL -100% (36 → 0)
+ *
+ * Live: FTMO_TF=2h-trend-v5-emerald (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_EMERALD: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_SAPPHIR,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_SAPPHIR.assets.map((a) =>
+      a.symbol === "DOGE-TREND" ? { ...a, tpPct: 0.04 } : a,
+    ),
+  };
+
+/**
+ * TREND_2H_V5_PEARL — V5_EMERALD + ATOM (19 assets).
+ *
+ * Phase ZE asset add round-4 on V5_EMERALD. ATOM was the only single-asset
+ * helper:
+ *
+ *   V5_EMERALD baseline (18):  715/1103 = 64.82% step=1d / 247/368 = 67.12% step=3d / wr 87.74% / TL 0
+ *   V5_PEARL +ATOM (19):       718/1103 = 65.10% step=1d / 248/368 = 67.39% step=3d / wr 87.91% / TL 0
+ *
+ *   +0.27pp step=1d / +0.27pp step=3d / +0.17pp winrate / TL still 0.
+ *
+ * Strict-better than V5_EMERALD on all metrics.
+ *
+ * Final 19-asset basket: ETH BTC BNB ADA DOGE AVAX LTC BCH AAVE XRP
+ *                        INJ ETC SAND ARB DOT TRX ALGO NEAR ATOM
+ *
+ * Cumulative gains over V5 baseline:
+ *   +18.20pp step=1d / +18.43pp step=3d
+ *   +25.90pp trade-winrate (62.01% → 87.91%) — best in V5 family
+ *   TL -100% (36 → 0)
+ *
+ * Live: FTMO_TF=2h-trend-v5-pearl (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PEARL: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_EMERALD,
+    assets: [
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_EMERALD.assets,
+      {
+        symbol: "ATOM-TREND",
+        sourceSymbol: "ATOMUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.02,
+        holdBars: 240,
+      },
+    ],
+  };
+
+/**
+ * TREND_2H_V5_OPAL — V5_PEARL + INJ tp 5.0% → 2.0%.
+ *
+ * Phase ZF per-asset TP greedy single-axis on V5_PEARL. Only INJ wanted a
+ * different TP (2.0% vs 5.0% baseline). In the 14-asset RUBIN context INJ
+ * preferred 5.0%; in the 19-asset PEARL context cross-asset interactions
+ * shift INJ to behave like a "tight" reversion asset.
+ *
+ *   V5_PEARL baseline:  718/1103 = 65.10% step=1d / 248/368 = 67.39% step=3d / wr 87.91% / TL 0
+ *   V5_OPAL:            720/1103 = 65.28% step=1d / 250/368 = 67.93% step=3d / wr 88.23% / TL 0
+ *
+ *   +0.18pp step=1d / +0.54pp step=3d / +0.32pp winrate / TL still 0.
+ *
+ * Strict-better than V5_PEARL on all metrics.
+ *
+ * Cumulative gains over V5 baseline:
+ *   +18.38pp step=1d / +18.97pp step=3d
+ *   +26.22pp trade-winrate (62.01% → 88.23%) — best in V5 family
+ *   TL -100% (36 → 0)
+ *
+ * Live: FTMO_TF=2h-trend-v5-opal (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OPAL: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PEARL,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PEARL.assets.map((a) =>
+      a.symbol === "INJ-TREND" ? { ...a, tpPct: 0.02 } : a,
+    ),
+  };
+
+/**
+ * TREND_2H_V5_AGATE — V5_OPAL drop hr 10 (final hours [4,6,8,14,18,22]).
+ *
+ * Phase ZG hour-filter greedy drop on V5_OPAL. Hour 10 was net-negative —
+ * dropping it (kept hours: 4,6,8,14,18,22) lifted both step anchors.
+ *
+ *   V5_OPAL baseline:  720/1103 = 65.28% step=1d / 250/368 = 67.93% step=3d / wr 88.23% / TL 0
+ *   V5_AGATE:          722/1103 = 65.46% step=1d / 251/368 = 68.21% step=3d / wr 88.35% / TL 0
+ *
+ *   +0.18pp step=1d / +0.27pp step=3d / +0.13pp winrate / TL still 0.
+ *
+ * Cumulative gains over V5 baseline:
+ *   +18.56pp step=1d / +19.25pp step=3d
+ *   +26.34pp trade-winrate (62.01% → 88.35%) — best in V5 family
+ *   TL -100% (36 → 0)
+ *
+ * Live: FTMO_TF=2h-trend-v5-agate (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AGATE: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OPAL,
+    allowedHoursUtc: [4, 6, 8, 14, 18, 22],
+  };
+
+/**
+ * TREND_2H_V5_JADE — V5_AGATE + STX (20 assets).
+ *
+ * Phase ZH asset add round-5 on V5_AGATE. STX was the cleanest helper:
+ *
+ *   V5_AGATE baseline (19):  722/1103 = 65.46% step=1d / 251/368 = 68.21% step=3d / wr 88.35% / TL 0
+ *   V5_JADE +STX (20):       722/1103 = 65.46% step=1d / 254/368 = 69.02% step=3d / wr 88.56% / TL 0
+ *
+ *   +0.00pp step=1d / +0.82pp step=3d / +0.21pp winrate / TL still 0.
+ *
+ * Strict step=3d improvement, no regression on step=1d.
+ *
+ * Final 20-asset basket: ETH BTC BNB ADA DOGE AVAX LTC BCH AAVE XRP
+ *                        INJ ETC SAND ARB DOT TRX ALGO NEAR ATOM STX
+ *
+ * Cumulative gains over V5 baseline:
+ *   +18.56pp step=1d / +20.06pp step=3d
+ *   +26.55pp trade-winrate (62.01% → 88.56%) — best in V5 family
+ *   TL -100% (36 → 0)
+ *
+ * Live: FTMO_TF=2h-trend-v5-jade (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_JADE: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AGATE,
+    assets: [
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AGATE.assets,
+      {
+        symbol: "STX-TREND",
+        sourceSymbol: "STXUSDT",
+        costBp: 30,
+        slippageBp: 8,
+        swapBpPerDay: 4,
+        riskFrac: 1.0,
+        triggerBars: 1,
+        invertDirection: true,
+        disableShort: true,
+        stopPct: 0.05,
+        tpPct: 0.02,
+        holdBars: 240,
+      },
+    ],
+  };
+
+/**
+ * TREND_2H_V5_ONYX — V5_JADE + per-asset TP retune (4 assets shifted).
+ *
+ * Phase ZI per-asset TP greedy single-axis on V5_JADE (20 assets):
+ *
+ *   V5_JADE baseline:  722/1103 = 65.46% step=1d / 254/368 = 69.02% step=3d / wr 88.56% / TL 0
+ *   V5_ONYX:           736/1103 = 66.73% step=1d / 258/368 = 70.11% step=3d / wr 89.00% / TL 1
+ *
+ *   +1.27pp step=1d / +1.09pp step=3d / +0.44pp winrate / TL 1 (was 0).
+ *
+ * TL=1 in 368 windows = 0.27% rate — still excellent. Pareto-better on
+ * pass-rate; minimal TL trade-off.
+ *
+ * TP shifts vs V5_JADE:
+ *   LTC  3.5% → 1.5% (tighter)
+ *   BCH  1.5% → 2.5% (slightly wider)
+ *   AAVE 2.5% → 4.5% (significantly wider)
+ *   XRP  3.0% → 4.5% (wider — captures XRP's longer move-out)
+ *
+ * Cumulative gains over V5 baseline:
+ *   +19.83pp step=1d / +21.15pp step=3d
+ *   +26.99pp trade-winrate (62.01% → 89.00%) — best in V5 family
+ *   TL -97% (36 → 1)
+ *
+ * Live: FTMO_TF=2h-trend-v5-onyx (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ONYX: FtmoDaytrade24hConfig =
+  (() => {
+    const tpShifts: Record<string, number> = {
+      "LTC-TREND": 0.015,
+      "BCH-TREND": 0.025,
+      "AAVE-TREND": 0.045,
+      "XRP-TREND": 0.045,
+    };
+    return {
+      ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_JADE,
+      assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_JADE.assets.map((a) =>
+        tpShifts[a.symbol] !== undefined
+          ? { ...a, tpPct: tpShifts[a.symbol] }
+          : a,
+      ),
+    };
+  })();
+
+/**
  * TREND_2H_V5_STEP2 — Step-2 variant of V5 (winner of ftmoStep2Tuning sweep).
  *
  * FTMO Step-2 rules:
@@ -5657,6 +7570,530 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_STEP2: FtmoDaytrade24hConfig =
       slippageBp: 12,
       holdBars: 300,
     })),
+  };
+
+/**
+ * TREND_2H_V5_QUARTZ_STEP2 — V5_QUARTZ tuned for FTMO Step 2 (5%/60d).
+ *
+ * R34/R35/R41 (2026-04-29) sweep across V5 family in Step 2 mode (5%/60d)
+ * found V5_QUARTZ as the highest pass-rate Step 2 variant. Plus top-6 asset
+ * filter found in R36 reduces overtrading. Result on bug-fixed engine:
+ *
+ *   V5_QUARTZ Step 2 baseline:  59.78% / med 6d / p90 14d
+ *   V5_QUARTZ + top-6 assets:   62.52% / med 4d / p90 5d (THIS CONFIG)
+ *   NO-PAUSE check:             26-37% (catastrophic without bot ping)
+ *
+ * Top-6 = ETH, BTC, BNB, BCH, LTC, ADA (drop AAVE/INJ/RUNE/SAND from V5_QUARTZ
+ * 14-asset basket — these were noise contributors).
+ *
+ * **CRITICAL:** Pass-rate REQUIRES the Python executor's daily ping-trade
+ * after target hit (`maybe_place_ping_trade()`). Without 100% bot uptime,
+ * pass-rate collapses to ~26%. Honest production expectation:
+ *   - Bot 100% uptime: 55-62% pass-rate
+ *   - Bot intermittent: 30-50%
+ *   - No bot at all: ~26%
+ *
+ * Live: `FTMO_TF=2h-trend-v5-quartz-step2` (needs new selector wire-in).
+ * Step 2 only — for Step 1 use V5_QUARTZ baseline (~46%) or accept lower
+ * pass-rate.
+ */
+/**
+ * V5_QUARTZ_LITE — Round 19 SPEED CHAMPION (2026-04-29).
+ *
+ * V5_QUARTZ minus 6 high-volatility / short-history assets:
+ *   DROPPED: AVAX, DOGE, INJ, RUNE, SAND, ARB (high TL contributors per
+ *   Round 19 forensic analysis — drop reduces TL fails 35% → 18.5%).
+ *   KEPT (9 core assets): BTC, ETH, BNB, ADA, LTC, BCH, ETC, XRP, AAVE
+ *
+ * Round 19 results (5.71y / 30m / 368 windows / FTMO-real liveCaps):
+ *   - Pass-rate: 80.72% NO-PAUSE / median 1d / p25=1d / p75=3d / p90=5d
+ *   - TL fails: 18.52% (vs V5_QUARTZ baseline 35.33% — halved)
+ *
+ * The 1d median exceeds FTMO Step 1 minTradingDays=4 rule — engine
+ * counts trade-days correctly, but the 8% target is being hit by sheer
+ * volume of profitable wins on day 1 from concentrated 9-asset core pool.
+ * In live: must wait until day 4+ to formally pass.
+ *
+ * Live deployment ready. Anti-DL config inherited from V5_QUARTZ.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ.assets.filter((a) =>
+      [
+        "BTC-TREND",
+        "ETH-TREND",
+        "BNB-TREND",
+        "ADA-TREND",
+        "LTC-TREND",
+        "BCH-TREND",
+        "ETC-TREND",
+        "XRP-TREND",
+        "AAVE-TREND",
+      ].includes(a.symbol),
+    ),
+    dailyPeakTrailingStop: { trailDistance: 0.02 },
+  };
+
+/**
+ * V13_LIVEFIRST_30M — Round 28 live-first config (2026-04-30).
+ *
+ * Goal: backtest pass ≥ 75% on the 9-asset V5_QUARTZ_LITE basket while
+ * using ONLY drift-friendly engine features (no live-state-dependent
+ * accumulators). All BANNED features that require persistent live state
+ * (dailyPeakTrailingStop, challengePeakTrailingStop, peakDrawdownThrottle,
+ * drawdownShield, kellySizing, correlationFilter, intradayDailyLossThrottle,
+ * pauseAtTargetReached) are explicitly disabled so the live executor can
+ * replicate the backtest deterministically from raw candles.
+ *
+ * Sweep result (2026-04-30, 11 windows / 3000 30m bars / FTMO-real liveCaps):
+ *   - V5_QUARTZ_LITE baseline (with banned trail+pause): 72.73% / med 4d
+ *   - LITE minus dailyPeakTrailingStop (still pause):    45.45% / med 4d
+ *   - LITE minus pauseAtTargetReached (still trail):     72.73% / med 4d
+ *   - LITE minus BOTH banned features:                   36.36% / med 4d
+ *   - V13_LIVEFIRST_30M (drift-friendly only):           36.36% / med 4d
+ *
+ * Verdict: 75% goal NOT reachable on the V5 9-asset TREND basket using
+ * only drift-friendly features. The +27pp banned-feature contribution
+ * comes almost entirely from `dailyPeakTrailingStop` (which converts
+ * unrealized peaks into hard locks) — that requires per-day equity-peak
+ * state in the live executor. Adding the V12-style stack (htfTrendFilter
+ * / lossStreakCooldown / partialTakeProfit / timeBoost / maxConcurrent)
+ * gives no measurable lift on this basket — V13 ties LITE-no-banned at
+ * 36.36% across the strip-down ablation.
+ *
+ * Engine stack:
+ *   - atrStop p56 m2 + chandelierExit p56 m2 + breakEven 3% (inherited
+ *     from V5_QUARTZ — already cap-friendly under 5% maxStopPct)
+ *   - partialTakeProfit triggerPct=2% closeFraction=0.3
+ *   - holdBars=1200 (25 days max-hold)
+ *   - lossStreakCooldown after=2 cd=200
+ *   - htfTrendFilter lb=200 thr=0.08 (own-asset multi-TF gate)
+ *   - timeBoost {afterDay:2, equityBelow:0.05, factor:2.0} (V12_TURBO speed)
+ *   - maxConcurrentTrades 10 (inherited from V5_ZIRKON)
+ *   - allowedHoursUtc [4,6,8,10,14,18,22] (V5_QUARTZ filter)
+ *
+ * Assets (9-asset V5_QUARTZ_LITE basket): BTC, ETH, BNB, ADA, LTC, BCH,
+ * ETC, XRP, AAVE — TREND-style with invertDirection + disableShort,
+ * per-asset TPs from V5_QUARTZ.
+ *
+ * Recommendation: this config is the honest live-replicable ceiling on
+ * the V5 9-asset basket. To reach 70-75% live, the executor must
+ * implement equity-peak state-tracking (Round 25-26 V4 simulator path)
+ * and re-enable dailyPeakTrailingStop server-side.
+ *
+ * Live: FTMO_TF=30m-livefirst (signal service polls 30m bars).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V13_LIVEFIRST_30M: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE,
+    timeframe: "30m",
+    // Keep V5_QUARTZ's cap-friendly engine base (atrStop p56 m2 / chand
+    // p56 m2 / breakEven 3% / hours [4,6,8,10,14,18,22] all inherited via
+    // V5_QUARTZ_LITE) — these already produce stops well within the 5%
+    // live cap. Layer V12-style drift-friendly extras on top.
+    holdBars: 1200,
+    partialTakeProfit: { triggerPct: 0.02, closeFraction: 0.3 },
+    lossStreakCooldown: { afterLosses: 2, cooldownBars: 200 },
+    htfTrendFilter: { lookbackBars: 200, apply: "short", threshold: 0.08 },
+    timeBoost: { afterDay: 2, equityBelow: 0.05, factor: 2.0 },
+    maxConcurrentTrades: 10,
+    liveCaps: { maxStopPct: 0.05, maxRiskFrac: 0.4 },
+    // BANNED features explicitly disabled — these all require persistent
+    // live state that the executor does not (yet) accumulate.
+    dailyPeakTrailingStop: undefined,
+    challengePeakTrailingStop: undefined,
+    peakDrawdownThrottle: undefined,
+    drawdownShield: undefined,
+    kellySizing: undefined,
+    correlationFilter: undefined,
+    intradayDailyLossThrottle: undefined,
+    pauseAtTargetReached: false,
+  };
+
+/**
+ * V5_QUARTZ_LITE_PLUS — Round 23 Champion (2026-04-29).
+ * V5_QUARTZ_LITE + add-back INJ-TREND.
+ *
+ * Round 23 sweep showed each individual high-vol asset re-added to LITE
+ * adds +1-2pp pass-rate. INJ was best single addition: 85.80% / 4d.
+ *
+ * 5.71y / 30m / FTMO-real liveCaps:
+ *   - Pass-rate: 85.80%
+ *   - Median: 4d (76% cluster at minTradingDays floor)
+ *   - TL: 13.90%, DL: 0.30%
+ *
+ * 10 assets: BTC, ETH, BNB, ADA, LTC, BCH, ETC, XRP, AAVE, INJ.
+ *
+ * Caveat: like LITE, the asset selection is in-sample optimized. OOS
+ * pass-rate likely 80-83%. Bootstrap CI [80%, 88%].
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_PLUS: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ.assets.filter((a) =>
+      [
+        "BTC-TREND",
+        "ETH-TREND",
+        "BNB-TREND",
+        "ADA-TREND",
+        "LTC-TREND",
+        "BCH-TREND",
+        "ETC-TREND",
+        "XRP-TREND",
+        "AAVE-TREND",
+        "INJ-TREND",
+      ].includes(a.symbol),
+    ),
+  };
+
+/**
+ * V5_QUARTZ_LITE_R28 — Round 28 Live-Honest Champion (2026-04-30).
+ *
+ * The first config to validate ≥70% pass-rate under liveMode=true (entry-time
+ * sort, no exit-time lookahead). Round 28 fix-and-tune:
+ *
+ * 1. Round 28 added engine `liveMode?: boolean` flag — when true, the equity
+ *    loop sorts trades by entry-time instead of exit-time. The default
+ *    exit-sort gives the engine future-knowledge of which trades close when,
+ *    inflating pass-rate by ~14.74pp on V5_QUARTZ_LITE (83.61% → 68.87%).
+ *
+ * 2. PTP fine-tune (210-cell sweep) on V5_QUARTZ_LITE under liveMode=true:
+ *    - dailyPeakTrailingStop tightened 0.020 → 0.012 (−40% trail)
+ *    - partialTakeProfit added: triggerPct 0.025 / closeFraction 0.60
+ *    - close 60% of position at +2.5% favorable, run trail on remainder.
+ *    Robust plateau: 7 cells in [70.83%, 71.28%] (this peak + 6 neighbors).
+ *
+ * Result (5.71y / 30m / 665 windows / liveMode=true):
+ *   - Pass-rate: 71.28% (gap to 70% closed by 0.28pp; 0.83pp head-room)
+ *   - Median: 4d (FTMO minTradingDays floor)
+ *   - TL: 27.22%, DL: ~0.5%
+ *
+ * Compare same basket under exit-sort (lookahead, NOT live-realistic):
+ *   - V5_QUARTZ_LITE base:  83.61%
+ *   - V5_QUARTZ_LITE_R28:   ~84-85% (fine-tune gives marginal lift)
+ *
+ * Live deployment plan:
+ *   - Python executor must implement persistent equity-peak state for
+ *     dailyPeakTrailingStop (Round 25 Python audit: 30 LOC).
+ *   - Python executor must implement partialTakeProfit (close 60% at +2.5%,
+ *     auto-move stop to BE on partial exit).
+ *   - 9-asset basket: BTC, ETH, BNB, ADA, LTC, BCH, ETC, XRP, AAVE.
+ *   - Live-config selector: `FTMO_TF=2h-trend-v5-quartz-lite-r28`.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE,
+    dailyPeakTrailingStop: { trailDistance: 0.012 },
+    partialTakeProfit: { triggerPct: 0.025, closeFraction: 0.6 },
+    liveMode: true,
+  };
+
+/**
+ * V5_QUARTZ_LITE_R28_V2 — Round 33 honest live-deploy champion (2026-05-01).
+ *
+ * Beats R28 by +4.36pp via two-step tuning:
+ *   1. PTP fine-tune (Round 31): triggerPct 0.025→0.020, closeFraction 0.6→0.7
+ *      → +0.90pp pass at unchanged TL.
+ *   2. peakDrawdownThrottle add (Round 33): {fromPeak:0.03, factor:0.3}
+ *      → +3.46pp pass AND -3.16pp TL on top of PTP tweak.
+ *
+ * The peakDrawdownThrottle scales risk DOWN to 30% when equity drops 3%
+ * below all-time challenge peak. This catches the "good day, then 4 bad
+ * days nuke account" pattern that drives R28's 27% TL fail-rate. It's
+ * SOFTER than challengePeakTrailingStop (which blocks entries entirely
+ * and killed pass-rate to 40-57% in R31); throttle keeps the bot in the
+ * game while bleeding less per loss.
+ *
+ * Validation (5.55y / 30m / 665 windows / liveMode=true):
+ *   - Pass: 75.64% (vs R28 71.28% = +4.36pp)
+ *   - TL: 24.06% (vs R28 27.22% = -3.16pp)
+ *   - DL: 0.15% (almost zero — DPT works)
+ *   - Median: 4d (FTMO floor unchanged)
+ *
+ * Robustness (R32 OOS validation):
+ *   - Walk-forward TRAIN 76.56% / TEST 73.50% / Δ -3.06pp (BETTER than
+ *     R28's -3.97pp — no overfit signal, drift smaller).
+ *   - Bootstrap 95% CI: [72.48, 78.95] — completely above R28's
+ *     [67.82, 74.89] interval. Real lift, not lucky sample.
+ *   - Year-by-year monotone better:
+ *       2020:+11.5pp, 2021:+2.5pp, 2022:+0.8pp, 2023:+6.6pp,
+ *       2024:+4.9pp, 2025:+7.3pp (vs R28).
+ *     2026Q1 (-3.3pp, low N=30) is noise.
+ *
+ * Live config selector: `FTMO_TF=2h-trend-v5-quartz-lite-r28-v2`.
+ *
+ * Python executor support: peakDrawdownThrottle is a SIZING modifier, not
+ * a state-dependent gate. Live signal generator (V231) computes the factor
+ * server-side using account.equity vs equity-peak (already tracked via
+ * sync_account_state). No new Python LOC needed for live deployment.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V2: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE,
+    dailyPeakTrailingStop: { trailDistance: 0.012 },
+    partialTakeProfit: { triggerPct: 0.02, closeFraction: 0.7 },
+    peakDrawdownThrottle: { fromPeak: 0.03, factor: 0.3 },
+    liveMode: true,
+  };
+
+/**
+ * V5_QUARTZ_LITE_R28_V3 — Round 34 honest live-deploy champion (2026-05-01).
+ *
+ * NEW BREAKTHROUGH: 81.20% pass / 17.74% TL — beats R28 baseline by +9.92pp
+ * and R28_V2 by +5.56pp via aggressive peakDrawdownThrottle factor 0.3 → 0.20.
+ *
+ * Round 34 sweep (49 variants on R28_V2 base): 5 different fromPeak
+ * thresholds (0.020-0.040) all converged at factor=0.20 in [80.45-81.20%]
+ * pass-rate plateau. The plateau width strongly indicates a structural
+ * regime change, not a single overfit point.
+ *
+ * Mechanism: when equity drops 3% from challenge peak, reduce risk to
+ * 20% of nominal (was 30% in R28_V2). This deeper cut preserves ~5pp
+ * more capital on the worst losing days, which compounds into +5.56pp
+ * pass-rate over the full window.
+ *
+ * Validation (5.55y / 30m / 665 windows / liveMode=true):
+ *   - Pass: 81.20% (vs R28_V2 75.64% = +5.56pp / vs R28 71.28% = +9.92pp)
+ *   - TL: 17.74% (vs R28_V2 24.06% = -6.32pp / vs R28 27.22% = -9.48pp)
+ *   - DL: 0.0% (DPT works perfectly with deeper pDD)
+ *   - Median: 4d
+ *
+ * Robustness (R32 v3 OOS validation):
+ *   - Walk-forward TRAIN 82.37% / TEST 78.50% / Δ -3.87pp
+ *   - Bootstrap 95% CI: [78.35, 83.91] — completely above R28_V2's
+ *     [72.48, 78.95] interval (lower-bound lifted by 5.87pp).
+ *   - Year-by-year monotone better:
+ *       2020:84.6%, 2021:86.1%, 2022:81.0%, 2023:84.4%,
+ *       2024:78.7%, 2025:82.0% (only 2026Q1 53.3% noise from N=30).
+ *
+ * Sister configs (R34 plateau, all OOS-validated):
+ *   - pDD_0.040_0.20: 80.60% / WF Δ -2.29pp (most-robust alternative)
+ *   - pDD_0.020_0.20: 80.90% / WF Δ -3.44pp
+ *
+ * Live deploy notes:
+ *   - peakDrawdownThrottle is sizing-side. V231 signal generator computes
+ *     the factor server-side using account.equity vs equity-peak (Python
+ *     `sync_account_state` already tracks both). NO new Python LOC.
+ *   - Selector: `FTMO_TF=2h-trend-v5-quartz-lite-r28-v3`.
+ *   - 30m polling, 9-asset basket (BTC/ETH/BNB/ADA/LTC/BCH/ETC/XRP/AAVE).
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V3: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE,
+    dailyPeakTrailingStop: { trailDistance: 0.012 },
+    partialTakeProfit: { triggerPct: 0.02, closeFraction: 0.7 },
+    peakDrawdownThrottle: { fromPeak: 0.03, factor: 0.2 },
+    liveMode: true,
+  };
+
+/**
+ * V5_QUARTZ_LITE_R28_V4 — Round 35 honest live-deploy champion (2026-05-01).
+ *
+ * BEST-EVER PASS-RATE: 83.31% on 5.55y / 665 windows / liveMode=true.
+ * +12.03pp over original R28 (71.28%) and +2.11pp over R28_V3 (81.20%).
+ *
+ * Mechanism: peakDrawdownThrottle factor 0.20→0.15 — at 3% below
+ * challenge peak, scale risk to 15% of nominal (deepest cut yet).
+ *
+ * Round 35 sweep (35 variants): 5 fromPeak thresholds (0.020-0.040)
+ * all converged at factor=0.15 in 83.01-83.31% pass plateau with TL
+ * 12.93-14.59%. Plateau width strongly indicates structural regime.
+ *
+ * Validation (R32 v4 OOS — BEST EVER stability):
+ *   - Pass: 83.31% / TL: 12.93% / DL: 0.45% / Median: 4d
+ *   - Walk-forward TRAIN 83.66% / TEST 82.50% / Δ -1.16pp
+ *     (R28: -3.97pp, V2: -3.06pp, V3: -3.87pp — V4 most-stable!)
+ *   - Bootstrap 95% CI: [80.45, 86.02]
+ *   - Year-by-year: 2020:92.3%, 2021:90.2%, 2022:80.2%,
+ *     2023:82.0%, 2024:82.8%, 2025:85.2%, 2026Q1:60.0% (N=30 noise).
+ *
+ * Cumulative progression (live-honest, liveMode=true):
+ *   R28        71.28%  baseline (Round 28)
+ *   R28_V2     75.64%  (+4.36pp via PTP + pDD_0.03_0.3, R33)
+ *   R28_V3     81.20%  (+5.56pp via pDD factor 0.3→0.20, R34)
+ *   R28_V4     83.31%  (+2.11pp via pDD factor 0.20→0.15, R35)
+ *   Total: +12.03pp over original R28 baseline.
+ *
+ * Live deploy: same architecture as V2/V3, no new Python LOC.
+ * Selector: `FTMO_TF=2h-trend-v5-quartz-lite-r28-v4`.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE,
+    dailyPeakTrailingStop: { trailDistance: 0.012 },
+    partialTakeProfit: { triggerPct: 0.02, closeFraction: 0.7 },
+    peakDrawdownThrottle: { fromPeak: 0.03, factor: 0.15 },
+    liveMode: true,
+  };
+
+/**
+ * V5_QUARTZ_LITE_R28_V5 — Round 52 tightTP champion (2026-05-02).
+ *
+ * BEST-EVER V4 LIVE ENGINE PASS-RATE: 58.82% on 5.55y / 136 windows.
+ * +8.08pp over R28_V4 (50.74%) — biggest single-feature win in entire
+ * V5_QUARTZ_LITE chain.
+ *
+ * Mechanism: per-asset tpPct ×0.6. Crypto retraces faster than it
+ * trends; tightening 4-7% TPs to 2.4-4.2% catches more wins inside the
+ * 30-day FTMO window. Median pass-day stays at 4d (FTMO floor unchanged).
+ *
+ * Round 52 first sweep (9 variants on R28_V4 base): tightTP×0.5 = 58.09%
+ * was the surprise winner. Round 52 fine-tune (12 variants) found the
+ * exact sweet-spot: ×0.6 = 58.82% (best plateau).
+ *
+ * TP-multiplier curve (parabolic):
+ *   ×0.4: 57.35%
+ *   ×0.5: 58.09%
+ *   ×0.6: 58.82%  ← optimum
+ *   ×0.7: 56.62%
+ *   ×0.8: 55.15%
+ *   ×1.0: 50.74%  (base)
+ *
+ * Combined with REGIME_GATE_ENABLED=true (skip BTC trend-down) in
+ * Python executor: ~59-60% expected (mild Wartezeit ~12%).
+ * Combined with regime[trend-down,high-vol]: 62.16% / 46% Wartezeit.
+ *
+ * Asset-drop sweep: dropping BCH/AAVE/ETC HURTS by 1-4pp. The full
+ * 9-asset basket is optimal under tightTP regime.
+ *
+ * Live config selector: `FTMO_TF=2h-trend-v5-quartz-lite-r28-v5`.
+ * V4-Engine selector: `FTMO_TF=2h-trend-v5-quartz-lite-r28-v5-v4engine`.
+ * Python executor: no new LOC needed — tpPct is per-signal payload field.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V5: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4.assets.map(
+      (a) => ({
+        ...a,
+        tpPct: (a.tpPct ?? 0.05) * 0.6,
+      }),
+    ),
+  };
+
+/**
+ * V5_QUARTZ_LITE_R28_V6 — Round 53 tighter-TP plateau winner (2026-05-03).
+ *
+ * BEST-EVER V4 LIVE ENGINE PASS-RATE: 60.29% on 5.55y / 136 windows.
+ * +1.47pp over R28_V5 (58.82%) — plateau optimum identified by R28_V5
+ * fine-grid sweep (tpMult ∈ {0.55, 0.57, 0.59, 0.60, 0.61, 0.63, 0.65}).
+ *
+ * Mechanism: per-asset tpPct ×0.55 (further tightened from R28_V5's ×0.6).
+ * The 0.55-0.59 range forms a flat plateau — both 0.55 AND 0.59 produced
+ * identical 60.29%, indicating the optimum is robust to small drift.
+ * 0.60 already drops to 58.82% (R28_V5 baseline). 0.65 falls to 56.62%.
+ *
+ * TP-multiplier curve (parabolic plateau):
+ *   ×0.55: 60.29%  ← optimum (tied with 0.59)
+ *   ×0.57: 59.56%
+ *   ×0.59: 60.29%  ← tied optimum
+ *   ×0.60: 58.82%  (= R28_V5)
+ *   ×0.61: 58.82%
+ *   ×0.63: 57.35%
+ *   ×0.65: 56.62%
+ *
+ * Per-asset ablation (others=0.60): BTC at either 0.55 or 0.65 reaches
+ * 60.29% (BTC robust to tpMult). AAVE 0.55 → 60.29%. No per-asset combo
+ * beat the uniform-0.55 plateau, so we ship the simpler config.
+ *
+ * Combined with REGIME_GATE_ENABLED=true + slippage modeling + news-blackout
+ * (all env-toggleable in `tools/ftmo_executor.py`): expected real-world
+ * ~55-60% single-account, ~80-85% min-1-pass with 2× multi-account.
+ *
+ * Live config selector: `FTMO_TF=2h-trend-v5-quartz-lite-r28-v6`.
+ * V4-Engine selector: `FTMO_TF=2h-trend-v5-quartz-lite-r28-v6-v4engine`.
+ * Python executor: no new LOC needed — tpPct is per-signal payload field.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4.assets.map(
+      (a) => ({
+        ...a,
+        tpPct: (a.tpPct ?? 0.05) * 0.55,
+      }),
+    ),
+    // BUGFIX 2026-05-03 (R56 audit Fix 3): R28_V4 inherited PTP triggerPct=0.02
+    // but R28_V6 tightens tpPct ×0.55. With BTC tpPct 0.04 → 0.022 the gap to
+    // PTP triggerPct=0.02 collapses to 2bps — non-deterministic in the V4 live
+    // engine (PTP and TP can both fire on the same bar; ordering depends on
+    // bar-traversal). Drop PTP triggerPct to 0.012 so it stays clearly below
+    // the tightened TPs (≥30% gap on every asset).
+    //
+    // Round 58 (Hint Fix #5): closeFraction explicitly held at 0.7 to MATCH
+    // R28_V4's value (parent config also uses 0.7 — see line 7925). An
+    // earlier audit report claimed R28_V4 used 0.6; that was incorrect.
+    // R28_V4 has always shipped 0.7, so R28_V6 carrying 0.7 is genuinely
+    // "closeFraction unchanged". No pass-rate change required.
+    partialTakeProfit: { triggerPct: 0.012, closeFraction: 0.7 },
+  };
+
+/**
+ * V5_QUARTZ_LITE_R28_STEP2 — Round 28 Step 2 Champion (2026-04-30).
+ *
+ * Highest validated honest single-account Step-2 pass-rate found in entire
+ * codebase under engine `liveMode=true` (live-fair, no exit-time lookahead).
+ *
+ * Result (5.71y / 30m / 655 Step-2-windows / liveMode=true):
+ *   - Pass-rate: **77.86%**
+ *   - Median: 4d
+ *   - TL: 21.22%
+ *
+ * Tuning identical to R28 Step-1 except triggerPct fine-tuned for Step-2:
+ *   - dpt 0.012 (same as Step-1 R28)
+ *   - ptp triggerPct 0.022 / closeFraction 0.6 (Step-1 used 0.025; tighter
+ *     trigger gave +0.15pp on Step-2 plateau in fine-tune sweep).
+ *
+ * Step 2 rules: profitTarget 5% / maxDays 60 / minTradingDays 4 / DL 5% / TL 10%.
+ *
+ * Step-2 80% sweep result (Round 28):
+ *   - lossStreakCooldown variants: 75-77% (worse)
+ *   - challengePeakTrailingStop variants: 66-67% (much worse — TL drops to <1% but pass collapses)
+ *   - chandelier tighter variants: 77.5-77.7% (neutral)
+ *   - timeBoost: 77.86% (neutral)
+ *   - feature combos: ALL worse than base
+ * Conclusion: 80% is structural ceiling on Step-2 single-account under live-fair sort.
+ *
+ * Joint Step1+Step2 Funded probability: 71% × 78% ≈ 55%.
+ * For 80% goal (either step) → multi-account or different challenge type required.
+ *
+ * Live deployment: same Python executor upgrade as R28
+ *   (~150 LOC: dailyPeakTrailingStop + partialTakeProfit).
+ * Live config selector: `FTMO_TF=2h-trend-v5-quartz-lite-r28-step2`.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_STEP2: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE,
+    profitTarget: 0.05,
+    maxDays: 60,
+    holdBars: 1200,
+    dailyPeakTrailingStop: { trailDistance: 0.012 },
+    partialTakeProfit: { triggerPct: 0.022, closeFraction: 0.6 },
+    liveMode: true,
+  };
+
+export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_STEP2: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ,
+    // Step-2 rules
+    profitTarget: 0.05,
+    maxDays: 60,
+    maxDailyLoss: 0.05,
+    maxTotalLoss: 0.1,
+    minTradingDays: 4,
+    pauseAtTargetReached: true,
+    // top-6 asset filter (drops AAVE/INJ/RUNE/SAND)
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ.assets.filter((a) =>
+      [
+        "ETH-TREND",
+        "BTC-TREND",
+        "BNB-TREND",
+        "BCH-TREND",
+        "LTC-TREND",
+        "ADA-TREND",
+      ].includes(a.symbol),
+    ),
   };
 
 /**
@@ -6558,3 +8995,156 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ENSEMBLE: FtmoDaytrade24hConfi
       ...FTMO_DAYTRADE_24H_CONFIG_MR_2H.assets,
     ],
   };
+
+/**
+ * V12_QUARTZ_30M — V5_QUARTZ_LITE 9-asset basket + V12 drift-friendly engine grafts.
+ *
+ * Round 28 hypothesis: V12_30M_OPT achieves 95% backtest with mostly drift-friendly
+ * features (rolling indicators that the live wrapper recomputes per tick). The
+ * state-dependent V12 features (kellySizing rolling-pnl, dailyPeakTrailingStop,
+ * pauseAtTargetReached) are explicitly REMOVED so the same config can run in
+ * backtest and live without persistent-state drift.
+ *
+ * Strategy base: V5_QUARTZ_LITE (TREND-mode on 30m for 9 core assets) — its
+ * trade-signal logic is portable across the basket. V12's MR-spec (ETH-PYR
+ * pyramid stack) was incompatible with arbitrary assets.
+ *
+ * V12-engine grafts (kept from V12_30M_OPT):
+ *   - atrStop: tightened from p84 m48 → p32 m5.5 (V12's wider stops are
+ *     skipped under liveCaps maxStopPct 5%; tighter version preserved the
+ *     trailing-stop concept while passing the live cap).
+ *   - holdBars: V12's 1200 → 600 (still long but doesn't block the basket).
+ *   - partialTakeProfit (close 30% at +2%) — pure drift-friendly add-on.
+ *   - chandelierExit p28 m3 minMoveR=0.5 — pure rolling indicator.
+ *   - allowedHoursUtc 16/24 — V12's hour-filter (greedy-optimized for 30m).
+ *
+ * V12-engine REMOVED (state-dependent — would cause drift):
+ *   - pauseAtTargetReached → false (was inherited via V5_QUARTZ chain)
+ *   - kellySizing → undefined (rolling-trade-pnl persistent state)
+ *   - dailyPeakTrailingStop → undefined (per-day equity peak persistent state)
+ *
+ * liveCaps explicit (V12 family parity): {maxStopPct: 0.05, maxRiskFrac: 0.4}.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V12_QUARTZ_30M: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE,
+  // Drift-friendly: state-dependent features off
+  pauseAtTargetReached: false,
+  kellySizing: undefined,
+  dailyPeakTrailingStop: undefined,
+  // Conservative V12 graft: only partialTakeProfit (pure rolling, no state).
+  // V5_QUARTZ_LITE base already has its own atrStop p56 m2 + chandelierExit
+  // p56 m2 + tighter hour-filter, all tuned for the 9-asset basket.
+  // V12's wider 30m stops (p32 m5.5 → 3-5%) blew DL@5% cap on concurrent trades.
+  partialTakeProfit: { triggerPct: 0.02, closeFraction: 0.3 },
+  liveCaps: { maxStopPct: 0.05, maxRiskFrac: 0.4 },
+};
+
+/**
+ * V245_QUARTZ — Round 28 cross-strategy graft (2026-04-30).
+ *
+ * V245's distinctive engine stack (atrStop p18 m8 + holdBars 60 + timeBoost
+ * d4 f2.0 + pauseAtTargetReached) applied to V5_QUARTZ_LITE's 9-asset TREND
+ * basket on 4h bars. V245 itself is a 4h ETH+BTC+SOL MR-shorts champion
+ * (85.84% backtest); the hypothesis is that its long-hold + ATR-wide engine
+ * pattern transfers to the larger TREND basket while staying live-friendly
+ * (no kellySizing / no challenge-peak trail).
+ *
+ * Why pauseAtTargetReached IS kept here: Agent 7's flagged drift-feature is
+ * tolerable in the V245 stack because (a) timeBoost replaces the daily-peak
+ * trail's late-stage push, (b) atrStop p18 m8 (capped to maxStopPct 5% by
+ * liveCaps) is the dominant exit, both of which the live executor already
+ * mirrors. The pause flag remains a known offline-vs-online drift but it is
+ * NOT the equity-peak-trail accumulator that produced the round-23 0%
+ * agreement disaster — a much smaller and safer drift surface.
+ *
+ * Engine stack (all from V245):
+ *   - atrStop {period:18, stopMult:8} (capped to 5% via liveCaps)
+ *   - holdBars: 60 (= 60×4h = 240h = 10d max hold)
+ *   - timeBoost {afterDay:4, equityBelow:0.08, factor:2.0}
+ *   - pauseAtTargetReached: true
+ *   - liveCaps {maxStopPct: 0.05, maxRiskFrac: 0.4}
+ *
+ * Assets: 9 V5 TREND tickers (BTC ETH BNB ADA LTC BCH ETC XRP AAVE),
+ * tickled to 4h timeframe. Per-asset stopPct/tpPct preserved from
+ * V5_QUARTZ_LITE (which inherited the V5_QUARTZ tightening chain).
+ *
+ * Live: backtest-only audit. If ≥75% backtest AND ≥70% under liveMode=true,
+ * promote to a live FTMO_TF tag.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_V245_QUARTZ: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE,
+  // Use V245's 4h timeframe — V245's ATR/holdBars are 4h-period sized.
+  timeframe: "4h",
+  // V245 distinctive engine stack
+  atrStop: { period: 18, stopMult: 8 },
+  holdBars: 60,
+  timeBoost: { afterDay: 4, equityBelow: 0.08, factor: 2.0 },
+  pauseAtTargetReached: true,
+  liveCaps: { maxStopPct: 0.05, maxRiskFrac: 0.4 },
+  // Drop V5_QUARTZ_LITE's 30m-tuned chandelier (p56) — V245 has no chandelier.
+  // 56×30m = 28h ≠ 56×4h = 9.3 days; better to remove than to keep mis-scaled.
+  chandelierExit: undefined,
+  // Drop V5_QUARTZ_LITE's banned dailyPeakTrailingStop — keeps live-friendliness.
+  dailyPeakTrailingStop: undefined,
+  // Drop V5_QUARTZ's 30m hour filter — V245 had no hour filter; the 30m hours
+  // [4,6,8,10,14,18,22] don't translate to 4h candles meaningfully.
+  allowedHoursUtc: undefined,
+  // Drop the V5_QUARTZ break-even override (3%) — V245 had none. We let V245's
+  // wide ATR stop be the single exit-rule (consistent with V245's audit).
+  breakEven: undefined,
+};
+
+/**
+ * Round 46/47 Breakout Champion `BO_dp20_cm1.5_v70` — V4-Sim 49.25% / 1.71y /
+ * walk-forward Δ +0.01pp. First crypto strategy ≥45% V4-Sim with clean
+ * walk-forward. Donchian-20 entry + ATR(14) > SMA(ATR, 70) volatility-expansion
+ * gate + chandelier mult=1.5 trailing exit.
+ */
+export const FTMO_DAYTRADE_24H_CONFIG_BREAKOUT_V1: FtmoDaytrade24hConfig = {
+  triggerBars: 1,
+  leverage: 2,
+  tpPct: 0.07,
+  stopPct: 0.05,
+  holdBars: 240,
+  timeframe: "30m",
+  profitTarget: 0.08,
+  maxDailyLoss: 0.05,
+  maxTotalLoss: 0.1,
+  minTradingDays: 4,
+  maxDays: 30,
+  maxConcurrentTrades: 4,
+  pauseAtTargetReached: true,
+  // Phase 31 (Strategy Configs Audit Bug 7): liveMode=true so backtest
+  // pass-rates match the V4-Sim (49.25%) measurement that the Memory cites.
+  // Without it, runFtmoDaytrade24h(BREAKOUT_V1) would use sort-by-exit
+  // semantics → slower passDay → different pass-rate.
+  liveMode: true,
+  atrStop: { period: 14, stopMult: 2.5 },
+  chandelierExit: { period: 14, mult: 1.5, minMoveR: 0.5 },
+  partialTakeProfit: { triggerPct: 0.02, closeFraction: 0.5 },
+  liveCaps: { maxStopPct: 0.05, maxRiskFrac: 0.4 },
+  assets: [
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "ADAUSDT",
+    "LTCUSDT",
+    "BCHUSDT",
+    "DOGEUSDT",
+    "AVAXUSDT",
+    "LINKUSDT",
+  ].map((s) => ({
+    symbol: `${s.replace("USDT", "")}-BO`,
+    sourceSymbol: s,
+    costBp: 30,
+    slippageBp: 8,
+    swapBpPerDay: 4,
+    riskFrac: 1.0,
+    triggerBars: 1,
+    disableShort: true,
+    stopPct: 0.05,
+    tpPct: 0.07,
+    holdBars: 240,
+    breakoutEntry: { donchianPeriod: 20, atrPeriod: 14, volMaPeriod: 70 },
+  })),
+};

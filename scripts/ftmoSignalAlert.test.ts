@@ -22,9 +22,13 @@
 import { describe, it, expect } from "vitest";
 import {
   appendFileSync,
+  closeSync,
   existsSync,
+  fsyncSync,
+  openSync,
   readFileSync,
-  writeFileSync,
+  renameSync,
+  writeSync,
 } from "node:fs";
 import { loadBinanceHistory } from "../src/utils/historicalData";
 import {
@@ -40,12 +44,39 @@ interface SignalState {
   lastAlertedBarCloseTime: number;
 }
 
-function loadState(): SignalState {
-  if (!existsSync(STATE_PATH)) return { lastAlertedBarCloseTime: 0 };
-  return JSON.parse(readFileSync(STATE_PATH, "utf8"));
+function defaultState(): SignalState {
+  return { lastAlertedBarCloseTime: 0 };
 }
+
+function loadState(): SignalState {
+  if (!existsSync(STATE_PATH)) return defaultState();
+  // Round 54 Fix #6: corruption-recovery. SIGTERM during the previous
+  // (non-atomic) write could leave a 0-byte / half-written JSON file —
+  // log it and start fresh rather than crashing the cron job.
+  try {
+    return JSON.parse(readFileSync(STATE_PATH, "utf8")) as SignalState;
+  } catch (e) {
+    console.error(
+      `[signal-alert] state file corrupt (${STATE_PATH}); starting fresh:`,
+      e,
+    );
+    return defaultState();
+  }
+}
+// Round 54 Fix #6: atomic write — temp + fsync + rename. SIGTERM during a
+// plain writeFileSync could otherwise produce a 0-byte / half-flushed state
+// file, breaking the next cron run's dedup. Mirrors writeJSON() in
+// ftmoLiveService.ts.
 function saveState(s: SignalState) {
-  writeFileSync(STATE_PATH, JSON.stringify(s, null, 2));
+  const tmp = `${STATE_PATH}.tmp.${process.pid}`;
+  const fd = openSync(tmp, "w");
+  try {
+    writeSync(fd, JSON.stringify(s, null, 2));
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(tmp, STATE_PATH);
 }
 
 async function sendTelegram(msg: string): Promise<boolean> {

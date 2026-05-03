@@ -18,7 +18,7 @@
 import type { Candle } from "@/utils/indicators";
 import { runWalkForwardHourOfDay } from "@/utils/walkForward";
 import type { WalkForwardConfig } from "@/utils/walkForward";
-import { runMondayReversal, MAKER_COSTS } from "@/utils/intradayLab";
+import { runMondayReversal } from "@/utils/intradayLab";
 import { runFundingCarryBacktest } from "@/utils/fundingCarry";
 import type { FundingEvent } from "@/utils/fundingRate";
 import { runLeadLagBacktest } from "@/utils/leadLagStrategy";

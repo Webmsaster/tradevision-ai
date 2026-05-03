@@ -77,7 +77,7 @@ export async function fetchFundingHistory(
     }
     if (fresh.length === 0) break;
     all.push(...fresh);
-    const newestInBatch = rows[rows.length - 1].fundingTime;
+    const newestInBatch = rows[rows.length - 1]!.fundingTime;
     if (newestInBatch <= startTime) break;
     startTime = newestInBatch + 1;
   }
@@ -124,7 +124,7 @@ export async function fetchRecentFunding(
     }
     if (fresh.length === 0) break;
     all.push(...fresh);
-    const oldestInBatch = rows[0].fundingTime;
+    const oldestInBatch = rows[0]!.fundingTime;
     if (endTime !== undefined && oldestInBatch >= endTime) break;
     endTime = oldestInBatch - 1;
   }
@@ -142,24 +142,24 @@ export async function fetchRecentFunding(
 export function analyzeFunding(events: FundingEvent[]): FundingSnapshot | null {
   if (events.length < 10) return null;
   const sorted = [...events].sort((a, b) => a.fundingTime - b.fundingTime);
-  const latest = sorted[sorted.length - 1];
+  const latest = sorted[sorted.length - 1]!;
   const rates = sorted.slice(0, -1).map((e) => e.fundingRate);
   const mean = rates.reduce((s, v) => s + v, 0) / rates.length;
   const variance =
     rates.reduce((s, v) => s + (v - mean) * (v - mean), 0) / rates.length;
   const stdDev = Math.sqrt(variance);
-  const zScore = stdDev > 0 ? (latest.fundingRate - mean) / stdDev : 0;
+  const zScore = stdDev > 0 ? (latest!.fundingRate - mean) / stdDev : 0;
 
   // Binance perpetual settles funding every 8h → 3 times per day → 1095 per year
-  const annualisedPct = latest.fundingRate * 3 * 365 * 100;
+  const annualisedPct = latest!.fundingRate * 3 * 365 * 100;
 
   let regime: FundingSnapshot["regime"];
-  if (latest.fundingRate > 0.0003 || zScore > 2.5)
+  if (latest!.fundingRate > 0.0003 || zScore > 2.5)
     regime = "extreme-long-crowded";
-  else if (latest.fundingRate > 0.0001 || zScore > 1) regime = "long-crowded";
-  else if (latest.fundingRate < -0.0003 || zScore < -2.5)
+  else if (latest!.fundingRate > 0.0001 || zScore > 1) regime = "long-crowded";
+  else if (latest!.fundingRate < -0.0003 || zScore < -2.5)
     regime = "extreme-short-crowded";
-  else if (latest.fundingRate < -0.0001 || zScore < -1)
+  else if (latest!.fundingRate < -0.0001 || zScore < -1)
     regime = "short-crowded";
   else regime = "neutral";
 

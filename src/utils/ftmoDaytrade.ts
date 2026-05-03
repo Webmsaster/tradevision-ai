@@ -124,7 +124,7 @@ export function detect4DownSignals(
 ): FtmoDaytradeTrade[] {
   const out: FtmoDaytradeTrade[] = [];
   if (candles.length < cfg.downBars + 2) return out;
-  const ts0 = candles[0].openTime;
+  const ts0 = candles[0]!.openTime;
   const costs = cfg.costs ?? MAKER_COSTS;
   const barsPerHour = 4;
   let cooldown = -1;
@@ -133,7 +133,7 @@ export function detect4DownSignals(
     if (i < cooldown) continue;
     let ok = true;
     for (let k = 0; k < cfg.downBars; k++) {
-      if (candles[i - k].close >= candles[i - k - 1].close) {
+      if (candles[i - k]!.close >= candles[i - k - 1]!.close) {
         ok = false;
         break;
       }
@@ -147,17 +147,17 @@ export function detect4DownSignals(
     const stop = entry * (1 - cfg.stopPct);
     const mx = Math.min(i + 1 + cfg.holdBars, candles.length - 1);
     let exitBar = mx;
-    let exitPrice = candles[mx].close;
+    let exitPrice = candles[mx]!.close;
     let reason: "tp" | "stop" | "time" = "time";
     for (let j = i + 2; j <= mx; j++) {
       const bar = candles[j];
-      if (bar.low <= stop) {
+      if (bar!.low <= stop) {
         exitBar = j;
         exitPrice = stop;
         reason = "stop";
         break;
       }
-      if (bar.high >= tp) {
+      if (bar!.high >= tp) {
         exitBar = j;
         exitPrice = tp;
         reason = "tp";
@@ -179,7 +179,7 @@ export function detect4DownSignals(
 
     out.push({
       entryTime: eb.openTime,
-      exitTime: candles[exitBar].closeTime,
+      exitTime: candles[exitBar]!.closeTime,
       entryPrice: entry,
       exitPrice,
       rawPnl,

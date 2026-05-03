@@ -1,6 +1,6 @@
 import type { Candle } from "@/utils/indicators";
 import { atr } from "@/utils/indicators";
-import { vwap, bollingerBands } from "@/utils/marketStructure";
+import { vwap } from "@/utils/marketStructure";
 import type { StrategyDecision, StrategyConfig } from "@/utils/strategies";
 import { DEFAULT_STRATEGY_CONFIG } from "@/utils/strategies";
 
@@ -60,16 +60,16 @@ export function orbStrategy(
 ): StrategyDecision {
   if (candles.length < cfg.rangeBars + 20) return flatDecision();
   const last = candles[candles.length - 1];
-  const hour = utcHour(last.closeTime);
+  const hour = utcHour(last!.closeTime);
   if (hour >= cfg.cutoffHourUtc)
     return flatDecision(["Past daily cutoff hour"]);
 
   // Find all candles that share today's UTC date
-  const today = dayKey(last.closeTime);
+  const today = dayKey(last!.closeTime);
   const todayCandles: Candle[] = [];
   for (let i = candles.length - 1; i >= 0; i--) {
-    if (dayKey(candles[i].closeTime) !== today) break;
-    todayCandles.unshift(candles[i]);
+    if (dayKey(candles[i]!.closeTime) !== today) break;
+    todayCandles.unshift(candles[i]!);
   }
   if (todayCandles.length < cfg.rangeBars + 1)
     return flatDecision(["Opening range not yet complete"]);
@@ -80,11 +80,11 @@ export function orbStrategy(
 
   const atrArr = atr(candles, 14);
   const atrNow = atrArr[atrArr.length - 1];
-  if (atrNow === null) return flatDecision();
+  if (atrNow == null) return flatDecision();
 
-  const priceNow = last.close;
-  const stop = atrNow * cfg.stopAtrMult;
-  const target = atrNow * cfg.targetAtrMult;
+  const priceNow = last!.close;
+  const stop = atrNow! * cfg.stopAtrMult;
+  const target = atrNow! * cfg.targetAtrMult;
 
   if (priceNow > rangeHigh) {
     return {
@@ -138,36 +138,37 @@ export function vwapReversionStrategy(
   if (candles.length < 30) return flatDecision();
   const vwapPts = vwap(candles);
   const v = vwapPts[vwapPts.length - 1];
-  if (!v.vwap || v.upper2 === null || v.lower2 === null) return flatDecision();
+  if (!v!.vwap || v!.upper2 === null || v!.lower2 === null)
+    return flatDecision();
 
   const atrArr = atr(candles, 14);
   const atrNow = atrArr[atrArr.length - 1];
-  if (atrNow === null) return flatDecision();
+  if (atrNow == null) return flatDecision();
 
-  const priceNow = candles[candles.length - 1].close;
-  const stop = atrNow * cfg.stopAtrMult;
+  const priceNow = candles[candles.length - 1]!.close;
+  const stop = atrNow! * cfg.stopAtrMult;
 
-  if (priceNow < v.lower2) {
-    const target = v.vwap - priceNow;
+  if (priceNow < v!.lower2) {
+    const target = v!.vwap - priceNow;
     return {
       action: "long",
       strategy: "mean-reversion",
       stopDistance: stop,
       targetDistance: Math.max(target, atrNow),
       notes: [
-        `Price ${priceNow.toFixed(2)} below VWAP-2σ (${v.lower2.toFixed(2)}) — revert to VWAP ${v.vwap.toFixed(2)}`,
+        `Price ${priceNow.toFixed(2)} below VWAP-2σ (${v!.lower2.toFixed(2)}) — revert to VWAP ${v!.vwap.toFixed(2)}`,
       ],
     };
   }
-  if (priceNow > v.upper2) {
-    const target = priceNow - v.vwap;
+  if (priceNow > v!.upper2) {
+    const target = priceNow - v!.vwap;
     return {
       action: "short",
       strategy: "mean-reversion",
       stopDistance: stop,
       targetDistance: Math.max(target, atrNow),
       notes: [
-        `Price ${priceNow.toFixed(2)} above VWAP+2σ (${v.upper2.toFixed(2)}) — revert to VWAP ${v.vwap.toFixed(2)}`,
+        `Price ${priceNow.toFixed(2)} above VWAP+2σ (${v!.upper2.toFixed(2)}) — revert to VWAP ${v!.vwap.toFixed(2)}`,
       ],
     };
   }
@@ -201,29 +202,29 @@ export function liquidationFadeStrategy(
   const prev = candles[candles.length - 2];
   const atrArr = atr(candles, 14);
   const atrNow = atrArr[atrArr.length - 1];
-  if (atrNow === null) return flatDecision();
+  if (atrNow == null) return flatDecision();
 
-  const moveAbs = Math.abs(last.close - prev.close);
-  if (moveAbs < atrNow * cfg.moveAtrMult)
+  const moveAbs = Math.abs(last!.close - prev!.close);
+  if (moveAbs < atrNow! * cfg.moveAtrMult)
     return flatDecision(["No cascade-sized move"]);
 
   const vols = candles.slice(-20).map((c) => c.volume);
   const volAvg = vols.reduce((s, v) => s + v, 0) / vols.length;
-  if (last.volume < volAvg * cfg.volMult)
+  if (last!.volume < volAvg * cfg.volMult)
     return flatDecision(["Volume not at cascade level"]);
 
-  const stop = atrNow * cfg.stopAtrMult;
+  const stop = atrNow! * cfg.stopAtrMult;
   const target = moveAbs / 2;
 
   // Down-cascade → fade long (bottom-fish)
-  if (last.close < prev.close) {
+  if (last!.close < prev!.close) {
     return {
       action: "long",
       strategy: "mean-reversion",
       stopDistance: stop,
       targetDistance: target,
       notes: [
-        `Long-liquidation cascade detected: ${moveAbs.toFixed(2)} down on ${(last.volume / volAvg).toFixed(1)}x volume — fade long to half retrace`,
+        `Long-liquidation cascade detected: ${moveAbs.toFixed(2)} down on ${(last!.volume / volAvg).toFixed(1)}x volume — fade long to half retrace`,
       ],
     };
   }
@@ -234,7 +235,7 @@ export function liquidationFadeStrategy(
     stopDistance: stop,
     targetDistance: target,
     notes: [
-      `Short-liquidation cascade detected: ${moveAbs.toFixed(2)} up on ${(last.volume / volAvg).toFixed(1)}x volume — fade short to half retrace`,
+      `Short-liquidation cascade detected: ${moveAbs.toFixed(2)} up on ${(last!.volume / volAvg).toFixed(1)}x volume — fade short to half retrace`,
     ],
   };
 }

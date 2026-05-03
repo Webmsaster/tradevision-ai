@@ -65,8 +65,8 @@ describe("vwap", () => {
       isFinal: true,
     }));
     const out = vwap([...day1, ...day2]);
-    expect(out[2].vwap).toBeCloseTo(100, 0);
-    expect(out[5].vwap).toBeCloseTo(200, 0);
+    expect(out[2]!.vwap).toBeCloseTo(100, 0);
+    expect(out[5]!.vwap).toBeCloseTo(200, 0);
   });
 });
 

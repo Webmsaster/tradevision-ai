@@ -45,9 +45,9 @@ export function computeDowStats(candles: Candle[]): DowStat[] {
   const buckets: number[][] = Array.from({ length: 7 }, () => []);
   for (let i = 1; i < candles.length; i++) {
     const ret =
-      (candles[i].close - candles[i - 1].close) / candles[i - 1].close;
-    const dow = new Date(candles[i].openTime).getUTCDay();
-    buckets[dow].push(ret);
+      (candles[i]!.close - candles[i - 1]!.close) / candles[i - 1]!.close;
+    const dow = new Date(candles[i]!.openTime).getUTCDay();
+    buckets[dow]!.push(ret);
   }
   return buckets.map((returns, dow) => {
     const n = returns.length;
@@ -85,22 +85,22 @@ export interface HourDowBucket {
 export function computeHourDowMatrix(candles: Candle[]): HourDowBucket[] {
   const buckets: number[][] = Array.from({ length: 168 }, () => []);
   for (let i = 1; i < candles.length; i++) {
-    const t = candles[i].openTime;
+    const t = candles[i]!.openTime;
     const d = new Date(t);
     const key = d.getUTCDay() * 24 + d.getUTCHours();
     const ret =
-      (candles[i].close - candles[i - 1].close) / candles[i - 1].close;
-    buckets[key].push(ret);
+      (candles[i]!.close - candles[i - 1]!.close) / candles[i - 1]!.close;
+    buckets[key]!.push(ret);
   }
   const out: HourDowBucket[] = [];
   for (let dow = 0; dow < 7; dow++) {
     for (let h = 0; h < 24; h++) {
       const key = dow * 24 + h;
       const rs = buckets[key];
-      const n = rs.length;
-      const mean = n > 0 ? rs.reduce((s, v) => s + v, 0) / n : 0;
+      const n = rs!.length;
+      const mean = n > 0 ? rs!.reduce((s, v) => s + v, 0) / n : 0;
       const varr =
-        n > 0 ? rs.reduce((s, v) => s + (v - mean) * (v - mean), 0) / n : 0;
+        n > 0 ? rs!.reduce((s, v) => s + (v - mean) * (v - mean), 0) / n : 0;
       const std = Math.sqrt(varr);
       const tStat = std > 0 ? (mean * Math.sqrt(n)) / std : 0;
       out.push({
@@ -109,7 +109,7 @@ export function computeHourDowMatrix(candles: Candle[]): HourDowBucket[] {
         n,
         mean,
         tStat,
-        winRate: n > 0 ? rs.filter((r) => r > 0).length / n : 0,
+        winRate: n > 0 ? rs!.filter((r) => r > 0).length / n : 0,
       });
     }
   }
@@ -150,15 +150,15 @@ export function runHourDowStrategy(
   const returns: number[] = [];
   for (let i = 0; i < candles.length; i++) {
     const bar = candles[i];
-    const d = new Date(bar.openTime);
+    const d = new Date(bar!.openTime);
     const key = d.getUTCDay() * 24 + d.getUTCHours();
     const isLong = longKeys.has(key);
     const isShort = shortKeys.has(key);
     if (!isLong && !isShort) continue;
     const direction: "long" | "short" = isLong ? "long" : "short";
     const cost = applyCosts({
-      entry: bar.open,
-      exit: bar.close,
+      entry: bar!.open,
+      exit: bar!.close,
       direction,
       holdingHours: 1,
       config: costs,
@@ -176,7 +176,7 @@ export function runHourDowStrategy(
   const std = Math.sqrt(v);
   const sharpe = std > 0 ? (m / std) * Math.sqrt(8760) : 0;
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {
@@ -246,15 +246,15 @@ export function runTrendFilteredHourStrategy(
     const smaNow = smaArr[i];
     if (smaNow === null) continue;
     const bar = candles[i];
-    const hour = new Date(bar.openTime).getUTCHours();
-    const uptrend = bar.close > smaNow;
+    const hour = new Date(bar!.openTime).getUTCHours();
+    const uptrend = bar!.close > smaNow!;
     const isLong = longSet.has(hour) && uptrend;
     const isShort = !config.longOnly && shortSet.has(hour) && !uptrend;
     if (!isLong && !isShort) continue;
     const direction: "long" | "short" = isLong ? "long" : "short";
     const cost = applyCosts({
-      entry: bar.open,
-      exit: bar.close,
+      entry: bar!.open,
+      exit: bar!.close,
       direction,
       holdingHours: 1,
       config: costs,
@@ -291,16 +291,16 @@ export function runVolFilteredHourStrategy(
     const a = atrArr[i];
     if (a === null) continue;
     const bar = candles[i];
-    const atrPct = a / bar.close;
+    const atrPct = a! / bar!.close;
     if (atrPct < config.minAtrPct || atrPct > config.maxAtrPct) continue;
-    const hour = new Date(bar.openTime).getUTCHours();
+    const hour = new Date(bar!.openTime).getUTCHours();
     const isLong = longSet.has(hour);
     const isShort = shortSet.has(hour);
     if (!isLong && !isShort) continue;
     const direction: "long" | "short" = isLong ? "long" : "short";
     const cost = applyCosts({
-      entry: bar.open,
-      exit: bar.close,
+      entry: bar!.open,
+      exit: bar!.close,
       direction,
       holdingHours: 1,
       config: costs,
@@ -377,7 +377,7 @@ export function runSpreadStrategy(
 ): SpreadReport {
   const costs = config.costs ?? DEFAULT_COSTS;
   const { times, a, b } = alignByTime(numeratorCandles, denominatorCandles);
-  const ratio = a.map((v, i) => (b[i] > 0 ? v / b[i] : 0));
+  const ratio = a.map((v, i) => (b[i]! > 0 ? v / b[i]! : 0));
   const trades: SpreadTrade[] = [];
   let open: {
     dir: "long-ratio" | "short-ratio";
@@ -391,16 +391,16 @@ export function runSpreadStrategy(
     const varr =
       window.reduce((s, v) => s + (v - mean) * (v - mean), 0) / window.length;
     const std = Math.sqrt(varr);
-    const z = std > 0 ? (ratio[i] - mean) / std : 0;
+    const z = std > 0 ? (ratio[i]! - mean) / std : 0;
 
     if (open) {
       const holdTooLong = i - open.bar >= config.holdBarsMax;
       const reachedMean = Math.abs(z) < config.exitZ;
       if (reachedMean || holdTooLong) {
-        const exitRatio = ratio[i];
+        const exitRatio = ratio[i]!;
         // PnL for ratio spread. long-ratio = long numerator + short denominator
         // Approximation: pnl ≈ (exitRatio - entryRatio) / entryRatio
-        let gross =
+        const gross =
           open.dir === "long-ratio"
             ? (exitRatio - open.entry) / open.entry
             : (open.entry - exitRatio) / open.entry;
@@ -409,8 +409,8 @@ export function runSpreadStrategy(
         const slip = (costs.slippageBps / 10_000) * 4;
         const net = gross - fees - slip;
         trades.push({
-          entryTime: times[open.bar],
-          exitTime: times[i],
+          entryTime: times[open.bar]!,
+          exitTime: times[i]!,
           direction: open.dir,
           entryRatio: open.entry,
           exitRatio,
@@ -424,7 +424,7 @@ export function runSpreadStrategy(
     if (!open && Math.abs(z) > config.entryZ) {
       open = {
         dir: z > 0 ? "short-ratio" : "long-ratio",
-        entry: ratio[i],
+        entry: ratio[i]!,
         bar: i,
       };
     }
@@ -445,7 +445,7 @@ export function runSpreadStrategy(
   const periodsPerYear = (365 * 24) / Math.max(1, avgBars);
   const sharpe = std > 0 ? (m / std) * Math.sqrt(periodsPerYear) : 0;
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {
@@ -573,7 +573,7 @@ export function runMondayReversal(
 
   // Find Monday 00 UTC bars
   for (let i = 0; i < candles.length; i++) {
-    const d = new Date(candles[i].openTime);
+    const d = new Date(candles[i]!.openTime);
     if (d.getUTCDay() !== 1 || d.getUTCHours() !== 0) continue;
 
     // Find Friday 00 UTC and Sunday 23 UTC
@@ -582,8 +582,8 @@ export function runMondayReversal(
       return (
         dd.getUTCDay() === 5 &&
         dd.getUTCHours() === 0 &&
-        c.openTime < candles[i].openTime &&
-        c.openTime >= candles[i].openTime - 4 * 86400000
+        c.openTime < candles[i]!.openTime &&
+        c.openTime >= candles[i]!.openTime - 4 * 86400000
       );
     });
     if (!fri0) continue;
@@ -592,16 +592,17 @@ export function runMondayReversal(
     const sun23Idx = i - 1;
     if (sun23Idx < friIdx) continue;
     const weekendReturn =
-      (candles[sun23Idx].close - candles[friIdx].open) / candles[friIdx].open;
+      (candles[sun23Idx]!.close - candles[friIdx]!.open) /
+      candles[friIdx]!.open;
     if (weekendReturn > config.weekendDropThreshold) continue;
 
-    const entry = candles[i].open;
+    const entry = candles[i]!.open;
     const stopLevel = entry * (1 - config.stopPct);
     let exitIdx = Math.min(i + config.holdHours, candles.length - 1);
     let exitReason: MondayTrade["exitReason"] = "time";
-    let exitPrice = candles[exitIdx].close;
+    let exitPrice = candles[exitIdx]!.close;
     for (let j = i; j <= exitIdx; j++) {
-      if (candles[j].low <= stopLevel) {
+      if (candles[j]!.low <= stopLevel) {
         exitPrice = stopLevel;
         exitIdx = j;
         exitReason = "stop";
@@ -616,8 +617,8 @@ export function runMondayReversal(
       config: costs,
     });
     trades.push({
-      entryTime: candles[i].openTime,
-      exitTime: candles[exitIdx].closeTime,
+      entryTime: candles[i]!.openTime,
+      exitTime: candles[exitIdx]!.closeTime,
       entry,
       exit: exitPrice,
       weekendReturnPct: weekendReturn,
@@ -637,7 +638,7 @@ export function runMondayReversal(
   const std = Math.sqrt(v);
   const sharpe = std > 0 ? (m / std) * Math.sqrt(52) : 0; // ~52 weeks/yr
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {
@@ -709,26 +710,26 @@ export function runTakerImbalance(
 
   for (let i = 0; i < candles.length - config.holdBars; i++) {
     const c = candles[i];
-    if (c.volume <= 0 || c.takerBuyVolume === undefined) continue;
-    const imbalance = c.takerBuyVolume / c.volume;
+    if (c!.volume <= 0 || c!.takerBuyVolume === undefined) continue;
+    const imbalance = c!.takerBuyVolume / c!.volume;
     if (imbalance <= config.imbalanceThreshold) continue;
-    const barReturn = (c.close - c.open) / c.open;
+    const barReturn = (c!.close - c!.open) / c!.open;
     if (Math.abs(barReturn) > config.maxBarReturn) continue;
 
-    const entry = c.close;
+    const entry = c!.close;
     const target = entry * (1 + config.targetPct);
     const stop = entry * (1 - config.stopPct);
     let exitIdx = i + config.holdBars;
     let exitReason: TakerTrade["exitReason"] = "time";
-    let exitPrice = candles[exitIdx].close;
+    let exitPrice = candles[exitIdx]!.close;
     for (let j = i + 1; j <= i + config.holdBars; j++) {
-      if (candles[j].high >= target) {
+      if (candles[j]!.high >= target) {
         exitPrice = target;
         exitIdx = j;
         exitReason = "target";
         break;
       }
-      if (candles[j].low <= stop) {
+      if (candles[j]!.low <= stop) {
         exitPrice = stop;
         exitIdx = j;
         exitReason = "stop";
@@ -743,8 +744,8 @@ export function runTakerImbalance(
       config: costs,
     });
     trades.push({
-      entryTime: c.closeTime,
-      exitTime: candles[exitIdx].closeTime,
+      entryTime: c!.closeTime,
+      exitTime: candles[exitIdx]!.closeTime,
       entry,
       exit: exitPrice,
       imbalance,
@@ -769,7 +770,7 @@ export function runTakerImbalance(
   const std = Math.sqrt(v);
   const sharpe = std > 0 ? (m / std) * Math.sqrt(8760 / config.holdBars) : 0;
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {
@@ -801,7 +802,7 @@ function summarize(returns: number[]): BucketStrategyReport {
   const std = Math.sqrt(v);
   const sharpe = std > 0 ? (m / std) * Math.sqrt(8760) : 0;
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {

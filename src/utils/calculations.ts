@@ -3,21 +3,58 @@ import type {
   TradeStats,
   EquityCurvePoint,
   PerformanceByTime,
-} from '@/types/trade';
+} from "@/types/trade";
+import { DAYS_OF_WEEK } from "@/lib/constants";
+
+/**
+ * Single source of truth for leverage validation. A leverage value is valid
+ * iff it's a finite positive number. Anything else (NaN, 0, negative,
+ * Infinity) falls back to 1 so calculations stay defined.
+ *
+ * Round 54: lift the previous `leverage || 1` shortcut into a named helper
+ * so both calculatePnl and the form/import boundaries reach the same
+ * conclusion. UI layers can use this to flag a "data quality" badge when
+ * the fallback fires.
+ */
+export function validateLeverage(n: unknown): {
+  leverage: number;
+  fallback: boolean;
+} {
+  if (typeof n === "number" && Number.isFinite(n) && n > 0) {
+    return { leverage: n, fallback: false };
+  }
+  return { leverage: 1, fallback: true };
+}
+
+// Lazy once-per-session warning so we don't spam the console when an
+// imported CSV has many bad rows.
+let _leverageWarningEmitted = false;
+function _warnLeverageFallbackOnce(): void {
+  if (_leverageWarningEmitted) return;
+  _leverageWarningEmitted = true;
+  if (typeof console !== "undefined") {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[calculations] One or more trades had a missing/invalid leverage; falling back to 1x. " +
+        "Validate your CSV import / TradeForm input.",
+    );
+  }
+}
 
 /**
  * Calculate PnL and PnL percentage for a trade based on direction, prices,
  * quantity, leverage, and fees.
  */
-export function calculatePnl(
-  trade: Omit<Trade, 'id' | 'pnl' | 'pnlPercent'>
-): { pnl: number; pnlPercent: number } {
-  const { direction, entryPrice, exitPrice, quantity, leverage, fees } = trade;
+export function calculatePnl(trade: Omit<Trade, "id" | "pnl" | "pnlPercent">): {
+  pnl: number;
+  pnlPercent: number;
+} {
+  const { direction, entryPrice, exitPrice, quantity, fees } = trade;
 
   // quantity = total units in the position (full exposure).
   // Leverage only affects the margin (collateral) required, not the raw PnL.
   let pnl: number;
-  if (direction === 'long') {
+  if (direction === "long") {
     pnl = (exitPrice - entryPrice) * quantity - fees;
   } else {
     pnl = (entryPrice - exitPrice) * quantity - fees;
@@ -25,8 +62,10 @@ export function calculatePnl(
 
   // pnlPercent = return on margin (capital actually deployed).
   // margin = positionValue / leverage
+  const { leverage, fallback } = validateLeverage(trade.leverage);
+  if (fallback) _warnLeverageFallbackOnce();
   const positionValue = entryPrice * quantity;
-  const margin = positionValue / (leverage || 1);
+  const margin = positionValue / leverage;
   const pnlPercent = margin !== 0 ? (pnl / margin) * 100 : 0;
 
   return { pnl, pnlPercent };
@@ -52,12 +91,11 @@ export function calculateAvgWinLoss(trades: Trade[]): {
   avgLoss: number;
 } {
   const wins = trades.filter((t) => t.pnl > 0);
-  const losses = trades.filter((t) => t.pnl <= 0);
+  // Break-even (pnl === 0) is neither win nor loss — consistent with calculateWinRate.
+  const losses = trades.filter((t) => t.pnl < 0);
 
   const avgWin =
-    wins.length > 0
-      ? wins.reduce((sum, t) => sum + t.pnl, 0) / wins.length
-      : 0;
+    wins.length > 0 ? wins.reduce((sum, t) => sum + t.pnl, 0) / wins.length : 0;
 
   const avgLoss =
     losses.length > 0
@@ -73,19 +111,26 @@ export function calculateAvgWinLoss(trades: Trade[]): {
  */
 export function calculateRiskReward(trades: Trade[]): number {
   const { avgWin, avgLoss } = calculateAvgWinLoss(trades);
-  if (avgLoss === 0) return 0;
+  // No losses but wins → infinite R:R (UI should render as "∞" / "N/A").
+  if (avgLoss === 0) return avgWin > 0 ? Infinity : 0;
   return avgWin / avgLoss;
 }
 
 /**
  * Calculate expectancy: the expected value per trade.
- * Formula: (winRate/100 * avgWin) - (lossRate/100 * avgLoss)
+ * Formula: (winRate * avgWin) - (lossRate * avgLoss), where rates count
+ * BE-trades as NEITHER (consistent with calculateWinRate / calculateAvgWinLoss).
  */
 export function calculateExpectancy(trades: Trade[]): number {
   if (trades.length === 0) return 0;
 
-  const winRate = calculateWinRate(trades) / 100;
-  const lossRate = 1 - winRate;
+  // Phase 42 (R44-CALC-1): lossRate = losses / total directly. Was
+  // `1 - winRate`, which folded BE-trades into the loss bucket and
+  // overweighted avgLoss when many BE trades were present (4 wins / 2
+  // losses / 4 BE used to yield lossRate=0.6 instead of 0.2).
+  const total = trades.length;
+  const winRate = trades.filter((t) => t.pnl > 0).length / total;
+  const lossRate = trades.filter((t) => t.pnl < 0).length / total;
   const { avgWin, avgLoss } = calculateAvgWinLoss(trades);
 
   return winRate * avgWin - lossRate * avgLoss;
@@ -96,7 +141,7 @@ export function calculateExpectancy(trades: Trade[]): number {
  */
 function sortByExitDate(trades: Trade[]): Trade[] {
   return [...trades].sort(
-    (a, b) => new Date(a.exitDate).getTime() - new Date(b.exitDate).getTime()
+    (a, b) => new Date(a.exitDate).getTime() - new Date(b.exitDate).getTime(),
   );
 }
 
@@ -134,13 +179,16 @@ export function calculateMaxDrawdown(trades: Trade[]): {
       maxDrawdown = drawdown;
     }
 
-    // Calculate drawdown as percentage of peak.
+    // Float-point tolerance: ignore sub-penny pseudo-drawdowns from cumulative
+    // floating-point error (e.g. 0.1 + 0.2 - 0.3 ≈ 5.55e-17).
     // When peak <= 0 (all trades are losses), use absolute equity as reference.
-    if (drawdown > 0) {
+    const FP_TOLERANCE = 1e-9;
+    if (drawdown > FP_TOLERANCE) {
       const reference = peak > 0 ? peak : Math.abs(equity);
       const drawdownPercent = reference > 0 ? (drawdown / reference) * 100 : 0;
       if (drawdownPercent > maxDrawdownPercent) {
-        maxDrawdownPercent = Math.min(drawdownPercent, 100);
+        // No silent cap — if real DD > 100% (loss exceeds peak), report it.
+        maxDrawdownPercent = drawdownPercent;
       }
     }
   }
@@ -227,49 +275,88 @@ export function calculateStreaks(trades: Trade[]): {
     if (trade.pnl > 0) {
       currentWinStreak++;
       currentLossStreak = 0;
-
       if (currentWinStreak > longestWinStreak) {
         longestWinStreak = currentWinStreak;
       }
-    } else {
+    } else if (trade.pnl < 0) {
       currentLossStreak++;
       currentWinStreak = 0;
-
       if (currentLossStreak > longestLossStreak) {
         longestLossStreak = currentLossStreak;
       }
     }
+    // Break-even trades (pnl === 0) do NOT break or extend either streak.
   }
 
   return { longestWinStreak, longestLossStreak };
 }
 
 /**
- * Calculate the annualized Sharpe ratio of trade returns.
+ * Trade-frequency-adjusted Sharpe proxy.
  *
- * Uses each trade's PnL as the return for that period:
- *   Sharpe = (mean return / std deviation of returns) * sqrt(252)
+ * NOTE: this is NOT the textbook Sharpe ratio (which is computed on a
+ * regularly-spaced return series, e.g. daily closes). We compute a per-trade
+ * Sharpe using each trade's `pnlPercent` and annualise it by sqrt(N), where
+ * N = trades-per-year inferred from the actual exit-date span.
  *
- * The sqrt(252) factor is a standard annualization assuming 252 trading days.
- * Returns 0 if there are fewer than 2 trades or if the standard deviation is 0.
+ * Why this matters: the previous implementation hard-coded sqrt(252),
+ * implicitly assuming each trade represents one trading day. A scalper who
+ * places 10 trades/day and a swing trader who places 1/week would both get
+ * the same scaling factor — wildly under-/over-stating their annualised
+ * Sharpe by 5-10×.
+ *
+ * Implementation:
+ *   - Use pnlPercent (return-based) so position size doesn't dominate.
+ *   - tradesPerYear = trades.length / years-spanned (from first→last exit).
+ *   - For very short spans (< ~36 days) the inferred frequency is noisy,
+ *     so we fall back to sqrt(252) and warn via JSDoc — callers should
+ *     treat the result as high-variance.
+ *
+ * Returns 0 for fewer than 2 trades, or when the std dev of returns is 0.
  */
 export function calculateSharpeRatio(trades: Trade[]): number {
   if (trades.length < 2) return 0;
 
-  const returns = trades.map((t) => t.pnl);
+  const returns = trades.map((t) =>
+    Number.isFinite(t.pnlPercent) ? t.pnlPercent : 0,
+  );
 
   const mean = returns.reduce((sum, r) => sum + r, 0) / returns.length;
 
-  // Population standard deviation is used here. For sample std dev you would
-  // divide by (n - 1), but for Sharpe ratio on the full trade set, population
-  // is the standard convention in most trading analytics tools.
+  // Population standard deviation (full-population convention).
   const variance =
     returns.reduce((sum, r) => sum + (r - mean) ** 2, 0) / returns.length;
   const stdDev = Math.sqrt(variance);
 
   if (stdDev === 0) return 0;
 
-  const sharpe = (mean / stdDev) * Math.sqrt(252);
+  // Infer trades-per-year from the exit-date span.
+  const exitTimes = trades
+    .map((t) => new Date(t.exitDate).getTime())
+    .filter((n) => Number.isFinite(n));
+
+  let annualisationFactor = Math.sqrt(252); // sensible default
+  if (exitTimes.length >= 2) {
+    // Round 56 (R56-CAL-1): explicit min/max reduce instead of
+    // `Math.max(...arr)` / `Math.min(...arr)`. Spread of >~10k items can
+    // overflow the V8 argument stack on power-user backtest imports
+    // (50k+ trades) — `RangeError: Maximum call stack size exceeded`.
+    let mx = -Infinity;
+    let mn = Infinity;
+    for (const t of exitTimes) {
+      if (t > mx) mx = t;
+      if (t < mn) mn = t;
+    }
+    const spanMs = mx - mn;
+    const years = spanMs / (365.25 * 24 * 60 * 60 * 1000);
+    // Below ~36 days the inferred rate is too noisy; keep the default.
+    if (years >= 0.1) {
+      const tradesPerYear = trades.length / years;
+      annualisationFactor = Math.sqrt(tradesPerYear);
+    }
+  }
+
+  const sharpe = (mean / stdDev) * annualisationFactor;
   return sharpe;
 }
 
@@ -278,24 +365,19 @@ export function calculateSharpeRatio(trades: Trade[]): number {
  * performance stats for each group.
  */
 export function calculatePerformanceByDayOfWeek(
-  trades: Trade[]
+  trades: Trade[],
 ): PerformanceByTime[] {
   if (trades.length === 0) return [];
 
-  const dayNames = [
-    'Sunday',
-    'Monday',
-    'Tuesday',
-    'Wednesday',
-    'Thursday',
-    'Friday',
-    'Saturday',
-  ];
-
+  const dayNames = DAYS_OF_WEEK;
   const groups: Map<number, Trade[]> = new Map();
 
+  // Phase 42 (R44-CALC-3): use UTC for time-of-week bucketing — Round 43
+  // Phase 6 already moved aiAnalysis day/hour helpers to UTC; this kept
+  // local time so detector insights ("Sunday underperforms") would
+  // disagree with the dashboard heatmap for the same trade set.
   for (const trade of trades) {
-    const day = new Date(trade.entryDate).getDay();
+    const day = new Date(trade.entryDate).getUTCDay();
     if (!groups.has(day)) {
       groups.set(day, []);
     }
@@ -315,7 +397,7 @@ export function calculatePerformanceByDayOfWeek(
     const wins = dayTrades.filter((t) => t.pnl > 0).length;
 
     result.push({
-      label: dayNames[day],
+      label: dayNames[day]!,
       trades: dayTrades.length,
       winRate: (wins / dayTrades.length) * 100,
       avgPnl: totalPnl / dayTrades.length,
@@ -331,14 +413,15 @@ export function calculatePerformanceByDayOfWeek(
  * performance stats for each group.
  */
 export function calculatePerformanceByHour(
-  trades: Trade[]
+  trades: Trade[],
 ): PerformanceByTime[] {
   if (trades.length === 0) return [];
 
   const groups: Map<number, Trade[]> = new Map();
 
+  // Phase 42 (R44-CALC-3): UTC bucketing for parity with aiAnalysis.
   for (const trade of trades) {
-    const hour = new Date(trade.entryDate).getHours();
+    const hour = new Date(trade.entryDate).getUTCHours();
     if (!groups.has(hour)) {
       groups.set(hour, []);
     }
@@ -356,7 +439,7 @@ export function calculatePerformanceByHour(
     const wins = hourTrades.filter((t) => t.pnl > 0).length;
 
     result.push({
-      label: `${hour.toString().padStart(2, '0')}:00`,
+      label: `${hour.toString().padStart(2, "0")}:00`,
       trades: hourTrades.length,
       winRate: (wins / hourTrades.length) * 100,
       avgPnl: totalPnl / hourTrades.length,
@@ -421,15 +504,15 @@ export function calculateAllStats(trades: Trade[]): TradeStats {
 
   const totalPnl = trades.reduce((sum, t) => sum + t.pnl, 0);
 
-  // Find best and worst trades by PnL
-  const bestTrade = trades.reduce<Trade>((best, t) =>
-    t.pnl > best.pnl ? t : best,
-    trades[0]
+  // Find best and worst trades by PnL (caller guards trades.length > 0)
+  const bestTrade = trades.reduce<Trade>(
+    (best, t) => (t.pnl > best.pnl ? t : best),
+    trades[0]!,
   );
 
-  const worstTrade = trades.reduce<Trade>((worst, t) =>
-    t.pnl < worst.pnl ? t : worst,
-    trades[0]
+  const worstTrade = trades.reduce<Trade>(
+    (worst, t) => (t.pnl < worst.pnl ? t : worst),
+    trades[0]!,
   );
 
   return {

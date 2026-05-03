@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import {
   detectEmotionalPerformance,
   detectBestSetup,
@@ -7,9 +7,15 @@ import {
 } from "@/utils/aiAnalysis";
 import { Trade } from "@/types/trade";
 
+// Round 58 cleanup: deterministic counter ID (replaces Math.random()).
+let _idCounter = 0;
+beforeEach(() => {
+  _idCounter = 0;
+});
+
 function t(overrides: Partial<Trade>): Trade {
   return {
-    id: Math.random().toString(36).slice(2),
+    id: `t-${++_idCounter}`,
     pair: "BTC/USDT",
     direction: "long",
     entryPrice: 100,
@@ -113,12 +119,22 @@ describe("detectDayOfWeekBias", () => {
 
   it("flags warning when worst weekday is notably negative", () => {
     // Monday = 2026-01-05, Tuesday = 2026-01-06
+    // Phase 52 (R45-CC-H4): detector now buckets by entryDate (was exitDate)
+    // for parity with the dashboard heatmap; provide both explicitly.
     const trades = [
       ...Array.from({ length: 5 }, () =>
-        t({ exitDate: "2026-01-05T12:00:00Z", pnl: 10 }),
+        t({
+          entryDate: "2026-01-05T10:00:00Z",
+          exitDate: "2026-01-05T12:00:00Z",
+          pnl: 10,
+        }),
       ),
       ...Array.from({ length: 5 }, () =>
-        t({ exitDate: "2026-01-06T12:00:00Z", pnl: -40 }),
+        t({
+          entryDate: "2026-01-06T10:00:00Z",
+          exitDate: "2026-01-06T12:00:00Z",
+          pnl: -40,
+        }),
       ),
     ];
     const insight = detectDayOfWeekBias(trades);

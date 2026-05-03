@@ -76,45 +76,45 @@ export function ensembleStrategy(
 
   // 1. EMA
   if (emaFast !== null && emaSlow !== null) {
-    if (emaFast > emaSlow * 1.0005)
+    if (emaFast! > emaSlow! * 1.0005)
       pushVote(
         "EMA",
         "long",
-        `Fast ${emaFast.toFixed(2)} > slow ${emaSlow.toFixed(2)}`,
+        `Fast ${emaFast!.toFixed(2)} > slow ${emaSlow!.toFixed(2)}`,
       );
-    else if (emaFast < emaSlow * 0.9995)
+    else if (emaFast! < emaSlow! * 0.9995)
       pushVote(
         "EMA",
         "short",
-        `Fast ${emaFast.toFixed(2)} < slow ${emaSlow.toFixed(2)}`,
+        `Fast ${emaFast!.toFixed(2)} < slow ${emaSlow!.toFixed(2)}`,
       );
     else pushVote("EMA", "abstain", "EMAs nearly equal");
   } else pushVote("EMA", "abstain", "Not enough data");
 
   // 2. MACD
   if (histNow !== null && histPrev !== null) {
-    if (histNow > 0 && histNow > histPrev)
+    if (histNow! > 0 && histNow! > histPrev!)
       pushVote("MACD", "long", "Hist positive and rising");
-    else if (histNow < 0 && histNow < histPrev)
+    else if (histNow! < 0 && histNow! < histPrev!)
       pushVote("MACD", "short", "Hist negative and falling");
     else pushVote("MACD", "abstain", "Mixed MACD");
   } else pushVote("MACD", "abstain", "Not enough data");
 
   // 3. RSI
   if (rsiNow !== null) {
-    if (rsiNow >= 55) pushVote("RSI", "long", `${rsiNow.toFixed(1)} > 55`);
-    else if (rsiNow <= 45)
-      pushVote("RSI", "short", `${rsiNow.toFixed(1)} < 45`);
-    else pushVote("RSI", "abstain", `${rsiNow.toFixed(1)} neutral`);
+    if (rsiNow! >= 55) pushVote("RSI", "long", `${rsiNow!.toFixed(1)} > 55`);
+    else if (rsiNow! <= 45)
+      pushVote("RSI", "short", `${rsiNow!.toFixed(1)} < 45`);
+    else pushVote("RSI", "abstain", `${rsiNow!.toFixed(1)} neutral`);
   } else pushVote("RSI", "abstain", "Not enough data");
 
   // 4. ADX strength filter
   if (adxNow !== null) {
-    if (adxNow >= cfg.adxTrendThreshold) {
+    if (adxNow! >= cfg.adxTrendThreshold) {
       pushVote(
         "ADX",
         "abstain",
-        `Trend strength ${adxNow.toFixed(1)} (filter ok)`,
+        `Trend strength ${adxNow!.toFixed(1)} (filter ok)`,
       );
     } else {
       // Ranging regime: force everyone to abstain
@@ -125,11 +125,11 @@ export function ensembleStrategy(
           {
             name: "ADX",
             vote: "abstain",
-            reason: `Weak trend ${adxNow.toFixed(1)} — ensemble suppressed`,
+            reason: `Weak trend ${adxNow!.toFixed(1)} — ensemble suppressed`,
           },
         ],
         notes: [
-          `ADX ${adxNow.toFixed(1)} below ${cfg.adxTrendThreshold}: ranging regime, ensemble abstains`,
+          `ADX ${adxNow!.toFixed(1)} below ${cfg.adxTrendThreshold}: ranging regime, ensemble abstains`,
         ],
       };
     }
@@ -137,15 +137,15 @@ export function ensembleStrategy(
 
   // 5. Bollinger Band position
   if (bbUpper !== null && bbLower !== null) {
-    if (priceNow > bbUpper)
+    if (priceNow! > bbUpper!)
       pushVote("BB", "long", "Price above upper band (continuation bias)");
-    else if (priceNow < bbLower)
+    else if (priceNow! < bbLower!)
       pushVote("BB", "short", "Price below lower band");
     else pushVote("BB", "abstain", "Inside bands");
   } else pushVote("BB", "abstain", "Not enough data");
 
   // 6. Volume
-  if (volAvg > 0 && volNow > volAvg * 1.2) {
+  if (volAvg > 0 && volNow! > volAvg * 1.2) {
     // Volume confirms whatever direction the other voters are leaning
     const netLongs = votes.filter((v) => v.vote === "long").length;
     const netShorts = votes.filter((v) => v.vote === "short").length;
@@ -153,13 +153,13 @@ export function ensembleStrategy(
       pushVote(
         "Volume",
         "long",
-        `${((volNow / volAvg - 1) * 100).toFixed(0)}% above avg, confirming longs`,
+        `${((volNow! / volAvg - 1) * 100).toFixed(0)}% above avg, confirming longs`,
       );
     else if (netShorts > netLongs)
       pushVote(
         "Volume",
         "short",
-        `${((volNow / volAvg - 1) * 100).toFixed(0)}% above avg, confirming shorts`,
+        `${((volNow! / volAvg - 1) * 100).toFixed(0)}% above avg, confirming shorts`,
       );
     else pushVote("Volume", "abstain", "Above-avg volume, no clear direction");
   } else pushVote("Volume", "abstain", "Volume below 120% of avg");
@@ -184,8 +184,8 @@ export function ensembleStrategy(
   return {
     action,
     strategy: "trend-follow",
-    stopDistance: atrNow * cfg.stopAtrMult,
-    targetDistance: atrNow * cfg.targetAtrMult,
+    stopDistance: atrNow! * cfg.stopAtrMult,
+    targetDistance: atrNow! * cfg.targetAtrMult,
     notes: votes
       .filter((v) => v.vote === action)
       .map((v) => `${v.name}: ${v.reason}`),

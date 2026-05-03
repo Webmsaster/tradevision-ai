@@ -366,7 +366,7 @@ function rsiSeries(closes: number[], len: number): number[] {
   let gain = 0,
     loss = 0;
   for (let i = 1; i <= len; i++) {
-    const d = closes[i] - closes[i - 1];
+    const d = closes[i]! - closes[i - 1]!;
     if (d >= 0) gain += d;
     else loss += -d;
   }
@@ -374,7 +374,7 @@ function rsiSeries(closes: number[], len: number): number[] {
   loss /= len;
   out[len] = loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
   for (let i = len + 1; i < closes.length; i++) {
-    const d = closes[i] - closes[i - 1];
+    const d = closes[i]! - closes[i - 1]!;
     const g = d > 0 ? d : 0;
     const l = d < 0 ? -d : 0;
     gain = (gain * (len - 1) + g) / len;
@@ -397,17 +397,17 @@ function fireMechanic(
     case "M1_nDown":
       if (i < cfg.nDown + 1) return false;
       for (let k = 0; k < cfg.nDown; k++) {
-        if (closes[i - k] >= closes[i - k - 1]) return false;
+        if (closes[i - k]! >= closes[i - k - 1]!) return false;
       }
       return true;
     case "M4_rsi":
-      return r[i] <= cfg.rsiTh;
+      return r[i]! <= cfg.rsiTh;
     case "M5_breakout":
       if (i < cfg.nHi + 1) return false;
-      return candles[i].close > maxLast(highs.slice(i - cfg.nHi, i), cfg.nHi);
+      return candles[i]!.close > maxLast(highs.slice(i - cfg.nHi, i), cfg.nHi);
     case "M6_redBar": {
-      const o = candles[i].open;
-      const c = candles[i].close;
+      const o = candles[i]!.open;
+      const c = candles[i]!.close;
       if (o <= 0) return false;
       return (c - o) / o <= -cfg.redPct;
     }
@@ -430,17 +430,17 @@ function executeLong(
   const stop = entry * (1 - cfg.stopPct);
   const mx = Math.min(i + 1 + cfg.holdBars, candles.length - 1);
   let exitBar = mx;
-  let exitPrice = candles[mx].close;
+  let exitPrice = candles[mx]!.close;
   let reason: BtcSwingTrade["exitReason"] = "time";
   for (let j = i + 2; j <= mx; j++) {
     const bar = candles[j];
-    if (bar.low <= stop) {
+    if (bar!.low <= stop) {
       exitBar = j;
       exitPrice = stop;
       reason = "stop";
       break;
     }
-    if (bar.high >= tp) {
+    if (bar!.high >= tp) {
       exitBar = j;
       exitPrice = tp;
       reason = "tp";
@@ -485,12 +485,12 @@ export function runBtcSwing(
   const trendMask: boolean[] = new Array(candles.length).fill(false);
   for (let i = cfg.htfLen; i < candles.length; i++) {
     const s = smaLast(closes.slice(i - cfg.htfLen, i), cfg.htfLen);
-    trendMask[i] = candles[i].close > s;
+    trendMask[i] = candles[i]!.close > s;
   }
   const macroMask: boolean[] = new Array(candles.length).fill(false);
   for (let i = cfg.macroBars; i < candles.length; i++) {
     const past = closes[i - cfg.macroBars];
-    if (past > 0) macroMask[i] = (closes[i] - past) / past > 0;
+    if (past! > 0) macroMask[i]! = (closes[i]! - past!) / past! > 0;
   }
 
   const open: { exitBar: number; mech: BtcSwingMechanic }[] = [];
@@ -504,7 +504,7 @@ export function runBtcSwing(
   const startIdx = Math.max(cfg.htfLen, cfg.macroBars, cfg.rsiLen + 1) + 1;
   for (let i = startIdx; i < candles.length - 1; i++) {
     for (let k = open.length - 1; k >= 0; k--) {
-      if (open[k].exitBar < i) open.splice(k, 1);
+      if (open[k]!.exitBar < i) open.splice(k, 1);
     }
     if (open.length >= cfg.maxConcurrent) continue;
     if (!trendMask[i] || !macroMask[i]) continue;
@@ -515,9 +515,9 @@ export function runBtcSwing(
       const res = executeLong(candles, i, cfg);
       if (!res) continue;
       trades.push({
-        entryTime: candles[i + 1].openTime,
-        exitTime: candles[res.exitBar].closeTime,
-        entry: candles[i + 1].open,
+        entryTime: candles[i + 1]!.openTime,
+        exitTime: candles[res.exitBar]!.closeTime,
+        entry: candles[i + 1]!.open,
         mechanic: m,
         pnl: res.pnl,
         exitReason: res.reason,

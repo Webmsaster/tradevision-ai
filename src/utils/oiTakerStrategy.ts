@@ -81,7 +81,7 @@ function alignCandlesWithOi(
   let prevOi: number | null = null;
   let j = 0;
   for (const c of candles) {
-    while (j < sorted.length - 1 && sorted[j + 1].time <= c.openTime) j++;
+    while (j < sorted.length - 1 && sorted[j + 1]!.time <= c.openTime) j++;
     const o = sorted[j];
     if (!o || Math.abs(o.time - c.openTime) > maxGapMs) continue;
     const delta =
@@ -135,12 +135,12 @@ export function runOiTakerBacktest(
     let num = 0,
       den = 0;
     for (let j = start; j <= i; j++) {
-      const a = aligned[j].candle;
+      const a = aligned[j]!.candle;
       const typical = (a.high + a.low + a.close) / 3;
       num += typical * a.volume;
       den += a.volume;
     }
-    vwap[i] = den > 0 ? num / den : aligned[i].candle.close;
+    vwap[i] = den > 0 ? num / den : aligned[i]!.candle.close;
   }
 
   // Taker ratio
@@ -157,26 +157,26 @@ export function runOiTakerBacktest(
   while (i < aligned.length - config.holdBarsMax) {
     const d = oiDeltas[i];
     const sigma = sigmas[i];
-    if (sigma <= 0) {
+    if (sigma! <= 0) {
       i++;
       continue;
     }
-    const z = (d - means[i]) / sigma;
-    const tr = takerRatios[i];
-    const price = aligned[i].candle.close;
+    const z = (d! - means[i]!) / sigma!;
+    const tr = takerRatios[i]!;
+    const price = aligned[i]!.candle.close;
     const vw = vwap[i];
 
     let direction: "long" | "short" | null = null;
     if (
       z > config.oiSigmaThreshold &&
-      tr > config.longTakerRatio &&
-      price > vw
+      tr! > config.longTakerRatio &&
+      price > vw!
     ) {
       direction = "long";
     } else if (
       z > config.oiSigmaThreshold &&
-      tr < config.shortTakerRatio &&
-      price < vw
+      tr! < config.shortTakerRatio &&
+      price < vw!
     ) {
       direction = "short";
     }
@@ -194,9 +194,9 @@ export function runOiTakerBacktest(
       direction === "long" ? entry - stopDist : entry + stopDist;
     let exitReason: OiTakerTrade["exitReason"] = "time";
     let exitIdx = Math.min(i + config.holdBarsMax, aligned.length - 1);
-    let exitPrice = aligned[exitIdx].candle.close;
+    let exitPrice = aligned[exitIdx]!.candle.close;
     for (let j = i + 1; j <= i + config.holdBarsMax; j++) {
-      const bar = aligned[j].candle;
+      const bar = aligned[j]!.candle;
       // Stop hit
       if (direction === "long" && bar.low <= stopLevel) {
         exitIdx = j;
@@ -211,7 +211,7 @@ export function runOiTakerBacktest(
         break;
       }
       // OI reversal exit
-      const jz = (oiDeltas[j] - means[j]) / Math.max(1e-9, sigmas[j]);
+      const jz = (oiDeltas[j]! - means[j]!) / Math.max(1e-9, sigmas[j]!);
       if (jz < config.oiExitSigma) {
         exitIdx = j;
         exitPrice = bar.close;
@@ -230,12 +230,12 @@ export function runOiTakerBacktest(
     });
 
     trades.push({
-      time: aligned[i].candle.openTime,
+      time: aligned[i]!.candle.openTime,
       direction,
       entry,
       exit: exitPrice,
-      entryTime: aligned[i].candle.openTime,
-      exitTime: aligned[exitIdx].candle.closeTime,
+      entryTime: aligned[i]!.candle.openTime,
+      exitTime: aligned[exitIdx]!.candle.closeTime,
       oiSigma: z,
       takerRatio: tr,
       netPnlPct: cost.netPnlPct,
@@ -262,13 +262,13 @@ export function runOiTakerBacktest(
   // Annualise: trades/year estimated from sample
   const periodDays =
     trades.length > 0
-      ? (trades[trades.length - 1].exitTime - trades[0].entryTime) / 86400000
+      ? (trades[trades.length - 1]!.exitTime - trades[0]!.entryTime) / 86400000
       : 30;
   const tradesPerYear = periodDays > 0 ? (trades.length / periodDays) * 365 : 0;
   const sharpe = std > 0 ? (m / std) * Math.sqrt(tradesPerYear) : 0;
 
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {

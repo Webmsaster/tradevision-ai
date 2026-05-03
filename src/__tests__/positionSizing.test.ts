@@ -126,8 +126,8 @@ describe("positionSizing — recommendSize", () => {
 
   it("hf-daytrading: applies bootstrap edge stats", () => {
     const stats = STRATEGY_EDGE_STATS["hf-daytrading"];
-    expect(stats.winRate).toBe(0.85);
-    expect(stats.avgLossPct).toBeGreaterThan(stats.avgWinPct);
+    expect(stats!.winRate).toBe(0.85);
+    expect(stats!.avgLossPct).toBeGreaterThan(stats!.avgWinPct);
     const r = recommendSize({
       capital: 10000,
       entry: 2.0,

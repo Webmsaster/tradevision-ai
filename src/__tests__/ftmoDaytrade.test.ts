@@ -110,8 +110,8 @@ describe("ftmoDaytrade — signal detection", () => {
     }
     const signals = detect4DownSignals(candles);
     expect(signals.length).toBeGreaterThanOrEqual(1);
-    expect(signals[0].exitReason).toBe("tp");
-    expect(signals[0].rawPnl).toBeGreaterThan(0.005); // ~0.8% minus costs
+    expect(signals[0]!.exitReason).toBe("tp");
+    expect(signals[0]!.rawPnl).toBeGreaterThan(0.005); // ~0.8% minus costs
   });
 
   it("effPnl = rawPnl × leverage × riskFrac, capped at −riskFrac", () => {
@@ -130,10 +130,10 @@ describe("ftmoDaytrade — signal detection", () => {
       candles.push(mkCandle(t0 + i * bar, 97, 97.5, 96.5, 97));
     const signals = detect4DownSignals(candles);
     expect(signals.length).toBeGreaterThanOrEqual(1);
-    expect(signals[0].exitReason).toBe("stop");
+    expect(signals[0]!.exitReason).toBe("stop");
     // rawPnl ≈ −0.2% → effPnl = −0.2% × 2 × 1.0 = −0.4%
-    expect(signals[0].effPnl).toBeLessThan(0);
-    expect(signals[0].effPnl).toBeGreaterThan(-0.01); // survives, not liquidated
+    expect(signals[0]!.effPnl).toBeLessThan(0);
+    expect(signals[0]!.effPnl).toBeGreaterThan(-0.01); // survives, not liquidated
   });
 });
 

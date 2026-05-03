@@ -7,7 +7,7 @@ describe("Skeleton", () => {
     const { container } = render(<Skeleton />);
     const items = container.querySelectorAll(".skeleton");
     expect(items.length).toBe(1);
-    expect(items[0].className).toContain("skeleton-text");
+    expect(items[0]!.className).toContain("skeleton-text");
   });
 
   it("renders count items", () => {

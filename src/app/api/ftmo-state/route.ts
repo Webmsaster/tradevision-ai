@@ -4,8 +4,9 @@
  * Reads from FTMO_STATE_DIR (or ./ftmo-state by default). Used by the
  * /ftmo-monitor dashboard page.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import * as path from "node:path";
 import { NextResponse } from "next/server";
 
 function isEnabled() {
@@ -19,10 +20,23 @@ function getStateDir() {
   return process.env.FTMO_STATE_DIR ?? join(process.cwd(), "ftmo-state");
 }
 
+// Phase 62 (R45-API-5): cap state-file reads at 1 MB so a corrupted /
+// runaway-write state file can't blow the API response (and the Node
+// memory of the function instance) up to multi-megabyte. State files
+// in normal operation are ~1-50 KB.
+const STATE_FILE_MAX_BYTES = 1_000_000;
+
 function readJson<T = unknown>(name: string, fallback: T): T {
   const p = join(getStateDir(), name);
   if (!existsSync(p)) return fallback;
   try {
+    const stat = statSync(p);
+    if (stat.size > STATE_FILE_MAX_BYTES) {
+      console.error(
+        `[ftmo-state] ${name} too large (${stat.size}B > ${STATE_FILE_MAX_BYTES}B) — using fallback`,
+      );
+      return fallback;
+    }
     return JSON.parse(readFileSync(p, "utf8")) as T;
   } catch {
     return fallback;
@@ -33,6 +47,14 @@ function readJsonl(name: string, maxEntries = 100): unknown[] {
   const p = join(getStateDir(), name);
   if (!existsSync(p)) return [];
   try {
+    const stat = statSync(p);
+    if (stat.size > STATE_FILE_MAX_BYTES * 10) {
+      // JSONL logs grow naturally — give them 10× headroom, but still cap.
+      console.error(
+        `[ftmo-state] ${name} too large (${stat.size}B) — returning empty`,
+      );
+      return [];
+    }
     const lines = readFileSync(p, "utf8").trim().split("\n");
     return lines
       .slice(-maxEntries)
@@ -102,14 +124,15 @@ function computeStats(executorLog: ExecutorLogEntry[]) {
 
 function computeDrawdown(equityHistory: EquitySample[]) {
   if (!equityHistory.length) return { currentDd: 0, maxDd: 0, peak: 0 };
-  let peak = equityHistory[0].equity_usd;
+  // Phase 78: index access guarded by length check above; non-null safe.
+  let peak = equityHistory[0]!.equity_usd;
   let maxDd = 0;
   for (const s of equityHistory) {
     if (s.equity_usd > peak) peak = s.equity_usd;
     const dd = (s.equity_usd - peak) / peak;
     if (dd < maxDd) maxDd = dd;
   }
-  const last = equityHistory[equityHistory.length - 1];
+  const last = equityHistory[equityHistory.length - 1]!;
   const currentDd = (last.equity_usd - peak) / peak;
   return { currentDd, maxDd, peak };
 }
@@ -169,22 +192,29 @@ export async function GET() {
     totalGainPct,
   };
 
-  return NextResponse.json({
-    account,
-    status,
-    pending,
-    executed,
-    openPos,
-    dailyReset,
-    controls,
-    lastCheck,
-    signalLog,
-    executorLog,
-    equityHistory: equityHistory.slice(-200), // cap for wire size
-    stats,
-    drawdown,
-    ruleProgress,
-    stateDir: getStateDir(),
-    generatedAt: new Date().toISOString(),
-  });
+  return NextResponse.json(
+    {
+      account,
+      status,
+      pending,
+      executed,
+      openPos,
+      dailyReset,
+      controls,
+      lastCheck,
+      signalLog,
+      executorLog,
+      equityHistory: equityHistory.slice(-200), // cap for wire size
+      stats,
+      drawdown,
+      ruleProgress,
+      // Phase 33 (API Audit Bug 5): only relative path — leaking absolute
+      // server filesystem paths is information-disclosure (server topology).
+      stateDir: path.relative(process.cwd(), getStateDir()) || ".",
+      generatedAt: new Date().toISOString(),
+    },
+    {
+      headers: { "Cache-Control": "no-store" },
+    },
+  );
 }

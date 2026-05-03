@@ -22,6 +22,7 @@
  */
 
 import type { PremiumSnapshot } from "@/utils/coinbasePremium";
+import { fetchJsonWithRetry } from "@/utils/httpRetry";
 
 const DERIBIT_URL =
   "https://www.deribit.com/api/v2/public/get_book_summary_by_currency";
@@ -55,18 +56,19 @@ function parseInstrument(name: string): {
   if (parts.length !== 4) return null;
   const [, exp, strike, type] = parts;
   if (type !== "C" && type !== "P") return null;
-  const s = parseFloat(strike);
+  const s = parseFloat(strike!);
   if (!isFinite(s)) return null;
-  return { expiry: exp, strike: s, type };
+  return { expiry: exp!, strike: s, type };
 }
 
 export async function fetchDeribitSkew(): Promise<DeribitSkewSnapshot> {
   const url = new URL(DERIBIT_URL);
   url.searchParams.set("currency", "BTC");
   url.searchParams.set("kind", "option");
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`Deribit fetch failed: ${res.status}`);
-  const json = (await res.json()) as { result: RawOption[] };
+  // Round 56 (Fix 3): timeout + retry/backoff via shared helper.
+  const json = await fetchJsonWithRetry<{ result: RawOption[] }>(
+    url.toString(),
+  );
   const rows = json.result ?? [];
   if (rows.length === 0) {
     throw new Error("Deribit returned no option books");
@@ -102,9 +104,9 @@ export async function fetchDeribitSkew(): Promise<DeribitSkewSnapshot> {
   function expiryMs(exp: string): number {
     const m = exp.match(/^(\d{1,2})([A-Z]{3})(\d{2})$/);
     if (!m) return 0;
-    const day = parseInt(m[1]);
-    const mon = monthMap[m[2]] ?? 0;
-    const year = 2000 + parseInt(m[3]);
+    const day = parseInt(m[1]!);
+    const mon = monthMap[m[2]!] ?? 0;
+    const year = 2000 + parseInt(m[3]!);
     return Date.UTC(year, mon, day, 8);
   }
 
@@ -117,7 +119,7 @@ export async function fetchDeribitSkew(): Promise<DeribitSkewSnapshot> {
     throw new Error("No Deribit expiry >1 day away");
   }
   const chosen = expiryCandidates[0];
-  const list = chosen.list;
+  const list = chosen!.list;
 
   // Underlying from first row
   const spot = list[0]?.underlying_price ?? 0;
@@ -184,7 +186,7 @@ export async function fetchDeribitSkew(): Promise<DeribitSkewSnapshot> {
 
   return {
     capturedAt: Date.now(),
-    expiry: chosen.exp,
+    expiry: chosen!.exp,
     spotEstimate: spot,
     call25dIv: callIv,
     put25dIv: putIv,

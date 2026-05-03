@@ -204,7 +204,10 @@ export default function Sidebar() {
 
   const isActive = (href: string) => {
     if (href === "/") return pathname === "/";
-    return pathname.startsWith(href);
+    // Phase 60 (R45-UI-L4): exact-or-segment-prefix match. Plain
+    // startsWith would match "/import" as active when route is
+    // "/imports-archive" (or any future route sharing the prefix).
+    return pathname === href || pathname.startsWith(href + "/");
   };
 
   return (
@@ -281,18 +284,25 @@ export default function Sidebar() {
         <AccountSwitcher />
 
         <nav className="sidebar-nav">
-          {navItems.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              prefetch={false}
-              className={`sidebar-link${isActive(item.href) ? " active" : ""}`}
-              onClick={() => setCollapsed(false)}
-            >
-              <span className="sidebar-link-icon">{item.icon}</span>
-              {item.label}
-            </Link>
-          ))}
+          {navItems.map((item) => {
+            const active = isActive(item.href);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                prefetch={false}
+                // Phase 60 (R45-UI-L1): aria-current so screen readers
+                // announce the active nav item. Visual `.active` class
+                // alone wasn't accessible.
+                aria-current={active ? "page" : undefined}
+                className={`sidebar-link${active ? " active" : ""}`}
+                onClick={() => setCollapsed(false)}
+              >
+                <span className="sidebar-link-icon">{item.icon}</span>
+                {item.label}
+              </Link>
+            );
+          })}
         </nav>
 
         <button

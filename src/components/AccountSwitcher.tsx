@@ -37,7 +37,8 @@ export default function AccountSwitcher() {
     const s = readSettings();
     if (!s?.accounts || s.accounts.length === 0) return;
     setAccounts(s.accounts);
-    setActiveId(s.activeAccountId || s.accounts[0].id);
+    // Phase 78: length>0 guarded above.
+    setActiveId(s.activeAccountId || s.accounts[0]!.id);
   }, []);
 
   useEffect(() => {
@@ -92,7 +93,8 @@ export default function AccountSwitcher() {
 
   if (accounts.length < 2) return null;
 
-  const activeAccount = accounts.find((a) => a.id === activeId) || accounts[0];
+  // Phase 78: length >= 2 guarded above.
+  const activeAccount = accounts.find((a) => a.id === activeId) || accounts[0]!;
 
   return (
     <div className="account-switcher" ref={rootRef}>

@@ -200,15 +200,15 @@ function median(arr: number[]): number {
   if (arr.length === 0) return 0;
   const s = [...arr].sort((a, b) => a - b);
   const m = Math.floor(s.length / 2);
-  return s.length % 2 === 0 ? (s[m - 1] + s[m]) / 2 : s[m];
+  return s.length % 2 === 0 ? (s[m - 1]! + s[m]!) / 2 : s[m]!;
 }
 
 function stdReturns(closes: number[]): number {
   if (closes.length < 3) return 0;
   const r: number[] = [];
   for (let i = 1; i < closes.length; i++) {
-    if (closes[i - 1] <= 0) continue;
-    r.push((closes[i] - closes[i - 1]) / closes[i - 1]);
+    if (closes[i - 1]! <= 0) continue;
+    r.push((closes[i]! - closes[i - 1]!) / closes[i - 1]!);
   }
   if (r.length === 0) return 0;
   const m = r.reduce((s, v) => s + v, 0) / r.length;
@@ -265,7 +265,7 @@ export function evaluateVolumeSpikeSignal(
   const i = candles.length - 1;
   const cur = candles[i];
   const prev = candles[i - 1];
-  if (prev.close <= 0) {
+  if (prev!.close <= 0) {
     return {
       ...base,
       active: false,
@@ -277,9 +277,9 @@ export function evaluateVolumeSpikeSignal(
 
   const window = candles.slice(i - cfg.lookback, i);
   const medVol = median(window.map((c) => c.volume));
-  const vZ = medVol > 0 ? cur.volume / medVol : 0;
+  const vZ = medVol > 0 ? cur!.volume / medVol : 0;
   const sd = stdReturns(window.map((c) => c.close));
-  const ret = (cur.close - prev.close) / prev.close;
+  const ret = (cur!.close - prev!.close) / prev!.close;
   const pZ = sd > 0 ? Math.abs(ret) / sd : 0;
 
   const volPass = vZ >= cfg.volMult;
@@ -303,12 +303,12 @@ export function evaluateVolumeSpikeSignal(
       : ret > 0
         ? "long"
         : "short";
-  const entry = cur.close;
+  const entry = cur!.close;
   const stop =
     direction === "long"
       ? entry * (1 - cfg.stopPct)
       : entry * (1 + cfg.stopPct);
-  const exitAt = cur.closeTime + cfg.holdBars * 60 * 60 * 1000;
+  const exitAt = cur!.closeTime + cfg.holdBars * 60 * 60 * 1000;
 
   return {
     ...base,

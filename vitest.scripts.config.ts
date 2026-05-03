@@ -10,6 +10,7 @@ export default defineConfig({
     globals: true,
     css: true,
     include: ["scripts/**/*.test.ts"],
+    fileParallelism: false,
   },
   resolve: {
     alias: {

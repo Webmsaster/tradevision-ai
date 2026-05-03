@@ -68,7 +68,10 @@ export function buildThesis(inputs: ThesisInputs): TradeThesis {
   } = inputs;
 
   const price = snapshot.price;
-  const actionWord = formatDirection(gatedAction);
+  // formatDirection result kept available via _actionWord; not currently
+  // rendered into the narrative copy but referenced as side-effect anchor.
+  const _actionWord = formatDirection(gatedAction);
+  void _actionWord;
   const structureWord =
     structure.state === "bullish"
       ? "bullish (higher highs + higher lows)"
@@ -217,7 +220,7 @@ export function atrPercentile(
     .slice(-lookback)
     .filter((v): v is number => v !== null);
   if (slice.length < 20) return null;
-  const current = slice[slice.length - 1];
+  const current = slice[slice.length - 1]!;
   const smaller = slice.filter((v) => v < current).length;
   return smaller / slice.length;
 }

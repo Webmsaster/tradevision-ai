@@ -30,11 +30,11 @@ describe("signalJournal.closeExpiredSignals", () => {
     });
     const closed = closeExpiredSignals({ BTCUSDT: 101 }, now);
     expect(closed.length).toBe(1);
-    expect(closed[0].exitPrice).toBe(101);
-    expect(closed[0].exitReason).toBe("expired");
-    expect(closed[0].actualPnlPct).toBeCloseTo(0.01, 6);
+    expect(closed[0]!.exitPrice).toBe(101);
+    expect(closed[0]!.exitReason).toBe("expired");
+    expect(closed[0]!.actualPnlPct).toBeCloseTo(0.01, 6);
     const reloaded = loadJournal();
-    expect(reloaded[0].exitPrice).toBe(101);
+    expect(reloaded[0]!.exitPrice).toBe(101);
   });
 
   it("leaves future-exit signals untouched", () => {
@@ -54,7 +54,7 @@ describe("signalJournal.closeExpiredSignals", () => {
     const closed = closeExpiredSignals({ ETHUSDT: 199 }, now);
     expect(closed.length).toBe(0);
     const all = loadJournal();
-    expect(all[0].exitPrice).toBeUndefined();
+    expect(all[0]!.exitPrice).toBeUndefined();
   });
 
   it("computes short P&L correctly on auto-close", () => {
@@ -74,7 +74,7 @@ describe("signalJournal.closeExpiredSignals", () => {
     // Price dropped 2% → short wins 2%
     const closed = closeExpiredSignals({ SOLUSDT: 98 }, now);
     expect(closed.length).toBe(1);
-    expect(closed[0].actualPnlPct).toBeCloseTo(0.02, 6);
+    expect(closed[0]!.actualPnlPct).toBeCloseTo(0.02, 6);
   });
 
   it("skips signals with no price data", () => {
@@ -94,7 +94,7 @@ describe("signalJournal.closeExpiredSignals", () => {
     const closed = closeExpiredSignals({ BTCUSDT: 100 }, now);
     expect(closed.length).toBe(0);
     const all = loadJournal();
-    expect(all[0].exitPrice).toBeUndefined();
+    expect(all[0]!.exitPrice).toBeUndefined();
   });
 
   it("expired auto-closures flow through journal stats", () => {
@@ -141,6 +141,6 @@ describe("signalJournal.closeExpiredSignals", () => {
     const closed = closeExpiredSignals({ BTCUSDT: 99 }, now);
     expect(closed.length).toBe(0);
     const reloaded = loadJournal();
-    expect(reloaded[0].exitPrice).toBe(101.5); // unchanged
+    expect(reloaded[0]!.exitPrice).toBe(101.5); // unchanged
   });
 });

@@ -70,14 +70,16 @@ function median(arr: number[]): number {
   if (arr.length === 0) return 0;
   const sorted = [...arr].sort((a, b) => a - b);
   const m = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[m - 1] + sorted[m]) / 2 : sorted[m];
+  return sorted.length % 2 === 0
+    ? (sorted[m - 1]! + sorted[m]!) / 2
+    : sorted[m]!;
 }
 
 function stdReturns(closes: number[]): number {
   if (closes.length < 3) return 0;
   const rets: number[] = [];
   for (let i = 1; i < closes.length; i++) {
-    const r = (closes[i] - closes[i - 1]) / closes[i - 1];
+    const r = (closes[i]! - closes[i - 1]!) / closes[i - 1]!;
     rets.push(r);
   }
   const m = rets.reduce((s, v) => s + v, 0) / rets.length;
@@ -96,16 +98,16 @@ export function runVolumeSpikeFade(
   for (let i = cfg.lookback; i < candles.length - cfg.holdBars - 1; i++) {
     const cur = candles[i];
     const prev = candles[i - 1];
-    if (prev.close <= 0) continue;
+    if (prev!.close <= 0) continue;
     const window = candles.slice(i - cfg.lookback, i);
     const medVol = median(window.map((c) => c.volume));
     if (medVol <= 0) continue;
-    const vZ = cur.volume / medVol;
+    const vZ = cur!.volume / medVol;
     if (vZ < cfg.volMult) continue;
 
     const sd = stdReturns(window.map((c) => c.close));
     if (sd <= 0) continue;
-    const ret = (cur.close - prev.close) / prev.close;
+    const ret = (cur!.close - prev!.close) / prev!.close;
     const pZ = Math.abs(ret) / sd;
     if (pZ < cfg.priceZ) continue;
     signalsFired++;
@@ -133,17 +135,17 @@ export function runVolumeSpikeFade(
     let exitIdx = i + 1 + cfg.holdBars;
     if (exitIdx >= candles.length) exitIdx = candles.length - 1;
     let exitReason: VolumeFadeTrade["exitReason"] = "time";
-    let exitPrice = candles[exitIdx].close;
+    let exitPrice = candles[exitIdx]!.close;
 
     for (let j = i + 2; j <= exitIdx; j++) {
       const bar = candles[j];
-      if (direction === "long" && bar.low <= stopLevel) {
+      if (direction === "long" && bar!.low <= stopLevel) {
         exitIdx = j;
         exitPrice = stopLevel;
         exitReason = "stop";
         break;
       }
-      if (direction === "short" && bar.high >= stopLevel) {
+      if (direction === "short" && bar!.high >= stopLevel) {
         exitIdx = j;
         exitPrice = stopLevel;
         exitReason = "stop";
@@ -160,7 +162,7 @@ export function runVolumeSpikeFade(
     });
     trades.push({
       entryTime: entryBar.openTime,
-      exitTime: candles[exitIdx].openTime,
+      exitTime: candles[exitIdx]!.openTime,
       direction,
       entry,
       exit: exitPrice,
@@ -188,13 +190,13 @@ export function runVolumeSpikeFade(
   const sd = Math.sqrt(v);
   const periodDays =
     trades.length > 0
-      ? (trades[trades.length - 1].exitTime - trades[0].entryTime) / 86400000
+      ? (trades[trades.length - 1]!.exitTime - trades[0]!.entryTime) / 86400000
       : 30;
   const perYear = periodDays > 0 ? (trades.length / periodDays) * 365 : 0;
   const sharpe = sd > 0 ? (m / sd) * Math.sqrt(perYear) : 0;
 
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {

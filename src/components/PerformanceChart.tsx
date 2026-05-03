@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState, useEffect } from "react";
+import { useMemo } from "react";
+import { useThemeColors } from "@/hooks/useThemeColors";
 import {
   BarChart,
   Bar,
@@ -96,7 +97,7 @@ function DistributionTooltip({
     <div className="perf-tooltip">
       <div className="perf-tooltip-label">{label}</div>
       <div className="perf-tooltip-value">
-        {payload[0].value} trade{payload[0].value !== 1 ? "s" : ""}
+        {payload[0]!.value} trade{payload[0]!.value !== 1 ? "s" : ""}
       </div>
     </div>
   );
@@ -104,7 +105,7 @@ function DistributionTooltip({
 
 function PieTooltip({ active, payload }: PieTooltipProps) {
   if (!active || !payload?.length) return null;
-  const d = payload[0].payload;
+  const d = payload[0]!.payload;
   return (
     <div className="perf-tooltip">
       <div className="perf-tooltip-label">{d.name}</div>
@@ -117,7 +118,7 @@ function PieTooltip({ active, payload }: PieTooltipProps) {
 
 function TimeTooltip({ active, payload, label, green, red }: TimeTooltipProps) {
   if (!active || !payload?.length) return null;
-  const d = payload[0].payload;
+  const d = payload[0]!.payload;
   return (
     <div className="perf-tooltip">
       <div className="perf-tooltip-label">{label}</div>
@@ -137,7 +138,7 @@ function TimeTooltip({ active, payload, label, green, red }: TimeTooltipProps) {
 
 function PairTooltip({ active, payload, green, red }: PairTooltipProps) {
   if (!active || !payload?.length) return null;
-  const d = payload[0].payload;
+  const d = payload[0]!.payload;
   return (
     <div className="perf-tooltip">
       <div className="perf-tooltip-label">{d.pair}</div>
@@ -210,7 +211,6 @@ function buildDistributionData(trades: Trade[]): BucketDatum[] {
   const step = niceStep(absMax);
 
   // Build boundary array from negative to positive
-  const boundaries: number[] = [];
   let b = 0;
   while (b + step < absMax * 1.01) {
     b += step;
@@ -230,16 +230,16 @@ function buildDistributionData(trades: Trade[]): BucketDatum[] {
   // Create buckets
   const buckets: BucketDatum[] = [];
   // Below min boundary
-  if (min < allBounds[0]) {
+  if (min < allBounds[0]!) {
     buckets.push({
-      label: `< ${fmt(allBounds[0])}`,
+      label: `< ${fmt(allBounds[0]!)}`,
       count: 0,
-      isPositive: allBounds[0] >= 0,
+      isPositive: allBounds[0]! >= 0,
     });
   }
   for (let i = 0; i < allBounds.length - 1; i++) {
-    const lo = allBounds[i];
-    const hi = allBounds[i + 1];
+    const lo = allBounds[i]!;
+    const hi = allBounds[i + 1]!;
     buckets.push({
       label: `${fmt(lo)} to ${fmt(hi)}`,
       count: 0,
@@ -247,8 +247,8 @@ function buildDistributionData(trades: Trade[]): BucketDatum[] {
     });
   }
   // Above max boundary
-  if (max >= allBounds[allBounds.length - 1]) {
-    const last = allBounds[allBounds.length - 1];
+  if (max >= allBounds[allBounds.length - 1]!) {
+    const last = allBounds[allBounds.length - 1]!;
     buckets.push({ label: `> ${fmt(last)}`, count: 0, isPositive: last >= 0 });
   }
 
@@ -256,15 +256,15 @@ function buildDistributionData(trades: Trade[]): BucketDatum[] {
   for (const pnl of pnls) {
     let placed = false;
     // Check below-min bucket
-    if (buckets.length > 0 && min < allBounds[0] && pnl < allBounds[0]) {
-      buckets[0].count++;
+    if (buckets.length > 0 && min < allBounds[0]! && pnl < allBounds[0]!) {
+      buckets[0]!.count++;
       placed = true;
     }
     if (!placed) {
-      const offset = min < allBounds[0] ? 1 : 0;
+      const offset = min < allBounds[0]! ? 1 : 0;
       for (let i = 0; i < allBounds.length - 1; i++) {
-        if (pnl >= allBounds[i] && pnl < allBounds[i + 1]) {
-          buckets[i + offset].count++;
+        if (pnl >= allBounds[i]! && pnl < allBounds[i + 1]!) {
+          buckets[i + offset]!.count++;
           placed = true;
           break;
         }
@@ -272,13 +272,13 @@ function buildDistributionData(trades: Trade[]): BucketDatum[] {
     }
     if (!placed) {
       // Falls in the last (above-max) bucket
-      buckets[buckets.length - 1].count++;
+      buckets[buckets.length - 1]!.count++;
     }
   }
 
   // Remove empty edge buckets
-  while (buckets.length > 0 && buckets[0].count === 0) buckets.shift();
-  while (buckets.length > 0 && buckets[buckets.length - 1].count === 0)
+  while (buckets.length > 0 && buckets[0]!.count === 0) buckets.shift();
+  while (buckets.length > 0 && buckets[buckets.length - 1]!.count === 0)
     buckets.pop();
 
   return buckets;
@@ -345,30 +345,9 @@ export default function PerformanceChart({
   data,
   height = 300,
 }: PerformanceChartProps) {
-  // ---- theme-aware chart colors ----
-  const [chartColors, setChartColors] = useState({
-    green: "#00ff88",
-    red: "#ff4757",
-  });
-  useEffect(() => {
-    function readColors() {
-      const green = getComputedStyle(document.documentElement)
-        .getPropertyValue("--profit")
-        .trim();
-      const red = getComputedStyle(document.documentElement)
-        .getPropertyValue("--loss")
-        .trim();
-      if (green) setChartColors((c) => ({ ...c, green }));
-      if (red) setChartColors((c) => ({ ...c, red }));
-    }
-    readColors();
-    const observer = new MutationObserver(readColors);
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["data-theme"],
-    });
-    return () => observer.disconnect();
-  }, []);
+  // Phase 68 (R45-UI-M1): shared theme-colors hook — was a per-instance
+  // MutationObserver, now one shared observer across all chart consumers.
+  const chartColors = useThemeColors();
 
   // ---- derived data ----
   const distributionData = useMemo(
@@ -431,7 +410,12 @@ export default function PerformanceChart({
           content={<DistributionTooltip />}
           cursor={{ fill: "rgba(255,255,255,0.04)" }}
         />
-        <Bar dataKey="count" radius={[4, 4, 0, 0]} maxBarSize={48}>
+        <Bar
+          dataKey="count"
+          radius={[4, 4, 0, 0]}
+          maxBarSize={48}
+          isAnimationActive={false}
+        >
           {distributionData.map((d, i) => (
             <Cell
               key={i}
@@ -457,6 +441,7 @@ export default function PerformanceChart({
           label={renderPieLabel}
           labelLine={false}
           strokeWidth={0}
+          isAnimationActive={false}
         >
           {pieData.map((d, i) => (
             <Cell key={i} fill={d.color} />
@@ -499,7 +484,12 @@ export default function PerformanceChart({
             }
             cursor={{ fill: "rgba(255,255,255,0.04)" }}
           />
-          <Bar dataKey="totalPnl" radius={[4, 4, 0, 0]} maxBarSize={48}>
+          <Bar
+            dataKey="totalPnl"
+            radius={[4, 4, 0, 0]}
+            maxBarSize={48}
+            isAnimationActive={false}
+          >
             {data.map((d, i) => (
               <Cell
                 key={i}
@@ -550,7 +540,12 @@ export default function PerformanceChart({
             }
             cursor={{ fill: "rgba(255,255,255,0.04)" }}
           />
-          <Bar dataKey="totalPnl" radius={[0, 4, 4, 0]} maxBarSize={28}>
+          <Bar
+            dataKey="totalPnl"
+            radius={[0, 4, 4, 0]}
+            maxBarSize={28}
+            isAnimationActive={false}
+          >
             {pairData.map((d, i) => (
               <Cell
                 key={i}
@@ -574,10 +569,37 @@ export default function PerformanceChart({
       "by-pair": renderPairChart,
     };
 
+  // Round 58 a11y (WCAG 1.1.1): text alternative for the SVG chart.
+  // Builds a short summary describing the chart's key takeaways so
+  // screen-reader users get more than "graphic" announced.
+  let summary = "";
+  if (type === "pnl-distribution") {
+    summary = `${trades.length} trades distributed across ${distributionData.length} PnL buckets.`;
+  } else if (type === "win-loss-pie") {
+    const wins = pieData.find((d) => d.name === "Wins");
+    const losses = pieData.find((d) => d.name === "Losses");
+    summary = `${wins?.value ?? 0} wins (${wins?.percent.toFixed(1) ?? "0"}%) versus ${losses?.value ?? 0} losses.`;
+  } else if (type === "by-pair") {
+    const top = pairData[0];
+    const bot = pairData[pairData.length - 1];
+    summary = `Performance by pair across ${pairData.length} pairs. Best: ${top?.pair ?? "n/a"} ($${top?.totalPnl.toFixed(2) ?? "0"}). Worst: ${bot?.pair ?? "n/a"} ($${bot?.totalPnl.toFixed(2) ?? "0"}).`;
+  } else if ((type === "by-day" || type === "by-hour") && data) {
+    const totalTrades = data.reduce((acc, d) => acc + d.trades, 0);
+    const totalPnl = data.reduce((acc, d) => acc + d.totalPnl, 0);
+    summary = `${type === "by-day" ? "Daily" : "Hourly"} aggregation: ${totalTrades} trades totaling $${totalPnl.toFixed(2)} PnL.`;
+  }
+  const chartAriaLabel = `${TITLES[type]}: ${summary}`;
+
   return (
     <div className="performance-chart">
       <div className="performance-chart-title">{TITLES[type]}</div>
-      <div className="performance-chart-container">{chartMap[type]()}</div>
+      <div
+        className="performance-chart-container"
+        role="img"
+        aria-label={chartAriaLabel}
+      >
+        {chartMap[type]()}
+      </div>
     </div>
   );
 }

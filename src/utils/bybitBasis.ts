@@ -12,6 +12,7 @@
  *
  * Returns: { result: { list: [{ lastPrice, ... }] } }
  */
+import { fetchJsonWithRetry } from "@/utils/httpRetry";
 
 const BYBIT_URL = "https://api.bybit.com/v5/market/tickers";
 
@@ -29,12 +30,11 @@ async function fetchPrice(category: "spot" | "linear"): Promise<number> {
   const url = new URL(BYBIT_URL);
   url.searchParams.set("category", category);
   url.searchParams.set("symbol", "BTCUSDT");
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`Bybit ${category} fetch failed: ${res.status}`);
-  const json = (await res.json()) as {
+  // Round 56 (Fix 3): timeout + retry/backoff via shared helper.
+  const json = await fetchJsonWithRetry<{
     retCode: number;
     result?: { list?: { lastPrice: string }[] };
-  };
+  }>(url.toString());
   if (json.retCode !== 0 || !json.result?.list?.[0]?.lastPrice) {
     throw new Error(`Bybit ${category} malformed response`);
   }

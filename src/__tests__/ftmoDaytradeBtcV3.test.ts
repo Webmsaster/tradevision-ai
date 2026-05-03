@@ -111,7 +111,7 @@ describe("ftmoDaytradeBtcV3 — signals", () => {
       candles.push(mkCandle(t0 + i * bar, 100, 100.5, 99.5, 100));
     const sigs = detectBtcV3LongSignals(candles);
     expect(sigs.length).toBeGreaterThanOrEqual(1);
-    expect(sigs[0].direction).toBe("long");
+    expect(sigs[0]!.direction).toBe("long");
   });
 
   it("short fires on 2-up", () => {
@@ -127,7 +127,7 @@ describe("ftmoDaytradeBtcV3 — signals", () => {
       candles.push(mkCandle(t0 + i * bar, 99.5, 100, 99, 99.5));
     const sigs = detectBtcV3ShortSignals(candles);
     expect(sigs.length).toBeGreaterThanOrEqual(1);
-    expect(sigs[0].direction).toBe("short");
+    expect(sigs[0]!.direction).toBe("short");
   });
 
   it("effPnl scales with 80% risk × 2× leverage", () => {
@@ -143,7 +143,7 @@ describe("ftmoDaytradeBtcV3 — signals", () => {
       candles.push(mkCandle(t0 + i * bar, 100, 100.5, 99.5, 100));
     const sigs = detectBtcV3LongSignals(candles);
     expect(sigs.length).toBeGreaterThanOrEqual(1);
-    const ratio = sigs[0].effPnl / sigs[0].rawPnl;
+    const ratio = sigs[0]!.effPnl / sigs[0]!.rawPnl;
     expect(ratio).toBeCloseTo(1.6, 1); // 2 × 0.8 = 1.6
   });
 });

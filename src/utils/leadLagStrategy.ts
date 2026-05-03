@@ -88,8 +88,8 @@ export function runLeadLagBacktest(
   for (let i = 1; i < pairs.length - config.holdBarsMax; i++) {
     const prev = pairs[i - 1];
     const curr = pairs[i];
-    const btcRet = (curr.a.close - prev.a.close) / prev.a.close;
-    const altRet = (curr.b.close - prev.b.close) / prev.b.close;
+    const btcRet = (curr!.a.close - prev!.a.close) / prev!.a.close;
+    const altRet = (curr!.b.close - prev!.b.close) / prev!.b.close;
     if (btcRet < config.btcThresholdPct) continue;
     if (altRet > config.altMaxMovePct) continue;
 
@@ -101,7 +101,7 @@ export function runLeadLagBacktest(
     const btcEntry = entryBar.a.close;
 
     let exitIdx = Math.min(i + 1 + config.holdBarsMax, pairs.length - 1);
-    let exitPrice = pairs[exitIdx].b.close;
+    let exitPrice = pairs[exitIdx]!.b.close;
     let exitReason: LeadLagTrade["exitReason"] = "time";
 
     for (
@@ -111,15 +111,15 @@ export function runLeadLagBacktest(
     ) {
       const bar = pairs[j];
       // BTC reversal
-      const btcFromEntry = (bar.a.close - btcEntry) / btcEntry;
+      const btcFromEntry = (bar!.a.close - btcEntry) / btcEntry;
       if (btcFromEntry <= -config.stopPctBtcReversal) {
         exitIdx = j;
-        exitPrice = bar.b.close;
+        exitPrice = bar!.b.close;
         exitReason = "btc-reversal";
         break;
       }
       // Target hit
-      if (bar.b.high >= target) {
+      if (bar!.b.high >= target) {
         exitIdx = j;
         exitPrice = target;
         exitReason = "target";
@@ -127,7 +127,7 @@ export function runLeadLagBacktest(
       }
     }
 
-    const holdHours = (pairs[exitIdx].time - entryBar.time) / (60 * 60 * 1000);
+    const holdHours = (pairs[exitIdx]!.time - entryBar.time) / (60 * 60 * 1000);
     const cost = applyCosts({
       entry,
       exit: exitPrice,
@@ -137,9 +137,9 @@ export function runLeadLagBacktest(
     });
     trades.push({
       altSymbol,
-      triggerTime: curr.time,
+      triggerTime: curr!.time,
       entryTime: entryBar.time,
-      exitTime: pairs[exitIdx].time,
+      exitTime: pairs[exitIdx]!.time,
       btc1hReturn: btcRet,
       altReturnAtTrigger: altRet,
       entry,
@@ -169,13 +169,13 @@ export function runLeadLagBacktest(
   // Annualise from sample
   const periodDays =
     trades.length > 0
-      ? (trades[trades.length - 1].exitTime - trades[0].entryTime) / 86400000
+      ? (trades[trades.length - 1]!.exitTime - trades[0]!.entryTime) / 86400000
       : 30;
   const perYear = periodDays > 0 ? (trades.length / periodDays) * 365 : 0;
   const sharpe = std > 0 ? (m / std) * Math.sqrt(perYear) : 0;
 
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {

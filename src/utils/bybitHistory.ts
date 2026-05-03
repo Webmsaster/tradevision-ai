@@ -65,14 +65,14 @@ interface RawBybitKlineResponse {
 
 /** One row: [start, open, high, low, close, volume, turnover] in ms-string. */
 function parseRow(row: string[], intervalMs: number): Candle {
-  const start = parseInt(row[0], 10);
+  const start = parseInt(row[0]!, 10);
   return {
     openTime: start,
-    open: parseFloat(row[1]),
-    high: parseFloat(row[2]),
-    low: parseFloat(row[3]),
-    close: parseFloat(row[4]),
-    volume: parseFloat(row[5]),
+    open: parseFloat(row[1]!),
+    high: parseFloat(row[2]!),
+    low: parseFloat(row[3]!),
+    close: parseFloat(row[4]!),
+    volume: parseFloat(row[5]!),
     closeTime: start + intervalMs - 1,
     isFinal: true,
   };
@@ -123,7 +123,7 @@ export async function fetchBybitKlines({
     fresh.sort((a, b) => a.openTime - b.openTime);
     out.unshift(...fresh);
 
-    const oldestOpen = fresh[0].openTime;
+    const oldestOpen = fresh[0]!.openTime;
     endTime = oldestOpen - 1;
 
     if (rows.length < pageSize) break;

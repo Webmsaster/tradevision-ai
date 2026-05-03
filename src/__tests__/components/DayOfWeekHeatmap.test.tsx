@@ -1,11 +1,17 @@
 import { render, screen } from "@testing-library/react";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import DayOfWeekHeatmap from "@/components/DayOfWeekHeatmap";
 import { Trade } from "@/types/trade";
 
+// Round 58 cleanup: deterministic counter ID (replaces Math.random()).
+let _idCounter = 0;
+beforeEach(() => {
+  _idCounter = 0;
+});
+
 function t(overrides: Partial<Trade> = {}): Trade {
   return {
-    id: Math.random().toString(36).slice(2),
+    id: `t-${++_idCounter}`,
     pair: "BTC/USDT",
     direction: "long",
     entryPrice: 100,
@@ -53,5 +59,23 @@ describe("DayOfWeekHeatmap", () => {
     for (const l of ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) {
       expect(screen.getByText(l)).toBeInTheDocument();
     }
+  });
+
+  // Round 56 fix #2: bucket on getUTCDay so a Sunday 23:00 UTC trade is
+  // booked on Sunday for ALL users — previously getDay() shifted it to
+  // Monday for users east of UTC and Saturday for users west of UTC.
+  it("buckets trades by UTC day-of-week (not local TZ)", () => {
+    // 2026-01-04 is a Sunday in UTC.
+    const trades = [t({ exitDate: "2026-01-04T23:30:00Z", pnl: 42 })];
+    const { container } = render(<DayOfWeekHeatmap trades={trades} />);
+    // Find the Sun row by short label and check its sibling shows the PnL.
+    expect(screen.getByText("Sun")).toBeInTheDocument();
+    expect(screen.getByText(/\+\$42\.00/)).toBeInTheDocument();
+    // Other six days should be empty (em-dash).
+    const dashes = container.querySelectorAll(".weekly-pnl");
+    const dashCount = Array.from(dashes).filter(
+      (n) => n.textContent === "—",
+    ).length;
+    expect(dashCount).toBe(6);
   });
 });

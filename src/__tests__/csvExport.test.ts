@@ -62,8 +62,8 @@ describe("tradesToCsv", () => {
     const lines = csv.split("\n");
     expect(lines).toHaveLength(2);
     // no crash and header column count matches row column count
-    const headerCount = (lines[0].match(/,/g) || []).length;
-    const rowCount = (lines[1].match(/,/g) || []).length;
+    const headerCount = (lines[0]!.match(/,/g) || []).length;
+    const rowCount = (lines[1]!.match(/,/g) || []).length;
     expect(rowCount).toBe(headerCount);
   });
 

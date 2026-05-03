@@ -57,19 +57,19 @@ export function goldenCrossStrategy(
   const atrNow = atrArr[i];
   if (fastNow === null || slowNow === null || atrNow === null) return flat();
 
-  if (fastNow > slowNow) {
+  if (fastNow! > slowNow!) {
     return {
       action: "long",
       strategy: "trend-follow",
-      stopDistance: atrNow * gc.stopAtrMult,
-      targetDistance: atrNow * 999, // no take-profit; let the cross exit
+      stopDistance: atrNow! * gc.stopAtrMult,
+      targetDistance: atrNow! * 999, // no take-profit; let the cross exit
       notes: [
-        `Golden cross active: ${gc.fastPeriod}-SMA ${fastNow.toFixed(2)} > ${gc.slowPeriod}-SMA ${slowNow.toFixed(2)}`,
+        `Golden cross active: ${gc.fastPeriod}-SMA ${fastNow!.toFixed(2)} > ${gc.slowPeriod}-SMA ${slowNow!.toFixed(2)}`,
       ],
     };
   }
   return flat([
-    `Death cross: ${gc.fastPeriod}-SMA ${fastNow.toFixed(2)} ≤ ${gc.slowPeriod}-SMA ${slowNow.toFixed(2)} — stay flat`,
+    `Death cross: ${gc.fastPeriod}-SMA ${fastNow!.toFixed(2)} ≤ ${gc.slowPeriod}-SMA ${slowNow!.toFixed(2)} — stay flat`,
   ]);
 }
 
@@ -101,15 +101,15 @@ export function donchianLongOnlyStrategy(
   // Entry channel: highest high of the previous entryPeriod bars (exclusive)
   let entryHigh = -Infinity;
   for (let j = i - dc.entryPeriod; j < i; j++) {
-    if (candles[j].high > entryHigh) entryHigh = candles[j].high;
+    if (candles[j]!.high > entryHigh) entryHigh = candles[j]!.high;
   }
   // Exit channel: lowest low of the previous exitPeriod bars (exclusive)
   let exitLow = Infinity;
   for (let j = i - dc.exitPeriod; j < i; j++) {
-    if (candles[j].low < exitLow) exitLow = candles[j].low;
+    if (candles[j]!.low < exitLow) exitLow = candles[j]!.low;
   }
 
-  const priceNow = candles[i].close;
+  const priceNow = candles[i]!.close;
   const atrArr = atr(candles, 14);
   const atrNow = atrArr[i];
   if (atrNow === null) return flat();
@@ -122,8 +122,8 @@ export function donchianLongOnlyStrategy(
     return {
       action: "long",
       strategy: "breakout",
-      stopDistance: atrNow * dc.stopAtrMult,
-      targetDistance: atrNow * 999,
+      stopDistance: atrNow! * dc.stopAtrMult,
+      targetDistance: atrNow! * 999,
       notes: [
         `Donchian ${dc.entryPeriod}-bar breakout: price ${priceNow.toFixed(2)} > channel high ${entryHigh.toFixed(2)}`,
       ],
@@ -134,8 +134,8 @@ export function donchianLongOnlyStrategy(
     return {
       action: "long",
       strategy: "breakout",
-      stopDistance: atrNow * dc.stopAtrMult,
-      targetDistance: atrNow * 999,
+      stopDistance: atrNow! * dc.stopAtrMult,
+      targetDistance: atrNow! * 999,
       notes: [
         `Holding Donchian long: price ${priceNow.toFixed(2)} > ${dc.exitPeriod}-bar low ${exitLow.toFixed(2)}`,
       ],
@@ -168,8 +168,8 @@ export function momentumStrategy(
 ): StrategyDecision {
   if (candles.length < mc.lookbackBars + 5) return flat();
   const i = candles.length - 1;
-  const priceNow = candles[i].close;
-  const priceBack = candles[i - mc.lookbackBars].close;
+  const priceNow = candles[i]!.close;
+  const priceBack = candles[i - mc.lookbackBars]!.close;
   const roc = (priceNow - priceBack) / priceBack;
   const atrArr = atr(candles, 14);
   const atrNow = atrArr[i];
@@ -179,8 +179,8 @@ export function momentumStrategy(
     return {
       action: "long",
       strategy: "trend-follow",
-      stopDistance: atrNow * mc.stopAtrMult,
-      targetDistance: atrNow * 999,
+      stopDistance: atrNow! * mc.stopAtrMult,
+      targetDistance: atrNow! * 999,
       notes: [
         `Momentum long: ${mc.lookbackBars}-bar ROC ${(roc * 100).toFixed(1)}% > ${(mc.minRoc * 100).toFixed(1)}% threshold`,
       ],

@@ -146,15 +146,15 @@ function median(arr: number[]): number {
   if (arr.length === 0) return 0;
   const s = [...arr].sort((a, b) => a - b);
   const m = Math.floor(s.length / 2);
-  return s.length % 2 === 0 ? (s[m - 1] + s[m]) / 2 : s[m];
+  return s.length % 2 === 0 ? (s[m - 1]! + s[m]!) / 2 : s[m]!;
 }
 
 function stdReturns(closes: number[]): number {
   if (closes.length < 3) return 0;
   const r: number[] = [];
   for (let i = 1; i < closes.length; i++) {
-    if (closes[i - 1] <= 0) continue;
-    r.push((closes[i] - closes[i - 1]) / closes[i - 1]);
+    if (closes[i - 1]! <= 0) continue;
+    r.push((closes[i]! - closes[i - 1]!) / closes[i - 1]!);
   }
   if (r.length === 0) return 0;
   const m = r.reduce((s, v) => s + v, 0) / r.length;
@@ -177,7 +177,7 @@ function passesFilters(
   ret: number,
 ): boolean {
   if (cfg.avoidHoursUtc.length) {
-    const h = new Date(candles[i].openTime).getUTCHours();
+    const h = new Date(candles[i]!.openTime).getUTCHours();
     if (cfg.avoidHoursUtc.includes(h)) return false;
   }
 
@@ -186,7 +186,7 @@ function passesFilters(
       .slice(Math.max(0, i - 23), i + 1)
       .map((c) => c.close);
     const smaVal = smaOf(closes, 24);
-    const alignedLong = candles[i].close > smaVal;
+    const alignedLong = candles[i]!.close > smaVal;
     if (direction === "long" && !alignedLong) return false;
     if (direction === "short" && alignedLong) return false;
   }
@@ -222,15 +222,15 @@ export function runHighWrScaleOut(
   for (let i = cfg.lookback; i < candles.length - cfg.holdBars - 1; i++) {
     const cur = candles[i];
     const prev = candles[i - 1];
-    if (prev.close <= 0) continue;
+    if (prev!.close <= 0) continue;
     const window = candles.slice(i - cfg.lookback, i);
     const medVol = median(window.map((c) => c.volume));
     if (medVol <= 0) continue;
-    const vZ = cur.volume / medVol;
+    const vZ = cur!.volume / medVol;
     if (vZ < cfg.volMult) continue;
     const sd = stdReturns(window.map((c) => c.close));
     if (sd <= 0) continue;
-    const ret = (cur.close - prev.close) / prev.close;
+    const ret = (cur!.close - prev!.close) / prev!.close;
     const pZ = Math.abs(ret) / sd;
     if (pZ < cfg.priceZ) continue;
 
@@ -264,18 +264,18 @@ export function runHighWrScaleOut(
     const maxExit = Math.min(i + 1 + cfg.holdBars, candles.length - 1);
     let tp1Hit = false;
     let tp1HitBar = -1;
-    let leg2ExitPrice = candles[maxExit].close;
+    let leg2ExitPrice = candles[maxExit]!.close;
     let leg2ExitBar = maxExit;
     let exitReason: HighWrTrade["exitReason"] = "time";
 
     for (let j = i + 2; j <= maxExit; j++) {
       const bar = candles[j];
       const stopHit =
-        direction === "long" ? bar.low <= stopLevel : bar.high >= stopLevel;
+        direction === "long" ? bar!.low <= stopLevel : bar!.high >= stopLevel;
       const tp1Reached =
-        direction === "long" ? bar.high >= tp1Level : bar.low <= tp1Level;
+        direction === "long" ? bar!.high >= tp1Level : bar!.low <= tp1Level;
       const tp2Reached =
-        direction === "long" ? bar.high >= tp2Level : bar.low <= tp2Level;
+        direction === "long" ? bar!.high >= tp2Level : bar!.low <= tp2Level;
 
       if (!tp1Hit) {
         if (tp1Reached && stopHit) {
@@ -304,9 +304,9 @@ export function runHighWrScaleOut(
         }
       } else {
         const stopHitNow =
-          direction === "long" ? bar.low <= stopLevel : bar.high >= stopLevel;
+          direction === "long" ? bar!.low <= stopLevel : bar!.high >= stopLevel;
         const tp2ReachedNow =
-          direction === "long" ? bar.high >= tp2Level : bar.low <= tp2Level;
+          direction === "long" ? bar!.high >= tp2Level : bar!.low <= tp2Level;
         if (tp2ReachedNow && stopHitNow) {
           leg2ExitBar = j;
           leg2ExitPrice = stopLevel;
@@ -354,7 +354,7 @@ export function runHighWrScaleOut(
     const totalPnl = 0.5 * leg1Pnl + 0.5 * leg2Pnl;
     trades.push({
       entryTime: entryBar.openTime,
-      exitTime: candles[leg2ExitBar].openTime,
+      exitTime: candles[leg2ExitBar]!.openTime,
       direction,
       entry,
       tp1Hit,
@@ -382,13 +382,13 @@ export function runHighWrScaleOut(
   const sd = Math.sqrt(v);
   const periodDays =
     trades.length > 0
-      ? (trades[trades.length - 1].exitTime - trades[0].entryTime) / 86400000
+      ? (trades[trades.length - 1]!.exitTime - trades[0]!.entryTime) / 86400000
       : 30;
   const perYear = periodDays > 0 ? (trades.length / periodDays) * 365 : 0;
   const sharpe = sd > 0 ? (m / sd) * Math.sqrt(perYear) : 0;
 
   const equity = [1];
-  for (const r of returns) equity.push(equity[equity.length - 1] * (1 + r));
+  for (const r of returns) equity.push(equity[equity.length - 1]! * (1 + r));
   let peak = 1,
     maxDd = 0;
   for (const e of equity) {
@@ -469,13 +469,13 @@ export function evaluateHighWrSignal(
   const i = candles.length - 1;
   const cur = candles[i];
   const prev = candles[i - 1];
-  if (prev.close <= 0) return { ...base, reason: "Previous close invalid" };
+  if (prev!.close <= 0) return { ...base, reason: "Previous close invalid" };
 
   const window = candles.slice(i - cfg.lookback, i);
   const medVol = median(window.map((c) => c.volume));
-  const vZ = medVol > 0 ? cur.volume / medVol : 0;
+  const vZ = medVol > 0 ? cur!.volume / medVol : 0;
   const sd = stdReturns(window.map((c) => c.close));
-  const ret = (cur.close - prev.close) / prev.close;
+  const ret = (cur!.close - prev!.close) / prev!.close;
   const pZ = sd > 0 ? Math.abs(ret) / sd : 0;
 
   if (vZ < cfg.volMult || pZ < cfg.priceZ) {
@@ -498,7 +498,7 @@ export function evaluateHighWrSignal(
 
   const filtersFailed: string[] = [];
   if (cfg.avoidHoursUtc.length) {
-    const h = new Date(cur.openTime).getUTCHours();
+    const h = new Date(cur!.openTime).getUTCHours();
     if (cfg.avoidHoursUtc.includes(h)) filtersFailed.push(`hour ${h} UTC`);
   }
   if (cfg.htfTrend) {
@@ -506,7 +506,7 @@ export function evaluateHighWrSignal(
       candles.slice(Math.max(0, i - 23), i + 1).map((c) => c.close),
       24,
     );
-    const alignedLong = cur.close > smaVal;
+    const alignedLong = cur!.close > smaVal;
     if (direction === "long" && !alignedLong)
       filtersFailed.push("HTF trend (want up for long)");
     if (direction === "short" && alignedLong)
@@ -540,7 +540,7 @@ export function evaluateHighWrSignal(
     };
   }
 
-  const entry = cur.close;
+  const entry = cur!.close;
   const tp1 =
     direction === "long" ? entry * (1 + cfg.tp1Pct) : entry * (1 - cfg.tp1Pct);
   const tp2 =
@@ -549,7 +549,7 @@ export function evaluateHighWrSignal(
     direction === "long"
       ? entry * (1 - cfg.stopPct)
       : entry * (1 + cfg.stopPct);
-  const holdUntil = cur.closeTime + cfg.holdBars * 60 * 60 * 1000;
+  const holdUntil = cur!.closeTime + cfg.holdBars * 60 * 60 * 1000;
 
   return {
     symbol,

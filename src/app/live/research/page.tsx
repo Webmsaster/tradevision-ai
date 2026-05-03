@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import {
   Area,
   AreaChart,
@@ -10,7 +11,6 @@ import {
   Pie,
   PieChart,
   CartesianGrid,
-  Legend,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -235,10 +235,30 @@ export default function ResearchPage() {
   // Auto-load on mount and refresh every 5 minutes so the signal stays
   // fresh as the UTC hour changes. Users can also click the button for an
   // immediate refresh.
+  //
+  // Phase 54 (R45-UI-H3): pause the interval when the tab is hidden.
+  // Without this, hours of background ticks queued up Notification.fire
+  // calls that all flushed when the user returned to the tab (treating
+  // every queued state diff as new), and burned battery on mobile.
   useEffect(() => {
     refreshLiveSignals();
-    const id = setInterval(refreshLiveSignals, 5 * 60 * 1000);
-    return () => clearInterval(id);
+    const tick = () => {
+      if (
+        typeof document === "undefined" ||
+        document.visibilityState === "visible"
+      ) {
+        refreshLiveSignals();
+      }
+    };
+    const id = setInterval(tick, 5 * 60 * 1000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refreshLiveSignals();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [refreshLiveSignals]);
 
   // Alert notification: fire a browser notification when any alert verdict
@@ -278,7 +298,7 @@ export default function ResearchPage() {
   // the journal for open signals whose plannedExitTime has passed and close
   // them at the current champion price. Prevents the journal from filling
   // up with perpetually-open positions.
-  const [autoClosed, setAutoClosed] = useState<number>(0);
+  const [, setAutoClosed] = useState<number>(0);
   useEffect(() => {
     if (!liveSignals?.champion || liveSignals.champion.length === 0) return;
     const latestPrices: Record<string, number> = {};
@@ -1509,11 +1529,12 @@ export default function ResearchPage() {
                   {winners.length > 1 ? "S" : ""} CONFIRMED
                 </h2>
                 <p>
-                  Best: <strong>{best.symbol}</strong>{" "}
-                  <strong>{best.timeframe}</strong> <strong>{best.mode}</strong>{" "}
-                  · {fmtPct(best.totalReturnPct)} return · Sharpe{" "}
-                  {fmtNum(best.sharpe)} · PF {fmtNum(best.profitFactor)} · MaxDD{" "}
-                  {fmtPct(best.maxDrawdownPct)} · {best.trades} trades.
+                  Best: <strong>{best!.symbol}</strong>{" "}
+                  <strong>{best!.timeframe}</strong>{" "}
+                  <strong>{best!.mode}</strong> · {fmtPct(best!.totalReturnPct)}{" "}
+                  return · Sharpe {fmtNum(best!.sharpe)} · PF{" "}
+                  {fmtNum(best!.profitFactor)} · MaxDD{" "}
+                  {fmtPct(best!.maxDrawdownPct)} · {best!.trades} trades.
                   Long-only trend-filter style; expect low trade frequency and
                   long holds. Paper-trade before risking capital.
                 </p>
@@ -3273,6 +3294,10 @@ function EtfFlowPanel() {
     action: string;
   } | null>(null);
   const [refresh, setRefresh] = useState(0);
+  // Phase 76 (R45-UI-M5): replaced native `confirm()` with ConfirmDialog
+  // — native blocks the test harness (Playwright) and is inconsistent
+  // with the rest of the app's confirmation UX.
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -3296,11 +3321,14 @@ function EtfFlowPanel() {
     setRefresh((r) => r + 1);
   }
 
-  async function handleClear() {
-    if (!confirm("Clear ETF flow history?")) return;
+  function handleClear() {
+    setShowClearConfirm(true);
+  }
+  async function confirmClear() {
     const mod = await import("@/utils/etfFlowSignal");
     mod.saveEtfFlowHistory([]);
     setRefresh((r) => r + 1);
+    setShowClearConfirm(false);
   }
 
   const tone =
@@ -3394,6 +3422,14 @@ function EtfFlowPanel() {
           </div>
         </div>
       )}
+      <ConfirmDialog
+        isOpen={showClearConfirm}
+        title="Clear ETF flow history?"
+        message="This removes all ETF flow entries from local storage. The action cannot be undone."
+        confirmLabel="Clear"
+        onConfirm={confirmClear}
+        onCancel={() => setShowClearConfirm(false)}
+      />
     </div>
   );
 }
@@ -3529,7 +3565,7 @@ function PortfolioEquityPanel() {
                 : 0,
             weight: c.weight,
             sharpe: c.sharpe,
-            color: palette[i % palette.length],
+            color: palette[i % palette.length]!,
           }))
           .sort((a, b) => b.absSharePct - a.absSharePct),
       );
@@ -3538,7 +3574,7 @@ function PortfolioEquityPanel() {
       try {
         const { classifyRegimes } = await import("@/utils/regimeClassifier");
         const btcFunding = fundingBySymbol["BTCUSDT"] ?? [];
-        const btcWindows = classifyRegimes(candlesByH["BTCUSDT"], btcFunding);
+        const btcWindows = classifyRegimes(candlesByH["BTCUSDT"]!, btcFunding);
         // Map each daily return to its BTC regime
         const buckets = new Map<string, { sum: number; count: number }>();
         for (const dr of ens.dailyReturns) {
@@ -4017,6 +4053,7 @@ function SignalJournalPanel({
 }) {
   const [entries, setEntries] = useState<SignalEntry[]>([]);
   const [refresh, setRefresh] = useState(0);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   // Reload on manual refresh trigger AND whenever live signals refresh
   // (parent auto-closes expired paper trades on liveReport change).
@@ -4061,10 +4098,14 @@ function SignalJournalPanel({
     setRefresh((r) => r + 1);
   }
 
+  // Phase 76 (R45-UI-M5): ConfirmDialog instead of native confirm().
   function handleClear() {
-    if (!confirm("Clear all signal journal entries?")) return;
+    setShowClearConfirm(true);
+  }
+  function confirmClear() {
     saveJournal([]);
     setRefresh((r) => r + 1);
+    setShowClearConfirm(false);
   }
 
   const openEntries = entries.filter((e) => e.actualPnlPct === undefined);
@@ -4308,6 +4349,14 @@ function SignalJournalPanel({
           </div>
         </div>
       )}
+      <ConfirmDialog
+        isOpen={showClearConfirm}
+        title="Clear all signal journal entries?"
+        message="This removes the entire signal journal from local storage. The action cannot be undone."
+        confirmLabel="Clear"
+        onConfirm={confirmClear}
+        onCancel={() => setShowClearConfirm(false)}
+      />
     </div>
   );
 }
@@ -4318,9 +4367,9 @@ function StrategyBreakdown({ trades }: { trades: BacktestReport["trades"] }) {
   for (const t of trades) {
     if (!byStrat[t.strategy])
       byStrat[t.strategy] = { n: 0, wins: 0, totalPct: 0 };
-    byStrat[t.strategy].n++;
-    if (t.netPnlPct > 0) byStrat[t.strategy].wins++;
-    byStrat[t.strategy].totalPct += t.netPnlPct;
+    byStrat[t.strategy]!.n++;
+    if (t.netPnlPct > 0) byStrat[t.strategy]!.wins++;
+    byStrat[t.strategy]!.totalPct += t.netPnlPct;
   }
   const entries = Object.entries(byStrat);
   if (entries.length === 0)

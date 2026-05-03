@@ -14,12 +14,19 @@ permissions:
 
 jobs:
   dependabot-automerge:
-    if: github.actor == 'dependabot[bot]' && github.event.pull_request.draft == false
+    # Phase 48 (R45-CFG-2): pull_request_target gives the workflow access to
+    # repo secrets even on PRs from forks. Restrict to PRs originating from
+    # THIS repository to defeat any "spoof the bot name" supply-chain attack.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - name: Fetch Dependabot metadata
         id: metadata
-        uses: dependabot/fetch-metadata@v3
+        # Phase 93 (R51-S9): SHA-pinned third-party action (was @v3 floating).
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -28,6 +35,20 @@ jobs:
           steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
           steps.metadata.outputs.update-type == 'version-update:semver-minor'
         run: gh pr review --repo "$GITHUB_REPOSITORY" "$PR_NUMBER" --approve -b "Auto-approving Dependabot ${{ steps.metadata.outputs.update-type }}."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+
+      # Round 54: defense-in-depth — wait for ALL CI checks to finish and
+      # require all to pass before enabling auto-merge. Branch protection is
+      # the primary gate; this step adds a second one in case the protection
+      # rules drift or are accidentally relaxed. `--watch --fail-fast` exits
+      # non-zero the moment any check fails, blocking the merge step.
+      - name: Wait for CI checks to pass
+        if: >-
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        run: gh pr checks --repo "$GITHUB_REPOSITORY" "$PR_NUMBER" --watch --fail-fast
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}

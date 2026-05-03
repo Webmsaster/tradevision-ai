@@ -53,8 +53,8 @@ export function classifyVolRegime(
   // Log-returns
   const logRet = new Array(candles.length).fill(0);
   for (let i = 1; i < candles.length; i++) {
-    if (candles[i - 1].close > 0 && candles[i].close > 0) {
-      logRet[i] = Math.log(candles[i].close / candles[i - 1].close);
+    if (candles[i - 1]!.close > 0 && candles[i]!.close > 0) {
+      logRet[i] = Math.log(candles[i]!.close / candles[i - 1]!.close);
     }
   }
 
@@ -78,7 +78,7 @@ export function classifyVolRegime(
   for (let i = 0; i < candles.length; i++) {
     if (i < config.percentileWindowBars) {
       out[i] = {
-        time: candles[i].openTime,
+        time: candles[i]!.openTime,
         realizedVol: rv[i],
         percentile: null,
         inRegime: false,
@@ -90,7 +90,7 @@ export function classifyVolRegime(
     for (const v of sample) if (v < rv[i]) below++;
     const pct = below / sample.length;
     out[i] = {
-      time: candles[i].openTime,
+      time: candles[i]!.openTime,
       realizedVol: rv[i],
       percentile: pct,
       inRegime: pct >= config.minPercentile && pct <= config.maxPercentile,

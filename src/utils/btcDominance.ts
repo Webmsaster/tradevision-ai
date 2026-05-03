@@ -12,6 +12,7 @@
  * periodically and computing trend direction from the last N snapshots
  * captured during the session.
  */
+import { fetchJsonWithRetry } from "@/utils/httpRetry";
 
 export interface DominanceSnapshot {
   capturedAt: number;
@@ -41,9 +42,8 @@ interface RawGlobal {
 }
 
 export async function fetchDominance(): Promise<DominanceSnapshot> {
-  const res = await fetch(COINGECKO_GLOBAL);
-  if (!res.ok) throw new Error(`CoinGecko fetch failed: ${res.status}`);
-  const json = (await res.json()) as RawGlobal;
+  // Round 56 (Fix 3): timeout + retry/backoff via shared helper.
+  const json = await fetchJsonWithRetry<RawGlobal>(COINGECKO_GLOBAL);
   const d = json.data;
   return {
     capturedAt: Date.now(),
@@ -68,16 +68,16 @@ export function classifyDominance(
   const d = snap.btcDominancePct;
   let trend: DominanceRegime["trend"] = "unknown";
   if (history.length >= 3) {
-    const first = history[0].btcDominancePct;
-    const last = history[history.length - 1].btcDominancePct;
+    const first = history[0]!.btcDominancePct;
+    const last = history[history.length - 1]!.btcDominancePct;
     const delta = last - first;
     if (delta > 0.5) trend = "rising";
     else if (delta < -0.5) trend = "falling";
     else trend = "flat";
   }
 
-  let bias: DominanceRegime["bias"] = "neutral";
-  let interpretation = "";
+  let bias: DominanceRegime["bias"];
+  let interpretation: string;
 
   if (btcAbove200dSma === false) {
     bias = "risk-off";

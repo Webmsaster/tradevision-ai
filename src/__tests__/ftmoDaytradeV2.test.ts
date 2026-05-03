@@ -111,8 +111,8 @@ describe("ftmoDaytradeV2 — signal detection", () => {
       candles.push(mkCandle(t0 + i * bar, 100, 100.5, 99.5, 100));
     const signals = detectNDownLongSignals(candles);
     expect(signals.length).toBeGreaterThanOrEqual(1);
-    expect(signals[0].direction).toBe("long");
-    expect(signals[0].exitReason).toBe("tp");
+    expect(signals[0]!.direction).toBe("long");
+    expect(signals[0]!.exitReason).toBe("tp");
   });
 
   it("2-up trigger fires on 2 consecutive green bars (short)", () => {
@@ -130,8 +130,8 @@ describe("ftmoDaytradeV2 — signal detection", () => {
       candles.push(mkCandle(t0 + i * bar, 99.5, 100, 99, 99.5));
     const signals = detectNUpShortSignals(candles);
     expect(signals.length).toBeGreaterThanOrEqual(1);
-    expect(signals[0].direction).toBe("short");
-    expect(signals[0].exitReason).toBe("tp");
+    expect(signals[0]!.direction).toBe("short");
+    expect(signals[0]!.exitReason).toBe("tp");
   });
 });
 

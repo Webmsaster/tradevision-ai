@@ -23,6 +23,7 @@
  */
 
 import { fetchFundingHistory, type FundingEvent } from "@/utils/fundingRate";
+import { fetchJsonWithRetry } from "@/utils/httpRetry";
 
 export interface CarryConfig {
   entryThreshold: number; // e.g. 0.0002 = 0.02%/8h (~22% annualised)
@@ -103,7 +104,7 @@ export function runFundingCarryBacktest(
 
     if (inPosition === null) {
       // Track consecutive streaks in both directions
-      if (ev.fundingRate > config.entryThreshold) {
+      if (ev!.fundingRate > config.entryThreshold) {
         longConsec++;
         shortConsec = 0;
         if (longConsec >= config.consecutiveEntryPeriods) {
@@ -111,7 +112,7 @@ export function runFundingCarryBacktest(
           posStart = i;
           posCarry = 0;
         }
-      } else if (ev.fundingRate < -config.entryThreshold) {
+      } else if (ev!.fundingRate < -config.entryThreshold) {
         shortConsec++;
         longConsec = 0;
         if (shortConsec >= config.consecutiveEntryPeriods) {
@@ -123,7 +124,7 @@ export function runFundingCarryBacktest(
         longConsec = 0;
         shortConsec = 0;
       }
-      equity.push(equity[equity.length - 1]);
+      equity.push(equity[equity.length - 1]!);
       continue;
     }
 
@@ -131,15 +132,15 @@ export function runFundingCarryBacktest(
     // long-basis (short-perp+long-spot) → earns ev.fundingRate (positive when funding>0)
     // short-basis (long-perp+short-spot) → earns -ev.fundingRate (positive when funding<0)
     const perPeriodCarry =
-      inPosition === "long-basis" ? ev.fundingRate : -ev.fundingRate;
+      inPosition === "long-basis" ? ev!.fundingRate : -ev!.fundingRate;
     posCarry += perPeriodCarry;
     periodsInTrade++;
 
     // Exit when funding leaves the favourable zone
     const shouldExit =
       inPosition === "long-basis"
-        ? ev.fundingRate < config.exitThreshold
-        : ev.fundingRate > -config.exitThreshold;
+        ? ev!.fundingRate < config.exitThreshold
+        : ev!.fundingRate > -config.exitThreshold;
 
     if (shouldExit || i === sorted.length - 1) {
       const fees = config.perLegFee * 4;
@@ -148,8 +149,8 @@ export function runFundingCarryBacktest(
       const ann = periods > 0 ? (net / periods) * 3 * 365 : 0;
       trades.push({
         symbol,
-        openTime: sorted[posStart].fundingTime,
-        closeTime: ev.fundingTime,
+        openTime: sorted[posStart]!.fundingTime,
+        closeTime: ev!.fundingTime,
         periods,
         grossCarryPct: posCarry,
         feesPct: fees,
@@ -157,14 +158,14 @@ export function runFundingCarryBacktest(
         annualisedPct: ann,
         side: inPosition,
       });
-      equity.push(equity[equity.length - 1] * (1 + net));
+      equity.push(equity[equity.length - 1]! * (1 + net));
       inPosition = null;
       posStart = -1;
       posCarry = 0;
       longConsec = 0;
       shortConsec = 0;
     } else {
-      equity.push(equity[equity.length - 1] * (1 + perPeriodCarry));
+      equity.push(equity[equity.length - 1]! * (1 + perPeriodCarry));
     }
   }
 
@@ -221,10 +222,10 @@ export async function fetchAndBacktestCarry(
     url.searchParams.set("symbol", symbol.toUpperCase());
     url.searchParams.set("limit", "1000");
     if (endTime !== undefined) url.searchParams.set("endTime", String(endTime));
-    const res = await fetch(url.toString());
-    if (!res.ok) throw new Error(`Binance funding fetch failed: ${res.status}`);
-    const rows: { fundingTime: number; fundingRate: string; symbol: string }[] =
-      await res.json();
+    // Round 56 (Fix 3): timeout + retry/backoff via shared helper.
+    const rows = await fetchJsonWithRetry<
+      { fundingTime: number; fundingRate: string; symbol: string }[]
+    >(url.toString());
     if (!rows || rows.length === 0) break;
     const fresh: FundingEvent[] = [];
     for (const r of rows) {
@@ -240,7 +241,7 @@ export async function fetchAndBacktestCarry(
     if (fresh.length === 0) break;
     all.unshift(...fresh);
     // Go one ms earlier than the oldest row of THIS batch
-    const oldest = rows[0].fundingTime;
+    const oldest = rows[0]!.fundingTime;
     endTime = oldest - 1;
   }
 
