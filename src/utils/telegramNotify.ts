@@ -9,6 +9,15 @@
  *        TELEGRAM_BOT_TOKEN=<token>
  *        TELEGRAM_CHAT_ID=<chat id>
  *
+ * Multi-account (Round 57, 2026-05-03):
+ *   When running 2+ FTMO bots in parallel, each can use its own bot/chat by
+ *   setting `FTMO_ACCOUNT_ID=<id>` and providing
+ *     TELEGRAM_BOT_TOKEN_<id>
+ *     TELEGRAM_CHAT_ID_<id>
+ *   The bare `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` are used as a fallback
+ *   so a shared chat keeps working. Outgoing messages are auto-prefixed with
+ *   `[acct:<id>] ` so a shared chat stays unambiguous.
+ *
  * Usage:
  *   import { tgSend } from "@/utils/telegramNotify";
  *   await tgSend("🚨 Signal: SHORT ETH @ $3456");
@@ -22,12 +31,39 @@ export interface TelegramConfig {
 }
 
 /**
+ * Resolve `TELEGRAM_<base>_<FTMO_ACCOUNT_ID>` first, fall back to
+ * `TELEGRAM_<base>`. Returns undefined when neither is set.
+ *
+ * The account id is sanitised — only `[A-Za-z0-9_]` survive so a stray
+ * dash/space/slash in FTMO_ACCOUNT_ID can't poison env-var lookup.
+ */
+function resolveAccountEnv(base: string): string | undefined {
+  const acct = (process.env.FTMO_ACCOUNT_ID ?? "").trim();
+  if (acct) {
+    const safe = acct.replace(/[^A-Za-z0-9_]/g, "_");
+    const perAcct = process.env[`TELEGRAM_${base}_${safe}`];
+    if (perAcct) return perAcct;
+  }
+  return process.env[`TELEGRAM_${base}`] ?? undefined;
+}
+
+/** `[acct:<id>] ` if FTMO_ACCOUNT_ID is set, else empty string. */
+export function accountPrefix(): string {
+  const acct = (process.env.FTMO_ACCOUNT_ID ?? "").trim();
+  return acct ? `[acct:${acct}] ` : "";
+}
+
+/**
  * Read Telegram config from env vars.
  * Returns undefined if not configured (caller should treat as no-op).
+ *
+ * Round 57: per-account env precedence
+ *   TELEGRAM_BOT_TOKEN_<FTMO_ACCOUNT_ID> → TELEGRAM_BOT_TOKEN
+ *   TELEGRAM_CHAT_ID_<FTMO_ACCOUNT_ID>   → TELEGRAM_CHAT_ID
  */
 export function readTelegramConfig(): TelegramConfig | undefined {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
+  const token = resolveAccountEnv("BOT_TOKEN");
+  const chatId = resolveAccountEnv("CHAT_ID");
   if (!token || !chatId) return undefined;
   return { token, chatId };
 }
@@ -42,12 +78,18 @@ export async function tgSend(
 ): Promise<boolean> {
   const conf = cfg ?? readTelegramConfig();
   if (!conf) return false;
+  // Round 57: prefix multi-account messages so a shared chat stays readable.
+  // Prefix counts toward the 4000-char Telegram budget so we apply it before
+  // the safe-truncation step below.
+  const prefixed = accountPrefix() + text;
   // BUGFIX 2026-04-28 (Round 18): HTML-tag-aware truncation.
   // Naive slice() could split mid-tag (<co|de>) which Telegram rejects with
   // 400 "can't parse entities". Truncate at the last safe spot (before any
   // open tag whose closing partner would be lost), then close all open tags.
   const body =
-    text.length > MAX_MSG_LEN ? safeTruncateHtml(text, MAX_MSG_LEN - 20) : text;
+    prefixed.length > MAX_MSG_LEN
+      ? safeTruncateHtml(prefixed, MAX_MSG_LEN - 20)
+      : prefixed;
   try {
     const resp = await fetch(
       `https://api.telegram.org/bot${conf.token}/sendMessage`,

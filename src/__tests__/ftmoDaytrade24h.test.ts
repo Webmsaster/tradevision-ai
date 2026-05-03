@@ -364,6 +364,117 @@ describe("ftmoDaytrade24h — R56 funding-cost / volMult-floor / maxDays-cap", (
     expect(trd.volMult).toBeGreaterThan(0);
   });
 
+  it("Round 57 Fix 4: triple-swap on Wed→Thu rollover (1 extra Wed = +2 day-charges)", () => {
+    // Anchor t0 to a Tuesday so a 3-day hold spans Tue→Wed→Thu.
+    // 2024-01-09 = Tuesday (verify: getUTCDay() === 2).
+    const tueT0 = new Date("2024-01-09T04:00:00Z").getTime();
+    expect(new Date(tueT0).getUTCDay()).toBe(2);
+    const barMsLocal = 4 * 3600_000;
+    const cfgWithSwap: import("../utils/ftmoDaytrade24h").FtmoDaytrade24hConfig =
+      {
+        timeframe: "4h",
+        tpPct: 0.5,
+        stopPct: 0.5,
+        holdBars: 18, // 18 × 4h = 72h ≈ 3 days → spans Tue→Wed→Thu→Fri
+        triggerBars: 2,
+        invertDirection: false,
+        disableShort: true,
+        disableLong: false,
+        profitTarget: 1.0,
+        maxDailyLoss: 1.0,
+        maxTotalLoss: 1.0,
+        leverage: 1,
+        maxDays: 30,
+        minTradingDays: 0,
+        pauseAtTargetReached: false,
+        assets: [
+          {
+            symbol: "EURUSD",
+            sourceSymbol: "EURUSD",
+            riskFrac: 0.1,
+            costBp: 0,
+            slippageBp: 0,
+            swapBpPerDay: 100, // 1 % per day so the effect is observable
+          },
+        ],
+      };
+    // 3 declining closes for long entry, then flat hold.
+    const candles: Candle[] = [];
+    candles.push(mkCandle(tueT0, 100, 101, 99, 100));
+    candles.push(mkCandle(tueT0 + barMsLocal, 100, 100, 96, 96));
+    candles.push(mkCandle(tueT0 + 2 * barMsLocal, 96, 96, 92, 92));
+    for (let i = 3; i < 30; i++) {
+      candles.push(mkCandle(tueT0 + i * barMsLocal, 92, 93, 91, 92));
+    }
+    const cfgNoSwap = JSON.parse(
+      JSON.stringify(cfgWithSwap),
+    ) as typeof cfgWithSwap;
+    cfgNoSwap.assets[0]!.swapBpPerDay = 0;
+    const r1 = runFtmoDaytrade24h({ EURUSD: candles }, cfgNoSwap);
+    const r2 = runFtmoDaytrade24h({ EURUSD: candles }, cfgWithSwap);
+    expect(r1.trades.length).toBeGreaterThanOrEqual(1);
+    expect(r2.trades.length).toBe(r1.trades.length);
+    // The Wed-night triple-swap means rawPnl with swap is BELOW (more
+    // negative) rawPnl without swap by at least 3 day-charges (1 Wed-rollover
+    // adds +2 over the regular crossing). 100 bp/day = 0.01 per day; a
+    // 3-day hold covering one Wed = 5 effective day-charges = 5%. Without
+    // the fix it would be 3% — so any trade-1 swap delta ≤ -0.04 confirms
+    // the triple-swap is applied (linear baseline = -0.03).
+    const delta1 = r2.trades[0]!.rawPnl - r1.trades[0]!.rawPnl;
+    expect(delta1).toBeLessThanOrEqual(-0.04 + 1e-9);
+  });
+
+  it("Round 57 Fix 4: long-hold (Tue→Sat ≈4d) Wed-rollover → at least 5 day-charges", () => {
+    // Tuesday anchor, hold ≥ 4 days so we cross Wed-night exactly once.
+    // 4 day-charges baseline + 2 extra for Wed-rollover = 6.
+    const tueT0 = new Date("2024-01-09T04:00:00Z").getTime();
+    expect(new Date(tueT0).getUTCDay()).toBe(2);
+    const barMsLocal = 4 * 3600_000;
+    const cfgBase: import("../utils/ftmoDaytrade24h").FtmoDaytrade24hConfig = {
+      timeframe: "4h",
+      tpPct: 0.5,
+      stopPct: 0.5,
+      holdBars: 24, // 24 × 4h = 96h ≈ 4 days
+      triggerBars: 2,
+      invertDirection: false,
+      disableShort: true,
+      disableLong: false,
+      profitTarget: 1.0,
+      maxDailyLoss: 1.0,
+      maxTotalLoss: 1.0,
+      leverage: 1,
+      maxDays: 30,
+      minTradingDays: 0,
+      pauseAtTargetReached: false,
+      assets: [
+        {
+          symbol: "EURUSD",
+          sourceSymbol: "EURUSD",
+          riskFrac: 0.1,
+          costBp: 0,
+          slippageBp: 0,
+          swapBpPerDay: 100,
+        },
+      ],
+    };
+    const candles: Candle[] = [];
+    candles.push(mkCandle(tueT0, 100, 101, 99, 100));
+    candles.push(mkCandle(tueT0 + barMsLocal, 100, 100, 96, 96));
+    candles.push(mkCandle(tueT0 + 2 * barMsLocal, 96, 96, 92, 92));
+    for (let i = 3; i < 40; i++) {
+      candles.push(mkCandle(tueT0 + i * barMsLocal, 92, 93, 91, 92));
+    }
+    const cfgNoSwap = JSON.parse(JSON.stringify(cfgBase)) as typeof cfgBase;
+    cfgNoSwap.assets[0]!.swapBpPerDay = 0;
+    const r0 = runFtmoDaytrade24h({ EURUSD: candles }, cfgNoSwap);
+    const r1 = runFtmoDaytrade24h({ EURUSD: candles }, cfgBase);
+    expect(r0.trades.length).toBeGreaterThanOrEqual(1);
+    // Swap delta of trade 0 must be ≤ -0.05 (5+ day-charges at 1 %/day),
+    // proving the Wed-rollover added ≥2 extra charges over the linear baseline.
+    const delta = r1.trades[0]!.rawPnl - r0.trades[0]!.rawPnl;
+    expect(delta).toBeLessThanOrEqual(-0.05 + 1e-9);
+  });
+
   it("Fix 6: holdBars × maxDays interaction caps trade exit within challenge window", () => {
     // Build candles where signal fires near start of the maxDays window and
     // holdBars would extend many days past it. Engine should clamp the exit

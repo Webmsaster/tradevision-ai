@@ -5,11 +5,21 @@
  * ISO-8601 string with a `Z` suffix before being stored. Local-time-only
  * strings (e.g. "2026-04-15 14:30") are coerced to UTC explicitly and the
  * caller is told it happened so the UI can surface a warning.
+ *
+ * Round 57: extended to handle EU (`15/04/2026`, `15.04.2026`,
+ * `15-04-2026`), US (`04/15/2026`) and MT4 (`2026.04.15 14:30`) date
+ * formats. Previously these all fell through to `new Date(trimmed)` which
+ * is engine-dependent and silently produced `Invalid Date` on most
+ * runtimes — entire CSV imports were dropped without any warning.
  */
 
 export type DateNormalizeWarning =
   | "naive-iso-assumed-utc"
-  | "date-only-assumed-utc-midnight";
+  | "date-only-assumed-utc-midnight"
+  | "ambiguous-slash-date-assumed-dmy"
+  | "mt4-date-assumed-utc"
+  | "eu-date-assumed-utc"
+  | "us-date-assumed-utc";
 
 export interface DateNormalizeResult {
   iso: string | null; // null when the input is unparseable
@@ -24,6 +34,62 @@ const DATE_ONLY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 const NAIVE_DATETIME_REGEX =
   /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)$/;
 
+// Round 57 fix #1: explicit format regexes BEFORE the new Date() fallback.
+// MT4 / MetaTrader 4 export format: yyyy.mm.dd[ HH:MM[:SS]]
+const MT4_REGEX =
+  /^(\d{4})\.(\d{1,2})\.(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/;
+// Slash-separated, ambiguous between dd/mm/yyyy (EU) and mm/dd/yyyy (US).
+const SLASH_REGEX =
+  /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/;
+// Dot-separated EU: dd.mm.yyyy[ HH:MM[:SS]]
+const EU_DOT_REGEX =
+  /^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/;
+// Dash-separated EU: dd-mm-yyyy[ HH:MM[:SS]] (note: yyyy-mm-dd is handled
+// by NAIVE_DATETIME_REGEX above, so the year-trailing form is unambiguous.)
+const EU_DASH_REGEX =
+  /^(\d{1,2})-(\d{1,2})-(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/;
+
+function inRange(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  min: number,
+  sec: number,
+): boolean {
+  if (year < 1900 || year > 9999) return false;
+  if (month < 1 || month > 12) return false;
+  if (day < 1 || day > 31) return false;
+  if (hour < 0 || hour > 23) return false;
+  if (min < 0 || min > 59) return false;
+  if (sec < 0 || sec > 59) return false;
+  return true;
+}
+
+function buildUTC(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  min: number,
+  sec: number,
+): string | null {
+  if (!inRange(year, month, day, hour, min, sec)) return null;
+  // Date.UTC clamps invalid combinations silently (Feb 30 → Mar 2). Verify
+  // round-trip equality so we reject Feb 30 etc.
+  const ms = Date.UTC(year, month - 1, day, hour, min, sec);
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return null;
+  if (
+    d.getUTCFullYear() !== year ||
+    d.getUTCMonth() !== month - 1 ||
+    d.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return d.toISOString();
+}
+
 /**
  * Normalise a raw date string to a UTC ISO-8601 string.
  *
@@ -31,6 +97,12 @@ const NAIVE_DATETIME_REGEX =
  *   "2026-04-15T14:30:00"    → { iso: "...Z", warning: "naive-iso-assumed-utc" }
  *   "2026-04-15 14:30"       → { iso: "...Z", warning: "naive-iso-assumed-utc" }
  *   "2026-04-15"             → { iso: "...T00:00:00.000Z", warning: "date-only-assumed-utc-midnight" }
+ *   "2026.04.15 14:30"       → { iso: "...Z", warning: "mt4-date-assumed-utc" }
+ *   "15.04.2026 14:30"       → { iso: "...Z", warning: "eu-date-assumed-utc" }
+ *   "15-04-2026"             → { iso: "...Z", warning: "eu-date-assumed-utc" }
+ *   "13/04/2026"             → { iso: "...Z", warning: "eu-date-assumed-utc" }   (day>12 → must be dmy)
+ *   "04/13/2026"             → { iso: "...Z", warning: "us-date-assumed-utc" }   (second>12 → must be mdy)
+ *   "04/05/2026"             → { iso: "...Z", warning: "ambiguous-slash-date-assumed-dmy" }
  *   "garbage"                → { iso: null }
  */
 export function normalizeDateToUTC(raw: unknown): DateNormalizeResult {
@@ -60,11 +132,106 @@ export function normalizeDateToUTC(raw: unknown): DateNormalizeResult {
     return { iso: d.toISOString(), warning: "naive-iso-assumed-utc" };
   }
 
-  // Has explicit TZ marker (Z or ±HH:MM) — let JS parse natively, then re-emit as UTC.
-  if (HAS_TZ_REGEX.test(trimmed)) {
+  // Round 57: TZ marker check should not fire for dd-mm-yyyy strings —
+  // "15-04-2026" ends in `-2026` which superficially looks like a `±HHMM`
+  // offset. Require a `:` (time separator) anywhere in the string to count
+  // it as a TZ-marked datetime.
+  if (HAS_TZ_REGEX.test(trimmed) && trimmed.includes(":")) {
     const d = new Date(trimmed);
     if (Number.isNaN(d.getTime())) return { iso: null };
     return { iso: d.toISOString() };
+  }
+
+  // -- Round 57 fix #1: explicit handling for MT4 / EU / US formats. ----
+
+  // MT4 export: yyyy.mm.dd HH:MM[:SS]
+  const mt4 = MT4_REGEX.exec(trimmed);
+  if (mt4) {
+    const [, y, m, d, h, mi, s] = mt4;
+    const iso = buildUTC(
+      Number(y),
+      Number(m),
+      Number(d),
+      h ? Number(h) : 0,
+      mi ? Number(mi) : 0,
+      s ? Number(s) : 0,
+    );
+    if (!iso) return { iso: null };
+    return { iso, warning: "mt4-date-assumed-utc" };
+  }
+
+  // EU dot-separated: dd.mm.yyyy
+  const euDot = EU_DOT_REGEX.exec(trimmed);
+  if (euDot) {
+    const [, d, m, y, h, mi, s] = euDot;
+    const iso = buildUTC(
+      Number(y),
+      Number(m),
+      Number(d),
+      h ? Number(h) : 0,
+      mi ? Number(mi) : 0,
+      s ? Number(s) : 0,
+    );
+    if (!iso) return { iso: null };
+    return { iso, warning: "eu-date-assumed-utc" };
+  }
+
+  // EU dash-separated: dd-mm-yyyy (yyyy-mm-dd handled above as ISO).
+  const euDash = EU_DASH_REGEX.exec(trimmed);
+  if (euDash) {
+    const [, d, m, y, h, mi, s] = euDash;
+    const iso = buildUTC(
+      Number(y),
+      Number(m),
+      Number(d),
+      h ? Number(h) : 0,
+      mi ? Number(mi) : 0,
+      s ? Number(s) : 0,
+    );
+    if (!iso) return { iso: null };
+    return { iso, warning: "eu-date-assumed-utc" };
+  }
+
+  // Slash-separated: ambiguous dd/mm/yyyy vs mm/dd/yyyy.
+  // Heuristic:
+  //   - first part > 12 → must be dmy (EU)
+  //   - second part > 12 → must be mdy (US)
+  //   - otherwise default to dmy (EU) and emit ambiguous warning.
+  const slash = SLASH_REGEX.exec(trimmed);
+  if (slash) {
+    const [, a, b, y, h, mi, s] = slash;
+    const aN = Number(a);
+    const bN = Number(b);
+    let day: number;
+    let month: number;
+    let warning: DateNormalizeWarning;
+    if (aN > 12 && bN <= 12) {
+      day = aN;
+      month = bN;
+      warning = "eu-date-assumed-utc";
+    } else if (bN > 12 && aN <= 12) {
+      month = aN;
+      day = bN;
+      warning = "us-date-assumed-utc";
+    } else if (aN > 12 && bN > 12) {
+      // Both > 12 — neither dmy nor mdy is a valid date. Reject.
+      return { iso: null };
+    } else {
+      // Both ≤ 12 → genuinely ambiguous. Default to dmy (EU) and warn.
+      day = aN;
+      month = bN;
+      warning = "ambiguous-slash-date-assumed-dmy";
+    }
+    const iso = buildUTC(
+      Number(y),
+      month,
+      day,
+      h ? Number(h) : 0,
+      mi ? Number(mi) : 0,
+      s ? Number(s) : 0,
+    );
+    if (!iso) return { iso: null };
+    return { iso, warning };
   }
 
   // Last-resort fallback: let Date attempt to parse it (handles e.g.

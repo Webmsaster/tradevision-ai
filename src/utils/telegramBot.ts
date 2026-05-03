@@ -62,6 +62,22 @@ function writeLastUpdateId(stateDir: string, id: number): void {
 }
 
 export async function startTelegramBot(ctx: TelegramCommandHandlerCtx) {
+  // Round 57: in a multi-account deployment all bots that share the same
+  // bot-token would race for `getUpdates` — only the first to poll receives
+  // each command. Solution: exactly one process is the master (set
+  // `FTMO_TELEGRAM_BOT_MASTER=1`), the rest skip the listener silently.
+  // If FTMO_ACCOUNT_ID is unset we assume single-account mode and run the
+  // listener unconditionally (legacy behaviour).
+  const acct = (process.env.FTMO_ACCOUNT_ID ?? "").trim();
+  const isMaster =
+    process.env.FTMO_TELEGRAM_BOT_MASTER === "1" ||
+    process.env.FTMO_TELEGRAM_BOT_MASTER === "true";
+  if (acct && !isMaster) {
+    console.log(
+      `[tg-bot] FTMO_ACCOUNT_ID=${acct} but FTMO_TELEGRAM_BOT_MASTER not set — command listener disabled (alerts still send)`,
+    );
+    return;
+  }
   const cfg = readTelegramConfig();
   if (!cfg) {
     console.log(

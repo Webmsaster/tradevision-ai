@@ -69,6 +69,10 @@ export default function CSVImport({ onImport }: CSVImportProps) {
   const [dragOver, setDragOver] = useState<boolean>(false);
   const [error, setError] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
+  // Round 57 fix #2: warnings accumulated by mapCSVToTrades (naive dates,
+  // ambiguous-slash dates, skipped direction rows) — surfaced in step 3 as
+  // a yellow banner so users notice structured issues without console.warn.
+  const [importWarnings, setImportWarnings] = useState<string[]>([]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -88,7 +92,37 @@ export default function CSVImport({ onImport }: CSVImportProps) {
     setDragOver(false);
   }
 
-  function handleDrop(e: DragEvent<HTMLDivElement>) {
+  /**
+   * Round 57 fix #5: lightweight 1KB content sniff in the drop handler
+   * BEFORE we call setFile, so a binary disguised as `evil.exe.csv`
+   * (passes the extension check) is rejected up-front. Mirrors the deeper
+   * sniff in csvParser.parseCSVFile but operates synchronously enough that
+   * the user gets immediate feedback.
+   */
+  async function quickSniffCsvShape(file: File): Promise<boolean> {
+    try {
+      const head = await file.slice(0, 1024).text();
+      if (!head || !head.trim()) return false;
+      const trimmed = head.trimStart();
+      if (
+        trimmed.startsWith("<") ||
+        trimmed.startsWith("{") ||
+        trimmed.startsWith("[")
+      ) {
+        return false;
+      }
+      // Reject binary: presence of NUL byte in first 1KB.
+      if (head.includes("\0")) return false;
+      // Need at least one delimiter (comma/semicolon/tab) on the first line
+      // to look CSV-shaped.
+      const firstLine = head.split(/\r?\n/, 1)[0] ?? "";
+      return /[,;\t]/.test(firstLine);
+    } catch {
+      return false;
+    }
+  }
+
+  async function handleDrop(e: DragEvent<HTMLDivElement>) {
     e.preventDefault();
     e.stopPropagation();
     setDragOver(false);
@@ -102,11 +136,21 @@ export default function CSVImport({ onImport }: CSVImportProps) {
         !(droppedFile.name.endsWith(".csv") || droppedFile.type === "text/csv")
       ) {
         setError("Please upload a .csv file.");
-      } else if (droppedFile.size > MAX_FILE_SIZE) {
-        setError("File too large. Maximum size is 10 MB.");
-      } else {
-        setFile(droppedFile);
+        return;
       }
+      if (droppedFile.size > MAX_FILE_SIZE) {
+        setError("File too large. Maximum size is 10 MB.");
+        return;
+      }
+      // Round 57 fix #5: content-sniff before accepting the file.
+      const looksOk = await quickSniffCsvShape(droppedFile);
+      if (!looksOk) {
+        setError(
+          "File doesn't appear to be a valid CSV (missing delimiters or contains binary data).",
+        );
+        return;
+      }
+      setFile(droppedFile);
     }
   }
 
@@ -217,12 +261,14 @@ export default function CSVImport({ onImport }: CSVImportProps) {
     }
 
     try {
-      const trades = mapCSVToTrades(csvData, mapping);
+      // Round 57 fix #2: mapCSVToTrades now returns { trades, warnings }.
+      const { trades, warnings } = mapCSVToTrades(csvData, mapping);
       const totalRows = csvData.length;
       const skipped = totalRows - trades.length;
 
       setMappedTrades(trades);
       setSkippedRows(skipped);
+      setImportWarnings(warnings);
 
       if (trades.length === 0) {
         setError(
@@ -262,6 +308,7 @@ export default function CSVImport({ onImport }: CSVImportProps) {
     setMapping({ ...EMPTY_MAPPING });
     setMappedTrades([]);
     setSkippedRows(0);
+    setImportWarnings([]);
     setPlatform("auto");
     setDragOver(false);
     setError("");
@@ -572,6 +619,39 @@ export default function CSVImport({ onImport }: CSVImportProps) {
               </span>
             )}
           </p>
+
+          {/* Round 57 fix #2: surface accumulated import warnings (naive */}
+          {/* dates, ambiguous-slash heuristics, skipped-direction rows). */}
+          {importWarnings.length > 0 && (
+            <div
+              role="alert"
+              data-testid="csv-import-warnings"
+              style={{
+                background: "rgba(245, 158, 11, 0.08)",
+                border: "1px solid rgba(245, 158, 11, 0.4)",
+                color: "var(--text-warning, #f59e0b)",
+                padding: "12px 16px",
+                borderRadius: "8px",
+                marginBottom: "16px",
+                fontSize: "0.85rem",
+              }}
+            >
+              <strong>Import warnings:</strong>
+              <ul
+                style={{
+                  margin: "8px 0 0",
+                  paddingLeft: "20px",
+                  listStyleType: "disc",
+                }}
+              >
+                {importWarnings.map((w, i) => (
+                  <li key={i} style={{ marginBottom: "4px" }}>
+                    {w}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           <div className="csv-preview-table">
             <table>

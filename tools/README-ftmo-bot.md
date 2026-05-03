@@ -172,6 +172,65 @@ http://localhost:3000/dashboard/drift?ftmo_tf=2h-trend-v5-quartz-lite-r28-v5-v4e
 The TF picker in the header auto-discovers all `ftmo-state-*/` directories
 under the project root and lets you switch between them without editing the URL.
 
+#### Running 2-3 demo accounts in parallel (Round 57)
+
+Each account runs as its own executor process with isolated state and a
+unique `FTMO_ACCOUNT_ID`. Three deployment-blockers were closed in Round 57:
+
+**1. Per-account state isolation** (already in place — Phase 73 / Round 44):
+`FTMO_ACCOUNT_ID=<id>` causes `STATE_DIR` to become
+`ftmo-state-<TF>-<id>/` so two bots on the same TF never share files.
+
+**2. Per-account Telegram routing** (Round 57): set `FTMO_ACCOUNT_ID` and
+optionally provide independent bot/chat per account:
+
+```powershell
+# Account A (its own bot or shared bot, dedicated chat)
+$env:FTMO_ACCOUNT_ID            = "demo_A"
+$env:TELEGRAM_BOT_TOKEN_demo_A  = "1234:AAA..."     # optional
+$env:TELEGRAM_CHAT_ID_demo_A    = "111111111"
+$env:FTMO_TELEGRAM_BOT_MASTER   = "1"               # this account owns /pause /kill etc.
+
+# Account B (shared bot, dedicated chat)
+$env:FTMO_ACCOUNT_ID            = "demo_B"
+$env:TELEGRAM_BOT_TOKEN         = "1234:AAA..."     # falls back to shared
+$env:TELEGRAM_CHAT_ID_demo_B    = "222222222"
+# DO NOT set FTMO_TELEGRAM_BOT_MASTER on B — only one account can own
+# the long-poll loop or commands race between processes.
+```
+
+Resolution order for `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`:
+
+1. `TELEGRAM_BOT_TOKEN_<FTMO_ACCOUNT_ID>` (sanitised — non-`[A-Za-z0-9_]` chars become `_`)
+2. `TELEGRAM_BOT_TOKEN`
+
+Outgoing alerts are auto-prefixed with `[acct:<id>] ` so a shared chat with
+2-3 demos in it stays unambiguous.
+
+**3. MT5 account verification** (Round 57): set `FTMO_EXPECTED_LOGIN=<int>`
+on each process so the executor refuses to trade if it attaches to the wrong
+MT5 terminal. Required when running multiple MT5 installs side-by-side:
+
+```powershell
+# Account A
+$env:MT5_PATH               = "C:\FTMO_A\terminal64.exe"
+$env:FTMO_EXPECTED_LOGIN    = "12345678"
+# Account B
+$env:MT5_PATH               = "C:\FTMO_B\terminal64.exe"
+$env:FTMO_EXPECTED_LOGIN    = "23456789"
+```
+
+If `account_info().login` doesn't match `FTMO_EXPECTED_LOGIN`, the process
+logs `mt5_wrong_account`, sends a Telegram alert, and `sys.exit(2)` — PM2
+will keep restarting until the operator fixes the path. Skipping this is
+allowed for single-account setups (a one-line warning is logged so you
+notice on multi-account installs).
+
+**4. Drift dashboard auth** (Round 57): `/api/drift-data` now requires a
+Supabase session (or `FTMO_MONITOR_AUTH_BYPASS=1` for headless single-VPS
+setups) — without it any visitor that knows your slug could read live
+equity. The dashboard page already logs in, so legitimate use is unaffected.
+
 ### What it shows
 
 | Section          | Source                                                            |

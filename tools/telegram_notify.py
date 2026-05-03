@@ -8,6 +8,15 @@ Round 55 audit hardening (2026-05-03):
 - Reduced timeout from 10s → 3s (10s blocked the trade loop on outages).
 - 429/5xx → 60s suppression cooldown (prevent ban-spam).
 - 401/404 → permanent suppression (invalid token / blocked bot — needs restart).
+
+Round 57 multi-account hardening (2026-05-03):
+- Per-account token + chat-id resolution. Env precedence:
+    TELEGRAM_BOT_TOKEN_<FTMO_ACCOUNT_ID>  →  TELEGRAM_BOT_TOKEN
+    TELEGRAM_CHAT_ID_<FTMO_ACCOUNT_ID>    →  TELEGRAM_CHAT_ID
+  Two parallel demo accounts can either share one bot+chat (legacy fallback)
+  or use independent ones to avoid mixed alerts.
+- Outgoing alerts are prefixed with `[acct:<FTMO_ACCOUNT_ID>]` when
+  FTMO_ACCOUNT_ID is set so the chat is unambiguous.
 """
 from __future__ import annotations
 
@@ -54,14 +63,40 @@ def _clear_suppression() -> None:
     _suppress_logged = False
 
 
+def _resolve_account_env(base: str) -> str | None:
+    """
+    Resolve `TELEGRAM_<base>_<FTMO_ACCOUNT_ID>` first, fall back to
+    `TELEGRAM_<base>`. Returns the value or None if neither is set.
+
+    The account id is sanitised — only [A-Za-z0-9_] are kept so a stray
+    space/dash in FTMO_ACCOUNT_ID can't break env-var resolution.
+    """
+    acct = os.environ.get("FTMO_ACCOUNT_ID", "").strip()
+    if acct:
+        safe = re.sub(r"[^A-Za-z0-9_]", "_", acct)
+        per_acct = os.environ.get(f"TELEGRAM_{base}_{safe}")
+        if per_acct:
+            return per_acct
+    return os.environ.get(f"TELEGRAM_{base}") or None
+
+
+def _account_prefix() -> str:
+    """`[acct:<id>] ` if FTMO_ACCOUNT_ID set, else empty string."""
+    acct = os.environ.get("FTMO_ACCOUNT_ID", "").strip()
+    return f"[acct:{acct}] " if acct else ""
+
+
 def tg_send(text: str) -> bool:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    token = _resolve_account_env("BOT_TOKEN")
+    chat_id = _resolve_account_env("CHAT_ID")
     if not token or not chat_id:
         return False
     # Suppression-active → skip without hitting urlopen.
     if time.time() < _suppress_until_ts:
         return False
+    # Round 57: prefix with account id for multi-account chats. Prefix counts
+    # toward the 4000-char Telegram budget so we apply it before truncation.
+    text = _account_prefix() + text
     if len(text) > 4000:
         text = text[:3980] + "\n…(truncated)"
     try:

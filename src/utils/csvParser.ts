@@ -68,6 +68,10 @@ export async function parseCSVFile(
       // CSVs frequently include a BOM that breaks column matching.
       // eslint-disable-next-line no-irregular-whitespace
       transformHeader: (h) => h.replace(/^﻿/, "").trim(),
+      // Round 57 fix #4: trim trailing/leading whitespace from each value
+      // (companion to transformHeader). Excel/MT4 exports often pad fields
+      // with stray spaces that break numeric parsing.
+      transform: (v) => (typeof v === "string" ? v.trim() : v),
       complete(results) {
         resolve(results);
       },
@@ -193,127 +197,183 @@ export function getCSVHeaders(
 }
 
 /**
+ * Result of mapping CSV rows → Trade objects. Includes structured warnings
+ * accumulated during the import (naive-date coercions, ambiguous-slash
+ * heuristics, skipped-direction rows) so the UI can surface them to the
+ * user instead of swallowing them in console.warn.
+ *
+ * Round 57 fix #2: replaces the previous module-level `_dateWarningEmitted`
+ * boolean which was a once-per-process latch — second import would silently
+ * suppress all warnings. Per-call accumulation makes the contract honest.
+ */
+export interface CSVImportResult {
+  trades: Trade[];
+  warnings: string[];
+}
+
+/**
+ * Direction parser. Supports:
+ *   - English: long/buy → long ; short/sell → short
+ *   - German:  kauf/kaufen → long ; verkauf/verkaufen → short
+ *   - Abbreviations: L → long ; S → short
+ *   - MT4 numeric: 0 → long (OP_BUY) ; 1 → short (OP_SELL)
+ *
+ * Returns null if direction cannot be determined — caller SKIPS the row
+ * rather than silently defaulting to long, so users notice MT4-numeric
+ * exports that map to the wrong column.
+ */
+function parseDirection(raw: string): "long" | "short" | null {
+  const v = raw.trim().toLowerCase();
+  if (!v) return null;
+  // MT4 numeric convention: 0 = OP_BUY (long), 1 = OP_SELL (short).
+  if (v === "0") return "long";
+  if (v === "1") return "short";
+  // Prefix-match: l/b/k → long, s/v → short. Order matters: check long
+  // synonyms before short to handle e.g. "long" (l-prefix) vs "short" (s).
+  const c = v[0];
+  if (c === "l" || c === "b" || c === "k") return "long";
+  if (c === "s" || c === "v") return "short";
+  return null;
+}
+
+/**
  * Map an array of raw CSV row objects to Trade objects using the provided
  * column mapping.  Rows that are missing essential fields (pair, entryPrice,
  * exitPrice, quantity) are silently filtered out.
+ *
+ * Round 57 fix #2: now returns `{ trades, warnings }` so callers can show
+ * structured warnings (naive-date coercion, ambiguous slash dates,
+ * skipped-direction rows) in the UI.
  */
 export function mapCSVToTrades(
   data: Record<string, string>[],
   mapping: CSVColumnMapping,
-): Trade[] {
-  return data
-    .map((row): Trade | null => {
-      const pair = sanitizeCSVField(row[mapping.pair] ?? "");
-      const entryPrice = parseLocaleNumber(row[mapping.entryPrice]);
-      const exitPrice = parseLocaleNumber(row[mapping.exitPrice]);
-      const quantity = parseLocaleNumber(row[mapping.quantity]);
+): CSVImportResult {
+  const warnings: string[] = [];
+  // Track which warning kinds have been added so we don't spam the UI with
+  // one identical message per row. Distinct warnings (e.g. ambiguous slash
+  // date for two different rows) still merge to a single banner.
+  const seenWarnings = new Set<string>();
+  function addWarning(key: string, message: string) {
+    if (seenWarnings.has(key)) return;
+    seenWarnings.add(key);
+    warnings.push(message);
+  }
 
-      // Filter out rows where essential fields are missing or invalid.
-      // Number.isFinite filters NaN AND Infinity; positive prices/quantities only.
-      if (
-        !pair ||
-        !Number.isFinite(entryPrice) ||
-        !Number.isFinite(exitPrice) ||
-        !Number.isFinite(quantity) ||
-        entryPrice <= 0 ||
-        exitPrice <= 0 ||
-        quantity <= 0
-      ) {
-        return null;
-      }
+  const trades: Trade[] = [];
+  for (const row of data) {
+    const pair = sanitizeCSVField(row[mapping.pair] ?? "");
+    const entryPrice = parseLocaleNumber(row[mapping.entryPrice]);
+    const exitPrice = parseLocaleNumber(row[mapping.exitPrice]);
+    const quantity = parseLocaleNumber(row[mapping.quantity]);
 
-      // Parse direction -------------------------------------------------
-      const rawDirection = sanitizeCSVField(
-        row[mapping.direction] ?? "",
-      ).toLowerCase();
-      let direction: "long" | "short";
-      if (rawDirection === "long" || rawDirection === "buy") {
-        direction = "long";
-      } else if (rawDirection === "short" || rawDirection === "sell") {
-        direction = "short";
-      } else {
-        // Default to long when direction cannot be determined
-        direction = "long";
-      }
+    // Filter out rows where essential fields are missing or invalid.
+    // Number.isFinite filters NaN AND Infinity; positive prices/quantities only.
+    if (
+      !pair ||
+      !Number.isFinite(entryPrice) ||
+      !Number.isFinite(exitPrice) ||
+      !Number.isFinite(quantity) ||
+      entryPrice <= 0 ||
+      exitPrice <= 0 ||
+      quantity <= 0
+    ) {
+      continue;
+    }
 
-      // Parse dates -----------------------------------------------------
-      // Empty value → fall back to "now" (caller didn't supply a date),
-      // routed through normalizeDateToUTC for symmetry with non-empty path.
-      // Non-empty but unparseable → drop the row (fail-loud, prevents stale
-      // trades from being silently re-dated to the import time).
-      // Round 56 fix #1: empty fallback now uses normalizeDateToUTC, so all
-      // CSV-imported dates pass through the same UTC-coercion gate.
-      const entryDateRaw = mapping.entryDate
-        ? row[mapping.entryDate]?.trim()
-        : "";
-      let entryDate: string;
-      if (!entryDateRaw) {
-        const fallback = normalizeDateToUTC(new Date().toISOString()).iso;
-        // new Date().toISOString() always has Z → never null in practice,
-        // but the explicit null-check defends against future refactors.
-        if (!fallback) return null;
-        entryDate = fallback;
-      } else {
-        const parsed = safeISODate(entryDateRaw);
-        if (!parsed) return null;
-        entryDate = parsed;
-      }
-      const exitDateRaw = mapping.exitDate ? row[mapping.exitDate]?.trim() : "";
-      let exitDate: string;
-      if (!exitDateRaw) {
-        const fallback = normalizeDateToUTC(new Date().toISOString()).iso;
-        if (!fallback) return null;
-        exitDate = fallback;
-      } else {
-        const parsed = safeISODate(exitDateRaw);
-        if (!parsed) return null;
-        exitDate = parsed;
-      }
+    // Parse direction -------------------------------------------------
+    // Round 57 fix #3: support German (kauf/verkauf), MT4-numeric (0/1),
+    // L/S abbreviations. Unknown direction → SKIP the row (no silent
+    // long-default) so users notice mapping errors.
+    const rawDirection = sanitizeCSVField(row[mapping.direction] ?? "");
+    const direction = parseDirection(rawDirection);
+    if (!direction) {
+      addWarning(
+        "direction-unknown",
+        `Skipped rows with unrecognised direction value (e.g. "${rawDirection || "(empty)"}"). Expected long/short, buy/sell, kauf/verkauf, L/S, or 0/1.`,
+      );
+      continue;
+    }
 
-      // Parse optional numeric fields -----------------------------------
-      const leverageRaw = mapping.leverage
-        ? parseLocaleNumber(row[mapping.leverage])
-        : NaN;
-      const leverage =
-        Number.isFinite(leverageRaw) && leverageRaw > 0 ? leverageRaw : 1;
+    // Parse dates -----------------------------------------------------
+    // Empty value → fall back to "now" (caller didn't supply a date),
+    // routed through normalizeDateToUTC for symmetry with non-empty path.
+    // Non-empty but unparseable → drop the row (fail-loud, prevents stale
+    // trades from being silently re-dated to the import time).
+    // Round 56 fix #1: empty fallback now uses normalizeDateToUTC, so all
+    // CSV-imported dates pass through the same UTC-coercion gate.
+    const entryDateRaw = mapping.entryDate
+      ? row[mapping.entryDate]?.trim()
+      : "";
+    let entryDate: string;
+    if (!entryDateRaw) {
+      const fallback = normalizeDateToUTC(new Date().toISOString()).iso;
+      // new Date().toISOString() always has Z → never null in practice,
+      // but the explicit null-check defends against future refactors.
+      if (!fallback) continue;
+      entryDate = fallback;
+    } else {
+      const parsed = safeISODate(entryDateRaw, addWarning);
+      if (!parsed) continue;
+      entryDate = parsed;
+    }
+    const exitDateRaw = mapping.exitDate ? row[mapping.exitDate]?.trim() : "";
+    let exitDate: string;
+    if (!exitDateRaw) {
+      const fallback = normalizeDateToUTC(new Date().toISOString()).iso;
+      if (!fallback) continue;
+      exitDate = fallback;
+    } else {
+      const parsed = safeISODate(exitDateRaw, addWarning);
+      if (!parsed) continue;
+      exitDate = parsed;
+    }
 
-      const feesRaw = mapping.fees ? parseLocaleNumber(row[mapping.fees]) : NaN;
-      const fees = Number.isFinite(feesRaw) ? feesRaw : 0;
+    // Parse optional numeric fields -----------------------------------
+    const leverageRaw = mapping.leverage
+      ? parseLocaleNumber(row[mapping.leverage])
+      : NaN;
+    const leverage =
+      Number.isFinite(leverageRaw) && leverageRaw > 0 ? leverageRaw : 1;
 
-      // Calculate PnL ---------------------------------------------------
-      const { pnl, pnlPercent } = calculatePnl({
-        direction,
-        entryPrice,
-        exitPrice,
-        quantity,
-        leverage,
-        fees,
-        pair,
-        entryDate,
-        exitDate,
-        notes: "",
-        tags: [],
-      });
+    const feesRaw = mapping.fees ? parseLocaleNumber(row[mapping.fees]) : NaN;
+    const fees = Number.isFinite(feesRaw) ? feesRaw : 0;
 
-      return {
-        id: uuidv4(),
-        pair,
-        direction,
-        entryPrice,
-        exitPrice,
-        quantity,
-        entryDate,
-        exitDate,
-        pnl,
-        pnlPercent,
-        fees,
-        notes: "",
-        tags: [],
-        leverage,
-        strategy: undefined,
-      };
-    })
-    .filter((t): t is Trade => t !== null);
+    // Calculate PnL ---------------------------------------------------
+    const { pnl, pnlPercent } = calculatePnl({
+      direction,
+      entryPrice,
+      exitPrice,
+      quantity,
+      leverage,
+      fees,
+      pair,
+      entryDate,
+      exitDate,
+      notes: "",
+      tags: [],
+    });
+
+    trades.push({
+      id: uuidv4(),
+      pair,
+      direction,
+      entryPrice,
+      exitPrice,
+      quantity,
+      entryDate,
+      exitDate,
+      pnl,
+      pnlPercent,
+      fees,
+      notes: "",
+      tags: [],
+      leverage,
+      strategy: undefined,
+    });
+  }
+
+  return { trades, warnings };
 }
 
 /**
@@ -458,22 +518,56 @@ export function sanitizeCSVField(value: string): string {
  *
  * Round 54: route through normalizeDateToUTC so naive (no-TZ) inputs are
  * coerced to UTC explicitly with a structured warning, instead of being
- * silently parsed in the host's local timezone. The CSV import surface
- * still returns a single string here; the warning is logged once per
- * import session via console.warn so the user sees it without us having
- * to thread a return-tuple through every caller.
+ * silently parsed in the host's local timezone.
+ *
+ * Round 57 fix #2: warnings are now accumulated into the per-call warnings
+ * array via the `addWarning` callback (was: module-level `_dateWarningEmitted`
+ * singleton that only fired once per process). This ensures every import
+ * surface its own warnings, even if a previous import already ran.
  */
-let _dateWarningEmitted = false;
-function safeISODate(raw: string | undefined): string | null {
+function safeISODate(
+  raw: string | undefined,
+  addWarning: (key: string, message: string) => void,
+): string | null {
   const { iso, warning } = normalizeDateToUTC(raw);
-  if (iso && warning && !_dateWarningEmitted) {
-    _dateWarningEmitted = true;
-    if (typeof console !== "undefined") {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[csvParser] Date string without timezone detected (e.g. "${raw}"). ` +
-          `Coerced to UTC. Add a "Z" suffix or "+HH:MM" offset to silence this warning.`,
-      );
+  if (iso && warning) {
+    switch (warning) {
+      case "naive-iso-assumed-utc":
+        addWarning(
+          "naive-iso",
+          `Date strings without timezone detected (e.g. "${raw}"). Coerced to UTC. Add a "Z" suffix or "+HH:MM" offset to silence this warning.`,
+        );
+        break;
+      case "date-only-assumed-utc-midnight":
+        addWarning(
+          "date-only",
+          `Date-only strings detected (e.g. "${raw}"). Time-of-day defaulted to UTC midnight.`,
+        );
+        break;
+      case "ambiguous-slash-date-assumed-dmy":
+        addWarning(
+          "ambiguous-slash",
+          `Ambiguous slash-date detected (e.g. "${raw}") interpreted as dd/mm/yyyy (EU). If your CSV is US-format (mm/dd/yyyy), check that dates >12 are present in the day position to disambiguate.`,
+        );
+        break;
+      case "mt4-date-assumed-utc":
+        addWarning(
+          "mt4-date",
+          `MT4-format dates detected (e.g. "${raw}"). Coerced to UTC.`,
+        );
+        break;
+      case "eu-date-assumed-utc":
+        addWarning(
+          "eu-date",
+          `EU-format dates detected (e.g. "${raw}"). Coerced to UTC.`,
+        );
+        break;
+      case "us-date-assumed-utc":
+        addWarning(
+          "us-date",
+          `US-format dates detected (e.g. "${raw}"). Coerced to UTC.`,
+        );
+        break;
     }
   }
   return iso;

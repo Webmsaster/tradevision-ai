@@ -15,6 +15,7 @@
 import { existsSync, readFileSync, statSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { NextResponse, type NextRequest } from "next/server";
+import { createServerSupabaseClient } from "@/lib/supabase-server";
 
 // ---------------------------------------------------------------------------
 // Config / constants
@@ -56,6 +57,51 @@ function isEnabled(): boolean {
     process.env.FTMO_MONITOR_ENABLED === "1" ||
     process.env.FTMO_MONITOR_ENABLED === "true"
   );
+}
+
+/**
+ * Round 57 (2026-05-03): require a Supabase session before exposing live
+ * equity/positions. Previously the route was protected only by
+ * FTMO_MONITOR_ENABLED + a slug whitelist — anyone who knew the slug could
+ * read account data. Now we additionally require a logged-in user.
+ *
+ * Skipped when:
+ *   - Supabase is not configured (createServerSupabaseClient → null) — this
+ *     is the localStorage-only fallback path; nothing to protect because
+ *     auth doesn't exist in this deployment.
+ *   - `FTMO_MONITOR_AUTH_BYPASS=1` is set (escape hatch for local dev /
+ *     headless-vps where the user IS the only one with shell access).
+ */
+async function isAuthenticated(): Promise<{
+  ok: boolean;
+  reason?: string;
+}> {
+  if (
+    process.env.FTMO_MONITOR_AUTH_BYPASS === "1" ||
+    process.env.FTMO_MONITOR_AUTH_BYPASS === "true"
+  ) {
+    return { ok: true, reason: "bypass" };
+  }
+  let supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>;
+  try {
+    supabase = await createServerSupabaseClient();
+  } catch {
+    // createServerSupabaseClient throws if cookies() is unavailable in
+    // the runtime — treat that as "no auth backend" and let the request
+    // through (matches the localStorage-fallback path of the rest of the app).
+    return { ok: true, reason: "no-auth-backend" };
+  }
+  if (!supabase) {
+    // Supabase env vars not configured — no auth to enforce.
+    return { ok: true, reason: "no-auth-backend" };
+  }
+  try {
+    const { data, error } = await supabase.auth.getUser();
+    if (error || !data?.user) return { ok: false };
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -512,6 +558,16 @@ function annotatePositions(positions: OpenPosition[]): ActivePosition[] {
 export async function GET(req: NextRequest) {
   if (!isEnabled()) {
     return new NextResponse("Not Found", { status: 404 });
+  }
+
+  // Round 57 (2026-05-03): require Supabase auth so other tenants can't
+  // read live equity/positions through a known slug.
+  const auth = await isAuthenticated();
+  if (!auth.ok) {
+    return NextResponse.json(
+      { error: "unauthorized" },
+      { status: 401, headers: { "Cache-Control": "no-store" } },
+    );
   }
 
   const tfSlug = req.nextUrl.searchParams.get("ftmo_tf");

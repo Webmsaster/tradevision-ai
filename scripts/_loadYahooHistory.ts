@@ -167,16 +167,14 @@ export function resampleCandles(src: Candle[], targetMs: number): Candle[] {
   for (let i = 0; i < keys.length; i++) {
     const k = keys[i];
     const arr = buckets.get(k)!;
-    // Drop the FIRST bucket if it's missing leading source bars (open
-    // price would be wrong relative to bucket-aligned openTime). Don't
-    // drop trailing partials — most callers want the latest data even
-    // if the bucket isn't sealed yet (their `isFinal=false` upstream
-    // is the real seal-check).
-    if (
-      i === 0 &&
-      expectedBarsPerBucket > 1 &&
-      arr.length < expectedBarsPerBucket
-    ) {
+    // Phase R57 (Round 57 Forex Fix 1): drop ANY under-filled bucket.
+    // Previous logic only dropped the leading bucket (i===0), but
+    // mid-series under-filled buckets occur during forex weekend reopen
+    // (Sun 22:00 UTC) and holidays — emitting them as "valid" 2h/4h
+    // bars with only 1h of data distorts ATR/percentile calculations.
+    // Trailing partials are dropped too; callers needing partial
+    // current-bar data should consume source candles directly.
+    if (expectedBarsPerBucket > 1 && arr.length < expectedBarsPerBucket) {
       continue;
     }
     const first = arr[0];

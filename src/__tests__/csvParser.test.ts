@@ -135,7 +135,7 @@ describe("mapCSVToTrades", () => {
       },
     ];
 
-    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
+    const { trades } = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
     expect(trades).toHaveLength(1);
     expect(trades[0]!.pair).toBe("BTC/USDT");
     expect(trades[0]!.direction).toBe("long");
@@ -170,11 +170,13 @@ describe("mapCSVToTrades", () => {
       },
     ];
 
-    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
+    const { trades } = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
     expect(trades).toHaveLength(1);
   });
 
-  it("defaults direction to long for unknown values", () => {
+  // Round 57 fix #3: previously unknown directions silently defaulted to
+  // long; now the row is skipped with a structured warning.
+  it("skips rows with unknown direction (no silent long-default)", () => {
     const data = [
       {
         Pair: "BTC/USDT",
@@ -189,8 +191,13 @@ describe("mapCSVToTrades", () => {
       },
     ];
 
-    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
-    expect(trades[0]!.direction).toBe("long");
+    const { trades, warnings } = mapCSVToTrades(
+      data,
+      PLATFORM_PRESETS.generic!,
+    );
+    expect(trades).toHaveLength(0);
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings.some((w) => /direction/i.test(w))).toBe(true);
   });
 
   it("maps sell/buy to short/long", () => {
@@ -219,9 +226,110 @@ describe("mapCSVToTrades", () => {
       },
     ];
 
-    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
+    const { trades } = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
     expect(trades[0]!.direction).toBe("short");
     expect(trades[1]!.direction).toBe("long");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 57 fix #2: per-call warnings array (replaces module-level singleton)
+// ---------------------------------------------------------------------------
+
+describe("mapCSVToTrades - per-call warnings (R57 fix #2)", () => {
+  function makeRow(entryDate: string) {
+    return {
+      Pair: "BTC/USDT",
+      Direction: "long",
+      "Entry Price": "100",
+      "Exit Price": "110",
+      Quantity: "1",
+      "Entry Date": entryDate,
+      "Exit Date": entryDate,
+      Fees: "",
+      Leverage: "",
+    };
+  }
+
+  it("two consecutive imports both report naive-date warnings (no singleton latch)", () => {
+    const naiveRow = [makeRow("2026-04-15 14:30")];
+
+    const first = mapCSVToTrades(naiveRow, PLATFORM_PRESETS.generic!);
+    expect(first.trades).toHaveLength(1);
+    expect(first.warnings.length).toBeGreaterThan(0);
+    expect(first.warnings.some((w) => /timezone|UTC/i.test(w))).toBe(true);
+
+    // Second import — the OLD module-level _dateWarningEmitted flag would
+    // have suppressed this. Verify the warning is still emitted.
+    const second = mapCSVToTrades(naiveRow, PLATFORM_PRESETS.generic!);
+    expect(second.trades).toHaveLength(1);
+    expect(second.warnings.length).toBeGreaterThan(0);
+    expect(second.warnings.some((w) => /timezone|UTC/i.test(w))).toBe(true);
+  });
+
+  it("populates warnings array with structured messages", () => {
+    const data = [
+      makeRow("2026-04-15 14:30"), // naive ISO
+      makeRow("15/04/2026"), // ambiguous slash → defaults to dmy with warning
+    ];
+    const { trades, warnings } = mapCSVToTrades(
+      data,
+      PLATFORM_PRESETS.generic!,
+    );
+    expect(trades).toHaveLength(2);
+    expect(warnings.length).toBeGreaterThan(0);
+    // first row: 14:30 → naive; second row: 15/04/2026 first part is 15>12
+    // so it's unambiguously dmy → eu-date-assumed-utc.
+    expect(warnings.some((w) => /timezone|UTC/i.test(w))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 57 fix #3: extended direction matching
+// ---------------------------------------------------------------------------
+
+describe("mapCSVToTrades - extended direction parsing (R57 fix #3)", () => {
+  function rowWith(direction: string) {
+    return {
+      Pair: "BTC/USDT",
+      Direction: direction,
+      "Entry Price": "100",
+      "Exit Price": "110",
+      Quantity: "1",
+      "Entry Date": "2026-04-15T10:00:00Z",
+      "Exit Date": "2026-04-15T11:00:00Z",
+      Fees: "",
+      Leverage: "",
+    };
+  }
+
+  it("parses MT4-numeric direction (0=long, 1=short)", () => {
+    const data = [rowWith("0"), rowWith("1")];
+    const { trades, warnings } = mapCSVToTrades(
+      data,
+      PLATFORM_PRESETS.generic!,
+    );
+    expect(trades).toHaveLength(2);
+    expect(trades[0]!.direction).toBe("long");
+    expect(trades[1]!.direction).toBe("short");
+    expect(warnings).toHaveLength(0);
+  });
+
+  it("parses German direction labels (kauf/verkauf)", () => {
+    const data = [rowWith("Kauf"), rowWith("Verkauf"), rowWith("Kaufen")];
+    const { trades } = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
+    expect(trades).toHaveLength(3);
+    expect(trades[0]!.direction).toBe("long");
+    expect(trades[1]!.direction).toBe("short");
+    expect(trades[2]!.direction).toBe("long");
+  });
+
+  it("parses single-letter L/S abbreviations", () => {
+    const data = [rowWith("L"), rowWith("S")];
+    const { trades } = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
+    expect(trades).toHaveLength(2);
+    expect(trades[0]!.direction).toBe("long");
+    expect(trades[1]!.direction).toBe("short");
   });
 });
 
@@ -278,7 +386,7 @@ describe("mapCSVToTrades - CSV injection protection", () => {
         Leverage: "",
       },
     ];
-    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
+    const { trades } = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
     expect(trades[0]!.pair).toBe("CMD()");
   });
 
@@ -296,7 +404,7 @@ describe("mapCSVToTrades - CSV injection protection", () => {
         Leverage: "",
       },
     ];
-    const trades = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
+    const { trades } = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
     expect(trades[0]!.direction).toBe("long");
   });
 });

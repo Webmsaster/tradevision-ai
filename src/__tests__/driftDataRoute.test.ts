@@ -268,4 +268,66 @@ describe("/api/drift-data route", () => {
       "ftmo-state-2h-trend-v5-quartz-lite-r28",
     );
   });
+
+  // Round 57 (2026-05-03): auth gate. When Supabase is configured but the
+  // request has no valid session, return 401 — defends against a tenant on
+  // the same monitor URL reading another user's equity by guessing the slug.
+  it("returns 401 when Supabase is configured but the user is not signed in", async () => {
+    // Mock the supabase-server helper directly: it returns a client whose
+    // auth.getUser() resolves with no user (i.e. no session cookie present).
+    vi.doMock("@/lib/supabase-server", () => ({
+      createServerSupabaseClient: async () => ({
+        auth: {
+          getUser: async () => ({ data: { user: null }, error: null }),
+        },
+      }),
+    }));
+    try {
+      const { GET } = await import("@/app/api/drift-data/route");
+      const resp = await GET(makeReq());
+      expect(resp.status).toBe(401);
+    } finally {
+      vi.doUnmock("@/lib/supabase-server");
+    }
+  });
+
+  it("returns 200 when a valid Supabase session is present", async () => {
+    vi.doMock("@/lib/supabase-server", () => ({
+      createServerSupabaseClient: async () => ({
+        auth: {
+          getUser: async () => ({
+            data: { user: { id: "user-123", email: "u@example.com" } },
+            error: null,
+          }),
+        },
+      }),
+    }));
+    try {
+      const { GET } = await import("@/app/api/drift-data/route");
+      const resp = await GET(makeReq());
+      expect(resp.status).toBe(200);
+    } finally {
+      vi.doUnmock("@/lib/supabase-server");
+    }
+  });
+
+  it("allows requests when FTMO_MONITOR_AUTH_BYPASS=1 (single-VPS escape hatch)", async () => {
+    process.env.FTMO_MONITOR_AUTH_BYPASS = "1";
+    // Even with a Supabase client that would deny, bypass should win.
+    vi.doMock("@/lib/supabase-server", () => ({
+      createServerSupabaseClient: async () => ({
+        auth: {
+          getUser: async () => ({ data: { user: null }, error: null }),
+        },
+      }),
+    }));
+    try {
+      const { GET } = await import("@/app/api/drift-data/route");
+      const resp = await GET(makeReq());
+      expect(resp.status).toBe(200);
+    } finally {
+      vi.doUnmock("@/lib/supabase-server");
+      delete process.env.FTMO_MONITOR_AUTH_BYPASS;
+    }
+  });
 });

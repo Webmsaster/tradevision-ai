@@ -1265,5 +1265,374 @@ def test_excessive_slippage_rejects_order(monkeypatch):
     )
 
 
+# ============================================================================
+# Round 57 (R57-PY-1): get_challenge_day — DST + activation-time fix
+# ============================================================================
+def test_get_challenge_day_returns_zero_when_unset():
+    import ftmo_executor as exe
+    saved = exe.CHALLENGE_START_DATE
+    try:
+        exe.CHALLENGE_START_DATE = None
+        assert exe.get_challenge_day() == 0
+    finally:
+        exe.CHALLENGE_START_DATE = saved
+
+
+def test_get_challenge_day_with_iso_timestamp_activation_time():
+    """Activation-time-of-day is informational — challenge counts whole
+    Prague-days from midnight to midnight. Activating 16:00 still counts
+    as day 0 until the next Prague midnight."""
+    import ftmo_executor as exe
+    from datetime import datetime, timedelta
+    try:
+        from zoneinfo import ZoneInfo
+        prague_tz = ZoneInfo("Europe/Prague")
+    except ImportError:
+        from datetime import timezone
+        prague_tz = timezone(timedelta(hours=1))
+
+    saved = exe.CHALLENGE_START_DATE
+    try:
+        # Activate "today" 16:00 Prague — get_challenge_day must return 0.
+        now_prague = datetime.now(prague_tz)
+        today_at_16 = now_prague.replace(hour=16, minute=0, second=0, microsecond=0)
+        exe.CHALLENGE_START_DATE = today_at_16.isoformat()
+        # If "now" is past 16:00 today, still day 0. If we're past midnight already,
+        # this test runs day 0 immediately. We just need to assert it doesn't blow up
+        # and returns a non-negative integer.
+        day = exe.get_challenge_day()
+        assert day >= 0
+        # Now flip to "yesterday at 16:00" — must be day 1.
+        yesterday_at_16 = today_at_16 - timedelta(days=1)
+        exe.CHALLENGE_START_DATE = yesterday_at_16.isoformat()
+        assert exe.get_challenge_day() == 1
+    finally:
+        exe.CHALLENGE_START_DATE = saved
+
+
+def test_get_challenge_day_dst_spring_forward_safe(monkeypatch):
+    """Pure calendar-day arithmetic must NOT drift around DST transitions.
+    Spring-forward (last Sunday in March, +1h): a challenge starting on
+    March 1 must still produce day=N=days-elapsed even if the count
+    crosses the DST boundary.
+
+    We mock `datetime.now` to return values across the spring-forward day
+    and verify get_challenge_day increments by exactly 1 per Prague day.
+    """
+    import ftmo_executor as exe
+    from datetime import datetime, timedelta
+    try:
+        from zoneinfo import ZoneInfo
+        prague_tz = ZoneInfo("Europe/Prague")
+    except ImportError:
+        pytest.skip("zoneinfo unavailable — DST test requires ZoneInfo")
+
+    saved = exe.CHALLENGE_START_DATE
+    saved_dt = exe.datetime
+    try:
+        # Challenge start: 2026-03-25 00:00 Prague (5 days before DST 2026-03-29).
+        exe.CHALLENGE_START_DATE = "2026-03-25T00:00:00"
+
+        # Build a `datetime` proxy whose `.now(tz)` we control.
+        class FrozenDatetime(datetime):
+            _frozen_now = None
+
+            @classmethod
+            def now(cls, tz=None):
+                if tz is not None and cls._frozen_now is not None:
+                    return cls._frozen_now.astimezone(tz)
+                return cls._frozen_now or datetime.now(tz)
+
+        monkeypatch.setattr(exe, "datetime", FrozenDatetime)
+
+        # Day 4: 2026-03-29 (DST jump day) at 12:00 Prague.
+        FrozenDatetime._frozen_now = datetime(2026, 3, 29, 12, 0, 0, tzinfo=prague_tz)
+        assert exe.get_challenge_day() == 4
+
+        # Day 5: 2026-03-30 (post-DST) at 12:00 Prague.
+        FrozenDatetime._frozen_now = datetime(2026, 3, 30, 12, 0, 0, tzinfo=prague_tz)
+        assert exe.get_challenge_day() == 5
+
+        # Day 0: 2026-03-25 (start day) at 23:00 Prague — still day 0.
+        FrozenDatetime._frozen_now = datetime(2026, 3, 25, 23, 0, 0, tzinfo=prague_tz)
+        assert exe.get_challenge_day() == 0
+    finally:
+        exe.CHALLENGE_START_DATE = saved
+        exe.datetime = saved_dt
+
+
+def test_get_challenge_day_dst_fall_back_safe(monkeypatch):
+    """Fall-back DST (last Sunday in October, -1h): challenge-day must
+    still increment by exactly 1 per Prague calendar day, no off-by-one."""
+    import ftmo_executor as exe
+    from datetime import datetime, timedelta
+    try:
+        from zoneinfo import ZoneInfo
+        prague_tz = ZoneInfo("Europe/Prague")
+    except ImportError:
+        pytest.skip("zoneinfo unavailable — DST test requires ZoneInfo")
+
+    saved = exe.CHALLENGE_START_DATE
+    saved_dt = exe.datetime
+    try:
+        # Challenge start: 2026-10-23 (5 days before DST 2026-10-25).
+        exe.CHALLENGE_START_DATE = "2026-10-23T00:00:00"
+
+        class FrozenDatetime(datetime):
+            _frozen_now = None
+
+            @classmethod
+            def now(cls, tz=None):
+                if tz is not None and cls._frozen_now is not None:
+                    return cls._frozen_now.astimezone(tz)
+                return cls._frozen_now or datetime.now(tz)
+
+        monkeypatch.setattr(exe, "datetime", FrozenDatetime)
+
+        # Day 2: 2026-10-25 (DST fall-back) at 12:00 Prague.
+        FrozenDatetime._frozen_now = datetime(2026, 10, 25, 12, 0, 0, tzinfo=prague_tz)
+        assert exe.get_challenge_day() == 2
+
+        # Day 3: 2026-10-26 (post fall-back) at 01:00 Prague.
+        FrozenDatetime._frozen_now = datetime(2026, 10, 26, 1, 0, 0, tzinfo=prague_tz)
+        assert exe.get_challenge_day() == 3
+    finally:
+        exe.CHALLENGE_START_DATE = saved
+        exe.datetime = saved_dt
+
+
+def test_get_challenge_day_with_naive_date_only_string():
+    """A bare `YYYY-MM-DD` string should still work (legacy format).
+    Treats midnight Prague of that day as the anchor."""
+    import ftmo_executor as exe
+    from datetime import datetime, timedelta
+    try:
+        from zoneinfo import ZoneInfo
+        prague_tz = ZoneInfo("Europe/Prague")
+    except ImportError:
+        from datetime import timezone
+        prague_tz = timezone(timedelta(hours=1))
+
+    saved = exe.CHALLENGE_START_DATE
+    try:
+        # Yesterday in Prague (date-only).
+        yesterday = (datetime.now(prague_tz) - timedelta(days=1)).strftime("%Y-%m-%d")
+        exe.CHALLENGE_START_DATE = yesterday
+        assert exe.get_challenge_day() == 1
+    finally:
+        exe.CHALLENGE_START_DATE = saved
+
+
+# ============================================================================
+# Round 57 (R57-PY-3): reconcile_missing_positions — offline-close recovery
+# ============================================================================
+def test_reconcile_missing_positions_no_open_positions_noop(monkeypatch):
+    """If on-disk open-positions.json is empty, reconcile must early-exit."""
+    import ftmo_executor as exe
+    with tempfile.TemporaryDirectory() as td:
+        exe.STATE_DIR = Path(td)
+        exe.OPEN_POS_PATH = Path(td) / "open-positions.json"
+        exe.OPEN_POS_PATH.write_text(json.dumps({"positions": []}))
+
+        called = {"history_deals_get": 0}
+        monkeypatch.setattr(
+            exe.mt5, "positions_get", lambda *a, **k: [],
+        )
+        def _hd(*_a, **_kw):
+            called["history_deals_get"] += 1
+            return []
+        monkeypatch.setattr(exe.mt5, "history_deals_get", _hd)
+
+        exe.reconcile_missing_positions()
+        # Must not even probe history if no on-disk positions to reconcile.
+        assert called["history_deals_get"] == 0
+
+
+def test_reconcile_missing_positions_logs_offline_close(monkeypatch):
+    """When a position is on-disk but absent from MT5, look up the
+    closing deal in history and append to closed-during-offline.json."""
+    import ftmo_executor as exe
+    with tempfile.TemporaryDirectory() as td:
+        exe.STATE_DIR = Path(td)
+        exe.OPEN_POS_PATH = Path(td) / "open-positions.json"
+        # On-disk: ticket 7777 long BTC.
+        exe.OPEN_POS_PATH.write_text(json.dumps({"positions": [{
+            "ticket": 7777,
+            "signalAsset": "BTC-TREND",
+            "direction": "long",
+            "entry_price": 50000.0,
+        }]}))
+
+        # MT5: no positions (the ticket disappeared during offline period).
+        monkeypatch.setattr(exe.mt5, "positions_get", lambda *a, **k: [])
+
+        # MT5 history: closing deal for ticket 7777.
+        class FakeDeal:
+            def __init__(self, position_id, entry, price, time, profit):
+                self.position_id = position_id
+                self.entry = entry
+                self.price = price
+                self.time = time
+                self.profit = profit
+                self.magic = 231
+
+        deal_close = FakeDeal(
+            position_id=7777,
+            entry=getattr(exe.mt5, "DEAL_ENTRY_OUT", 1),
+            price=51500.0,
+            time=1714000000,
+            profit=150.0,
+        )
+        monkeypatch.setattr(exe.mt5, "history_deals_get", lambda *a, **k: [deal_close])
+        # Suppress Telegram side-effect.
+        monkeypatch.setattr(exe, "tg_send", lambda *a, **k: None)
+
+        exe.reconcile_missing_positions()
+
+        offline_path = Path(td) / "closed-during-offline.json"
+        assert offline_path.exists()
+        log = json.loads(offline_path.read_text())
+        assert len(log["trades"]) == 1
+        t0 = log["trades"][0]
+        assert t0["ticket"] == 7777
+        assert t0["exit_price"] == 51500.0
+        assert t0["profit_usd"] == 150.0
+        assert t0["reason"] == "offline_close"
+
+
+# ============================================================================
+# Round 57 (2026-05-03): mt5_init_with_retry — FTMO_EXPECTED_LOGIN guard
+# ----------------------------------------------------------------------------
+# Multi-account VPS safety: if FTMO_EXPECTED_LOGIN is set, the executor must
+# refuse to trade when MT5 attaches to the wrong account. We simulate the
+# attach by stubbing `mt5.initialize` and `mt5.account_info` and assert
+# `sys.exit(2)` is raised on a mismatch.
+# ============================================================================
+def test_mt5_init_exits_on_wrong_login(monkeypatch):
+    import ftmo_executor as exe
+
+    class FakeInfo:
+        login = 5_555_555  # actual attached account
+        server = "FakeBroker-Demo"
+        balance = 100_000.0
+        equity = 100_000.0
+
+    monkeypatch.setattr(exe.mt5, "initialize", lambda *a, **k: True)
+    monkeypatch.setattr(exe.mt5, "account_info", lambda: FakeInfo())
+    monkeypatch.setattr(exe, "tg_send", lambda *a, **k: None)
+    monkeypatch.setattr(exe, "log_event", lambda *a, **k: None)
+    # Simulate a multi-account deployment where the operator expected
+    # a different login than the one MT5 actually attached to.
+    monkeypatch.setenv("FTMO_EXPECTED_LOGIN", "1234567")
+
+    with pytest.raises(SystemExit) as excinfo:
+        exe.mt5_init_with_retry()
+    assert excinfo.value.code == 2
+
+
+def test_mt5_init_succeeds_when_login_matches(monkeypatch):
+    import ftmo_executor as exe
+
+    class FakeInfo:
+        login = 9_876_543
+        server = "FakeBroker-Demo"
+        balance = 100_000.0
+        equity = 100_000.0
+
+    monkeypatch.setattr(exe.mt5, "initialize", lambda *a, **k: True)
+    monkeypatch.setattr(exe.mt5, "account_info", lambda: FakeInfo())
+    monkeypatch.setattr(exe, "log_event", lambda *a, **k: None)
+    monkeypatch.setenv("FTMO_EXPECTED_LOGIN", "9876543")
+
+    assert exe.mt5_init_with_retry() is True
+
+
+def test_mt5_init_warns_but_passes_when_expected_login_unset(monkeypatch):
+    """When FTMO_EXPECTED_LOGIN is not set, init still succeeds (legacy path).
+
+    A warning event is logged so multi-account operators see the omission.
+    """
+    import ftmo_executor as exe
+
+    class FakeInfo:
+        login = 11_111
+        server = "FakeBroker-Demo"
+        balance = 100_000.0
+        equity = 100_000.0
+
+    events: list[tuple[str, dict]] = []
+
+    def capture(name, **kw):
+        events.append((name, kw))
+
+    monkeypatch.setattr(exe.mt5, "initialize", lambda *a, **k: True)
+    monkeypatch.setattr(exe.mt5, "account_info", lambda: FakeInfo())
+    monkeypatch.setattr(exe, "log_event", capture)
+    monkeypatch.delenv("FTMO_EXPECTED_LOGIN", raising=False)
+
+    assert exe.mt5_init_with_retry() is True
+    # We expect both `mt5_expected_login_unset` (warning) and `mt5_connected`
+    names = {ev[0] for ev in events}
+    assert "mt5_expected_login_unset" in names
+    assert "mt5_connected" in names
+
+
+def test_mt5_init_exits_on_invalid_expected_login_string(monkeypatch):
+    """Garbage in FTMO_EXPECTED_LOGIN must abort startup (not silently pass)."""
+    import ftmo_executor as exe
+
+    class FakeInfo:
+        login = 12345
+        server = "?"
+        balance = 0.0
+        equity = 0.0
+
+    monkeypatch.setattr(exe.mt5, "initialize", lambda *a, **k: True)
+    monkeypatch.setattr(exe.mt5, "account_info", lambda: FakeInfo())
+    monkeypatch.setattr(exe, "log_event", lambda *a, **k: None)
+    monkeypatch.setattr(exe, "tg_send", lambda *a, **k: None)
+    monkeypatch.setenv("FTMO_EXPECTED_LOGIN", "not-a-number")
+
+    with pytest.raises(SystemExit) as excinfo:
+        exe.mt5_init_with_retry()
+    assert excinfo.value.code == 2
+
+
+# ============================================================================
+# Round 57 (2026-05-03): telegram_notify per-account env resolution
+# ============================================================================
+def test_telegram_notify_per_account_env(monkeypatch):
+    """tg_send should pick TELEGRAM_BOT_TOKEN_<ACCT> over TELEGRAM_BOT_TOKEN."""
+    import telegram_notify as tn
+
+    monkeypatch.setenv("FTMO_ACCOUNT_ID", "DEMO_A")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "shared")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "shared-chat")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN_DEMO_A", "per-acct-A")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID_DEMO_A", "per-acct-chat-A")
+
+    tok = tn._resolve_account_env("BOT_TOKEN")
+    chat = tn._resolve_account_env("CHAT_ID")
+    assert tok == "per-acct-A"
+    assert chat == "per-acct-chat-A"
+
+    # Verify prefix gets injected
+    assert tn._account_prefix() == "[acct:DEMO_A] "
+
+
+def test_telegram_notify_falls_back_to_bare_env(monkeypatch):
+    """When per-account env is missing, fall back to bare env."""
+    import telegram_notify as tn
+
+    monkeypatch.setenv("FTMO_ACCOUNT_ID", "DEMO_B")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "shared")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "shared-chat")
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN_DEMO_B", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID_DEMO_B", raising=False)
+
+    assert tn._resolve_account_env("BOT_TOKEN") == "shared"
+    assert tn._resolve_account_env("CHAT_ID") == "shared-chat"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

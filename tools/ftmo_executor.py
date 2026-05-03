@@ -287,12 +287,59 @@ def mt5_init_with_retry() -> bool:
 
     Honors MT5_PATH env var so multiple parallel MT5 installations can be
     targeted (e.g. one terminal per FTMO account on the same VPS).
+
+    Round 57 multi-account safety (2026-05-03):
+    On a multi-terminal VPS the executor could attach to the wrong MT5
+    process (`mt5.initialize()` defaults to "any running terminal"). When
+    `FTMO_EXPECTED_LOGIN` is set we cross-check `account_info().login`
+    after attach and refuse to trade on a mismatched account — better to
+    crash than to silently route Account A's signals onto Account B's funds.
     """
     mt5_path = os.environ.get("MT5_PATH", "").strip()
     ok = mt5.initialize(path=mt5_path) if mt5_path else mt5.initialize()  # type: ignore[call-arg]
     if ok:
         info = mt5.account_info()
         if info is not None:
+            # Round 57: verify we attached to the expected FTMO account.
+            expected_raw = os.environ.get("FTMO_EXPECTED_LOGIN", "").strip()
+            if expected_raw:
+                try:
+                    expected = int(expected_raw)
+                except ValueError:
+                    log_event(
+                        "mt5_expected_login_invalid",
+                        value=expected_raw,
+                        level="error",
+                    )
+                    tg_send(
+                        f"🔴 <b>FTMO_EXPECTED_LOGIN invalid</b>\nValue: <code>{html_escape(expected_raw)}</code>\nMust be an integer login id. Refusing to trade."
+                    )
+                    sys.exit(2)
+                if int(info.login) != expected:
+                    log_event(
+                        "mt5_wrong_account",
+                        got=int(info.login),
+                        want=expected,
+                        server=getattr(info, "server", "?"),
+                        path=mt5_path or "default",
+                        level="error",
+                    )
+                    tg_send(
+                        f"🔴 <b>MT5 wrong account!</b>\nGot login <code>{int(info.login)}</code> but FTMO_EXPECTED_LOGIN=<code>{expected}</code>.\nProcess will exit (will NOT trade on wrong account)."
+                    )
+                    try:
+                        mt5.shutdown()
+                    except Exception:
+                        pass
+                    sys.exit(2)
+            else:
+                # No expected login configured — log a one-line warning so
+                # multi-account operators see it, but don't fail.
+                log_event(
+                    "mt5_expected_login_unset",
+                    note="no FTMO_EXPECTED_LOGIN configured — skipping account verification",
+                    got=int(info.login),
+                )
             log_event("mt5_connected", login=info.login, server=info.server, balance=info.balance, equity=info.equity, path=mt5_path or "default")
             return True
     err = mt5.last_error() if hasattr(mt5, "last_error") else ("?", "?")
@@ -715,21 +762,54 @@ def update_challenge_peak(current_equity_usd: float) -> float:
 
 
 def get_challenge_day() -> int:
+    """Return the current challenge-day index (0-based, Prague calendar days).
+
+    Round 57 (R57-PY-1) fix: previous implementation had two bugs.
+
+    1. `(now - start).days` returns calendar-day-difference but ignores
+       hours when the timestamps were equally aligned, AND breaks when start
+       has an activation-time (e.g. 16:00). With start=Mon 16:00 and
+       now=Tue 10:00, `(now - start).days` returned 0 even though the
+       challenge has already entered Tue (FTMO calendar-day 1).
+
+    2. `replace(tzinfo=prague_tz)` on a NAIVE datetime forces the offset
+       at *parse time*; spring-forward DST then makes `(now - start)`
+       off by 1h vs the real Prague wall-clock interval — which can
+       flip the day boundary at the spring-forward / fall-back transition.
+
+    Fix: parse `CHALLENGE_START_DATE` as either a date (`YYYY-MM-DD`,
+    treated as 00:00 Prague) or an ISO timestamp (with optional time-of-day,
+    interpreted as Prague local time). Then compute:
+
+        challenge_day = prague_calendar_day(now) - prague_calendar_day(start)
+
+    Pure calendar-day arithmetic via `.date()`, DST-safe because the
+    ZoneInfo lookup happens against the actual wall-clock day, not via
+    a naive subtraction.
+
+    Activation-time-of-day is informational (e.g. for logging) — the
+    challenge counts whole Prague-days from midnight to midnight, so
+    a 16:00 activation still belongs to "day 0" until next Prague midnight.
+    """
     if not CHALLENGE_START_DATE:
         return 0
     try:
-        # R56 audit fix: anchor challenge-day count to Prague midnight (FTMO
-        # server timezone), consistent with update_day_peak / handle_daily_reset.
-        # UTC anchoring drifts by 1-2h (DST-dependent) → off-by-one on the
-        # day-boundary against FTMO's own day-count.
         try:
             from zoneinfo import ZoneInfo
             prague_tz = ZoneInfo("Europe/Prague")
         except ImportError:
             prague_tz = timezone(timedelta(hours=1))
-        start = datetime.fromisoformat(CHALLENGE_START_DATE).replace(tzinfo=prague_tz)
+        # Accept either bare date "YYYY-MM-DD" or ISO timestamp with time.
+        # `datetime.fromisoformat` parses both.
+        parsed = datetime.fromisoformat(CHALLENGE_START_DATE)
+        # If naive (no tzinfo), interpret as Prague local time.
+        if parsed.tzinfo is None:
+            start = parsed.replace(tzinfo=prague_tz)
+        else:
+            start = parsed.astimezone(prague_tz)
         now = datetime.now(prague_tz)
-        return max(0, (now - start).days)
+        # Pure calendar-day subtraction (DST-safe).
+        return max(0, (now.date() - start.date()).days)
     except Exception:
         return 0
 
@@ -2641,6 +2721,126 @@ def check_daily_dd_warning(current_equity_usd: float, day_start_usd: float) -> N
         )
 
 
+def reconcile_missing_positions() -> None:
+    """Round 57 (R57-PY-3): on boot, find positions that were open per
+    open-positions.json but are NO LONGER on MT5 (closed during the
+    executor off-period via SL/TP), and reconcile them via history_deals.
+
+    Without this, the on-disk open-positions.json silently drops the
+    ticket via `rebuild_open_positions_from_mt5`'s stale-cleanup, and
+    the engine never sees the closing PnL. The trade is "lost" — but
+    the broker's equity reflects it, so equity-tracking logic gets out
+    of sync (peak/dayPeak/lossStreak/kelly all miss the trade).
+
+    Strategy:
+      1. Read the on-disk open positions (set A).
+      2. Pull current MT5 positions (set B).
+      3. For tickets in A \\ B (missing): query history_deals for the
+         most recent deal with that POSITION_ID. Record exit-price,
+         exit-time, and PnL into a `closed-during-offline.json` log
+         for the upstream V4 engine to consume.
+
+    Note: this is best-effort — if MT5 history is incomplete or the
+    deal happened outside the search window (we look back 7 days),
+    the ticket is dropped without reconciliation. Telegram alert
+    notifies the user when this happens so they can investigate.
+    """
+    try:
+        live_positions = mt5.positions_get() or []
+    except Exception as e:
+        log_event("reconcile_missing_mt5_get_failed", error=str(e))
+        return
+    live_tickets = {p.ticket for p in live_positions if getattr(p, "magic", None) == 231}
+
+    existing = read_json(OPEN_POS_PATH, {"positions": []})
+    on_disk = existing.get("positions", [])
+    if not on_disk:
+        return
+
+    missing = [p for p in on_disk if p.get("ticket") not in live_tickets]
+    if not missing:
+        return
+
+    log_event("reconcile_missing_start", count=len(missing))
+    # R57 audit fix: tz-aware UTC range for history_deals_get (broker-TZ safe).
+    since = datetime.now(timezone.utc) - timedelta(days=7)
+    until = datetime.now(timezone.utc)
+    reconciled: list[dict] = []
+    unreconciled: list[dict] = []
+
+    for pos in missing:
+        ticket = pos.get("ticket")
+        if not ticket:
+            continue
+        try:
+            deals = mt5.history_deals_get(since, until) or []
+            # Filter to this position's closing deal. MT5 deal has
+            # `position_id` linking to the original open ticket; the
+            # closing deal has entry==DEAL_ENTRY_OUT (1) and matching
+            # position_id.
+            close_deals = [
+                d for d in deals
+                if getattr(d, "position_id", None) == ticket
+                and getattr(d, "entry", None) == getattr(mt5, "DEAL_ENTRY_OUT", 1)
+            ]
+            if not close_deals:
+                unreconciled.append({"ticket": ticket, "symbol": pos.get("signalAsset")})
+                continue
+            # Pick the latest close deal for safety (positions can have
+            # multiple partial closes — last one is the final exit).
+            close_deals.sort(key=lambda d: getattr(d, "time", 0))
+            final = close_deals[-1]
+            exit_price = float(getattr(final, "price", 0.0))
+            exit_time_ms = int(getattr(final, "time", 0)) * 1000
+            profit = float(getattr(final, "profit", 0.0))
+            reconciled.append({
+                "ticket": ticket,
+                "symbol": pos.get("signalAsset", ""),
+                "direction": pos.get("direction", ""),
+                "entry_price": pos.get("entry_price"),
+                "exit_price": exit_price,
+                "exit_time_ms": exit_time_ms,
+                "profit_usd": profit,
+                "reconciled_at": datetime.now(timezone.utc).isoformat(),
+                "reason": "offline_close",
+            })
+            log_event(
+                "reconcile_missing_position",
+                ticket=ticket,
+                exit_price=exit_price,
+                profit=profit,
+            )
+        except Exception as e:
+            log_event(
+                "reconcile_missing_position_failed",
+                ticket=ticket,
+                error=str(e),
+                level="warn",
+            )
+            unreconciled.append({"ticket": ticket, "symbol": pos.get("signalAsset")})
+
+    # Persist reconciled trades for V4 engine to consume on next state-load.
+    if reconciled:
+        offline_log_path = STATE_DIR / "closed-during-offline.json"
+        existing_log = read_json(offline_log_path, {"trades": []})
+        existing_log["trades"] = existing_log.get("trades", []) + reconciled
+        write_json(offline_log_path, existing_log)
+        tg_send(
+            f"🔄 <b>Offline Reconcile</b>\n"
+            f"{len(reconciled)} position(s) closed during offline period — see {offline_log_path.name}"
+        )
+    if unreconciled:
+        tg_send(
+            f"⚠️ <b>Reconcile Warning</b>\n"
+            f"{len(unreconciled)} ticket(s) gone from MT5 with no matching history deal — manual check needed"
+        )
+    log_event(
+        "reconcile_missing_done",
+        reconciled=len(reconciled),
+        unreconciled=len(unreconciled),
+    )
+
+
 def rebuild_open_positions_from_mt5() -> None:
     """Reconcile open-positions.json with the live MT5 positions on boot.
 
@@ -2853,6 +3053,13 @@ def main_loop() -> None:
     # Round 13 Bug 1: reconcile pending-orders write-ahead log to detect
     # crashed-mid-order_send signals (re-queue or cleanup).
     reconcile_pending_order_markers()
+    # Round 57 (R57-PY-3): reconcile positions that disappeared from MT5
+    # while we were offline (SL/TP fired during downtime). Must run BEFORE
+    # `rebuild_open_positions_from_mt5` so we can read the on-disk
+    # positions list before it gets overwritten with the bare MT5 snapshot.
+    # Logs offline closes to `closed-during-offline.json` for V4 engine
+    # to consume on next state-load.
+    reconcile_missing_positions()
     # Round-7 #11: reconcile on-disk position state with MT5 truth on boot.
     # Critical when the executor restarts while trades are open.
     rebuild_open_positions_from_mt5()

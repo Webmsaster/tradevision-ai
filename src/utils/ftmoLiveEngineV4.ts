@@ -111,7 +111,14 @@ import {
 // renamed to cdUntilBarsSeen because barIdx = refCandles.length-1 is
 // non-monotonic across ticks (refKey can change when feed alignment
 // shifts). Old states get auto-backed-up + reset by loadState.
-const SCHEMA_VERSION = 2 as const;
+//
+// Round 57 V4-3 fix (Fix 4): bumped to 3. R54 changed entryBarIdx convention
+// from `refCandles.length-1` (non-monotonic) to `state.barsSeen` (monotonic).
+// A persisted v2 state that includes openPositions has stale entryBarIdx
+// values referencing the old non-monotonic anchor. v2→v3 migration in
+// loadState rewrites each open position's entryBarIdx to state.barsSeen
+// (conservative — anchors to latest known monotonic value).
+const SCHEMA_VERSION = 3 as const;
 
 export interface OpenPositionV4 {
   /** Stable position id (entryTime + symbol) for ticket idempotency. */
@@ -211,6 +218,15 @@ export interface FtmoLiveStateV4 {
   >;
   /** Kelly window: realised pnl-per-trade with closeTime for filter-by-entryTime. */
   kellyPnls: Array<{ closeTime: number; effPnl: number }>;
+  /**
+   * Round 57 V4-3 (Fix 6): persisted Kelly tier index (sorted descending by
+   * winRateAbove). Adds hysteresis around tier boundaries: only step UP if
+   * wr >= newTier.winRateAbove + 0.05; only step DOWN if wr <= currentTier.winRateAbove - 0.05.
+   * Prevents flicker at the boundary (wr=0.701 → 1.5×, wr=0.699 → 1.0× per tick).
+   * Optional — undefined means "first call, use plain greedy lookup" (defaults to
+   * pre-fix behaviour, which initialises the index for subsequent calls).
+   */
+  kellyTierIdx?: number;
   /** Last 200 closed trades — audit/debug only. */
   closedTrades: ClosedTradeV4[];
   /** How many bars (any asset) we've processed. */
@@ -347,10 +363,38 @@ export function loadState(stateDir: string, cfgLabel: string): FtmoLiveStateV4 {
             delete (ls as { cdUntilBarIdx?: number }).cdUntilBarIdx;
           }
         }
+        // Mark as v2 so the v2→v3 migration below also runs on v1 states.
+        obj.schemaVersion = 2;
+        console.warn(
+          `[V4] in-place schema migration v1 → v2 for ${cfgLabel} ` +
+            `(cdUntilBarIdx → cdUntilBarsSeen, active cooldowns reset)`,
+        );
+      }
+      // Round 57 V4-3 (Fix 4): v2 → v3 migration. R54 (R54-V4-1) changed
+      // OpenPositionV4.entryBarIdx convention from `refCandles.length-1`
+      // (non-monotonic across ticks when refKey shifts) to monotonic
+      // `state.barsSeen`. A persisted v2 state with open positions still
+      // has the stale anchor — any future code comparing entryBarIdx
+      // against state.barsSeen would see negative deltas. Conservative
+      // rewrite: set entryBarIdx = state.barsSeen for every open position
+      // so all comparisons start fresh from the latest known monotonic
+      // value. Doesn't affect exits (entryBarIdx is currently unused at
+      // exit time per R54 comment).
+      if (
+        obj.schemaVersion === 2 &&
+        obj.cfgLabel === cfgLabel &&
+        Array.isArray(obj.openPositions)
+      ) {
+        const anchor = typeof obj.barsSeen === "number" ? obj.barsSeen : 0;
+        for (const pos of obj.openPositions) {
+          if (pos && typeof pos === "object") {
+            (pos as OpenPositionV4).entryBarIdx = anchor;
+          }
+        }
         obj.schemaVersion = SCHEMA_VERSION;
         console.warn(
-          `[V4] in-place schema migration v1 → v${SCHEMA_VERSION} for ${cfgLabel} ` +
-            `(cdUntilBarIdx → cdUntilBarsSeen, active cooldowns reset)`,
+          `[V4] in-place schema migration v2 → v${SCHEMA_VERSION} for ${cfgLabel} ` +
+            `(entryBarIdx re-anchored to state.barsSeen=${anchor} for ${obj.openPositions.length} open position(s))`,
         );
       }
       // Phase 14 (V4 Bug 9): on schema/cfg mismatch, BACK UP the old state
@@ -567,8 +611,11 @@ function computeMtmEquity(
  * Resolve sizing factor mirroring `runFtmoDaytrade24h` equity loop. Same
  * order: adaptiveSizing → timeBoost → kellySizing → drawdownShield →
  * peakDrawdownThrottle → intradayDailyLossThrottle.
+ *
+ * Round 57 V4-3 (Fix 6): exported so unit tests can verify kellyTierIdx
+ * hysteresis without having to drive a full detect-asset-emits-signal flow.
  */
-function resolveSizingFactor(
+export function resolveSizingFactor(
   state: FtmoLiveStateV4,
   cfg: FtmoDaytrade24hConfig,
   entryTime: number,
@@ -593,6 +640,13 @@ function resolveSizingFactor(
     factor = cfg.timeBoost.factor;
   }
   // Kelly multiplier from realised PnL window.
+  // Round 57 V4-3 (Fix 6): tier hysteresis. Without persistence, wr flickering
+  // around a tier boundary (e.g. 0.701 → 1.5×, 0.699 → 1.0×) toggled the
+  // sizing factor every other tick. With persisted state.kellyTierIdx we
+  // require a 5pp move past the threshold to step UP and a 5pp move below
+  // the CURRENT tier's threshold to step DOWN. First call (kellyTierIdx
+  // undefined) falls back to the plain greedy lookup so existing behaviour
+  // is preserved on cold-start.
   if (cfg.kellySizing) {
     const ks = cfg.kellySizing;
     const recent = state.kellyPnls
@@ -604,12 +658,45 @@ function resolveSizingFactor(
       const sortedTiers = [...ks.tiers].sort(
         (a, b) => b.winRateAbove - a.winRateAbove,
       );
-      for (const tier of sortedTiers) {
-        if (wr >= tier.winRateAbove) {
-          factor *= tier.multiplier;
-          break;
+      const HYST = 0.05;
+      let tierIdx: number;
+      if (state.kellyTierIdx === undefined) {
+        // Cold-start: greedy lookup, then persist.
+        tierIdx = sortedTiers.findIndex((t) => wr >= t.winRateAbove);
+        if (tierIdx === -1) tierIdx = sortedTiers.length - 1;
+      } else {
+        // Warm-start: hysteresis around current tier.
+        const cur = Math.min(state.kellyTierIdx, sortedTiers.length - 1);
+        const curTier = sortedTiers[cur]!;
+        // Step UP: wr crossed ABOVE next-better tier's threshold by >= HYST.
+        // Step DOWN: wr fell BELOW current tier's threshold by >= HYST.
+        if (cur > 0 && wr >= sortedTiers[cur - 1]!.winRateAbove + HYST) {
+          // Find the highest tier whose threshold we comfortably cleared.
+          tierIdx = cur - 1;
+          while (
+            tierIdx > 0 &&
+            wr >= sortedTiers[tierIdx - 1]!.winRateAbove + HYST
+          ) {
+            tierIdx -= 1;
+          }
+        } else if (
+          cur < sortedTiers.length - 1 &&
+          wr <= curTier.winRateAbove - HYST
+        ) {
+          tierIdx = cur + 1;
+          while (
+            tierIdx < sortedTiers.length - 1 &&
+            wr <= sortedTiers[tierIdx]!.winRateAbove - HYST
+          ) {
+            tierIdx += 1;
+          }
+        } else {
+          tierIdx = cur;
         }
       }
+      state.kellyTierIdx = tierIdx;
+      const tier = sortedTiers[tierIdx];
+      if (tier) factor *= tier.multiplier;
     }
   }
   // Hard cap to prevent compound timeBoost(2) × kelly(1.5) = 3× blow-ups.
@@ -821,6 +908,26 @@ function computeEffPnl(
   return { rawPnl, effPnl };
 }
 
+/**
+ * Round 57 V4-3 (Fix 2): inline trim of bounded buffers. Previously trim
+ * happened only at saveState time. In long-running pollLive sessions
+ * between saves, kellyPnls / closedTrades grew unbounded and resolveSizingFactor's
+ * filter+slice became O(N) per tick (10000+ entries).
+ *
+ * Cap = max(500, kelly windowSize × 4) — wide enough to never affect the
+ * sliced-window stats (windowSize is the relevant lookback), tight enough
+ * to keep the buffer bounded.
+ */
+function trimInline(state: FtmoLiveStateV4, cfg: FtmoDaytrade24hConfig): void {
+  const kellyCap = Math.max(500, (cfg.kellySizing?.windowSize ?? 100) * 4);
+  if (state.kellyPnls.length > kellyCap) {
+    state.kellyPnls = state.kellyPnls.slice(-kellyCap);
+  }
+  if (state.closedTrades.length > 200) {
+    state.closedTrades = state.closedTrades.slice(-200);
+  }
+}
+
 // ─── Main poll loop ─────────────────────────────────────────────────────
 
 /**
@@ -906,12 +1013,34 @@ export function pollLive(
   const barIdx = refCandles.length - 1;
 
   // First-call: anchor challenge start.
+  // Round 57 (R57-V4-2): if cfg.challengeStartTs is provided (typically
+  // from CHALLENGE_START_DATE env var), use it as the FTMO daily-loss
+  // anchor instead of lastBar.openTime. Without the override, activating
+  // mid-day (e.g. Fri 16:00 Prague) caused dayPeak / dayStart to anchor
+  // at the wrong wall-clock — the engine treated 16:00→18:00 as "day 0"
+  // (correct) but reset dayPeak only at +24h-from-first-bar (= 16:00
+  // next day), not at the next Prague midnight as FTMO does. The cfg-
+  // provided anchor lets the operator align the engine clock with the
+  // broker's wall-clock day-counter. dayIndex() still measures elapsed
+  // 24h periods (NOT calendar-day floors); the executor's
+  // `handle_daily_reset` is the wall-clock midnight authority.
   if (state.challengeStartTs === 0) {
-    state.challengeStartTs = lastBar.openTime;
+    state.challengeStartTs =
+      typeof cfg.challengeStartTs === "number" && cfg.challengeStartTs > 0
+        ? cfg.challengeStartTs
+        : lastBar.openTime;
     state.lastBarOpenTime = lastBar.openTime;
     state.dayStart = state.equity;
-    state.dayPeak = state.mtmEquity;
-    state.challengePeak = state.mtmEquity;
+    // Round 57 V4-3 (Fix 3): defensive — clamp the initial peak anchors
+    // to ≥ 1.0. If a state-corruption (or partial-write race) had set
+    // mtmEquity to e.g. 0.95 before this branch ran, challengePeak would
+    // persistently be below 1.0 and peakDrawdownThrottle could NEVER
+    // fire (fromPeak = (peak - mtm)/peak ≈ 0 when mtm tracks peak from
+    // below). Anchoring on max(mtmEquity, 1.0) makes the peak track a
+    // sensible baseline even after corruption — pDD then fires correctly
+    // once mtm drops past the cfg threshold.
+    state.dayPeak = Math.max(state.mtmEquity, 1.0);
+    state.challengePeak = Math.max(state.mtmEquity, 1.0);
   }
 
   // 1. Idempotent retry guard.
@@ -921,6 +1050,20 @@ export function pollLive(
   }
 
   // 2. Day-rollover.
+  // Round 57 (R57-V4-4) NOTE: There is up to a 1-bar gap between Prague's
+  // wall-clock midnight and `dayIndex(lastBar.openTime)` because dayIndex
+  // is computed off the bar's openTime — a 30m bar opening at 23:30 Prague
+  // still belongs to "yesterday" until the next bar at 00:00 fires. The
+  // Python executor uses `datetime.now(prague_tz)` directly so its
+  // `_prague_today_str` flips at exact wall-clock midnight, while the
+  // engine's `state.day` flips on the first bar with `openTime ≥
+  // next-Prague-midnight`. This is intentional: bar-time is the only
+  // monotonic clock the engine can trust (system clock can NTP-jump),
+  // and the gap is bounded by `barInterval` (≤2h for 2h candles, ≤30m
+  // for 30m). Round 56 fixed `handle_daily_reset` to use Prague-TZ; the
+  // remaining bar-time vs Prague-time gap is acceptable because the
+  // executor's daily-loss decision uses its own equity-at-day-start, not
+  // engine state.day.
   const newDay = dayIndex(lastBar.openTime, state.challengeStartTs);
   // Phase 84 (R51-FTMO-7): if newDay < state.day, the system clock or
   // feed time-traveled backwards (DST-end one-hour repeat, NTP step-back,
@@ -951,9 +1094,74 @@ export function pollLive(
     state.dayPeak = state.equity;
   }
   if (newDay >= cfg.maxDays) {
-    // Time exhausted.
+    // Round 57 V4-3 (Fix 1): force-close all open positions to lastBar.close
+    // BEFORE evaluating pass. FTMO server-side closes positions at challenge
+    // end and measures realised equity — a still-open winning position used
+    // to be silently discarded (pass false-negative); a still-open losing
+    // position used to be ignored too (pass false-positive). After this
+    // force-close, state.equity reflects realised PnL of every position and
+    // mtmEquity equals state.equity (no positions open).
+    for (let i = state.openPositions.length - 1; i >= 0; i--) {
+      const pos = state.openPositions[i]!;
+      const cs = candlesByAsset[pos.sourceSymbol];
+      let exitPrice: number | null = null;
+      if (cs && cs.length > 0) {
+        const matched = findCandleAtTime(cs, lastBar.openTime);
+        if (matched) {
+          exitPrice = matched.close;
+        } else {
+          // Fall back to most recent bar at-or-before lastBar.
+          for (let j = cs.length - 1; j >= 0; j--) {
+            if (cs[j]!.openTime <= lastBar.openTime) {
+              exitPrice = cs[j]!.close;
+              break;
+            }
+          }
+        }
+      }
+      // Last-resort fallback: if no candle for this asset, use entryPrice
+      // (zero-PnL exit) — safer than skipping (which would leave the
+      // position dangling and over-state realised equity).
+      if (exitPrice == null) exitPrice = pos.entryPrice;
+      const { rawPnl, effPnl } = computeEffPnl(pos, exitPrice, cfg);
+      state.equity *= 1 + effPnl;
+      const closed: ClosedTradeV4 = {
+        ticketId: pos.ticketId,
+        symbol: pos.symbol,
+        direction: pos.direction,
+        entryTime: pos.entryTime,
+        exitTime: lastBar.openTime,
+        entryPrice: pos.entryPrice,
+        exitPrice,
+        rawPnl,
+        effPnl,
+        exitReason: "manual",
+        day: state.day,
+        entryDay: dayIndex(pos.entryTime, state.challengeStartTs),
+      };
+      state.closedTrades.push(closed);
+      result.decision.closes.push({
+        ticketId: pos.ticketId,
+        exitPrice,
+        exitReason: "manual",
+      });
+      if (cfg.kellySizing) {
+        state.kellyPnls.push({ closeTime: lastBar.openTime, effPnl });
+      }
+    }
+    state.openPositions = [];
+    // After force-close: no unrealised PnL → MTM equals realised.
+    state.mtmEquity = state.equity;
+    // Round 57 V4-3 (Fix 2): trim inline so end-of-window force-close
+    // pushes don't unbounded-grow the buffer.
+    trimInline(state, cfg);
+
+    // Time exhausted — evaluate pass on post-close equity (both predicates
+    // identical now since no open positions remain, but kept symmetric for
+    // parity with the mid-stream pass-check at Phase 84).
     const passed =
       state.equity >= 1 + cfg.profitTarget &&
+      state.mtmEquity >= 1 + cfg.profitTarget &&
       state.tradingDays.length >= cfg.minTradingDays;
     state.stoppedReason = passed ? null : "time";
     result.challengeEnded = true;
@@ -1059,6 +1267,11 @@ export function pollLive(
       }
     }
   }
+  // Round 57 V4-3 (Fix 2): trim inline after the per-tick exit loop. With
+  // long-running sessions (10000+ closed trades), the prior saveState-only
+  // trim let kellyPnls grow unbounded — resolveSizingFactor's filter+slice
+  // then ran O(N) per tick.
+  trimInline(state, cfg);
 
   // 4. Recompute MTM equity after exits — uses CLOSE prices for unrealised.
   // Phase 36 (R44-V4-5): pick each asset's close at lastBar.openTime, not
@@ -1127,9 +1340,18 @@ export function pollLive(
   // (the bot pings the broker daily to satisfy minTradingDays). Mirrors
   // engine's finishPausedPass() — a real-world bot places a tiny no-risk
   // trade once per day until minTradingDays is satisfied.
+  //
+  // Round 57 V4-3 (Fix 5): use dayIndex(lastBar.openTime, ...) for ping-day
+  // book-keeping, mirroring the entry-side rule (R56 fix at line 1591).
+  // state.day and dayIndex(lastBar.openTime, ...) are equivalent at this
+  // point on the same tick, but the explicit derivation makes the
+  // "trading-day = challenge-day attributed via challengeStartTs" rule
+  // consistent across both ping and entry paths — defensive against any
+  // future reorder of state.day mutation relative to this push.
   if (state.pausedAtTarget && state.firstTargetHitDay !== null) {
-    if (!state.tradingDays.includes(state.day)) {
-      state.tradingDays.push(state.day);
+    const pingDay = dayIndex(lastBar.openTime, state.challengeStartTs);
+    if (!state.tradingDays.includes(pingDay)) {
+      state.tradingDays.push(pingDay);
     }
   }
   // Phase 84 (R51-FTMO-1): require BOTH realised AND mark-to-market equity
@@ -1478,6 +1700,19 @@ export interface SimulateResult {
 /**
  * Drive a complete challenge by polling pollLive() bar-by-bar across the
  * window. Used for parity tests vs. V4-simulator and for backtests.
+ *
+ * Round 57 (R57-V4-3) NOTE: simulate() assumes an UNINTERRUPTED candle
+ * stream — caller feeds every bar from startBar to endBar in order. The
+ * production live path (`tools/ftmo_executor.py`) does NOT replay missed
+ * bars: when the executor restarts after a crash/reboot, instead of
+ * iterating engine state through the off-period (impossible without an
+ * archived candle buffer), it reconciles open positions against
+ * `mt5.positions_get()` + `mt5.history_deals_get()` via
+ * `reconcile_missing_positions()`. Any position no longer on MT5 was
+ * closed during the off-period; the actual exit is read from broker
+ * history and persisted to `closed-during-offline.json` for the next V4
+ * state-load to ingest. This is the "Option B" path documented in the
+ * R57 audit — live truth comes from MT5 history, not engine replay.
  *
  * @param alignedCandles  per-asset Candle[] arrays, all same length, same
  *                        openTime sequence (caller aligns).

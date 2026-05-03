@@ -749,6 +749,18 @@ export interface FtmoDaytrade24hConfig {
     apply: "long" | "short" | "both";
     threshold: number;
   };
+  /**
+   * Round 57 (R57-V4-2): Optional explicit challenge-anchor timestamp
+   * (UTC ms). When set, the V4 live engine uses this as `challengeStartTs`
+   * on the first poll instead of `lastBar.openTime`. This matters when a
+   * user activates the FTMO challenge mid-day (e.g. Friday 16:00 Prague):
+   * FTMO's daily-loss anchor starts at the NEXT midnight Prague, but the
+   * bot would otherwise see ~8 hours of "day 0" before the rollover.
+   *
+   * Live executor reads this from `CHALLENGE_START_DATE` env var
+   * (ISO timestamp) and passes it through.
+   */
+  challengeStartTs?: number;
 }
 
 /**
@@ -4506,7 +4518,26 @@ export function detectAsset(
         const exitDay = pragueDay(candles[exitBar]!.closeTime);
         const overnightCrossings = Math.max(0, exitDay - entryDay);
         if (overnightCrossings > 0) {
-          rawPnl -= (swapBp / 10000) * overnightCrossings;
+          // Phase R57 (Round 57 Forex Fix 4): triple-swap on Wednesday
+          // rollover. Forex T+2 settlement means a Wed→Thu rollover
+          // accrues 3× the daily swap (covers Sat+Sun). Without this,
+          // long-hold backtests under-charge swap by ~28% (1 of 7 days
+          // is a Wed). Crypto assets typically have swapBpPerDay=0 and
+          // are unaffected; CFDs and forex pairs see the correction.
+          const entryDate = new Date(eb!.openTime);
+          const exitDate = new Date(candles[exitBar]!.closeTime);
+          let tripleSwapDays = 0;
+          const cur = new Date(entryDate);
+          cur.setUTCHours(0, 0, 0, 0);
+          while (cur.getTime() < exitDate.getTime()) {
+            // UTC day-of-week: Wed === 3.
+            if (cur.getUTCDay() === 3 && cur.getTime() > entryDate.getTime()) {
+              tripleSwapDays++;
+            }
+            cur.setUTCDate(cur.getUTCDate() + 1);
+          }
+          const adjustedCrossings = overnightCrossings + 2 * tripleSwapDays;
+          rawPnl -= (swapBp / 10000) * adjustedCrossings;
         }
       }
       // BUGFIX 2026-05-03 (R56 audit Fix 1): Funding-cost deduction from PnL.
