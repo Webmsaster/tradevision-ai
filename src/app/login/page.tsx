@@ -90,11 +90,12 @@ export default function LoginPage() {
     } catch (err: unknown) {
       // Phase 92 (R51-S5): generic auth-error mapping prevents user
       // enumeration via timing/text differences between "User already
-      // registered" and "Invalid login credentials". The original
-      // err.message is preserved for developer debugging via console
-      // (server logs still show the real error from the catch).
+      // registered" and "Invalid login credentials". Round 54
+      // (Finding #4): removed the matching `console.warn(raw)` because
+      // it surfaced the raw Supabase auth-error string to anyone with
+      // DevTools open, defeating the enumeration mitigation. Any
+      // legitimate debugging happens server-side via Supabase logs.
       const raw = err instanceof Error ? err.message : "An error occurred";
-      console.warn("[login] auth error:", raw);
       // Whitelist of safe-to-surface messages (non-enumerating).
       if (/network|timeout|fetch failed|unable to connect/i.test(raw)) {
         setError("Network error. Please check your connection and try again.");

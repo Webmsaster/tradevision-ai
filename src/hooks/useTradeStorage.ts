@@ -14,6 +14,7 @@ import {
   updateTrade as updateTradeLocal,
   deleteTrade as deleteTradeLocal,
   clearAllData,
+  SCREENSHOTS_KEY,
 } from "@/utils/storage";
 import {
   loadTradesFromSupabase,
@@ -126,11 +127,18 @@ export function useTradeStorage() {
     };
   }, []);
 
-  // Filter trades by active account
+  // Filter trades by active account.
+  //
+  // Phase 95 (R54-STO-6): "default" is treated as a real account ID
+  // (matches `accounts: [{id: "default"}]` in settings). Previously
+  // any trade was visible while the default account was active —
+  // multi-account reports showed cross-account totals, breaking the
+  // P&L breakdown. Legacy trades without an `accountId` are normalised
+  // to "default" so existing data continues to render under the
+  // default account.
   const trades = useMemo(() => {
-    if (activeAccountId === "default") return allTrades;
     return allTrades.filter(
-      (t) => !t.accountId || t.accountId === activeAccountId,
+      (t) => (t.accountId ?? "default") === activeAccountId,
     );
   }, [allTrades, activeAccountId]);
 
@@ -147,7 +155,11 @@ export function useTradeStorage() {
       // Phase 41 (R44-UI-2): match against the same constant storage.ts uses.
       // Was a hardcoded literal that drifted silently if storage.ts ever
       // renamed the key.
-      if (e.key === STORAGE_KEY) {
+      //
+      // Phase 95 (R54-STO-4): also listen on SCREENSHOTS_KEY so a
+      // sibling tab's screenshot upload / orphan cleanup re-attaches
+      // images in this tab without a manual refresh.
+      if (e.key === STORAGE_KEY || e.key === SCREENSHOTS_KEY) {
         setAllTrades(loadTrades());
       }
     };
@@ -169,6 +181,24 @@ export function useTradeStorage() {
 
       try {
         if (isCloud) {
+          // Phase 95 (R54-STO-2): drain any pending retry-queue from a
+          // previous partial bulk-upsert before trusting the cloud
+          // snapshot. If the drain fails (cloud still down), keep
+          // local data — overwriting it with the cloud subset would
+          // permanently lose the un-uploaded chunk.
+          const drained = await saveBulkTradesToSupabase(
+            supabase!,
+            [],
+            user!.id,
+          );
+          if (cancelled) return;
+          if (!drained) {
+            console.warn(
+              "[useTradeStorage] retry-queue still pending; keeping local data this load",
+            );
+            setAllTrades(loadTrades());
+            return;
+          }
           const cloudTrades = await loadTradesFromSupabase(supabase!, user!.id);
           if (cancelled) return;
           setAllTrades(cloudTrades);

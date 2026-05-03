@@ -1,0 +1,18 @@
+# TradeVision AI — FTMO Python bot dependencies
+# Round 54: introduced for Dependabot pip ecosystem visibility.
+#
+# All other imports across tools/*.py are stdlib (datetime, json, math,
+# os, pathlib, secrets, tempfile, time, contextlib, urllib.request,
+# urllib.error, dataclasses, typing, re, random, sys) and need no pin.
+#
+# Runtime deps:
+#   - MetaTrader5: Windows-only MT5 Python bridge.
+#     Used by: ftmo_executor.py, ftmo_kill.py.
+#     mock_mt5.py shadows it for Linux unit tests (no install needed
+#     in CI; pytest swaps in mock via sys.modules patching).
+MetaTrader5>=5.0.45 ; sys_platform == "win32"
+
+# Dev / test deps:
+#   - pytest: unit tests for ftmo_executor + engine_features + news_blackout.
+#     Used by: test_ftmo_executor.py, test_engine_features.py.
+pytest>=8.0.0

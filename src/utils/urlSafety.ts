@@ -8,7 +8,10 @@
  * sites now share this helper.
  */
 
-function isPrivateHostname(host: string): boolean {
+// Round 54 (Finding #5): exported so the new server-side webhook-test
+// route can re-validate DNS-resolved IPs against the same private-range
+// rules used by the URL-string check (defends against DNS rebinding).
+export function isPrivateHostname(host: string): boolean {
   // Round 54 audit fix: `new URL("https://[fe80::1]/").hostname` returns
   // "[fe80::1]" WITH brackets in Node, so the IPv6 startsWith() checks
   // below were silently dead. Strip brackets first; also lower-case for

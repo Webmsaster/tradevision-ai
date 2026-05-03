@@ -15,36 +15,11 @@ const nextConfig = {
           { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
           { key: 'X-XSS-Protection', value: '0' },
           { key: 'Strict-Transport-Security', value: 'max-age=63072000; includeSubDomains; preload' },
-          {
-            key: 'Content-Security-Policy',
-            // Phase 45 (R45-API-2): replaced `connect-src 'self' https:` (an
-            // effective wildcard that defeated XSS exfil-mitigation) with an
-            // explicit allow-list. Any future external service must be added
-            // here intentionally instead of getting smuggled in via XSS.
-            value: [
-              "default-src 'self'",
-              "script-src 'self' 'unsafe-inline'",
-              "style-src 'self' 'unsafe-inline'",
-              "img-src 'self' data: blob:",
-              "font-src 'self'",
-              [
-                "connect-src 'self'",
-                'https://*.supabase.co',
-                'wss://*.supabase.co',
-                'https://api.binance.com',
-                'https://fapi.binance.com',
-                'wss://stream.binance.com',
-                'wss://stream.binance.com:9443',
-                'https://query1.finance.yahoo.com',
-                'https://query2.finance.yahoo.com',
-                'https://stooq.com',
-                'https://nfs.faireconomy.media',
-              ].join(' '),
-              "frame-ancestors 'none'",
-              "base-uri 'self'",
-              "form-action 'self'",
-            ].join('; '),
-          },
+          // Round 54 (Finding #3): CSP is now set per-request from
+          // `middleware.ts` so we can attach a fresh `nonce-XYZ` to
+          // script-src on every request (replacing the previous
+          // `'unsafe-inline'`). Keeping the CSP here would override
+          // the dynamic one. See middleware.ts:34 for the full policy.
         ],
       },
     ];

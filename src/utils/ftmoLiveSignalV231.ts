@@ -540,9 +540,24 @@ if (_ftmoTfRaw && _ftmoTfRaw.trim() !== _ftmoTfRaw) {
 const _ftmoTfKey = _ftmoTfRaw?.trim() ?? "";
 const _registryHit =
   _ftmoTfKey in CFG_REGISTRY ? CFG_REGISTRY[_ftmoTfKey] : null;
+// Round 54 Fix #3 + #7: when env was SET but didn't match any registry key
+// (typo, trim mismatch, removed config), THROW at module load instead of
+// silently falling back to V261 4h. Operators easily miss console.error
+// in PM2/systemd logs — fail-loud is the correct default when the operator
+// asked for something specific and we can't deliver it.
+//
+// Test/CI escape hatch: set FTMO_TF_ALLOW_FALLBACK=1 to opt back into the
+// silent V261 fallback (used by test harnesses that import V231 without
+// caring about CFG selection).
+if (_ftmoTfKey && !_registryHit && process.env.FTMO_TF_ALLOW_FALLBACK !== "1") {
+  throw new Error(
+    `[ftmo-live] FTMO_TF="${_ftmoTfRaw}" did not match any known config in CFG_REGISTRY. ` +
+      `Check spelling / trailing whitespace. Set FTMO_TF_ALLOW_FALLBACK=1 to fall back to V261 (test only).`,
+  );
+}
 if (_ftmoTfKey && !_registryHit) {
   console.error(
-    `[ftmo-live] WARNING: FTMO_TF="${_ftmoTfRaw}" did not match any known config — falling back to V261 4h. Check spelling!`,
+    `[ftmo-live] WARNING: FTMO_TF="${_ftmoTfRaw}" did not match any known config — falling back to V261 4h (FTMO_TF_ALLOW_FALLBACK=1).`,
   );
 }
 
@@ -552,6 +567,15 @@ if (_ftmoTfKey && !_registryHit) {
 const CFG: FtmoDaytrade24hConfig =
   _registryHit?.cfg ?? CFGS.FTMO_DAYTRADE_24H_CONFIG_V261;
 const CFG_LABEL: string = _registryHit?.label ?? "V261";
+
+/**
+ * Round 54 Fix #3: lightweight introspection helper for the live-service
+ * boot banner. Lets ftmoLiveService.ts cross-check at startup that the CFG
+ * V231 resolved matches FTMO_TF (trim-mismatch detection at boot).
+ */
+export function getActiveCfgInfo(): { label: string; ftmoTfKey: string } {
+  return { label: CFG_LABEL, ftmoTfKey: _ftmoTfKey };
+}
 
 /**
  * Compute current sizing factor from adaptiveSizing + timeBoost + Kelly.
@@ -641,7 +665,11 @@ function computeSizingFactor(account: AccountState): {
     }
     const peak = peakKnown ? account.challengePeak! : account.equity;
     if (peak > 0) {
-      const fromPeak = (peak - account.equity) / peak;
+      // Round 54 Fix #4: clamp fromPeak ≥ 0. Python writes challenge-peak.json
+      // and account.json independently — a torn read where peak < equity
+      // would otherwise yield negative fromPeak → downstream NaN / no-throttle
+      // by accident. Equity-above-peak is meaningless for drawdown anyway.
+      const fromPeak = Math.max(0, (peak - account.equity) / peak);
       if (fromPeak >= CFG.peakDrawdownThrottle.fromPeak) {
         const pDDFactor = CFG.peakDrawdownThrottle.factor;
         if (pDDFactor < factor) {
@@ -742,6 +770,31 @@ export function detectLiveSignalsV231(
       skipped: [],
       notes: [
         `FTMO_TF=${process.env.FTMO_TF} is DEPRECATED (volTargeting maxMult=5 unsafe). Use V5_TITAN_REAL instead.`,
+      ],
+      account,
+      btc: { close: 0, ema10: 0, ema15: 0, uptrend: false, mom24h: 0 },
+    };
+  }
+  // Round 54 Fix #5: when peakDrawdownThrottle is CONFIGURED but
+  // account.challengePeak is missing (cold start, Python not yet written),
+  // REJECT signal generation entirely. Previously code fell back to
+  // peak=equity → fromPeak=0 → throttle silently disabled. peakWarnedOnce
+  // suppressed every subsequent warning, so the operator got ZERO notice
+  // that R28_V2/V3/V4 were running un-throttled (= base R28 ~71%, not the
+  // configured boost). Fail-loud: no trades until Python sync recovers.
+  if (
+    CFG.peakDrawdownThrottle &&
+    (account.challengePeak === undefined || account.challengePeak <= 0)
+  ) {
+    return {
+      timestamp: Date.now(),
+      regime: "BEAR_CHOP",
+      activeBotConfig: `${CFG_LABEL} (BLOCKED)`,
+      signals: [],
+      skipped: [],
+      notes: [
+        `peakDrawdownThrottle CONFIGURED but account.challengePeak missing — ` +
+          `no trades emitted. Check Python ftmo_executor.py challenge-peak.json sync.`,
       ],
       account,
       btc: { close: 0, ema10: 0, ema15: 0, uptrend: false, mom24h: 0 },

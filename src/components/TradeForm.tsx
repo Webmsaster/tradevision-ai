@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Trade } from "@/types/trade";
 import { calculatePnl } from "@/utils/calculations";
 import { useFocusTrap } from "@/hooks/useFocusTrap";
@@ -60,8 +60,17 @@ export default function TradeForm({
   >("");
   const [screenshot, setScreenshot] = useState<string>("");
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // Round 54 fix #4: prevent double-submit (double-click creates two trades).
+  const [submitting, setSubmitting] = useState(false);
+  // Round 54 fix #3: cancel-flag for in-flight image-decoding so rapid file
+  // selections + unmount don't race on setScreenshot/revoke.
+  const imageLoadCancelRef = useRef<{ cancelled: boolean } | null>(null);
 
   // ---- populate fields when editing ----
+  // Round 54 fix: deps reduced to [editTrade?.id, isOpen] — re-init only when actually
+  // switching trades or open/close. Parent re-renders that pass a new editTrade object
+  // identity (e.g. via spread) no longer obliterate user input.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (editTrade) {
       setPair(editTrade.pair);
@@ -85,7 +94,7 @@ export default function TradeForm({
     } else {
       resetForm();
     }
-  }, [editTrade, isOpen]);
+  }, [editTrade?.id, isOpen]);
 
   // Escape key and body scroll lock
   useEffect(() => {
@@ -103,6 +112,15 @@ export default function TradeForm({
       document.body.style.overflow = "";
     };
   }, [isOpen, onClose]);
+
+  // Round 54 fix #3: cancel any pending image-decode on unmount.
+  useEffect(() => {
+    return () => {
+      if (imageLoadCancelRef.current) {
+        imageLoadCancelRef.current.cancelled = true;
+      }
+    };
+  }, []);
 
   function resetForm() {
     setPair("");
@@ -187,53 +205,60 @@ export default function TradeForm({
   // ---- submit ----
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    // Round 54 fix #4: hard-block double-submit (rapid double-click).
+    if (submitting) return;
     if (!validate()) return;
+    setSubmitting(true);
 
-    const ep = parseFloat(entryPrice);
-    const xp = parseFloat(exitPrice);
-    const qty = parseFloat(quantity);
-    const lev = parseFloat(leverage) || 1;
-    const f = parseFloat(fees) || 0;
-    const parsedTags = tags
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
+    try {
+      const ep = parseFloat(entryPrice);
+      const xp = parseFloat(exitPrice);
+      const qty = parseFloat(quantity);
+      const lev = parseFloat(leverage) || 1;
+      const f = parseFloat(fees) || 0;
+      const parsedTags = tags
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean);
 
-    const tradeBase = {
-      pair: pair.trim(),
-      direction,
-      entryPrice: ep,
-      exitPrice: xp,
-      quantity: qty,
-      leverage: lev,
-      fees: f,
-      entryDate: fromDatetimeLocal(entryDate),
-      exitDate: fromDatetimeLocal(exitDate),
-      notes: notes.trim(),
-      tags: parsedTags,
-      strategy: strategy.trim() || undefined,
-      emotion: emotion || undefined,
-      confidence: confidence > 0 ? confidence : undefined,
-      setupType: setupType.trim() || undefined,
-      timeframe: timeframe || undefined,
-      marketCondition: marketCondition || undefined,
-      screenshot: screenshot || undefined,
-    };
+      const tradeBase = {
+        pair: pair.trim(),
+        direction,
+        entryPrice: ep,
+        exitPrice: xp,
+        quantity: qty,
+        leverage: lev,
+        fees: f,
+        entryDate: fromDatetimeLocal(entryDate),
+        exitDate: fromDatetimeLocal(exitDate),
+        notes: notes.trim(),
+        tags: parsedTags,
+        strategy: strategy.trim() || undefined,
+        emotion: emotion || undefined,
+        confidence: confidence > 0 ? confidence : undefined,
+        setupType: setupType.trim() || undefined,
+        timeframe: timeframe || undefined,
+        marketCondition: marketCondition || undefined,
+        screenshot: screenshot || undefined,
+      };
 
-    const { pnl, pnlPercent } = calculatePnl(
-      tradeBase as Omit<Trade, "id" | "pnl" | "pnlPercent">,
-    );
+      const { pnl, pnlPercent } = calculatePnl(
+        tradeBase as Omit<Trade, "id" | "pnl" | "pnlPercent">,
+      );
 
-    const trade: Trade = {
-      ...tradeBase,
-      id: editTrade ? editTrade.id : crypto.randomUUID(),
-      pnl,
-      pnlPercent,
-    } as Trade;
+      const trade: Trade = {
+        ...tradeBase,
+        id: editTrade ? editTrade.id : crypto.randomUUID(),
+        pnl,
+        pnlPercent,
+      } as Trade;
 
-    onSubmit(trade);
-    resetForm();
-    onClose();
+      onSubmit(trade);
+      resetForm();
+      onClose();
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   const focusTrapRef = useFocusTrap(isOpen);
@@ -605,21 +630,23 @@ export default function TradeForm({
                       const { screenshot: _, ...rest } = prev;
                       return rest;
                     });
+                    // Round 54 fix #3: cancel any in-flight previous decode so
+                    // rapid file selections don't race (slower onload winning
+                    // over faster). Each selection installs a fresh token; the
+                    // unmount-effect also flips cancelled=true.
+                    if (imageLoadCancelRef.current) {
+                      imageLoadCancelRef.current.cancelled = true;
+                    }
+                    const token = { cancelled: false };
+                    imageLoadCancelRef.current = token;
                     // Phase 44 (R44-UI-1): hold the ObjectURL in a separate
                     // variable so onload AND onerror revoke the same URL.
-                    // Was reading `img.src` inside the load-handler which
-                    // is fine for success but leaked on decode failure.
                     const objectUrl = URL.createObjectURL(file);
                     const img = new Image();
                     img.onload = () => {
                       try {
-                        // Phase 85 (R51-UI-1): clamp BOTH dimensions. The
-                        // previous code only capped width — a tall narrow
-                        // 800×100000 image (under the 5 MB upload cap)
-                        // produced an 800×100000 canvas (~320 MB ARGB
-                        // buffer) that crashed mobile browsers and many
-                        // desktop tabs. Use min-of-axis-scale so the
-                        // largest dimension determines the down-scale.
+                        if (token.cancelled) return;
+                        // Phase 85 (R51-UI-1): clamp BOTH dimensions.
                         const MAX_WIDTH = 800;
                         const MAX_HEIGHT = 800;
                         const scale = Math.min(
@@ -637,7 +664,7 @@ export default function TradeForm({
                             "image/jpeg",
                             0.6,
                           );
-                          setScreenshot(compressed);
+                          if (!token.cancelled) setScreenshot(compressed);
                         }
                       } finally {
                         URL.revokeObjectURL(objectUrl);
@@ -645,6 +672,7 @@ export default function TradeForm({
                     };
                     img.onerror = () => {
                       URL.revokeObjectURL(objectUrl);
+                      if (token.cancelled) return;
                       setErrors((prev) => ({
                         ...prev,
                         screenshot: "Could not decode image",
@@ -683,8 +711,19 @@ export default function TradeForm({
             <button type="button" className="btn btn-ghost" onClick={onClose}>
               Cancel
             </button>
-            <button type="submit" className="btn btn-primary">
-              {editTrade ? "Update Trade" : "Add Trade"}
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={submitting}
+              aria-busy={submitting}
+            >
+              {submitting
+                ? editTrade
+                  ? "Updating..."
+                  : "Adding..."
+                : editTrade
+                  ? "Update Trade"
+                  : "Add Trade"}
             </button>
           </div>
         </form>

@@ -832,5 +832,272 @@ def test_news_refresh_disabled_env_returns_zero(monkeypatch, tmp_path):
     assert not cache.exists()
 
 
+# ============================================================================
+# Round 55 audit fix: slippage-aware lot sizing
+# ============================================================================
+def test_place_market_order_slippage_widens_stop_shrinks_lot(monkeypatch):
+    """Lot must be sized using effective stop (post-slippage), not theoretical.
+
+    Scenario:
+      - theoretical ask = 2001.0, stop_pct = 1% → theoretical SL @ 1980.99,
+        theoretical stop_distance = 20.01 (= 1.000% of 2001.0).
+      - 1.5 spreads of slippage on a 20-point spread → fill_price = 2001.30.
+      - Effective stop_distance = 2001.30 - 1980.99 = 20.31 (= 1.0149% of fill).
+      - Lot sized at 1.0149% effective stop must be SMALLER than lot sized at
+        the theoretical 1% stop (loss-per-lot is wider, so fewer lots fit
+        the $1000 risk budget).
+    """
+    import ftmo_executor as exe
+    exe.SLIPPAGE_DISABLED = False
+    exe.SLIPPAGE_ENTRY_SPREADS = 1.5
+    exe._SYMBOL_CACHE.clear()
+
+    info = FakeSpreadSymbolInfo(
+        ask=2001.0, bid=1999.0, spread=20, point=0.01,
+        tick_size=0.01, tick_value=0.01,
+        volume_min=0.01, volume_max=10000.0, volume_step=0.001,
+    )
+    monkeypatch.setattr(exe.mt5, "symbol_info", lambda s: info)
+    monkeypatch.setattr(exe.mt5, "symbol_select", lambda s, e: True)
+
+    captured = {}
+
+    class FakeRes:
+        def __init__(self):
+            self.retcode = exe.mt5.TRADE_RETCODE_DONE
+            self.order = 999
+            self.price = 0.0
+            self.comment = ""
+
+    def fake_send(req):
+        captured["request"] = req
+        return FakeRes()
+
+    monkeypatch.setattr(exe.mt5, "order_send", fake_send)
+
+    res = exe.place_market_order(
+        binance_symbol="BTCUSDT",
+        direction="long",
+        risk_frac=0.01,           # $1000 of $100k
+        stop_pct=0.01,            # theoretical 1% stop
+        tp_pct=0.02,
+        account_equity=100000.0,
+        comment="slip_lot_test",
+    )
+    assert res.ok, f"order failed: {res.error}"
+
+    # Compute the un-slipped baseline lot using compute_lot_size directly.
+    # Same risk + theoretical stop = baseline; if our fix is wrong (i.e. we
+    # still size with theoretical stop), the assertion below fails.
+    baseline_lot = exe.compute_lot_size(
+        info, risk_frac=0.01, stop_pct=0.01,
+        account_equity=100000.0, direction="long",
+    )
+    assert res.lot is not None
+    assert res.lot < baseline_lot, (
+        f"expected post-slippage lot {res.lot} < baseline {baseline_lot} "
+        f"(slippage widens effective stop → fewer lots)"
+    )
+    # SL stays at the theoretical level (engine planned it that way).
+    assert abs(captured["request"]["sl"] - 2001.0 * 0.99) < 1e-6
+    # And the order price is the slipped fill.
+    assert abs(captured["request"]["price"] - 2001.30) < 1e-6
+
+
+# ============================================================================
+# Round 55 audit fix: telegram_notify hardening
+# ============================================================================
+def test_telegram_redact_strips_token_from_string():
+    import telegram_notify as tg
+    leaked = "HTTP Error 401: Unauthorized for url=https://api.telegram.org/bot1234567:ABCDEF-secret_xyz/sendMessage"
+    redacted = tg._redact(leaked)
+    assert "1234567:ABCDEF-secret_xyz" not in redacted
+    assert "/bot<REDACTED>" in redacted
+
+
+def test_telegram_429_sets_suppression(monkeypatch):
+    """HTTP 429 → 60s cooldown; subsequent calls skip urlopen entirely."""
+    import telegram_notify as tg
+    import urllib.error
+
+    tg._suppress_until_ts = 0.0
+    tg._suppress_logged = False
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "1111:dummy")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+
+    def raise_429(*args, **kwargs):
+        raise urllib.error.HTTPError(
+            "https://api.telegram.org/bot1111:dummy/sendMessage",
+            429, "Too Many Requests", {}, None,
+        )
+
+    monkeypatch.setattr(tg.urllib.request, "urlopen", raise_429)
+    assert tg.tg_send("hello") is False
+    # Suppression now active until ~now+60.
+    import time
+    assert tg._suppress_until_ts > time.time() + 30
+    assert tg._suppress_until_ts < time.time() + 120
+
+    # Second call must short-circuit before urlopen — replace with a tripwire.
+    def trip(*args, **kwargs):
+        raise AssertionError("urlopen called while suppression active")
+
+    monkeypatch.setattr(tg.urllib.request, "urlopen", trip)
+    assert tg.tg_send("again") is False  # skipped, no exception
+
+
+def test_telegram_401_sets_permanent_suppression(monkeypatch):
+    """HTTP 401 (invalid token) → permanent suppression until process restart."""
+    import telegram_notify as tg
+    import urllib.error
+
+    tg._suppress_until_ts = 0.0
+    tg._suppress_logged = False
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "2222:bad")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+
+    def raise_401(*args, **kwargs):
+        raise urllib.error.HTTPError(
+            "https://api.telegram.org/bot2222:bad/sendMessage",
+            401, "Unauthorized", {}, None,
+        )
+
+    monkeypatch.setattr(tg.urllib.request, "urlopen", raise_401)
+    assert tg.tg_send("hi") is False
+    assert tg._suppress_until_ts == float("inf")
+
+
+def test_telegram_success_clears_suppression(monkeypatch):
+    """A 200 response after suppression expires must clear the flag."""
+    import telegram_notify as tg
+
+    # Pretend suppression already expired
+    tg._suppress_until_ts = 0.0
+    tg._suppress_logged = False
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "3333:ok")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+
+    class FakeResp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(tg.urllib.request, "urlopen", lambda *a, **k: FakeResp())
+    assert tg.tg_send("ok") is True
+    assert tg._suppress_until_ts == 0.0
+
+
+def test_telegram_token_not_in_logged_error(monkeypatch, capsys):
+    """Even when urllib raises with a URL containing the token, the printed
+    log line must not include the token."""
+    import telegram_notify as tg
+    import urllib.error
+
+    tg._suppress_until_ts = 0.0
+    tg._suppress_logged = False
+    secret = "9999:VERY-SECRET-TOKEN_xyz"
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", secret)
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+
+    def raise_500(*args, **kwargs):
+        raise urllib.error.HTTPError(
+            f"https://api.telegram.org/bot{secret}/sendMessage",
+            500, "Internal Server Error", {}, None,
+        )
+
+    monkeypatch.setattr(tg.urllib.request, "urlopen", raise_500)
+    tg.tg_send("oops")
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert secret not in combined, f"token leaked in log: {combined!r}"
+
+
+# ============================================================================
+# Round 55 audit fix: process_pending_signals lock-extends across order loop
+# ============================================================================
+def test_process_pending_signals_holds_lock_through_critical_section(monkeypatch, tmp_path):
+    """Lock must be held from initial read through final write. We verify by
+    asserting that during the body of `_process_pending_signals_locked`, the
+    pending-signals.lock file exists on disk (indicating the lock is held).
+
+    Also verifies that the late-merge logic still works inside the lock: a
+    Node-style concurrent write of a fresh signal mid-flight must be
+    preserved by the post-loop merge re-read.
+    """
+    import ftmo_executor as exe
+    import time as _time
+
+    # Redirect state files into tmp_path
+    exe.STATE_DIR = tmp_path
+    exe.PENDING_PATH = tmp_path / "pending-signals.json"
+    exe.EXECUTED_PATH = tmp_path / "executed-signals.json"
+    exe.OPEN_POS_PATH = tmp_path / "open-positions.json"
+    exe.DAILY_STATE_PATH = tmp_path / "daily-reset.json"
+    exe.EXECUTOR_LOG_PATH = tmp_path / "executor-log.jsonl"
+    exe.PAUSE_STATE_PATH = tmp_path / "pause-state.json"
+    exe.CHALLENGE_PEAK_PATH = tmp_path / "challenge-peak.json"
+    exe.DRY_RUN = True  # avoid placing real orders
+
+    # Fresh signal so the staleness check (5min) doesn't drop it.
+    now_ms = int(_time.time() * 1000)
+    sig_a = {
+        "assetSymbol": "BTC", "sourceSymbol": "BTCUSDT",
+        "riskFrac": 0.005, "stopPct": 0.01, "tpPct": 0.02,
+        "stopPrice": 100.0, "tpPrice": 200.0, "entryPrice": 150.0,
+        "maxHoldUntil": "2026-12-31T00:00:00Z",
+        "signalBarClose": now_ms - 1000,
+        "direction": "long",
+    }
+    sig_b_late = {**sig_a, "assetSymbol": "ETH", "signalBarClose": now_ms - 500}
+
+    exe.write_json(exe.PENDING_PATH, {"signals": [sig_a]})
+
+    lock_path = tmp_path / "pending-signals.lock"
+    state = {"lock_seen_during_loop": False, "pending_reads": 0}
+
+    # Wrap read_json so:
+    #   1st PENDING_PATH read = initial loop input (just sig_a)
+    #   2nd PENDING_PATH read = post-loop merge → simulate Node having
+    #      written sig_b mid-flight by returning [sig_a, sig_b_late].
+    orig_read_json = exe.read_json
+
+    def patched_read_json(path, default=None):
+        if path == exe.PENDING_PATH:
+            state["pending_reads"] += 1
+            if state["pending_reads"] == 1:
+                # Initial read at top of locked section.
+                state["lock_seen_during_loop"] = lock_path.exists()
+                return {"signals": [sig_a]}
+            else:
+                # Post-loop merge re-read — Node has appended sig_b_late.
+                return {"signals": [sig_a, sig_b_late]}
+        return orig_read_json(path, default)
+
+    monkeypatch.setattr(exe, "read_json", patched_read_json)
+
+    exe.process_pending_signals()
+
+    # Lock-file is removed on context exit; we asserted presence during loop.
+    assert state["lock_seen_during_loop"] is True, (
+        "lock-file was not present during the locked critical section — "
+        "fix did not actually extend the lock window"
+    )
+    assert state["pending_reads"] >= 2, (
+        f"expected ≥2 PENDING_PATH reads (initial + merge), got {state['pending_reads']}"
+    )
+
+    # The merge-write must have preserved the late-arriving sig_b.
+    pending_after = json.loads(exe.PENDING_PATH.read_text())
+    assets = [s.get("assetSymbol") for s in pending_after.get("signals", [])]
+    assert "ETH" in assets, (
+        f"merge-write lost sig_b: {assets}. The post-loop merge re-read "
+        f"must run INSIDE the lock so it sees Node's late writes."
+    )
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

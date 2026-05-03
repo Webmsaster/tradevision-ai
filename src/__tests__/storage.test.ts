@@ -8,8 +8,12 @@ import {
   clearAllData,
   importFromJSON,
   hasSavedData,
+  loadTradesFromSupabase,
+  saveBulkTradesToSupabase,
+  deleteTradeFromSupabase,
 } from "@/utils/storage";
 import type { Trade } from "@/types/trade";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 function makeTrade(overrides: Partial<Trade> = {}): Trade {
   return {
@@ -257,5 +261,261 @@ describe("importFromJSON", () => {
   it("rejects unparseable JSON", async () => {
     const file = makeFile("not json at all");
     await expect(importFromJSON(file)).rejects.toThrow("Failed to parse JSON");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 95 (Round 54) regression tests
+// ---------------------------------------------------------------------------
+
+function makeDbRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "row-1",
+    pair: "BTC/USDT",
+    direction: "long",
+    entry_price: 100,
+    exit_price: 110,
+    quantity: 1,
+    entry_date: "2024-01-01T10:00:00Z",
+    exit_date: "2024-01-01T14:00:00Z",
+    pnl: 10,
+    pnl_percent: 10,
+    fees: 0,
+    leverage: 1,
+    notes: "",
+    tags: [],
+    account_id: "default",
+    deleted_at: null,
+    ...overrides,
+  };
+}
+
+/**
+ * Build a fluent Supabase mock chain. Captures upsert / update / delete
+ * call sites so individual tests can assert post-conditions without
+ * needing the real client.
+ */
+function makeSupabaseMock(opts: {
+  pages?: Array<unknown[]>;
+  upsertErrorAtCall?: number;
+  updateError?: { message: string };
+  deleteError?: { message: string };
+  failOnSoftDeleteColumn?: boolean;
+}) {
+  const pages = opts.pages ?? [];
+  let pageCallIdx = 0;
+  let upsertCalls = 0;
+  const upsertCalled: Array<unknown[]> = [];
+  const updateCalled: Array<Record<string, unknown>> = [];
+  const deleteCalled: number[] = [];
+  let softDeleteFailureFired = false;
+
+  const rangeFn = vi.fn(() => {
+    if (opts.failOnSoftDeleteColumn && !softDeleteFailureFired) {
+      softDeleteFailureFired = true;
+      return Promise.resolve({
+        data: null,
+        error: { message: 'column "deleted_at" does not exist' },
+      });
+    }
+    const page = pages[pageCallIdx] ?? [];
+    pageCallIdx += 1;
+    return Promise.resolve({ data: page, error: null });
+  });
+
+  const chain: Record<string, unknown> = {};
+  chain.range = rangeFn;
+  chain.order = vi.fn(() => chain);
+  chain.is = vi.fn(() => chain);
+  chain.eq = vi.fn(() => chain);
+
+  const selectFn = vi.fn(() => chain);
+
+  const upsertFn = vi.fn((rows: unknown[]) => {
+    upsertCalls += 1;
+    upsertCalled.push(rows);
+    if (opts.upsertErrorAtCall && upsertCalls === opts.upsertErrorAtCall) {
+      return Promise.resolve({ error: { message: "chunk failed" } });
+    }
+    return Promise.resolve({ error: null });
+  });
+
+  let updateEqCalls = 0;
+  const updateChain: Record<string, unknown> = {};
+  updateChain.eq = vi.fn(() => {
+    updateEqCalls += 1;
+    if (updateEqCalls >= 2) {
+      return Promise.resolve({ error: opts.updateError ?? null });
+    }
+    return updateChain;
+  });
+  updateChain.is = vi.fn(() =>
+    Promise.resolve({ error: opts.updateError ?? null }),
+  );
+
+  const updateFn = vi.fn((patch: Record<string, unknown>) => {
+    updateCalled.push(patch);
+    updateEqCalls = 0;
+    return updateChain;
+  });
+
+  let deleteEqCalls = 0;
+  const deleteChain: Record<string, unknown> = {};
+  deleteChain.eq = vi.fn(() => {
+    deleteEqCalls += 1;
+    if (deleteEqCalls >= 2) {
+      return Promise.resolve({ error: opts.deleteError ?? null });
+    }
+    return deleteChain;
+  });
+  const deleteFn = vi.fn(() => {
+    deleteCalled.push(1);
+    deleteEqCalls = 0;
+    return deleteChain;
+  });
+
+  const fromFn = vi.fn(() => ({
+    select: selectFn,
+    upsert: upsertFn,
+    update: updateFn,
+    delete: deleteFn,
+  }));
+
+  return {
+    client: { from: fromFn } as unknown as SupabaseClient,
+    upsertCalled,
+    updateCalled,
+    deleteCalled,
+    upsertCallCount: () => upsertCalls,
+  };
+}
+
+describe("loadTradesFromSupabase — pagination (R54-STO-1)", () => {
+  it("walks beyond the old 100k cap until the result-set is exhausted", async () => {
+    const PAGE = 1000;
+    const TOTAL_PAGES = 250;
+    const pages: Array<unknown[]> = Array.from({ length: TOTAL_PAGES }, () =>
+      Array.from({ length: PAGE }, (_, j) => makeDbRow({ id: `r-${j}` })),
+    );
+    pages.push([]);
+    const { client } = makeSupabaseMock({ pages });
+    const result = await loadTradesFromSupabase(client, "user-1");
+    expect(result).toHaveLength(PAGE * TOTAL_PAGES);
+  }, 30_000);
+
+  it("falls back when deleted_at column is missing", async () => {
+    const pages: Array<unknown[]> = [
+      [makeDbRow({ id: "a" }), makeDbRow({ id: "b" })],
+    ];
+    const { client } = makeSupabaseMock({
+      pages,
+      failOnSoftDeleteColumn: true,
+    });
+    const result = await loadTradesFromSupabase(client, "user-1");
+    expect(result).toHaveLength(2);
+  });
+});
+
+describe("saveBulkTradesToSupabase — retry-queue (R54-STO-2)", () => {
+  it("enqueues the failing slice when chunk N fails mid-flight", async () => {
+    const trades: Trade[] = Array.from({ length: 1200 }, (_, i) =>
+      makeTrade({ id: `t-${i}` }),
+    );
+    const { client, upsertCallCount } = makeSupabaseMock({
+      upsertErrorAtCall: 2,
+    });
+    const ok = await saveBulkTradesToSupabase(client, trades, "user-1");
+    expect(ok).toBe(false);
+    expect(upsertCallCount()).toBe(2);
+    const raw = store["sb-retry-queue"];
+    expect(raw).toBeDefined();
+    const parsed = JSON.parse(raw!);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed[0].rows.length).toBe(700);
+  });
+
+  it("drains the retry-queue on the next successful call", async () => {
+    store["sb-retry-queue"] = JSON.stringify([
+      {
+        rows: Array.from({ length: 200 }, (_, i) => ({ id: `q-${i}` })),
+        enqueuedAt: "2024-01-01T00:00:00Z",
+      },
+    ]);
+    const { client, upsertCallCount } = makeSupabaseMock({});
+    const ok = await saveBulkTradesToSupabase(client, [], "user-1");
+    expect(ok).toBe(true);
+    expect(upsertCallCount()).toBe(1);
+    expect(store["sb-retry-queue"]).toBeUndefined();
+  });
+});
+
+describe("dbToTrade — type validation (R54-STO-3)", () => {
+  it("normalises garbage NaN / non-array fields", async () => {
+    const garbageRow = makeDbRow({
+      id: "garbage-1",
+      confidence: NaN,
+      tags: { not: "array" },
+      notes: 12345 as unknown as string,
+      direction: "sideways" as unknown as string,
+      account_id: "",
+      strategy: 42 as unknown as string,
+    });
+    const { client } = makeSupabaseMock({ pages: [[garbageRow]] });
+    const [trade] = await loadTradesFromSupabase(client, "user-1");
+    expect(trade!.confidence).toBeUndefined();
+    expect(trade!.tags).toEqual([]);
+    expect(trade!.notes).toBe("");
+    expect(trade!.direction).toBe("long");
+    expect(trade!.accountId).toBe("default");
+    expect(trade!.strategy).toBeUndefined();
+  });
+});
+
+describe("deleteTradeFromSupabase — soft-delete (R54-STO-7)", () => {
+  it("issues UPDATE deleted_at on a migrated DB", async () => {
+    const { client, updateCalled, deleteCalled } = makeSupabaseMock({});
+    const ok = await deleteTradeFromSupabase(client, "tid", "user-1");
+    expect(ok).toBe(true);
+    expect(updateCalled).toHaveLength(1);
+    expect(updateCalled[0]!.deleted_at).toBeTypeOf("string");
+    expect(deleteCalled).toHaveLength(0);
+  });
+
+  it("falls back to hard-delete when deleted_at column missing", async () => {
+    const { client, deleteCalled } = makeSupabaseMock({
+      updateError: { message: 'column "deleted_at" does not exist' },
+    });
+    const ok = await deleteTradeFromSupabase(client, "tid", "user-1");
+    expect(ok).toBe(true);
+    expect(deleteCalled).toHaveLength(1);
+  });
+});
+
+describe("isValidTrade extended (R54-STO-5)", () => {
+  it("drops rows with non-array tags / non-string accountId / NaN numbers", () => {
+    const goodRow = {
+      id: "g",
+      pair: "BTC/USDT",
+      direction: "long",
+      entryPrice: 100,
+      exitPrice: 110,
+      quantity: 1,
+      entryDate: "2024-01-01T10:00:00Z",
+      exitDate: "2024-01-01T14:00:00Z",
+      pnl: 10,
+      pnlPercent: 10,
+      fees: 0,
+      leverage: 1,
+      notes: "",
+      tags: [] as string[],
+    };
+    const garbageTags = { ...goodRow, id: "gt", tags: { not: "array" } };
+    const garbageAccount = { ...goodRow, id: "ga", accountId: 42 };
+    const nanPnl = { ...goodRow, id: "nan", pnl: NaN };
+    const arr = [goodRow, garbageTags, garbageAccount, nanPnl];
+    store["trading-journal-trades"] = JSON.stringify(arr);
+    const loaded = loadTrades();
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]!.id).toBe("g");
   });
 });

@@ -129,6 +129,16 @@ export interface OpenPositionV4 {
   tpPrice: number;
   /** Engine-units risk fraction at entry (post sizing factor + caps). */
   effRisk: number;
+  /**
+   * Monotonic bar index at entry — tracks `state.barsSeen` (NOT
+   * `refCandles.length-1` which is non-monotonic across ticks because
+   * `refKey` can shift symbols).
+   *
+   * Round 54 (R54-V4-1) fix: previously stored `refCandles.length-1` —
+   * a latent landmine for any future code that compared this to
+   * `state.barsSeen` after refKey shifted. Field is currently unused at
+   * exit-time but kept for future bar-elapsed accounting.
+   */
   entryBarIdx: number;
   highWatermark: number; // long: highest high since entry; short: lowest low
   beActive: boolean;
@@ -677,6 +687,16 @@ function processPositionExit(
       pos.direction === "long"
         ? candle.open >= triggerPrice
         : candle.open <= triggerPrice;
+    // Round 54 (R54-V4-3): explicit same-bar PTP+Stop convention.
+    // PARITY with backtest engine `runFtmoDaytrade24h` (ftmoDaytrade24h.ts
+    // ~line 4228): "Conservative: PTP only fires when stop did NOT hit, OR
+    // a gap already passed the trigger before any wick down to stop." If
+    // both ptpHit and stopHit fire on the same bar AND the bar OPEN was
+    // between TP and stop (no gap-past-PTP), STOP wins — the engine treats
+    // the wick-to-PTP-then-down-to-stop case as stop-first. This is
+    // intentional pessimism on volatile bars. Asymmetric for shorts vs longs
+    // only insofar as long uses bar.high/low and short uses bar.low/high —
+    // the priority logic is identical.
     if (ptpHit && (!stopHit || gapPastPtp)) {
       pos.ptpTriggered = true;
       pos.ptpRealizedPct = ptp.closeFraction * ptp.triggerPct;
@@ -915,12 +935,20 @@ export function pollLive(
   } else if (newDay > state.day) {
     state.day = newDay;
     state.dayStart = state.equity;
-    // Phase 36 (R44-V4-7): set dayPeak to -Infinity so the recompute at
-    // step 4 (using THIS bar's closes) anchors it correctly. Was using
-    // state.mtmEquity which is the PREVIOUS bar's MTM — if today's open
-    // is below yesterday's close, dayPeak was anchored too high and
-    // dailyPeakTrailingStop fired spuriously.
-    state.dayPeak = -Infinity;
+    // Round 54 (R54-V4-5): defensive — anchor dayPeak at realised equity
+    // (= dayStart, finite) rather than -Infinity. Step 4 recomputes via
+    // `if (state.mtmEquity > state.dayPeak) state.dayPeak = state.mtmEquity`
+    // so today's MTM correctly raises the peak when above day-start.
+    // Previously (Phase 36 R44-V4-7) we used -Infinity to force the
+    // recompute to anchor on today's bar — but that left a landmine: any
+    // future early-return between rollover and recompute would persist
+    // -Infinity and downstream `dailyPeakTrailingStop` math becomes NaN.
+    // Anchoring at state.equity is finite, defensive, and remains correct
+    // because today's MTM ≥ state.equity in the normal case (no underwater
+    // open positions); when underwater, dayPeak = state.equity errs on
+    // the safe side (a slightly higher peak makes dailyPeakTrailingStop
+    // fire EARLIER on the same day, which is conservative).
+    state.dayPeak = state.equity;
   }
   if (newDay >= cfg.maxDays) {
     // Time exhausted.
@@ -1078,9 +1106,18 @@ export function pollLive(
   }
 
   // 6. Target-hit handling.
+  // Round 54 (R54-V4-2): require BOTH realised AND mtm equity ≥ target.
+  // Previously only realised was checked here, but the matching pass-check
+  // (Phase 84 below) requires both. With realised-only setting
+  // firstTargetHitDay, a window-exhaust path that only inspects
+  // `firstTargetHitDay !== null` (see end-of-window block in `simulate()`)
+  // could declare pass even when MTM never recovered above target after a
+  // losing open position dragged equity back down. Aligning the predicate
+  // here closes that false-positive-pass landmine.
   if (
     state.firstTargetHitDay === null &&
-    state.equity >= 1 + cfg.profitTarget
+    state.equity >= 1 + cfg.profitTarget &&
+    state.mtmEquity >= 1 + cfg.profitTarget
   ) {
     state.firstTargetHitDay = state.day;
     state.pausedAtTarget = !!cfg.pauseAtTargetReached;
@@ -1233,149 +1270,183 @@ export function pollLive(
         });
         continue;
       }
-      // Find trade whose entryTime equals current bar's openTime (live-poll
-      // convention — detectAsset enters on next bar of signal-bar; signal at
-      // candles[N-1] enters on candles[N].open == lastBar.openTime).
-      const matched = trades.find((t) => t.entryTime === lastBar.openTime);
-      if (!matched) continue;
+      // Round 54 (R54-V4-4): collect ALL trades whose entryTime equals
+      // current bar's openTime, not just the first one. detectAsset can
+      // emit multiple signals on the same bar (e.g. long + short on
+      // different strategy branches, or two parallel pullback fills). The
+      // backtest engine sees all of them; the live engine previously saw
+      // only the first via `.find()` → silent drift on multi-signal bars.
+      // Each matched signal flows through the full per-signal entry
+      // sequence (LSC / correlation / MCT recheck / sizing / stop caps) so
+      // a previously-opened position in this same bar will correctly bump
+      // the openPositions count for subsequent matches.
+      const matchedAll = trades.filter((t) => t.entryTime === lastBar.openTime);
+      if (matchedAll.length === 0) continue;
 
-      // Loss-streak cooldown (per asset|direction).
-      const k = lsKey(asset.symbol, matched.direction);
-      const ls = state.lossStreakByAssetDir[k];
-      if (ls && state.barsSeen < ls.cdUntilBarsSeen) {
-        result.skipped.push({
-          asset: asset.symbol,
-          reason: `lossStreakCooldown until barsSeen=${ls.cdUntilBarsSeen}`,
-        });
-        continue;
-      }
-
-      // correlationFilter check — count open same-direction.
-      if (cfg.correlationFilter) {
-        const sameDir = state.openPositions.filter(
-          (p) => p.direction === matched.direction,
-        ).length;
-        if (sameDir >= cfg.correlationFilter.maxOpenSameDirection) {
+      let mctBreakOuter = false;
+      for (const matched of matchedAll) {
+        // Loss-streak cooldown (per asset|direction).
+        const k = lsKey(asset.symbol, matched.direction);
+        const ls = state.lossStreakByAssetDir[k];
+        if (ls && state.barsSeen < ls.cdUntilBarsSeen) {
           result.skipped.push({
             asset: asset.symbol,
-            reason: `correlationFilter ${sameDir} same-dir open`,
+            reason: `lossStreakCooldown until barsSeen=${ls.cdUntilBarsSeen}`,
           });
           continue;
         }
-      }
 
-      // Final MCT re-check (could've opened in same bar).
-      if (
-        cfg.maxConcurrentTrades !== undefined &&
-        state.openPositions.length >= cfg.maxConcurrentTrades
-      ) {
-        result.skipped.push({ asset: asset.symbol, reason: "MCT cap mid-bar" });
-        break;
-      }
-
-      // Sizing: derive effRisk same way as backtest equity loop.
-      const factor = resolveSizingFactor(state, cfg, lastBar.openTime);
-      // Phase 30 (V4 Audit Bug 6): compute final stopPct (incl. atrStop)
-      // BEFORE effRisk back-derive. Was: back-derive used base stopPct,
-      // then atrStop pushed stopPct higher → modelled loss exceeded
-      // LIVE_LOSS_CAP for atrStop-heavy configs (V5_QUARTZ family).
-      const tpPct = asset.tpPct ?? cfg.tpPct;
-      let stopPct = asset.stopPct ?? cfg.stopPct;
-      if (cfg.atrStop) {
-        const series = atr(candles, cfg.atrStop.period);
-        const v = series[series.length - 1];
-        if (v != null) {
-          const atrFrac = (cfg.atrStop.stopMult * v) / matched.entryPrice;
-          stopPct = Math.max(stopPct, atrFrac);
+        // correlationFilter check — count open same-direction.
+        if (cfg.correlationFilter) {
+          const sameDir = state.openPositions.filter(
+            (p) => p.direction === matched.direction,
+          ).length;
+          if (sameDir >= cfg.correlationFilter.maxOpenSameDirection) {
+            result.skipped.push({
+              asset: asset.symbol,
+              reason: `correlationFilter ${sameDir} same-dir open`,
+            });
+            continue;
+          }
         }
-      }
-      if (cfg.liveCaps && stopPct > cfg.liveCaps.maxStopPct) {
-        result.skipped.push({
-          asset: asset.symbol,
-          reason: `stopPct ${(stopPct * 100).toFixed(2)}% > maxStopPct ${(
-            cfg.liveCaps.maxStopPct * 100
-          ).toFixed(2)}%`,
+
+        // Final MCT re-check (could've opened in same bar). When MCT is
+        // hit we break the OUTER asset loop too — no further entries
+        // possible this bar.
+        if (
+          cfg.maxConcurrentTrades !== undefined &&
+          state.openPositions.length >= cfg.maxConcurrentTrades
+        ) {
+          result.skipped.push({
+            asset: asset.symbol,
+            reason: "MCT cap mid-bar",
+          });
+          mctBreakOuter = true;
+          break;
+        }
+
+        // Sizing: derive effRisk same way as backtest equity loop.
+        const factor = resolveSizingFactor(state, cfg, lastBar.openTime);
+        // Phase 30 (V4 Audit Bug 6): compute final stopPct (incl. atrStop)
+        // BEFORE effRisk back-derive. Was: back-derive used base stopPct,
+        // then atrStop pushed stopPct higher → modelled loss exceeded
+        // LIVE_LOSS_CAP for atrStop-heavy configs (V5_QUARTZ family).
+        const tpPct = asset.tpPct ?? cfg.tpPct;
+        let stopPct = asset.stopPct ?? cfg.stopPct;
+        if (cfg.atrStop) {
+          // Round 54 (R54-V4-6): anchor ATR on prev-bar (length-2), not
+          // current-bar (length-1). The series is computed from
+          // `candles.slice(0, i+1)` where `i` is the just-closed bar;
+          // length-1 includes the entry-bar's high/low/close which is a
+          // subtle look-ahead. Backtest engine resolves stop via the
+          // signal-bar's ATR (computed on bars up-to and INCLUDING the
+          // signal bar) — same convention. Falls back to length-1 only if
+          // the prev-bar ATR is null (warm-up window).
+          const series = atr(candles, cfg.atrStop.period);
+          const prev =
+            series.length >= 2 ? series[series.length - 2] : undefined;
+          const cur = series[series.length - 1];
+          const v = prev ?? cur;
+          if (v != null) {
+            const atrFrac = (cfg.atrStop.stopMult * v) / matched.entryPrice;
+            stopPct = Math.max(stopPct, atrFrac);
+          }
+        }
+        if (cfg.liveCaps && stopPct > cfg.liveCaps.maxStopPct) {
+          result.skipped.push({
+            asset: asset.symbol,
+            reason: `stopPct ${(stopPct * 100).toFixed(2)}% > maxStopPct ${(
+              cfg.liveCaps.maxStopPct * 100
+            ).toFixed(2)}%`,
+          });
+          continue;
+        }
+
+        const volMult = cfg.liveCaps
+          ? Math.min(matched.volMult ?? 1.0, 1.0)
+          : (matched.volMult ?? 1.0);
+        let effRisk = asset.riskFrac * factor * volMult;
+        if (cfg.liveCaps && effRisk > cfg.liveCaps.maxRiskFrac) {
+          effRisk = cfg.liveCaps.maxRiskFrac;
+        }
+        // Phase 59 (R44-V4-10): derive the live-loss cap from cfg.maxDailyLoss
+        // (×0.8 safety margin) instead of hardcoding 0.04. A 0.10-DL config
+        // was needlessly restricted to 4% per trade; a 0.03-DL config was
+        // not restrictive enough. Back-derive effRisk from this cap using
+        // the FINAL stopPct.
+        const LIVE_LOSS_CAP = (cfg.maxDailyLoss ?? 0.05) * 0.8;
+        if (stopPct > 0 && cfg.leverage > 0) {
+          const modelledLoss = effRisk * stopPct * cfg.leverage;
+          if (modelledLoss > LIVE_LOSS_CAP) {
+            effRisk = LIVE_LOSS_CAP / (stopPct * cfg.leverage);
+          }
+        }
+        if (effRisk <= 0) continue;
+
+        const stopPrice =
+          matched.direction === "long"
+            ? matched.entryPrice * (1 - stopPct)
+            : matched.entryPrice * (1 + stopPct);
+        const tpPrice =
+          matched.direction === "long"
+            ? matched.entryPrice * (1 + tpPct)
+            : matched.entryPrice * (1 - tpPct);
+
+        let chandelierAtrAtEntry: number | null = null;
+        if (cfg.chandelierExit) {
+          const series = atr(candles, cfg.chandelierExit.period);
+          const v = series[series.length - 1];
+          if (v != null) chandelierAtrAtEntry = v;
+        }
+
+        // Ticket id includes direction so two signals (long+short) on the
+        // same bar produce distinct ids.
+        const ticketId = `${asset.symbol}@${matched.entryTime}@${matched.direction}`;
+        const newPos: OpenPositionV4 = {
+          ticketId,
+          symbol: asset.symbol,
+          sourceSymbol: sourceKey,
+          direction: matched.direction,
+          entryTime: matched.entryTime,
+          entryPrice: matched.entryPrice,
+          initialStopPct: stopPct,
+          stopPrice,
+          tpPrice,
+          effRisk,
+          // Round 54 (R54-V4-1): monotonic anchor — was `barIdx` (=
+          // refCandles.length-1) which is non-monotonic when refKey shifts.
+          entryBarIdx: state.barsSeen,
+          highWatermark: matched.entryPrice,
+          beActive: false,
+          ptpTriggered: false,
+          ptpRealizedPct: 0,
+          ptpLevelIdx: 0,
+          ptpLevelsRealized: 0,
+        };
+        state.openPositions.push(newPos);
+        if (!state.tradingDays.includes(state.day)) {
+          state.tradingDays.push(state.day);
+        }
+
+        result.decision.opens.push({
+          symbol: asset.symbol,
+          sourceSymbol: sourceKey,
+          direction: matched.direction,
+          entryTime: matched.entryTime,
+          entryPrice: matched.entryPrice,
+          stopPrice,
+          tpPrice,
+          stopPct,
+          tpPct,
+          effRisk,
+          ...(chandelierAtrAtEntry !== null ? { chandelierAtrAtEntry } : {}),
+          ...(cfg.partialTakeProfit
+            ? { ptpConfig: cfg.partialTakeProfit }
+            : {}),
+          ...(cfg.breakEven ? { beThreshold: cfg.breakEven.threshold } : {}),
         });
-        continue;
       }
-
-      const volMult = cfg.liveCaps
-        ? Math.min(matched.volMult ?? 1.0, 1.0)
-        : (matched.volMult ?? 1.0);
-      let effRisk = asset.riskFrac * factor * volMult;
-      if (cfg.liveCaps && effRisk > cfg.liveCaps.maxRiskFrac) {
-        effRisk = cfg.liveCaps.maxRiskFrac;
-      }
-      // Phase 59 (R44-V4-10): derive the live-loss cap from cfg.maxDailyLoss
-      // (×0.8 safety margin) instead of hardcoding 0.04. A 0.10-DL config
-      // was needlessly restricted to 4% per trade; a 0.03-DL config was
-      // not restrictive enough. Back-derive effRisk from this cap using
-      // the FINAL stopPct.
-      const LIVE_LOSS_CAP = (cfg.maxDailyLoss ?? 0.05) * 0.8;
-      if (stopPct > 0 && cfg.leverage > 0) {
-        const modelledLoss = effRisk * stopPct * cfg.leverage;
-        if (modelledLoss > LIVE_LOSS_CAP) {
-          effRisk = LIVE_LOSS_CAP / (stopPct * cfg.leverage);
-        }
-      }
-      if (effRisk <= 0) continue;
-
-      const stopPrice =
-        matched.direction === "long"
-          ? matched.entryPrice * (1 - stopPct)
-          : matched.entryPrice * (1 + stopPct);
-      const tpPrice =
-        matched.direction === "long"
-          ? matched.entryPrice * (1 + tpPct)
-          : matched.entryPrice * (1 - tpPct);
-
-      let chandelierAtrAtEntry: number | null = null;
-      if (cfg.chandelierExit) {
-        const series = atr(candles, cfg.chandelierExit.period);
-        const v = series[series.length - 1];
-        if (v != null) chandelierAtrAtEntry = v;
-      }
-
-      const ticketId = `${asset.symbol}@${matched.entryTime}`;
-      const newPos: OpenPositionV4 = {
-        ticketId,
-        symbol: asset.symbol,
-        sourceSymbol: sourceKey,
-        direction: matched.direction,
-        entryTime: matched.entryTime,
-        entryPrice: matched.entryPrice,
-        initialStopPct: stopPct,
-        stopPrice,
-        tpPrice,
-        effRisk,
-        entryBarIdx: barIdx,
-        highWatermark: matched.entryPrice,
-        beActive: false,
-        ptpTriggered: false,
-        ptpRealizedPct: 0,
-        ptpLevelIdx: 0,
-        ptpLevelsRealized: 0,
-      };
-      state.openPositions.push(newPos);
-      if (!state.tradingDays.includes(state.day)) {
-        state.tradingDays.push(state.day);
-      }
-
-      result.decision.opens.push({
-        symbol: asset.symbol,
-        sourceSymbol: sourceKey,
-        direction: matched.direction,
-        entryTime: matched.entryTime,
-        entryPrice: matched.entryPrice,
-        stopPrice,
-        tpPrice,
-        stopPct,
-        tpPct,
-        effRisk,
-        ...(chandelierAtrAtEntry !== null ? { chandelierAtrAtEntry } : {}),
-        ...(cfg.partialTakeProfit ? { ptpConfig: cfg.partialTakeProfit } : {}),
-        ...(cfg.breakEven ? { beThreshold: cfg.breakEven.threshold } : {}),
-      });
+      if (mctBreakOuter) break;
     }
   }
 

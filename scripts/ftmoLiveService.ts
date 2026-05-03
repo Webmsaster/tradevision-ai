@@ -21,6 +21,7 @@ import { loadBinanceHistory } from "../src/utils/historicalData";
 import {
   detectLiveSignalsV231,
   renderDetection,
+  getActiveCfgInfo,
   type AccountState,
   type DetectionResult,
   type LiveSignal,
@@ -260,14 +261,24 @@ const LOG_KEEP = 5;
 // Phase 26 (Live Service Bug 4): O_EXCL lock around the rotate critical
 // section so two concurrent appendLog callers can't half-rotate. Best-effort
 // — if lock can't be acquired in 200ms, skip rotation this tick.
-function tryAcquireRotateLock(): number | null {
+//
+// Round 54 Fix #1: token-based unlink to mirror processLock.ts. Without
+// a token, a stale-claim from another process would cause us to unlink
+// THEIR fresh lock on our way out. We now write `pid:rand` and verify
+// before unlink — mismatch = our lock was stolen, leave it alone.
+function makeRotateToken(): string {
+  return `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function tryAcquireRotateLock(): { fd: number; token: string } | null {
   const lockPath = `${LOG_PATH}.rotate.lock`;
+  const token = makeRotateToken();
   const start = Date.now();
   while (Date.now() - start < 200) {
     try {
       const fd = fs.openSync(lockPath, "wx");
-      fs.writeSync(fd, String(process.pid));
-      return fd;
+      fs.writeSync(fd, token);
+      return { fd, token };
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
       if (code !== "EEXIST") return null;
@@ -286,17 +297,59 @@ function tryAcquireRotateLock(): number | null {
   return null;
 }
 
-function rotateLogIfNeeded(): void {
+function releaseRotateLock(token: string): void {
+  const lockPath = `${LOG_PATH}.rotate.lock`;
   try {
-    if (!fs.existsSync(LOG_PATH)) return;
-    const size = fs.statSync(LOG_PATH).size;
-    if (size < LOG_ROTATE_BYTES) return;
-    const lockFd = tryAcquireRotateLock();
-    if (lockFd === null) return; // another process is rotating — skip
+    const held = fs.readFileSync(lockPath, "utf-8");
+    if (held === token) {
+      fs.unlinkSync(lockPath);
+    }
+    // else: another process force-claimed our lock — leave their token alone.
+  } catch {
+    /* lock-file already gone — nothing to release */
+  }
+}
+
+/**
+ * Round 54 Fix #1: append+rotate combined under a single lock so writes
+ * cannot straddle the rename. Concurrent appenders that already had the
+ * old inode opened via appendFileSync would otherwise silently write to
+ * the rotated `.1` file. Now: hold the rotate lock, decide rename-or-not,
+ * THEN append — every write goes to either the pre-rotate or post-rotate
+ * inode, never both.
+ */
+function appendAndRotate(line: string): void {
+  fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
+  let needRotate = false;
+  try {
+    if (fs.existsSync(LOG_PATH)) {
+      needRotate = fs.statSync(LOG_PATH).size >= LOG_ROTATE_BYTES;
+    }
+  } catch {
+    /* stat failed — proceed without rotate */
+  }
+  if (!needRotate) {
+    fs.appendFileSync(LOG_PATH, line);
+    return;
+  }
+  const lock = tryAcquireRotateLock();
+  if (lock === null) {
+    // Couldn't get lock — another process is rotating. Append anyway; worst
+    // case our line lands in the rotated archive (still preserved).
+    fs.appendFileSync(LOG_PATH, line);
+    return;
+  }
+  try {
+    // Re-check size under lock — another rotator may have just finished.
+    let sizeOk = false;
     try {
-      // Re-check size under lock — another rotator may have just finished.
-      if (!fs.existsSync(LOG_PATH)) return;
-      if (fs.statSync(LOG_PATH).size < LOG_ROTATE_BYTES) return;
+      sizeOk =
+        fs.existsSync(LOG_PATH) &&
+        fs.statSync(LOG_PATH).size >= LOG_ROTATE_BYTES;
+    } catch {
+      /* ignore */
+    }
+    if (sizeOk) {
       // Phase 26 (Live Service Bug 5): clean up pre-existing archives beyond
       // LOG_KEEP. If LOG_KEEP was lowered from 10→5 in a redeploy, the old
       // .6..10 files would otherwise leak forever.
@@ -319,17 +372,19 @@ function rotateLogIfNeeded(): void {
           }
         }
       }
-      fs.renameSync(LOG_PATH, `${LOG_PATH}.1`);
-    } finally {
-      fs.closeSync(lockFd);
       try {
-        fs.unlinkSync(`${LOG_PATH}.rotate.lock`);
+        fs.renameSync(LOG_PATH, `${LOG_PATH}.1`);
       } catch {
-        /* ignore */
+        /* race: another rotator beat us — fall through and append */
       }
     }
-  } catch (e) {
-    console.error(`[svc] log rotate failed:`, e);
+    // Append AFTER the rename decision under the lock. All writes either
+    // hit the pre-rotate inode (we didn't rotate) or the fresh post-rotate
+    // file (we did rotate) — never straddle.
+    fs.appendFileSync(LOG_PATH, line);
+  } finally {
+    fs.closeSync(lock.fd);
+    releaseRotateLock(lock.token);
   }
 }
 
@@ -339,12 +394,9 @@ function appendLog(entry: object) {
   // trackedRunOneCheck → consecutiveFailures++ → false-positive
   // "Binance failing" alert + recovery toggle.
   try {
-    rotateLogIfNeeded();
-    fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
-    fs.appendFileSync(
-      LOG_PATH,
-      JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n",
-    );
+    const line =
+      JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n";
+    appendAndRotate(line);
   } catch (e) {
     console.error("[svc] log append failed:", e);
   }
@@ -586,15 +638,29 @@ async function runOneCheck(): Promise<DetectionResult> {
     if (candleMap[sym]) extraCandles[sym] = candleMap[sym];
   }
 
-  const account = readJSON<AccountState>(ACCOUNT_PATH, defaultAccount());
-  // Phase 30: ALWAYS merge challenge-peak.json into account, not just on
-  // cold-start. Python writes account.json without `challengePeak` field,
-  // and V231's peakDrawdownThrottle would otherwise emit console.error
-  // every poll for the entire process lifetime.
-  if (account.challengePeak === undefined) {
-    const onDisk = readChallengePeakFromDisk();
-    if (onDisk !== undefined) account.challengePeak = onDisk;
-  }
+  // Round 54 Fix #4: read account.json + challenge-peak.json under a shared
+  // peek lock so Python's update_challenge_peak() (which writes peak then
+  // account independently) can't slip a stale-peak/fresh-equity pair past us.
+  // Short timeout + short stale-recovery window: we'd rather take a slightly
+  // racy read than block the polling loop indefinitely if Python doesn't
+  // honor the lock.
+  const ACCOUNT_LOCK = path.join(STATE_DIR, "account.lock");
+  const account = await withFileLock(
+    ACCOUNT_LOCK,
+    async () => {
+      const acc = readJSON<AccountState>(ACCOUNT_PATH, defaultAccount());
+      // Phase 30: ALWAYS merge challenge-peak.json into account, not just on
+      // cold-start. Python writes account.json without `challengePeak` field,
+      // and V231's peakDrawdownThrottle would otherwise emit console.error
+      // every poll for the entire process lifetime.
+      if (acc.challengePeak === undefined) {
+        const onDisk = readChallengePeakFromDisk();
+        if (onDisk !== undefined) acc.challengePeak = onDisk;
+      }
+      return acc;
+    },
+    { timeoutMs: 1500, staleMs: 2000 },
+  );
   await refreshNewsIfStale();
   // V4-Engine path: persistent-state live engine (Round 40).
   // Selector convention: FTMO_TF ends with "-v4engine" OR is "2h-trend-breakout-v1"
@@ -656,7 +722,15 @@ async function runOneCheck(): Promise<DetectionResult> {
   // Phase 19 (Live Service Bug 3): cross-process R-M-W on pending-signals.json
   // wrapped in file-lock. Python executor uses _file_lock for the same path —
   // both processes now serialize on the same lock file (O_EXCL semantics).
+  //
+  // Round 54 Fix #2: ALL Telegram/network calls happen AFTER lock release.
+  // Telegram 429 / network hang of 6+ s would otherwise block Python's
+  // read-modify-write on pending-signals.json for seconds → stale-claim.
+  // Inside-lock ONLY: disk read-modify-write. Outside-lock: Telegram fire.
   const PENDING_LOCK = path.join(STATE_DIR, "pending-signals.lock");
+  // Pending Telegram payloads — collected inside the lock, fired after release.
+  const tgPayloads: string[] = [];
+  let queuedSignals: LiveSignal[] = [];
   await withFileLock(PENDING_LOCK, async () => {
     // Append new signals to pending queue.
     // Dedup against BOTH pending AND executed signals — otherwise a service
@@ -704,7 +778,7 @@ async function runOneCheck(): Promise<DetectionResult> {
       console.log(
         `[ftmo-live] bot is PAUSED — dropping ${newSignals.length} new signal(s)`,
       );
-      await tgSend(
+      tgPayloads.push(
         `⏸ <b>${newSignals.length} signal(s) dropped (bot paused)</b>\n` +
           newSignals
             .map(
@@ -727,7 +801,7 @@ async function runOneCheck(): Promise<DetectionResult> {
         console.log(
           `[ftmo-live] /pause arrived during dedup — dropping ${newSignals.length} signal(s)`,
         );
-        await tgSend(
+        tgPayloads.push(
           `⏸ <b>${newSignals.length} signal(s) dropped</b> (pause arrived during processing)`,
         );
       } else {
@@ -736,8 +810,9 @@ async function runOneCheck(): Promise<DetectionResult> {
         console.log(
           `[ftmo-live] queued ${newSignals.length} new signal(s) to ${PENDING_PATH}`,
         );
+        queuedSignals = newSignals.slice();
 
-        // Telegram alert per new signal
+        // Collect Telegram alert per new signal — fired AFTER lock release.
         for (const sig of newSignals) {
           const msg = [
             `🚨 <b>NEW SIGNAL</b>`,
@@ -751,7 +826,7 @@ async function runOneCheck(): Promise<DetectionResult> {
             `Risk: ${(sig.riskFrac * 100).toFixed(3)}% · Factor ${sig.sizingFactor.toFixed(2)}×`,
             `Max hold: ${sig.maxHoldHours}h`,
           ].join("\n");
-          await tgSend(msg);
+          tgPayloads.push(msg);
         }
       } // end of else (controlsRecheck.paused)
     }
@@ -782,13 +857,21 @@ async function runOneCheck(): Promise<DetectionResult> {
     // so the heartbeat reflects what was actually QUEUED for execution, not
     // signals that were dropped (paused, dedup'd, blocked). Old behavior gave
     // false-positive 'OUT-OF-BAND Risk' flags during pause periods.
-    if (newSignals.length > 0) {
-      recordRecentSignals(newSignals);
+    if (queuedSignals.length > 0) {
+      recordRecentSignals(queuedSignals);
     }
-
-    // Smart alerts (equity drop, DL/TL warnings, stuck challenge, daily summary, risk heartbeat)
-    await runSmartAlerts(account);
   }); // close withFileLock(PENDING_LOCK, ...)
+
+  // Round 54 Fix #2: Telegram + smart-alert network calls run AFTER lock
+  // release. A 6+ s 429-backoff in tgSend can no longer block Python's
+  // read-modify-write on pending-signals.json.
+  for (const msg of tgPayloads) {
+    await tgSend(msg);
+  }
+  // Smart alerts (equity drop, DL/TL warnings, stuck challenge, daily summary,
+  // risk heartbeat) — these also call tgSend internally, so they run outside
+  // the lock too.
+  await runSmartAlerts(account);
 
   return result;
 }
@@ -962,8 +1045,24 @@ async function main() {
   console.log(`[ftmo-live] State directory: ${STATE_DIR}`);
   ensureStateDir();
 
+  // Round 54 Fix #3: assert CFG selection at boot. V231's getActiveCfgInfo()
+  // throws inside the module if FTMO_TF was set but didn't match any
+  // registry key — this banner adds a confirmation log so the operator
+  // sees `resolved CFG=<label> for FTMO_TF=<env>` and can spot drift
+  // (e.g. a config rename that wasn't propagated to the registry).
+  const cfgInfo = getActiveCfgInfo();
+  const ftmoTfEnv = process.env.FTMO_TF ?? "(unset)";
+  console.log(
+    `[ftmo-live] resolved CFG=${cfgInfo.label} for FTMO_TF=${ftmoTfEnv}`,
+  );
+  if (process.env.FTMO_TF && cfgInfo.ftmoTfKey === "") {
+    console.error(
+      `[ftmo-live] WARNING: FTMO_TF=${process.env.FTMO_TF} resolved to empty key — check trim/whitespace`,
+    );
+  }
+
   await tgSend(
-    `🤖 <b>FTMO Signal Service ONLINE (${TF})</b>\nState dir: <code>${htmlEscape(STATE_DIR)}</code>\nNext check at next ${TF} UTC boundary.`,
+    `🤖 <b>FTMO Signal Service ONLINE (${TF})</b>\nState dir: <code>${htmlEscape(STATE_DIR)}</code>\nCFG: ${htmlEscape(cfgInfo.label)} (FTMO_TF=${htmlEscape(ftmoTfEnv)})\nNext check at next ${TF} UTC boundary.`,
   );
 
   // BUGFIX 2026-04-28 (Round 10 Bug 5): supervisor restarts the bot if its

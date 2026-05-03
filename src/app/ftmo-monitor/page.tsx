@@ -12,7 +12,7 @@
  *
  * Auto-refreshes every 15s.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface PreviewResult {
   regime: "BULL" | "BEAR_CHOP";
@@ -140,9 +140,24 @@ export default function FtmoMonitorPage() {
   const [error, setError] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
+  // Round 54 fix #7: pause polling while tab is hidden — saves bandwidth and
+  // server CPU when the user has the monitor open in a background tab.
+  const visibleRef = useRef<boolean>(
+    typeof document !== "undefined" ? !document.hidden : true,
+  );
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onVisChange = () => {
+      visibleRef.current = !document.hidden;
+    };
+    document.addEventListener("visibilitychange", onVisChange);
+    return () => document.removeEventListener("visibilitychange", onVisChange);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     async function fetchState() {
+      if (!visibleRef.current) return;
       try {
         const resp = await fetch("/api/ftmo-state", { cache: "no-store" });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -157,6 +172,7 @@ export default function FtmoMonitorPage() {
     }
     async function fetchPreview() {
       if (cancelled) return;
+      if (!visibleRef.current) return;
       setPreviewLoading(true);
       try {
         const resp = await fetch("/api/ftmo-preview", { cache: "no-store" });

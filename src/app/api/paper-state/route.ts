@@ -39,8 +39,14 @@ export async function GET() {
     const state = JSON.parse(readFileSync(STATE_FILE, "utf8"));
     return NextResponse.json({ ...state, error: null });
   } catch (err) {
+    // Round 54 (Finding #1): mirror /api/ftmo-preview pattern (Phase 33
+    // R45-API-6) — never echo `(err as Error).message` to the client.
+    // ENOENT/EACCES messages from node:fs leak the absolute server path
+    // (`/home/<user>/.tradevision-ai/...`), which is information
+    // disclosure (CWE-209). Log internally, return generic 500.
+    console.error("[paper-state]", err);
     return NextResponse.json(
-      { error: (err as Error).message, openPositions: [], closedTrades: [] },
+      { error: "Internal error", openPositions: [], closedTrades: [] },
       { status: 500 },
     );
   }

@@ -254,6 +254,8 @@ export default function LivePage() {
         closedTracked.length
       : null;
 
+  // History effect: append on action change. Deps intentionally minimal so per-tick
+  // changes (priceNow, confidence) don't refire this effect.
   useEffect(() => {
     if (!snapshot) return;
     const effective: SignalSnapshot = { ...snapshot, action: gatedAction };
@@ -262,37 +264,45 @@ export default function LivePage() {
       setSignalHistory((prev) =>
         [effective, ...prev].slice(0, MAX_HISTORY_SIGNALS),
       );
+    }
+  }, [snapshot, gatedAction]);
 
-      if (
-        notify &&
-        !tracking.circuitBreakerActive &&
-        typeof Notification !== "undefined" &&
-        Notification.permission === "granted" &&
-        effective.action !== "flat"
-      ) {
-        const title = `${effective.action === "long" ? "BUY" : "SELL"} ${symbol} · ${confidence}%`;
-        const body = `${priceNow !== null ? formatPrice(priceNow) : ""} · ${timeframe}`;
-        try {
-          new Notification(title, { body, tag: `live-signal-${symbol}` });
-        } catch {
-          /* ignore */
-        }
+  // Notification effect: split out so confidence/priceNow don't retrigger.
+  // Use a separate ref so we never double-fire even on rapid re-renders before
+  // setSignalHistory's batched commit.
+  const lastNotifiedActionRef = useRef<"long" | "short" | "flat" | null>(null);
+  useEffect(() => {
+    if (!snapshot) return;
+    if (gatedAction === "flat") {
+      lastNotifiedActionRef.current = gatedAction;
+      return;
+    }
+    if (lastNotifiedActionRef.current === gatedAction) return;
+    // Mark BEFORE Notification creation to close the race window.
+    lastNotifiedActionRef.current = gatedAction;
+    if (
+      notify &&
+      !tracking.circuitBreakerActive &&
+      typeof Notification !== "undefined" &&
+      Notification.permission === "granted"
+    ) {
+      const title = `${gatedAction === "long" ? "BUY" : "SELL"} ${symbol} · ${confidence}%`;
+      const body = `${priceNow !== null ? formatPrice(priceNow) : ""} · ${timeframe}`;
+      try {
+        new Notification(title, { body, tag: `live-signal-${symbol}` });
+      } catch {
+        /* ignore */
       }
     }
-  }, [
-    snapshot,
-    gatedAction,
-    notify,
-    symbol,
-    confidence,
-    priceNow,
-    timeframe,
-    tracking.circuitBreakerActive,
-  ]);
+    // confidence/priceNow read from closure but intentionally NOT in deps —
+    // we only want to fire on action transitions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gatedAction, symbol, timeframe, notify, tracking.circuitBreakerActive]);
 
   useEffect(() => {
     setSignalHistory([]);
     lastEmittedRef.current = null;
+    lastNotifiedActionRef.current = null;
     setWalkForward(null);
     setMonteCarlo(null);
   }, [symbol, timeframe]);

@@ -180,6 +180,57 @@ describe("TradeForm", () => {
     expect(submittedTrade.pnl).toBe(100);
   });
 
+  // Round 54 fix #2: re-render with a new editTrade object identity (same id)
+  // must NOT obliterate user input. Effect deps now key on editTrade?.id +
+  // isOpen, not the object reference.
+  it("does not reset user input when parent re-passes a same-id editTrade with new identity", () => {
+    const { rerender } = render(
+      <TradeForm {...defaultProps} editTrade={editTrade} />,
+    );
+    const pairInput = screen.getByPlaceholderText(
+      "BTC/USDT",
+    ) as HTMLInputElement;
+
+    // User types over the populated value.
+    fireEvent.change(pairInput, { target: { value: "ETH/USDT" } });
+    expect(pairInput.value).toBe("ETH/USDT");
+
+    // Parent re-renders with a brand-new object identity but same id (e.g. via spread).
+    rerender(<TradeForm {...defaultProps} editTrade={{ ...editTrade }} />);
+
+    const pairInputAfter = screen.getByPlaceholderText(
+      "BTC/USDT",
+    ) as HTMLInputElement;
+    expect(pairInputAfter.value).toBe("ETH/USDT");
+  });
+
+  // Round 54 fix #4: rapid double-click on the submit button must produce
+  // exactly one onSubmit call.
+  it("guards against double-submit (rapid double-click)", () => {
+    render(<TradeForm {...defaultProps} />);
+
+    fireEvent.change(screen.getByPlaceholderText("BTC/USDT"), {
+      target: { value: "ETH/USDT" },
+    });
+    const priceInputs = screen.getAllByPlaceholderText("0.00");
+    fireEvent.change(priceInputs[0]!, { target: { value: "100" } });
+    fireEvent.change(priceInputs[1]!, { target: { value: "110" } });
+    fireEvent.change(priceInputs[2]!, { target: { value: "10" } });
+
+    const dateInputs = document.querySelectorAll(
+      'input[type="datetime-local"]',
+    );
+    fireEvent.change(dateInputs[0]!, { target: { value: "2026-01-01T10:00" } });
+    fireEvent.change(dateInputs[1]!, { target: { value: "2026-01-02T10:00" } });
+
+    const btn = screen.getByText("Add Trade");
+    fireEvent.click(btn);
+    fireEvent.click(btn);
+    fireEvent.click(btn);
+
+    expect(mockOnSubmit).toHaveBeenCalledTimes(1);
+  });
+
   it("validates exit date must be after entry date", () => {
     render(<TradeForm {...defaultProps} />);
 

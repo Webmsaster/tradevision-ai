@@ -1,29 +1,19 @@
 import { NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { isRateLimited } from "@/utils/distributedRateLimit";
 
-// Phase 70 (R45-API-6): in-memory rate-limit on /api/auth/callback.
-// Without this, a brute-force attacker could spray invalid `code`
-// parameters to amplify load on Supabase's exchangeCodeForSession
-// endpoint (and pollute logs). 10 attempts/min/IP is generous for
-// real users (whose code exchange normally happens once per login).
-const callbackHits = new Map<string, number[]>();
-const RATE_WINDOW_MS = 60_000;
-const RATE_MAX_HITS = 10;
-function isRateLimited(ip: string): boolean {
-  const now = Date.now();
-  const hits = (callbackHits.get(ip) ?? []).filter(
-    (t) => now - t < RATE_WINDOW_MS,
-  );
-  hits.push(now);
-  callbackHits.set(ip, hits);
-  // Opportunistic GC of stale IP entries.
-  if (callbackHits.size > 1000) {
-    for (const [k, v] of callbackHits) {
-      if (v.every((t) => now - t > RATE_WINDOW_MS)) callbackHits.delete(k);
-    }
-  }
-  return hits.length > RATE_MAX_HITS;
-}
+// Phase 70 (R45-API-6): rate-limit on /api/auth/callback to prevent
+// brute-force code-exchange spray that would amplify load on Supabase's
+// exchangeCodeForSession (and pollute logs). 10 attempts/min/IP is
+// generous for real users (code exchange runs once per login).
+//
+// Round 54 (Finding #2): switched from a per-instance `Map` to the
+// shared `distributedRateLimit` helper. On Vercel with N warm
+// serverless instances, a per-instance Map produced an effective limit
+// of `10 × N` per IP — defeating the throttle. With Upstash REST
+// (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN env-vars set),
+// counters are shared cluster-wide; otherwise we fall back to memory
+// and log a one-shot warning.
 
 /**
  * Auth callback handler for Supabase email confirmation and OAuth redirects.
@@ -43,7 +33,7 @@ export async function GET(request: Request) {
     request.headers.get("x-real-ip") ||
     request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
     "unknown";
-  if (isRateLimited(ip)) {
+  if (await isRateLimited("auth-callback", ip)) {
     return new NextResponse("rate limited", { status: 429 });
   }
   const code = searchParams.get("code");

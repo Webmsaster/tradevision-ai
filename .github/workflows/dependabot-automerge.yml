@@ -39,6 +39,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
 
+      # Round 54: defense-in-depth — wait for ALL CI checks to finish and
+      # require all to pass before enabling auto-merge. Branch protection is
+      # the primary gate; this step adds a second one in case the protection
+      # rules drift or are accidentally relaxed. `--watch --fail-fast` exits
+      # non-zero the moment any check fails, blocking the merge step.
+      - name: Wait for CI checks to pass
+        if: >-
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        run: gh pr checks --repo "$GITHUB_REPOSITORY" "$PR_NUMBER" --watch --fail-fast
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+
       - name: Enable auto-merge for patch/minor updates
         if: >-
           steps.metadata.outputs.update-type == 'version-update:semver-patch' ||

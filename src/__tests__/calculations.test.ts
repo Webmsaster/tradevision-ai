@@ -15,6 +15,7 @@ import {
   calculateAllStats,
   calculatePerformanceByDayOfWeek,
   calculatePerformanceByHour,
+  validateLeverage,
 } from "@/utils/calculations";
 
 function makeTrade(overrides: Partial<Trade> = {}): Trade {
@@ -270,12 +271,105 @@ describe("calculateSharpeRatio", () => {
   });
 
   it("returns positive value for profitable trades", () => {
+    // Round 54: Sharpe is driven by `pnlPercent`, so explicit values
+    // matter (default `pnlPercent: 10` for every trade produces std=0).
     const trades = [
-      makeTrade({ pnl: 10 }),
-      makeTrade({ pnl: 20 }),
-      makeTrade({ pnl: 15 }),
+      makeTrade({ pnl: 10, pnlPercent: 1 }),
+      makeTrade({ pnl: 20, pnlPercent: 2 }),
+      makeTrade({ pnl: 15, pnlPercent: 1.5 }),
     ];
     expect(calculateSharpeRatio(trades)).toBeGreaterThan(0);
+  });
+
+  it("frequency-adjusts annualisation: lower-frequency trader is annualised more conservatively", () => {
+    // Round 54: under the previous fixed-sqrt(252) implementation a
+    // weekly trader (52 trades) and a 10-times-a-day scalper (3650
+    // trades) with identical per-trade Sharpe got the SAME annualised
+    // figure — wildly inflating the swing trader. The frequency-adjusted
+    // factor (sqrt(trades-per-year)) means the scalper's Sharpe should
+    // now be substantially HIGHER than the swing trader's, since they
+    // compound the same per-trade edge many more times in a year.
+    const scalper: Trade[] = [];
+    for (let d = 0; d < 365; d++) {
+      const day = new Date(Date.UTC(2024, 0, 1) + d * 86400000);
+      for (let h = 0; h < 10; h++) {
+        const exit = new Date(day.getTime() + h * 3600000);
+        scalper.push(
+          makeTrade({
+            id: `s-${d}-${h}`,
+            pnl: h % 2 === 0 ? 1 : 3,
+            pnlPercent: h % 2 === 0 ? 1 : 3,
+            entryDate: exit.toISOString(),
+            exitDate: exit.toISOString(),
+          }),
+        );
+      }
+    }
+    const swing: Trade[] = [];
+    for (let w = 0; w < 52; w++) {
+      const exit = new Date(Date.UTC(2024, 0, 1) + w * 7 * 86400000);
+      swing.push(
+        makeTrade({
+          id: `w-${w}`,
+          pnl: w % 2 === 0 ? 1 : 3,
+          pnlPercent: w % 2 === 0 ? 1 : 3,
+          entryDate: exit.toISOString(),
+          exitDate: exit.toISOString(),
+        }),
+      );
+    }
+
+    const sScalp = calculateSharpeRatio(scalper);
+    const sSwing = calculateSharpeRatio(swing);
+    // Both positive, both finite.
+    expect(sScalp).toBeGreaterThan(0);
+    expect(sSwing).toBeGreaterThan(0);
+    // Pre-fix: ratio = 1 (identical, but wrong).
+    // Post-fix: scalper compounds 70× more trades/year → sqrt(70) ≈ 8.4×
+    // higher annualised Sharpe. Assert at least 5× to leave slack for
+    // calendar-day-rounding effects.
+    expect(sScalp / sSwing).toBeGreaterThan(5);
+  });
+
+  it("falls back to sqrt(252) when span is < ~36 days", () => {
+    // Two trades 10 days apart — span too short to infer trades-per-year.
+    const trades = [
+      makeTrade({
+        pnl: 10,
+        pnlPercent: 1,
+        exitDate: "2024-01-01T00:00:00Z",
+      }),
+      makeTrade({
+        pnl: 20,
+        pnlPercent: 2,
+        exitDate: "2024-01-11T00:00:00Z",
+      }),
+    ];
+    const s = calculateSharpeRatio(trades);
+    expect(Number.isFinite(s)).toBe(true);
+    // returns=[1,2], mean=1.5, popStd=0.5, factor=sqrt(252)
+    // → 1.5/0.5 * sqrt(252) ≈ 47.62
+    expect(s).toBeCloseTo(3 * Math.sqrt(252), 1);
+  });
+});
+
+describe("validateLeverage", () => {
+  it("accepts positive finite numbers", () => {
+    expect(validateLeverage(5)).toEqual({ leverage: 5, fallback: false });
+    expect(validateLeverage(0.5)).toEqual({ leverage: 0.5, fallback: false });
+  });
+
+  it("falls back to 1 for zero / negative / non-finite / non-number", () => {
+    expect(validateLeverage(0)).toEqual({ leverage: 1, fallback: true });
+    expect(validateLeverage(-3)).toEqual({ leverage: 1, fallback: true });
+    expect(validateLeverage(NaN)).toEqual({ leverage: 1, fallback: true });
+    expect(validateLeverage(Infinity)).toEqual({ leverage: 1, fallback: true });
+    expect(validateLeverage(undefined)).toEqual({
+      leverage: 1,
+      fallback: true,
+    });
+    expect(validateLeverage(null)).toEqual({ leverage: 1, fallback: true });
+    expect(validateLeverage("3")).toEqual({ leverage: 1, fallback: true });
   });
 });
 

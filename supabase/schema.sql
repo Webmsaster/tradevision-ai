@@ -40,7 +40,12 @@ create table if not exists trades (
   screenshot_url text check (screenshot_url is null or length(screenshot_url) <= 3000000),
   account_id text not null default 'default' check (length(account_id) <= 64),
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  -- Phase 95 (R54-STO-7): soft-delete column. Project convention
+  -- (CLAUDE.md) is soft-delete with `deleted_at is null` filter.
+  -- All read paths filter on `deleted_at is null`; delete paths
+  -- update this column instead of issuing a DELETE.
+  deleted_at timestamptz
 );
 
 -- Index for fast user queries
@@ -51,6 +56,11 @@ create index if not exists idx_trades_exit_date on trades(user_id, exit_date des
 -- many trades hits an in-memory sort after the user_id filter.
 create index if not exists idx_trades_account_exit
   on trades(user_id, account_id, exit_date desc);
+-- Phase 95 (R54-STO-7): partial index for the always-active soft-delete
+-- filter so the read path never scans tombstoned rows.
+create index if not exists idx_trades_user_active
+  on trades(user_id, exit_date desc)
+  where deleted_at is null;
 -- Phase 58 (R45-DB-H2): drop the rarely-used pair index. Pair filtering
 -- happens client-side; this index just adds write-amplification.
 drop index if exists idx_trades_pair;

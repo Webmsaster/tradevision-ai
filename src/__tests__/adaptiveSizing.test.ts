@@ -1,8 +1,21 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import {
   computeLiveEdgeStats,
   adaptiveStrategyStatsMap,
 } from "@/utils/adaptiveSizing";
+
+// Round 54: pin the system clock so the lookback-window arithmetic
+// (`Date.now() - daysAgo * 86400_000`) is deterministic across runs and
+// across midnight/DST boundaries — the previous wall-clock dependency
+// could flake the "ignores trades outside lookback" assertion when the
+// suite ran exactly at the 60-day cliff.
+beforeAll(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-01-01T12:00:00Z"));
+});
+afterAll(() => {
+  vi.useRealTimers();
+});
 
 function trade(strategy: string, pnl: number, daysAgo: number) {
   return {

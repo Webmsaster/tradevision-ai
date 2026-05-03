@@ -7,6 +7,41 @@ import type {
 import { DAYS_OF_WEEK } from "@/lib/constants";
 
 /**
+ * Single source of truth for leverage validation. A leverage value is valid
+ * iff it's a finite positive number. Anything else (NaN, 0, negative,
+ * Infinity) falls back to 1 so calculations stay defined.
+ *
+ * Round 54: lift the previous `leverage || 1` shortcut into a named helper
+ * so both calculatePnl and the form/import boundaries reach the same
+ * conclusion. UI layers can use this to flag a "data quality" badge when
+ * the fallback fires.
+ */
+export function validateLeverage(n: unknown): {
+  leverage: number;
+  fallback: boolean;
+} {
+  if (typeof n === "number" && Number.isFinite(n) && n > 0) {
+    return { leverage: n, fallback: false };
+  }
+  return { leverage: 1, fallback: true };
+}
+
+// Lazy once-per-session warning so we don't spam the console when an
+// imported CSV has many bad rows.
+let _leverageWarningEmitted = false;
+function _warnLeverageFallbackOnce(): void {
+  if (_leverageWarningEmitted) return;
+  _leverageWarningEmitted = true;
+  if (typeof console !== "undefined") {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[calculations] One or more trades had a missing/invalid leverage; falling back to 1x. " +
+        "Validate your CSV import / TradeForm input.",
+    );
+  }
+}
+
+/**
  * Calculate PnL and PnL percentage for a trade based on direction, prices,
  * quantity, leverage, and fees.
  */
@@ -14,7 +49,7 @@ export function calculatePnl(trade: Omit<Trade, "id" | "pnl" | "pnlPercent">): {
   pnl: number;
   pnlPercent: number;
 } {
-  const { direction, entryPrice, exitPrice, quantity, leverage, fees } = trade;
+  const { direction, entryPrice, exitPrice, quantity, fees } = trade;
 
   // quantity = total units in the position (full exposure).
   // Leverage only affects the margin (collateral) required, not the raw PnL.
@@ -27,8 +62,10 @@ export function calculatePnl(trade: Omit<Trade, "id" | "pnl" | "pnlPercent">): {
 
   // pnlPercent = return on margin (capital actually deployed).
   // margin = positionValue / leverage
+  const { leverage, fallback } = validateLeverage(trade.leverage);
+  if (fallback) _warnLeverageFallbackOnce();
   const positionValue = entryPrice * quantity;
-  const margin = positionValue / (leverage || 1);
+  const margin = positionValue / leverage;
   const pnlPercent = margin !== 0 ? (pnl / margin) * 100 : 0;
 
   return { pnl, pnlPercent };
@@ -255,31 +292,61 @@ export function calculateStreaks(trades: Trade[]): {
 }
 
 /**
- * Calculate the annualized Sharpe ratio of trade returns.
+ * Trade-frequency-adjusted Sharpe proxy.
  *
- * Uses each trade's PnL as the return for that period:
- *   Sharpe = (mean return / std deviation of returns) * sqrt(252)
+ * NOTE: this is NOT the textbook Sharpe ratio (which is computed on a
+ * regularly-spaced return series, e.g. daily closes). We compute a per-trade
+ * Sharpe using each trade's `pnlPercent` and annualise it by sqrt(N), where
+ * N = trades-per-year inferred from the actual exit-date span.
  *
- * The sqrt(252) factor is a standard annualization assuming 252 trading days.
- * Returns 0 if there are fewer than 2 trades or if the standard deviation is 0.
+ * Why this matters: the previous implementation hard-coded sqrt(252),
+ * implicitly assuming each trade represents one trading day. A scalper who
+ * places 10 trades/day and a swing trader who places 1/week would both get
+ * the same scaling factor — wildly under-/over-stating their annualised
+ * Sharpe by 5-10×.
+ *
+ * Implementation:
+ *   - Use pnlPercent (return-based) so position size doesn't dominate.
+ *   - tradesPerYear = trades.length / years-spanned (from first→last exit).
+ *   - For very short spans (< ~36 days) the inferred frequency is noisy,
+ *     so we fall back to sqrt(252) and warn via JSDoc — callers should
+ *     treat the result as high-variance.
+ *
+ * Returns 0 for fewer than 2 trades, or when the std dev of returns is 0.
  */
 export function calculateSharpeRatio(trades: Trade[]): number {
   if (trades.length < 2) return 0;
 
-  const returns = trades.map((t) => t.pnl);
+  const returns = trades.map((t) =>
+    Number.isFinite(t.pnlPercent) ? t.pnlPercent : 0,
+  );
 
   const mean = returns.reduce((sum, r) => sum + r, 0) / returns.length;
 
-  // Population standard deviation is used here. For sample std dev you would
-  // divide by (n - 1), but for Sharpe ratio on the full trade set, population
-  // is the standard convention in most trading analytics tools.
+  // Population standard deviation (full-population convention).
   const variance =
     returns.reduce((sum, r) => sum + (r - mean) ** 2, 0) / returns.length;
   const stdDev = Math.sqrt(variance);
 
   if (stdDev === 0) return 0;
 
-  const sharpe = (mean / stdDev) * Math.sqrt(252);
+  // Infer trades-per-year from the exit-date span.
+  const exitTimes = trades
+    .map((t) => new Date(t.exitDate).getTime())
+    .filter((n) => Number.isFinite(n));
+
+  let annualisationFactor = Math.sqrt(252); // sensible default
+  if (exitTimes.length >= 2) {
+    const spanMs = Math.max(...exitTimes) - Math.min(...exitTimes);
+    const years = spanMs / (365.25 * 24 * 60 * 60 * 1000);
+    // Below ~36 days the inferred rate is too noisy; keep the default.
+    if (years >= 0.1) {
+      const tradesPerYear = trades.length / years;
+      annualisationFactor = Math.sqrt(tradesPerYear);
+    }
+  }
+
+  const sharpe = (mean / stdDev) * annualisationFactor;
   return sharpe;
 }
 

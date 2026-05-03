@@ -2,14 +2,60 @@ import type { Trade, CSVColumnMapping } from "@/types/trade";
 import Papa from "papaparse";
 import { v4 as uuidv4 } from "uuid";
 import { calculatePnl } from "@/utils/calculations";
+import { normalizeDateToUTC } from "@/utils/dateNormalize";
+
+/**
+ * Round 54 fix #6: sniff the first ~1KB to confirm the file actually looks
+ * like CSV. Defends against MIME spoofing (a `.csv`-renamed binary or HTML
+ * page) that the extension/MIME check alone can't catch.
+ *
+ * Heuristic: parse the first 1KB with the auto-detected delimiter — if we
+ * cannot extract at least one row with 2+ columns, it is not CSV.
+ */
+async function sniffCsvShape(file: File): Promise<boolean> {
+  const slice = file.slice(0, 1024);
+  let head: string;
+  try {
+    head = await slice.text();
+  } catch {
+    return false;
+  }
+  if (!head || !head.trim()) return false;
+  // Reject obvious non-CSV content (HTML/binary/JSON-array).
+  const trimmed = head.trimStart();
+  if (
+    trimmed.startsWith("<") ||
+    trimmed.startsWith("{") ||
+    trimmed.startsWith("[")
+  ) {
+    return false;
+  }
+  // Try to parse as CSV with a small safety net — we just need to see >=1 row
+  // with >=2 columns or a single header line with multiple delimiter-separated
+  // values.
+  const result = Papa.parse<string[]>(head, {
+    header: false,
+    skipEmptyLines: true,
+  });
+  const data = (result.data as unknown[][]) ?? [];
+  if (data.length === 0) return false;
+  const row0 = data[0];
+  if (!Array.isArray(row0)) return false;
+  return row0.length >= 2;
+}
 
 /**
  * Parse a CSV File object using PapaParse with headers enabled.
  * Returns a Promise that resolves with the full ParseResult.
  */
-export function parseCSVFile(
+export async function parseCSVFile(
   file: File,
 ): Promise<Papa.ParseResult<Record<string, string>>> {
+  // Round 54 fix #6: content-sniff before full parse.
+  const looksLikeCsv = await sniffCsvShape(file);
+  if (!looksLikeCsv) {
+    throw new Error("File doesn't appear to be CSV");
+  }
   return new Promise((resolve, reject) => {
     Papa.parse<Record<string, string>>(file, {
       header: true,
@@ -395,14 +441,27 @@ export function sanitizeCSVField(value: string): string {
 }
 
 /**
- * Safely convert a raw date string into an ISO-8601 string.
- * Returns null if the input cannot be parsed (callers must handle).
- * Previously fell silently to "now" — that hid CSV import errors and put
- * old trades on the import date, breaking equity curves.
+ * Safely convert a raw date string into a UTC ISO-8601 string.
+ *
+ * Round 54: route through normalizeDateToUTC so naive (no-TZ) inputs are
+ * coerced to UTC explicitly with a structured warning, instead of being
+ * silently parsed in the host's local timezone. The CSV import surface
+ * still returns a single string here; the warning is logged once per
+ * import session via console.warn so the user sees it without us having
+ * to thread a return-tuple through every caller.
  */
+let _dateWarningEmitted = false;
 function safeISODate(raw: string | undefined): string | null {
-  if (!raw || !raw.trim()) return null;
-  const date = new Date(raw.trim());
-  if (isNaN(date.getTime())) return null;
-  return date.toISOString();
+  const { iso, warning } = normalizeDateToUTC(raw);
+  if (iso && warning && !_dateWarningEmitted) {
+    _dateWarningEmitted = true;
+    if (typeof console !== "undefined") {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[csvParser] Date string without timezone detected (e.g. "${raw}"). ` +
+          `Coerced to UTC. Add a "Z" suffix or "+HH:MM" offset to silence this warning.`,
+      );
+    }
+  }
+  return iso;
 }

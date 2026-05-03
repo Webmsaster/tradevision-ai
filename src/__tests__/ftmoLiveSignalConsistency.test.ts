@@ -19,15 +19,29 @@ import {
 } from "@/utils/ftmoDaytrade24h";
 import type { Candle } from "@/utils/indicators";
 
-function makeCandles(n: number, basePrice = 1000, vol = 5): Candle[] {
+// Round 54: replace Math.random() with seeded mulberry32 so the
+// makeCandles helper is deterministic across runs. Same pattern used in
+// ftmoLiveSafety.test.ts (Phase 63 / R45-TEST-2). A non-deterministic
+// candle stream can hide regressions when a particular seed never
+// triggers the codepath under test.
+function makeCandles(n: number, basePrice = 1000, vol = 5, seed = 1): Candle[] {
+  // mulberry32 — small public-domain seeded PRNG.
+  let s = seed >>> 0;
+  const rng = () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let r = s;
+    r = Math.imul(r ^ (r >>> 15), r | 1);
+    r ^= r + Math.imul(r ^ (r >>> 7), r | 61);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
   const out: Candle[] = [];
   let price = basePrice;
   let t = Date.UTC(2026, 0, 1, 0, 0, 0);
   for (let i = 0; i < n; i++) {
     const open = price;
-    const close = open + (Math.random() - 0.5) * vol;
-    const high = Math.max(open, close) + Math.random() * vol;
-    const low = Math.min(open, close) - Math.random() * vol;
+    const close = open + (rng() - 0.5) * vol;
+    const high = Math.max(open, close) + rng() * vol;
+    const low = Math.min(open, close) - rng() * vol;
     out.push({
       openTime: t,
       closeTime: t + 60 * 60 * 1000 - 1,

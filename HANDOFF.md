@@ -64,6 +64,20 @@
 - **Slug-Whitelist** `^[a-z0-9][a-z0-9-]{0,63}$` und path-confinement gegen path-traversal.
 - README-Update in `tools/README-ftmo-bot.md`.
 
+### 🛡️ Round 54 CI/CD + Coverage Fixes (6 Punkte)
+
+- **Fix 1**: Dependabot pip ecosystem für `tools/` hinzugefügt (`weekly`, label `python`, prefix `chore(deps-py)`).
+- **Fix 2**: `tools/requirements.txt` neu generiert. Pinned `MetaTrader5>=5.0.45` (win32-conditional) + `pytest>=8.0.0`. Alle anderen Imports sind stdlib.
+- **Fix 3**: `npm audit` von `--audit-level=high` auf `moderate` getightet. Single-CVE Allowlist via inline-Node parser: `GHSA-qx2v-qp2m-jg93` (postcss XSS, transitive via Next.js — fix nur via breaking Next-downgrade). Jeder NEUE CVE bricht CI.
+- **Fix 4**: `dependabot-automerge.yml` defense-in-depth: neuer `gh pr checks --watch --fail-fast` Step zwischen approve und auto-merge. Branch-protection bleibt primär gate.
+- **Fix 5**: 2 neue Coverage-Tests für zero-coverage Module:
+  - `bybitBasis.test.ts` (16 cases): alle 4 magnitude-buckets × signal-Richtungen + 3 error-paths + URL-Construction.
+  - `openInterest.test.ts` (7 cases): URL-build (uppercase, period, limit-cap), AbortSignal-forwarding, sort-by-time, 2 error-paths.
+  - **Round 56 deferred** (3 Module, ~600 LOC): `coinbasePremium.ts`, `fundingReversion.ts`, `longShortRatio.ts`, `regimeConfluence.ts`. Alle bereits in `vitest.config.ts` exclude (Phase 87 R51-B2 — research/live-only). Sollte in dedizierter Round mit Mock-Strategie nachgezogen werden, idealerweise parallel zur regimeConfluence-Refactor.
+- **Fix 6**: 2 Test-Determinismus-Fixes:
+  - `adaptiveSizing.test.ts`: `vi.useFakeTimers()` + `vi.setSystemTime("2026-01-01T12:00:00Z")` damit Lookback-Window-Arithmetik nicht an Wall-Clock gebunden ist (DST/Mitternacht-Flake).
+  - `ftmoLiveSignalConsistency.test.ts`: `Math.random()` → seeded mulberry32 PRNG (gleiches Pattern wie `ftmoLiveSafety.test.ts`).
+
 ## Current state
 
 ### ✅ Tests

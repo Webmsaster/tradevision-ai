@@ -16,6 +16,55 @@ interface TradeDetailModalProps {
   onClose: () => void;
 }
 
+/**
+ * Round 54 fix #5: Validate that a screenshot URL is safe to render in <img src>.
+ *
+ * Threat model:
+ *   - data:image with `;base64,` (and optional `;charset=utf-8;`) is safe.
+ *   - blob: URLs are same-origin only.
+ *   - http(s) URLs MUST match an allow-list. Loading an arbitrary external
+ *     `https://attacker.com/x.png` would leak the user's IP + Referer to that
+ *     server (and a previously-set RLS row could carry a malicious URL across
+ *     tenants).
+ *
+ * Allowed HTTPS origins:
+ *   - The configured Supabase storage host (NEXT_PUBLIC_SUPABASE_URL).
+ *   - That's it. Add explicit hosts here if needed.
+ *
+ * `validateScreenshot` in storage.ts already filters on save — this is the
+ * second line of defence at render-time.
+ */
+function isSafeScreenshotUrl(url: string): boolean {
+  if (!url) return false;
+  // data:image/<mime>(;charset=...)?;base64,<payload>
+  if (
+    /^data:image\/(png|jpe?g|webp|gif)(?:;charset=[\w-]+)?;base64,[A-Za-z0-9+/=]+$/i.test(
+      url,
+    )
+  ) {
+    return true;
+  }
+  if (url.startsWith("blob:")) return true;
+  if (/^https:\/\//i.test(url)) {
+    try {
+      const parsed = new URL(url);
+      const supabaseHost = (() => {
+        const env = process.env.NEXT_PUBLIC_SUPABASE_URL;
+        if (!env) return null;
+        try {
+          return new URL(env).host;
+        } catch {
+          return null;
+        }
+      })();
+      if (supabaseHost && parsed.host === supabaseHost) return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 function formatHoldTime(entryDate: string, exitDate: string): string {
   const diffMs = new Date(exitDate).getTime() - new Date(entryDate).getTime();
   const totalMinutes = Math.floor(diffMs / 60000);
@@ -257,31 +306,42 @@ export default function TradeDetailModal({
           </div>
         )}
 
-        {/* Screenshot */}
-        {/* Phase 60 (R45-UI-M3): only render if the URL is a safe image
-           data-URL or HTTPS — defends against a malicious row sneaking
-           in `javascript:` or `data:image/svg+xml` payloads. validateScreenshot
-           in storage.ts already filters on save, this is the second line. */}
-        {trade.screenshot &&
-          (/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(
-            trade.screenshot,
-          ) ||
-            /^https:\/\//i.test(trade.screenshot)) && (
-            <div className="trade-detail-screenshot">
-              <div className="trade-detail-notes-label">Chart Screenshot</div>
-              <img
-                src={trade.screenshot}
-                alt={`${trade.pair} trade chart`}
-                referrerPolicy="no-referrer"
-                style={{
-                  maxWidth: "100%",
-                  borderRadius: "8px",
-                  marginTop: "8px",
-                  border: "1px solid rgba(255,255,255,0.1)",
-                }}
-              />
+        {/* Screenshot — Round 54 fix #5: tightened regex + origin allow-list
+           in isSafeScreenshotUrl. External HTTPS images are blocked because
+           they leak user IP + Referer to arbitrary servers. */}
+        {trade.screenshot && isSafeScreenshotUrl(trade.screenshot) ? (
+          <div className="trade-detail-screenshot">
+            <div className="trade-detail-notes-label">Chart Screenshot</div>
+            <img
+              src={trade.screenshot}
+              alt={`${trade.pair} trade chart`}
+              referrerPolicy="no-referrer"
+              style={{
+                maxWidth: "100%",
+                borderRadius: "8px",
+                marginTop: "8px",
+                border: "1px solid rgba(255,255,255,0.1)",
+              }}
+            />
+          </div>
+        ) : trade.screenshot ? (
+          <div className="trade-detail-screenshot">
+            <div className="trade-detail-notes-label">Chart Screenshot</div>
+            <div
+              style={{
+                marginTop: "8px",
+                padding: "12px",
+                borderRadius: "8px",
+                border: "1px dashed rgba(255,255,255,0.2)",
+                color: "var(--txt-muted, #888)",
+                fontSize: "0.875rem",
+              }}
+              role="status"
+            >
+              External image blocked
             </div>
-          )}
+          </div>
+        ) : null}
 
         {/* Notes */}
         {trade.notes && (

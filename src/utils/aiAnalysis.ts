@@ -287,15 +287,35 @@ export function detectLossAversion(trades: Trade[]): AIInsight | null {
 
 /**
  * Detects tilt: after a >5% drawdown period, the next 5 trades have a win rate < 30%.
+ *
+ * Round 54: scan ALL candidate windows and surface the WORST cluster
+ * (highest severity = drawdown × (1 − next5_winRate)). The previous
+ * implementation early-returned on the first match, which would mask a
+ * later, much-deeper drawdown→tilt cluster.
+ *
+ * Also: if the running equity never goes positive (peak <= 0), the
+ * relative-drawdown formula is undefined. Fall back to ABSOLUTE drawdown
+ * vs the running cumulative PnL (i.e. how far below peak in raw $),
+ * normalising against the average per-trade PnL of the prior window so
+ * the threshold scales with the trader's typical trade size.
  */
 export function detectTiltPattern(trades: Trade[]): AIInsight | null {
   if (trades.length < 6) return null;
 
   const sorted = [...trades].sort(compareByExitDate);
 
-  // Calculate running equity curve to identify drawdown periods
   let peak = 0;
   let runningPnl = 0;
+
+  // Track the WORST candidate found (not the first).
+  let worst: {
+    drawdown: number; // raw fraction (may exceed 1)
+    next5WinRate: number;
+    next5Wins: number;
+    severity: number; // sort key
+    relatedTrades: string[];
+    isAbsolute: boolean;
+  } | null = null;
 
   for (let i = 0; i < sorted.length - 5; i++) {
     runningPnl += sorted[i]!.pnl;
@@ -303,40 +323,73 @@ export function detectTiltPattern(trades: Trade[]): AIInsight | null {
       peak = runningPnl;
     }
 
-    // Check for >5% drawdown from peak
-    // Use peak as reference; if peak is 0 or negative, use absolute comparison
-    const drawdown = peak > 0 ? (peak - runningPnl) / peak : 0;
+    let drawdown: number;
+    let isAbsolute = false;
 
-    if (drawdown > 0.05) {
-      // Check next 5 trades
-      const next5 = sorted.slice(i + 1, i + 6);
-      if (next5.length < 5) continue;
+    if (peak > 0) {
+      drawdown = (peak - runningPnl) / peak;
+    } else {
+      // Always-negative trader: peak<=0 → relative formula degenerates to 0.
+      // Use absolute drawdown normalised by mean |pnl| of prior trades so
+      // the metric still scales with trade size. Threshold matches the 5%
+      // relative threshold semantically: drop ≥ ~1× avg-trade-magnitude.
+      isAbsolute = true;
+      const prior = sorted.slice(0, i + 1);
+      const meanAbs =
+        prior.reduce((s, t) => s + Math.abs(t.pnl), 0) / prior.length;
+      const absDrop = peak - runningPnl; // peak ≤ 0, runningPnl ≤ peak
+      drawdown = meanAbs > 0 ? absDrop / meanAbs : 0;
+    }
 
-      const next5Wins = next5.filter((t) => t.pnl > 0).length;
-      const next5WinRate = next5Wins / 5;
+    // Threshold: relative-mode uses 5%; absolute-mode uses ≥ 1.0 (i.e.
+    // current drop equals one full average-trade magnitude below peak).
+    const threshold = isAbsolute ? 1.0 : 0.05;
+    if (drawdown <= threshold) continue;
 
-      if (next5WinRate < 0.3) {
-        const drawdownPercent = Math.round(drawdown * 100);
+    const next5 = sorted.slice(i + 1, i + 6);
+    if (next5.length < 5) continue;
 
-        return {
-          id: generateId(),
-          type: "warning",
-          title: "Tilt Pattern Detected",
-          description:
-            `After experiencing a ${drawdownPercent}% drawdown, your next 5 trades had a win rate of only ` +
-            `${Math.round(next5WinRate * 100)}% (${next5Wins} out of 5 wins). This pattern suggests emotional ` +
-            `decision-making following significant losses. When you are in a drawdown, your judgment is impaired ` +
-            `by the desire to recover quickly. Consider implementing a mandatory cool-down period after drawdowns ` +
-            `exceeding 5%, or switch to paper trading until you regain composure.`,
-          severity: 9,
-          relatedTrades: [sorted[i]!.id, ...next5.map((t) => t.id)],
-          category: "tilt",
-        };
-      }
+    const next5Wins = next5.filter((t) => t.pnl > 0).length;
+    const next5WinRate = next5Wins / 5;
+
+    if (next5WinRate >= 0.3) continue;
+
+    const severity = drawdown * (1 - next5WinRate);
+    if (!worst || severity > worst.severity) {
+      worst = {
+        drawdown,
+        next5WinRate,
+        next5Wins,
+        severity,
+        relatedTrades: [sorted[i]!.id, ...next5.map((t) => t.id)],
+        isAbsolute,
+      };
     }
   }
 
-  return null;
+  if (!worst) return null;
+
+  // Display drawdown:
+  //  - relative-mode: cap at 100% (display-only — raw value still drove ranking)
+  //  - absolute-mode: report as "Nx average trade" since % isn't meaningful.
+  const drawdownLabel = worst.isAbsolute
+    ? `${worst.drawdown.toFixed(1)}× your average-trade magnitude`
+    : `${Math.min(100, Math.round(worst.drawdown * 100))}%${worst.drawdown > 1 ? " (full drawdown)" : ""}`;
+
+  return {
+    id: generateId(),
+    type: "warning",
+    title: "Tilt Pattern Detected",
+    description:
+      `After experiencing a drawdown of ${drawdownLabel}, your next 5 trades had a win rate of only ` +
+      `${Math.round(worst.next5WinRate * 100)}% (${worst.next5Wins} out of 5 wins). This pattern suggests ` +
+      `emotional decision-making following significant losses. When you are in a drawdown, your judgment is ` +
+      `impaired by the desire to recover quickly. Consider implementing a mandatory cool-down period after ` +
+      `drawdowns exceeding 5%, or switch to paper trading until you regain composure.`,
+    severity: 9,
+    relatedTrades: worst.relatedTrades,
+    category: "tilt",
+  };
 }
 
 /**
@@ -399,21 +452,29 @@ export function detectConsistentPair(trades: Trade[]): AIInsight | null {
 }
 
 /**
- * Detects good risk management: profit factor > 1.5 and max single loss < 3% of total equity.
+ * Detects good risk management: profit factor > 1.5 AND no more than 5% of
+ * losing trades are "outsized" (|loss| > 2× avgWin).
+ *
+ * Round 54: replaced the previous `maxSingleLoss / grossProfit` ratio.
+ * That ratio was meaningless for small samples and double-counted PnL on
+ * both sides. The new test asks the question we actually care about:
+ * "When you DO lose, is the typical loss bounded relative to your typical
+ * win?" If ≤5% of your losses blow past the 2× avg-win bound, you've got
+ * effective stop-loss discipline.
+ *
+ * Returns null (skip detector) when the data can't support the test —
+ * e.g. no winners to anchor avgWin.
  */
 export function detectGoodRiskManagement(trades: Trade[]): AIInsight | null {
   if (trades.length < 5) return null;
 
-  const grossProfit = trades
-    .filter((t) => t.pnl > 0)
-    .reduce((sum, t) => sum + t.pnl, 0);
+  const winners = trades.filter((t) => t.pnl > 0);
+  const losers = trades.filter((t) => t.pnl < 0);
 
-  const grossLoss = Math.abs(
-    trades.filter((t) => t.pnl < 0).reduce((sum, t) => sum + t.pnl, 0),
-  );
+  const grossProfit = winners.reduce((sum, t) => sum + t.pnl, 0);
+  const grossLoss = Math.abs(losers.reduce((sum, t) => sum + t.pnl, 0));
 
   if (grossLoss === 0) {
-    // No losses means infinite profit factor - still counts as good risk management
     return {
       id: generateId(),
       type: "positive",
@@ -430,27 +491,31 @@ export function detectGoodRiskManagement(trades: Trade[]): AIInsight | null {
 
   const profitFactor = grossProfit / grossLoss;
 
-  // Phase 6 (AI Bug 3): "totalEquity = sum(|pnl|)" was semantically meaningless
-  // — many small trades inflated the denominator → maxLossPercent always tiny
-  // → false-positive "Strong Risk Management" insight. Use grossProfit (real
-  // capital deployed) as a proxy that at least scales with the account.
-  const totalEquity = grossProfit;
-  const maxSingleLoss = Math.abs(
-    Math.min(...trades.filter((t) => t.pnl < 0).map((t) => t.pnl)),
-  );
-  const maxLossPercent =
-    totalEquity > 0 ? (maxSingleLoss / totalEquity) * 100 : 100;
+  // Need at least one winner to define avgWin. No winners → skip detector
+  // entirely (the 0-grossLoss branch already handled "all winners").
+  if (winners.length === 0 || losers.length === 0) return null;
 
-  if (profitFactor > 1.5 && maxLossPercent < 3) {
+  const avgWin = grossProfit / winners.length;
+  if (avgWin <= 0) return null;
+
+  const outsizedThreshold = 2 * avgWin;
+  const outsizedLosses = losers.filter(
+    (t) => Math.abs(t.pnl) > outsizedThreshold,
+  ).length;
+  const outsizedRatio = outsizedLosses / losers.length;
+
+  if (profitFactor > 1.5 && outsizedRatio <= 0.05) {
+    const outsizedPercent = Math.round(outsizedRatio * 100);
     return {
       id: generateId(),
       type: "positive",
       title: "Strong Risk Management",
       description:
-        `Your profit factor is ${profitFactor.toFixed(2)} (above the 1.5 threshold) and your largest single loss ` +
-        `was only ${maxLossPercent.toFixed(1)}% of total traded equity. Across ${trades.length} trades, this shows ` +
-        `disciplined position sizing and effective stop-loss usage. Your risk management is a key strength - ` +
-        `maintain these habits as you scale your trading size.`,
+        `Your profit factor is ${profitFactor.toFixed(2)} (above the 1.5 threshold) and only ` +
+        `${outsizedPercent}% of your losses (${outsizedLosses}/${losers.length}) exceeded 2× your average win ` +
+        `($${avgWin.toFixed(2)}). Across ${trades.length} trades, this shows disciplined position sizing and ` +
+        `effective stop-loss usage. Your risk management is a key strength — maintain these habits as you ` +
+        `scale your trading size.`,
       severity: 2,
       relatedTrades: trades.slice(0, 10).map((t) => t.id),
       category: "risk-management",

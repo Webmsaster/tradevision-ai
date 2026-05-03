@@ -213,6 +213,77 @@ describe("detectTiltPattern", () => {
     expect(result).not.toBeNull();
     expect(result!.category).toBe("tilt");
   });
+
+  it("flags tilt for an always-negative trader (peak <= 0 absolute branch)", () => {
+    // Round 54: never-positive equity curve. Old code returned null
+    // because `(peak - runningPnl)/peak` is 0 when peak<=0. The new
+    // absolute-fallback branch should still flag the tilt cluster.
+    const trades = [
+      makeTrade({ pnl: -10, exitDate: "2024-01-01T00:00:00Z" }),
+      makeTrade({ pnl: -25, exitDate: "2024-01-02T00:00:00Z" }), // big drop below peak
+      makeTrade({ pnl: -8, exitDate: "2024-01-03T00:00:00Z" }),
+      makeTrade({ pnl: -8, exitDate: "2024-01-04T00:00:00Z" }),
+      makeTrade({ pnl: -8, exitDate: "2024-01-05T00:00:00Z" }),
+      makeTrade({ pnl: -8, exitDate: "2024-01-06T00:00:00Z" }),
+      makeTrade({ pnl: -8, exitDate: "2024-01-07T00:00:00Z" }),
+    ];
+    const result = detectTiltPattern(trades);
+    expect(result).not.toBeNull();
+    expect(result!.category).toBe("tilt");
+    // Display string must use the "× average-trade magnitude" phrasing
+    // since percent-of-peak is undefined here.
+    expect(result!.description.toLowerCase()).toContain("average-trade");
+  });
+
+  it("returns the WORST tilt cluster, not the first", () => {
+    // First cluster: drawdown ~10%, next-5 winrate 20% → severity ~0.10*0.8 = 0.08
+    // Second cluster: drawdown ~50%, next-5 winrate 0%   → severity ~0.50*1.0 = 0.50
+    // Build deterministic exit dates so order is stable.
+    const trades = [
+      makeTrade({ pnl: 100, exitDate: "2024-01-01T00:00:00Z" }),
+      makeTrade({ pnl: -10, exitDate: "2024-01-02T00:00:00Z" }), // small DD (~10%)
+      makeTrade({ pnl: -1, exitDate: "2024-01-03T00:00:00Z" }),
+      makeTrade({ pnl: -1, exitDate: "2024-01-04T00:00:00Z" }),
+      makeTrade({ pnl: -1, exitDate: "2024-01-05T00:00:00Z" }),
+      makeTrade({ pnl: -1, exitDate: "2024-01-06T00:00:00Z" }),
+      makeTrade({ pnl: 100, exitDate: "2024-01-07T00:00:00Z" }), // recover, new peak
+      makeTrade({ pnl: -100, exitDate: "2024-01-08T00:00:00Z" }), // huge drop
+      makeTrade({ pnl: -10, exitDate: "2024-01-09T00:00:00Z" }),
+      makeTrade({ pnl: -10, exitDate: "2024-01-10T00:00:00Z" }),
+      makeTrade({ pnl: -10, exitDate: "2024-01-11T00:00:00Z" }),
+      makeTrade({ pnl: -10, exitDate: "2024-01-12T00:00:00Z" }),
+      makeTrade({ pnl: -10, exitDate: "2024-01-13T00:00:00Z" }),
+    ];
+    const result = detectTiltPattern(trades);
+    expect(result).not.toBeNull();
+    // Human-readable string should mention the deeper drawdown — i.e. the
+    // worst cluster, not the small early one. Draw should be ≥ 50% (display capped at 100%).
+    const m = result!.description.match(/drawdown of (\d+)%/);
+    expect(m).not.toBeNull();
+    expect(Number(m![1])).toBeGreaterThanOrEqual(50);
+  });
+
+  it("caps display drawdown at 100% even when raw drawdown exceeds peak", () => {
+    // peak=10, then -50 → raw drawdown = 5.0 (500%). Display must show ≤100%.
+    const trades = [
+      makeTrade({ pnl: 10, exitDate: "2024-01-01T00:00:00Z" }),
+      makeTrade({ pnl: -50, exitDate: "2024-01-02T00:00:00Z" }),
+      makeTrade({ pnl: -1, exitDate: "2024-01-03T00:00:00Z" }),
+      makeTrade({ pnl: -1, exitDate: "2024-01-04T00:00:00Z" }),
+      makeTrade({ pnl: -1, exitDate: "2024-01-05T00:00:00Z" }),
+      makeTrade({ pnl: -1, exitDate: "2024-01-06T00:00:00Z" }),
+      makeTrade({ pnl: -1, exitDate: "2024-01-07T00:00:00Z" }),
+    ];
+    const result = detectTiltPattern(trades);
+    expect(result).not.toBeNull();
+    // Extract every "drawdown of NN%" phrasing and assert the display cap.
+    const m = result!.description.match(/drawdown of (\d+)%/);
+    expect(m).not.toBeNull();
+    expect(Number(m![1])).toBeLessThanOrEqual(100);
+    // Display reaches the cap and shows the "(full drawdown)" disclaimer.
+    expect(result!.description).toContain("100%");
+    expect(result!.description).toContain("full drawdown");
+  });
 });
 
 describe("detectConsistentPair", () => {

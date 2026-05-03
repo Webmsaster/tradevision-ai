@@ -6,7 +6,10 @@ import { v4 as uuidv4 } from "uuid";
 // against this same constant instead of a hardcoded string literal.
 import { STORAGE_KEY } from "@/lib/constants";
 
-const SCREENSHOTS_KEY = "trading-journal-screenshots";
+// Phase 95 (R54-STO-4): exported so the cross-tab listener in
+// useTradeStorage can re-render when a sibling tab modifies screenshots
+// (orphan screenshot cleanup or screenshot upload).
+export const SCREENSHOTS_KEY = "trading-journal-screenshots";
 
 // Phase 7 (Storage Bug 7): screenshot data-URL safety. Reject anything that
 // isn't an image base64 data URL. Caps size at 2 MB to prevent DB-bloat.
@@ -50,44 +53,67 @@ const ALLOWED_MARKET_CONDITIONS = [
 // Helper: convert between DB snake_case and app camelCase
 // ---------------------------------------------------------------------------
 
+// Phase 95 (R54-STO-3): defensive type-guards for optional fields. Values
+// arriving from Supabase are typed `unknown` (a future schema-mismatch or
+// adversarial RLS bypass could feed garbage). Without guards, NaN
+// confidence and non-array tags propagate into stats / UI iterators.
+function strOrUndef(v: unknown): string | undefined {
+  return typeof v === "string" ? v : undefined;
+}
+function strOrEmpty(v: unknown): string {
+  return typeof v === "string" ? v : "";
+}
+function strArr(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((t): t is string => typeof t === "string");
+}
+function finiteOrUndef(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
 function dbToTrade(row: Record<string, unknown>): Trade {
   // Phase 7 (Storage Bug 6): allow-list emotion / marketCondition; arbitrary
   // strings from the DB cast straight to Trade['emotion'] would let a future
   // dangerouslySetInnerHTML render unfiltered values.
-  const rawEmotion = row.emotion as string | null | undefined;
+  const rawEmotion = strOrUndef(row.emotion);
   const emotion =
     rawEmotion && (ALLOWED_EMOTIONS as readonly string[]).includes(rawEmotion)
       ? (rawEmotion as Trade["emotion"])
       : undefined;
-  const rawMarket = row.market_condition as string | null | undefined;
+  const rawMarket = strOrUndef(row.market_condition);
   const marketCondition =
     rawMarket &&
     (ALLOWED_MARKET_CONDITIONS as readonly string[]).includes(rawMarket)
       ? (rawMarket as Trade["marketCondition"])
       : undefined;
+  const rawDirection = strOrUndef(row.direction);
+  const direction: "long" | "short" =
+    rawDirection === "short" ? "short" : "long";
+  const rawAccountId = strOrUndef(row.account_id);
   return {
-    id: row.id as string,
-    pair: row.pair as string,
-    direction: row.direction as "long" | "short",
+    id: strOrEmpty(row.id),
+    pair: strOrEmpty(row.pair),
+    direction,
     entryPrice: num(row.entry_price),
     exitPrice: num(row.exit_price),
     quantity: num(row.quantity),
-    entryDate: row.entry_date as string,
-    exitDate: row.exit_date as string,
+    entryDate: strOrEmpty(row.entry_date),
+    exitDate: strOrEmpty(row.exit_date),
     pnl: num(row.pnl),
     pnlPercent: num(row.pnl_percent),
     fees: num(row.fees),
     leverage: num(row.leverage, 1),
-    notes: (row.notes as string) ?? "",
-    tags: (row.tags as string[]) ?? [],
-    strategy: row.strategy as string | undefined,
+    notes: strOrEmpty(row.notes),
+    tags: strArr(row.tags),
+    strategy: strOrUndef(row.strategy),
     emotion,
-    confidence: row.confidence as number | undefined,
-    setupType: row.setup_type as string | undefined,
-    timeframe: row.timeframe as string | undefined,
+    confidence: finiteOrUndef(row.confidence),
+    setupType: strOrUndef(row.setup_type),
+    timeframe: strOrUndef(row.timeframe),
     marketCondition,
-    screenshot: validateScreenshot(row.screenshot_url as string | undefined),
-    accountId: (row.account_id as string) ?? "default",
+    screenshot: validateScreenshot(strOrUndef(row.screenshot_url)),
+    accountId:
+      rawAccountId && rawAccountId.length > 0 ? rawAccountId : "default",
   };
 }
 
@@ -141,17 +167,41 @@ export async function loadTradesFromSupabase(
   // Phase 47 (R45-CC-H1): on a mid-fetch error we now THROW instead of
   // silent `break`. Returning a partially-loaded array poisoned downstream
   // stats (winRate / drawdown / Sharpe) with no signal to the caller.
+  //
+  // Phase 95 (R54-STO-1): drop the 100_000-row hard cap. Power-users with
+  // multi-year backtest imports were silently losing the oldest trades when
+  // their cloud DB exceeded 100k rows. Loop until a partial page (<PAGE)
+  // signals end-of-result-set. A 1M soft-cap remains as a defensive guard
+  // against runaway result-sets — it logs a warning so the rare hit is
+  // observable instead of silent.
+  // Phase 95 (R54-STO-7): filter soft-deleted rows. `deleted_at is null`
+  // is a no-op for rows in DBs that haven't been migrated yet (the column
+  // simply doesn't exist there) — Supabase rejects the query with a
+  // "column does not exist" error. We catch that and retry without the
+  // filter so the client works against pre-migration deployments.
   const PAGE = 1000;
+  const SOFT_CAP = 1_000_000;
   const all: Trade[] = [];
-  for (let from = 0; from < 100_000; from += PAGE) {
-    const { data, error } = await supabase
-      .from("trades")
-      .select("*")
-      .eq("user_id", userId)
+  let useSoftDeleteFilter = true;
+  for (let from = 0; from < SOFT_CAP; from += PAGE) {
+    let query = supabase.from("trades").select("*").eq("user_id", userId);
+    if (useSoftDeleteFilter) query = query.is("deleted_at", null);
+    const { data, error } = await query
       .order("exit_date", { ascending: false })
       .order("id", { ascending: false })
       .range(from, from + PAGE - 1);
     if (error) {
+      // Column-missing → retry once without the soft-delete filter so
+      // pre-migration databases continue to work.
+      const msg = (error.message ?? "").toLowerCase();
+      if (
+        useSoftDeleteFilter &&
+        (msg.includes("deleted_at") || msg.includes("column"))
+      ) {
+        useSoftDeleteFilter = false;
+        from -= PAGE; // retry this offset
+        continue;
+      }
       console.error("Failed to load trades from Supabase:", error);
       throw new Error(
         `loadTradesFromSupabase: page-fetch failed at offset ${from}: ${error.message}`,
@@ -160,6 +210,11 @@ export async function loadTradesFromSupabase(
     if (!data || data.length === 0) break;
     for (const row of data) all.push(dbToTrade(row));
     if (data.length < PAGE) break;
+    if (from + PAGE >= SOFT_CAP) {
+      console.warn(
+        `[storage] hit ${SOFT_CAP.toLocaleString()} trade soft-cap, oldest trades may be missing`,
+      );
+    }
   }
   return all;
 }
@@ -192,15 +247,103 @@ export async function deleteTradeFromSupabase(
   // filter explicitly so a future RLS misconfig doesn't leak deletes.
   userId: string,
 ): Promise<boolean> {
-  let query = supabase.from("trades").delete().eq("id", tradeId);
-  if (userId) query = query.eq("user_id", userId);
-  const { error } = await query;
-
+  // Phase 95 (R54-STO-7): soft-delete instead of hard-delete. Project
+  // convention (CLAUDE.md) is soft-delete. Falls back to hard-delete if
+  // the deleted_at column doesn't exist (pre-migration DBs) so the client
+  // continues working through the migration window.
+  const nowIso = new Date().toISOString();
+  let updateQuery = supabase
+    .from("trades")
+    .update({ deleted_at: nowIso })
+    .eq("id", tradeId)
+    .eq("user_id", userId);
+  let { error } = await updateQuery;
+  if (error) {
+    const msg = (error.message ?? "").toLowerCase();
+    if (msg.includes("deleted_at") || msg.includes("column")) {
+      // Pre-migration DB: hard-delete.
+      const hardDel = await supabase
+        .from("trades")
+        .delete()
+        .eq("id", tradeId)
+        .eq("user_id", userId);
+      error = hardDel.error;
+    }
+  }
   if (error) {
     console.error("Failed to delete trade from Supabase:", error);
     return false;
   }
   return true;
+}
+
+// Phase 95 (R54-STO-2): retry-queue for bulk-upserts that fail mid-flight.
+// Trade IDs are UUIDs, upserts are idempotent → on the next save attempt
+// we drain the queue first (re-uploading rows from a previous partial
+// failure) before processing the new payload. Survives tab reloads via
+// localStorage.
+const BULK_RETRY_KEY = "sb-retry-queue";
+
+interface RetryEntry {
+  rows: Array<Record<string, unknown>>;
+  enqueuedAt: string;
+}
+
+function readRetryQueue(): RetryEntry[] {
+  try {
+    if (typeof window === "undefined") return [];
+    const raw = localStorage.getItem(BULK_RETRY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (e): e is RetryEntry =>
+        !!e && typeof e === "object" && Array.isArray(e.rows),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeRetryQueue(queue: RetryEntry[]): void {
+  try {
+    if (typeof window === "undefined") return;
+    if (queue.length === 0) {
+      localStorage.removeItem(BULK_RETRY_KEY);
+    } else {
+      localStorage.setItem(BULK_RETRY_KEY, JSON.stringify(queue));
+    }
+  } catch (err) {
+    console.warn("[storage] retry-queue persistence failed:", err);
+  }
+}
+
+function enqueueRetry(rows: Array<Record<string, unknown>>): void {
+  if (rows.length === 0) return;
+  const queue = readRetryQueue();
+  queue.push({ rows, enqueuedAt: new Date().toISOString() });
+  writeRetryQueue(queue);
+}
+
+async function uploadChunked(
+  supabase: SupabaseClient,
+  rows: Array<Record<string, unknown>>,
+  chunk: number,
+): Promise<{ ok: boolean; failedFromIndex: number | null }> {
+  for (let i = 0; i < rows.length; i += chunk) {
+    const slice = rows.slice(i, i + chunk);
+    const { error } = await supabase
+      .from("trades")
+      .upsert(slice, { onConflict: "id" });
+    if (error) {
+      console.error(
+        `Failed to bulk save trades to Supabase (chunk ${i / chunk}):`,
+        error,
+      );
+      return { ok: false, failedFromIndex: i };
+    }
+  }
+  return { ok: true, failedFromIndex: null };
 }
 
 export async function saveBulkTradesToSupabase(
@@ -210,24 +353,45 @@ export async function saveBulkTradesToSupabase(
 ): Promise<boolean> {
   // Phase 47 (R45-DB-2): batch in 500-row chunks. Supabase pooler caps
   // payloads around 4 MB; a single upsert of 50k+ trades from CSV import
-  // hit the cap and was rejected wholesale (no partial-success / no
-  // resume). Process in chunks and abort on the first failure — caller
-  // sees `false` and can show a clear error.
-  if (trades.length === 0) return true;
+  // hit the cap and was rejected wholesale.
+  //
+  // Phase 95 (R54-STO-2): drain retry-queue first, then upload current
+  // payload. On mid-flight failure we enqueue the un-uploaded slice
+  // (rows from the failing chunk onward) for the next call. UUID
+  // primary keys make the upsert idempotent — replaying succeeded
+  // chunks is safe.
   const CHUNK = 500;
-  const rows = trades.map((t) => tradeToDb(t, userId));
-  for (let i = 0; i < rows.length; i += CHUNK) {
-    const slice = rows.slice(i, i + CHUNK);
-    const { error } = await supabase
-      .from("trades")
-      .upsert(slice, { onConflict: "id" });
-    if (error) {
-      console.error(
-        `Failed to bulk save trades to Supabase (chunk ${i / CHUNK}):`,
-        error,
-      );
+
+  // 1) Drain queue from prior failed runs.
+  const pending = readRetryQueue();
+  if (pending.length > 0) {
+    const survived: RetryEntry[] = [];
+    for (const entry of pending) {
+      const result = await uploadChunked(supabase, entry.rows, CHUNK);
+      if (result.ok) continue;
+      // Re-enqueue everything from the failure point onward.
+      const remaining = entry.rows.slice(result.failedFromIndex ?? 0);
+      survived.push({ ...entry, rows: remaining });
+    }
+    writeRetryQueue(survived);
+    if (survived.length > 0) {
+      // Don't even attempt the new payload — surface failure to caller
+      // so they can keep their localStorage copy and retry later.
+      // Enqueue the new payload too so it isn't lost.
+      if (trades.length > 0) {
+        enqueueRetry(trades.map((t) => tradeToDb(t, userId)));
+      }
       return false;
     }
+  }
+
+  if (trades.length === 0) return true;
+  const rows = trades.map((t) => tradeToDb(t, userId));
+  const result = await uploadChunked(supabase, rows, CHUNK);
+  if (!result.ok) {
+    const remaining = rows.slice(result.failedFromIndex ?? 0);
+    enqueueRetry(remaining);
+    return false;
   }
   return true;
 }
@@ -236,11 +400,24 @@ export async function clearAllSupabaseTrades(
   supabase: SupabaseClient,
   userId: string,
 ): Promise<boolean> {
-  const { error } = await supabase
+  // Phase 95 (R54-STO-7): soft-delete batch. Falls back to hard-delete
+  // for pre-migration DBs.
+  const nowIso = new Date().toISOString();
+  let { error } = await supabase
     .from("trades")
-    .delete()
-    .eq("user_id", userId);
-
+    .update({ deleted_at: nowIso })
+    .eq("user_id", userId)
+    .is("deleted_at", null);
+  if (error) {
+    const msg = (error.message ?? "").toLowerCase();
+    if (msg.includes("deleted_at") || msg.includes("column")) {
+      const hardDel = await supabase
+        .from("trades")
+        .delete()
+        .eq("user_id", userId);
+      error = hardDel.error;
+    }
+  }
   if (error) {
     console.error("Failed to clear trades from Supabase:", error);
     return false;
@@ -279,11 +456,37 @@ export function saveTrades(trades: Trade[]): void {
     // user deleted a trade, its screenshot remained in SCREENSHOTS_KEY
     // forever (each up to 2MB); after ~10 deletions a user could hit
     // localStorage quota with no live trade referencing the data.
+    //
+    // Phase 95 (R54-STO-4): tab-safe rebuild. Anchor the trade-id set
+    // on the *current* STORAGE_KEY content (which we just wrote),
+    // re-derived from `tradesWithoutScreenshots` plus any ids from
+    // OTHER tabs we haven't yet observed. The idempotent rebuild
+    // tolerates an interleaved write from a sibling tab — worst case
+    // we drop a screenshot that the sibling just attached, and the
+    // sibling's next save re-attaches it (saveTrades carries the
+    // screenshot in the trade payload).
     try {
       const tradeIds = new Set(trades.map((t) => t.id));
       const existing = JSON.parse(
         localStorage.getItem(SCREENSHOTS_KEY) || "{}",
       ) as Record<string, string>;
+      // Re-read STORAGE_KEY (in case a sibling tab wrote between our
+      // setItem above and now) so we don't drop their trade ids.
+      try {
+        const currentRaw = localStorage.getItem(STORAGE_KEY);
+        if (currentRaw) {
+          const currentTrades = JSON.parse(currentRaw);
+          if (Array.isArray(currentTrades)) {
+            for (const t of currentTrades) {
+              if (t && typeof t === "object" && typeof t.id === "string") {
+                tradeIds.add(t.id);
+              }
+            }
+          }
+        }
+      } catch {
+        /* ignore — fall back to our own trade-id set */
+      }
       const cleaned: Record<string, string> = {};
       for (const [id, dataUrl] of Object.entries(existing)) {
         if (tradeIds.has(id)) cleaned[id] = dataUrl;
@@ -329,7 +532,21 @@ export function loadTrades(): Trade[] {
       console.error("Failed to parse screenshots from localStorage:", err);
     }
 
-    return (parsed as unknown[]).filter(isValidTrade).map((t) => {
+    // Phase 95 (R54-STO-5): fail-closed on invalid rows — log a warning
+    // so corrupt entries are observable instead of silently dropped.
+    const arr = parsed as unknown[];
+    const valid: Trade[] = [];
+    let dropped = 0;
+    for (const row of arr) {
+      if (isValidTrade(row)) valid.push(row);
+      else dropped += 1;
+    }
+    if (dropped > 0) {
+      console.warn(
+        `[storage] loadTrades: dropped ${dropped} invalid row(s) of ${arr.length}`,
+      );
+    }
+    return valid.map((t) => {
       if (screenshots[t.id]) {
         return { ...t, screenshot: screenshots[t.id] };
       }
@@ -422,20 +639,36 @@ export async function exportToCSV(trades: Trade[]): Promise<void> {
 function isValidTrade(obj: unknown): obj is Trade {
   if (!obj || typeof obj !== "object") return false;
   const t = obj as Record<string, unknown>;
+  // Phase 95 (R54-STO-5): extended schema validation. tags must be a
+  // string-array (not a Map / object that would crash array-iterators
+  // downstream). accountId, when present, must be a string. All number
+  // fields must be finite (NaN poisons stats).
+  const tagsValid =
+    t.tags === undefined ||
+    (Array.isArray(t.tags) && t.tags.every((x) => typeof x === "string"));
+  const accountIdValid =
+    t.accountId === undefined || typeof t.accountId === "string";
   return (
     typeof t.id === "string" &&
     typeof t.pair === "string" &&
     (t.direction === "long" || t.direction === "short") &&
     typeof t.entryPrice === "number" &&
+    Number.isFinite(t.entryPrice) &&
     t.entryPrice > 0 &&
     typeof t.exitPrice === "number" &&
+    Number.isFinite(t.exitPrice) &&
     t.exitPrice > 0 &&
     typeof t.quantity === "number" &&
+    Number.isFinite(t.quantity) &&
     t.quantity > 0 &&
     typeof t.entryDate === "string" &&
     typeof t.exitDate === "string" &&
     typeof t.pnl === "number" &&
-    typeof t.pnlPercent === "number"
+    Number.isFinite(t.pnl) &&
+    typeof t.pnlPercent === "number" &&
+    Number.isFinite(t.pnlPercent) &&
+    tagsValid &&
+    accountIdValid
   );
 }
 
@@ -465,7 +698,15 @@ export function importFromJSON(file: File): Promise<Trade[]> {
             : null;
 
         if (rawTrades) {
+          // Phase 95 (R54-STO-5): warn on invalid rows so corrupt
+          // backups don't fail silently.
           const valid = rawTrades.filter(isValidTrade);
+          const dropped = (rawTrades.length as number) - valid.length;
+          if (dropped > 0) {
+            console.warn(
+              `[storage] importFromJSON: skipped ${dropped} invalid row(s) of ${rawTrades.length}`,
+            );
+          }
           if (valid.length === 0) {
             reject(new Error("No valid trades found in the file."));
           } else {

@@ -1019,20 +1019,6 @@ def place_market_order(
         )
         risk_frac = RISK_FRAC_HARD_CAP
 
-    lot = compute_lot_size(info, risk_frac, stop_pct, account_equity, direction)
-    if lot <= 0:
-        # BUGFIX 2026-04-28: Was silent. Now logs symbol-info dump so user can
-        # diagnose why lot=0 (typically broker volume_min too high or tick_size=0).
-        diag = (
-            f"lot=0 for {ftmo_symbol}: vol_min={getattr(info, 'volume_min', '?')} "
-            f"vol_step={getattr(info, 'volume_step', '?')} tick_value={getattr(info, 'trade_tick_value', '?')} "
-            f"tick_size={getattr(info, 'trade_tick_size', '?')} point={getattr(info, 'point', '?')} "
-            f"contract={getattr(info, 'trade_contract_size', '?')} risk={risk_frac:.4f} stop={stop_pct:.4f}"
-        )
-        log_event("lot_zero", asset=binance_symbol, ftmo_symbol=ftmo_symbol, diag=diag)
-        tg_send(f"⚠️ <b>Lot=0 skip</b>\n{ftmo_symbol}\n<code>{html_escape(diag)}</code>")
-        return OrderResult(False, None, "lot computation returned 0", None, None)
-
     if direction == "short":
         entry_price = info.bid
         stop_price = entry_price * (1 + stop_pct)
@@ -1044,7 +1030,7 @@ def place_market_order(
         tp_price = entry_price * (1 + tp_pct)
         order_type = mt5.ORDER_TYPE_BUY
     else:
-        return OrderResult(False, None, f"unknown direction {direction}", lot, None)
+        return OrderResult(False, None, f"unknown direction {direction}", None, None)
 
     # Round 53: realistic slippage on entry. SL/TP stay relative to the
     # theoretical mid (engine planned them that way) — only the order
@@ -1052,6 +1038,27 @@ def place_market_order(
     # the trader's stop-distance plan is preserved, but the actual fill
     # is 1-2 spreads worse than the quoted ask/bid.
     fill_price = _apply_slippage(entry_price, direction, "entry", info)
+
+    # Round 55 audit fix: recompute lot AFTER slippage using the effective
+    # stop distance (|fill_price − stop_price| / fill_price). Previously the
+    # lot was sized with the theoretical `stop_pct` while the order fills at
+    # `fill_price` and SL stays at `stop_price` → real loss-per-SL exceeds
+    # the engine-planned `risk_frac` by the slippage delta. Sizing with the
+    # effective distance keeps real loss = risk_frac on the fill.
+    effective_stop_pct = abs(fill_price - stop_price) / fill_price if fill_price > 0 else stop_pct
+    lot = compute_lot_size(info, risk_frac, effective_stop_pct, account_equity, direction)
+    if lot <= 0:
+        # BUGFIX 2026-04-28: Was silent. Now logs symbol-info dump so user can
+        # diagnose why lot=0 (typically broker volume_min too high or tick_size=0).
+        diag = (
+            f"lot=0 for {ftmo_symbol}: vol_min={getattr(info, 'volume_min', '?')} "
+            f"vol_step={getattr(info, 'volume_step', '?')} tick_value={getattr(info, 'trade_tick_value', '?')} "
+            f"tick_size={getattr(info, 'trade_tick_size', '?')} point={getattr(info, 'point', '?')} "
+            f"contract={getattr(info, 'trade_contract_size', '?')} risk={risk_frac:.4f} eff_stop={effective_stop_pct:.4f}"
+        )
+        log_event("lot_zero", asset=binance_symbol, ftmo_symbol=ftmo_symbol, diag=diag)
+        tg_send(f"⚠️ <b>Lot=0 skip</b>\n{ftmo_symbol}\n<code>{html_escape(diag)}</code>")
+        return OrderResult(False, None, "lot computation returned 0", None, None)
 
     # Margin pre-check — ask MT5 to validate the order. If margin would
     # exceed free_margin, halve the lot until it fits or hit volume_min.
@@ -1321,14 +1328,28 @@ def process_pending_signals() -> None:
     # serialize against the Node service's R-M-W. Phase 19 added the lock
     # on the Node side but not here — Python was racing the Node writer,
     # leaving the cross-process race only HALF closed.
+    #
+    # Round 55 audit fix: the lock previously wrapped only the initial read.
+    # The order_send loop, slippage, regime/news gates AND the final write
+    # of `remaining` ran OUTSIDE the lock — Node could append a signal X
+    # mid-flight, then Python's final write_json(PENDING) silently dropped
+    # X. Now the lock wraps the FULL critical section. Lock window is
+    # bounded by len(pending) × ~150ms (typically 1-5 signals).
     pending_lock = STATE_DIR / "pending-signals.lock"
-    with _file_lock(pending_lock):
-        data = read_json(PENDING_PATH, {"signals": []})
-        pending = data.get("signals", [])
-        if not pending:
-            return
-        executed = read_json(EXECUTED_PATH, {"executions": []})
-        open_positions = read_json(OPEN_POS_PATH, {"positions": []})
+    with _file_lock(pending_lock, timeout_sec=10.0, stale_sec=30.0):
+        _process_pending_signals_locked()
+
+
+def _process_pending_signals_locked() -> None:
+    """Critical section of process_pending_signals — must be called with the
+    pending-signals.lock held. Split out so the lock-acquisition is a single
+    point, and so callers/tests can inject the lock."""
+    data = read_json(PENDING_PATH, {"signals": []})
+    pending = data.get("signals", [])
+    if not pending:
+        return
+    executed = read_json(EXECUTED_PATH, {"executions": []})
+    open_positions = read_json(OPEN_POS_PATH, {"positions": []})
 
     acct = mt5_get_equity()
     account_equity = acct["equity"] or CHALLENGE_START_BALANCE
