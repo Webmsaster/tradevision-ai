@@ -17,6 +17,7 @@ dist/
 # so onboarding still has a template.
 .env*
 !.env.local.example
+!.env.ftmo.*.example
 
 # debug
 npm-debug.log*
