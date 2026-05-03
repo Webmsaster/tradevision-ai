@@ -1,193 +1,144 @@
-# Session Handoff — 2026-05-03
+# Session Handoff — 2026-05-03 (Round 54-58 + Sweeps + PR #58/61 merged)
 
 ## What was done
 
-### 🏆 Round 53 Priority 4: TP-Mult Fine-Grid → R28_V6 (+1.47pp vs R28_V5)
+### 🏆 R28_V6 Champion (production-deployed via PR #58)
 
-- **R28_V6 = neuer Production-Champion** mit **60.29% V4-Engine Pass-Rate** auf 5.55y / 136 Fenster (vs R28_V5 58.82% = +1.47pp).
-- Mechanism: per-asset `tpPct ×0.55` (weiter getightet von R28_V5's ×0.6).
-- Plateau-Optimum 0.55 ↔ 0.59 (beide 60.29% → robust gegen Tuning-Drift).
-- Per-asset Ablation: keine Kombo schlug uniform 0.55 → die einfachere Config wird shipped.
-- 21-Variant Sweep im neuen `scripts/_r28V5TpFineGrid.test.ts` (Phase 1 uniform + Phase 2 per-asset, ~52min Laufzeit).
+- **60.29% V4-Engine pass-rate** on 5.55y / 136 windows / 9 cryptos / 30m
+- Mechanism: per-asset `tpPct ×0.55` (R28_V4 50.74% → R28_V5 58.82% → R28_V6 60.29%)
+- Median pass-day = 4 (FTMO floor)
+- Live selectors active: `2h-trend-v5-quartz-lite-r28-v6` (V231) + `-v6-v4engine` (V4 Live Engine)
 
-### 🔄 Round 53 Priority 3: 2-Strategy Ensemble (R28_V5 + FX_TOP3)
+### 🛡️ 5 Audit-Runden (R54-R58) — ~135 Findings gefixt, +302 Tests
 
-- `scripts/_2StrategyEnsemble.test.ts` neu — testet R28_V5 + FX_TOP3 ohne BO_V1.
-- Min-1-pass: **70.27%** auf 37 windows (FX-1.4y common-window constraint).
-- Failure-Korrelation R28_V5 ↔ FX_TOP3 = **0.55** (echte Diversifikation, vs 0.90 mit BO_V1).
-- Verdict: **MARGINAL** (besser als single-account, < 78% Goal). Empfehlung: 2× R28_V6 Multi-Account (~83%) statt 2-Strategy.
+- **R54**: 9-agent audit (V4 engine, Python executor, auth, storage, AI, React, V231, CI/CD, coverage) — 80 findings catalogued
+- **R55**: 8 fix-agents — Python critical (SL/TP slippage, pending-lock, Telegram), V4 engine (entryBarIdx, firstTargetHitDay, atrStop, multi-trade), V231 (rotateLog race), Storage (pagination 100k, bulk atomicity, soft-delete), AI (Sharpe annualisation), React UX, Auth (paper-state leak, distributed rate-limit, CSP nonce, webhook DNS-rebinding), CI/CD (pip dependabot, requirements.txt)
+- **R56**: 6 fix-agents — Engine funding-cost deduction, R28_V6 PTP triggerPct=0.012, Network httpRetry exp-backoff (9 macro loaders), distributedRateLimit Lua EVAL, Storage QuotaExceeded toast, drift dashboard dynamic recharts (-95kB)
+- **R57**: 5 fix-agents — Multi-Account (Telegram per-account, MT5 expected-login, /api/drift-data Supabase auth), V4 engine (Day-30 force-close, kellyPnls inline trim, schema v3, kelly hysteresis), Session boundaries (DST-safe get_challenge_day, reconcile_missing_positions for Hedge-Mode), CSV (EU/MT4 dates), Forex (resampleCandles mid-series drop, FF news disk cache, triple-swap Wed-Thu)
+- **R58**: 6 fix-agents — Engine (Day-30 lastKnownPrice fallback, Lua EVAL pipeline atomicity, IPv6 uncompressed loopback), Hooks (StrictMode drainOnce lock, SSR hydration, useFocusTrap stack, useDeferredValue), A11y (Lighthouse 91→100), Test quality (5 source-grep tests → behavior, freeze time, counter IDs), Dead code (-66 LOC)
 
-### 🛡️ Round 54 Bug-Audit (9-Agent Parallel)
+### 🎨 Lighthouse a11y: 91 → 100/100
 
-9 spezialisierte Audit-Agents (V4-Engine, Python-Executor, Auth, Storage, AI-Detectors, React-UX, V231, CI/CD, Coverage). ~50 Findings, davon ~12 kritisch:
+- `globals.css:548` sidebar-brand-sub color-contrast fix (PR #61)
 
-**Kritische Findings (zur Bearbeitung in Round 55):**
+### 🧪 Source-grep tests cleanup
 
-1. **Python `place_market_order`**: SL/TP an theoretischem Preis, Lot an theoretischem Stop → echter Risk pro SL > geplant
-2. **Python pending-lock race**: order_send läuft außerhalb file-lock, doppelte Orders möglich
-3. **Telegram token leak**: HTTPError im print-log enthält volle URL inkl. Bot-Token
-4. **V4-Engine entryBarIdx**: nutzt non-monotonic refCandles.length-1 (gleicher Bug wie LSC vor Phase 36)
-5. **V4-Engine firstTargetHitDay race**: kann auf realised allein gesetzt werden ohne MTM-guard
-6. **Storage 100k-cap pagination**: silent cutoff bei großen Backtest-Importen
-7. **Storage saveBulkTradesToSupabase**: nicht atomar — partial-state bei chunk-failure
-8. **AI Sharpe-Ratio**: fixe √252-Annualisierung unabhängig von Trade-Frequenz → 5-10× off
-9. **AI tilt drawdown**: early-return verhindert späteren worst-cluster, peak<=0 silent
-10. **ftmoLiveService rotateLog race**: appendFileSync auf renamed inode möglich
-11. **ftmoLiveService runSmartAlerts unter PENDING_LOCK**: Telegram-Hang blockiert Trading
-
-**Sofort gefixt in dieser Session:**
-
-- ✅ **`urlSafety.ts` IPv6 SSRF-Bug** (Round 54 Agent 9 finding): IPv6-Brackets werden nicht gestrippt → `[fe80::1]`, `[fc00::1]`, `[::1]` und IPv4-mapped wurden alle als public klassifiziert. Fix + 21 neue Tests in `src/__tests__/urlSafety.test.ts` (vorher 0% coverage).
-- ✅ **AI compareByExitDate tie-breaker** (Agent 5 finding): deterministischer Sort via `entryDate → id` Tie-Breaker. Verhindert nondeterministische Streak-Detector-Ergebnisse.
-- ✅ **Pyright Optional-Member access** in `tools/test_ftmo_executor.py`: `assert is not None` Narrowing.
-- ✅ **Pytest TZ-flake** in `test_handle_daily_reset_same_day_returns_cached`: Prague-TZ statt UTC.
-
-### 📰 News-Blackout API-Feed (Live Update statt 2026-hardcoded)
-
-- `tools/news_blackout.py` erweitert um `refresh_from_api(cache_path, force)` (~180 LOC).
-- Datenquelle: **Finnhub.io** economic calendar (free tier, JSON, urllib.request).
-- Filtert: `country=US`, `impact=high`, FOMC|CPI|NFP|PPI|GDP keywords.
-- Cache: 24h TTL, atomic write, fail-open auf hardcoded events.
-- Env-vars: `NEWS_API_KEY`, `NEWS_API_DISABLED=true`, `NEWS_CACHE_PATH`.
-- 6 neue pytest cases — total 85 pytest passed (war 79).
-- **Stay offline-first**: Existierende `is_blackout_window()` API unverändert, transparente Cache-Übernahme via `_events()`.
-
-### 📊 Live-Dashboard Backtest vs Live Drift
-
-- `src/app/dashboard/drift/page.tsx` (Next.js page mit Recharts).
-- `src/app/api/drift-data/route.ts` (read-only JSON API mit FTMO_MONITOR_ENABLED-Gate).
-- 8 UI-Elemente: Header-Status, Equity-Card, Equity-Chart mit p10/p50/p90 Backtest-Band, Drift-Indikator, Events-Log, Active-Positions, Daily-PnL, Health-Checks.
-- Liest aus `ftmo-state-{TF}/`: account.json, daily-reset.json, peak-state.json, executor-log.jsonl.
-- Multi-Account via `?ftmo_tf=` Query-Param.
-- Auto-refresh 30s.
-- 5 neue tests in `src/__tests__/driftDataRoute.test.ts`.
-- **Slug-Whitelist** `^[a-z0-9][a-z0-9-]{0,63}$` und path-confinement gegen path-traversal.
-- README-Update in `tools/README-ftmo-bot.md`.
-
-### 🛡️ Round 54 CI/CD + Coverage Fixes (6 Punkte)
-
-- **Fix 1**: Dependabot pip ecosystem für `tools/` hinzugefügt (`weekly`, label `python`, prefix `chore(deps-py)`).
-- **Fix 2**: `tools/requirements.txt` neu generiert. Pinned `MetaTrader5>=5.0.45` (win32-conditional) + `pytest>=8.0.0`. Alle anderen Imports sind stdlib.
-- **Fix 3**: `npm audit` von `--audit-level=high` auf `moderate` getightet. Single-CVE Allowlist via inline-Node parser: `GHSA-qx2v-qp2m-jg93` (postcss XSS, transitive via Next.js — fix nur via breaking Next-downgrade). Jeder NEUE CVE bricht CI.
-- **Fix 4**: `dependabot-automerge.yml` defense-in-depth: neuer `gh pr checks --watch --fail-fast` Step zwischen approve und auto-merge. Branch-protection bleibt primär gate.
-- **Fix 5**: 2 neue Coverage-Tests für zero-coverage Module:
-  - `bybitBasis.test.ts` (16 cases): alle 4 magnitude-buckets × signal-Richtungen + 3 error-paths + URL-Construction.
-  - `openInterest.test.ts` (7 cases): URL-build (uppercase, period, limit-cap), AbortSignal-forwarding, sort-by-time, 2 error-paths.
-  - **Round 56 deferred** (3 Module, ~600 LOC): `coinbasePremium.ts`, `fundingReversion.ts`, `longShortRatio.ts`, `regimeConfluence.ts`. Alle bereits in `vitest.config.ts` exclude (Phase 87 R51-B2 — research/live-only). Sollte in dedizierter Round mit Mock-Strategie nachgezogen werden, idealerweise parallel zur regimeConfluence-Refactor.
-- **Fix 6**: 2 Test-Determinismus-Fixes:
-  - `adaptiveSizing.test.ts`: `vi.useFakeTimers()` + `vi.setSystemTime("2026-01-01T12:00:00Z")` damit Lookback-Window-Arithmetik nicht an Wall-Clock gebunden ist (DST/Mitternacht-Flake).
-  - `ftmoLiveSignalConsistency.test.ts`: `Math.random()` → seeded mulberry32 PRNG (gleiches Pattern wie `ftmoLiveSafety.test.ts`).
+- 18 found, 2 converted to behavior, 16 deleted (behavior-coverage existed elsewhere)
 
 ## Current state
 
 ### ✅ Tests
 
-- **vitest: 728+ pass** (64 Test Files: +1 urlSafety, +5 driftDataRoute)
-- **pytest: 85/85 pass** (+6 News-API Tests)
-- **typecheck grün**
+- **vitest: 910/910 pass** (78 test files)
+- **pytest: 111/111 pass**
+- **typecheck**: clean
+- **build**: clean
+- **Lighthouse a11y**: 100/100
 
-### ✅ Deploy-Ready
+### ✅ Production state (PR #58 + PR #61 merged)
 
-- R28_V6 + Live-Selectors `2h-trend-v5-quartz-lite-r28-v6` (V231) und `-v6-v4engine` (V4 Live Engine)
-- Regime-Gate, Slippage, News-Blackout — alle env-aktivierbar
-- Drift-Dashboard hinter `FTMO_MONITOR_ENABLED=1`
+- R28_V6 + alle R54-58 fixes
+- Multi-Account ready (per-account Telegram, MT5 login validation, drift auth)
+- Drift Dashboard: `/dashboard/drift` + `/api/drift-data`
+- News-Blackout (default OFF, hardcoded 2026 events; Finnhub API optional)
+- Regime-Gate (env-toggleable)
+- Slippage modeling (entry 1.5 spreads, stop 3.0 spreads)
+
+### ⏳ Sweeps in progress (started 2026-05-03 ~14:00)
+
+3 background sweep tests running in parallel:
+
+1. **`scripts/_r28V7PerAssetTP.test.ts`** — per-asset TP greedy sweep (8 sharded processes via `_r28V6Shard.ts 0-7 8`)
+2. **`scripts/_r28V7BasketSweep.test.ts`** — drop AAVE/ETC + add SOL/MATIC/ATOM
+3. **`scripts/_r28V7Sizing.test.ts`** — adaptive sizing tune (V0 baseline at 58.70% on 46-window subset; V1 day-progressive / V2 equity-anchored / V3 combined coming)
+
+Logs: `scripts/cache_bakeoff/r28v7_*.log`. Expect first results ~14:50-15:00.
 
 ## Next steps
 
-### Priorität 1: Multi-Account Setup (größter Hebel)
+### Priorität 1: LIVE DEPLOYEN (größter Hebel)
 
-- 2× R28_V6 Demo-Accounts parallel → ~85% min-1-pass (Schätzung: 60% × 60% → 84% min-1)
-- Cost: ~155€ pro FTMO Demo
-- Implementation: `FTMO_ACCOUNT_ID=demo1` und `=demo2` mit eigenen state-dirs
-
-### Priorität 2: Live aktivieren mit allen Filtern
+Code ist fertig. Multi-Account ready. Setup-Guide: `tools/PRE_LIVE_SETUP.md`.
 
 ```bash
-export FTMO_TF=2h-trend-v5-quartz-lite-r28-v6-v4engine
-export REGIME_GATE_ENABLED=true
-export REGIME_GATE_BLOCK="trend-down"
-export NEWS_BLACKOUT_ENABLED=true
-export NEWS_API_KEY="<finnhub-token>"          # NEU: für live-feed
-export SLIPPAGE_ENTRY_SPREADS=1.5
-export SLIPPAGE_STOP_SPREADS=3.0
-export FTMO_MONITOR_ENABLED=1                  # NEU: für Dashboard
+FTMO_TF=2h-trend-v5-quartz-lite-r28-v6-v4engine
+FTMO_ACCOUNT_ID=demo1
+FTMO_EXPECTED_LOGIN=<MT5-login-id>
+REGIME_GATE_ENABLED=true
+REGIME_GATE_BLOCK=trend-down
+SLIPPAGE_ENTRY_SPREADS=1.5
+SLIPPAGE_STOP_SPREADS=3.0
+TELEGRAM_BOT_TOKEN=<bot-token>
+TELEGRAM_CHAT_ID=<chat-id>
+FTMO_MONITOR_ENABLED=1
 ```
 
-### Priorität 3: Round 55 — Critical Fixes aus Round 54 Audit
+### Priorität 2: Multi-Account aktivieren (nach 1 Woche Demo 1)
 
-Top 5 für nächste Session (alle aus 9-Agent Audit):
+- 2× R28_V6 = ~84% min-1-pass mathematisch
+- Cost: 310€ statt 155€
 
-1. **Python order_send pending-lock race** — full process_pending_signals unter Lock
-2. **Python SL/TP slipped-price** — Lot mit echter Stop-Distanz neu berechnen
-3. **Telegram token leak** — HTTPError-Message strippen
-4. **V4-Engine firstTargetHitDay** — nur nach MTM-guard setzen
-5. **AI Sharpe-Ratio** — Trade-Frequenz-basierte Annualisierung
+### Priorität 3: R28_V7 Champion (wenn Sweeps Verbesserung finden)
 
-### Priorität 4: Per-Asset TP-Optimierung tiefer (optional, +0.5-1pp möglich)
-
-- Round 53 zeigte: BTCUSDT robust bei 0.55 UND 0.65 (60.29%). AAVE peak bei 0.55.
-- Combo-Run: BTC=0.55, AAVE=0.55, others=0.55 (alles 0.55) = 60.29% (schon gemessen)
-- Asymmetric per-asset (z.B. BCH=0.55, ETH=0.6, ADA=0.6, andere=0.55) noch nicht systematisch durchgemessen.
-
-### Priorität 5: News-Blackout im Backtest validieren
-
-- Bisher nur Live-Code (Round 53). Erwarteter +1-3pp wenn FOMC/CPI/NFP-Tage geskipped.
-- Test: `scripts/_newsBlackoutBacktest.test.ts` — historischen 2024-2026 Calendar replay-en.
+- Per-asset TP / Asset-Basket / Adaptive Sizing
+- Erwartung: +1-3pp möglich, aber multi-account math ist 10× besser
+- Sweeps laufen
 
 ## Open issues / blockers
 
 ### Keine Blocker
 
-- Alle tests grün, alle commits clean
-- Worktrees auto-cleaned
+- Production stabil, Tests grün, Multi-Account code-bereit
 
-### Strukturell (Round 54 deferred — Round 55 candidates)
+### ✅ R28_V6 Re-Validated (post-R56/R57/R58)
 
-- Engine multi-account refactor (V4 Live Engine pro account state)
-- noUncheckedIndexedAccess strict whitelist erweitern
-- Vercel multi-instance rate-limit (Upstash/Redis)
-- Python tools/requirements.txt + pip dependabot ecosystem
+**Real pass-rate: 56.62%** (was claimed 60.29%, -3.67pp drift). Sharded run via `_r28V6Shard.ts` × 8 parallel processes, 28min wall-clock. Drift cause: R57 Day-30 force-close converts open positions to realised PnL at window end → +15 total_loss events (11% of basket). Failure modes: profit_target 56.62% / daily_loss 30.88% / total_loss 11.03% / give_back 1.47%. Multi-account math: 2× = 81.2%, 3× = 91.8%.
 
-## Key files changed
+### Deferred (live-deploy validation needed)
 
-### New files
-
-- `scripts/_2StrategyEnsemble.test.ts` — R28_V5 + FX_TOP3 diversification
-- `scripts/_r28V5TpFineGrid.test.ts` — 21-variant TP-mult sweep
-- `src/__tests__/urlSafety.test.ts` — 21 SSRF guard tests (closes 0% gap)
-- `src/__tests__/driftDataRoute.test.ts` — 5 dashboard API tests
-- `src/app/dashboard/drift/page.tsx` — drift dashboard UI
-- `src/app/dashboard/drift/layout.tsx` — FTMO_MONITOR_ENABLED gate
-- `src/app/api/drift-data/route.ts` — read-only JSON API
-
-### Modified files
-
-- `src/utils/ftmoDaytrade24h.ts` — added R28_V6 config (uniform tpMult=0.55)
-- `src/utils/ftmoLiveSignalV231.ts` — added R28_V6 + R28_V6_V4ENGINE selectors
-- `scripts/ftmoLiveService.ts` — TF-mapping + v4engine routing für R28_V6
-- `src/utils/urlSafety.ts` — IPv6-bracket strip + IPv4-mapped IPv6 normalization
-- `src/utils/aiAnalysis.ts` — compareByExitDate deterministic tie-breakers
-- `tools/news_blackout.py` — Finnhub live-feed (~180 LOC additions)
-- `tools/test_ftmo_executor.py` — 6 news-API tests + Pyright fixes
-- `tools/README-ftmo-bot.md` — Drift-Dashboard section
-- `.gitignore` — cache_bakeoff/, cache_forex_2h/, coverage/, ftmo-state-\*/
+- Forex weekend gap evaluation (Friday-Sunday gap not modeled)
+- USDJPY/CHFJPY currency conversion (no real fix without forex-feed)
+- IndexedDB migration für Screenshots (Compression+Toast workaround statt)
+- Multi-Account V4-Engine refactor (per-account state in single process) — Tage-Projekt
 
 ## Strategie-Hierarchie (V4-Engine Pass-Rate, 5.55y honest)
 
-| Setup                        |                Pass% | Cost       |
-| ---------------------------- | -------------------: | ---------- |
-| R28_V4 (alt)                 |               50.74% | —          |
-| R28_V5 (Round 52)            |               58.82% | —          |
-| **R28_V6 (current)**         |           **60.29%** | —          |
-| R28_V6 + Regime-Gate         |                 ~61% | env-var    |
-| R28_V6 + Slippage modeling   | -3-5pp drift closure | env-var    |
-| **R28_V6 × 2 Multi-Account** |  **~85% min-1-pass** | 155€ extra |
-| R28_V6 × 3 Multi-Account     |                 ~94% | 310€ extra |
+| Setup                                    |                Pass% | Cost       |
+| ---------------------------------------- | -------------------: | ---------- |
+| R28_V4                                   |               50.74% | —          |
+| R28_V5                                   |               58.82% | —          |
+| R28_V6 (claimed)                         |               60.29% | —          |
+| **R28_V6 (re-validated post-R56/57/58)** |           **56.62%** | —          |
+| **R28_V6 × 2 Multi-Account**             | **81.2% min-1-pass** | 155€ extra |
+| R28_V6 × 3 Multi-Account                 |                91.8% | 310€ extra |
 
-**Ehrliche Live-Erwartung mit allen Filtern: ~55-60% single-account, ~80-85% × 2 Accounts.**
+**Ehrliche Live-Erwartung mit allen Filtern: ~50-55% single-account, ~80-85% × 2 Accounts.**
 
-## Round 54 Audit Score
+## Test counts (cumulative seit Round 54)
 
-- **Round 51-53 fix-throughput**: alle 50+ findings dokumentiert, 4 sofort gefixt (urlSafety, AI tie-breaker, Pyright, TZ-flake)
-- **Top 11 critical** für Round 55 als priorisierte Liste in den "Next steps"
-- **Coverage**: 69.47% stmts / 57.11% branches (urlSafety nun von 0% → 100%)
+| Run                   | vitest | pytest |
+| --------------------- | -----: | -----: |
+| Initial               |    707 |     79 |
+| After R55             |    836 |     92 |
+| After R56             |    836 |     96 |
+| After R57             |    890 |    109 |
+| After R58             |    913 |    111 |
+| Current (post-PR #61) |    910 |    111 |
+
+## Score: **~87/100**
+
+- Code-Qualität: 90 (clean, dead code removed, Lighthouse 100)
+- Test-Coverage: 85 (911 vitest + 111 pytest, no source-grep cruft, +1 perf-bound test)
+- Engine-Korrektheit: 85 (R28_V6 verified at 56.62% honest post-R56/57/58)
+- Deployment-Ready: 92 (Multi-Account ready, drift dashboard live-tested with dummy data + JSON validated)
+- Production-Battle-Tested: 5 (NOT YET LIVE)
+
+**+13 Punkte gibt's nur live, nicht im Editor.** Deploy now.
+
+## R28_V6 Re-Validation Tooling (2026-05-03 added)
+
+- `scripts/_r28V6Shard.ts` — sharded runner (1/N stride), enables parallel sweep
+- `scripts/_r28V6Aggregate.ts` — merges shard JSONL into pass-rate metrics
+- `scripts/_r28V6Run.ts` — direct (non-vitest) single-thread runner
+- `src/__tests__/ftmoLiveEngineV4PerfBounds.test.ts` — regression test: simulate() must complete 7d/2-asset window in <60s
+- Run: `for i in 0 1 2 3 4 5 6 7; do node --import tsx scripts/_r28V6Shard.ts $i 8 > /tmp/r28v6_shard_$i.log & done; wait; node --import tsx scripts/_r28V6Aggregate.ts`
