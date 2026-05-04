@@ -10,9 +10,9 @@
 #     Used by: ftmo_executor.py, ftmo_kill.py.
 #     mock_mt5.py shadows it for Linux unit tests (no install needed
 #     in CI; pytest swaps in mock via sys.modules patching).
-MetaTrader5>=5.0.45 ; sys_platform == "win32"
+MetaTrader5>=5.0.5735 ; sys_platform == "win32"
 
 # Dev / test deps:
 #   - pytest: unit tests for ftmo_executor + engine_features + news_blackout.
 #     Used by: test_ftmo_executor.py, test_engine_features.py.
-pytest>=8.0.0
+pytest>=9.0.3
