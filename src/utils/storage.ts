@@ -337,7 +337,7 @@ export async function deleteTradeFromSupabase(
     }
     return true;
   }
-  let updateQuery = supabase
+  const updateQuery = supabase
     .from("trades")
     .update({ deleted_at: nowIso })
     .eq("id", tradeId)

@@ -130,4 +130,50 @@ describe("normalizeDateToUTC", () => {
     expect(normalizeDateToUTC("2026.04.15 25:00").iso).toBeNull();
     expect(normalizeDateToUTC("2026.04.15 14:60").iso).toBeNull();
   });
+
+  // -- Round 59 review: edge-case coverage --------------------------
+
+  it("preserves UTC across DST transition day (EU spring-forward 2026-03-29)", () => {
+    // 02:30 on the EU spring-forward day does not exist in Europe/Berlin
+    // local-time, but our parser is UTC-only by contract → must round-trip.
+    const r = normalizeDateToUTC("29.03.2026 02:30");
+    expect(r.iso).toBe("2026-03-29T02:30:00.000Z");
+    expect(r.warning).toBe("eu-date-assumed-utc");
+  });
+
+  it("handles UTC year boundary correctly (2025-12-31T23:59 → still 2025)", () => {
+    // No silent rollover via local-TZ: "31.12.2025 23:59" must stay in 2025.
+    expect(normalizeDateToUTC("31.12.2025 23:59").iso).toBe(
+      "2025-12-31T23:59:00.000Z",
+    );
+    expect(normalizeDateToUTC("2025-12-31T23:59:00Z").iso).toBe(
+      "2025-12-31T23:59:00.000Z",
+    );
+  });
+
+  it("normalises far-negative timezone offset (UTC-12) into UTC correctly", () => {
+    // 14:30 -12:00 → next-day 02:30 UTC. Catches sign-flip bugs.
+    const r = normalizeDateToUTC("2026-04-15T14:30:00-12:00");
+    expect(r.iso).toBe("2026-04-16T02:30:00.000Z");
+    expect(r.warning).toBeUndefined();
+  });
+
+  it("accepts leap-day 2028-02-29 in EU and MT4 formats, rejects 2027-02-29", () => {
+    expect(normalizeDateToUTC("29.02.2028").iso).toBe(
+      "2028-02-29T00:00:00.000Z",
+    );
+    expect(normalizeDateToUTC("2028.02.29 12:00").iso).toBe(
+      "2028-02-29T12:00:00.000Z",
+    );
+    // Non-leap year: must reject (Date.UTC would silently roll to Mar 1).
+    expect(normalizeDateToUTC("29.02.2027").iso).toBeNull();
+    expect(normalizeDateToUTC("2027.02.29").iso).toBeNull();
+  });
+
+  it("accepts MT4 format with trailing whitespace and seconds", () => {
+    // MT4 exports often include trailing whitespace; trim should normalise.
+    const r = normalizeDateToUTC("  2026.04.15 14:30:45  ");
+    expect(r.iso).toBe("2026-04-15T14:30:45.000Z");
+    expect(r.warning).toBe("mt4-date-assumed-utc");
+  });
 });

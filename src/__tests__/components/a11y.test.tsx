@@ -84,12 +84,20 @@ function findFirstBodyChild(node: React.ReactNode): React.ReactElement | null {
   return null;
 }
 
-describe("a11y — RootLayout skip-link structure (WCAG 2.4.1)", () => {
-  // Stub `next/font/google` is not loaded here; calling RootLayout uses the
-  // real next/font import which works fine in vitest (returns a font object
-  // with className), so we can call it directly.
-  const tree = RootLayout({ children: React.createElement("div") });
+// Round 60: RootLayout became async (awaits next/headers for CSP nonce).
+// Mock headers() so the layout resolves synchronously enough to be awaited
+// at top-level of the test module.
+vi.mock("next/headers", () => ({
+  headers: async () => ({
+    get: (k: string) => (k === "x-nonce" ? "test-nonce" : null),
+  }),
+}));
 
+const tree = (await RootLayout({
+  children: React.createElement("div"),
+})) as React.ReactElement;
+
+describe("a11y — RootLayout skip-link structure (WCAG 2.4.1)", () => {
   it("first body child is the skip-to-content link", () => {
     const first = findFirstBodyChild(tree);
     expect(first).not.toBeNull();

@@ -514,6 +514,49 @@ const CFG_REGISTRY: Record<string, CfgRegistryEntry> = {
     cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
     label: "V5_QUARTZ_LITE_R28_V6 (engine v4)",
   },
+  // Round 60 candidate variants — only the validated winner gets promoted
+  // to live-deploy. All inherit R28_V6 base; differ by single feature toggle.
+  "2h-trend-v5-r28-v6-passlock": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+    label: "R28_V6_PASSLOCK (closeAllOnTargetReached)",
+  },
+  "2h-trend-v5-r28-v6-corrcap2": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_CORRCAP2,
+    label: "R28_V6_CORRCAP2 (max-2-same-dir)",
+  },
+  "2h-trend-v5-r28-v6-lscool48": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_LSCOOL,
+    label: "R28_V6_LSCOOL48 (24h cooldown after 3 losses)",
+  },
+  "2h-trend-v5-r28-v6-todcutoff18": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_TODCUTOFF18,
+    label: "R28_V6_TODCUTOFF18 (no entries past 18 UTC)",
+  },
+  "2h-trend-v5-r28-v6-voltp-aggr": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_VOLTP_AGGR,
+    label: "R28_V6_VOLTP_AGGR (vol-adaptive tpMult ±30%)",
+  },
+  "2h-trend-v5-r28-v6-idlt30": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_IDLT_30,
+    label: "R28_V6_IDLT30 (intraday-loss-throttle hard 3%)",
+  },
+  "2h-trend-v5-r28-v6-combo-pl-idlt": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_COMBO_PL_IDLT,
+    label: "R28_V6_COMBO (passlock + idlt30)",
+  },
+  // Round 61 — PASSLOCK + Adaptive Day-Risk variants.
+  "2h-trend-v5-r28-v6-passlock-dayrisk50": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_DAYRISK_50,
+    label: "R28_V6_PASSLOCK + day-risk 0.5×(d0-2)",
+  },
+  "2h-trend-v5-r28-v6-passlock-dayrisk70": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_DAYRISK_70,
+    label: "R28_V6_PASSLOCK + day-risk 0.7×(d0-2)",
+  },
+  "2h-trend-v5-r28-v6-passlock-dayrisk50-2d": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_DAYRISK_50_2D,
+    label: "R28_V6_PASSLOCK + day-risk 0.5×(d0-1)",
+  },
   "2h-trend-breakout-v1": {
     cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_BREAKOUT_V1,
     label: "BREAKOUT_V1 (engine v4)",

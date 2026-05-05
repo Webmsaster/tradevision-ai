@@ -38,6 +38,7 @@ import type { Candle } from "../src/utils/indicators";
 import { tgSend, htmlEscape } from "../src/utils/telegramNotify";
 import { startTelegramBot, readControls } from "../src/utils/telegramBot";
 import { withFileLock } from "../src/utils/processLock";
+import { acquireSingletonLock } from "../src/utils/serviceSingleton";
 import {
   loadForexFactoryNews,
   filterNewsEvents,
@@ -665,31 +666,50 @@ async function runOneCheck(): Promise<DetectionResult> {
   // V4-Engine path: persistent-state live engine (Round 40).
   // Selector convention: FTMO_TF ends with "-v4engine" OR is "2h-trend-breakout-v1"
   // (Breakout always runs on V4-Engine because polling V231 doesn't know breakoutEntry).
-  const isBreakoutV1 = process.env.FTMO_TF === "2h-trend-breakout-v1";
-  const isR28V5 =
-    process.env.FTMO_TF === "2h-trend-v5-quartz-lite-r28-v5-v4engine";
-  const isR28V6 =
-    process.env.FTMO_TF === "2h-trend-v5-quartz-lite-r28-v6-v4engine";
+  //
+  // Round 60 audit (2026-05-05): the 13 R28_V6 sister selectors (passlock,
+  // corrcap2, lscool48, todcutoff18, voltp-aggr, idlt30, combo-pl-idlt,
+  // 3× passlock-dayrisk*) DO NOT end in "-v4engine" but their configs carry
+  // V4-engine-only flags (closeAllOnTargetReached, volAdaptiveTpMult,
+  // dayBasedRiskMultiplier). Without this branch, V231 was silently routing
+  // them through the legacy signal-generator → engine flags ignored, defeating
+  // the whole Round 60 hunt. Force V4-Engine for every selector matching the
+  // R28_V6 sister convention `r28-v6-{feature}`.
+  const ftmoTf = process.env.FTMO_TF ?? "";
+  const isBreakoutV1 = ftmoTf === "2h-trend-breakout-v1";
+  const isR28V5 = ftmoTf === "2h-trend-v5-quartz-lite-r28-v5-v4engine";
+  const isR28V6 = ftmoTf === "2h-trend-v5-quartz-lite-r28-v6-v4engine";
+  // R60 sister selectors: 2h-trend-v5-r28-v6-{passlock,corrcap2,lscool48,
+  // todcutoff18,voltp-aggr,idlt30,combo-pl-idlt,passlock-dayrisk*,…}
+  const isR28V6Sister = /^2h-trend-v5-r28-v6-[a-z0-9-]+$/.test(ftmoTf);
   const useV4Engine =
-    (process.env.FTMO_TF ?? "").endsWith("-v4engine") || isBreakoutV1;
+    ftmoTf.endsWith("-v4engine") || isBreakoutV1 || isR28V6Sister;
   let result: DetectionResult;
   if (useV4Engine) {
-    // For now four cfgs supported via v4engine — extend mapping here
-    // as more configs are validated under V4 persistent-state semantics.
-    const v4Cfg = isBreakoutV1
-      ? FTMO_DAYTRADE_24H_CONFIG_BREAKOUT_V1
-      : isR28V6
-        ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6
-        : isR28V5
-          ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V5
-          : FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4;
-    const v4Label = isBreakoutV1
-      ? "BREAKOUT_V1"
-      : isR28V6
-        ? "V5_QUARTZ_LITE_R28_V6"
-        : isR28V5
-          ? "V5_QUARTZ_LITE_R28_V5"
-          : "V5_QUARTZ_LITE_R28_V4";
+    // R60 sister: pick CFG via V231 CFG_REGISTRY lookup (one source of truth).
+    let v4Cfg: typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
+    let v4Label: string;
+    if (isR28V6Sister) {
+      const sisterCfg = LIVE_SIG_CFG;
+      v4Cfg =
+        sisterCfg as typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
+      v4Label = `R28_V6_${ftmoTf.replace("2h-trend-v5-r28-v6-", "").toUpperCase()}`;
+    } else {
+      v4Cfg = isBreakoutV1
+        ? (FTMO_DAYTRADE_24H_CONFIG_BREAKOUT_V1 as typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6)
+        : isR28V6
+          ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6
+          : isR28V5
+            ? (FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V5 as typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6)
+            : (FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4 as typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6);
+      v4Label = isBreakoutV1
+        ? "BREAKOUT_V1"
+        : isR28V6
+          ? "V5_QUARTZ_LITE_R28_V6"
+          : isR28V5
+            ? "V5_QUARTZ_LITE_R28_V5"
+            : "V5_QUARTZ_LITE_R28_V4";
+    }
     const fullCandleMap: Record<
       string,
       import("../src/utils/indicators").Candle[]
@@ -1043,6 +1063,16 @@ async function runSmartAlerts(account: AccountState) {
 async function main() {
   console.log("[ftmo-live] FTMO Live Signal Service starting");
   console.log(`[ftmo-live] State directory: ${STATE_DIR}`);
+  // Round 60 (Audit Round 3, Task B): refuse to start if another signal
+  // service is already running on this state dir. MUST happen before
+  // ensureStateDir/Telegram bring-up so a duplicate launch never opens a
+  // second long-poll on the same bot token. Mirrors Python executor's
+  // `acquire_singleton_or_exit()` (tools/ftmo_executor.py:2965).
+  const lock = acquireSingletonLock(STATE_DIR);
+  if (!lock.acquired) {
+    console.error(`[ftmo-live] ${lock.reason}. Refusing to start.`);
+    process.exit(11);
+  }
   ensureStateDir();
 
   // Round 54 Fix #3: assert CFG selection at boot. V231's getActiveCfgInfo()

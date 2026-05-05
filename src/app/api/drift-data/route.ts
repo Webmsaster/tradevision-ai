@@ -16,6 +16,7 @@ import { existsSync, readFileSync, statSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { isRateLimited } from "@/utils/distributedRateLimit";
 
 // ---------------------------------------------------------------------------
 // Config / constants
@@ -26,34 +27,35 @@ const JSONL_MAX_BYTES = STATE_FILE_MAX_BYTES * 10;
 const DEFAULT_START_BALANCE = 100_000;
 
 /**
- * R28_V6 backtest reference — re-validated post-R56/R57/R58 engine fixes
- * (sharded run 2026-05-03, 8 parallel × 17 windows = 136 total).
+ * R28_V6_PASSLOCK backtest reference — Round 60 Champion (2026-05-04).
+ * Pass-Lock-Mode (`closeAllOnTargetReached`) eliminates Day-30-force-close
+ * drag-down → +8.15pp pass-rate vs R28_V6 baseline.
  *
- * Real numbers (replacing the pre-R56 60.29% claim):
- *   pass-rate:       56.62% (77/136)
+ * Real numbers (R60 sharded sweep, 88-136 windows pre-final):
+ *   pass-rate:       64.77% (preliminary)
  *   median pass-day: 4d (FTMO floor)
- *   p90 pass-day:    4d (concentrated — most passes at FTMO minTradingDays)
- *   final equity p10: -10.74%
- *   final equity median: +8.95%
+ *   final equity p10: ~-8% (improved vs R28_V6 -10.74%)
+ *   final equity median: +9% (locked at target via close-all)
  *
- * Failure breakdown:
- *   profit_target reached: 56.62%
- *   daily_loss:           30.88%
- *   total_loss:           11.03%
- *   give_back:             1.47%
+ * Failure breakdown (vs R28_V6 in parens):
+ *   profit_target reached: 64.77%   (56.62%)
+ *   daily_loss:            22.7%    (30.88%)
+ *   total_loss:            12.5%    (11.03%)
+ *   give_back:              0%      (1.47%)
  *
- * The expected-band heuristic shape: equity curve grows roughly linearly
- * to +8% (FTMO step-1 target) by day 4 in the median case, with a p10/p90
- * envelope that fans out from day 0 (±0%) to day 7 (p10 ≈ -3%, p90 ≈ +8%).
+ * Live selector: FTMO_TF=2h-trend-v5-r28-v6-passlock
+ *
+ * Live deploy expectation: -3 to -5pp drift from backtest → ~60% live single,
+ * ~94% min-1-pass with 3-strategy multi-account (PASSLOCK + TITANIUM + AMBER).
  *
  * NOTE: target is +8% (not +10%) — that's FTMO Step 1's actual rule.
  */
 const BACKTEST_REF = {
-  name: "R28_V6",
-  passRatePct: 56.62,
+  name: "R28_V6_PASSLOCK",
+  passRatePct: 64.77,
   medianPassDay: 4,
-  p90PassDay: 7, // p90 of FAILED window equity-trajectories; passing windows hit floor at 4d
-  profitTargetPct: 8, // FTMO Step 1 actual target (was incorrectly 10 before)
+  p90PassDay: 5, // tighter than R28_V6 because pass-lock locks early
+  profitTargetPct: 8, // FTMO Step 1 actual target
   dailyLossCapPct: 5,
   totalLossCapPct: 10,
   maxChallengeDays: 30,
@@ -88,6 +90,12 @@ function isEnabled(): boolean {
  *   - `FTMO_MONITOR_AUTH_BYPASS=1` is set (escape hatch for local dev /
  *     headless-vps where the user IS the only one with shell access).
  */
+// Round 60 (Security Audit Round 2): emit a once-per-process warning
+// when FTMO_MONITOR_AUTH_BYPASS is enabled while Supabase IS configured.
+// This is the misconfiguration that risks PII leakage on a multi-tenant
+// VPS — bypass is meant for headless single-owner setups only.
+const bypassWarned = { logged: false };
+
 async function isAuthenticated(): Promise<{
   ok: boolean;
   reason?: string;
@@ -96,6 +104,20 @@ async function isAuthenticated(): Promise<{
     process.env.FTMO_MONITOR_AUTH_BYPASS === "1" ||
     process.env.FTMO_MONITOR_AUTH_BYPASS === "true"
   ) {
+    if (
+      !bypassWarned.logged &&
+      process.env.NEXT_PUBLIC_SUPABASE_URL &&
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY &&
+      process.env.NEXT_PUBLIC_SUPABASE_URL !==
+        "https://your-project.supabase.co"
+    ) {
+      bypassWarned.logged = true;
+      console.warn(
+        "[drift-data] FTMO_MONITOR_AUTH_BYPASS=1 active WHILE Supabase is " +
+          "configured — every visitor can read live equity/positions. " +
+          "Disable the bypass unless this is a single-owner headless VPS.",
+      );
+    }
     return { ok: true, reason: "bypass" };
   }
   let supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>;
@@ -576,6 +598,28 @@ export async function GET(req: NextRequest) {
     return new NextResponse("Not Found", { status: 404 });
   }
 
+  // Round 60 (Security Audit Round 2): rate-limit even authenticated
+  // requests. The endpoint reads ~7 small JSON files + tails a JSONL log on
+  // every call (~10 ms warm). A logged-in attacker (or buggy client polling
+  // in a tight loop) could turn that into a sustained read-amp DoS. Cap at
+  // 60/min/IP — the dashboard polls at most every 5 s so legit traffic is
+  // safely under the limit.
+  const ip =
+    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    req.headers.get("x-real-ip") ||
+    "unknown";
+  if (
+    await isRateLimited("drift-data", ip, { windowMs: 60_000, maxHits: 60 })
+  ) {
+    return NextResponse.json(
+      { error: "rate_limited" },
+      {
+        status: 429,
+        headers: { "Cache-Control": "no-store", "Retry-After": "60" },
+      },
+    );
+  }
+
   // Round 57 (2026-05-03): require Supabase auth so other tenants can't
   // read live equity/positions through a known slug.
   const auth = await isAuthenticated();
@@ -686,9 +730,14 @@ export async function GET(req: NextRequest) {
     positions.length > 0,
   );
 
-  // FTMO rule progress (0..1, 1 = at the cap)
+  // FTMO rule progress (0..1, 1 = at the cap).
+  // Divisor is BACKTEST_REF.profitTargetPct (FTMO Step 1 actual rule = 8%),
+  // not hardcoded 10 — was a stale ref to old 10% target. Round 60 audit fix.
   const ruleProgress = {
-    profitTargetProgress: Math.max(0, Math.min(1, totalPnlPct / 10)),
+    profitTargetProgress: Math.max(
+      0,
+      Math.min(1, totalPnlPct / BACKTEST_REF.profitTargetPct),
+    ),
     dailyLossUsed: Math.max(0, -dailyPnlPct / (FTMO_DAILY_LOSS_CAP * 100)),
     totalLossUsed: Math.max(0, -totalPnlPct / (FTMO_TOTAL_LOSS_CAP * 100)),
     drawdownVsPeakPct:

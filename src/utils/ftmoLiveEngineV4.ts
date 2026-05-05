@@ -1380,6 +1380,69 @@ export function pollLive(
     state.firstTargetHitDay = state.day;
     state.pausedAtTarget = !!cfg.pauseAtTargetReached;
     result.targetHit = true;
+    // Round 60 Pass-Lock-Mode: force-close all open positions immediately on
+    // first target-hit. Mathematically lossless at the moment of trigger
+    // (mtm ≥ target by predicate, so realised post-close ≥ target), but
+    // eliminates downstream Day-30-force-close drag-down failures.
+    //
+    // Round 60 audit (2026-05-05): require pauseAtTargetReached=true.
+    // Without pause, the close-all fires once but new entries remain
+    // allowed → equity-lock leaks through subsequent fresh trades.
+    // firstTargetHitDay !== null also blocks re-fire of this branch.
+    if (
+      cfg.closeAllOnTargetReached &&
+      cfg.pauseAtTargetReached &&
+      state.openPositions.length > 0
+    ) {
+      for (let i = state.openPositions.length - 1; i >= 0; i--) {
+        const pos = state.openPositions[i]!;
+        const cs = candlesByAsset[pos.sourceSymbol];
+        let exitPrice: number | null = null;
+        if (cs && cs.length > 0) {
+          const matched = findCandleAtTime(cs, lastBar.openTime);
+          if (matched) {
+            exitPrice = matched.close;
+          } else {
+            for (let j = cs.length - 1; j >= 0; j--) {
+              if (cs[j]!.openTime <= lastBar.openTime) {
+                exitPrice = cs[j]!.close;
+                break;
+              }
+            }
+          }
+        }
+        if (exitPrice == null) {
+          exitPrice = pos.lastKnownPrice ?? pos.entryPrice;
+        }
+        const { rawPnl, effPnl } = computeEffPnl(pos, exitPrice, cfg);
+        state.equity *= 1 + effPnl;
+        const closed: ClosedTradeV4 = {
+          ticketId: pos.ticketId,
+          symbol: pos.symbol,
+          direction: pos.direction,
+          entryTime: pos.entryTime,
+          exitTime: lastBar.openTime,
+          entryPrice: pos.entryPrice,
+          exitPrice,
+          rawPnl,
+          effPnl,
+          exitReason: "manual",
+          day: state.day,
+          entryDay: dayIndex(pos.entryTime, state.challengeStartTs),
+        };
+        state.closedTrades.push(closed);
+        result.decision.closes.push({
+          ticketId: pos.ticketId,
+          exitPrice,
+          exitReason: "manual",
+        });
+        if (cfg.kellySizing) {
+          state.kellyPnls.push({ closeTime: lastBar.openTime, effPnl });
+        }
+      }
+      state.openPositions = [];
+      state.mtmEquity = state.equity;
+    }
   }
   // After target hit, EVERY subsequent calendar day counts as a trading-day
   // (the bot pings the broker daily to satisfy minTradingDays). Mirrors
@@ -1598,7 +1661,28 @@ export function pollLive(
         // BEFORE effRisk back-derive. Was: back-derive used base stopPct,
         // then atrStop pushed stopPct higher → modelled loss exceeded
         // LIVE_LOSS_CAP for atrStop-heavy configs (V5_QUARTZ family).
-        const tpPct = asset.tpPct ?? cfg.tpPct;
+        let tpPct = asset.tpPct ?? cfg.tpPct;
+        // Round 60 Vol-Adaptive tpMult: scale tpPct by ATR-fraction regime.
+        // Anchor ATR on prev-bar (length-2), not current-bar (length-1) —
+        // mirrors R54-V4-6 atrStop fix to avoid subtle entry-bar look-ahead
+        // in backtest. Live mode hits this same prev-bar lookup naturally
+        // (current bar isn't closed yet at signal time).
+        if (cfg.volAdaptiveTpMult) {
+          const va = cfg.volAdaptiveTpMult;
+          const series = atr(candles, va.atrPeriod);
+          const prev =
+            series.length >= 2 ? series[series.length - 2] : undefined;
+          const cur = series[series.length - 1];
+          const v = prev ?? cur;
+          if (v != null && matched.entryPrice > 0) {
+            const atrFrac = v / matched.entryPrice;
+            if (atrFrac < va.lowVolThreshold) {
+              tpPct *= va.lowVolFactor;
+            } else if (atrFrac > va.highVolThreshold) {
+              tpPct *= va.highVolFactor;
+            }
+          }
+        }
         let stopPct = asset.stopPct ?? cfg.stopPct;
         if (cfg.atrStop) {
           // Round 54 (R54-V4-6): anchor ATR on prev-bar (length-2), not
@@ -1632,7 +1716,17 @@ export function pollLive(
         const volMult = cfg.liveCaps
           ? Math.min(matched.volMult ?? 1.0, 1.0)
           : (matched.volMult ?? 1.0);
-        let effRisk = asset.riskFrac * factor * volMult;
+        // Round 61 Adaptive Day-Risk: scale by challenge day-index. Tighter
+        // sizing in early days for capital preservation, full push on
+        // FTMO-floor target day. state.day is 0-based.
+        let dayRiskMult = 1.0;
+        if (
+          cfg.dayBasedRiskMultiplier &&
+          state.day < cfg.dayBasedRiskMultiplier.conservativeFirstDays
+        ) {
+          dayRiskMult = cfg.dayBasedRiskMultiplier.conservativeFactor;
+        }
+        let effRisk = asset.riskFrac * factor * volMult * dayRiskMult;
         if (cfg.liveCaps && effRisk > cfg.liveCaps.maxRiskFrac) {
           effRisk = cfg.liveCaps.maxRiskFrac;
         }

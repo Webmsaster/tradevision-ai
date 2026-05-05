@@ -188,7 +188,7 @@ export function EquityChartSection({ data }: { data: EquityCurveData }) {
               stroke="#10b981"
               strokeDasharray="2 2"
               label={{
-                value: "+10% target",
+                value: `+${data.equity.targetPct}% target`,
                 fill: "#10b981",
                 fontSize: 10,
                 position: "right",

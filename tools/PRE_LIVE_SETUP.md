@@ -1,6 +1,10 @@
-# Pre-Live Setup Guide — R28_V6 FTMO Bot
+# Pre-Live Setup Guide — R28_V6_PASSLOCK FTMO Bot
 
 Komplettes Step-by-Step für ersten Live-Deploy. ~30 Minuten Aufwand.
+
+> **Round 60 update:** Champion is now `R28_V6_PASSLOCK` (63.24% full-sweep / 64.77%
+> preliminary backtest, +6.62-8.15pp vs R28_V6 56.62% baseline). Selector below has been
+> updated. For the focused PASSLOCK runbook see `tools/PASSLOCK_DEPLOY_RUNBOOK.md`.
 
 ---
 
@@ -112,8 +116,8 @@ python -m pytest tools/ -q
 Erstelle `C:\tradevision-ai\.env.ftmo`:
 
 ```bash
-# === Strategy Selection ===
-FTMO_TF=2h-trend-v5-quartz-lite-r28-v6-v4engine
+# === Strategy Selection (Round 60 Champion) ===
+FTMO_TF=2h-trend-v5-r28-v6-passlock
 FTMO_ACCOUNT_ID=demo1
 FTMO_START_BALANCE=100000
 
@@ -170,9 +174,9 @@ pm2 logs ftmo-signal-service
 
 Erwartet:
 
-- `[boot] STATE_DIR=C:\tradevision-ai\ftmo-state-2h-trend-v5-quartz-lite-r28-v6-v4engine-demo1\`
-- `[boot] FTMO_TF=2h-trend-v5-quartz-lite-r28-v6-v4engine`
-- `[boot] CFG=V5_QUARTZ_LITE_R28_V6 (engine v4)`
+- `[boot] STATE_DIR=C:\tradevision-ai\ftmo-state-2h-trend-v5-r28-v6-passlock-demo1\`
+- `[boot] FTMO_TF=2h-trend-v5-r28-v6-passlock`
+- `[boot] CFG=R28_V6_PASSLOCK (engine v4, closeAllOnTargetReached=true)`
 - `[mt5] connected, login=<deine login>, balance=100000`
 - Telegram: "🤖 Bot started — demo1"
 
@@ -196,7 +200,7 @@ PORT=3000 NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co `
   npm start
 ```
 
-Browser: `http://<vps-ip>:3000/dashboard/drift?ftmo_tf=2h-trend-v5-quartz-lite-r28-v6-v4engine-demo1`
+Browser: `http://<vps-ip>:3000/dashboard/drift?ftmo_tf=2h-trend-v5-r28-v6-passlock-demo1`
 
 Du siehst:
 

@@ -1,4 +1,13 @@
-# R28_V6 FTMO Bot — 1-Page Cheat Sheet
+# R28_V6_PASSLOCK FTMO Bot — 1-Page Cheat Sheet
+
+## 🏆 Round 60 Champion (2026-05-04)
+
+**R28_V6_PASSLOCK = 63.24% V4-Engine pass-rate full-sweep** (preliminary 64.77% on 86/136 windows, +6.62 to +8.15pp vs R28_V6 baseline 56.62%)
+
+- Mechanism: `closeAllOnTargetReached` lockt mtm-equity bei first target-hit
+- Eliminiert Day-30-force-close Drag-Down (give_back 0%, total_loss unchanged)
+- Live erwartet: ~60% single-account, ~94% min-1-pass mit 3-Strategy
+- Live-Selector: `FTMO_TF=2h-trend-v5-r28-v6-passlock`
 
 ## 🚀 Deploy in 5 Befehlen
 
@@ -14,7 +23,7 @@ python tools/preflight_check.py && pm2 start ecosystem.config.js
 ## 🔑 .env.ftmo Essentials
 
 ```bash
-FTMO_TF=2h-trend-v5-quartz-lite-r28-v6-v4engine
+FTMO_TF=2h-trend-v5-r28-v6-passlock                  # ← R60 Champion (was: r28-v6-v4engine)
 FTMO_ACCOUNT_ID=demo1
 FTMO_EXPECTED_LOGIN=<MT5-Login-Zahl>
 FTMO_START_BALANCE=100000
@@ -40,7 +49,7 @@ FTMO_MONITOR_ENABLED=1
 ## 📊 Monitoring URLs
 
 ```
-Drift Dashboard:  http://<vps-ip>:3000/dashboard/drift?ftmo_tf=2h-trend-v5-quartz-lite-r28-v6-v4engine-demo1
+Drift Dashboard:  http://<vps-ip>:3000/dashboard/drift?ftmo_tf=2h-trend-v5-r28-v6-passlock-demo1
 PM2 Logs:         pm2 logs ftmo-executor
 Health Check:     python tools/preflight_check.py
 ```
@@ -55,20 +64,26 @@ Health Check:     python tools/preflight_check.py
 | MT5 disconnect   | MT5 Terminal                      | Re-login auf VPS                  |
 | Stale signals    | `pending-signals.json`            | Delete + restart                  |
 
-## 🎯 Erwartete Pass-Rate (honest)
+## 🎯 Erwartete Pass-Rate (R28_V6_PASSLOCK)
 
-- Single-Account Live: **~50-55%** (Backtest 56.62%, drift -3-7pp)
-- 2× Multi-Account: **~80% min-1-pass**
-- 3× Multi-Account: **~92%**
+- Single-Account Live: **~60%** (Backtest 63.24% honest / 64.77% preliminary, drift -3-5pp)
+- 2× PASSLOCK: **~84% min-1-pass**
+- 3× PASSLOCK: **~93%**
+- **3-Strategy (PASSLOCK + TITANIUM + AMBER): ~94% min-1-pass** ⭐ (uncorrelated)
 - Median Pass-Day: **4 Tage** (FTMO floor)
 
-## 🔄 Multi-Account Setup
+## 🔄 Multi-Account Setup (3-Strategy ~94%)
 
 ```powershell
-# Demo 2 dazu (NACH 1 Woche Demo 1 stable):
-copy .env.ftmo.demo2.example .env.ftmo.demo2
-# .env.ftmo.demo2 anpassen (anderer FTMO_EXPECTED_LOGIN, KEIN MASTER flag)
-pm2 start ecosystem.config.js --name ftmo-executor-demo2 --env-from-file .env.ftmo.demo2
+# 3 verschiedene Strategien für maximale Decorrelation:
+copy .env.ftmo.demo1.example     .env.ftmo.demo1       # R28_V6_PASSLOCK
+copy .env.ftmo.titanium.example  .env.ftmo.titanium    # V5_TITANIUM
+copy .env.ftmo.amber.example     .env.ftmo.amber       # V5_AMBER
+
+# Anpassen + Launch:
+bash tools/start-3-strategy.sh
+
+# Setup-Anleitung: tools/MULTI_STRATEGY_SETUP.md
 ```
 
 ## 🆘 Notbremse
@@ -90,22 +105,27 @@ C:\tradevision-ai\
 │   ├── preflight_check.py                 ← GO/NO-GO check
 │   ├── health_monitor.py                  ← cron watchdog (alle 15min)
 │   ├── ftmo_executor.py                   ← Python MT5 executor
-│   └── ecosystem.config.js                ← PM2 config
-├── ftmo-state-2h-trend-v5-quartz-lite-r28-v6-v4engine-demo1\
+│   ├── ecosystem.config.js                ← PM2 single-account config
+│   ├── ecosystem-multi.config.js          ← PM2 3-strategy multi-account
+│   ├── start-3-strategy.sh                ← Multi-Account launcher
+│   ├── MULTI_STRATEGY_SETUP.md            ← Multi-Account anleitung
+│   └── PASSLOCK_DEPLOY_RUNBOOK.md         ← Live-Deploy step-by-step
+├── ftmo-state-2h-trend-v5-r28-v6-passlock-demo1\
 │   ├── account.json                       ← live equity
 │   ├── executor-log.jsonl                 ← all events
 │   └── ...
 ```
 
-## 💸 ROI Quick Math (post-R58 honest)
+## 💸 ROI Quick Math (R28_V6_PASSLOCK post-R60)
 
-| Demos  |     Cost |   Pass% |  EV/Demo |
-| ------ | -------: | ------: | -------: |
-| 1×     |     155€ |     55% |     -28€ |
-| **2×** | **310€** | **80%** | **+96€** |
-| 3×     |     465€ |     92% |    +205€ |
+| Setup                   |     Cost |    Pass% |           EV |
+| ----------------------- | -------: | -------: | -----------: |
+| 1× PASSLOCK             |     155€ |      60% |         +25€ |
+| **2× PASSLOCK**         | **310€** |  **84%** |    **+225€** |
+| 3× PASSLOCK             |     465€ |      93% |        +395€ |
+| **3-Strategy (uncorr)** | **465€** | **~94%** | **+410€** ⭐ |
 
-**Sweet spot: 2× Multi-Account** — first profitable konfiguration.
+**Sweet spot: 3-Strategy** — gleiches Geld, +1pp aber dramatisch dekorreliert (1 Crypto-Crash killt nicht alle 3 Accounts).
 
 ## ⏱️ Tag-für-Tag Erwartung
 

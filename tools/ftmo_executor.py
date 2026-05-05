@@ -234,9 +234,16 @@ def write_json(path: Path, obj: Any) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     # BUGFIX 2026-04-28: PID-suffixed tmp prevents cross-process race
     # (Node telegramBot and Python both write bot-controls.json).
+    # Round 60 audit fix (2026-05-05): add f.flush() + os.fsync() to mirror
+    # the TS-side saveState durability guarantee. Prior version was at risk
+    # of post-crash partial-revert: tmp.replace() promoted a not-yet-flushed
+    # tmpfile, leaving account.json with stale content if the VPS lost power
+    # before kernel buffers reached disk.
     tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
     with open(tmp, "w") as f:
         json.dump(obj, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
     tmp.replace(path)
 
 
@@ -1532,7 +1539,7 @@ def _process_pending_signals_locked() -> None:
         if sig_ts and (now_ms - sig_ts) > MAX_SIGNAL_AGE_MS:
             age_min = (now_ms - sig_ts) / 60000
             log_event("signal_stale_drop", asset=sig["assetSymbol"], age_min=round(age_min, 1))
-            tg_send(f"⏰ <b>Signal stale, dropped</b>\n{sig['assetSymbol']}\nage={age_min:.1f}min")
+            tg_send(f"⏰ <b>Signal stale, dropped</b>\n{html_escape(sig['assetSymbol'])}\nage={age_min:.1f}min")
             executed["executions"].append({
                 "signal": sig, "result": "stale_drop", "age_min": round(age_min, 1),
                 "ts": datetime.now(timezone.utc).isoformat(),
@@ -1541,7 +1548,7 @@ def _process_pending_signals_locked() -> None:
         blocker = check_ftmo_rules(account_equity, day_start_usd)
         if blocker:
             log_event("rule_block", asset=sig["assetSymbol"], reason=blocker)
-            tg_send(f"🛑 <b>FTMO Rule Block</b>\nAsset: {sig['assetSymbol']}\nReason: {html_escape(blocker)}")
+            tg_send(f"🛑 <b>FTMO Rule Block</b>\nAsset: {html_escape(sig['assetSymbol'])}\nReason: {html_escape(blocker)}")
             executed["executions"].append({
                 "signal": sig, "result": "blocked", "reason": blocker,
                 "ts": datetime.now(timezone.utc).isoformat(),
@@ -1555,7 +1562,7 @@ def _process_pending_signals_locked() -> None:
         dpt_block = check_daily_peak_trail_block(account_equity)
         if dpt_block:
             log_event("dpt_block", asset=sig["assetSymbol"], reason=dpt_block)
-            tg_send(f"🛡️ <b>Day-Peak Trail Block</b>\n{sig['assetSymbol']}\n{html_escape(dpt_block)}")
+            tg_send(f"🛡️ <b>Day-Peak Trail Block</b>\n{html_escape(sig['assetSymbol'])}\n{html_escape(dpt_block)}")
             executed["executions"].append({
                 "signal": sig, "result": "dpt_blocked", "reason": dpt_block,
                 "ts": datetime.now(timezone.utc).isoformat(),
@@ -1569,7 +1576,7 @@ def _process_pending_signals_locked() -> None:
         rg_block = check_regime_gate_block()
         if rg_block:
             log_event("regime_gate_block", asset=sig["assetSymbol"], reason=rg_block)
-            tg_send(f"📉 <b>Regime Gate Block</b>\n{sig['assetSymbol']}\n{html_escape(rg_block)}")
+            tg_send(f"📉 <b>Regime Gate Block</b>\n{html_escape(sig['assetSymbol'])}\n{html_escape(rg_block)}")
             executed["executions"].append({
                 "signal": sig, "result": "regime_blocked", "reason": rg_block,
                 "ts": datetime.now(timezone.utc).isoformat(),
@@ -1582,7 +1589,7 @@ def _process_pending_signals_locked() -> None:
         news_block = check_news_blackout()
         if news_block:
             log_event("news_blackout_block", asset=sig["assetSymbol"], reason=news_block)
-            tg_send(f"📰 <b>News-Blackout</b>\n{sig['assetSymbol']}\n{html_escape(news_block)}")
+            tg_send(f"📰 <b>News-Blackout</b>\n{html_escape(sig['assetSymbol'])}\n{html_escape(news_block)}")
             executed["executions"].append({
                 "signal": sig, "result": "news_blackout", "reason": news_block,
                 "ts": datetime.now(timezone.utc).isoformat(),
@@ -1599,7 +1606,7 @@ def _process_pending_signals_locked() -> None:
         open_count = len(live_positions) + in_batch_placed
         if open_count >= MAX_CONCURRENT_TRADES:
             log_event("mct_block", asset=sig["assetSymbol"], open=open_count, cap=MAX_CONCURRENT_TRADES)
-            tg_send(f"🛑 <b>MCT Cap Reached</b>\n{sig['assetSymbol']} skipped\nOpen: {open_count}/{MAX_CONCURRENT_TRADES}")
+            tg_send(f"🛑 <b>MCT Cap Reached</b>\n{html_escape(sig['assetSymbol'])} skipped\nOpen: {open_count}/{MAX_CONCURRENT_TRADES}")
             executed["executions"].append({
                 "signal": sig, "result": "mct_blocked",
                 "open_count": open_count, "cap": MAX_CONCURRENT_TRADES,
@@ -1615,7 +1622,7 @@ def _process_pending_signals_locked() -> None:
             log_event("dry_run_order", asset=sig["assetSymbol"], risk=sig["riskFrac"], stop=sig["stopPct"])
             tg_send(
                 f"🧪 <b>DRY RUN — would place order</b>\n"
-                f"{sig['assetSymbol']} {direction.upper()}\n"
+                f"{html_escape(sig['assetSymbol'])} {direction.upper()}\n"
                 f"Risk: {sig['riskFrac']*100:.3f}% · Stop: {sig['stopPct']*100:.2f}%\n"
                 f"Entry≈${sig.get('entryPrice', 0):.4f}"
             )
@@ -1658,7 +1665,7 @@ def _process_pending_signals_locked() -> None:
             log_event("order_placed", asset=sig["assetSymbol"], ticket=result.ticket, lot=result.lot, entry=result.entry_price)
             tg_send(
                 f"✅ <b>ORDER PLACED</b>\n"
-                f"{sig['assetSymbol']} {direction.upper()}\n"
+                f"{html_escape(sig['assetSymbol'])} {direction.upper()}\n"
                 f"Ticket: <code>{result.ticket}</code>\n"
                 f"Lot: {result.lot} @ ${result.entry_price:.4f}\n"
                 f"Risk: {sig['riskFrac']*100:.3f}% of equity"
@@ -1721,7 +1728,7 @@ def _process_pending_signals_locked() -> None:
         else:
             _bump_order_fail_counter(result.error or "unknown")
             log_event("order_failed", asset=sig["assetSymbol"], error=result.error)
-            tg_send(f"❌ <b>ORDER FAILED</b>\n{sig['assetSymbol']}\nError: {html_escape(result.error or 'unknown')}")
+            tg_send(f"❌ <b>ORDER FAILED</b>\n{html_escape(sig['assetSymbol'])}\nError: {html_escape(result.error or 'unknown')}")
             # BUGFIX 2026-04-28: retry transient errors instead of silently dropping.
             err_str = (result.error or "").lower()
             retryable_keywords = ["timeout", "no money", "requote", "off quotes", "trade disabled", "10027"]

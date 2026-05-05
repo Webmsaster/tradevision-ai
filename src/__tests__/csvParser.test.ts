@@ -435,3 +435,118 @@ describe("PLATFORM_PRESETS", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Round 60: parseLocaleNumber edge-cases (whitespace/quotes, sign handling,
+// single-dot ambiguity), MT4 numeric direction with dirty whitespace,
+// and per-row leverage-fallback in mapCSVToTrades.
+// ---------------------------------------------------------------------------
+
+describe("parseLocaleNumber additional edges (R60)", () => {
+  it("strips internal whitespace and apostrophes (Swiss thousand separator)", () => {
+    expect(parseLocaleNumber("1'000")).toBe(1000);
+    expect(parseLocaleNumber("1 234")).toBe(1234);
+  });
+
+  it("rejects '$' / 'USD' suffixes (no parseFloat-style permissive parsing)", () => {
+    expect(parseLocaleNumber("$45.50")).toBeNaN();
+    expect(parseLocaleNumber("45.50 USD")).toBeNaN();
+  });
+
+  it("rejects pure punctuation strings", () => {
+    expect(parseLocaleNumber(".")).toBeNaN();
+    expect(parseLocaleNumber(",")).toBeNaN();
+    expect(parseLocaleNumber("-")).toBeNaN();
+  });
+
+  it("rejects negative-zero and dual-sign (e.g. '--1')", () => {
+    // "--1" → fails the leading-regex (only one optional - allowed).
+    expect(parseLocaleNumber("--1")).toBeNaN();
+  });
+
+  it("handles single-dot decimals with non-3-digit fractions", () => {
+    expect(parseLocaleNumber("0.5")).toBe(0.5);
+    expect(parseLocaleNumber("100.45")).toBe(100.45);
+    expect(parseLocaleNumber("1234.5")).toBe(1234.5);
+  });
+});
+
+describe("mapCSVToTrades — leverage fallback (R60)", () => {
+  it("falls back to leverage=1 when value is invalid (matches calculations.validateLeverage)", () => {
+    const data = [
+      {
+        Pair: "BTC/USDT",
+        Direction: "long",
+        "Entry Price": "100",
+        "Exit Price": "110",
+        Quantity: "1",
+        "Entry Date": "2026-04-15T10:00:00Z",
+        "Exit Date": "2026-04-15T11:00:00Z",
+        Fees: "0",
+        Leverage: "-5", // invalid → fallback to 1
+      },
+      {
+        Pair: "BTC/USDT",
+        Direction: "long",
+        "Entry Price": "100",
+        "Exit Price": "110",
+        Quantity: "1",
+        "Entry Date": "2026-04-15T10:00:00Z",
+        "Exit Date": "2026-04-15T11:00:00Z",
+        Fees: "0",
+        Leverage: "abc", // also invalid → fallback to 1
+      },
+    ];
+    const { trades } = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
+    expect(trades).toHaveLength(2);
+    expect(trades[0]!.leverage).toBe(1);
+    expect(trades[1]!.leverage).toBe(1);
+  });
+
+  it("preserves valid positive leverage", () => {
+    const data = [
+      {
+        Pair: "BTC/USDT",
+        Direction: "long",
+        "Entry Price": "100",
+        "Exit Price": "110",
+        Quantity: "1",
+        "Entry Date": "2026-04-15T10:00:00Z",
+        "Exit Date": "2026-04-15T11:00:00Z",
+        Fees: "0",
+        Leverage: "10",
+      },
+    ];
+    const { trades } = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
+    expect(trades[0]!.leverage).toBe(10);
+  });
+
+  it("rejects rows with non-positive prices/quantity (negative entryPrice)", () => {
+    const data = [
+      {
+        Pair: "BTC/USDT",
+        Direction: "long",
+        "Entry Price": "-100",
+        "Exit Price": "110",
+        Quantity: "1",
+        "Entry Date": "",
+        "Exit Date": "",
+        Fees: "",
+        Leverage: "",
+      },
+      {
+        Pair: "BTC/USDT",
+        Direction: "long",
+        "Entry Price": "100",
+        "Exit Price": "0",
+        Quantity: "1",
+        "Entry Date": "",
+        "Exit Date": "",
+        Fees: "",
+        Leverage: "",
+      },
+    ];
+    const { trades } = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
+    expect(trades).toHaveLength(0);
+  });
+});

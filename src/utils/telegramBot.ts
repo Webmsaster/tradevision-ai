@@ -236,17 +236,92 @@ async function handleCommand(
       });
       await tgSend("▶️ <b>Bot RESUMED</b>\nNew signals will be executed.", cfg);
       break;
-    case "/kill":
-      setControls(ctx.stateDir, {
-        killRequested: true,
-        paused: true,
-        lastCommand: { from, cmd, ts: new Date().toISOString() },
-      });
-      await tgSend(
-        "🛑 <b>KILL REQUESTED</b>\nExecutor will close all open positions on next poll (~30s) and pause.\nUse /resume to re-enable after.",
-        cfg,
+    case "/kill": {
+      // Round 60 (Audit Round 3, Task A): /kill must broadcast across siblings
+      // in multi-account deployments. Previously `setControls(ctx.stateDir, …)`
+      // only flagged demo1's state-dir → demo2/demo3 kept trading. Operator
+      // saw a single "🛑 KILL REQUESTED" reply and assumed all accounts stopped.
+      //
+      // Routing:
+      //   /kill            → reply with usage hint, no-op
+      //   /kill all        → broadcast to every sibling ftmo-state-* dir
+      //   /kill <accountId> → resolve sibling dir by accountId suffix (or
+      //                       exact-match against FTMO_TF slug) + flag only
+      //                       that one
+      const args = text.split(/\s+/).slice(1);
+      const arg = args[0]?.toLowerCase() ?? "";
+      const targets = resolveKillTargets(ctx.stateDir, arg);
+      if (targets.kind === "usage") {
+        await tgSend(
+          [
+            "❓ <b>/kill needs a target</b>",
+            "",
+            `<code>/kill all</code> — close + pause every account`,
+            `<code>/kill ${htmlEscape(targets.thisAccount ?? "this")}</code> — only this bot`,
+            "",
+            "Available accounts:",
+            ...targets.available.map(
+              (s) => `  • <code>${htmlEscape(s)}</code>`,
+            ),
+          ].join("\n"),
+          cfg,
+        );
+        break;
+      }
+      if (targets.kind === "not-found") {
+        await tgSend(
+          [
+            `❌ No state dir matched <code>${htmlEscape(arg)}</code>`,
+            "",
+            "Available accounts:",
+            ...targets.available.map(
+              (s) => `  • <code>${htmlEscape(s)}</code>`,
+            ),
+          ].join("\n"),
+          cfg,
+        );
+        break;
+      }
+      const failures: string[] = [];
+      for (const dir of targets.dirs) {
+        try {
+          setControls(dir, {
+            killRequested: true,
+            paused: true,
+            lastCommand: { from, cmd, ts: new Date().toISOString() },
+          });
+        } catch (e) {
+          failures.push(
+            `${path.basename(dir)}: ${(e as Error).message ?? "write failed"}`,
+          );
+        }
+      }
+      const successDirs = targets.dirs.filter(
+        (d) => !failures.some((f) => f.startsWith(path.basename(d) + ":")),
       );
+      const lines = [
+        `🛑 <b>KILL REQUESTED${targets.dirs.length > 1 ? " (broadcast)" : ""}</b>`,
+        "",
+        `Flagged ${successDirs.length}/${targets.dirs.length} account(s):`,
+        ...successDirs.map(
+          (d) => `  • <code>${htmlEscape(path.basename(d))}</code>`,
+        ),
+      ];
+      if (failures.length > 0) {
+        lines.push(
+          "",
+          "⚠️ Errors:",
+          ...failures.map((f) => `  • ${htmlEscape(f)}`),
+        );
+      }
+      lines.push(
+        "",
+        "Each executor will close its open positions on next poll (~30s) and pause.",
+        "Use <code>/resume</code> to re-enable after.",
+      );
+      await tgSend(lines.join("\n"), cfg);
       break;
+    }
     case "/config":
       await tgSend(await renderConfig(ctx), cfg);
       break;
@@ -425,6 +500,100 @@ async function renderConfig(ctx: TelegramCommandHandlerCtx): Promise<string> {
     `Start balance: $${ctx.challengeStartBalance.toLocaleString()}`,
     `State dir: <code>${htmlEscape(ctx.stateDir)}</code>`,
   ].join("\n");
+}
+
+// ---- Multi-account /kill routing ----
+//
+// Round 60 (Audit Round 3, Task A): discover sibling state-dirs in process.cwd()
+// so /kill <accountId> and /kill all can broadcast killRequested across every
+// account. Pattern mirrors `discoverStateDirs()` in
+// src/app/api/drift-data/route.ts but operates on absolute paths.
+const STATE_DIR_NAME_RE = /^ftmo-state(?:-[a-z0-9][a-z0-9-]{0,127})?$/;
+
+function discoverSiblingStateDirs(currentStateDir: string): string[] {
+  // Anchor discovery in the current state-dir's PARENT (typically project cwd)
+  // — not process.cwd() — so a chdir() in the middle of a test or PM2 launch
+  // can't make the bot blind to its own siblings.
+  let parent: string;
+  try {
+    parent = path.dirname(path.resolve(currentStateDir));
+  } catch {
+    return [path.resolve(currentStateDir)];
+  }
+  const out = new Set<string>();
+  out.add(path.resolve(currentStateDir));
+  try {
+    const entries = fs.readdirSync(parent, { withFileTypes: true });
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      if (!STATE_DIR_NAME_RE.test(e.name)) continue;
+      const abs = path.join(parent, e.name);
+      // Only count dirs that look like real state-dirs (have account.json
+      // or are at least non-empty). Cheap probe; avoids matching empty
+      // skeleton dirs created by unrelated tooling.
+      try {
+        const sub = fs.readdirSync(abs);
+        if (sub.length === 0) continue;
+      } catch {
+        continue;
+      }
+      out.add(abs);
+    }
+  } catch {
+    /* parent unreadable — single-account fallback */
+  }
+  return [...out].sort();
+}
+
+/**
+ * Decide which state-dirs a `/kill <arg>` invocation targets.
+ *
+ * - `arg === ""`        → usage hint (return list of available account slugs)
+ * - `arg === "all"`     → every discovered sibling state-dir
+ * - otherwise          → match `arg` against the trailing slug of each
+ *                        sibling dir (e.g. `ftmo-state-2h-trend-v5-r28-v6-demo2`
+ *                        matches `demo2`, `r28-v6-demo2`, or full name).
+ *                        First match wins; fails over to "not-found" if nothing
+ *                        matches.
+ */
+export type KillTargets =
+  | { kind: "usage"; available: string[]; thisAccount: string | null }
+  | { kind: "not-found"; available: string[] }
+  | { kind: "broadcast" | "single"; dirs: string[]; available: string[] };
+
+export function resolveKillTargets(
+  currentStateDir: string,
+  arg: string,
+): KillTargets {
+  const siblings = discoverSiblingStateDirs(currentStateDir);
+  const available = siblings.map((d) => path.basename(d));
+  const thisAccountFull = path.basename(path.resolve(currentStateDir));
+  const thisAccount = thisAccountFull.startsWith("ftmo-state-")
+    ? thisAccountFull.slice("ftmo-state-".length)
+    : null;
+  if (!arg) {
+    return { kind: "usage", available, thisAccount };
+  }
+  if (arg === "all") {
+    return {
+      kind: "broadcast",
+      dirs: siblings.length > 0 ? siblings : [path.resolve(currentStateDir)],
+      available,
+    };
+  }
+  // Match by exact basename, by trailing slug, or by suffix (account-id-only).
+  const lower = arg.toLowerCase();
+  const matched = siblings.filter((d) => {
+    const base = path.basename(d).toLowerCase();
+    if (base === lower) return true;
+    if (base === `ftmo-state-${lower}`) return true;
+    if (base.endsWith(`-${lower}`)) return true;
+    return false;
+  });
+  if (matched.length === 0) {
+    return { kind: "not-found", available };
+  }
+  return { kind: "single", dirs: matched, available };
 }
 
 // ---- Controls file ----

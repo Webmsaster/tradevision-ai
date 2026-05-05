@@ -496,3 +496,277 @@ describe("calculatePerformanceByHour", () => {
     expect(hour14!.winRate).toBe(100);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Round 60: branch coverage for under-tested formula paths.
+//   - calculateExpectancy: empty array (early return)
+//   - calculateMaxDrawdown: peak<=0 (all-loss trader) → uses |equity| reference
+//   - calculateMaxDrawdown: drawdown > peak (DD > 100%, no silent cap)
+//   - calculateRiskReward: avgWin > 0 / avgLoss === 0 → Infinity (no losses)
+//   - calculateProfitFactor: only losing trades → returns 0
+//   - calculateStreaks: break-even trade does NOT extend or break either
+//     streak (extends a winning run).
+// ---------------------------------------------------------------------------
+
+describe("calculation branch-coverage edge cases (R60)", () => {
+  it("calculateExpectancy returns 0 for empty trades", () => {
+    expect(calculateExpectancy([])).toBe(0);
+  });
+
+  it("calculateMaxDrawdown uses |equity| reference when peak<=0 (all-loss)", () => {
+    // Trader who only loses → equity goes [-50, -150, -300]. peak stays 0.
+    // Reference for DD% must be |equity|, not 0 (would be 0/0=NaN otherwise).
+    const trades = [
+      makeTrade({ pnl: -50, exitDate: "2024-01-01T10:00:00Z" }),
+      makeTrade({ pnl: -100, exitDate: "2024-01-02T10:00:00Z" }),
+      makeTrade({ pnl: -150, exitDate: "2024-01-03T10:00:00Z" }),
+    ];
+    const { maxDrawdown, maxDrawdownPercent } = calculateMaxDrawdown(trades);
+    expect(maxDrawdown).toBe(300);
+    // Reference = |equity at trough| = 300, drawdown = 300 → 100%.
+    expect(maxDrawdownPercent).toBeCloseTo(100, 5);
+  });
+
+  it("calculateMaxDrawdown reports DD > 100% (no silent cap)", () => {
+    // Round 56 (R56-CAL-2): no silent 100% cap on drawdownPercent.
+    // Equity goes +100 → -200; peak=100, equity=-200, DD=300, ref=peak=100 → 300%.
+    const trades = [
+      makeTrade({ pnl: 100, exitDate: "2024-01-01T10:00:00Z" }),
+      makeTrade({ pnl: -300, exitDate: "2024-01-02T10:00:00Z" }),
+    ];
+    const { maxDrawdownPercent } = calculateMaxDrawdown(trades);
+    expect(maxDrawdownPercent).toBeCloseTo(300, 5);
+  });
+
+  it("calculateRiskReward returns Infinity when wins exist but no losses", () => {
+    const trades = [makeTrade({ pnl: 10 }), makeTrade({ pnl: 20 })];
+    expect(calculateRiskReward(trades)).toBe(Infinity);
+  });
+
+  it("calculateRiskReward returns 0 when no wins and no losses (BE only)", () => {
+    const trades = [makeTrade({ pnl: 0 }), makeTrade({ pnl: 0 })];
+    expect(calculateRiskReward(trades)).toBe(0);
+  });
+
+  it("calculateProfitFactor returns 0 when only losing trades", () => {
+    const trades = [makeTrade({ pnl: -10 }), makeTrade({ pnl: -20 })];
+    expect(calculateProfitFactor(trades)).toBe(0);
+  });
+
+  it("calculateStreaks: break-even trade neither extends nor breaks streaks", () => {
+    // Win, Win, BE, Win → longest win streak should be 3 (BE is skipped, not
+    // a divider). Per JSDoc: "Break-even trades (pnl === 0) do NOT break or
+    // extend either streak."
+    const trades = [
+      makeTrade({ id: "a", pnl: 10, exitDate: "2024-01-01T10:00:00Z" }),
+      makeTrade({ id: "b", pnl: 20, exitDate: "2024-01-02T10:00:00Z" }),
+      makeTrade({ id: "c", pnl: 0, exitDate: "2024-01-03T10:00:00Z" }),
+      makeTrade({ id: "d", pnl: 15, exitDate: "2024-01-04T10:00:00Z" }),
+    ];
+    const { longestWinStreak, longestLossStreak } = calculateStreaks(trades);
+    // BE doesn't reset, so streak continues: 1 → 2 → 2 (BE) → 3.
+    expect(longestWinStreak).toBe(3);
+    expect(longestLossStreak).toBe(0);
+  });
+
+  it("calculatePerformanceByDayOfWeek/Hour: empty input → []", () => {
+    expect(calculatePerformanceByDayOfWeek([])).toEqual([]);
+    expect(calculatePerformanceByHour([])).toEqual([]);
+  });
+
+  it("calculateAllStats: bestTrade === worstTrade for single-trade input", () => {
+    const t = makeTrade({ pnl: 42 });
+    const stats = calculateAllStats([t]);
+    expect(stats.totalTrades).toBe(1);
+    expect(stats.bestTrade?.id).toBe(t.id);
+    expect(stats.worstTrade?.id).toBe(t.id);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 61: rare edge-cases that could surface real bugs.
+//   - Sharpe stddev=0 edge (already covered for identical pnl, plus NaN/Inf input)
+//   - Profit Factor: pure-loss vs pure-win symmetry
+//   - Single-trade portfolio: no Sharpe crash
+//   - All break-even trades: win-rate 0, expectancy 0, R:R 0, PF 0, no NaN
+//   - Negative-quantity / negative-price: not rejected — current behaviour documented
+//   - Very large numbers (PnL in billions): no precision loss
+//   - Floating-point noise in cumulative drawdown (FP_TOLERANCE branch)
+//   - calculatePnl: fees-only loss with matching prices
+//   - Sharpe with NaN/Infinity pnlPercent: sanitised to 0 (no NaN propagation)
+// ---------------------------------------------------------------------------
+
+describe("calculation rare edge-cases (R61)", () => {
+  it("Sharpe with all break-even trades returns 0 (stddev=0, no NaN)", () => {
+    // pnlPercent=0 for every trade → mean=0, stddev=0 → must be 0, not NaN/Infinity.
+    const trades = [
+      makeTrade({ pnl: 0, pnlPercent: 0, exitDate: "2024-01-01T00:00:00Z" }),
+      makeTrade({ pnl: 0, pnlPercent: 0, exitDate: "2024-02-01T00:00:00Z" }),
+      makeTrade({ pnl: 0, pnlPercent: 0, exitDate: "2024-03-01T00:00:00Z" }),
+    ];
+    const s = calculateSharpeRatio(trades);
+    expect(s).toBe(0);
+    expect(Number.isNaN(s)).toBe(false);
+  });
+
+  it("Sharpe sanitises NaN / Infinity in pnlPercent (no NaN propagation)", () => {
+    // If a CSV import produces a weird pnlPercent (e.g. div-by-zero margin),
+    // Sharpe must not propagate NaN to the dashboard.
+    const trades = [
+      makeTrade({ pnl: 10, pnlPercent: NaN, exitDate: "2024-01-01T00:00:00Z" }),
+      makeTrade({
+        pnl: 10,
+        pnlPercent: Infinity,
+        exitDate: "2024-02-15T00:00:00Z",
+      }),
+      makeTrade({ pnl: 10, pnlPercent: 5, exitDate: "2024-03-15T00:00:00Z" }),
+    ];
+    const s = calculateSharpeRatio(trades);
+    expect(Number.isFinite(s)).toBe(true);
+  });
+
+  it("All-break-even portfolio: winRate=0, PF=0, R:R=0, expectancy=0 (no NaN)", () => {
+    const trades = [
+      makeTrade({ pnl: 0 }),
+      makeTrade({ pnl: 0 }),
+      makeTrade({ pnl: 0 }),
+    ];
+    expect(calculateWinRate(trades)).toBe(0);
+    expect(calculateProfitFactor(trades)).toBe(0);
+    expect(calculateRiskReward(trades)).toBe(0);
+    expect(calculateExpectancy(trades)).toBe(0);
+    const { avgWin, avgLoss } = calculateAvgWinLoss(trades);
+    expect(avgWin).toBe(0);
+    expect(avgLoss).toBe(0);
+  });
+
+  it("Very large PnL (billions): no precision loss in totals & PF", () => {
+    // Single large win plus a moderate loss — totals must be exact within
+    // double-precision (≤ ~15 sig-figs). PF should be deterministic.
+    const BILLION = 1_000_000_000;
+    const trades = [
+      makeTrade({ pnl: 5 * BILLION, exitDate: "2024-01-01T00:00:00Z" }),
+      makeTrade({ pnl: -1 * BILLION, exitDate: "2024-02-01T00:00:00Z" }),
+    ];
+    const stats = calculateAllStats(trades);
+    expect(stats.totalPnl).toBe(4 * BILLION);
+    expect(stats.profitFactor).toBe(5);
+    // Drawdown is 1B (peak 5B → 4B). Since it's exact integer arithmetic the
+    // FP_TOLERANCE branch is irrelevant here.
+    expect(stats.maxDrawdown).toBe(BILLION);
+  });
+
+  it("Floating-point noise: identical equity sequence → 0 drawdown (R56-CAL-2 FP_TOLERANCE)", () => {
+    // The intent of FP_TOLERANCE is: when cumulative equity returns to its
+    // peak via FP arithmetic noise (e.g. 0.1 + 0.2 - 0.3 = 5.55e-17 instead
+    // of exact 0), the trough computation must NOT report a sub-penny
+    // drawdown. Test sequence: equity rises then comes back EXACTLY to peak
+    // — the only delta is FP noise.
+    const trades = [
+      makeTrade({ pnl: 0.1, exitDate: "2024-01-01T00:00:00Z" }),
+      makeTrade({ pnl: 0.2, exitDate: "2024-01-02T00:00:00Z" }),
+      // Intermediate state: equity peaks at 0.3 (with FP noise).
+      // Now drop AND come back: -0.05 then +0.05 should noise-cancel.
+      makeTrade({ pnl: -0.05, exitDate: "2024-01-03T00:00:00Z" }),
+      makeTrade({ pnl: 0.05, exitDate: "2024-01-04T00:00:00Z" }),
+    ];
+    const { maxDrawdown, maxDrawdownPercent } = calculateMaxDrawdown(trades);
+    // The real drawdown is 0.05 (from peak 0.3 to trough 0.25). Verify the
+    // FP_TOLERANCE branch still reports it accurately — it filters NOISE
+    // (≪1e-9), not real per-trade drawdown.
+    expect(maxDrawdown).toBeCloseTo(0.05, 9);
+    expect(maxDrawdownPercent).toBeGreaterThan(0);
+  });
+
+  it("Single-trade portfolio: Sharpe=0 (n<2 guard), no crash", () => {
+    const trades = [makeTrade({ pnl: 100, pnlPercent: 10 })];
+    expect(calculateSharpeRatio(trades)).toBe(0);
+    // calculateAllStats must also not crash on single-trade input.
+    const stats = calculateAllStats(trades);
+    expect(stats.totalTrades).toBe(1);
+    expect(Number.isFinite(stats.sharpeRatio)).toBe(true);
+  });
+
+  it("calculatePnl: fees exceed gross PnL → net loss (not clamped to 0)", () => {
+    // Tiny win, big fees → real net loss must be reported faithfully.
+    const result = calculatePnl({
+      direction: "long",
+      entryPrice: 100,
+      exitPrice: 100.5,
+      quantity: 1,
+      leverage: 1,
+      fees: 5, // larger than the 0.50 gross profit
+      pair: "BTC/USDT",
+      entryDate: "",
+      exitDate: "",
+      notes: "",
+      tags: [],
+    });
+    expect(result.pnl).toBeCloseTo(-4.5, 9);
+    expect(result.pnlPercent).toBeCloseTo(-4.5, 9);
+  });
+
+  it("calculatePnl: negative quantity is NOT rejected (passes through linearly)", () => {
+    // Documents current behaviour: there is no validation against negative
+    // quantity. A long with quantity=-1 yields the inverse PnL of a long
+    // with quantity=1. UI / form layer is responsible for rejecting this
+    // — calculatePnl is a pure formula. If validation gets added in
+    // production code, update this expectation.
+    const result = calculatePnl({
+      direction: "long",
+      entryPrice: 100,
+      exitPrice: 110,
+      quantity: -1,
+      leverage: 1,
+      fees: 0,
+      pair: "BTC/USDT",
+      entryDate: "",
+      exitDate: "",
+      notes: "",
+      tags: [],
+    });
+    expect(result.pnl).toBe(-10);
+    // pnlPercent uses positionValue = entryPrice * quantity = -100, so
+    // margin = -100; -10 / -100 * 100 = +10. Documents the math —
+    // negative quantity flips the percentage sign too.
+    expect(result.pnlPercent).toBe(10);
+  });
+
+  it("Profit factor: pure-loss vs pure-win symmetry", () => {
+    // Pure wins → Infinity. Pure losses → 0. Asymmetry by design.
+    expect(calculateProfitFactor([makeTrade({ pnl: 10 })])).toBe(Infinity);
+    expect(calculateProfitFactor([makeTrade({ pnl: -10 })])).toBe(0);
+  });
+
+  it("calculateAllStats: huge mixed portfolio retains internal consistency", () => {
+    // Sanity: totalPnl == sum of bestTrade + worstTrade + middle trades, AND
+    // expectancy * totalTrades ≈ totalPnl (within rounding / BE-bucketing).
+    const trades = [
+      makeTrade({
+        id: "b",
+        pnl: 1000,
+        pnlPercent: 10,
+        exitDate: "2024-01-01T00:00:00Z",
+      }),
+      makeTrade({
+        id: "w",
+        pnl: -500,
+        pnlPercent: -5,
+        exitDate: "2024-01-02T00:00:00Z",
+      }),
+      makeTrade({
+        id: "m",
+        pnl: 250,
+        pnlPercent: 2.5,
+        exitDate: "2024-01-03T00:00:00Z",
+      }),
+    ];
+    const stats = calculateAllStats(trades);
+    expect(stats.totalPnl).toBe(750);
+    expect(stats.bestTrade?.id).toBe("b");
+    expect(stats.worstTrade?.id).toBe("w");
+    // expectancy * N = winRate*avgWin*N - lossRate*avgLoss*N
+    // = (2/3 * 625 * 3) - (1/3 * 500 * 3) = 1250 - 500 = 750. Exact.
+    expect(stats.expectancy * stats.totalTrades).toBeCloseTo(stats.totalPnl, 6);
+  });
+});

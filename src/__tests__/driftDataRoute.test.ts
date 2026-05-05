@@ -173,15 +173,16 @@ describe("/api/drift-data route", () => {
     expect(body.equity.totalPnlPct).toBeCloseTo(2.5, 2);
     expect(body.equity.peakUsd).toBe(103_000);
 
-    // Drift: live +2.5% on day 3, R28_V5 median at day 3 = (10/4)*3 = 7.5%
-    // → drift = 2.5 - 7.5 = -5.0 (slightly underperforming)
+    // Drift: live +2.5% on day 3, R28_V6_PASSLOCK median grows to +8% (FTMO
+    // step-1 target) by day 4 → at day 3 = (8/4)*3 = 6.0%
+    // → drift = 2.5 - 6.0 = -3.5 (slightly underperforming)
     expect(body.drift).not.toBeNull();
-    expect(body.drift.driftPct).toBeCloseTo(-5.0, 1);
+    expect(body.drift.driftPct).toBeCloseTo(-3.5, 1);
 
     // Backtest band: 31 entries (day 0..30)
     expect(body.backtestBand).toHaveLength(31);
     expect(body.backtestBand[0].median).toBe(0);
-    expect(body.backtestBand[4].median).toBeCloseTo(10, 5);
+    expect(body.backtestBand[4].median).toBeCloseTo(8, 5);
 
     // Daily PnL bars: 4 anchors → 4 bars
     expect(body.dailyPnlBars.length).toBe(4);
@@ -204,8 +205,8 @@ describe("/api/drift-data route", () => {
     expect(body.recentEvents[0].event).toBe("news_blackout_skip");
 
     // Meta
-    expect(body.meta.backtestRef.name).toBe("R28_V5");
-    expect(body.meta.backtestRef.passRatePct).toBe(58.82);
+    expect(body.meta.backtestRef.name).toBe("R28_V6_PASSLOCK");
+    expect(body.meta.backtestRef.passRatePct).toBe(64.77);
   });
 
   it("flags pass status as 'passed' when total P&L ≥ +10%", async () => {

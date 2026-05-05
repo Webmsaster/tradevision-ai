@@ -6,11 +6,13 @@ import {
   updateTrade,
   deleteTrade,
   clearAllData,
+  clearAllSupabaseTrades,
   importFromJSON,
   hasSavedData,
   loadTradesFromSupabase,
   saveBulkTradesToSupabase,
   deleteTradeFromSupabase,
+  saveTradeToSupabase,
   __resetSoftDeleteCacheForTest,
 } from "@/utils/storage";
 import type { Trade } from "@/types/trade";
@@ -565,5 +567,30 @@ describe("isValidTrade extended (R54-STO-5)", () => {
     const loaded = loadTrades();
     expect(loaded).toHaveLength(1);
     expect(loaded[0]!.id).toBe("g");
+  });
+});
+
+describe("clearAllSupabaseTrades — soft-delete + user scoping (R54-STO-7)", () => {
+  it("issues UPDATE deleted_at scoped by user_id, never a bare DELETE", async () => {
+    const { client, updateCalled, deleteCalled } = makeSupabaseMock({});
+    const ok = await clearAllSupabaseTrades(client, "user-1");
+    expect(ok).toBe(true);
+    // Defense-in-depth: even if RLS were misconfigured, the update path
+    // must carry an explicit user_id filter (no service-role bypass).
+    expect(updateCalled).toHaveLength(1);
+    expect(updateCalled[0]!.deleted_at).toBeTypeOf("string");
+    expect(deleteCalled).toHaveLength(0);
+  });
+});
+
+describe("saveTradeToSupabase — RLS scoping", () => {
+  it("always sends user_id in the upserted row (defense-in-depth vs RLS)", async () => {
+    const { client, upsertCalled } = makeSupabaseMock({});
+    const ok = await saveTradeToSupabase(client, makeTrade(), "user-xyz");
+    expect(ok).toBe(true);
+    // Single-row upsert payload — Supabase mock captures it verbatim.
+    const row = upsertCalled[0] as unknown as Record<string, unknown>;
+    expect(row.user_id).toBe("user-xyz");
+    expect(row.account_id).toBe("default");
   });
 });

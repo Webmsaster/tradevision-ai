@@ -6,7 +6,7 @@
  * Pulls JSON from /api/drift-data every 30s and visualises:
  *   1. Header chip (challenge name, days elapsed/remaining, pass status)
  *   2. Equity card (current vs day-start vs peak vs DL/TL caps)
- *   3. Equity chart (live curve overlaid on R28_V5 backtest p10/p50/p90 band)
+ *   3. Equity chart (live curve overlaid on backtest p10/p50/p90 band)
  *   4. Drift indicator (live equity ± vs backtest median, large + colored)
  *   5. Recent events log (last 20 from executor-log.jsonl, collapsible)
  *   6. Active positions table

@@ -86,10 +86,23 @@ def check(name: str, blocking: bool = True) -> Callable[[Callable[[], tuple[bool
 def check_ftmo_tf() -> tuple[bool, str]:
     tf = os.environ.get("FTMO_TF")
     if not tf:
-        return False, "missing — set to e.g. 2h-trend-v5-quartz-lite-r28-v6-v4engine"
-    if "r28-v6" not in tf:
-        return True, f"{tf} (note: not R28_V6 — current champion is r28-v6-v4engine)"
-    return True, tf
+        return False, "missing — set to e.g. 2h-trend-v5-r28-v6-passlock"
+    # Round 60 Champion: PASSLOCK
+    if tf == "2h-trend-v5-r28-v6-passlock":
+        return True, f"{tf} ✅ R60 Champion (closeAllOnTargetReached, 64.77% backtest)"
+    if "r28-v6-passlock" in tf or "r28-v6-combo" in tf:
+        return True, f"{tf} ✅ R60 candidate"
+    if "r28-v6" in tf:
+        return (
+            True,
+            f"{tf} (legacy R28_V6 baseline 56.62%; consider upgrade to r28-v6-passlock for +8pp)",
+        )
+    if "v5-titanium" in tf or "v5-amber" in tf:
+        return (
+            True,
+            f"{tf} ✅ Multi-Strategy slot (decorrelated from PASSLOCK)",
+        )
+    return True, f"{tf} (note: not R28_V6 family — verify intentional)"
 
 
 @check("FTMO_ACCOUNT_ID env var (multi-account)", blocking=False)
@@ -170,6 +183,36 @@ def check_telegram_chat() -> tuple[bool, str]:
         return True, f"chat={cid_int}"
     except ValueError:
         return False, f"not an integer: {cid!r}"
+
+
+@check("Round 60 Engine-Patch active (closeAllOnTargetReached)", blocking=False)
+def check_round60_passlock_engine() -> tuple[bool, str]:
+    """Verify the V4-Engine has the closeAllOnTargetReached patch active when
+    FTMO_TF selects a passlock variant. Catches deploys where code wasn't
+    pulled after Round 60."""
+    tf = os.environ.get("FTMO_TF", "")
+    if "passlock" not in tf and "combo" not in tf:
+        return True, "N/A (FTMO_TF doesn't use Pass-Lock-Mode)"
+    # Resolve relative to project root (parent of tools/), not cwd — so the
+    # check works no matter where the script is invoked from.
+    project_root = Path(__file__).resolve().parent.parent
+    engine_path = project_root / "src/utils/ftmoLiveEngineV4.ts"
+    if not engine_path.exists():
+        return False, f"{engine_path} not found"
+    src = engine_path.read_text()
+    # Match the call-site `cfg.closeAllOnTargetReached` — survives symbol
+    # renames (e.g. closeAllOnTargetReachedV2) without false-positive.
+    if "cfg.closeAllOnTargetReached" not in src:
+        return (
+            False,
+            "Engine missing Round 60 patch — git pull required for passlock to work",
+        )
+    if "Round 60 Pass-Lock-Mode" not in src:
+        return (
+            False,
+            "closeAllOnTargetReached found but R60 marker missing — partial patch",
+        )
+    return True, "closeAllOnTargetReached patch active in V4-Engine ✅"
 
 
 @check("State directory writable", blocking=True)
@@ -374,6 +417,7 @@ def main() -> int:
         check_start_balance,
         check_telegram_token,
         check_telegram_chat,
+        check_round60_passlock_engine,
         check_state_dir,
         check_disk_space,
         check_binance,

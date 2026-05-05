@@ -207,7 +207,16 @@ export default function TradeForm({
       newErrors.quantity = "Valid quantity is required";
     if (!entryDate) newErrors.entryDate = "Entry date is required";
     if (!exitDate) newErrors.exitDate = "Exit date is required";
-    if (entryDate && exitDate && new Date(exitDate) < new Date(entryDate)) {
+    // Round 60 audit fix: append `:00Z` to force UTC interpretation —
+    // `<input type="datetime-local">` produces strings without TZ which
+    // `new Date()` parses as LOCAL. With storage in UTC this caused
+    // false-positive "exit < entry" validation for trades crossing UTC
+    // midnight in CEST/CET (Florian's TZ).
+    if (
+      entryDate &&
+      exitDate &&
+      new Date(`${exitDate}:00Z`) < new Date(`${entryDate}:00Z`)
+    ) {
       newErrors.exitDate = "Exit date must be after entry date";
     }
 
