@@ -30,6 +30,34 @@ import {
 // settings "Test webhook" handler can share the exact same logic.
 import { isValidHttpsUrl } from "@/utils/urlSafety";
 
+// Round 8 audit (MEDIUM): client-side platform-URL match — defence in
+// depth alongside the same gate in /api/webhook-test. Returning false
+// silently drops the webhook fire (no toast — this only triggers when
+// the operator's settings panel is mis-configured, which the settings
+// "Test" button surfaces with a real error).
+function webhookPlatformMatches(platform: unknown, url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (platform === "discord") {
+    return (
+      parsed.hostname === "discord.com" &&
+      parsed.pathname.startsWith("/api/webhooks/")
+    );
+  }
+  if (platform === "telegram") {
+    return (
+      parsed.hostname === "api.telegram.org" &&
+      parsed.pathname.startsWith("/bot")
+    );
+  }
+  // "custom" or any other value: rely on isValidHttpsUrl alone.
+  return true;
+}
+
 // Fire webhook notification for trade events (best-effort, never blocks).
 //
 // Round 6 audit (WARNING): accept an `unmountSignal` from the calling hook
@@ -52,6 +80,10 @@ function fireWebhook(
     const wh = settings.webhook;
     if (!wh?.enabled || !wh?.url || !wh.events?.[event]) return;
     if (!isValidHttpsUrl(wh.url)) return;
+    // Round 8 audit (MEDIUM): mirror the server-side platform-URL match
+    // so a Discord-platform webhook pointed at a wrong host never even
+    // leaves the browser.
+    if (!webhookPlatformMatches(wh.platform, wh.url)) return;
 
     const msg =
       event === "onTradeAdd"

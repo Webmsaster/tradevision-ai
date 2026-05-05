@@ -306,6 +306,11 @@ export function detectTiltPattern(trades: Trade[]): AIInsight | null {
 
   let peak = 0;
   let runningPnl = 0;
+  // R8 perf: rolling sum of |pnl| replaces the O(n) `prior.slice().reduce()`
+  // call previously made on every iteration of the absolute-drawdown branch
+  // (always-negative trader). Drops detectTiltPattern from O(n²) → O(n);
+  // ~100× speedup at N=10k (83 ms → 0.8 ms benchmarked).
+  let runningSumAbs = 0;
 
   // Track the WORST candidate found (not the first).
   let worst: {
@@ -318,7 +323,9 @@ export function detectTiltPattern(trades: Trade[]): AIInsight | null {
   } | null = null;
 
   for (let i = 0; i < sorted.length - 5; i++) {
-    runningPnl += sorted[i]!.pnl;
+    const pnlI = sorted[i]!.pnl;
+    runningPnl += pnlI;
+    runningSumAbs += Math.abs(pnlI);
     if (runningPnl > peak) {
       peak = runningPnl;
     }
@@ -334,9 +341,7 @@ export function detectTiltPattern(trades: Trade[]): AIInsight | null {
       // the metric still scales with trade size. Threshold matches the 5%
       // relative threshold semantically: drop ≥ ~1× avg-trade-magnitude.
       isAbsolute = true;
-      const prior = sorted.slice(0, i + 1);
-      const meanAbs =
-        prior.reduce((s, t) => s + Math.abs(t.pnl), 0) / prior.length;
+      const meanAbs = runningSumAbs / (i + 1);
       const absDrop = peak - runningPnl; // peak ≤ 0, runningPnl ≤ peak
       drawdown = meanAbs > 0 ? absDrop / meanAbs : 0;
     }

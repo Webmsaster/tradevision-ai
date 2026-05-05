@@ -33,7 +33,6 @@ function _warnLeverageFallbackOnce(): void {
   if (_leverageWarningEmitted) return;
   _leverageWarningEmitted = true;
   if (typeof console !== "undefined") {
-    // eslint-disable-next-line no-console
     console.warn(
       "[calculations] One or more trades had a missing/invalid leverage; falling back to 1x. " +
         "Validate your CSV import / TradeForm input.",

@@ -868,19 +868,52 @@ function processPositionExit(
     }
   }
 
-  // 5. SL/TP cross-detection at this bar.
+  // 5. SL/TP cross-detection at this bar — with weekend-gap parity to backtest
+  //    `runFtmoDaytrade24h` (ftmoDaytrade24h.ts ~line 4428-4470).
+  //
+  //    Crypto markets DO trade weekends but exhibit liquidity-thin gaps after
+  //    Friday-NY close vs Sunday-Asia open. FTMO Forex symbols gap over the
+  //    weekend. Both cases need realistic gap-fill semantics:
+  //
+  //    - gap-past-TP (favorable):  exitPrice = bar.open (we capture the gap).
+  //                                 Tie-break: gap-past-TP wins over same-bar stop.
+  //    - gap-past-stop (adverse):  exitPrice = bar.open (slippage through stop).
+  //                                 The position closes at a worse price than
+  //                                 stopPrice — realised loss can exceed stopPct.
+  //    - normal cross (no gap):    exitPrice = stopPrice / tpPrice (cross-fill).
+  //
+  //    The -1.5R floor in `computeEffPnl` (GAP_TAIL_MULT) only takes effect
+  //    when the engine ACTUALLY emits a sub-stop exit price. Without this
+  //    block the engine clamps every loss to exactly -stopPct → gap-tail
+  //    realism is silently disabled and pass-rate is over-stated.
   if (pos.direction === "long") {
-    if (candle.low <= pos.stopPrice) {
-      return { exitPrice: pos.stopPrice, reason: "stop" };
+    const stopHit = candle.low <= pos.stopPrice;
+    const tpHit = candle.high >= pos.tpPrice;
+    const gapPastTp = candle.open >= pos.tpPrice;
+    if (tpHit && gapPastTp) {
+      return { exitPrice: candle.open, reason: "tp" };
     }
-    if (candle.high >= pos.tpPrice) {
+    if (stopHit) {
+      const exitPrice =
+        candle.open < pos.stopPrice ? candle.open : pos.stopPrice;
+      return { exitPrice, reason: "stop" };
+    }
+    if (tpHit) {
       return { exitPrice: pos.tpPrice, reason: "tp" };
     }
   } else {
-    if (candle.high >= pos.stopPrice) {
-      return { exitPrice: pos.stopPrice, reason: "stop" };
+    const stopHit = candle.high >= pos.stopPrice;
+    const tpHit = candle.low <= pos.tpPrice;
+    const gapPastTp = candle.open <= pos.tpPrice;
+    if (tpHit && gapPastTp) {
+      return { exitPrice: candle.open, reason: "tp" };
     }
-    if (candle.low <= pos.tpPrice) {
+    if (stopHit) {
+      const exitPrice =
+        candle.open > pos.stopPrice ? candle.open : pos.stopPrice;
+      return { exitPrice, reason: "stop" };
+    }
+    if (tpHit) {
       return { exitPrice: pos.tpPrice, reason: "tp" };
     }
   }

@@ -36,12 +36,13 @@ test.describe("Settings Page", () => {
     }
   });
 
-  test.skip("should toggle dashboard widget and persist state", async ({
+  test.fixme("should toggle dashboard widget and persist state", async ({
     page,
   }) => {
-    // SKIPPED: There is a bug in settings validation (line 58 in page.tsx)
-    // where unchecked booleans get reset to true on reload.
-    // This is an app bug, not a test issue.
+    // R8 Task H: was test.skip — converted to test.fixme so the failing
+    // app-bug is tracked, not silently hidden. Bug claim: settings
+    // validation (settings/page.tsx) resets unchecked boolean widgets to
+    // `true` on reload. Re-investigate before re-enabling.
     // Verify it's initially checked
     const weeklySummaryLabel = page
       .locator("label")
@@ -74,9 +75,8 @@ test.describe("Settings Page", () => {
     expect(reloadedState).toBe(afterToggle);
   });
 
-  test.skip("should toggle all dashboard widgets", async ({ page }) => {
-    // SKIPPED: Same widget validation bug as above (line 58 in page.tsx).
-    // Booleans that are unchecked get reset to true on validation/reload.
+  test.fixme("should toggle all dashboard widgets", async ({ page }) => {
+    // R8 Task H: see test.fixme above — same pending bug.
     const widgetLabels = [
       "Equity Curve",
       "Weekly Summary",
@@ -281,13 +281,9 @@ test.describe("Settings Page", () => {
     // Success message should appear
     await expect(page.getByText("Settings saved!")).toBeVisible();
 
-    // Message should disappear after a few seconds
-    await page.waitForTimeout(2500);
+    // R8 Task E: assert disappearance via auto-retrying expect — was a
+    // flaky waitForTimeout(2500) + .catch swallow.
     const message = page.getByText("Settings saved!");
-    await expect(message)
-      .not.toBeVisible({ timeout: 1000 })
-      .catch(() => {
-        // It's ok if it's still visible, timeout expected
-      });
+    await expect(message).toBeHidden({ timeout: 5000 });
   });
 });

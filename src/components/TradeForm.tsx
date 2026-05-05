@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef } from "react";
 import { Trade } from "@/types/trade";
-import { calculatePnl } from "@/utils/calculations";
+import { calculatePnl, validateLeverage } from "@/utils/calculations";
 import { useFocusTrap } from "@/hooks/useFocusTrap";
 import { FILE_SIZE } from "@/lib/constants";
 
@@ -83,7 +83,7 @@ export default function TradeForm({
   // Round 54 fix: deps reduced to [editTrade?.id, isOpen] — re-init only when actually
   // switching trades or open/close. Parent re-renders that pass a new editTrade object
   // identity (e.g. via spread) no longer obliterate user input.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (editTrade) {
       setPair(editTrade.pair);
@@ -203,8 +203,28 @@ export default function TradeForm({
       parseFloat(exitPrice) <= 0
     )
       newErrors.exitPrice = "Valid exit price is required";
-    if (!quantity || isNaN(parseFloat(quantity)) || parseFloat(quantity) <= 0)
+    // R8: guard against Infinity / NaN / absurd magnitudes (1e12 cap).
+    const qtyNum = parseFloat(quantity);
+    if (!quantity || !Number.isFinite(qtyNum) || qtyNum <= 0 || qtyNum > 1e12)
       newErrors.quantity = "Valid quantity is required";
+    const epNum = parseFloat(entryPrice);
+    if (entryPrice && (!Number.isFinite(epNum) || epNum <= 0 || epNum > 1e12)) {
+      newErrors.entryPrice = "Valid entry price is required";
+    }
+    const xpNum = parseFloat(exitPrice);
+    if (exitPrice && (!Number.isFinite(xpNum) || xpNum <= 0 || xpNum > 1e12)) {
+      newErrors.exitPrice = "Valid exit price is required";
+    }
+    const feesNum = parseFloat(fees);
+    if (fees && (!Number.isFinite(feesNum) || feesNum < 0 || feesNum > 1e9)) {
+      newErrors.fees = "Valid fees value required";
+    }
+    // R8 Task B: validateLeverage on submit — flag fallback if user typed
+    // something unparseable (Infinity, NaN, negative, 0).
+    if (leverage !== "") {
+      const { fallback } = validateLeverage(parseFloat(leverage));
+      if (fallback) newErrors.leverage = "Invalid leverage value";
+    }
     if (!entryDate) newErrors.entryDate = "Entry date is required";
     if (!exitDate) newErrors.exitDate = "Exit date is required";
     // Round 60 audit fix: append `:00Z` to force UTC interpretation —
@@ -238,10 +258,14 @@ export default function TradeForm({
       const qty = parseFloat(quantity);
       const lev = parseFloat(leverage) || 1;
       const f = parseFloat(fees) || 0;
+      // R8 Task A: cap individual tag length (50) and total count (20) so
+      // pathological imports/pasted data can't blow up the trade record.
       const parsedTags = tags
         .split(",")
         .map((t) => t.trim())
-        .filter(Boolean);
+        .filter(Boolean)
+        .filter((t) => t.length <= 50)
+        .slice(0, 20);
 
       const tradeBase = {
         pair: pair.trim(),
@@ -355,7 +379,7 @@ export default function TradeForm({
                 Leverage
                 <input
                   type="number"
-                  className="form-input"
+                  className={`form-input${errors.leverage ? " error" : ""}`}
                   placeholder="1"
                   min="1"
                   step="1"
@@ -363,6 +387,9 @@ export default function TradeForm({
                   onChange={(e) => setLeverage(e.target.value)}
                 />
               </label>
+              {errors.leverage && (
+                <span className="form-error">{errors.leverage}</span>
+              )}
             </div>
 
             {/* Entry Price */}
@@ -506,6 +533,7 @@ export default function TradeForm({
                   placeholder="Comma separated, e.g. scalp, news, momentum"
                   value={tags}
                   onChange={(e) => setTags(e.target.value)}
+                  maxLength={500}
                 />
               </label>
             </div>

@@ -595,3 +595,151 @@ describe("Round 62 — Audit fixes (failReason preservation on re-poll)", () => 
     expect(r.failReason).toBe("daily_loss");
   });
 });
+
+describe("Round 60 — Weekend-gap fill semantics (V4-Sim parity)", () => {
+  // The backtest engine `runFtmoDaytrade24h` (ftmoDaytrade24h.ts ~4428-4470)
+  // applies these rules:
+  //   - bar.open >= tp (long) → fill at bar.open (favorable gap captured).
+  //   - bar.open < stopPrice (long) → fill at bar.open (gap-tail loss).
+  //   - tie-break on a same-bar gap-past-tp + stop-wick: TP wins.
+  // Crypto trades 24/7 but Sun-night gaps after low-liquidity weekends and
+  // FTMO Forex symbols gap over the weekend. Without these rules V4-Engine
+  // clamped every loss to exactly -stopPct — over-stating realised pass-rate.
+
+  function mkOpenPos(
+    direction: "long" | "short",
+    entry: number,
+    stopPrice: number,
+    tpPrice: number,
+    startTs: number,
+  ): OpenPositionV4 {
+    return {
+      ticketId: `BTC-NONE@1@${direction}`,
+      symbol: "BTC-NONE",
+      sourceSymbol: "BTCUSDT",
+      direction,
+      entryTime: startTs,
+      entryPrice: entry,
+      initialStopPct: 0.02,
+      stopPrice,
+      tpPrice,
+      effRisk: 0.1,
+      entryBarIdx: 0,
+      highWatermark: entry,
+      beActive: false,
+      ptpTriggered: false,
+      ptpRealizedPct: 0,
+      ptpLevelIdx: 0,
+      ptpLevelsRealized: 0,
+    };
+  }
+
+  function mkBaseState(entryTs: number, pos: OpenPositionV4): FtmoLiveStateV4 {
+    return {
+      ...initialState("test-gap"),
+      challengeStartTs: entryTs,
+      lastBarOpenTime: entryTs,
+      equity: 1.0,
+      mtmEquity: 1.0,
+      day: 0,
+      dayStart: 1.0,
+      dayPeak: 1.0,
+      challengePeak: 1.0,
+      barsSeen: 1,
+      tradingDays: [0],
+      openPositions: [pos],
+    };
+  }
+
+  it("LONG gap-DOWN past stop: fills at bar.open (worse than stopPrice)", () => {
+    // Entry 100, stop 98 (-2%). Sunday-open candle gaps to 95 then climbs.
+    // Backtest fills at bar.open=95 → realised loss > stopPct.
+    // V4-Engine pre-fix clamped to stopPrice=98 (silent under-statement).
+    const startTs = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const lastBarTs = startTs + 2 * 3600_000;
+    const pos = mkOpenPos("long", 100, 98, 110, startTs);
+    const state = mkBaseState(startTs, pos);
+
+    // Gap-down: open=95 (< stop 98), high=97, low=95, close=96.
+    const candles = [mkCandle(lastBarTs, 95, 97, 95, 96)];
+    const r = pollLive(state, { BTCUSDT: candles }, baseCfg);
+
+    expect(r.decision.closes.length).toBe(1);
+    expect(r.decision.closes[0]!.exitReason).toBe("stop");
+    expect(r.decision.closes[0]!.exitPrice).toBe(95);
+    // Realised raw < -stopPct (gap-tail). Floor in computeEffPnl is -1.5R.
+    const raw = (95 - 100) / 100;
+    expect(raw).toBeLessThan(-0.02);
+    // Equity must reflect the gap-tail (worse than -stopPct × leverage × effRisk).
+    // -stopPct × 5 × 0.1 = -0.01; gap-tail must be more negative.
+    expect(state.equity).toBeLessThan(0.99);
+  });
+
+  it("LONG gap-UP past TP: fills at bar.open (favorable gap captured)", () => {
+    // Entry 100, tp 110. Sunday-open gaps to 115 → exit at 115, not 110.
+    const startTs = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const lastBarTs = startTs + 2 * 3600_000;
+    const pos = mkOpenPos("long", 100, 98, 110, startTs);
+    const state = mkBaseState(startTs, pos);
+
+    // Gap-up: open=115 (>= tp 110), high=116, low=114, close=115.
+    const candles = [mkCandle(lastBarTs, 115, 116, 114, 115)];
+    const r = pollLive(state, { BTCUSDT: candles }, baseCfg);
+
+    expect(r.decision.closes.length).toBe(1);
+    expect(r.decision.closes[0]!.exitReason).toBe("tp");
+    expect(r.decision.closes[0]!.exitPrice).toBe(115);
+  });
+
+  it("SHORT gap-UP past stop: fills at bar.open (gap-tail loss)", () => {
+    // Short entry 100, stop 102 (+2%). Adverse gap-up to 106.
+    const startTs = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const lastBarTs = startTs + 2 * 3600_000;
+    const pos = mkOpenPos("short", 100, 102, 90, startTs);
+    const state = mkBaseState(startTs, pos);
+
+    // Gap-up: open=106 (> stop 102), high=107, low=105, close=106.
+    const candles = [mkCandle(lastBarTs, 106, 107, 105, 106)];
+    const r = pollLive(state, { BTCUSDT: candles }, baseCfg);
+
+    expect(r.decision.closes.length).toBe(1);
+    expect(r.decision.closes[0]!.exitReason).toBe("stop");
+    expect(r.decision.closes[0]!.exitPrice).toBe(106);
+    // Short raw = (entry - exit)/entry = (100-106)/100 = -6%.
+    expect(state.equity).toBeLessThan(0.99);
+  });
+
+  it("Same-bar gap-past-TP wins over stop-wick (tie-break favors trader)", () => {
+    // Long entry 100, stop 98, tp 105. Bar opens at 106 (already past tp),
+    // wicks down to 97 (would also touch stop), closes 106.
+    // Backtest convention: gap-past-TP wins → exit at open=106.
+    const startTs = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const lastBarTs = startTs + 2 * 3600_000;
+    const pos = mkOpenPos("long", 100, 98, 105, startTs);
+    const state = mkBaseState(startTs, pos);
+
+    // Gap-up open + wick-down: open=106, high=106, low=97, close=106.
+    const candles = [mkCandle(lastBarTs, 106, 106, 97, 106)];
+    const r = pollLive(state, { BTCUSDT: candles }, baseCfg);
+
+    expect(r.decision.closes.length).toBe(1);
+    expect(r.decision.closes[0]!.exitReason).toBe("tp");
+    expect(r.decision.closes[0]!.exitPrice).toBe(106);
+  });
+
+  it("Normal cross (no gap) — TP fills at tpPrice exactly (regression guard)", () => {
+    // Entry 100, tp 110. Bar opens at 105 (mid), wicks up to 111 (touches tp),
+    // closes 109. No gap → fill at tp 110, not bar.open or bar.high.
+    const startTs = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const lastBarTs = startTs + 2 * 3600_000;
+    const pos = mkOpenPos("long", 100, 98, 110, startTs);
+    const state = mkBaseState(startTs, pos);
+
+    const candles = [mkCandle(lastBarTs, 105, 111, 104, 109)];
+    const r = pollLive(state, { BTCUSDT: candles }, baseCfg);
+
+    expect(r.decision.closes.length).toBe(1);
+    expect(r.decision.closes[0]!.exitReason).toBe("tp");
+    expect(r.decision.closes[0]!.exitPrice).toBe(110);
+  });
+});

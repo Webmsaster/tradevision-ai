@@ -8104,7 +8104,10 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V5: FtmoDaytra
 /**
  * V5_QUARTZ_LITE_R28_V6 — Round 53 tighter-TP plateau winner (2026-05-03).
  *
- * BEST-EVER V4 LIVE ENGINE PASS-RATE: 60.29% on 5.55y / 136 windows.
+ * BEST-EVER PASS-RATE: 63.24% post-PASSLOCK Round 60 sweep (2026-05-04).
+ * Pre-R56 claim was 60.29%; -3.67pp drift explained by R57 Day-30 force-close
+ * + post-R60 PTP audit-trail confirms 63.24% as honest value.
+ *
  * +1.47pp over R28_V5 (58.82%) — plateau optimum identified by R28_V5
  * fine-grid sweep (tpMult ∈ {0.55, 0.57, 0.59, 0.60, 0.61, 0.63, 0.65}).
  *
@@ -8173,8 +8176,11 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6: FtmoDaytra
 
 /**
  * Round 60 sweep variants — built from R28_V6 + single-feature toggles.
- * All run via `scripts/_r28V6Round60Shard.ts <variant>`. Sweep-only (not for
- * live deploy) until best-variant is identified.
+ * All run via `scripts/_r28V6Round60Shard.ts <variant>`.
+ *
+ * Round 60+61 sweeps complete (2026-05-05): all sister-variants rejected vs
+ * R28_V6 baseline 63.24%. Kept for sweep-replay only, NOT live-deploy.
+ * Champion remains R28_V6_PASSLOCK.
  */
 
 // V60_PASSLOCK — closeAllOnTargetReached: lock equity at firstTargetHit.

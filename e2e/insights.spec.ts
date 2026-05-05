@@ -147,15 +147,12 @@ test.describe("AI Insights", () => {
     await loadSampleData(page);
     await gotoAndWaitForApp(page, "/insights");
 
-    // Look for buttons in insight cards (they should have "View" or similar)
+    // R8 Task F: assert directly — sample data always yields >=1 insight
+    // card with a related-trades button. Conditional expect masked regressions.
     const viewButtons = page
       .locator("button")
       .filter({ hasText: /view|related|trades/i });
-
-    // There should be at least one button for viewing related trades
-    if ((await viewButtons.count()) > 0) {
-      await expect(viewButtons.first()).toBeVisible();
-    }
+    await expect(viewButtons.first()).toBeVisible({ timeout: 5000 });
   });
 
   test("should clear filters button appear when filters are set", async ({
