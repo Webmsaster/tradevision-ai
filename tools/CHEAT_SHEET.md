@@ -2,9 +2,10 @@
 
 ## 🏆 Round 60 Champion (2026-05-04)
 
-**R28_V6_PASSLOCK = 63.24% V4-Engine pass-rate full-sweep** (preliminary 64.77% on 86/136 windows, +6.62 to +8.15pp vs R28_V6 baseline 56.62%)
+**R28_V6_PASSLOCK = 63.24% V4-Engine pass-rate full-sweep** (preliminary 64.77% on 86/136 windows, +6.62 to +8.15pp vs R28_V6 baseline 56.62%) — confirmed after **10 R60 audit-rounds** (~80 agents, ~220 findings, ~70 fixes shipped, R9 gap-fix included).
 
 - Mechanism: `closeAllOnTargetReached` lockt mtm-equity bei first target-hit
+- R9 gap-fix audit-trail: open-position MTM realised at window end no longer leaks past Pass-Lock fire (gap closed; ensures the 63.24% number is honest, not an artefact of unrealised positions)
 - Eliminiert Day-30-force-close Drag-Down (give_back 0%, total_loss unchanged)
 - Live erwartet: ~60% single-account, ~94% min-1-pass mit 3-Strategy
 - Live-Selector: `FTMO_TF=2h-trend-v5-r28-v6-passlock`

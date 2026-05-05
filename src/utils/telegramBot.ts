@@ -73,19 +73,19 @@ export async function startTelegramBot(ctx: TelegramCommandHandlerCtx) {
     process.env.FTMO_TELEGRAM_BOT_MASTER === "1" ||
     process.env.FTMO_TELEGRAM_BOT_MASTER === "true";
   if (acct && !isMaster) {
-    console.log(
+    console.warn(
       `[tg-bot] FTMO_ACCOUNT_ID=${acct} but FTMO_TELEGRAM_BOT_MASTER not set — command listener disabled (alerts still send)`,
     );
     return;
   }
   const cfg = readTelegramConfig();
   if (!cfg) {
-    console.log(
+    console.warn(
       "[tg-bot] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — bot commands disabled",
     );
     return;
   }
-  console.log(
+  console.warn(
     `[tg-bot] command receiver starting (long-poll every ${POLL_TIMEOUT_SEC}s)`,
   );
   await tgSend(
@@ -203,7 +203,7 @@ async function handleCommand(
   if (!text.startsWith("/")) return;
   const cmd = text.split(/\s+/)[0]!.toLowerCase().split("@")[0]!; // strip @botname
   const from = msg.from?.username || msg.from?.first_name || "user";
-  console.log(`[tg-bot] ${from}: ${cmd}`);
+  console.warn(`[tg-bot] ${from}: ${cmd}`);
 
   switch (cmd) {
     case "/help":

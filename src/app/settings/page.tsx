@@ -7,6 +7,42 @@ import {
 } from "@/lib/constants";
 import { isValidHttpsUrl } from "@/utils/urlSafety";
 
+// Round 9 audit (KRITISCH): client-side platform-URL match — defence in
+// depth alongside the same gate in /api/webhook-test. Discord webhooks
+// MUST point at discord.com/api/webhooks/...; Telegram MUST hit
+// api.telegram.org/bot...; otherwise the user has misconfigured and we
+// surface a clear error before the network round-trip.
+function platformUrlMatches(
+  platform: WebhookSettings["platform"],
+  url: string,
+): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (platform === "discord") {
+    return (
+      parsed.hostname === "discord.com" &&
+      parsed.pathname.startsWith("/api/webhooks/")
+    );
+  }
+  if (platform === "telegram") {
+    return (
+      parsed.hostname === "api.telegram.org" &&
+      parsed.pathname.startsWith("/bot")
+    );
+  }
+  // "custom" or any other value: rely on isValidHttpsUrl alone.
+  return true;
+}
+
+// Round 9 audit (KRITISCH): structured test-status replaces fragile
+// `testResult.includes("success")` string-match for color switching.
+// Color logic is tied to the discrete status, not message text.
+type TestStatus = "ok" | "error" | "pending" | null;
+
 interface WebhookSettings {
   enabled: boolean;
   url: string;
@@ -134,7 +170,12 @@ const DEFAULT_SETTINGS: Settings = {
 export default function SettingsPage() {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [saved, setSaved] = useState(false);
-  const [testResult, setTestResult] = useState<string>("");
+  // Round 9 audit (KRITISCH): testStatus drives the colour, testMessage
+  // carries the human-readable copy. Decoupling them avoids the previous
+  // `includes("success")` brittle string-match (broke on i18n / phrasing
+  // tweaks).
+  const [testStatus, setTestStatus] = useState<TestStatus>(null);
+  const [testMessage, setTestMessage] = useState<string>("");
 
   // Load persisted settings on client-side only
   useEffect(() => {
@@ -153,7 +194,8 @@ export default function SettingsPage() {
 
   async function handleTestWebhook() {
     if (!settings.webhook.url) {
-      setTestResult("Please enter a webhook URL first.");
+      setTestStatus("error");
+      setTestMessage("Please enter a webhook URL first.");
       return;
     }
     // Phase 86 (R51-S1): client-side string gate via isValidHttpsUrl.
@@ -162,12 +204,32 @@ export default function SettingsPage() {
     // that resolve to private IPs (DNS rebinding) and refuse 30x
     // redirects. The client check stays as an early UX hint.
     if (!isValidHttpsUrl(settings.webhook.url)) {
-      setTestResult(
+      setTestStatus("error");
+      setTestMessage(
         "Webhook URL must use HTTPS and point to a public host (no private IPs / loopback).",
       );
       return;
     }
-    setTestResult("Sending...");
+    // Round 9 audit (KRITISCH): platform-URL mismatch — fail loud BEFORE
+    // sending. A Discord-platform setting pointed at a non-Discord URL
+    // (or vice versa) almost always means the user pasted the wrong
+    // string; sending it would either 404 silently or — worse — leak the
+    // payload to a third-party host.
+    if (!platformUrlMatches(settings.webhook.platform, settings.webhook.url)) {
+      setTestStatus("error");
+      const expected =
+        settings.webhook.platform === "discord"
+          ? "discord.com/api/webhooks/..."
+          : settings.webhook.platform === "telegram"
+            ? "api.telegram.org/bot..."
+            : "a matching URL";
+      setTestMessage(
+        `Webhook URL does not match the selected platform (${settings.webhook.platform}). Expected: ${expected}`,
+      );
+      return;
+    }
+    setTestStatus("pending");
+    setTestMessage("Sending...");
     try {
       const res = await fetch("/api/webhook-test", {
         method: "POST",
@@ -184,18 +246,24 @@ export default function SettingsPage() {
         error?: string;
       };
       if (data.ok) {
-        setTestResult(
+        setTestStatus("ok");
+        setTestMessage(
           `Test sent successfully! (${data.status ?? 200}, ${data.latencyMs ?? 0}ms)`,
         );
       } else {
-        setTestResult(`Failed: ${data.error ?? "Unknown error"}`);
+        setTestStatus("error");
+        setTestMessage(`Failed: ${data.error ?? "Unknown error"}`);
       }
     } catch (err) {
-      setTestResult(
+      setTestStatus("error");
+      setTestMessage(
         `Error: ${err instanceof Error ? err.message : "Failed to send"}`,
       );
     }
-    setTimeout(() => setTestResult(""), 5000);
+    setTimeout(() => {
+      setTestStatus(null);
+      setTestMessage("");
+    }, 5000);
   }
 
   function handleAddAccount() {
@@ -212,15 +280,22 @@ export default function SettingsPage() {
 
   function handleRemoveAccount(id: string) {
     if (settings.accounts.length <= 1) return;
-    setSettings((prev) => ({
-      ...prev,
-      accounts: prev.accounts.filter((a) => a.id !== id),
-      activeAccountId:
+    setSettings((prev) => {
+      // Round 9 audit (WARNING): off-by-one — the previous logic took
+      // `prev.accounts[0]` BEFORE filtering, so deleting the first
+      // account left the activeAccountId pointing at the removed entry.
+      // Filter first, THEN pick the first remaining account as fallback.
+      const remaining = prev.accounts.filter((a) => a.id !== id);
+      const nextActive =
         prev.activeAccountId === id
-          ? // Phase 78: at least the "default" account is always present.
-            (prev.accounts[0]?.id ?? "default")
-          : prev.activeAccountId,
-    }));
+          ? (remaining[0]?.id ?? "default")
+          : prev.activeAccountId;
+      return {
+        ...prev,
+        accounts: remaining,
+        activeAccountId: nextActive,
+      };
+    });
   }
 
   function handleAccountChange(
@@ -445,16 +520,25 @@ export default function SettingsPage() {
               >
                 Test Webhook
               </button>
-              {testResult && (
+              {testMessage && (
                 <p
+                  data-testid="webhook-test-result"
+                  data-test-status={testStatus ?? ""}
                   style={{
                     fontSize: "0.85rem",
-                    color: testResult.includes("success")
-                      ? "var(--profit)"
-                      : "var(--loss)",
+                    // Round 9 audit (KRITISCH): colour now driven by the
+                    // discrete testStatus enum — "ok" → profit-green,
+                    // anything else (error / pending) → loss-red. No
+                    // fragile substring matching against the message.
+                    color:
+                      testStatus === "ok"
+                        ? "var(--profit)"
+                        : testStatus === "pending"
+                          ? "var(--text-muted)"
+                          : "var(--loss)",
                   }}
                 >
-                  {testResult}
+                  {testMessage}
                 </p>
               )}
             </>

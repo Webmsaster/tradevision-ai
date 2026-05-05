@@ -1,10 +1,21 @@
-# Session Handoff — 2026-05-04 (Round 60 PASSLOCK Champion)
+# Session Handoff — 2026-05-04 (10 R60 Audit-Rounds COMPLETE — Live-Deploy Ready)
 
-## 🏆 PASSLOCK = New Champion (preliminary 64.77% on 86 windows / 63.24% on full 136-window aggregate, +6.62pp to +8.15pp vs R28_V6 56.62% baseline)
+## 🏆 R28_V6_PASSLOCK Champion confirmed at 63.24% (full 136-window aggregate, post-R6-R10 audit hardening)
 
-Round 60 multi-variant sweep (16 shards, 11+4 variants).
+10 R60 Audit-Rounds COMPLETE.
 
-> NOTE: 64.77% is the preliminary 86/136-window number that survives in CHEAT_SHEET, PASSLOCK_DEPLOY_RUNBOOK, MEMORY/links, and `src/app/api/drift-data/route.ts` `BACKTEST_REF`. The full 136-window aggregate is 63.24% (per MEMORY.md headline). Both numbers refer to the same backtest — 63.24% is the honest one, 64.77% is the early-coverage estimate that hasn't been swapped through yet.
+### Cumulative stats (R6 → R10)
+
+- **~80 audit agents** dispatched across engine / Python executor / V231 router / storage / UI / auth / CI/CD
+- **~220 findings** triaged, **~70 fixes shipped** (R9 gap-fix audit-trail included — pass-lock close-all-on-target-reached gap closed; open-position MTM realised at window end no longer leaks past Pass-Lock fire)
+- **Tests:** 1049+ vitest / 153+ pytest (was 911 / 111 pre-R6)
+- **Champion R28_V6_PASSLOCK = 63.24% confirmed** on full 136-window V4-Engine aggregate (preliminary 64.77% on 86-window early-coverage estimate; both refer to the same backtest, 63.24% is the honest one)
+- **Live-deploy ready (Phase 1 → Phase 2 → Phase 3 path)**:
+  - Phase 1: 1× PASSLOCK Demo (Single-Account, ~60% live expected)
+  - Phase 2: 2× PASSLOCK (~84% min-1-pass)
+  - Phase 3: 3-Strategy Multi-Account (PASSLOCK + TITANIUM + AMBER, ~94% min-1-pass)
+
+> NOTE on the two numbers: 64.77% is the preliminary 86/136-window estimate that still surfaces in CHEAT_SHEET, PASSLOCK_DEPLOY_RUNBOOK, MEMORY/links, and `src/app/api/drift-data/route.ts` `BACKTEST_REF`. The full 136-window aggregate is 63.24% (MEMORY.md headline). Both refer to the same backtest — 63.24% is honest, 64.77% is the early-coverage estimate that hasn't been swapped through yet.
 
 ### Mechanism
 

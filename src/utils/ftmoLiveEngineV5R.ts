@@ -1,5 +1,10 @@
 /**
- * FTMO V4 LIVE ENGINE — persistent-state bar-by-bar live engine.
+ * @deprecated 2026-05-04 — V5R was rejected by Round 60 V5R-Guardian sweep
+ *   (-10 to -14pp vs R28_V6 baseline). Kept for sweep replay only.
+ *   State-file changed to v5r-engine.json (R4) to prevent V4 conflicts.
+ *   NOT for live deploy. Use ftmoLiveEngineV4 (R28_V6) for production.
+ *
+ * FTMO V5R LIVE ENGINE — experimental persistent-state bar-by-bar live engine.
  *
  * Designed in Round 25, prototyped as test-only simulator in Round 26
  * (`scripts/_v4LiveSimulator.test.ts`), and extracted to production here
@@ -873,18 +878,40 @@ function processPositionExit(
   }
 
   // 5. SL/TP cross-detection at this bar.
+  // R9 gap-fix mirror (2026-05-04): match V4 engine `runFtmoDaytrade24h`
+  // (~line 4423) tie-break logic — when bar.open gaps past TP, TP wins and
+  // fills at bar.open (favorable gap-up for long / gap-down for short).
+  // When bar.open gaps past stop, stop fills at bar.open (worse than stop).
+  // Without this, V5R simulations diverge from V4 on gap-bars and break
+  // sweep comparability.
   if (pos.direction === "long") {
-    if (candle.low <= pos.stopPrice) {
-      return { exitPrice: pos.stopPrice, reason: "stop" };
+    const stopHit = candle.low <= pos.stopPrice;
+    const tpHit = candle.high >= pos.tpPrice;
+    const gapPastTp = candle.open >= pos.tpPrice;
+    if (tpHit && gapPastTp) {
+      return { exitPrice: candle.open, reason: "tp" };
     }
-    if (candle.high >= pos.tpPrice) {
+    if (stopHit) {
+      const exitPrice =
+        candle.open < pos.stopPrice ? candle.open : pos.stopPrice;
+      return { exitPrice, reason: "stop" };
+    }
+    if (tpHit) {
       return { exitPrice: pos.tpPrice, reason: "tp" };
     }
   } else {
-    if (candle.high >= pos.stopPrice) {
-      return { exitPrice: pos.stopPrice, reason: "stop" };
+    const stopHit = candle.high >= pos.stopPrice;
+    const tpHit = candle.low <= pos.tpPrice;
+    const gapPastTp = candle.open <= pos.tpPrice;
+    if (tpHit && gapPastTp) {
+      return { exitPrice: candle.open, reason: "tp" };
     }
-    if (candle.low <= pos.tpPrice) {
+    if (stopHit) {
+      const exitPrice =
+        candle.open > pos.stopPrice ? candle.open : pos.stopPrice;
+      return { exitPrice, reason: "stop" };
+    }
+    if (tpHit) {
       return { exitPrice: pos.tpPrice, reason: "tp" };
     }
   }

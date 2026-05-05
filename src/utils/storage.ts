@@ -112,6 +112,51 @@ const ALLOWED_MARKET_CONDITIONS = [
 ] as const;
 
 // ---------------------------------------------------------------------------
+// Round 9 audit (MEDIUM): content-hash for CSV-import dedupe.
+//
+// Re-importing the same CSV currently inserts duplicates because each row
+// is freshly UUID'd at parse time → the existing-id Set in importTrades
+// never sees a match. The fix: derive a deterministic hash from the
+// trade-content fields (pair / direction / prices / quantity / dates) and
+// skip rows whose hash already exists in the user's trade set. UUIDs
+// remain the row-id; the hash is purely a dedupe key.
+//
+// Hash is FNV-1a 32-bit over the canonical string — fast (no crypto
+// import on the client), collision-rate ~0 for the realistic per-user
+// trade volume (<1M rows). Returned as 8-char hex.
+// ---------------------------------------------------------------------------
+export function tradeContentHash(t: Trade): string {
+  const canonical = [
+    t.pair,
+    t.direction,
+    t.entryPrice,
+    t.exitPrice,
+    t.quantity,
+    t.entryDate,
+    t.exitDate,
+  ].join("|");
+  // FNV-1a 32-bit
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < canonical.length; i += 1) {
+    hash ^= canonical.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  // Coerce to unsigned 32-bit hex.
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * Round 9 audit (MEDIUM): build the dedupe-set from existing trades
+ * (cloud or local). Used by the import handler to skip rows whose
+ * content matches an already-stored trade.
+ */
+export function buildContentHashSet(trades: Trade[]): Set<string> {
+  const set = new Set<string>();
+  for (const t of trades) set.add(tradeContentHash(t));
+  return set;
+}
+
+// ---------------------------------------------------------------------------
 // Helper: convert between DB snake_case and app camelCase
 // ---------------------------------------------------------------------------
 

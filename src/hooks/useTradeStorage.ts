@@ -17,6 +17,8 @@ import {
   clearAllData,
   SCREENSHOTS_KEY,
   QUOTA_EXCEEDED_EVENT,
+  tradeContentHash,
+  buildContentHashSet,
 } from "@/utils/storage";
 import {
   loadTradesFromSupabase,
@@ -436,10 +438,26 @@ export function useTradeStorage() {
     async (newTrades: Trade[]) => {
       const existing = loadTrades();
       const existingIds = new Set(existing.map((t) => t.id));
-      // Auto-assign active account to imported trades
-      const unique = newTrades
-        .filter((t) => !existingIds.has(t.id))
-        .map((t) => ({ ...t, accountId: t.accountId || activeAccountId }));
+      // Round 9 audit (MEDIUM): content-hash dedupe.
+      // Each CSV row is freshly UUID'd at parse time, so the existingIds
+      // set never matched a re-imported row — every re-import multiplied
+      // duplicates. Build a Set of content-hashes from the user's
+      // existing trades and SKIP any incoming row whose content already
+      // exists. UUID-collisions remain handled by existingIds (they
+      // happen e.g. when importing your own JSON backup).
+      const existingContent = buildContentHashSet(existing);
+      // Auto-assign active account to imported trades. Then filter out
+      // both UUID-conflicts AND content-duplicates (CSV re-imports).
+      const unique: Trade[] = [];
+      const seenInBatch = new Set<string>();
+      for (const t of newTrades) {
+        if (existingIds.has(t.id)) continue;
+        const hash = tradeContentHash(t);
+        if (existingContent.has(hash)) continue;
+        if (seenInBatch.has(hash)) continue; // dedupe within the batch too
+        seenInBatch.add(hash);
+        unique.push({ ...t, accountId: t.accountId || activeAccountId });
+      }
       const merged = [...existing, ...unique];
       saveTrades(merged);
       setAllTrades(merged);

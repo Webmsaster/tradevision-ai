@@ -66,17 +66,22 @@ export async function parseCSVFile(
       worker: true,
       // Strip UTF-8 BOM (U+FEFF) and whitespace from headers — Excel-exported
       // CSVs frequently include a BOM that breaks column matching.
-      // Round 60 audit fix: use explicit `﻿` codepoint instead of literal
-      // BOM character. Editor/build-tool BOM-stripping otherwise silently
+      /* eslint-disable no-irregular-whitespace */
+      // Round 9 audit (HOCH): use the explicit `﻿` escape instead of
+      // the literal BOM character. Editor/build-tool BOM-stripping (or
+      // copy-paste through a normalising clipboard) otherwise silently
       // turned the regex into a no-op, leaving headers like `﻿Pair`
-      // unmatched by autoDetectMapping. Strip from both headers AND values
-      // (mid-stream merged files can carry BOM into data fields).
-      transformHeader: (h) => h.replace(/^﻿/, "").trim(),
+      // unmatched by autoDetectMapping. The escape is invariant under any
+      // editor's invisible-character-stripping pass. Strip from both
+      // headers AND values (mid-stream merged files can carry BOM into
+      // data fields).
+      transformHeader: (h) => h.replace(/^\uFEFF/, "").trim(),
       // Round 57 fix #4: trim trailing/leading whitespace from each value
       // (companion to transformHeader). Excel/MT4 exports often pad fields
       // with stray spaces that break numeric parsing.
       transform: (v) =>
-        typeof v === "string" ? v.replace(/^﻿/, "").trim() : v,
+        typeof v === "string" ? v.replace(/^\uFEFF/, "").trim() : v,
+      /* eslint-enable no-irregular-whitespace */
       complete(results) {
         resolve(results);
       },

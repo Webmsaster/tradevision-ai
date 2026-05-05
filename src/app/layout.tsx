@@ -69,7 +69,8 @@ export default async function RootLayout({
             through localStorage → prefers-color-scheme → default 'dark'. */}
         <script
           nonce={nonce}
-          // eslint-disable-next-line react/no-danger
+          // Audited inline script: theme bootstrap to prevent FOUC, served
+          // with strict CSP nonce (see middleware.ts).
           dangerouslySetInnerHTML={{
             __html:
               "try{var t=localStorage.getItem('tradevision-theme');if(t!=='dark'&&t!=='light'){t=matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)}catch(e){document.documentElement.setAttribute('data-theme','dark')}",

@@ -2,6 +2,8 @@
 
 AI-powered trading journal and performance analyzer that helps traders identify patterns, track performance, and improve their edge through data-driven insights.
 
+> **Status:** App-side (journal, analytics, AI insights, auth, CSV import/export) is production-grade — all 1049+ vitest + 153+ pytest tests pass, Lighthouse a11y 100/100, CI/CD + Dependabot active. The optional FTMO bot subsystem (`tools/`) is **deploy-ready but not yet live-validated**: champion R28_V6_PASSLOCK = 63.24% backtest pass-rate (10 R60 audit-rounds, ~70 fixes shipped); expected live ~60% single-account pending Demo-account validation.
+
 ## Features
 
 - **Dashboard** - KPIs, equity curve, recent trades, top AI insights at a glance

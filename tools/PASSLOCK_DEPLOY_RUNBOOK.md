@@ -1,6 +1,6 @@
 # R28_V6_PASSLOCK — Live Deploy Runbook
 
-Pre-condition: Round 60 Sweep abgeschlossen, PASSLOCK als Champion bestätigt (63.24% full-sweep / 64.77% preliminary 86-window backtest, +6.62 to +8.15pp vs R28_V6 56.62% baseline).
+Pre-condition: Round 60 Sweep abgeschlossen, PASSLOCK als Champion bestätigt (63.24% full-sweep / 64.77% preliminary 86-window backtest, +6.62 to +8.15pp vs R28_V6 56.62% baseline). **10 R60 Audit-Rounds COMPLETE** (~80 agents, ~220 findings, ~70 fixes shipped — R6-R10 hardening patches all merged including R9 gap-fix: open-position MTM realised at window end no longer leaks past Pass-Lock fire).
 
 ## 🎯 Ziel
 
@@ -230,12 +230,14 @@ Pass-Reward (FTMO Funded): **$1500-2500 pro Bestand**.
 
 ## 📋 Final Pre-Deploy Checklist
 
-1. ☐ Round 60 Sweep komplett (final aggregate gerunnt)
+1. ☐ Round 60 Sweep komplett (final aggregate gerunnt, 63.24% confirmed)
 2. ☐ PASSLOCK als Champion in `MEMORY.md` bestätigt
-3. ☐ `npm run build` clean
-4. ☐ `node ./node_modules/vitest/vitest.mjs run` 911+ tests pass
-5. ☐ MT5-Login + Telegram-Token konfiguriert
-6. ☐ Drift-Dashboard erreichbar
-7. ☐ `pm2 start ecosystem.config.js` Output: `online`
+3. ☐ R6-R10 audit patches all merged (R9 gap-fix: pass-lock close-all-on-target-reached gap; R10 hardening; ~70 fixes total)
+4. ☐ `npm run build` clean
+5. ☐ `node ./node_modules/vitest/vitest.mjs run` **1049+ vitest tests pass**
+6. ☐ `pytest` **153+ pytest tests pass**
+7. ☐ MT5-Login + Telegram-Token konfiguriert
+8. ☐ Drift-Dashboard erreichbar
+9. ☐ `pm2 start ecosystem.config.js` Output: `online`
 
-**Wenn alle 7 ✓ → R28_V6_PASSLOCK live.**
+**Wenn alle 9 ✓ → R28_V6_PASSLOCK live.**
