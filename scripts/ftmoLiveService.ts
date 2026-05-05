@@ -22,6 +22,7 @@ import {
   detectLiveSignalsV231,
   renderDetection,
   getActiveCfgInfo,
+  getActiveCfg,
   type AccountState,
   type DetectionResult,
   type LiveSignal,
@@ -690,7 +691,7 @@ async function runOneCheck(): Promise<DetectionResult> {
     let v4Cfg: typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
     let v4Label: string;
     if (isR28V6Sister) {
-      const sisterCfg = LIVE_SIG_CFG;
+      const sisterCfg = getActiveCfg();
       v4Cfg =
         sisterCfg as typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
       v4Label = `R28_V6_${ftmoTf.replace("2h-trend-v5-r28-v6-", "").toUpperCase()}`;

@@ -620,6 +620,10 @@ export function getActiveCfgInfo(): { label: string; ftmoTfKey: string } {
   return { label: CFG_LABEL, ftmoTfKey: _ftmoTfKey };
 }
 
+export function getActiveCfg(): FtmoDaytrade24hConfig {
+  return CFG;
+}
+
 /**
  * Compute current sizing factor from adaptiveSizing + timeBoost + Kelly.
  * Mirrors the engine's logic at src/utils/ftmoDaytrade24h.ts.
