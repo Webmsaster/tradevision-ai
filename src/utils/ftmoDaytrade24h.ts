@@ -8159,6 +8159,15 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6: FtmoDaytra
     // The corresponding test in ftmoLiveSignalV231Selectors.test.ts asserts
     // PTP > minTp (documents the design); a flip-back to "PTP < minTp" only
     // makes sense after a full re-sweep proves the new behavior is better.
+    // ROUND 61 SWEEP RESULT (2026-05-05): PTP=0.005 yielded PASSLOCK 55.88%
+    // vs PTP=0.012 yielded 63.24% (full 136-window sweep, both with same
+    // engine). Conclusion: early PTP-fire at 0.5% gain breaks the strategy
+    // — too many trades partial-close before reaching real TP. Reverted.
+    //
+    // The R28_V6 PTP design is INTENTIONAL dual-cohort:
+    //   - Small-TP (BTC/BNB/ADA/BCH/ETC at 0.00825 + ETH at 0.011): PTP inert
+    //   - Mid-TP (AAVE 0.01375): PTP fires (~13% gap)
+    //   - Large-TP (LTC 0.01925, XRP 0.0165): PTP fires with comfortable gap
     partialTakeProfit: { triggerPct: 0.012, closeFraction: 0.7 },
   };
 

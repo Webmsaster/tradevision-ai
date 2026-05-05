@@ -127,6 +127,8 @@ describe("R28_V6 invariants (champion sanity)", () => {
     // AND PTP < maxTp (large assets active). When a future round re-runs full
     // sweep with PTP=0.005 and confirms a higher pass-rate, flip both
     // assertions and update the comment.
+    // Round 61 sweep result (2026-05-05): PTP=0.005 → 55.88%, PTP=0.012 → 63.24%.
+    // Reverted to 0.012 (dual-cohort design confirmed superior by full sweep).
     const v6 = Cfgs.FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
     const ptp = v6.partialTakeProfit?.triggerPct;
     expect(ptp).toBeDefined();
