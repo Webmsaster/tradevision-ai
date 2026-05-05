@@ -547,3 +547,51 @@ describe("Round 60 — Edge Cases (volAdaptiveTpMult)", () => {
     expect(tpPctLow).toBe(0.04);
   });
 });
+
+describe("Round 62 — Audit fixes (failReason preservation on re-poll)", () => {
+  it("re-poll of stoppedReason='time' state preserves failReason='time' (not null)", () => {
+    // Previously line ~993 mapped stoppedReason='time' → failReason=null,
+    // losing the failure mode for any caller re-polling after maxDays
+    // force-close failed-by-time. Setting stoppedReason='time' only
+    // happens on the FAIL branch (passed→null), so this branch can only
+    // fire for genuine failures and must report failReason='time'.
+    const startTs = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const state: FtmoLiveStateV4 = {
+      ...initialState("test-time-fail-replay"),
+      challengeStartTs: startTs,
+      lastBarOpenTime: startTs + 24 * 3600_000,
+      equity: 0.97, // below 8% target, no daily/total-loss breach
+      mtmEquity: 0.97,
+      day: 30,
+      dayStart: 0.97,
+      dayPeak: 0.97,
+      challengePeak: 1.02,
+      barsSeen: 100,
+      tradingDays: [0, 1, 2, 3],
+      stoppedReason: "time",
+    };
+    // Re-poll: any candle, any cfg — early-return at top must fire.
+    const candle = mkCandle(startTs + 25 * 3600_000, 100, 100, 100, 100);
+    const r = pollLive(state, { BTCUSDT: [candle] }, baseCfg);
+    expect(r.challengeEnded).toBe(true);
+    expect(r.passed).toBe(false);
+    // Bug fix: failReason must equal stoppedReason verbatim.
+    expect(r.failReason).toBe("time");
+  });
+
+  it("re-poll of stoppedReason='daily_loss' preserves failReason (regression guard)", () => {
+    const startTs = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const state: FtmoLiveStateV4 = {
+      ...initialState("test-dl-replay"),
+      challengeStartTs: startTs,
+      lastBarOpenTime: startTs,
+      equity: 0.94,
+      mtmEquity: 0.94,
+      stoppedReason: "daily_loss",
+    };
+    const candle = mkCandle(startTs + 2 * 3600_000, 100, 100, 100, 100);
+    const r = pollLive(state, { BTCUSDT: [candle] }, baseCfg);
+    expect(r.challengeEnded).toBe(true);
+    expect(r.failReason).toBe("daily_loss");
+  });
+});

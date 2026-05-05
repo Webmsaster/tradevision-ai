@@ -989,8 +989,14 @@ export function pollLive(
   if (state.stoppedReason) {
     result.notes.push(`engine stopped: ${state.stoppedReason}`);
     result.challengeEnded = true;
-    result.failReason =
-      state.stoppedReason === "time" ? null : state.stoppedReason;
+    // Round 62 (Audit Fix): preserve stoppedReason verbatim. Previously
+    // "time" was mapped to null → re-poll on a failed-by-time challenge
+    // returned `failReason: null`, losing the failure mode. The only
+    // path that sets stoppedReason="time" is the maxDays force-close
+    // branch when `passed=false` (line ~1205) — i.e. failed-by-time.
+    // Passed challenges leave stoppedReason=null (see same line), so
+    // this branch only fires on genuine failures.
+    result.failReason = state.stoppedReason;
     return result;
   }
 
