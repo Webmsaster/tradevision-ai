@@ -93,6 +93,13 @@ export interface UseLiveCandlesResult {
   error: string | null;
 }
 
+// Round 6 audit (HOCH): exponential-backoff reconnect for transient WS
+// drops. Without this, a brief network blip put the chart into a permanent
+// "closed" state until the user navigated away and back. Caps at 5 attempts
+// and 30s delay to avoid thundering-herd if Binance is genuinely down.
+const MAX_RECONNECT_ATTEMPTS = 5;
+const MAX_RECONNECT_DELAY_MS = 30_000;
+
 export function useLiveCandles({
   symbol,
   timeframe,
@@ -102,12 +109,18 @@ export function useLiveCandles({
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  // Round 6 audit (HOCH): attempt counter survives across reconnect ticks
+  // but resets on a successful onopen. Stored in a ref so updates don't
+  // trigger re-renders.
+  const reconnectAttemptRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setStatus("loading");
     setError(null);
     setCandles([]);
+    reconnectAttemptRef.current = 0;
 
     const lowerSymbol = symbol.toLowerCase();
     const restUrl = `https://api.binance.com/api/v3/klines?symbol=${symbol.toUpperCase()}&interval=${timeframe}&limit=${history}`;
@@ -138,6 +151,22 @@ export function useLiveCandles({
         setError(err instanceof Error ? err.message : "Failed to load history");
       });
 
+    function scheduleReconnect() {
+      if (cancelled) return;
+      const attempt = reconnectAttemptRef.current;
+      if (attempt >= MAX_RECONNECT_ATTEMPTS) {
+        setStatus("error");
+        setError("WebSocket reconnect failed after 5 attempts");
+        return;
+      }
+      const delay = Math.min(1000 * 2 ** attempt, MAX_RECONNECT_DELAY_MS);
+      reconnectAttemptRef.current = attempt + 1;
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        if (!cancelled) connectWebSocket();
+      }, delay);
+    }
+
     function connectWebSocket() {
       const ws = new WebSocket(
         `wss://stream.binance.com:9443/ws/${lowerSymbol}@kline_${timeframe}`,
@@ -145,7 +174,13 @@ export function useLiveCandles({
       wsRef.current = ws;
 
       ws.onopen = () => {
-        if (!cancelled) setStatus("connected");
+        if (!cancelled) {
+          // Round 6 audit (HOCH): reset attempt counter on a confirmed open
+          // so a stable connection that drops later gets a fresh budget.
+          reconnectAttemptRef.current = 0;
+          setStatus("connected");
+          setError(null);
+        }
       };
 
       ws.onmessage = (event) => {
@@ -181,13 +216,22 @@ export function useLiveCandles({
       };
 
       ws.onclose = () => {
-        if (!cancelled) setStatus("closed");
+        if (cancelled) return;
+        setStatus("closed");
+        // Round 6 audit (HOCH): trigger backoff reconnect. The cleanup
+        // path sets `cancelled` first, so a deliberate close-on-unmount
+        // bails above without scheduling.
+        scheduleReconnect();
       };
     }
 
     return () => {
       cancelled = true;
       abort.abort();
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
       // Round 58 Fix 3: avoid closing a WebSocket while it is still in
       // CONNECTING state — that produces a half-opened TCP connection
       // (server sees connect → immediate FIN). Defer close until the

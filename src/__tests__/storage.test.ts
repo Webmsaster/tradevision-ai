@@ -484,6 +484,44 @@ describe("saveBulkTradesToSupabase — retry-queue (R54-STO-2)", () => {
     expect(parsed[0].rows.length).toBe(700);
   });
 
+  // Race-audit (2026-05-04): atomic persistence of survivors + new
+  // payload. The previous code wrote survivors first, then called
+  // enqueueRetry for the new payload — two separate localStorage
+  // writes. A browser crash between them lost the new payload while
+  // keeping the survivors. Verify both arrive in a single setItem.
+  it("persists survivors AND new payload in a single atomic write", async () => {
+    store["sb-retry-queue"] = JSON.stringify([
+      {
+        rows: Array.from({ length: 200 }, (_, i) => ({ id: `q-${i}` })),
+        enqueuedAt: "2024-01-01T00:00:00Z",
+      },
+    ]);
+    let writeCount = 0;
+    const setItemSpy = vi.fn((key: string, value: string) => {
+      if (key === "sb-retry-queue") writeCount += 1;
+      store[key] = value;
+    });
+    vi.stubGlobal("localStorage", {
+      getItem: vi.fn((key: string) => store[key] ?? null),
+      setItem: setItemSpy,
+      removeItem: vi.fn((key: string) => {
+        delete store[key];
+      }),
+    });
+    // Drain failure on call 1 (the queued survivor) → survivors > 0
+    // and new payload non-empty → must persist both atomically.
+    const { client } = makeSupabaseMock({ upsertErrorAtCall: 1 });
+    const newPayload: Trade[] = Array.from({ length: 10 }, (_, i) =>
+      makeTrade({ id: `new-${i}` }),
+    );
+    const ok = await saveBulkTradesToSupabase(client, newPayload, "user-1");
+    expect(ok).toBe(false);
+    expect(writeCount).toBe(1);
+    const parsed = JSON.parse(store["sb-retry-queue"]!);
+    expect(parsed).toHaveLength(2); // survivor + new payload
+    expect(parsed[1].rows).toHaveLength(10);
+  });
+
   it("drains the retry-queue on the next successful call", async () => {
     store["sb-retry-queue"] = JSON.stringify([
       {
@@ -501,12 +539,16 @@ describe("saveBulkTradesToSupabase — retry-queue (R54-STO-2)", () => {
 
 describe("dbToTrade — type validation (R54-STO-3)", () => {
   it("normalises garbage NaN / non-array fields", async () => {
+    // Round 6 audit (MEDIUM): invalid `direction` now causes the row to
+    // be SKIPPED with a console.warn instead of silently coerced to
+    // "long" — splitting the original test into two: this case keeps a
+    // VALID direction so the other normalisations are still observed.
     const garbageRow = makeDbRow({
       id: "garbage-1",
       confidence: NaN,
       tags: { not: "array" },
       notes: 12345 as unknown as string,
-      direction: "sideways" as unknown as string,
+      direction: "long",
       account_id: "",
       strategy: 42 as unknown as string,
     });
@@ -518,6 +560,26 @@ describe("dbToTrade — type validation (R54-STO-3)", () => {
     expect(trade!.direction).toBe("long");
     expect(trade!.accountId).toBe("default");
     expect(trade!.strategy).toBeUndefined();
+  });
+
+  it("skips rows with invalid direction and logs a warning (Round 6 MEDIUM)", async () => {
+    const consoleSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    const goodRow = makeDbRow({ id: "good-1", direction: "short" });
+    const badRow = makeDbRow({
+      id: "bad-1",
+      direction: "sideways" as unknown as string,
+    });
+    const { client } = makeSupabaseMock({ pages: [[goodRow, badRow]] });
+    const trades = await loadTradesFromSupabase(client, "user-1");
+    expect(trades).toHaveLength(1);
+    expect(trades[0]!.id).toBe("good-1");
+    expect(trades[0]!.direction).toBe("short");
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining("invalid direction"),
+    );
+    consoleSpy.mockRestore();
   });
 });
 

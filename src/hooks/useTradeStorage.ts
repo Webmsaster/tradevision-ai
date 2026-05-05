@@ -30,10 +30,20 @@ import {
 // settings "Test webhook" handler can share the exact same logic.
 import { isValidHttpsUrl } from "@/utils/urlSafety";
 
-// Fire webhook notification for trade events (best-effort, never blocks)
+// Fire webhook notification for trade events (best-effort, never blocks).
+//
+// Round 6 audit (WARNING): accept an `unmountSignal` from the calling hook
+// so an in-flight webhook POST is aborted when the component unmounts.
+// Previously the fetch held a reference to the unmounted React tree via
+// the `.catch` closure (the trade payload), occasionally producing
+// "setState on unmounted component" warnings under StrictMode and
+// leaking a TCP socket until the 5s timeout fired. We compose two
+// signals (timeout + unmount) via AbortSignal.any when available, and
+// fall back to a manual link otherwise.
 function fireWebhook(
   event: "onTradeAdd" | "onTradeEdit" | "onTradeDelete",
-  trade?: Trade,
+  trade: Trade | undefined,
+  unmountSignal?: AbortSignal,
 ) {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
@@ -68,12 +78,24 @@ function fireWebhook(
     // Round 56 (Fix 4): 5s AbortSignal.timeout matches /api/webhook-test
     // convention — a hung user-supplied webhook URL can't block the trade
     // CRUD path forever.
+    // Round 6 audit (WARNING): also abort on unmount.
+    const timeoutSignal = AbortSignal.timeout(5_000);
+    const signal: AbortSignal = unmountSignal
+      ? typeof (AbortSignal as { any?: unknown }).any === "function"
+        ? (
+            AbortSignal as unknown as { any: (s: AbortSignal[]) => AbortSignal }
+          ).any([timeoutSignal, unmountSignal])
+        : timeoutSignal
+      : timeoutSignal;
     fetch(wh.url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(5_000),
+      signal,
     }).catch((err) => {
+      // Round 6 audit (WARNING): ignore AbortError on unmount; the user
+      // navigated away mid-flight and we don't want to noise their console.
+      if (err instanceof Error && err.name === "AbortError") return;
       console.error("Webhook delivery failed:", err);
     }); // best-effort
   } catch (err) {
@@ -143,6 +165,19 @@ export function useTradeStorage() {
     allTradesRef.current = allTrades;
   }, [allTrades]);
   const hasLoadedInitialDataRef = useRef(false);
+
+  // Round 6 audit (WARNING): single AbortController for all webhook
+  // dispatches. Abort on unmount so any in-flight POST is cancelled —
+  // prevents leaked sockets and StrictMode setState-on-unmounted warnings.
+  const webhookAbortRef = useRef<AbortController | null>(null);
+  if (webhookAbortRef.current === null) {
+    webhookAbortRef.current = new AbortController();
+  }
+  useEffect(() => {
+    return () => {
+      webhookAbortRef.current?.abort();
+    };
+  }, []);
 
   // Listen for settings changes to update active account
   // Round 58 Fix 2: removed redundant `setActiveAccountId(getActiveAccountId())`
@@ -303,7 +338,11 @@ export function useTradeStorage() {
       };
       const updated = addTradeLocal(tradeWithAccount);
       setAllTrades(updated);
-      fireWebhook("onTradeAdd", tradeWithAccount);
+      fireWebhook(
+        "onTradeAdd",
+        tradeWithAccount,
+        webhookAbortRef.current?.signal,
+      );
       if (isCloud) {
         try {
           await saveTradeToSupabase(supabase!, tradeWithAccount, user!.id);
@@ -322,7 +361,7 @@ export function useTradeStorage() {
     async (trade: Trade) => {
       const updated = updateTradeLocal(trade);
       setAllTrades(updated);
-      fireWebhook("onTradeEdit", trade);
+      fireWebhook("onTradeEdit", trade, webhookAbortRef.current?.signal);
       if (isCloud) {
         try {
           await saveTradeToSupabase(supabase!, trade, user!.id);
@@ -342,7 +381,11 @@ export function useTradeStorage() {
       const removedTrade = allTradesRef.current.find((t) => t.id === tradeId);
       const updated = deleteTradeLocal(tradeId);
       setAllTrades(updated);
-      fireWebhook("onTradeDelete", removedTrade);
+      fireWebhook(
+        "onTradeDelete",
+        removedTrade,
+        webhookAbortRef.current?.signal,
+      );
       if (isCloud) {
         try {
           await deleteTradeFromSupabase(supabase!, tradeId, user!.id);

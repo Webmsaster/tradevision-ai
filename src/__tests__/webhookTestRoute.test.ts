@@ -193,13 +193,39 @@ describe("/api/webhook-test — happy path + redirect refusal", () => {
     expect(body.status).toBe(500);
   });
 
-  it("handles fetch errors gracefully", async () => {
+  it("handles fetch errors gracefully without leaking error details (Round 6 CRITICAL)", async () => {
+    // Round 6 audit: server-side error message must NEVER echo the
+    // underlying error (which leaks internal hostnames/IPs/cert paths).
+    // Verify the response surfaces the generic "Request failed" only.
+    const consoleSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
     globalThis.fetch = vi.fn(async () => {
-      throw new Error("ECONNRESET");
+      throw new Error("ECONNRESET to internal-host-10.2.0.5");
     }) as typeof fetch;
 
     const { body } = await callRoute({ url: "https://hooks.example.com/y" });
     expect(body.ok).toBe(false);
-    expect(body.error).toMatch(/ECONNRESET/i);
+    expect(body.error).toBe("Request failed");
+    // Server-side log MUST still capture the specific error for ops.
+    expect(consoleSpy).toHaveBeenCalledWith(
+      "[webhook-test]",
+      expect.any(Error),
+    );
+    consoleSpy.mockRestore();
+  });
+
+  it("preserves the specific timeout message (operator UX)", async () => {
+    // Round 6 audit: timeout branch may stay specific — it tells the user
+    // "your URL hung", which is actionable and reveals nothing internal.
+    globalThis.fetch = vi.fn(async () => {
+      const err = new Error("Timed out");
+      err.name = "TimeoutError";
+      throw err;
+    }) as typeof fetch;
+
+    const { body } = await callRoute({ url: "https://hooks.example.com/t" });
+    expect(body.ok).toBe(false);
+    expect(body.error).toMatch(/timed out/i);
   });
 });

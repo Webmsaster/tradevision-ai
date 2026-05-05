@@ -197,7 +197,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, status: resp.status, latencyMs });
   } catch (err) {
     const latencyMs = Date.now() - startedAt;
-    const msg = err instanceof Error ? err.message : "Request failed";
     // Distinguish abort/timeout for clearer UX.
     if (err instanceof Error && err.name === "TimeoutError") {
       return NextResponse.json({
@@ -206,6 +205,16 @@ export async function POST(request: Request) {
         error: `Webhook timed out after ${REQUEST_TIMEOUT_MS}ms.`,
       });
     }
-    return NextResponse.json({ ok: false, latencyMs, error: msg });
+    // Round 6 audit (CRITICAL): never echo `err.message` back to the
+    // client. Node fetch errors include the failing host / IP / certificate
+    // path which leaks internal infrastructure to a CSRF attacker probing
+    // for the AWS-metadata IP, internal cert authority names, etc. Log
+    // the specific cause server-side, return a generic message.
+    console.error("[webhook-test]", err);
+    return NextResponse.json({
+      ok: false,
+      latencyMs,
+      error: "Request failed",
+    });
   }
 }

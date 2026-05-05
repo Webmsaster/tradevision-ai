@@ -1,4 +1,4 @@
-import { Trade } from "@/types/trade";
+import { Trade, isValidTrade as isValidTradeShared } from "@/types/trade";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from "uuid";
 // Phase 41 (R44-UI-2): single source of truth for the trades-localStorage
@@ -133,7 +133,7 @@ function finiteOrUndef(v: unknown): number | undefined {
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
-function dbToTrade(row: Record<string, unknown>): Trade {
+function dbToTrade(row: Record<string, unknown>): Trade | null {
   // Phase 7 (Storage Bug 6): allow-list emotion / marketCondition; arbitrary
   // strings from the DB cast straight to Trade['emotion'] would let a future
   // dangerouslySetInnerHTML render unfiltered values.
@@ -148,9 +148,18 @@ function dbToTrade(row: Record<string, unknown>): Trade {
     (ALLOWED_MARKET_CONDITIONS as readonly string[]).includes(rawMarket)
       ? (rawMarket as Trade["marketCondition"])
       : undefined;
+  // Round 6 audit (MEDIUM): previously any invalid direction silently
+  // fell back to "long" — corrupting the P&L sign for shorts that
+  // arrived with a typo'd column. Log + skip the row instead so the
+  // user sees data is missing rather than mis-categorised.
   const rawDirection = strOrUndef(row.direction);
-  const direction: "long" | "short" =
-    rawDirection === "short" ? "short" : "long";
+  if (rawDirection !== "long" && rawDirection !== "short") {
+    console.warn(
+      `[storage] dbToTrade: skipping row id=${strOrEmpty(row.id) || "<no-id>"} with invalid direction=${JSON.stringify(rawDirection)}`,
+    );
+    return null;
+  }
+  const direction: "long" | "short" = rawDirection;
   const rawAccountId = strOrUndef(row.account_id);
   return {
     id: strOrEmpty(row.id),
@@ -270,7 +279,10 @@ export async function loadTradesFromSupabase(
       );
     }
     if (!data || data.length === 0) break;
-    for (const row of data) all.push(dbToTrade(row));
+    for (const row of data) {
+      const t = dbToTrade(row);
+      if (t) all.push(t);
+    }
     // First successful query with the soft-delete filter promotes the
     // cache to "confirmed present" — subsequent calls in this process
     // skip the probe entirely.
@@ -460,16 +472,23 @@ export async function saveBulkTradesToSupabase(
       const remaining = entry.rows.slice(result.failedFromIndex ?? 0);
       survived.push({ ...entry, rows: remaining });
     }
-    writeRetryQueue(survived);
     if (survived.length > 0) {
-      // Don't even attempt the new payload — surface failure to caller
-      // so they can keep their localStorage copy and retry later.
-      // Enqueue the new payload too so it isn't lost.
+      // Bug fix (race-audit): atomically persist BOTH survivors and the
+      // new payload in a single write. The previous version called
+      // writeRetryQueue(survived) and then enqueueRetry(newPayload)
+      // separately — a browser crash / power loss between the two
+      // writes lost the new payload while keeping the survivors.
       if (trades.length > 0) {
-        enqueueRetry(trades.map((t) => tradeToDb(t, userId)));
+        survived.push({
+          rows: trades.map((t) => tradeToDb(t, userId)),
+          enqueuedAt: new Date().toISOString(),
+        });
       }
+      writeRetryQueue(survived);
+      // Surface failure so the caller keeps their localStorage copy.
       return false;
     }
+    writeRetryQueue(survived); // empty → removes the key
   }
 
   if (trades.length === 0) return true;
@@ -773,41 +792,10 @@ export async function exportToCSV(trades: Trade[]): Promise<void> {
   }
 }
 
-function isValidTrade(obj: unknown): obj is Trade {
-  if (!obj || typeof obj !== "object") return false;
-  const t = obj as Record<string, unknown>;
-  // Phase 95 (R54-STO-5): extended schema validation. tags must be a
-  // string-array (not a Map / object that would crash array-iterators
-  // downstream). accountId, when present, must be a string. All number
-  // fields must be finite (NaN poisons stats).
-  const tagsValid =
-    t.tags === undefined ||
-    (Array.isArray(t.tags) && t.tags.every((x) => typeof x === "string"));
-  const accountIdValid =
-    t.accountId === undefined || typeof t.accountId === "string";
-  return (
-    typeof t.id === "string" &&
-    typeof t.pair === "string" &&
-    (t.direction === "long" || t.direction === "short") &&
-    typeof t.entryPrice === "number" &&
-    Number.isFinite(t.entryPrice) &&
-    t.entryPrice > 0 &&
-    typeof t.exitPrice === "number" &&
-    Number.isFinite(t.exitPrice) &&
-    t.exitPrice > 0 &&
-    typeof t.quantity === "number" &&
-    Number.isFinite(t.quantity) &&
-    t.quantity > 0 &&
-    typeof t.entryDate === "string" &&
-    typeof t.exitDate === "string" &&
-    typeof t.pnl === "number" &&
-    Number.isFinite(t.pnl) &&
-    typeof t.pnlPercent === "number" &&
-    Number.isFinite(t.pnlPercent) &&
-    tagsValid &&
-    accountIdValid
-  );
-}
+// Round 6 audit (MEDIUM): single source of truth lives in `@/types/trade`
+// — re-exported here under the original local name so existing tests and
+// call sites continue to work.
+const isValidTrade = isValidTradeShared;
 
 /**
  * Import trades from a JSON file.
