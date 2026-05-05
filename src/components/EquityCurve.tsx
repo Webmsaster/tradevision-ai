@@ -20,9 +20,13 @@ interface EquityCurveProps {
 }
 
 function formatDate(dateStr: string): string {
+  // R7 fix #B: use UTC accessors to match DayOfWeekHeatmap.tsx (R56 fix #2)
+  // and the rest of the codebase. Local-TZ getMonth()/getDate() shifted
+  // dates by ±1 day for users far from UTC, producing inconsistent X-axis
+  // labels vs other date-bucketed components.
   const date = new Date(dateStr);
-  const month = date.getMonth() + 1;
-  const day = date.getDate();
+  const month = date.getUTCMonth() + 1;
+  const day = date.getUTCDate();
   return `${month}/${day}`;
 }
 

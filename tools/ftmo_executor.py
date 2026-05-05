@@ -205,26 +205,70 @@ def _rotate_jsonl_if_needed(path: Path, max_mb: int = 50) -> None:
 
 def log_event(event: str, level: str = "info", **kwargs: Any) -> None:
     """BUGFIX 2026-04-28 (Round 30): added severity level. Default 'info' for
-    backwards compat; pass level='warn' or 'error' for parseable filtering."""
+    backwards compat; pass level='warn' or 'error' for parseable filtering.
+
+    Round 7 audit fix (2026-05-04, KRITISCH): rotation+append wrapped under
+    `_file_lock(executor-log.lock)` so concurrent appenders never straddle a
+    rename (mirrors TS-side `appendAndRotate` in scripts/ftmoLiveService.ts).
+    Three issues this resolves:
+      1. Rotation-Append-Race: rotator could rename mid-write, sending a line
+         to the rotated archive while the next caller wrote to the new inode.
+      2. No fsync: kernel buffers could lose the most recent log lines on a
+         VPS power-loss, masking the *cause* of the crash.
+      3. Multi-account same FTMO_TF: two executors with the same TF but
+         different account IDs would otherwise interleave bytes — JSONL
+         parsers reject the result.
+    """
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    _rotate_jsonl_if_needed(EXECUTOR_LOG_PATH)
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "level": level,
         "event": event,
         **kwargs,
     }
-    with open(EXECUTOR_LOG_PATH, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
+    line = json.dumps(entry) + "\n"
+    lock_path = STATE_DIR / "executor-log.lock"
+    with _file_lock(lock_path, timeout_sec=2.0, stale_sec=2.0):
+        _rotate_jsonl_if_needed(EXECUTOR_LOG_PATH)
+        with open(EXECUTOR_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass  # best-effort on filesystems that don't support fsync
     print(f"[executor] [{level}] {event}: {kwargs}")
 
 
 def read_json(path: Path, fallback: Any) -> Any:
+    """Read a JSON state file, returning `fallback` if missing or corrupt.
+
+    Round 7 audit fix (2026-05-04, WARNING): on `JSONDecodeError`, rename the
+    corrupt file to `path.corrupt.<unix-ts>` and fire a Telegram alert. Prior
+    behavior silently returned `fallback`, which could mask high-stakes state
+    like `pause-state.json` (target_hit=True) — a corrupt file would let the
+    bot resume trading after a passed challenge.
+    """
     try:
         if not path.exists():
             return fallback
         with open(path) as f:
             return json.load(f)
+    except json.JSONDecodeError as e:
+        ts = int(time.time())
+        corrupt_path = path.with_suffix(path.suffix + f".corrupt.{ts}")
+        try:
+            path.rename(corrupt_path)
+            preserved = str(corrupt_path)
+        except OSError:
+            preserved = "(rename-failed)"
+        msg = f"corrupt JSON at {path.name}: {e}; preserved as {preserved}"
+        print(f"[executor] {msg}")
+        try:
+            tg_send(f"<b>State corruption</b>\n{html_escape(msg)}")
+        except Exception:
+            pass  # don't let Telegram failure mask the corruption
+        return fallback
     except Exception as e:
         print(f"[executor] failed to read {path}: {e}")
         return fallback
@@ -239,12 +283,27 @@ def write_json(path: Path, obj: Any) -> None:
     # of post-crash partial-revert: tmp.replace() promoted a not-yet-flushed
     # tmpfile, leaving account.json with stale content if the VPS lost power
     # before kernel buffers reached disk.
+    # Round 7 audit fix (2026-05-04, KRITISCH): also fsync the parent
+    # directory so the `tmp.replace(path)` rename itself is durable. Without
+    # this, on power-loss after the file fsync but before the dir-entry hits
+    # disk, the rename can be lost — `path` then points to the OLD inode,
+    # leaving an orphaned-but-fsynced tmpfile next to the stale state file.
     tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
     with open(tmp, "w") as f:
         json.dump(obj, f, indent=2)
         f.flush()
         os.fsync(f.fileno())
     tmp.replace(path)
+    # POSIX: fsync the parent dir so the rename is durable. Best-effort on
+    # Windows / unsupported FS (os.open of a directory raises there).
+    try:
+        dirfd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
+    except (OSError, AttributeError):
+        pass  # Windows or unsupported FS — best-effort
 
 
 # BUGFIX 2026-04-28 (Round 36 Bug 5/7): cross-process exclusive lock for

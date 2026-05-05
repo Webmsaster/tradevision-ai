@@ -550,30 +550,49 @@ export function detectOvertrading(trades: Trade[]): AIInsight | null {
     dayStats[day]!.tradeIds.push(trade.id);
   }
 
+  // R6 AI-Analysis: previously returned the FIRST qualifying day (object key
+  // order), which was effectively arbitrary. Iterate every qualifying day and
+  // pick the worst — lowest win-rate, ties broken by highest trade count.
+  let worstDay: string | null = null;
+  let worstWinRate = Infinity;
+  let worstTotal = 0;
+
   for (const day of Object.keys(dayStats)) {
     const stats = dayStats[day]!;
-    if (stats!.total > 5) {
-      const winRate = stats!.wins / stats!.total;
+    if (stats.total > 5) {
+      const winRate = stats.wins / stats.total;
       if (winRate < 0.4) {
-        const winRatePercent = Math.round(winRate * 100);
-
-        return {
-          id: generateId(),
-          type: "warning",
-          title: "Overtrading Detected",
-          description:
-            // Round 56 (R56-AI-1): bucketing is UTC (engine consistency).
-            // Append "(UTC)" so a trader in a non-UTC TZ doesn't get
-            // confused when the day in the message disagrees with their
-            // local-time recollection of when they traded.
-            `You placed ${stats!.total} trades on ${day} (UTC) with only ${winRatePercent}% win rate. ` +
-            `High-frequency trading often leads to poor decision making.`,
-          severity: 7,
-          relatedTrades: stats!.tradeIds.slice(0, 10),
-          category: "overtrading",
-        };
+        const isWorse =
+          winRate < worstWinRate ||
+          (winRate === worstWinRate && stats.total > worstTotal);
+        if (isWorse) {
+          worstDay = day;
+          worstWinRate = winRate;
+          worstTotal = stats.total;
+        }
       }
     }
+  }
+
+  if (worstDay !== null) {
+    const stats = dayStats[worstDay]!;
+    const winRatePercent = Math.round(worstWinRate * 100);
+
+    return {
+      id: generateId(),
+      type: "warning",
+      title: "Overtrading Detected",
+      description:
+        // Round 56 (R56-AI-1): bucketing is UTC (engine consistency).
+        // Append "(UTC)" so a trader in a non-UTC TZ doesn't get
+        // confused when the day in the message disagrees with their
+        // local-time recollection of when they traded.
+        `You placed ${stats.total} trades on ${worstDay} (UTC) with only ${winRatePercent}% win rate. ` +
+        `High-frequency trading often leads to poor decision making.`,
+      severity: 7,
+      relatedTrades: stats.tradeIds.slice(0, 10),
+      category: "overtrading",
+    };
   }
 
   return null;

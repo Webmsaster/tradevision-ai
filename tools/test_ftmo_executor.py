@@ -1695,5 +1695,196 @@ def test_telegram_notify_falls_back_to_bare_env(monkeypatch):
     assert tn._resolve_account_env("CHAT_ID") == "shared-chat"
 
 
+# ============================================================================
+# Round 7 audit (2026-05-04): log_event lock + fsync, write_json dir-fsync,
+# read_json corruption marker
+# ============================================================================
+def test_log_event_acquires_file_lock(monkeypatch, tmp_path):
+    """log_event must wrap rotation+append under _file_lock to serialise
+    concurrent writers from multi-account same-FTMO_TF executors."""
+    import ftmo_executor as exe
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "EXECUTOR_LOG_PATH", tmp_path / "executor-log.jsonl")
+
+    calls: list[Path] = []
+    real_lock = exe._file_lock
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def spy_lock(lock_path, *args, **kwargs):
+        calls.append(Path(lock_path))
+        with real_lock(lock_path, *args, **kwargs):
+            yield
+
+    monkeypatch.setattr(exe, "_file_lock", spy_lock)
+
+    exe.log_event("test_event", level="info", foo="bar")
+
+    assert len(calls) == 1, f"expected exactly one lock acquire, got {len(calls)}"
+    assert calls[0].name == "executor-log.lock"
+    # And the line was actually appended
+    log = (tmp_path / "executor-log.jsonl").read_text(encoding="utf-8").strip()
+    parsed = json.loads(log)
+    assert parsed["event"] == "test_event"
+    assert parsed["foo"] == "bar"
+
+
+def test_log_event_fsyncs_after_append(monkeypatch, tmp_path):
+    """log_event must call os.fsync on the log fd so a power-loss doesn't
+    drop the most recent log lines (which usually narrate the crash cause)."""
+    import ftmo_executor as exe
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "EXECUTOR_LOG_PATH", tmp_path / "executor-log.jsonl")
+
+    fsynced_fds: list[int] = []
+    real_fsync = os.fsync
+
+    def spy_fsync(fd):
+        fsynced_fds.append(fd)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(exe.os, "fsync", spy_fsync)
+
+    exe.log_event("fsync_check")
+
+    # At least one fsync must have happened during log_event.
+    assert len(fsynced_fds) >= 1, "log_event did not fsync the log fd"
+
+
+def test_log_event_serialises_concurrent_writers(monkeypatch, tmp_path):
+    """Two threads logging at once must not produce interleaved bytes —
+    every line in the JSONL output must parse as valid JSON."""
+    import ftmo_executor as exe
+    import threading
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "EXECUTOR_LOG_PATH", tmp_path / "executor-log.jsonl")
+
+    def worker(idx: int):
+        for i in range(20):
+            exe.log_event("concurrent", worker=idx, i=i)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    lines = (tmp_path / "executor-log.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 80, f"expected 80 lines, got {len(lines)}"
+    for line in lines:
+        parsed = json.loads(line)  # raises if any line was corrupted
+        assert parsed["event"] == "concurrent"
+
+
+def test_write_json_fsyncs_parent_dir_on_posix(monkeypatch, tmp_path):
+    """On POSIX, write_json must fsync the parent dir after rename so the
+    dir-entry update survives a power-loss."""
+    if sys.platform == "win32":
+        pytest.skip("POSIX-only: Windows can't os.open() directories")
+
+    import ftmo_executor as exe
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+
+    fsync_calls: list[int] = []
+    real_fsync = os.fsync
+
+    def spy_fsync(fd):
+        fsync_calls.append(fd)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(exe.os, "fsync", spy_fsync)
+
+    target = tmp_path / "state.json"
+    exe.write_json(target, {"ok": True})
+
+    # Expect at least 2 fsyncs: file fd + parent-dir fd.
+    assert len(fsync_calls) >= 2, (
+        f"expected >=2 fsyncs (file + dir), got {len(fsync_calls)}"
+    )
+    assert json.loads(target.read_text()) == {"ok": True}
+
+
+def test_write_json_dir_fsync_swallows_oserror(monkeypatch, tmp_path):
+    """If os.open(parent_dir) raises (Windows / unsupported FS), write_json
+    must NOT propagate — it's best-effort durability."""
+    import ftmo_executor as exe
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+
+    real_open = os.open
+
+    def fake_open(path, flags, *args, **kwargs):
+        # Reject only the dir-fsync open (RDONLY on a directory)
+        if flags == os.O_RDONLY and Path(path).is_dir():
+            raise OSError("simulated: directory fsync not supported")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(exe.os, "open", fake_open)
+
+    target = tmp_path / "state.json"
+    # Should not raise.
+    exe.write_json(target, {"ok": True})
+    assert json.loads(target.read_text()) == {"ok": True}
+
+
+def test_read_json_renames_corrupt_and_returns_fallback(monkeypatch, tmp_path):
+    """On JSONDecodeError, read_json must rename the corrupt file to
+    `path.corrupt.<ts>` and return the fallback — never silently succeed."""
+    import ftmo_executor as exe
+
+    tg_calls: list[str] = []
+    monkeypatch.setattr(exe, "tg_send", lambda msg, **kw: tg_calls.append(msg))
+
+    corrupt_path = tmp_path / "pause-state.json"
+    corrupt_path.write_text("{not valid json", encoding="utf-8")
+
+    fallback = {"target_hit": False}
+    result = exe.read_json(corrupt_path, fallback)
+
+    assert result == fallback, "must return fallback on corruption"
+    assert not corrupt_path.exists(), "corrupt file must be renamed away"
+    # Find the rename target
+    siblings = list(tmp_path.glob("pause-state.json.corrupt.*"))
+    assert len(siblings) == 1, f"expected 1 corrupt-renamed file, got {siblings}"
+    assert siblings[0].read_text(encoding="utf-8") == "{not valid json"
+    # And Telegram was alerted
+    assert len(tg_calls) == 1
+    assert "corrupt" in tg_calls[0].lower()
+
+
+def test_read_json_telegram_failure_does_not_mask_fallback(monkeypatch, tmp_path):
+    """If tg_send blows up, read_json must still return the fallback —
+    Telegram is best-effort, corruption handling is not."""
+    import ftmo_executor as exe
+
+    def boom(*a, **kw):
+        raise RuntimeError("telegram down")
+
+    monkeypatch.setattr(exe, "tg_send", boom)
+
+    corrupt_path = tmp_path / "broken.json"
+    corrupt_path.write_text("garbage", encoding="utf-8")
+
+    result = exe.read_json(corrupt_path, {"fallback": True})
+    assert result == {"fallback": True}
+
+
+def test_read_json_missing_file_returns_fallback_silently(monkeypatch, tmp_path):
+    """Existing happy-path behavior: missing file → fallback, no Telegram."""
+    import ftmo_executor as exe
+
+    tg_calls: list[str] = []
+    monkeypatch.setattr(exe, "tg_send", lambda msg, **kw: tg_calls.append(msg))
+
+    result = exe.read_json(tmp_path / "nope.json", {"x": 1})
+    assert result == {"x": 1}
+    assert tg_calls == [], "missing file is not corruption — no alert expected"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

@@ -203,8 +203,15 @@ function buildDistributionData(trades: Trade[]): BucketDatum[] {
   if (trades.length === 0) return [];
 
   const pnls = trades.map((t) => t.pnl);
-  const min = Math.min(...pnls);
-  const max = Math.max(...pnls);
+  // R7 fix #C: avoid Math.min/max(...arr) spread — RangeError stack overflow at
+  // ~100k+ array length on V8. Single-pass reduce is also faster on large
+  // inputs and constant-stack.
+  let min = Infinity;
+  let max = -Infinity;
+  for (const v of pnls) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
 
   // Determine nice bucket boundaries that include 0 as a boundary
   const absMax = Math.max(Math.abs(min), Math.abs(max));
@@ -229,8 +236,9 @@ function buildDistributionData(trades: Trade[]): BucketDatum[] {
 
   // Create buckets
   const buckets: BucketDatum[] = [];
+  const hasUnderflowBucket = min < allBounds[0]!;
   // Below min boundary
-  if (min < allBounds[0]!) {
+  if (hasUnderflowBucket) {
     buckets.push({
       label: `< ${fmt(allBounds[0]!)}`,
       count: 0,
@@ -247,33 +255,35 @@ function buildDistributionData(trades: Trade[]): BucketDatum[] {
     });
   }
   // Above max boundary
-  if (max >= allBounds[allBounds.length - 1]!) {
+  const hasOverflowBucket = max >= allBounds[allBounds.length - 1]!;
+  if (hasOverflowBucket) {
     const last = allBounds[allBounds.length - 1]!;
     buckets.push({ label: `> ${fmt(last)}`, count: 0, isPositive: last >= 0 });
   }
 
-  // Fill buckets
+  // R7 fix #A: Direct bucket index via floor((pnl - lo) / step) — was
+  // O(n*b) linear scan over allBounds for every trade. Buckets are
+  // equidistant so a single division replaces the inner loop. O(n) total.
+  const lo0 = allBounds[0]!;
+  const hi0 = allBounds[allBounds.length - 1]!;
+  const innerCount = allBounds.length - 1; // number of [lo,hi) intervals
+  const offset = hasUnderflowBucket ? 1 : 0;
   for (const pnl of pnls) {
-    let placed = false;
-    // Check below-min bucket
-    if (buckets.length > 0 && min < allBounds[0]! && pnl < allBounds[0]!) {
-      buckets[0]!.count++;
-      placed = true;
+    if (pnl < lo0) {
+      // Below-min bucket (only present if hasUnderflowBucket)
+      if (hasUnderflowBucket) buckets[0]!.count++;
+      continue;
     }
-    if (!placed) {
-      const offset = min < allBounds[0]! ? 1 : 0;
-      for (let i = 0; i < allBounds.length - 1; i++) {
-        if (pnl >= allBounds[i]! && pnl < allBounds[i + 1]!) {
-          buckets[i + offset]!.count++;
-          placed = true;
-          break;
-        }
-      }
-    }
-    if (!placed) {
-      // Falls in the last (above-max) bucket
+    if (pnl >= hi0) {
+      // Above-max bucket (only present if hasOverflowBucket)
       buckets[buckets.length - 1]!.count++;
+      continue;
     }
+    let idx = Math.floor((pnl - lo0) / step);
+    // Defensive clamp against FP rounding edge-cases.
+    if (idx < 0) idx = 0;
+    else if (idx >= innerCount) idx = innerCount - 1;
+    buckets[idx + offset]!.count++;
   }
 
   // Remove empty edge buckets

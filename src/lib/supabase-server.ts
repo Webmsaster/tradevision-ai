@@ -1,5 +1,6 @@
-import { createServerClient } from '@supabase/ssr';
-import { cookies } from 'next/headers';
+import { createServerClient } from "@supabase/ssr";
+import { cookies } from "next/headers";
+import { isPlaceholderSupabaseUrl } from "./supabase";
 
 /**
  * Create a Supabase client for use in server components and route handlers.
@@ -9,13 +10,13 @@ export async function createServerSupabaseClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-  if (!url || !key || url === 'https://your-project.supabase.co') {
+  if (!key || isPlaceholderSupabaseUrl(url)) {
     return null;
   }
 
   const cookieStore = await cookies();
 
-  return createServerClient(url, key, {
+  return createServerClient(url!, key, {
     cookies: {
       getAll() {
         return cookieStore.getAll();
@@ -23,7 +24,7 @@ export async function createServerSupabaseClient() {
       setAll(cookiesToSet) {
         try {
           cookiesToSet.forEach(({ name, value, options }) =>
-            cookieStore.set(name, value, options)
+            cookieStore.set(name, value, options),
           );
         } catch {
           // setAll can fail in Server Components where cookies are read-only.

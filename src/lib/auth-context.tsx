@@ -28,32 +28,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let unsubscribe: (() => void) | null = null;
 
     async function initAuth() {
-      const client = await createClient();
+      // R6 lib-utils: any thrown error in createClient/getUser left
+      // isLoading=true forever, blocking the UI on a permanent loading state.
+      // try/catch + finally guarantees we always release the loading flag.
+      try {
+        const client = await createClient();
 
-      if (!mounted) return;
-      setSupabase(client);
+        if (!mounted) return;
+        setSupabase(client);
 
-      if (!client) {
-        setIsLoading(false);
-        return;
+        if (!client) {
+          return;
+        }
+
+        // Get initial session
+        const {
+          data: { user: initialUser },
+        } = await client.auth.getUser();
+
+        if (!mounted) return;
+        setUser(initialUser ?? null);
+
+        // Listen for auth changes
+        const {
+          data: { subscription },
+        } = client.auth.onAuthStateChange((_event, session) => {
+          setUser(session?.user ?? null);
+        });
+        unsubscribe = () => subscription.unsubscribe();
+      } catch (err) {
+        console.error("[auth] initAuth failed:", err);
+      } finally {
+        if (mounted) setIsLoading(false);
       }
-
-      // Get initial session
-      const {
-        data: { user: initialUser },
-      } = await client.auth.getUser();
-
-      if (!mounted) return;
-      setUser(initialUser ?? null);
-      setIsLoading(false);
-
-      // Listen for auth changes
-      const {
-        data: { subscription },
-      } = client.auth.onAuthStateChange((_event, session) => {
-        setUser(session?.user ?? null);
-      });
-      unsubscribe = () => subscription.unsubscribe();
     }
 
     initAuth();
