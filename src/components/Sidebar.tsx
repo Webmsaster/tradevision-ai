@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { memo, useState, useEffect } from "react";
+import { memo, useState, useEffect, useCallback } from "react";
 import { useTheme } from "@/components/ThemeProvider";
 import AccountSwitcher from "@/components/AccountSwitcher";
 
@@ -240,6 +240,11 @@ export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const { theme, toggleTheme } = useTheme();
 
+  // Stable callback so the memoised <NavLinks/> doesn't re-render on every
+  // theme toggle / parent re-render — an inline arrow would create a new
+  // function reference every render and defeat React.memo.
+  const handleNavigate = useCallback(() => setCollapsed(false), []);
+
   // Mobile menu UX: Escape closes + lock body scroll while open.
   useEffect(() => {
     if (!collapsed) return;
@@ -329,10 +334,7 @@ export default function Sidebar() {
         <AccountSwitcher />
 
         <nav className="sidebar-nav">
-          <NavLinks
-            pathname={pathname}
-            onNavigate={() => setCollapsed(false)}
-          />
+          <NavLinks pathname={pathname} onNavigate={handleNavigate} />
         </nav>
 
         <button

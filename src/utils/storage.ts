@@ -402,10 +402,17 @@ export async function deleteTradeFromSupabase(
     }
     return true;
   }
-  // R67 audit (Round 2): also filter `is("deleted_at", null)` to prevent
-  // a redundant UPDATE rewriting deleted_at when the row is already
-  // tombstoned. Application-side audit-trail protection (the RLS UPDATE
-  // policy was loosened to allow UPSERT-resolve-to-UPDATE on tombstones).
+  // R67 audit (Round 5): audit-trail protection lives HERE via the
+  // `.is("deleted_at", null)` filter on the UPDATE WHERE clause. A
+  // double-delete is a no-op (zero rows match, no rewrite of deleted_at).
+  // The R67-r3 DB trigger that enforced this server-side was dropped in
+  // migration_round67_audit_trigger_drop.sql because it broke the
+  // UPSERT-resolve-to-UPDATE re-import path (R67-r2 RLS policy allows
+  // updates on tombstoned rows, but the trigger silently blocked the
+  // deleted_at→NULL flip, leaving the row hidden by the SELECT policy).
+  // The only sanctioned un-tombstone path is the explicit
+  // `update({ deleted_at: null })` in saveBulkTradesToSupabase after a
+  // successful UPSERT — the user's explicit re-import action.
   const updateQuery = supabase
     .from("trades")
     .update({ deleted_at: nowIso })

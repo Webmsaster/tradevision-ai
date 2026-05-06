@@ -178,6 +178,13 @@ export default function SettingsPage() {
   // tweaks).
   const [testStatus, setTestStatus] = useState<TestStatus>(null);
   const [testMessage, setTestMessage] = useState<string>("");
+  // R6 deferred-fix: busy state prevents double-click + dropped-promise on
+  // Remove. While the async cloud reassignment is in flight the button is
+  // disabled (per row), and the onClick callback uses `void` so the
+  // floating Promise warning is silenced and the click handler stays sync.
+  const [removingAccountId, setRemovingAccountId] = useState<string | null>(
+    null,
+  );
   const { supabase, user } = useAuth();
 
   // Load persisted settings on client-side only
@@ -309,71 +316,77 @@ export default function SettingsPage() {
   // stays consistent.
   async function handleRemoveAccount(id: string) {
     if (settings.accounts.length <= 1) return;
+    if (removingAccountId !== null) return; // already in flight
 
-    // Step 1: count orphans in localStorage (always present — even cloud
-    // users have a localStorage mirror so the offline fallback works).
-    const allTrades = loadTrades();
-    const orphanCount = allTrades.filter((t) => t.accountId === id).length;
+    setRemovingAccountId(id);
+    try {
+      // Step 1: count orphans in localStorage (always present — even cloud
+      // users have a localStorage mirror so the offline fallback works).
+      const allTrades = loadTrades();
+      const orphanCount = allTrades.filter((t) => t.accountId === id).length;
 
-    // Step 2: confirm with the user. Show the orphan count so the
-    // decision is informed; an empty account is removed without prompt.
-    if (orphanCount > 0) {
-      const account = settings.accounts.find((a) => a.id === id);
-      const accountLabel = account?.name ?? "this account";
-      const confirmed = window.confirm(
-        `Remove ${accountLabel}?\n\n` +
-          `${orphanCount} trade${orphanCount === 1 ? "" : "s"} ` +
-          `currently belong${orphanCount === 1 ? "s" : ""} to this account. ` +
-          `OK = migrate them to the "default" account.\n` +
-          `Cancel = abort removal (no changes will be made).`,
-      );
-      if (!confirmed) return;
+      // Step 2: confirm with the user. Show the orphan count so the
+      // decision is informed; an empty account is removed without prompt.
+      if (orphanCount > 0) {
+        const account = settings.accounts.find((a) => a.id === id);
+        const accountLabel = account?.name ?? "this account";
+        const confirmed = window.confirm(
+          `Remove ${accountLabel}?\n\n` +
+            `${orphanCount} trade${orphanCount === 1 ? "" : "s"} ` +
+            `currently belong${orphanCount === 1 ? "s" : ""} to this account. ` +
+            `OK = migrate them to the "default" account.\n` +
+            `Cancel = abort removal (no changes will be made).`,
+        );
+        if (!confirmed) return;
 
-      // Step 3a: reassign in localStorage.
-      const migrated = allTrades.map((t) =>
-        t.accountId === id ? { ...t, accountId: "default" } : t,
-      );
-      saveTrades(migrated);
+        // Step 3a: reassign in localStorage.
+        const migrated = allTrades.map((t) =>
+          t.accountId === id ? { ...t, accountId: "default" } : t,
+        );
+        saveTrades(migrated);
 
-      // Step 3b: best-effort cloud reassignment. Supabase failure does
-      // NOT block the local removal — the next full sync (or manual
-      // re-save) will reconcile.
-      if (supabase && user) {
-        try {
-          const { error } = await supabase
-            .from("trades")
-            .update({ account_id: "default" })
-            .eq("user_id", user.id)
-            .eq("account_id", id);
-          if (error) {
-            console.error(
-              "[settings] cloud orphan migration failed (localStorage already updated):",
-              error,
-            );
+        // Step 3b: best-effort cloud reassignment. Supabase failure does
+        // NOT block the local removal — the next full sync (or manual
+        // re-save) will reconcile.
+        if (supabase && user) {
+          try {
+            const { error } = await supabase
+              .from("trades")
+              .update({ account_id: "default" })
+              .eq("user_id", user.id)
+              .eq("account_id", id);
+            if (error) {
+              console.error(
+                "[settings] cloud orphan migration failed (localStorage already updated):",
+                error,
+              );
+            }
+          } catch (err) {
+            console.error("[settings] cloud orphan migration threw:", err);
           }
-        } catch (err) {
-          console.error("[settings] cloud orphan migration threw:", err);
         }
       }
-    }
 
-    // Step 4: drop the account itself + reset activeAccountId if needed.
-    setSettings((prev) => {
-      // Round 9 audit (WARNING): off-by-one — the previous logic took
-      // `prev.accounts[0]` BEFORE filtering, so deleting the first
-      // account left the activeAccountId pointing at the removed entry.
-      // Filter first, THEN pick the first remaining account as fallback.
-      const remaining = prev.accounts.filter((a) => a.id !== id);
-      const nextActive =
-        prev.activeAccountId === id
-          ? (remaining[0]?.id ?? "default")
-          : prev.activeAccountId;
-      return {
-        ...prev,
-        accounts: remaining,
-        activeAccountId: nextActive,
-      };
-    });
+      // Step 4: drop the account itself + reset activeAccountId if needed.
+      setSettings((prev) => {
+        // Round 9 audit (WARNING): off-by-one — the previous logic took
+        // `prev.accounts[0]` BEFORE filtering, so deleting the first
+        // account left the activeAccountId pointing at the removed entry.
+        // Filter first, THEN pick the first remaining account as fallback.
+        const remaining = prev.accounts.filter((a) => a.id !== id);
+        const nextActive =
+          prev.activeAccountId === id
+            ? (remaining[0]?.id ?? "default")
+            : prev.activeAccountId;
+        return {
+          ...prev,
+          accounts: remaining,
+          activeAccountId: nextActive,
+        };
+      });
+    } finally {
+      setRemovingAccountId(null);
+    }
   }
 
   function handleAccountChange(
@@ -747,10 +760,13 @@ export default function SettingsPage() {
               {settings.accounts.length > 1 && (
                 <button
                   className="btn btn-ghost btn-sm"
-                  onClick={() => handleRemoveAccount(account.id)}
+                  disabled={removingAccountId === account.id}
+                  onClick={() => {
+                    void handleRemoveAccount(account.id);
+                  }}
                   aria-label={`Remove ${account.name}`}
                 >
-                  Remove
+                  {removingAccountId === account.id ? "Removing…" : "Remove"}
                 </button>
               )}
             </div>

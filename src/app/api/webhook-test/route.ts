@@ -93,15 +93,44 @@ function buildPayload(platform: string | undefined): unknown {
 }
 
 export async function POST(request: Request) {
+  // R67-r7 audit: same-origin gate. Without this, a third-party site that
+  // a logged-in user visits can fetch this route from their browser
+  // (cookie-less, but the SSRF-probe + outbound-amplifier still works
+  // since the request originates from the server's egress IP). 403 on
+  // any cross-origin POST.
+  const origin = request.headers.get("origin");
+  const host = request.headers.get("host");
+  if (!origin || !host) {
+    return NextResponse.json(
+      { ok: false, error: "forbidden" },
+      { status: 403, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+  try {
+    if (new URL(origin).host !== host) {
+      return NextResponse.json(
+        { ok: false, error: "forbidden" },
+        { status: 403, headers: { "Cache-Control": "no-store" } },
+      );
+    }
+  } catch {
+    return NextResponse.json(
+      { ok: false, error: "forbidden" },
+      { status: 403, headers: { "Cache-Control": "no-store" } },
+    );
+  }
   // Round 8 audit (MEDIUM): rate-limit before any work. The route is
   // unauthenticated by design (settings page calls it pre-save) and each
   // hit issues a DNS lookup + outbound HTTPS request — exactly the
   // amplification primitive an attacker wants for cheap SSRF probing or
   // outbound traffic generation. Cap at 60/min/IP, mirroring the
   // /api/drift-data convention.
+  // R67-r7 audit: prefer Vercel-injected x-vercel-forwarded-for (un-spoofable
+  // edge-network header) over x-forwarded-for (client-supplied, spoofable).
   const ip =
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    request.headers.get("x-vercel-forwarded-for")?.split(",")[0]?.trim() ||
     request.headers.get("x-real-ip") ||
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
     "unknown";
   if (
     await isRateLimited("webhook-test", ip, { windowMs: 60_000, maxHits: 60 })

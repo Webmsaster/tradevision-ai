@@ -80,7 +80,8 @@ export interface TradeStats {
   winRate: number;
   avgWin: number;
   avgLoss: number;
-  riskReward: number;
+  /** null when undefined (e.g. wins but no losses) instead of Infinity. */
+  riskReward: number | null;
   expectancy: number;
   maxDrawdown: number;
   maxDrawdownPercent: number;

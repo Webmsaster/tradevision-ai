@@ -19,7 +19,13 @@
  * used by the production R28_V6 sweep so window 0 here matches window 0
  * there.
  */
-import { readFileSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
+import {
+  readFileSync,
+  mkdirSync,
+  writeFileSync,
+  renameSync,
+  unlinkSync,
+} from "node:fs";
 import * as path from "node:path";
 import {
   FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
@@ -230,8 +236,20 @@ async function main() {
   const outDir = path.dirname(args.out);
   mkdirSync(outDir, { recursive: true });
   const tmp = `${args.out}.tmp.${process.pid}`;
-  writeFileSync(tmp, JSON.stringify(fixture, null, 2));
-  renameSync(tmp, args.out);
+  // R5 deferred-fix: clean up the .tmp file on any failure between
+  // writeFileSync and renameSync — a SIGTERM, disk-full, or rename error
+  // would otherwise leave orphaned tmp files in the golden-fixtures dir.
+  try {
+    writeFileSync(tmp, JSON.stringify(fixture, null, 2));
+    renameSync(tmp, args.out);
+  } catch (e) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* ignore — tmp may not exist if writeFileSync threw before creation */
+    }
+    throw e;
+  }
   console.log(
     `wrote ${args.out} (passed=${passed} reason=${reason} eq=${finalEquityPct.toFixed(4)} trades=${state.closedTrades.length})`,
   );

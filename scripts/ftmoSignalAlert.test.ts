@@ -71,14 +71,26 @@ function loadState(): SignalState {
 // ftmoLiveService.ts.
 function saveState(s: SignalState) {
   const tmp = `${STATE_PATH}.tmp.${process.pid}`;
-  const fd = openSync(tmp, "w");
+  // R5 deferred-fix: clean up tmp file on any failure (write, fsync,
+  // rename). Without this a crashed/interrupted run could leave orphaned
+  // .tmp.<pid> files next to STATE_PATH, gradually polluting cwd.
   try {
-    writeSync(fd, JSON.stringify(s, null, 2));
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
+    const fd = openSync(tmp, "w");
+    try {
+      writeSync(fd, JSON.stringify(s, null, 2));
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, STATE_PATH);
+  } catch (e) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* ignore — tmp may not exist if openSync threw before creation */
+    }
+    throw e;
   }
-  renameSync(tmp, STATE_PATH);
 }
 
 async function sendTelegram(msg: string): Promise<boolean> {

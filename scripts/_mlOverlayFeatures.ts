@@ -124,7 +124,7 @@ console.log(
 
 for (let start = WARMUP; start + winBars <= minBars; start += stepBars) {
   const state = initialState("R28_V6_PASSLOCK");
-  const pending: PendingSignal[] = [];
+  let pending: PendingSignal[] = [];
 
   for (let i = start; i < start + winBars; i++) {
     const slice: Record<string, Candle[]> = {};
@@ -172,25 +172,30 @@ for (let start = WARMUP; start + winBars <= minBars; start += stepBars) {
     }
 
     // Match newly closed trades to pending signals by ticket_id and label them.
-    for (const closed of state.closedTrades.slice(-r.decision.closes.length)) {
-      const m = pending.find((p) => p.ticket_id === closed.ticketId);
-      if (!m) continue;
+    // Iterate r.decision.closes (per-bar list) instead of state.closedTrades.slice(-N) —
+    // slice is fragile when force-close batches mix into the same poll.
+    for (const close of r.decision.closes) {
+      const matched = pending.find((p) => p.ticket_id === close.ticketId);
+      if (!matched) continue;
       const outcome =
-        closed.exitReason === "tp" ? 1 : closed.exitReason === "stop" ? 0 : -1;
+        close.exitReason === "tp" ? 1 : close.exitReason === "stop" ? 0 : -1;
       if (outcome !== -1) {
+        const closedRec = state.closedTrades.find(
+          (c) => c.ticketId === close.ticketId,
+        );
         appendFileSync(
           OUT,
           JSON.stringify({
-            ...m.features,
+            ...matched.features,
             outcome,
-            eff_pnl: closed.effPnl,
+            eff_pnl: closedRec?.effPnl ?? 0,
             window_start: start,
-            ticket_id: m.ticket_id,
+            ticket_id: matched.ticket_id,
           }) + "\n",
         );
         totalRows++;
       }
-      pending.splice(pending.indexOf(m), 1);
+      pending = pending.filter((p) => p.ticket_id !== matched.ticket_id);
     }
 
     if (r.challengeEnded) break;

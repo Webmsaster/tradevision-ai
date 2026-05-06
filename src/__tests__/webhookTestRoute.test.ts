@@ -32,9 +32,15 @@ const ORIG_FETCH = globalThis.fetch;
 
 async function callRoute(body: unknown) {
   const { POST } = await import("@/app/api/webhook-test/route");
+  // R67-r7: route now requires same-origin (Origin header host === Host
+  // header). Mock both so the CSRF gate passes.
   const req = new Request("http://localhost/api/webhook-test", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Origin: "http://localhost",
+      Host: "localhost",
+    },
     body: JSON.stringify(body),
   });
   const resp = await POST(req);
@@ -51,7 +57,12 @@ describe("/api/webhook-test — input validation", () => {
     const { POST } = await import("@/app/api/webhook-test/route");
     const req = new Request("http://localhost/api/webhook-test", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        // R67-r7: same-origin headers required
+        Origin: "http://localhost",
+        Host: "localhost",
+      },
       body: "not-json",
     });
     const resp = await POST(req);

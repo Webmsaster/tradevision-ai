@@ -588,5 +588,9 @@ export function useTradeStorage() {
     importTrades,
     clearAll,
     setAllTrades: replaceTrades,
+    // R67-r7 audit: expose activeAccountId so callers (e.g. dashboard sample-
+    // data loader) can stamp new trades correctly without falling back to
+    // "default" (where they'd be invisible if user has a non-default account).
+    activeAccountId,
   };
 }

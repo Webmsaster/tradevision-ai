@@ -155,9 +155,9 @@ describe("calculateAvgWinLoss", () => {
 });
 
 describe("calculateRiskReward", () => {
-  it("returns Infinity when only wins (semantically correct — undefined R:R)", () => {
+  it("returns null when only wins (semantically correct — undefined R:R)", () => {
     const trades = [makeTrade({ pnl: 10 })];
-    expect(calculateRiskReward(trades)).toBe(Infinity);
+    expect(calculateRiskReward(trades)).toBeNull();
   });
 
   it("returns 0 when no trades at all", () => {
@@ -538,9 +538,9 @@ describe("calculation branch-coverage edge cases (R60)", () => {
     expect(maxDrawdownPercent).toBeCloseTo(300, 5);
   });
 
-  it("calculateRiskReward returns Infinity when wins exist but no losses", () => {
+  it("calculateRiskReward returns null when wins exist but no losses", () => {
     const trades = [makeTrade({ pnl: 10 }), makeTrade({ pnl: 20 })];
-    expect(calculateRiskReward(trades)).toBe(Infinity);
+    expect(calculateRiskReward(trades)).toBeNull();
   });
 
   it("calculateRiskReward returns 0 when no wins and no losses (BE only)", () => {

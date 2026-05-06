@@ -106,13 +106,22 @@ export function calculateAvgWinLoss(trades: Trade[]): {
 
 /**
  * Calculate the risk/reward ratio (average win / average loss).
- * Returns 0 if there are no losing trades or no winning trades.
+ * Returns null when the ratio is undefined (no losses but wins → would be
+ * Infinity) so callers can render an explicit "N/A" instead of carrying
+ * a non-finite number through downstream math (formatting, charts, AI).
+ * Returns 0 if there are neither winning nor losing trades.
  */
-export function calculateRiskReward(trades: Trade[]): number {
+export function calculateRiskReward(trades: Trade[]): number | null {
   const { avgWin, avgLoss } = calculateAvgWinLoss(trades);
-  // No losses but wins → infinite R:R (UI should render as "∞" / "N/A").
-  if (avgLoss === 0) return avgWin > 0 ? Infinity : 0;
-  return avgWin / avgLoss;
+  if (avgLoss === 0) {
+    // Wins but no losses → undefined R:R; signal explicitly via null.
+    if (avgWin > 0) return null;
+    return 0;
+  }
+  const value = avgWin / avgLoss;
+  // Defensive: if FP arithmetic still produces a non-finite value, surface null.
+  if (!Number.isFinite(value)) return null;
+  return value;
 }
 
 /**
@@ -327,7 +336,11 @@ export function calculateSharpeRatio(trades: Trade[]): number {
     returns.reduce((sum, r) => sum + (r - mean) ** 2, 0) / returns.length;
   const stdDev = Math.sqrt(variance);
 
-  if (stdDev === 0) return 0;
+  // FP-noise guard: identical-return series can produce stdDev ≈ 1e-15 from
+  // round-off in the variance accumulator, blowing up mean/stdDev to a huge
+  // bogus Sharpe. Treat anything below tolerance as zero.
+  const FP_TOLERANCE = 1e-12;
+  if (stdDev < FP_TOLERANCE) return 0;
 
   // Infer trades-per-year from the exit-date span.
   const exitTimes = trades
@@ -350,7 +363,10 @@ export function calculateSharpeRatio(trades: Trade[]): number {
     const years = spanMs / (365.25 * 24 * 60 * 60 * 1000);
     // Below ~36 days the inferred rate is too noisy; keep the default.
     if (years >= 0.1) {
-      const tradesPerYear = trades.length / years;
+      // Use exitTimes.length (the validated, finite-date count) — not
+      // trades.length — so trades with malformed exitDates don't inflate
+      // the inferred frequency.
+      const tradesPerYear = exitTimes.length / Math.max(years, 1e-9);
       annualisationFactor = Math.sqrt(tradesPerYear);
     }
   }
@@ -503,16 +519,26 @@ export function calculateAllStats(trades: Trade[]): TradeStats {
 
   const totalPnl = trades.reduce((sum, t) => sum + t.pnl, 0);
 
-  // Find best and worst trades by PnL (caller guards trades.length > 0)
-  const bestTrade = trades.reduce<Trade>(
-    (best, t) => (t.pnl > best.pnl ? t : best),
-    trades[0]!,
-  );
+  // Find best and worst trades by PnL. Filter out NaN-PnL rows: a single
+  // NaN trade poisons reduce() (any comparison with NaN is false) and would
+  // make best/worst depend on iteration order. trades[] is non-empty here,
+  // but validTrades may still be empty if every PnL is NaN.
+  const validTrades = trades.filter((t) => Number.isFinite(t.pnl));
+  const bestTrade =
+    validTrades.length > 0
+      ? validTrades.reduce<Trade>(
+          (best, t) => (t.pnl > best.pnl ? t : best),
+          validTrades[0]!,
+        )
+      : null;
 
-  const worstTrade = trades.reduce<Trade>(
-    (worst, t) => (t.pnl < worst.pnl ? t : worst),
-    trades[0]!,
-  );
+  const worstTrade =
+    validTrades.length > 0
+      ? validTrades.reduce<Trade>(
+          (worst, t) => (t.pnl < worst.pnl ? t : worst),
+          validTrades[0]!,
+        )
+      : null;
 
   return {
     totalTrades: trades.length,

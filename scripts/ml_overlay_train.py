@@ -107,8 +107,23 @@ def main() -> int:
         )
         return 1
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=args.test_size, random_state=args.random_state, stratify=y
+    # Time-series split: sort by window_start, then chronological cutoff.
+    # Random split would leak future bars into train (signals from window N
+    # share the same regime as their later closes in window N+1).
+    if 'window_start' in df.columns:
+        order = df.loc[mask].sort_values('window_start').index
+        X = X.loc[order]
+        y = y.loc[order]
+        ws = df.loc[order, 'window_start']
+    else:
+        ws = pd.Series([0] * len(X), index=X.index)
+    cutoff = int(len(X) * (1 - args.test_size))
+    X_train, X_test = X.iloc[:cutoff], X.iloc[cutoff:]
+    y_train, y_test = y.iloc[:cutoff], y.iloc[cutoff:]
+    cutoff_ts = ws.iloc[cutoff] if cutoff < len(ws) else ws.iloc[-1]
+    print(
+        f'[ml_overlay] time-split: train={len(X_train)}, test={len(X_test)}, '
+        f'cutoff=window_start_ts={cutoff_ts}'
     )
 
     clf = xgb.XGBClassifier(

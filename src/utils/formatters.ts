@@ -15,7 +15,10 @@ export function formatCurrency(n: number): string {
 }
 
 /** Format a number that might be Infinity or NaN as a safe string. */
-export function formatFinite(value: number | undefined, decimals = 2): string {
+export function formatFinite(
+  value: number | null | undefined,
+  decimals = 2,
+): string {
   if (value === undefined || value === null) return "N/A";
   if (!Number.isFinite(value)) return "N/A";
   return value.toFixed(decimals);

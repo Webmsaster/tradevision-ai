@@ -14,7 +14,7 @@ import InsightCard from "@/components/InsightCard";
 import WeeklySummary from "@/components/WeeklySummary";
 import DayOfWeekHeatmap from "@/components/DayOfWeekHeatmap";
 import SyncErrorToast from "@/components/SyncErrorToast";
-import { formatCurrency } from "@/utils/formatters";
+import { formatCurrency, formatFinite } from "@/utils/formatters";
 
 interface DashboardWidgets {
   equityCurve: boolean;
@@ -78,6 +78,8 @@ export default function DashboardPage() {
     trades,
     isLoading,
     setAllTrades,
+    importTrades,
+    activeAccountId,
     clearAll,
     syncError,
     dismissSyncError,
@@ -128,10 +130,25 @@ export default function DashboardPage() {
   /**
    * Load the built-in sample data set on demand, persist it, and switch to demo mode.
    * Uses dynamic import so the sample data bundle is only fetched when clicked.
+   *
+   * R67-r7 audit: was using `setAllTrades` (= replaceTrades, which calls
+   * clearAllSupabaseTrades — DESTRUCTIVE). On a multi-account setup,
+   * clicking this on an empty Account-B would WIPE all of Account-A's
+   * cloud trades before failing on non-UUID sample IDs (sample-1..67).
+   * Now uses `importTrades` (additive + dedup) and stamps trades with
+   * fresh UUIDs + activeAccountId so they're visible AND don't collide.
    */
   const handleLoadSampleData = async () => {
     const { sampleTrades } = await import("@/data/sampleTrades");
-    setAllTrades(sampleTrades);
+    const fresh = sampleTrades.map((t) => ({
+      ...t,
+      id:
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      accountId: activeAccountId,
+    }));
+    await importTrades(fresh);
   };
 
   /**
@@ -288,7 +305,7 @@ export default function DashboardPage() {
       <div className="dashboard-kpi-secondary">
         <StatCard
           label="Risk : Reward"
-          value={stats.riskReward.toFixed(2)}
+          value={formatFinite(stats.riskReward)}
           suffix=":1"
         />
         <StatCard label="Total Trades" value={stats.totalTrades} />
