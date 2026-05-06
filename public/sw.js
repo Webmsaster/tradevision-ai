@@ -120,8 +120,9 @@ async function cacheFirst(request, cacheName) {
 async function networkFirst(request, cacheName) {
   try {
     const networkResponse = await fetch(request);
-    // Cache successful responses
-    if (networkResponse.ok) {
+    // Respect Cache-Control: no-store / private — never cache opt-outs
+    const cc = networkResponse.headers.get('cache-control') || '';
+    if (networkResponse.ok && !cc.includes('no-store') && !cc.includes('private')) {
       const cache = await caches.open(cacheName);
       cache.put(request, networkResponse.clone());
     }

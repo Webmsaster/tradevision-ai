@@ -6,7 +6,7 @@ enough to stop sharding `vitest` for backtest sweeps.
 
 ## Status (Phase 3-8 + numerical-parity infrastructure + drift-debug session)
 
-**129 tests green** across nine suites. Anchor-handling bug fixed (3/5 → 4/5
+**133 tests green** across thirteen suites. Anchor-handling bug fixed (3/5 → 4/5
 windows perfect parity). Per-asset stop_pct=0.05 + tp_pct cohort overrides
 shipped. ATR pre-computation wired in all parity runners. CI drift-job +
 determinism + cargo-fuzz + 60-day soak + architecture diagram all live.
@@ -23,6 +23,10 @@ determinism + cargo-fuzz + 60-day soak + architecture diagram all live.
 | Drift diagnose                      | 1     |
 | Determinism                         | 1     |
 | 60-day soak                         | 1     |
+| State diff                          | 1     |
+| Asset expansion sweep               | 1     |
+| Asset importance sweep              | 1     |
+| DL attack sweep                     | 1     |
 
 ### Drift snapshot vs TS V4-Sim (R28_V6_PASSLOCK, post-anchor-fix)
 
@@ -58,7 +62,7 @@ hits + paused, but Rust didn't, leading to 25 of 50 windows where Rust
 matched equity exactly but never declared `passed=true` because the
 trading-days threshold was never reached.
 
-### Full sweep: 136 windows (R28_V6_PASSLOCK Champion reproduction) — **🎯 BIT-PRECISE PARITY**
+### Full sweep: 137 windows (R28_V6_PASSLOCK Champion reproduction) — **🎯 BIT-PRECISE PARITY**
 
 | Metric      | TS V4-Sim           | Rust harness                     |
 | ----------- | ------------------- | -------------------------------- |
@@ -102,13 +106,14 @@ via two changes — see `PERF_NOTES.md`:
 1. `prague_offset_ms` String-allocation removal (3× win across all paths)
 2. RSI pre-cache for mean-reversion (8× win on that path alone)
 
-| Suite                                               | Count              | What it covers                                                                                       |
-| --------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------- |
-| Unit (`#[cfg(test)] mod tests`)                     | 108                | Per-module: types, helpers, exit branches, sizing, signals, persistence, drift, news, reconcile, v5r |
-| Integration (`tests/integration_passlock.rs`)       | 3                  | PASSLOCK lifecycle, total-loss breach, idempotent replay                                             |
-| Integration (`tests/integration_v5r.rs`)            | 2                  | dailyEquityGuardian force-close, reentry-after-stop bypass                                           |
-| Property (`tests/property_invariants.rs`, proptest) | 4 (×64 cases each) | Monotone bars_seen, gap-tail floor, day-index DST, gap-fill stop                                     |
-| Golden (`tests/golden_runner.rs`)                   | 1                  | JSON fixture in `tests/golden/` with hand-defined expected outcome                                   |
+| Suite                                                                                              | Count              | What it covers                                                                                                              |
+| -------------------------------------------------------------------------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| Unit (`#[cfg(test)] mod tests`)                                                                    | 115                | Per-module: types, helpers, exit branches, sizing, signals, persistence, drift, news, reconcile, v5r                        |
+| Integration (`tests/integration_passlock.rs`)                                                      | 3                  | PASSLOCK lifecycle, total-loss breach, idempotent replay                                                                    |
+| Integration (`tests/integration_v5r.rs`)                                                           | 2                  | dailyEquityGuardian force-close, reentry-after-stop bypass                                                                  |
+| Property (`tests/property_invariants.rs`, proptest)                                                | 4 (×64 cases each) | Monotone bars_seen, gap-tail floor, day-index DST, gap-fill stop                                                            |
+| Golden (`tests/golden_runner.rs`)                                                                  | 1                  | JSON fixture in `tests/golden/` with hand-defined expected outcome                                                          |
+| Sweeps + diff (`asset_*_sweep`, `dl_attack_sweep`, `state_diff`, `determinism`, `drift_*`, `soak`) | 8                  | Asset-importance/expansion sweeps, daily-loss attack grid, state divergence finder, determinism, TS↔Rust drift, 60-day soak |
 
 Release build + 8-thread rayon harness:
 
@@ -221,7 +226,7 @@ cargo run --release --bin ftmo-sweep -- --list-configs
 ## Tests
 
 ```bash
-cargo test --workspace                    # 110 unit + 5 integration + 4 property + 1 golden + 1 drift
+cargo test --workspace                    # 133 total: 115 unit + 5 integration + 4 property + 1 golden + 8 sweeps/diff
 cargo test --test drift_summary -- --nocapture   # quantitative TS↔Rust drift report
 cargo bench --bench step_bar_throughput   # criterion micro-benches
 ```

@@ -116,6 +116,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         console.error("[auth] failed to clear storage on signOut:", e);
       }
     }
+    try {
+      if (typeof window !== "undefined" && "caches" in window) {
+        const names = await caches.keys();
+        await Promise.all(
+          names
+            .filter((n) => n.startsWith("tradevision-"))
+            .map((n) => caches.delete(n)),
+        );
+      }
+    } catch (e) {
+      console.error("[auth] failed to clear SW caches on signOut:", e);
+    }
     setUser(null);
   }, [supabase]);
 

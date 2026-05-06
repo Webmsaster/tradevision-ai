@@ -52,6 +52,15 @@ else:
 from telegram_notify import tg_send, html_escape  # type: ignore
 
 
+def _round_to_tick(price: float, tick_size: float, digits: int) -> float:
+    """R67-r10: round price to broker tick grid + declared digits."""
+    if tick_size and tick_size > 0:
+        price = round(price / tick_size) * tick_size
+    if digits and digits > 0:
+        price = round(price, int(digits))
+    return price
+
+
 # =============================================================================
 # Config — via env vars
 # =============================================================================
@@ -192,15 +201,30 @@ _validate_config()
 # =============================================================================
 # IO helpers
 # =============================================================================
-def _rotate_jsonl_if_needed(path: Path, max_mb: int = 50) -> None:
-    """BUGFIX 2026-04-28 (Round 12): rotate jsonl files at 50MB to prevent
-    unbounded disk fill on long-running bots."""
+def _rotate_jsonl_if_needed(path: Path, max_mb: int = 50, keep: int = 14) -> None:
+    """Rotate at max_mb; keep last `keep` daily archives.
+    R67-r10: prevent unbounded archive accumulation."""
     try:
         if path.exists() and path.stat().st_size > max_mb * 1024 * 1024:
-            archive = path.with_suffix(f".{datetime.now(timezone.utc).strftime('%Y%m%d')}.jsonl")
+            archive = path.with_suffix(
+                f".{datetime.now(timezone.utc).strftime('%Y%m%d')}.jsonl"
+            )
             path.rename(archive)
+        # Reap old archives (regardless of whether we just rotated).
+        stem = path.stem
+        suffix = path.suffix
+        archives = sorted(
+            path.parent.glob(f"{stem}.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]{suffix}"),
+            key=lambda p: p.name,
+            reverse=True,
+        )
+        for old in archives[keep:]:
+            try:
+                old.unlink(missing_ok=True)
+            except Exception:
+                pass
     except Exception:
-        pass  # don't crash on rotation issues
+        pass
 
 
 def log_event(event: str, level: str = "info", **kwargs: Any) -> None:
@@ -262,6 +286,18 @@ def read_json(path: Path, fallback: Any) -> Any:
             preserved = str(corrupt_path)
         except OSError:
             preserved = "(rename-failed)"
+        # R67-r10: reap quarantine files older than 30 days
+        try:
+            cutoff = time.time() - 30 * 86400
+            for old in path.parent.glob(f"{path.name}.corrupt.*"):
+                try:
+                    ts_str = old.suffix.lstrip(".")
+                    if ts_str.isdigit() and int(ts_str) < cutoff:
+                        old.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         msg = f"corrupt JSON at {path.name}: {e}; preserved as {preserved}"
         print(f"[executor] {msg}")
         try:
@@ -1232,6 +1268,15 @@ def place_market_order(
     else:
         return OrderResult(False, None, f"unknown direction {direction}", None, None)
 
+    # R67-r10: round SL/TP to broker tick grid + declared digits to avoid
+    # retcode 10016 "Invalid stops" on symbols with non-trivial tick size
+    # (FX JPY 0.001, indices 0.1). Crypto (digits=2-3, tick=0.01) is a
+    # no-op but cheap.
+    tick_size = float(getattr(info, "trade_tick_size", 0.0) or getattr(info, "point", 0.0) or 0.0)
+    digits = int(getattr(info, "digits", 0) or 0)
+    stop_price = _round_to_tick(stop_price, tick_size, digits)
+    tp_price = _round_to_tick(tp_price, tick_size, digits)
+
     # Round 53: realistic slippage on entry. SL/TP stay relative to the
     # theoretical mid (engine planned them that way) — only the order
     # `price` and the reported fill move. This mirrors real MT5 behavior:
@@ -1352,6 +1397,15 @@ def _fit_lot_to_margin(
             return cur_lot
         # 10019 = "No money", 10014 = "Invalid volume", 10016 = "Invalid stops"
         if check.retcode != 10019:
+            if check.retcode == 10016:
+                log_event(
+                    "order_check_invalid_stops",
+                    symbol=ftmo_symbol,
+                    sl=stop_price,
+                    tp=tp_price,
+                    level="warn",
+                    hint="SL/TP not on tick grid — verify _round_to_tick was applied",
+                )
             return cur_lot  # not a margin issue — let order_send surface it
         new_lot = max(vol_min, math.floor((cur_lot / 2) / step) * step)
         if new_lot >= cur_lot:
@@ -1976,11 +2030,19 @@ def _modify_position_sl(ticket: int, new_sl: float) -> bool:
     if not live:
         return False
     pos = live[0]
+    # R67-r10: round new SL to tick grid (caller passes computed price like
+    # entry × (1 - trailPct) which is generally NOT on the broker grid).
+    sl_rounded = float(new_sl)
+    info = mt5.symbol_info(pos.symbol)
+    if info is not None:
+        tick_size = float(getattr(info, "trade_tick_size", 0.0) or getattr(info, "point", 0.0) or 0.0)
+        digits = int(getattr(info, "digits", 0) or 0)
+        sl_rounded = _round_to_tick(sl_rounded, tick_size, digits)
     request = {
         "action": mt5.TRADE_ACTION_SLTP,
         "symbol": pos.symbol,
         "position": ticket,
-        "sl": float(new_sl),
+        "sl": sl_rounded,
         "tp": float(pos.tp),
         "magic": 231,
     }

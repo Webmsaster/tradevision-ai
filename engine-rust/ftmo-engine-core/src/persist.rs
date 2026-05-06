@@ -237,6 +237,10 @@ pub fn save_state(state: &EngineState, state_dir: &Path) -> Result<()> {
     }
     std::fs::rename(&tmp_path, &final_path)
         .with_context(|| format!("renaming {} → {}", tmp_path.display(), final_path.display()))?;
+    // R67-r10: POSIX requires fsync of parent directory for rename durability.
+    if let Ok(dir) = File::open(state_dir) {
+        let _ = dir.sync_all(); // best-effort; Windows / unsupported FS no-op
+    }
     Ok(())
 }
 

@@ -54,7 +54,13 @@ function writeLastUpdateId(stateDir: string, id: number): void {
     fs.mkdirSync(stateDir, { recursive: true });
     const p = lastUpdateIdPath(stateDir);
     const tmp = `${p}.tmp.${process.pid}`;
-    fs.writeFileSync(tmp, JSON.stringify({ id }));
+    const fd = fs.openSync(tmp, "w");
+    try {
+      fs.writeSync(fd, JSON.stringify({ id }));
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
     fs.renameSync(tmp, p);
   } catch (e) {
     console.error(`[tg-bot] failed to persist lastUpdateId:`, e);

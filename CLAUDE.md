@@ -78,7 +78,6 @@ All 17 pattern detectors run in the browser with no API calls. Logic is in `src/
 - **Strategy/FTMO tests** (`scripts/ftmo*.test.ts` and `scripts/exploratory/`): Heavy backtests run via vitest.
   - **🏆 Current Champion (2026-05-04, Round 60): `R28_V6_PASSLOCK`** (`FTMO_TF=2h-trend-v5-r28-v6-passlock`). **63.24% V4-Engine full-sweep / 64.77% preliminary** on 9-crypto basket, 5.55y / 136 windows. +6.62 to +8.15pp vs R28_V6 baseline (56.62%). Mechanism: `closeAllOnTargetReached` flag forces all positions closed at first target-hit, eliminating Day-30-force-close drag-down. give_back 0% (eliminated). Live deploy: see `tools/PASSLOCK_DEPLOY_RUNBOOK.md`. Multi-account 3-Strategy (PASSLOCK+TITANIUM+AMBER) ≈ 94% min-1-pass.
   - **Prev: R28_V6** (`FTMO_TF=2h-trend-v5-quartz-lite-r28-v6-v4engine`): 56.62% V4-Engine, walk-forward TRAIN 55.56% / TEST 54.93% (drift -0.63pp = robust). Per-asset tpPct ×0.55, plateau 0.55-0.59. Superseded by PASSLOCK.
-  - **⚠️ Audit-pending champion (2026-04-29): `V5_ONYX`** (`FTMO_TF=2h-trend-v5-onyx`). Claimed 70.11% step=3d but audit found MAJOR overfit/recency-bias confounders. Engine bugs fixed (finishPausedPass off-by-one, MCT selection-bias). True OOS pass-rate likely 45-55% — re-validation in progress. **For production: prefer R28_V6_PASSLOCK (current champion) or V5_TITANIUM (5.5y full history, 58.24% step=1d) as conservative alternative.**
   - **Sister champions:**
     - **`V5_RUBIN`** (`FTMO_TF=2h-trend-v5-rubin`): 64.40% step=3d / wr 86.72% / TL 0 (14 assets, smaller basket)
     - **`V5_TOPAZ`** (`FTMO_TF=2h-trend-v5-topaz`): 63.86% step=3d / wr 86.45% / TL 0 (14 assets, V5_QUARTZ minus RUNE)
@@ -115,6 +114,10 @@ Production-ready full-auto trading bot for FTMO Demo/Live. Default live config (
 - **Release:** Automated via `release-please` — semantic PR titles (`feat:`, `fix:`, etc.) trigger version bumps and changelog
 - **Dependabot:** Weekly npm + GitHub Actions dependency updates with auto-merge for patch/minor
 - **Prod smoke** (`.github/workflows/prod-smoke.yml`): Daily Playwright checks against production
+
+## Historical / Superseded
+
+- **❌ ARCHIVED — `V5_ONYX`** (`FTMO_TF=2h-trend-v5-onyx`, 2026-04-29) — superseded by R28_V6_PASSLOCK champion (2026-05-04). Claimed 70.11% step=3d but audit found MAJOR overfit/recency-bias confounders. Engine bugs fixed (finishPausedPass off-by-one, MCT selection-bias) but config not promoted. Re-validation never completed. Do not deploy. Use R28_V6_PASSLOCK or V5_TITANIUM instead.
 
 ## Conventions
 
