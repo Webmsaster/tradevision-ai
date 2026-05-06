@@ -575,12 +575,22 @@ export default function SettingsPage() {
                 type="radio"
                 name="activeAccount"
                 checked={settings.activeAccountId === account.id}
-                onChange={() =>
-                  setSettings((prev) => ({
-                    ...prev,
-                    activeAccountId: account.id,
-                  }))
-                }
+                onChange={() => {
+                  // Auto-persist active account on radio change so it
+                  // matches AccountSwitcher.tsx behaviour (no Save click
+                  // required). Other settings (webhook/widgets/account
+                  // names) still require Save to commit.
+                  const next = { ...settings, activeAccountId: account.id };
+                  setSettings(next);
+                  try {
+                    localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+                  } catch {
+                    /* quota / disabled storage — UI state still updates */
+                  }
+                  window.dispatchEvent(
+                    new CustomEvent(SETTINGS_CHANGED_EVENT, { detail: next }),
+                  );
+                }}
                 aria-label={`Select ${account.name} as active account`}
               />
               <input

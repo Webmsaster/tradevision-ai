@@ -44,10 +44,12 @@ export default function TradeTable({
   const [selectedTrade, setSelectedTrade] = useState<Trade | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
 
-  // Reset to page 1 when trades change (e.g. filters applied)
+  // Reset to page 1 when the trades reference changes (e.g. filters applied).
+  // Use the array reference (not just length) so re-filtered results that keep
+  // the same length still snap back to page 1.
   useEffect(() => {
     setCurrentPage(1);
-  }, [trades.length]);
+  }, [trades]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -121,6 +123,15 @@ export default function TradeTable({
 
     return sorted;
   }, [trades, sortKey, sortDirection]);
+
+  // Clamp currentPage if the data shrinks below the current page boundary
+  // (e.g. after delete or filter reduces total pages).
+  useEffect(() => {
+    const maxPage = Math.max(1, Math.ceil(sortedTrades.length / PAGE_SIZE));
+    if (currentPage > maxPage) {
+      setCurrentPage(maxPage);
+    }
+  }, [sortedTrades.length, currentPage]);
 
   const renderSortHeader = (label: string, key: SortKey) => {
     const isSorted = sortKey === key;

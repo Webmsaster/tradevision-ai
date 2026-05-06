@@ -1659,6 +1659,50 @@ def test_mt5_init_exits_on_invalid_expected_login_string(monkeypatch):
     assert excinfo.value.code == 2
 
 
+def test_mt5_ensure_connected_exits_on_login_drift_mid_session(monkeypatch):
+    """R67: warm path must re-validate FTMO_EXPECTED_LOGIN every cycle.
+
+    Cold-init succeeds with login=999999. Then the broker silently re-routes
+    the terminal to a different account (mock injects login=42). The next
+    `mt5_ensure_connected()` call (which fires every ~30s in steady state)
+    must detect the drift, send a Telegram alert, and exit with code 2 so
+    PM2/systemd restarts the executor on the correct account.
+    """
+    import ftmo_executor as exe
+    import mock_mt5
+
+    # Reset the module-level cache so a previous test does not leak through.
+    exe._EXPECTED_LOGIN_INT = None
+    mock_mt5._set_login(999999)
+
+    monkeypatch.setattr(exe.mt5, "initialize", lambda *a, **k: True)
+    # Use the real mock account_info() so login changes propagate.
+    monkeypatch.setattr(exe.mt5, "account_info", mock_mt5.account_info)
+    mock_mt5._STATE["initialized"] = True
+
+    tg_calls: list[str] = []
+    monkeypatch.setattr(exe, "tg_send", lambda msg, **kw: tg_calls.append(msg) or True)
+    monkeypatch.setattr(exe, "log_event", lambda *a, **k: None)
+    monkeypatch.setenv("FTMO_EXPECTED_LOGIN", "999999")
+
+    # Cold init validates and caches the expected login.
+    assert exe.mt5_init_with_retry() is True
+    assert exe._EXPECTED_LOGIN_INT == 999999
+
+    # Simulate broker-side account drift mid-session.
+    mock_mt5._set_login(42)
+
+    with pytest.raises(SystemExit) as excinfo:
+        exe.mt5_ensure_connected()
+    assert excinfo.value.code == 2
+    assert any("drift" in m.lower() or "wrong" in m.lower() for m in tg_calls), tg_calls
+
+    # Cleanup so the leaked _STATE doesn't break subsequent tests.
+    mock_mt5._set_login(999999)
+    mock_mt5._STATE["initialized"] = False
+    exe._EXPECTED_LOGIN_INT = None
+
+
 # ============================================================================
 # Round 57 (2026-05-03): telegram_notify per-account env resolution
 # ============================================================================

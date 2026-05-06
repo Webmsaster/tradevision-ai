@@ -136,21 +136,58 @@ describe("ftmo signal alert", { timeout: 60_000 }, () => {
 
     // Telegram push only on NEW signal (not duplicate)
     if (alert.hasSignal) {
-      const state = loadState();
-      if (alert.signalBarClose > state.lastAlertedBarCloseTime) {
-        const pushed = await sendTelegram(rendered);
-        if (pushed) {
-          console.log("\n📲 Pushed to Telegram");
-        } else {
-          console.log(
-            "\n📲 (Telegram not configured; set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID env)",
-          );
+      // R67-r4 audit: PID-file lock around the load/sendTG/save sequence so
+      // two overlapping cron-runs (slow Binance fetch leaves prev still
+      // sending Telegram) don't both push the same alert. The previous code
+      // had a 200-2000ms TOCTOU window between loadState and saveState.
+      const LOCK_PATH = "signal-alerts.lock";
+      const haveLock = (() => {
+        try {
+          if (existsSync(LOCK_PATH)) {
+            const pid = parseInt(readFileSync(LOCK_PATH, "utf8"), 10);
+            try {
+              process.kill(pid, 0);
+              return false; // alive → previous instance still running
+            } catch {
+              /* stale → fall through and overwrite */
+            }
+          }
+          writeFileSync(LOCK_PATH, String(process.pid));
+          return true;
+        } catch {
+          return true; // best-effort: don't block alerts on lock error
         }
-        saveState({ lastAlertedBarCloseTime: alert.signalBarClose });
-      } else {
+      })();
+      if (!haveLock) {
         console.log(
-          `\n⏭ Signal for this bar already alerted (${new Date(alert.signalBarClose).toISOString()})`,
+          "\n⏭ Previous signal-alert run still active (lockfile); skipping push",
         );
+      } else {
+        try {
+          const state = loadState();
+          if (alert.signalBarClose > state.lastAlertedBarCloseTime) {
+            const pushed = await sendTelegram(rendered);
+            if (pushed) {
+              console.log("\n📲 Pushed to Telegram");
+            } else {
+              console.log(
+                "\n📲 (Telegram not configured; set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID env)",
+              );
+            }
+            saveState({ lastAlertedBarCloseTime: alert.signalBarClose });
+          } else {
+            console.log(
+              `\n⏭ Signal for this bar already alerted (${new Date(alert.signalBarClose).toISOString()})`,
+            );
+          }
+        } finally {
+          try {
+            const { unlinkSync } = await import("node:fs");
+            unlinkSync(LOCK_PATH);
+          } catch {
+            /* ignore */
+          }
+        }
       }
     }
 

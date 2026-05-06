@@ -103,7 +103,12 @@ export default function TradeForm({
       setSetupType(editTrade.setupType ?? "");
       setTimeframe(editTrade.timeframe ?? "");
       setMarketCondition(editTrade.marketCondition ?? "");
-      setScreenshot(editTrade.screenshot ?? "");
+      // Round-N UX: allowlist data-URL prefix on edit-restore. Older trades or
+      // hand-edited DB rows might carry SVG/HTML data-URLs — drop them silently
+      // so the <img> never tries to render an unsanitized payload.
+      const restored = editTrade.screenshot ?? "";
+      const allowed = /^data:image\/(png|jpeg|webp);base64,/;
+      setScreenshot(allowed.test(restored) ? restored : "");
     } else {
       resetForm();
     }
@@ -704,7 +709,7 @@ export default function TradeForm({
               ) : (
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="image/png,image/jpeg,image/webp"
                   className="form-input"
                   aria-label="Chart screenshot"
                   onChange={(e) => {
@@ -714,10 +719,12 @@ export default function TradeForm({
                     // parses SVG-DOM during img.onload (no script-execution,
                     // but unwanted DOM cost), and our re-encode-to-JPEG path
                     // disarms scripts only after parse. Cheap to block.
-                    if (
-                      !file.type.startsWith("image/") ||
-                      file.type === "image/svg+xml"
-                    ) {
+                    const ALLOWED_MIME = [
+                      "image/png",
+                      "image/jpeg",
+                      "image/webp",
+                    ];
+                    if (!ALLOWED_MIME.includes(file.type)) {
                       setErrors((prev) => ({
                         ...prev,
                         screenshot: "Only PNG/JPEG/WebP images are supported",

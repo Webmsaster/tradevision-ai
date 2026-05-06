@@ -59,11 +59,20 @@ function TradesPageContent() {
       return trades.filter((t) => highlightIds.has(t.id));
     }
     return trades.filter((trade) => {
-      if (
-        searchQuery &&
-        !trade.pair.toLowerCase().includes(searchQuery.toLowerCase())
-      ) {
-        return false;
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase();
+        const haystack = [
+          trade.pair,
+          trade.notes ?? "",
+          trade.strategy ?? "",
+          trade.setupType ?? "",
+          (trade.tags ?? []).join(" "),
+        ]
+          .join(" ")
+          .toLowerCase();
+        if (!haystack.includes(q)) {
+          return false;
+        }
       }
 
       if (directionFilter !== "all" && trade.direction !== directionFilter) {
@@ -221,8 +230,8 @@ function TradesPageContent() {
         <input
           type="text"
           className="input trades-search"
-          placeholder="Search by pair (e.g. BTC/USD)..."
-          aria-label="Search trades by pair"
+          placeholder="Search pair, notes, tags, strategy..."
+          aria-label="Search trades by pair, notes, tags, strategy or setup type"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
         />

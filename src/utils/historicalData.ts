@@ -158,6 +158,17 @@ export async function loadBinanceHistory({
       retry++;
     }
     if (!res.ok) throw new Error(`Binance history fetch failed: ${res.status}`);
+    // R67-r3 (2026-05-06): some upstream proxies / Cloudflare maintenance
+    // pages return HTTP 200 with text/html. `res.json()` on those throws an
+    // un-helpful SyntaxError that hid the real cause. Verify content-type
+    // first and surface a retryable error with a body snippet for diagnostics.
+    const ct = res.headers.get("content-type") ?? "";
+    if (!ct.includes("application/json")) {
+      const body = await res.text().catch(() => "");
+      throw new Error(
+        `Binance history non-JSON response (content-type=${ct || "<none>"}, status=${res.status}): ${body.slice(0, 200)}`,
+      );
+    }
     const rows: RawKline[] = await res.json();
     if (!rows || rows.length === 0) break;
 

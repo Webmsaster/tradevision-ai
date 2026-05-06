@@ -532,13 +532,26 @@ async function refreshNewsIfStale() {
     newsLastFetched = Date.now() - NEWS_REFRESH_MS + 5 * 60_000; // retry in 5min
     if (cachedNews.length === 0) {
       try {
-        const persisted = readJSON<{ events: NewsEvent[] }>(NEWS_PATH, {
-          events: [],
-        });
-        if (persisted.events.length > 0) {
+        // R10 audit fix: only trust persisted file if fresh (< NEWS_MAX_AGE_MS).
+        // Stale fallback would silently blackout against last-week's events.
+        const persisted = readJSON<{
+          events: NewsEvent[];
+          fetchedAt?: string;
+        }>(NEWS_PATH, { events: [] });
+        const fetchedAtMs = persisted.fetchedAt
+          ? Date.parse(persisted.fetchedAt)
+          : NaN;
+        const fresh =
+          Number.isFinite(fetchedAtMs) &&
+          Date.now() - fetchedAtMs < NEWS_MAX_AGE_MS;
+        if (persisted.events.length > 0 && fresh) {
           cachedNews = persisted.events;
           console.log(
             `[ftmo-live] news fetch failed — using persisted ${cachedNews.length} events as fallback`,
+          );
+        } else if (persisted.events.length > 0 && !fresh) {
+          console.warn(
+            `[ftmo-live] persisted news stale (fetchedAt=${persisted.fetchedAt ?? "missing"}) — discarding fallback`,
           );
         }
       } catch {}
@@ -683,8 +696,13 @@ async function runOneCheck(): Promise<DetectionResult> {
   // R60 sister selectors: 2h-trend-v5-r28-v6-{passlock,corrcap2,lscool48,
   // todcutoff18,voltp-aggr,idlt30,combo-pl-idlt,passlock-dayrisk*,…}
   const isR28V6Sister = /^2h-trend-v5-r28-v6-[a-z0-9-]+$/.test(ftmoTf);
+  // R10 audit fix: any LSC-using config must route through V4 engine — the
+  // legacy V231 path does NOT honor lossStreakCooldown. Catches misnamed selectors.
   const useV4Engine =
-    ftmoTf.endsWith("-v4engine") || isBreakoutV1 || isR28V6Sister;
+    ftmoTf.endsWith("-v4engine") ||
+    isBreakoutV1 ||
+    isR28V6Sister ||
+    !!getActiveCfg().lossStreakCooldown;
   let result: DetectionResult;
   if (useV4Engine) {
     // R60 sister: pick CFG via V231 CFG_REGISTRY lookup (one source of truth).

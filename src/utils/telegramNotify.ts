@@ -25,6 +25,46 @@
 
 const MAX_MSG_LEN = 4000; // Telegram limit is 4096, leave buffer
 
+// R67-r3 (2026-05-06): port `tools/telegram_notify.py` hardening to TS.
+// - Redact bot tokens before any console.error
+// - 401/404 → permanent suppression (invalid token / blocked bot — needs restart)
+// - 429/5xx → 60-second cooldown (avoid ban-spam during rate-limit / outage)
+// - Skip the actual fetch when we're inside a suppression window
+const TOKEN_REDACT_RE = /\/bot\d+:[A-Za-z0-9_-]+/g;
+const SUPPRESSION_COOLDOWN_MS = 60_000;
+const PERMANENT = Number.POSITIVE_INFINITY;
+
+let suppressUntilTs = 0;
+let suppressLogged = false;
+
+function redactToken(s: string): string {
+  return s.replace(TOKEN_REDACT_RE, "/bot<REDACTED>");
+}
+
+function enterSuppression(ms: number, reason: string): void {
+  suppressUntilTs = ms === PERMANENT ? PERMANENT : Date.now() + ms;
+  if (!suppressLogged) {
+    if (suppressUntilTs === PERMANENT) {
+      console.error(`[telegram] permanently suppressed: ${reason}`);
+    } else {
+      console.error(
+        `[telegram] suppressed until ${suppressUntilTs.toFixed(0)} (${reason})`,
+      );
+    }
+    suppressLogged = true;
+  }
+}
+
+function clearSuppression(): void {
+  suppressUntilTs = 0;
+  suppressLogged = false;
+}
+
+/** Test hook — reset suppression state between vitest runs. */
+export function __resetTelegramSuppression(): void {
+  clearSuppression();
+}
+
 export interface TelegramConfig {
   token?: string;
   chatId?: string;
@@ -90,6 +130,9 @@ export async function tgSend(
     prefixed.length > MAX_MSG_LEN
       ? safeTruncateHtml(prefixed, MAX_MSG_LEN - 20)
       : prefixed;
+  // R67-r3: skip fetch entirely while inside a suppression window so a
+  // misconfigured bot can't spam Telegram and trigger a global ban.
+  if (Date.now() < suppressUntilTs) return false;
   try {
     const resp = await fetch(
       `https://api.telegram.org/bot${conf.token}/sendMessage`,
@@ -105,13 +148,31 @@ export async function tgSend(
       },
     );
     if (!resp.ok) {
-      const t = await resp.text();
-      console.error(`[telegram] HTTP ${resp.status}: ${t}`);
+      const t = await resp.text().catch(() => "");
+      const safeBody = redactToken(t).slice(0, 200);
+      const status = resp.status;
+      if (status === 401 || status === 404) {
+        // Invalid token / bot blocked → permanent suppression until restart.
+        console.error(`[telegram] auth/bot error ${status}: ${safeBody}`);
+        enterSuppression(PERMANENT, `HTTP ${status}`);
+      } else if (status === 429 || (status >= 500 && status < 600)) {
+        // Rate-limited or server error → 60s cooldown.
+        console.error(`[telegram] backoff ${status}: ${safeBody}`);
+        enterSuppression(SUPPRESSION_COOLDOWN_MS, `HTTP ${status}`);
+      } else {
+        console.error(`[telegram] HTTP ${status}: ${safeBody}`);
+      }
       return false;
     }
+    // Successful send → drop any pending suppression state.
+    clearSuppression();
     return true;
   } catch (e) {
-    console.error(`[telegram] send error:`, e);
+    // Network / DNS / timeout. Redact in case the exception text contains
+    // the URL (some libs format the URL into the error message).
+    const msg =
+      e instanceof Error ? e.message : typeof e === "string" ? e : String(e);
+    console.error(`[telegram] send error: ${redactToken(msg)}`);
     return false;
   }
 }

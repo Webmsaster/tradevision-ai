@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useTheme } from "@/components/ThemeProvider";
 import AccountSwitcher from "@/components/AccountSwitcher";
 
@@ -201,6 +201,21 @@ export default function Sidebar() {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const { theme, toggleTheme } = useTheme();
+
+  // Mobile menu UX: Escape closes + lock body scroll while open.
+  useEffect(() => {
+    if (!collapsed) return;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setCollapsed(false);
+    };
+    document.addEventListener("keydown", handleKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", handleKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [collapsed]);
 
   const isActive = (href: string) => {
     if (href === "/") return pathname === "/";

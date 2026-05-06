@@ -1254,7 +1254,11 @@ export function detectLiveSignalsV231(
     // ATR-adaptive stop: take max(stopPct, atr*mult/entry) to widen on vol.
     if (CFG.atrStop) {
       const atrSeries = atr(a.candles, CFG.atrStop.period);
-      const atrVal = atrSeries[atrSeries.length - 1];
+      // R54-V4-6 parity: V4 engine uses prev-bar ATR (no look-ahead).
+      const prev =
+        atrSeries.length >= 2 ? atrSeries[atrSeries.length - 2] : undefined;
+      const cur = atrSeries[atrSeries.length - 1];
+      const atrVal = prev ?? cur;
       if (atrVal !== null && atrVal !== undefined) {
         const atrFrac = (CFG.atrStop.stopMult * atrVal) / entryPrice;
         stopPct = Math.max(stopPct, atrFrac);
@@ -1301,7 +1305,11 @@ export function detectLiveSignalsV231(
     let chandelierAtrAtEntry: number | null = null;
     if (CFG.chandelierExit) {
       const chSeries = atr(a.candles, CFG.chandelierExit.period);
-      const v = chSeries[chSeries.length - 1];
+      // R54-V4-6 parity: prev-bar ATR (no look-ahead).
+      const prev =
+        chSeries.length >= 2 ? chSeries[chSeries.length - 2] : undefined;
+      const cur = chSeries[chSeries.length - 1];
+      const v = prev ?? cur;
       if (v !== null && v !== undefined) chandelierAtrAtEntry = v;
     }
 

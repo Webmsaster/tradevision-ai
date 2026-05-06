@@ -116,3 +116,24 @@ create trigger trades_updated_at
   before update on trades
   for each row
   execute function update_updated_at();
+
+-- R67 audit (Round 3): DB-level audit-trail protection. The R67-r2
+-- UPDATE policy intentionally allows updates on tombstoned rows so
+-- UPSERT-resolve-to-UPDATE works for CSV/JSON re-imports — but that
+-- means a direct PostgREST PATCH could flip deleted_at from NOT NULL
+-- back to NULL and silently un-tombstone a soft-deleted trade. This
+-- trigger blocks that one path while leaving normal tombstoning
+-- (NULL → NOT NULL) and regular updates (NULL → NULL) untouched.
+create or replace function trades_protect_audit_trail()
+returns trigger language plpgsql as $$
+begin
+  if old.deleted_at is not null and new.deleted_at is null then
+    raise exception 'cannot un-tombstone a soft-deleted trade (use admin tooling)';
+  end if;
+  return new;
+end$$;
+
+drop trigger if exists trades_protect_audit_before_update on trades;
+create trigger trades_protect_audit_before_update
+  before update on trades
+  for each row execute function trades_protect_audit_trail();
