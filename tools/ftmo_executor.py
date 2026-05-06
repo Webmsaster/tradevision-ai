@@ -1373,7 +1373,47 @@ def close_position(ticket: int) -> bool:
     result = mt5.order_send(request)
     ok = result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
     if ok and result is not None:
-        log_event("closed", ticket=ticket, close_price=result.price)
+        # Drift-monitor: log entry_price, planned SL/TP from MT5's position
+        # data (set when order was placed) plus actual close price. Joiner
+        # by ticket id reconstructs slippage on close vs planned exit.
+        entry_price = getattr(pos, "price_open", None)
+        sl = getattr(pos, "sl", None)
+        tp = getattr(pos, "tp", None)
+        actual = result.price
+        # Determine which exit was hit (if any). MT5 doesn't tell us so we
+        # infer from proximity: exit price closer to TP within 1 spread →
+        # tp; closer to SL → stop; else manual.
+        exit_reason = "manual"
+        if sl and tp and entry_price:
+            tp_dist = abs(actual - tp) if tp else float("inf")
+            sl_dist = abs(actual - sl) if sl else float("inf")
+            if tp_dist < sl_dist:
+                exit_reason = "tp"
+            else:
+                exit_reason = "stop"
+        slippage_bps = None
+        planned_exit = None
+        if exit_reason == "tp" and tp:
+            planned_exit = tp
+            slip = (tp - actual) / tp if pos.type == mt5.POSITION_TYPE_BUY else (actual - tp) / tp
+            slippage_bps = round(slip * 10_000, 2)  # positive = adverse
+        elif exit_reason == "stop" and sl:
+            planned_exit = sl
+            slip = (sl - actual) / sl if pos.type == mt5.POSITION_TYPE_BUY else (actual - sl) / sl
+            slippage_bps = round(slip * 10_000, 2)
+        log_event(
+            "closed",
+            ticket=ticket,
+            close_price=actual,
+            entry_price=entry_price,
+            planned_exit=planned_exit,
+            sl=sl,
+            tp=tp,
+            exit_reason=exit_reason,
+            slippage_bps=slippage_bps,
+            symbol=getattr(pos, "symbol", None),
+            volume=getattr(pos, "volume", None),
+        )
     else:
         log_event("close_failed", ticket=ticket, retcode=getattr(result, "retcode", None))
     return ok
@@ -1721,7 +1761,42 @@ def _process_pending_signals_locked() -> None:
             _clear_pending_order_marker(order_marker)
             _reset_order_fail_counter()
             in_batch_placed += 1
-            log_event("order_placed", asset=sig["assetSymbol"], ticket=result.ticket, lot=result.lot, entry=result.entry_price)
+            # Drift-monitor fields: capture signal-side prediction + MT5
+            # actual fill so the daily report can attribute live drift to
+            # entry slippage, spread cost, or stop_pct slippage. Read the
+            # spread from the symbol info we resolved earlier.
+            sig_entry = sig.get("entryPrice")
+            slippage_bps = None
+            if sig_entry and sig_entry > 0 and result.entry_price:
+                slip = (result.entry_price - sig_entry) / sig_entry
+                # Long entries fill higher (positive slip = paid more).
+                # Short entries fill lower (negative slip = received less).
+                # Normalise so positive = adverse for the trader.
+                if sig.get("direction") == "short":
+                    slip = -slip
+                slippage_bps = round(slip * 10_000, 2)
+            # Re-resolve broker symbol (cached) to read the live spread at
+            # fill time. _resolve_symbol returns None if mapping is missing,
+            # in which case we just omit the spread field.
+            ftmo_symbol = _resolve_broker_symbol(sig["sourceSymbol"])
+            broker_symbol_info = mt5.symbol_info(ftmo_symbol) if ftmo_symbol else None
+            spread_pts = getattr(broker_symbol_info, "spread", None) if broker_symbol_info else None
+            log_event(
+                "order_placed",
+                asset=sig["assetSymbol"],
+                ticket=result.ticket,
+                lot=result.lot,
+                entry=result.entry_price,
+                signal_entry=sig_entry,
+                signal_stop=sig.get("stopPrice"),
+                signal_tp=sig.get("tpPrice"),
+                direction=sig.get("direction"),
+                risk_frac=sig.get("riskFrac"),
+                stop_pct=sig.get("stopPct"),
+                tp_pct=sig.get("tpPct"),
+                slippage_bps=slippage_bps,
+                spread_pts=spread_pts,
+            )
             tg_send(
                 f"✅ <b>ORDER PLACED</b>\n"
                 f"{html_escape(sig['assetSymbol'])} {direction.upper()}\n"
