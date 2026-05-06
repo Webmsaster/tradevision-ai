@@ -68,6 +68,8 @@ fn main() -> Result<()> {
     // R67 audit (Round 2): replace `args.next().unwrap()` with `ok_or_else`
     // — `ftmo-sweep --candles` (no path follows) panics with the usual Rust
     // backtrace. Now exits cleanly with a one-line error.
+    // R67 audit (Round 3): add windows ≥ 1 guard analog to bench.rs (was
+    // missing here → --windows 0 silently returned NaN%).
     let mut args = std::env::args().skip(1);
     macro_rules! need {
         ($flag:expr) => {
@@ -99,6 +101,9 @@ fn main() -> Result<()> {
             }
             other => return Err(anyhow!("unknown arg: {other}")),
         }
+    }
+    if windows == 0 {
+        return Err(anyhow!("--windows must be ≥ 1"));
     }
     let candles_path = candles_path.ok_or_else(|| anyhow!("--candles is required"))?;
     let candles = loader::load_candles(&candles_path)?;

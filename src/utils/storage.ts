@@ -126,14 +126,22 @@ const ALLOWED_MARKET_CONDITIONS = [
 // trade volume (<1M rows). Returned as 8-char hex.
 // ---------------------------------------------------------------------------
 export function tradeContentHash(t: Trade): string {
+  // R67 audit (Round 3): normalize dates to epoch-ms so format drift
+  // (Supabase ISO with `+00:00` vs `Z`, with vs without milliseconds)
+  // doesn't change the hash on roundtrip → re-import dedup actually works.
+  // Prices fixed to 8 decimals to avoid float-stringification drift.
+  const toMs = (s: string): string => {
+    const ms = Date.parse(s);
+    return Number.isFinite(ms) ? String(ms) : s;
+  };
   const canonical = [
-    t.pair,
+    t.pair.toLowerCase(),
     t.direction,
-    t.entryPrice,
-    t.exitPrice,
-    t.quantity,
-    t.entryDate,
-    t.exitDate,
+    Number(t.entryPrice).toFixed(8),
+    Number(t.exitPrice).toFixed(8),
+    Number(t.quantity).toFixed(8),
+    toMs(t.entryDate),
+    toMs(t.exitDate),
   ].join("|");
   // FNV-1a 32-bit
   let hash = 0x811c9dc5;
@@ -925,12 +933,20 @@ export function importFromJSON(file: File): Promise<Trade[]> {
 
 /**
  * Remove all saved trade data from localStorage.
+ *
+ * R67 audit (Round 3): also clear SETTINGS_KEY (webhook URLs, account list,
+ * activeAccountId, dashboard widgets — User-A's webhook would otherwise
+ * leak across logout→login as User-B) and BULK_RETRY_KEY (User-A's pending
+ * bulk-uploads would be flushed under User-B's session on next mount).
  */
 export function clearAllData(): void {
   try {
     if (typeof window !== "undefined") {
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem(SCREENSHOTS_KEY);
+      // R67-r3: prevent cross-user data leakage on logout
+      localStorage.removeItem("tradevision-settings");
+      localStorage.removeItem(BULK_RETRY_KEY);
     }
   } catch (error) {
     console.error("Failed to clear trade data from localStorage:", error);

@@ -136,7 +136,18 @@ interface JoinedTrade {
   risk_frac: number | null;
   stop_pct: number | null;
   tp_pct: number | null;
-  exit_reason: "tp" | "stop" | "manual" | null;
+  // R67 audit (Round 3): widen JoinedTrade.exit_reason to match the source
+  // type union (R67-r2 expanded ClosedEvent but JoinedTrade was missed).
+  exit_reason:
+    | "tp"
+    | "stop"
+    | "manual"
+    | "time_exit"
+    | "hold_expired"
+    | "news_blackout"
+    | "kill_request"
+    | (string & {}) // accepts "emergency:..." prefix
+    | null;
   planned_exit: number | null;
   actual_exit: number;
   exit_slip_bps: number | null;

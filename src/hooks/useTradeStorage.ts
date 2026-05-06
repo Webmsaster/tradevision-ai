@@ -343,13 +343,36 @@ export function useTradeStorage() {
           // cloud-as-source-of-truth.
           if (cloudTrades.length === 0) {
             const localTrades = loadTrades();
-            if (localTrades.length > 0) {
+            // R67 audit (Round 3): owner-stamp guard. Without this, if
+            // User A's clearAllData() failed silently (network glitch,
+            // localStorage error), User B's first login would migrate
+            // User A's left-over trades into User B's cloud — cross-user
+            // data leakage. Migration only proceeds when local data is
+            // tagged as anonymous (legitimate pre-login trades).
+            const localOwner =
+              typeof window !== "undefined"
+                ? (localStorage.getItem("tradevision-owner") ?? "anonymous")
+                : "anonymous";
+            const ownerOk = localOwner === "anonymous";
+            if (!ownerOk && localOwner !== user!.id) {
+              console.warn(
+                `[useTradeStorage] local owner=${localOwner} but logged-in user=${user!.id} — discarding local cache`,
+              );
+              setAllTrades([]);
+              saveTrades([]);
+              return;
+            }
+            if (localTrades.length > 0 && ownerOk) {
               try {
                 const ok = await saveBulkTradesToSupabase(
                   supabase!,
                   localTrades,
                   user!.id,
                 );
+                if (ok && typeof window !== "undefined") {
+                  // Stamp localStorage with new owner so re-mount is correct
+                  localStorage.setItem("tradevision-owner", user!.id);
+                }
                 if (cancelled) return;
                 if (ok) {
                   setAllTrades(localTrades);
@@ -373,6 +396,10 @@ export function useTradeStorage() {
           }
           setAllTrades(cloudTrades);
           saveTrades(cloudTrades);
+          // R67-r3: stamp owner so future mounts can detect cross-user reuse
+          if (typeof window !== "undefined") {
+            localStorage.setItem("tradevision-owner", user!.id);
+          }
         } else {
           if (cancelled) return;
           setAllTrades(loadTrades());

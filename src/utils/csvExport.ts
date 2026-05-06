@@ -21,6 +21,11 @@ const COLUMNS: { key: keyof Trade; header: string }[] = [
   { key: "marketCondition", header: "Market Condition" },
   { key: "tags", header: "Tags" },
   { key: "notes", header: "Notes" },
+  // R67 audit (Round 3): include accountId and screenshot so JSON↔CSV round-
+  // trip preserves multi-account scoping and screenshot data. Excluding them
+  // silently lost data on export-then-reimport.
+  { key: "accountId", header: "Account ID" },
+  { key: "screenshot", header: "Screenshot" },
 ];
 
 function escapeCell(value: unknown): string {
@@ -45,7 +50,9 @@ export function tradesToCsv(trades: Trade[]): string {
   const rows = trades.map((t) =>
     COLUMNS.map((c) => escapeCell(t[c.key])).join(","),
   );
-  return [header, ...rows].join("\n");
+  // R67 audit (Round 3): RFC 4180 requires CRLF line separator. Pure \n
+  // breaks Excel import on some Windows setups (single mega-row).
+  return [header, ...rows].join("\r\n") + "\r\n";
 }
 
 export function downloadCsv(filename: string, csv: string): void {

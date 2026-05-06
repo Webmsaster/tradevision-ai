@@ -270,7 +270,10 @@ export function adx(candles: Candle[], period = 14): AdxOutput {
  */
 export function choppiness(candles: Candle[], period = 14): (number | null)[] {
   const out: (number | null)[] = new Array(candles.length).fill(null);
-  if (candles.length <= period) return out;
+  // R67 audit (Round 3): period=1 gives log10(1)=0 → division-by-zero →
+  // NaN output that downstream `null`-only checks miss. Mirror the Rust
+  // guard (detector_filters.rs:133): require period ≥ 2.
+  if (period < 2 || candles.length <= period) return out;
   const tr: number[] = candles.map((c, i) => {
     if (i === 0) return c.high - c.low;
     const prevClose = candles[i - 1]!.close;

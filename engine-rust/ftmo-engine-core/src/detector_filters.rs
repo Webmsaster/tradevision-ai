@@ -109,7 +109,14 @@ pub fn adx(candles: &[Candle], period: usize) -> Vec<Option<f64>> {
         return out;
     }
     let mut adx_val = dx_series[..period].iter().sum::<f64>() / period as f64;
-    let first_idx = period * 2;
+    // R67 audit (Round 3): Wilder ADX seed lands at bar `2*period-1`, NOT
+    // `2*period`. DX[0] corresponds to candle[period], so DX[period-1] →
+    // candle[2*period-1]. The mean of DX[0..period] is the ADX value at
+    // the index of the LAST DX-value in the seed window (= 2*period-1).
+    // TS engine uses `adxArr[2*period-1]` (indicators.ts:256) — Rust was
+    // off-by-one too late, breaking parity for any path that recomputes
+    // ADX from candles (signals_r28v6 detect_r28_v6 calls this).
+    let first_idx = period * 2 - 1;
     if first_idx < n {
         out[first_idx] = Some(adx_val);
     }

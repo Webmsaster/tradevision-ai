@@ -25,7 +25,8 @@ function makeTrade(overrides: Partial<Trade> = {}): Trade {
 describe("tradesToCsv", () => {
   it("writes header row only when trades is empty", () => {
     const csv = tradesToCsv([]);
-    expect(csv.split("\n").length).toBe(1);
+    // R67-r3 added RFC4180 \r\n line terminator + trailing newline.
+    expect(csv.split("\r\n").filter((l) => l.length > 0).length).toBe(1);
     expect(csv).toContain("ID");
     expect(csv).toContain("Pair");
     expect(csv).toContain("PnL");
@@ -33,7 +34,7 @@ describe("tradesToCsv", () => {
 
   it("writes one row per trade", () => {
     const csv = tradesToCsv([makeTrade(), makeTrade({ id: "t2" })]);
-    expect(csv.split("\n").length).toBe(3);
+    expect(csv.split("\r\n").filter((l) => l.length > 0).length).toBe(3);
   });
 
   it("includes trade values in output", () => {
@@ -59,7 +60,7 @@ describe("tradesToCsv", () => {
 
   it("handles empty optional fields gracefully", () => {
     const csv = tradesToCsv([makeTrade()]);
-    const lines = csv.split("\n");
+    const lines = csv.split("\r\n").filter((l) => l.length > 0);
     expect(lines).toHaveLength(2);
     // no crash and header column count matches row column count
     const headerCount = (lines[0]!.match(/,/g) || []).length;
