@@ -57,10 +57,17 @@ let lastSyncMs = 0;
 const SYNC_INTERVAL_MS = 30 * 60_000;
 const SYNC_TIMEOUT_MS = 3_000;
 
+// R67-r4 (2026-05-06): in-flight Promise cache to deduplicate concurrent
+// cold-start calls. Without this, N parallel signedGet() callers on a fresh
+// process all race to fetch /fapi/v1/time simultaneously, which both wastes
+// requests and risks Binance rate-limiting the time endpoint.
+let inFlight: Promise<number> | null = null;
+
 /** Test hook — reset clock-skew state. */
 export function __resetServerTimeOffset(): void {
   serverTimeOffset = 0;
   lastSyncMs = 0;
+  inFlight = null;
 }
 
 /**
@@ -68,6 +75,9 @@ export function __resetServerTimeOffset(): void {
  * signed requests stamp `Date.now() + serverTimeOffset`. No-op if the last
  * sync was less than SYNC_INTERVAL_MS ago. Network failures leave the
  * existing offset intact — better stale than wildly wrong.
+ *
+ * R67-r4: concurrent callers during cold-start share a single in-flight
+ * Promise rather than each issuing their own /fapi/v1/time fetch.
  */
 export async function syncServerTime(
   cfg: BinanceConfig = configFromEnv(),
@@ -77,21 +87,27 @@ export async function syncServerTime(
   if (!opts.force && now - lastSyncMs < SYNC_INTERVAL_MS) {
     return serverTimeOffset;
   }
-  try {
-    const url = `${baseUrl(cfg)}/fapi/v1/time`;
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(SYNC_TIMEOUT_MS),
-    });
-    if (!res.ok) return serverTimeOffset;
-    const data = (await res.json()) as { serverTime?: number };
-    if (typeof data.serverTime === "number") {
-      serverTimeOffset = data.serverTime - Date.now();
-      lastSyncMs = Date.now();
+  if (inFlight) return inFlight;
+  inFlight = (async () => {
+    try {
+      const url = `${baseUrl(cfg)}/fapi/v1/time`;
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(SYNC_TIMEOUT_MS),
+      });
+      if (!res.ok) return serverTimeOffset;
+      const data = (await res.json()) as { serverTime?: number };
+      if (typeof data.serverTime === "number") {
+        serverTimeOffset = data.serverTime - Date.now();
+        lastSyncMs = Date.now();
+      }
+    } catch {
+      // Keep existing offset on network/timeout errors.
+    } finally {
+      inFlight = null;
     }
-  } catch {
-    // Keep existing offset on network/timeout errors.
-  }
-  return serverTimeOffset;
+    return serverTimeOffset;
+  })();
+  return inFlight;
 }
 
 /** Current cached offset (for diagnostics / tests). */

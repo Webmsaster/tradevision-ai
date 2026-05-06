@@ -880,6 +880,17 @@ export interface FtmoDaytrade24hConfig {
   challengeStartTs?: number;
 }
 
+function spreadCrossAssetFilter(
+  base: NonNullable<FtmoDaytrade24hConfig["crossAssetFilter"]> | undefined,
+): NonNullable<FtmoDaytrade24hConfig["crossAssetFilter"]> {
+  if (!base) {
+    throw new Error(
+      "crossAssetFilter spread on a config without a base \u2014 define crossAssetFilter on the parent first",
+    );
+  }
+  return { ...base };
+}
+
 /**
  * iter208 — BTC cross-asset filter pushes to 55% with ultra-low regime spread.
  *
@@ -2306,7 +2317,7 @@ export const FTMO_DAYTRADE_24H_CONFIG_V249: FtmoDaytrade24hConfig = {
 export const FTMO_DAYTRADE_24H_CONFIG_V250: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V249,
   crossAssetFilter: {
-    ...(FTMO_DAYTRADE_24H_CONFIG_V249.crossAssetFilter as any),
+    ...spreadCrossAssetFilter(FTMO_DAYTRADE_24H_CONFIG_V249.crossAssetFilter),
     emaFastPeriod: 8,
     emaSlowPeriod: 10,
   },
@@ -2404,7 +2415,7 @@ export const FTMO_DAYTRADE_24H_CONFIG_V252: FtmoDaytrade24hConfig = {
 export const FTMO_DAYTRADE_24H_CONFIG_V253: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V252,
   crossAssetFilter: {
-    ...(FTMO_DAYTRADE_24H_CONFIG_V252.crossAssetFilter as any),
+    ...spreadCrossAssetFilter(FTMO_DAYTRADE_24H_CONFIG_V252.crossAssetFilter),
     emaFastPeriod: 8,
     emaSlowPeriod: 15,
     momSkipShortAbove: 0.01,
@@ -2428,7 +2439,7 @@ export const FTMO_DAYTRADE_24H_CONFIG_V253: FtmoDaytrade24hConfig = {
 export const FTMO_DAYTRADE_24H_CONFIG_V254: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V253,
   crossAssetFilter: {
-    ...(FTMO_DAYTRADE_24H_CONFIG_V253.crossAssetFilter as any),
+    ...spreadCrossAssetFilter(FTMO_DAYTRADE_24H_CONFIG_V253.crossAssetFilter),
     emaFastPeriod: 7,
     emaSlowPeriod: 15,
     momSkipShortAbove: 0.005,
@@ -2596,7 +2607,9 @@ export const FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT: FtmoDaytrade24hConfig = {
   allowedHoursUtc: [0, 2, 6, 12, 16, 20, 22],
   atrStop: { period: 28, stopMult: 20 },
   crossAssetFilter: {
-    ...(FTMO_DAYTRADE_24H_CONFIG_V261_2H.crossAssetFilter as any),
+    ...spreadCrossAssetFilter(
+      FTMO_DAYTRADE_24H_CONFIG_V261_2H.crossAssetFilter,
+    ),
     emaFastPeriod: 12,
     emaSlowPeriod: 16,
     momSkipShortAbove: 0.03,
@@ -2641,7 +2654,9 @@ export const FTMO_DAYTRADE_24H_CONFIG_V7_1H_OPT: FtmoDaytrade24hConfig = {
   lossStreakCooldown: { afterLosses: 2, cooldownBars: 96 },
   htfTrendFilter: { lookbackBars: 96, apply: "short", threshold: 0.08 },
   crossAssetFilter: {
-    ...(FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT.crossAssetFilter as any),
+    ...spreadCrossAssetFilter(
+      FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT.crossAssetFilter,
+    ),
     emaFastPeriod: 12,
     emaSlowPeriod: 16,
     momSkipShortAbove: 0.04,
@@ -2693,7 +2708,9 @@ export const FTMO_DAYTRADE_24H_CONFIG_V10_30M_OPT: FtmoDaytrade24hConfig = {
   htfTrendFilter: { lookbackBars: 200, apply: "short", threshold: 0.08 },
   chandelierExit: { period: 28, mult: 3, minMoveR: 0.5 },
   crossAssetFilter: {
-    ...(FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT.crossAssetFilter as any),
+    ...spreadCrossAssetFilter(
+      FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT.crossAssetFilter,
+    ),
     emaFastPeriod: 8,
     emaSlowPeriod: 16,
     momSkipShortAbove: 0.04,
@@ -6034,7 +6051,9 @@ export const FTMO_DAYTRADE_24H_CONFIG_LIVE_4H_V2: FtmoDaytrade24hConfig = {
 export const FTMO_DAYTRADE_24H_CONFIG_LIVE_15M_V3: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_LIVE_15M_V2,
   crossAssetFilter: {
-    ...(FTMO_DAYTRADE_24H_CONFIG_LIVE_15M_V2.crossAssetFilter as any),
+    ...spreadCrossAssetFilter(
+      FTMO_DAYTRADE_24H_CONFIG_LIVE_15M_V2.crossAssetFilter,
+    ),
     momSkipShortAbove: 0.005,
     momentumBars: 6,
   },
@@ -6096,7 +6115,9 @@ export const FTMO_DAYTRADE_24H_CONFIG_LIVE_5M_V2: FtmoDaytrade24hConfig = {
   partialTakeProfit: { triggerPct: 0.02, closeFraction: 0.3 },
   timeBoost: { afterDay: 4, equityBelow: 0.08, factor: 3 },
   crossAssetFilter: {
-    ...(FTMO_DAYTRADE_24H_CONFIG_LIVE_5M_V1.crossAssetFilter as any),
+    ...spreadCrossAssetFilter(
+      FTMO_DAYTRADE_24H_CONFIG_LIVE_5M_V1.crossAssetFilter,
+    ),
     momSkipShortAbove: 0.005,
     momentumBars: 4,
   },

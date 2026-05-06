@@ -33,9 +33,16 @@ const MAX_MSG_LEN = 4000; // Telegram limit is 4096, leave buffer
 const TOKEN_REDACT_RE = /\/bot\d+:[A-Za-z0-9_-]+/g;
 const SUPPRESSION_COOLDOWN_MS = 60_000;
 const PERMANENT = Number.POSITIVE_INFINITY;
+// R67-r4 (2026-05-06): expanding cooldown for 401/404 instead of permanent
+// suppression. A transient bot-token glitch (e.g. BotFather propagation,
+// proxy 404) used to silence the bot until process restart. Now we back
+// off 5min → 10min → 20min → … capped at 24h, and clear on first success.
+const AUTH_FAIL_BASE_MS = 5 * 60_000;
+const AUTH_FAIL_CAP_MS = 24 * 60 * 60_000;
 
 let suppressUntilTs = 0;
 let suppressLogged = false;
+let consecutiveAuthFailures = 0;
 
 function redactToken(s: string): string {
   return s.replace(TOKEN_REDACT_RE, "/bot<REDACTED>");
@@ -63,6 +70,21 @@ function clearSuppression(): void {
 /** Test hook — reset suppression state between vitest runs. */
 export function __resetTelegramSuppression(): void {
   clearSuppression();
+  consecutiveAuthFailures = 0;
+}
+
+/**
+ * Force-clear the suppression state from outside (supervisor / admin
+ * endpoint after the operator has confirmed the token is valid again).
+ * Unlike `__resetTelegramSuppression` this is a public API — exported with
+ * a `__` prefix to keep callers honest about the recovery intent.
+ *
+ * R67-r4: pairs with the new expanding-cooldown logic so an operator does
+ * not have to wait the full 24h cap after rotating a bot token.
+ */
+export function __forceClearTelegramSuppression(): void {
+  clearSuppression();
+  consecutiveAuthFailures = 0;
 }
 
 export interface TelegramConfig {
@@ -152,9 +174,18 @@ export async function tgSend(
       const safeBody = redactToken(t).slice(0, 200);
       const status = resp.status;
       if (status === 401 || status === 404) {
-        // Invalid token / bot blocked → permanent suppression until restart.
-        console.error(`[telegram] auth/bot error ${status}: ${safeBody}`);
-        enterSuppression(PERMANENT, `HTTP ${status}`);
+        // R67-r4: expanding cooldown 5min → 10min → 20min … capped at 24h
+        // (was: permanent until restart). Recovers automatically once
+        // BotFather/proxy hiccups settle, while still throttling spam.
+        consecutiveAuthFailures++;
+        const ms = Math.min(
+          AUTH_FAIL_BASE_MS * 2 ** (consecutiveAuthFailures - 1),
+          AUTH_FAIL_CAP_MS,
+        );
+        console.error(
+          `[telegram] auth/bot error ${status} (#${consecutiveAuthFailures}, cooldown ${ms}ms): ${safeBody}`,
+        );
+        enterSuppression(ms, `HTTP ${status}`);
       } else if (status === 429 || (status >= 500 && status < 600)) {
         // Rate-limited or server error → 60s cooldown.
         console.error(`[telegram] backoff ${status}: ${safeBody}`);
@@ -165,6 +196,7 @@ export async function tgSend(
       return false;
     }
     // Successful send → drop any pending suppression state.
+    consecutiveAuthFailures = 0;
     clearSuppression();
     return true;
   } catch (e) {

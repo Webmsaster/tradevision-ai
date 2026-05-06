@@ -10,6 +10,24 @@
  */
 import type { Candle } from "../src/utils/indicators";
 
+type YahooKline = number | null;
+interface YahooChartResponse {
+  chart?: {
+    result?: Array<{
+      timestamp?: number[];
+      indicators?: {
+        quote?: Array<{
+          open?: YahooKline[];
+          high?: YahooKline[];
+          low?: YahooKline[];
+          close?: YahooKline[];
+          volume?: YahooKline[];
+        }>;
+      };
+    }>;
+  };
+}
+
 interface YahooArgs {
   symbol: string;
   startMs?: number;
@@ -85,7 +103,7 @@ export async function loadYahooIntraday(
       `Yahoo intraday ${res?.status ?? "?"} for ${symbol} ${interval}/${range}`,
     );
   }
-  const json: any = await res.json();
+  const json = (await res.json()) as YahooChartResponse;
   const result = json?.chart?.result?.[0];
   if (!result) throw new Error(`Yahoo: no result for ${symbol}`);
   const ts: number[] = result.timestamp ?? [];

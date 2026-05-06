@@ -15,7 +15,7 @@ smallvec.workspace = true
 
 [dev-dependencies]
 proptest = "1.5"
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 mimalloc = { workspace = true }
 
 [[bench]]

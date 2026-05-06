@@ -2,6 +2,12 @@
  * Loads Binance Futures Open Interest history (5-minute granularity available
  * via openInterestHist endpoint). Public, no API key.
  */
+interface BinanceOiRow {
+  timestamp: number;
+  sumOpenInterest: string;
+  sumOpenInterestValue: string;
+}
+
 export interface OIRow {
   timestamp: number;
   oi: number;
@@ -39,7 +45,7 @@ export async function loadBinanceOpenInterest(
       if (res.status === 400) return out;
       throw new Error(`OI fetch failed: ${res.status} for ${symbol}`);
     }
-    const rows: any[] = await res.json();
+    const rows = (await res.json()) as BinanceOiRow[];
     if (!rows || rows.length === 0) break;
     // Phase 43 (R44-MD-1): sort response ascending before reading rows[0].
     // Binance openInterestHist response order isn't documented to be stable

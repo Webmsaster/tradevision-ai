@@ -53,7 +53,13 @@ pub struct StateLock {
 }
 
 pub fn acquire_state_lock(state_dir: &Path) -> Result<StateLock> {
-    // R67-r5 audit: migrated fs2 → fs4 (fs2 unmaintained since 2018).
+    // R67-r5 audit: migrated fs2 → fs4. R67-r6 audit (regression): fs4
+    // changed `try_lock_exclusive` from `Result<()>` to `Result<bool>` —
+    // `?` only unwraps the Result, NOT the bool. Without the explicit
+    // `if !acquired` check, contended locks silently "succeeded" → two
+    // processes both held the "exclusive" lock → torn writes despite
+    // the atomic-rename strategy. Production multi-account hazard.
+    use anyhow::anyhow;
     use fs4::fs_std::FileExt;
     std::fs::create_dir_all(state_dir)?;
     let path = state_dir.join(format!("{STATE_FILENAME}.lock"));
@@ -63,8 +69,15 @@ pub fn acquire_state_lock(state_dir: &Path) -> Result<StateLock> {
         .truncate(true)
         .open(&path)
         .with_context(|| format!("opening lockfile {}", path.display()))?;
-    f.try_lock_exclusive()
+    let acquired = f
+        .try_lock_exclusive()
         .with_context(|| format!("acquiring exclusive lock on {}", path.display()))?;
+    if !acquired {
+        return Err(anyhow!(
+            "state file lock is held by another process: {}",
+            path.display()
+        ));
+    }
     Ok(StateLock { _file: f })
 }
 

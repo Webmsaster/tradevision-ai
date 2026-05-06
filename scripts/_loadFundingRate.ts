@@ -2,6 +2,12 @@
  * Loads historical funding rates from Binance Futures.
  * Public endpoint, no API key needed. Funding settles every 8h.
  */
+interface BinanceFundingRow {
+  fundingTime: number;
+  fundingRate: string;
+  symbol: string;
+}
+
 export interface FundingRow {
   symbol: string;
   fundingTime: number;
@@ -27,7 +33,7 @@ export async function loadBinanceFundingRate(
       if (res.status === 400) return out;
       throw new Error(`Funding fetch failed: ${res.status} for ${symbol}`);
     }
-    const rows: any[] = await res.json();
+    const rows = (await res.json()) as BinanceFundingRow[];
     if (rows.length === 0) break;
     for (const r of rows) {
       out.push({
