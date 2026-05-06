@@ -335,6 +335,42 @@ export function useTradeStorage() {
           }
           const cloudTrades = await loadTradesFromSupabase(supabase!, user!.id);
           if (cancelled) return;
+          // R67 audit fix: mid-session login data-loss. If user signs in with
+          // anonymous local trades and a fresh cloud account (cloudTrades=[]),
+          // the original code would overwrite local with empty cloud and
+          // permanently lose those trades. Detect first-login + non-empty
+          // local + empty cloud and migrate the local set up before trusting
+          // cloud-as-source-of-truth.
+          if (cloudTrades.length === 0) {
+            const localTrades = loadTrades();
+            if (localTrades.length > 0) {
+              try {
+                const ok = await saveBulkTradesToSupabase(
+                  supabase!,
+                  localTrades,
+                  user!.id,
+                );
+                if (cancelled) return;
+                if (ok) {
+                  setAllTrades(localTrades);
+                  return;
+                }
+                console.warn(
+                  "[useTradeStorage] local→cloud migration failed; keeping local",
+                );
+                setAllTrades(localTrades);
+                return;
+              } catch (e) {
+                if (cancelled) return;
+                console.error(
+                  "[useTradeStorage] local→cloud migration threw; keeping local",
+                  e,
+                );
+                setAllTrades(localTrades);
+                return;
+              }
+            }
+          }
           setAllTrades(cloudTrades);
           saveTrades(cloudTrades);
         } else {

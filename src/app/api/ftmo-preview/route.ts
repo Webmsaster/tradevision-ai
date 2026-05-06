@@ -11,6 +11,7 @@ import { NextResponse } from "next/server";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadBinanceHistory } from "@/utils/historicalData";
+import { requireFtmoMonitorAuth } from "@/lib/ftmoMonitorAuth";
 import {
   detectLiveSignalsV231,
   type AccountState,
@@ -72,6 +73,11 @@ function resolvePreviewTf(): "30m" | "1h" | "2h" | "4h" {
 export async function GET() {
   if (!isEnabled()) {
     return new NextResponse("Not Found", { status: 404 });
+  }
+  // R67 audit fix: require Supabase session (mirrors drift-data R57 hardening)
+  const auth = await requireFtmoMonitorAuth();
+  if (!auth.ok) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
   const tf = resolvePreviewTf();

@@ -5,10 +5,14 @@
  * running on Vercel/serverless, this will be empty (the dev server + cron
  * live on your local machine). For local dev only.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { NextResponse } from "next/server";
+import { requireFtmoMonitorAuth } from "@/lib/ftmoMonitorAuth";
+
+// R67 audit: file-size cap to prevent JSON-DoS on a corrupted/manipulated file
+const MAX_FILE_BYTES = 5_000_000;
 
 const STATE_FILE = join(homedir(), ".tradevision-ai", "paper-trades.json");
 
@@ -26,6 +30,11 @@ export async function GET() {
   if (!isEnabled()) {
     return new NextResponse("Not Found", { status: 404 });
   }
+  // R67 audit fix: require Supabase session (mirrors drift-data R57 hardening)
+  const auth = await requireFtmoMonitorAuth();
+  if (!auth.ok) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
   if (!existsSync(STATE_FILE)) {
     return NextResponse.json({
       openPositions: [],
@@ -36,6 +45,15 @@ export async function GET() {
     });
   }
   try {
+    // R67 audit: cap file-read at 5MB to prevent JSON-DoS on a manipulated file
+    const sz = statSync(STATE_FILE).size;
+    if (sz > MAX_FILE_BYTES) {
+      console.error("[paper-state] file too large:", sz);
+      return NextResponse.json(
+        { error: "state file too large", openPositions: [], closedTrades: [] },
+        { status: 500 },
+      );
+    }
     const state = JSON.parse(readFileSync(STATE_FILE, "utf8"));
     return NextResponse.json({ ...state, error: null });
   } catch (err) {

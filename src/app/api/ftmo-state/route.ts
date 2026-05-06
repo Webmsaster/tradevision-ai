@@ -8,6 +8,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import * as path from "node:path";
 import { NextResponse } from "next/server";
+import { requireFtmoMonitorAuth } from "@/lib/ftmoMonitorAuth";
 
 function isEnabled() {
   return (
@@ -141,6 +142,11 @@ export async function GET() {
   // Gate: only expose when explicitly enabled (prevents leaks in production)
   if (!isEnabled()) {
     return new NextResponse("Not Found", { status: 404 });
+  }
+  // R67 audit fix: require Supabase session (mirrors drift-data R57 hardening)
+  const auth = await requireFtmoMonitorAuth();
+  if (!auth.ok) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
   const account = readJson<{

@@ -68,9 +68,12 @@ drop index if exists idx_trades_pair;
 -- Row Level Security: users can only access their own trades
 alter table trades enable row level security;
 
+-- R67 audit fix: SELECT/UPDATE policies hide soft-deleted rows so direct-
+-- client access (Supabase Studio, custom REST consumer) cannot read PII
+-- from tombstoned trades or re-write deleted_at.
 create policy "Users can view their own trades"
   on trades for select
-  using (auth.uid() = user_id);
+  using (auth.uid() = user_id and deleted_at is null);
 
 create policy "Users can insert their own trades"
   on trades for insert
@@ -78,7 +81,7 @@ create policy "Users can insert their own trades"
 
 create policy "Users can update their own trades"
   on trades for update
-  using (auth.uid() = user_id)
+  using (auth.uid() = user_id and deleted_at is null)
   with check (auth.uid() = user_id);
 
 create policy "Users can delete their own trades"
@@ -94,6 +97,10 @@ create or replace function update_updated_at()
 returns trigger as $$
 begin
   new.updated_at = now();
+  -- R67 audit: also freeze id and user_id on UPDATE so PostgREST PATCH
+  -- can't rewrite the PK or steal the row's owner.
+  new.id = old.id;
+  new.user_id = old.user_id;
   new.created_at = old.created_at;
   return new;
 end;

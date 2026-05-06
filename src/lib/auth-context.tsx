@@ -49,10 +49,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!mounted) return;
         setUser(initialUser ?? null);
 
-        // Listen for auth changes
+        // Listen for auth changes — R67 audit: respect mounted flag so an
+        // in-flight auth event between mounted=false and unsubscribe() can
+        // not setState on an unmounted provider (StrictMode / hot-reload).
         const {
           data: { subscription },
         } = client.auth.onAuthStateChange((_event, session) => {
+          if (!mounted) return;
           setUser(session?.user ?? null);
         });
         unsubscribe = () => subscription.unsubscribe();
