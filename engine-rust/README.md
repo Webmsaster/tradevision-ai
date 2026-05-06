@@ -58,6 +58,42 @@ hits + paused, but Rust didn't, leading to 25 of 50 windows where Rust
 matched equity exactly but never declared `passed=true` because the
 trading-days threshold was never reached.
 
+### Full sweep: 136 windows (R28_V6_PASSLOCK Champion reproduction)
+
+After dumping the entire 136-window sweep that produced the live R28_V6_PASSLOCK
+champion 63.24% pass-rate:
+
+| Metric                              | TS V4-Sim                                                                              | Rust harness            |
+| ----------------------------------- | -------------------------------------------------------------------------------------- | ----------------------- |
+| Pass-rate                           | **63.50%** (87/137 windows) — matches R28_V6_PASSLOCK champion 63.24% within ±0.3pp ✅ | **51.82%** (71/137)     |
+| Pass-match (agreement on pass/fail) | —                                                                                      | **121/137 = 88.3%**     |
+| Median Δeq                          | —                                                                                      | **0.00pp**              |
+| Mean Δeq                            | —                                                                                      | -0.65pp                 |
+| Max \|Δeq\|                         | —                                                                                      | 16.42pp (DPTS outliers) |
+
+**Reading:** TS reproduces the documented champion within rounding. Rust
+agrees with TS on the pass/fail outcome of 121/137 windows (88.3%); the
+remaining 16 windows all show the same `dailyPeakTrailingStop` cumulative
+state-drift pattern that causes the w2 outlier. Closing those needs
+TS-side per-bar state instrumentation. Acceptable for backtest-speedup
+primary use case where a 88% second-opinion is already invaluable.
+
+### Performance
+
+Bench results (2000-bar synthetic, single thread, post-optimisation):
+
+| Profile                | Time   | Throughput     |
+| ---------------------- | ------ | -------------- |
+| idle (no signals)      | 220 µs | ~9.1M bars/sec |
+| breakout signals       | 241 µs | ~8.3M bars/sec |
+| mean-reversion signals | 363 µs | ~5.5M bars/sec |
+
+3.0-17.5× speedup over the unoptimised baseline (708 / 728 / 6370 µs)
+via two changes — see `PERF_NOTES.md`:
+
+1. `prague_offset_ms` String-allocation removal (3× win across all paths)
+2. RSI pre-cache for mean-reversion (8× win on that path alone)
+
 | Suite                                               | Count              | What it covers                                                                                       |
 | --------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------- |
 | Unit (`#[cfg(test)] mod tests`)                     | 108                | Per-module: types, helpers, exit branches, sizing, signals, persistence, drift, news, reconcile, v5r |
