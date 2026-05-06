@@ -28,6 +28,8 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  unlinkSync,
+  writeFileSync,
   writeSync,
 } from "node:fs";
 import { loadBinanceHistory } from "../src/utils/historicalData";
@@ -182,7 +184,6 @@ describe("ftmo signal alert", { timeout: 60_000 }, () => {
           }
         } finally {
           try {
-            const { unlinkSync } = await import("node:fs");
             unlinkSync(LOCK_PATH);
           } catch {
             /* ignore */

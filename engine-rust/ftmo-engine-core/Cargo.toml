@@ -10,7 +10,7 @@ chrono.workspace = true
 chrono-tz.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
-fs2.workspace = true
+fs4.workspace = true
 smallvec.workspace = true
 
 [dev-dependencies]

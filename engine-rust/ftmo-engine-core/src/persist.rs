@@ -53,7 +53,8 @@ pub struct StateLock {
 }
 
 pub fn acquire_state_lock(state_dir: &Path) -> Result<StateLock> {
-    use fs2::FileExt;
+    // R67-r5 audit: migrated fs2 → fs4 (fs2 unmaintained since 2018).
+    use fs4::fs_std::FileExt;
     std::fs::create_dir_all(state_dir)?;
     let path = state_dir.join(format!("{STATE_FILENAME}.lock"));
     let f = OpenOptions::new()

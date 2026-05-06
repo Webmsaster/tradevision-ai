@@ -19,7 +19,7 @@
  * used by the production R28_V6 sweep so window 0 here matches window 0
  * there.
  */
-import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { readFileSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
 import * as path from "node:path";
 import {
   FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
@@ -229,7 +229,9 @@ async function main() {
 
   const outDir = path.dirname(args.out);
   mkdirSync(outDir, { recursive: true });
-  writeFileSync(args.out, JSON.stringify(fixture, null, 2));
+  const tmp = `${args.out}.tmp.${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(fixture, null, 2));
+  renameSync(tmp, args.out);
   console.log(
     `wrote ${args.out} (passed=${passed} reason=${reason} eq=${finalEquityPct.toFixed(4)} trades=${state.closedTrades.length})`,
   );

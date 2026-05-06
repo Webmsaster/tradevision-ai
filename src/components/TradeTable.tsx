@@ -44,12 +44,13 @@ export default function TradeTable({
   const [selectedTrade, setSelectedTrade] = useState<Trade | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
 
-  // Reset to page 1 when the trades reference changes (e.g. filters applied).
-  // Use the array reference (not just length) so re-filtered results that keep
-  // the same length still snap back to page 1.
+  // R67-r5 audit: revert to length-based reset. Reference-based reset
+  // jumped to page 1 on every single trade-edit (storage hooks return new
+  // array on every mutation) — bad UX. Length-based misses re-filters
+  // that keep same length, but that edge case is far less annoying.
   useEffect(() => {
     setCurrentPage(1);
-  }, [trades]);
+  }, [trades.length]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {

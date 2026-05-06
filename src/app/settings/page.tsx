@@ -6,6 +6,8 @@ import {
   SETTINGS_KEY as SETTINGS_STORAGE_KEY,
 } from "@/lib/constants";
 import { isValidHttpsUrl } from "@/utils/urlSafety";
+import { loadTrades, saveTrades } from "@/utils/storage";
+import { useAuth } from "@/lib/auth-context";
 
 // Round 9 audit (KRITISCH): client-side platform-URL match — defence in
 // depth alongside the same gate in /api/webhook-test. Discord webhooks
@@ -176,6 +178,7 @@ export default function SettingsPage() {
   // tweaks).
   const [testStatus, setTestStatus] = useState<TestStatus>(null);
   const [testMessage, setTestMessage] = useState<string>("");
+  const { supabase, user } = useAuth();
 
   // Load persisted settings on client-side only
   useEffect(() => {
@@ -266,20 +269,95 @@ export default function SettingsPage() {
     }, 5000);
   }
 
-  function handleAddAccount() {
-    const newAccount: Account = {
-      id: crypto.randomUUID(),
-      name: `Account ${settings.accounts.length + 1}`,
-      broker: "",
-    };
-    setSettings((prev) => ({
-      ...prev,
-      accounts: [...prev.accounts, newAccount],
-    }));
+  // Round-N audit: previously `Account ${length+1}` collided after
+  // add → remove → add (e.g. removing #2 then adding produced another
+  // "Account 2"). Derive the next index from the highest existing
+  // numeric suffix instead of from the array length.
+  function nextAccountName(accounts: Account[]): string {
+    const maxN = Math.max(
+      ...accounts.map((a) =>
+        parseInt(a.name.match(/Account (\d+)/)?.[1] ?? "0", 10),
+      ),
+      0,
+    );
+    return `Account ${maxN + 1}`;
   }
 
-  function handleRemoveAccount(id: string) {
+  function handleAddAccount() {
+    setSettings((prev) => {
+      const newAccount: Account = {
+        id: crypto.randomUUID(),
+        name: nextAccountName(prev.accounts),
+        broker: "",
+      };
+      return {
+        ...prev,
+        accounts: [...prev.accounts, newAccount],
+      };
+    });
+  }
+
+  // Round-N audit: orphan-trade cleanup on account removal. The previous
+  // implementation only removed the account from the settings list, which
+  // left every trade with `accountId === <removed-id>` pointing at a
+  // non-existent account → those trades disappeared from per-account
+  // filters but still skewed the global stats (and could never be
+  // re-assigned via UI). We now scan the trade store, count the orphans,
+  // and ask the user whether to migrate them to "default" (or abort).
+  // Cloud sync: if Supabase is connected we additionally update the rows
+  // there; localStorage is updated in either case so the offline path
+  // stays consistent.
+  async function handleRemoveAccount(id: string) {
     if (settings.accounts.length <= 1) return;
+
+    // Step 1: count orphans in localStorage (always present — even cloud
+    // users have a localStorage mirror so the offline fallback works).
+    const allTrades = loadTrades();
+    const orphanCount = allTrades.filter((t) => t.accountId === id).length;
+
+    // Step 2: confirm with the user. Show the orphan count so the
+    // decision is informed; an empty account is removed without prompt.
+    if (orphanCount > 0) {
+      const account = settings.accounts.find((a) => a.id === id);
+      const accountLabel = account?.name ?? "this account";
+      const confirmed = window.confirm(
+        `Remove ${accountLabel}?\n\n` +
+          `${orphanCount} trade${orphanCount === 1 ? "" : "s"} ` +
+          `currently belong${orphanCount === 1 ? "s" : ""} to this account. ` +
+          `OK = migrate them to the "default" account.\n` +
+          `Cancel = abort removal (no changes will be made).`,
+      );
+      if (!confirmed) return;
+
+      // Step 3a: reassign in localStorage.
+      const migrated = allTrades.map((t) =>
+        t.accountId === id ? { ...t, accountId: "default" } : t,
+      );
+      saveTrades(migrated);
+
+      // Step 3b: best-effort cloud reassignment. Supabase failure does
+      // NOT block the local removal — the next full sync (or manual
+      // re-save) will reconcile.
+      if (supabase && user) {
+        try {
+          const { error } = await supabase
+            .from("trades")
+            .update({ account_id: "default" })
+            .eq("user_id", user.id)
+            .eq("account_id", id);
+          if (error) {
+            console.error(
+              "[settings] cloud orphan migration failed (localStorage already updated):",
+              error,
+            );
+          }
+        } catch (err) {
+          console.error("[settings] cloud orphan migration threw:", err);
+        }
+      }
+    }
+
+    // Step 4: drop the account itself + reset activeAccountId if needed.
     setSettings((prev) => {
       // Round 9 audit (WARNING): off-by-one — the previous logic took
       // `prev.accounts[0]` BEFORE filtering, so deleting the first
@@ -309,6 +387,57 @@ export default function SettingsPage() {
         a.id === id ? { ...a, [field]: value } : a,
       ),
     }));
+  }
+
+  // Round-N audit: validate uniqueness on blur. Empty / duplicate names
+  // are auto-suffixed (e.g. "Account 2 (1)") so the activeAccount radio
+  // and downstream filters always have a stable, identifiable label.
+  // We compare on the trimmed name to ignore trailing whitespace.
+  function handleAccountNameBlur(id: string) {
+    setSettings((prev) => {
+      const target = prev.accounts.find((a) => a.id === id);
+      if (!target) return prev;
+      const trimmed = target.name.trim();
+      // Empty → assign a fresh "Account N" derived from the rest.
+      if (trimmed.length === 0) {
+        const others = prev.accounts.filter((a) => a.id !== id);
+        return {
+          ...prev,
+          accounts: prev.accounts.map((a) =>
+            a.id === id ? { ...a, name: nextAccountName(others) } : a,
+          ),
+        };
+      }
+      // Collision detection against other accounts.
+      const taken = new Set(
+        prev.accounts
+          .filter((a) => a.id !== id)
+          .map((a) => a.name.trim().toLowerCase()),
+      );
+      if (!taken.has(trimmed.toLowerCase())) {
+        // No collision — normalise whitespace only.
+        if (trimmed === target.name) return prev;
+        return {
+          ...prev,
+          accounts: prev.accounts.map((a) =>
+            a.id === id ? { ...a, name: trimmed } : a,
+          ),
+        };
+      }
+      // Collision — append "(2)", "(3)", ... until unique.
+      let suffix = 2;
+      let candidate = `${trimmed} (${suffix})`;
+      while (taken.has(candidate.toLowerCase())) {
+        suffix += 1;
+        candidate = `${trimmed} (${suffix})`;
+      }
+      return {
+        ...prev,
+        accounts: prev.accounts.map((a) =>
+          a.id === id ? { ...a, name: candidate } : a,
+        ),
+      };
+    });
   }
 
   return (
@@ -601,6 +730,7 @@ export default function SettingsPage() {
                 onChange={(e) =>
                   handleAccountChange(account.id, "name", e.target.value)
                 }
+                onBlur={() => handleAccountNameBlur(account.id)}
                 aria-label="Account name"
               />
               <input

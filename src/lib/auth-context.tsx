@@ -1,6 +1,13 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import type { User, SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "./supabase";
 
@@ -74,7 +81,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const signOut = async () => {
+  const signOut = useCallback(async () => {
     // Phase 32 (Re-Audit Storage Bug 7): only clearAllData() AFTER
     // successful Supabase signOut. Previous behavior wiped local cache
     // even on auth failure (Network glitch / 500) → user lost their
@@ -93,18 +100,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const { clearAllData } = await import("@/utils/storage");
         clearAllData();
+        // Round-N audit: theme is currently persisted under a global
+        // localStorage key (`tradevision-theme`) and therefore leaks
+        // across sign-outs — User-A's light-mode preference would
+        // otherwise greet User-B at the next session start. Drop it
+        // here so the next user falls back to the default (dark or
+        // prefers-color-scheme). User-scoped keys would be cleaner but
+        // are too invasive for the current scope.
+        try {
+          localStorage.removeItem("tradevision-theme");
+        } catch {
+          // ignore — Privacy-Mode/Safari-ITP/quota
+        }
       } catch (e) {
         console.error("[auth] failed to clear storage on signOut:", e);
       }
     }
     setUser(null);
-  };
+  }, [supabase]);
 
-  return (
-    <AuthContext.Provider value={{ user, supabase, isLoading, signOut }}>
-      {children}
-    </AuthContext.Provider>
+  // R-Perf: memoize the context value so consumers don't re-render
+  // on every AuthProvider render (each call to {} creates a new identity).
+  const value = useMemo(
+    () => ({ user, supabase, isLoading, signOut }),
+    [user, supabase, isLoading, signOut],
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

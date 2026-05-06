@@ -28,7 +28,13 @@ export async function loadBinanceOpenInterest(
     url.searchParams.set("period", period);
     url.searchParams.set("endTime", String(cursor));
     url.searchParams.set("limit", "500");
-    const res = await fetch(url.toString());
+    let res = await fetch(url.toString());
+    if (res.status === 429) {
+      const retryAfter =
+        parseInt(res.headers.get("retry-after") ?? "5", 10) * 1000;
+      await new Promise((r) => setTimeout(r, retryAfter));
+      res = await fetch(url.toString());
+    }
     if (!res.ok) {
       if (res.status === 400) return out;
       throw new Error(`OI fetch failed: ${res.status} for ${symbol}`);
@@ -40,6 +46,7 @@ export async function loadBinanceOpenInterest(
     // across versions — explicit sort guarantees rows[0]=oldest regardless.
     rows.sort((a, b) => a.timestamp - b.timestamp);
     for (const r of rows) {
+      if (r.timestamp < startMs || r.timestamp > endMs) continue;
       out.push({
         timestamp: r.timestamp,
         oi: parseFloat(r.sumOpenInterest),

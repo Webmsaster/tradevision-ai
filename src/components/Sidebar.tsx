@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState, useEffect } from "react";
+import { memo, useState, useEffect } from "react";
 import { useTheme } from "@/components/ThemeProvider";
 import AccountSwitcher from "@/components/AccountSwitcher";
 
@@ -197,6 +197,44 @@ const navItems = [
   },
 ];
 
+// R-Perf: extract nav-list rendering so theme toggles don't re-render the 9
+// SVG-icon Link list. Only re-renders when pathname changes.
+const NavLinks = memo(function NavLinks({
+  pathname,
+  onNavigate,
+}: {
+  pathname: string;
+  onNavigate: () => void;
+}) {
+  const isActive = (href: string) => {
+    if (href === "/") return pathname === "/";
+    return pathname === href || pathname.startsWith(href + "/");
+  };
+  return (
+    <>
+      {navItems.map((item) => {
+        const active = isActive(item.href);
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            prefetch={false}
+            // Phase 60 (R45-UI-L1): aria-current so screen readers
+            // announce the active nav item. Visual `.active` class
+            // alone wasn't accessible.
+            aria-current={active ? "page" : undefined}
+            className={`sidebar-link${active ? " active" : ""}`}
+            onClick={onNavigate}
+          >
+            <span className="sidebar-link-icon">{item.icon}</span>
+            {item.label}
+          </Link>
+        );
+      })}
+    </>
+  );
+});
+
 export default function Sidebar() {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
@@ -216,14 +254,6 @@ export default function Sidebar() {
       document.body.style.overflow = prevOverflow;
     };
   }, [collapsed]);
-
-  const isActive = (href: string) => {
-    if (href === "/") return pathname === "/";
-    // Phase 60 (R45-UI-L4): exact-or-segment-prefix match. Plain
-    // startsWith would match "/import" as active when route is
-    // "/imports-archive" (or any future route sharing the prefix).
-    return pathname === href || pathname.startsWith(href + "/");
-  };
 
   return (
     <>
@@ -299,25 +329,10 @@ export default function Sidebar() {
         <AccountSwitcher />
 
         <nav className="sidebar-nav">
-          {navItems.map((item) => {
-            const active = isActive(item.href);
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                prefetch={false}
-                // Phase 60 (R45-UI-L1): aria-current so screen readers
-                // announce the active nav item. Visual `.active` class
-                // alone wasn't accessible.
-                aria-current={active ? "page" : undefined}
-                className={`sidebar-link${active ? " active" : ""}`}
-                onClick={() => setCollapsed(false)}
-              >
-                <span className="sidebar-link-icon">{item.icon}</span>
-                {item.label}
-              </Link>
-            );
-          })}
+          <NavLinks
+            pathname={pathname}
+            onNavigate={() => setCollapsed(false)}
+          />
         </nav>
 
         <button

@@ -86,17 +86,28 @@ async function main() {
   }
 
   // Telegram sendMessage has a 4096-char limit; split if needed.
-  const chunks: string[] = [];
-  let buf = "";
-  for (const line of text.split("\n")) {
-    if (buf.length + line.length + 1 > 3800) {
-      chunks.push(buf);
-      buf = line;
-    } else {
-      buf = buf ? `${buf}\n${line}` : line;
+  // Splitter tracks <pre>...</pre> boundaries so chunked output stays valid HTML.
+  function splitChunks(text: string, max = 3800): string[] {
+    const out: string[] = [];
+    let buf = "";
+    let inPre = false;
+    for (const line of text.split("\n")) {
+      if (line.includes("<pre>")) inPre = true;
+      if (line.includes("</pre>")) inPre = false;
+      const trimmed =
+        line.length > max ? line.slice(0, max - 100) + "\u2026" : line;
+      if (buf.length + trimmed.length + 1 > max) {
+        out.push(inPre ? buf + "\n</pre>" : buf);
+        buf = inPre ? "<pre>\n" + trimmed : trimmed;
+      } else {
+        buf = buf ? `${buf}\n${trimmed}` : trimmed;
+      }
     }
+    if (buf) out.push(buf);
+    return out;
   }
-  if (buf) chunks.push(buf);
+
+  const chunks = splitChunks(text);
 
   for (const chunk of chunks) {
     try {
