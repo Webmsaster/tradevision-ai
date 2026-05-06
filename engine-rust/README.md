@@ -4,27 +4,46 @@ Rust port of `src/utils/ftmoLiveEngineV4.ts` — the persistent-state bar-by-bar
 FTMO live engine. Goal: match the TS V4-Sim numerically while running fast
 enough to stop sharding `vitest` for backtest sweeps.
 
-## Status (Phase 3-8 + numerical-parity infrastructure)
+## Status (Phase 3-8 + numerical-parity infrastructure + drift-debug session)
 
-**121 tests green** across seven suites; per-asset R28_V6 numeric overrides
-shipped; TS-Dump-Script wired end-to-end; 5 R28_V6 golden fixtures captured
-from real cached candles; structured drift summary live.
+**129 tests green** across nine suites. Anchor-handling bug fixed (3/5 → 4/5
+windows perfect parity). Per-asset stop_pct=0.05 + tp_pct cohort overrides
+shipped. ATR pre-computation wired in all parity runners. CI drift-job +
+determinism + cargo-fuzz + 60-day soak + architecture diagram all live.
 
-### Drift snapshot vs TS V4-Sim (R28_V6_PASSLOCK, 5 windows)
+### Suites
 
-| Window | TS eq   | Rust eq | Δeq          | TS / Rust pass | TS / Rust trades |
-| ------ | ------- | ------- | ------------ | -------------- | ---------------- |
-| w0     | +9.14%  | +7.48%  | **-1.66pp**  | true / false   | 25 / 17          |
-| w1     | -15.07% | -15.07% | **0.00pp**   | false / false  | 4 / 4            |
-| w2     | +10.53% | -5.89%  | **-16.42pp** | true / false   | 64 / 32          |
-| w3     | -12.79% | -12.79% | **0.00pp**   | false / false  | 8 / 8            |
-| w4     | -7.84%  | -7.84%  | **0.00pp**   | false / false  | 2 / 2            |
+| Suite                               | Count |
+| ----------------------------------- | ----- |
+| Unit (`#[cfg(test)] mod tests`)     | 115   |
+| Integration (passlock + v5r)        | 5     |
+| Property (proptest, ×64 cases each) | 4     |
+| Golden runner                       | 1     |
+| Drift summary                       | 1     |
+| Drift diagnose                      | 1     |
+| Determinism                         | 1     |
+| 60-day soak                         | 1     |
 
-**3/5 perfect parity** (TotalLoss/DailyLoss paths). **2/5 drift** on
-profit-target paths — Rust filters ~33-50% of TS-emitted signals on
-long-running windows. Median Δeq = 0pp, max|Δ| = 16.42pp. Next debug
-target: which entry-side gate fires earlier in Rust than TS (likely
-`dailyPeakTrailingStop` or `lossStreakCooldown` cumulative timing).
+### Drift snapshot vs TS V4-Sim (R28_V6_PASSLOCK, post-anchor-fix)
+
+After the anchor-handling fix (don't pre-set `challenge_start_ts` — let
+`step_bar`'s first-call branch own it) AND wiring ATR pre-computation
+through golden_runner / drift_summary / drift_diagnose:
+
+| Window | TS eq   | Rust eq | Δeq             | TS / Rust pass | TS / Rust trades |
+| ------ | ------- | ------- | --------------- | -------------- | ---------------- |
+| w0     | +9.14%  | +9.14%  | **0.00pp** ✅   | true / true    | 25 / 25          |
+| w1     | -15.07% | -15.07% | **0.00pp** ✅   | false / false  | 4 / 4            |
+| w2     | +10.53% | -5.89%  | **-16.42pp** ❌ | true / false   | 64 / 32          |
+| w3     | -12.79% | -12.79% | **0.00pp** ✅   | false / false  | 8 / 8            |
+| w4     | -7.84%  | -7.84%  | **0.00pp** ✅   | false / false  | 2 / 2            |
+
+**4/5 perfect parity** (was 3/5). w2 still drifts — `dailyPeakTrailingStop`
+fires more aggressively in Rust on long-running windows due to per-bar
+state divergence accumulating after many bars. The drift-diagnose test
+(`tests/drift_diagnose.rs`) instruments per-bar skip-counter for further
+debug. Hypothesis verified by stripping DPTS from the cfg → 25/25 trades
+match TS exactly. The remaining gap is a state-tracking timing diff.
 
 | Suite                                               | Count              | What it covers                                                                                       |
 | --------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------- |

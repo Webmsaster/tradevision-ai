@@ -358,7 +358,24 @@ pub fn step_bar(
         }
     }
 
-    // 9. Open new positions from supplied signals.
+    // 9. Open new positions from supplied signals. When `entries_allowed` is
+    //    false (set by bar-level gates above), record EACH offered signal as
+    //    a skip so diagnostics see exactly why drops happened — previously
+    //    these were silently dropped, masking the gate that fired.
+    if !entries_allowed {
+        for sig in &input.signals {
+            // Determine which gate caused the block. The most recent note tells us.
+            let reason = result
+                .notes
+                .last()
+                .cloned()
+                .unwrap_or_else(|| "entries_allowed=false".into());
+            result.skipped.push(crate::signal::PollSkip {
+                asset: sig.symbol.clone(),
+                reason: format!("bar-gate: {reason}"),
+            });
+        }
+    }
     if entries_allowed {
         let max_concurrent = cfg.max_concurrent_trades.unwrap_or(u32::MAX) as usize;
         for sig in &input.signals {

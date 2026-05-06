@@ -82,10 +82,13 @@ fn r28_v6_tp_for(symbol: &str) -> f64 {
     }
 }
 
-/// Apply R28_V6 per-asset tp_pct overrides to a config's asset list.
+/// Apply R28_V6 per-asset tp_pct + stop_pct overrides to a config's asset list.
+/// stop_pct=0.05 is the V5_QUARTZ baseline (matches `ftmoDaytrade24h.ts`
+/// per-asset definitions). atrStop may widen further; live_caps clamp at 0.05.
 fn apply_r28_v6_per_asset(cfg: &mut EngineConfig) {
     for asset in cfg.assets.iter_mut() {
         asset.tp_pct = Some(r28_v6_tp_for(&asset.symbol));
+        asset.stop_pct = Some(0.05);
     }
 }
 
@@ -173,6 +176,7 @@ pub fn v5_titanium() -> EngineConfig {
     cfg.assets = make_assets(V5_TITANIUM_BASKET, 0.4);
     for asset in cfg.assets.iter_mut() {
         asset.tp_pct = Some(v5_titanium_tp_for(&asset.symbol));
+        asset.stop_pct = Some(0.05);
     }
     cfg.close_all_on_target_reached = false;
     cfg
@@ -186,6 +190,7 @@ pub fn v5_amber() -> EngineConfig {
     cfg.assets = make_assets(&basket, 0.4);
     for asset in cfg.assets.iter_mut() {
         asset.tp_pct = Some(v5_titanium_tp_for(&asset.symbol));
+        asset.stop_pct = Some(0.05);
     }
     cfg.close_all_on_target_reached = false;
     cfg

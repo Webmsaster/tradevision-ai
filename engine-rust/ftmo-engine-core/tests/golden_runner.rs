@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use ftmo_engine_core::candle::Candle;
 use ftmo_engine_core::config::EngineConfig;
 use ftmo_engine_core::harness::{step_bar, BarInput};
+use ftmo_engine_core::indicators::atr;
 use ftmo_engine_core::signal::PollSignal;
 use ftmo_engine_core::state::EngineState;
 use serde::Deserialize;
@@ -78,7 +79,22 @@ fn run_fixture(fix: &Fixture) {
     for k in fix.bars_by_source.keys() {
         feeds.insert(k.clone(), Vec::new());
     }
-    let atr: HashMap<String, Vec<Option<f64>>> = HashMap::new();
+    // Pre-compute ATR series so the chandelier-exit logic actually fires
+    // (matches TS pollLive's live ATR computation).
+    let mut atr_full: HashMap<String, Vec<Option<f64>>> = HashMap::new();
+    let chand_period = fix
+        .cfg
+        .chandelier_exit
+        .as_ref()
+        .map(|c| c.period as usize)
+        .unwrap_or(14);
+    for (k, arr) in fix.bars_by_source.iter() {
+        atr_full.insert(k.clone(), atr(arr, chand_period));
+    }
+    let mut atr_feed: HashMap<String, Vec<Option<f64>>> = HashMap::new();
+    for k in fix.bars_by_source.keys() {
+        atr_feed.insert(k.clone(), Vec::new());
+    }
 
     let n_bars = fix
         .bars_by_source
@@ -87,22 +103,19 @@ fn run_fixture(fix: &Fixture) {
         .max()
         .unwrap_or(0);
 
-    // Anchor for engine: bar at index `warmup` (matches TS simulate startBar).
-    let anchor_bar = fix
-        .bars_by_source
-        .values()
-        .next()
-        .and_then(|v| v.get(fix.warmup))
-        .map(|c| c.open_time)
-        .unwrap_or(0);
-    state.challenge_start_ts = anchor_bar;
-    state.last_bar_open_time = anchor_bar.saturating_sub(1);
+    // Don't pre-set anchors — let step_bar's first-call branch handle it
+    // exactly like TS pollLive does (matching anchor / dayStart / dayPeak).
 
     // Phase 1: pre-fill feed with warmup bars (indicator history).
     for i in 0..fix.warmup.min(n_bars) {
         for (k, arr) in fix.bars_by_source.iter() {
             if let Some(c) = arr.get(i) {
                 feeds.get_mut(k).unwrap().push(*c);
+            }
+            if let Some(series) = atr_full.get(k) {
+                if let Some(v) = series.get(i).copied() {
+                    atr_feed.get_mut(k).unwrap().push(v);
+                }
             }
         }
     }
@@ -114,6 +127,11 @@ fn run_fixture(fix: &Fixture) {
             if let Some(c) = arr.get(i) {
                 feeds.get_mut(k).unwrap().push(*c);
             }
+            if let Some(series) = atr_full.get(k) {
+                if let Some(v) = series.get(i).copied() {
+                    atr_feed.get_mut(k).unwrap().push(v);
+                }
+            }
         }
         let signals = fix
             .signals_by_bar
@@ -124,7 +142,7 @@ fn run_fixture(fix: &Fixture) {
             &mut state,
             &BarInput {
                 candles_by_source: &feeds,
-                atr_series_by_source: &atr,
+                atr_series_by_source: &atr_feed,
                 signals,
             },
             &fix.cfg,

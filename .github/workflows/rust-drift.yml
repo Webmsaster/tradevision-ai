@@ -1,0 +1,68 @@
+name: Rust drift report
+
+on:
+  schedule:
+    - cron: '17 5 * * *' # daily 05:17 UTC
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'engine-rust/**'
+      - 'src/utils/ftmoLiveEngineV4.ts'
+      - 'src/utils/ftmoDaytrade24h.ts'
+      - 'scripts/dumpRustGoldenFixture.ts'
+      - '.github/workflows/rust-drift.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  drift:
+    name: Regenerate fixtures + drift report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine-rust
+      - name: Install npm deps (tsx)
+        run: |
+          npm ci --no-audit --prefer-offline || npm install --no-audit
+      - name: Cache: pull crypto candles (BTC/ETH/AAVE only — keep CI fast)
+        run: |
+          mkdir -p scripts/cache_bakeoff
+          # Skip if user already has cached candles in the repo (gitignored otherwise).
+          # CI runs only with the candles present; if not, drift report degrades to "no fixtures".
+          if [ ! -f scripts/cache_bakeoff/BTCUSDT_30m.json ]; then
+            echo "::warning::no cached candles in repo; drift report will skip"
+          fi
+      - name: Regenerate first 3 windows (fast smoke)
+        run: |
+          if [ -f scripts/cache_bakeoff/BTCUSDT_30m.json ]; then
+            WINDOWS="0 1 2" engine-rust/scripts/regen-golden-fixtures.sh
+          else
+            echo "no candles, skipping regen"
+          fi
+      - name: Drift summary
+        run: |
+          cd engine-rust
+          cargo test --test drift_summary --release -- --nocapture | tee /tmp/drift.txt
+          # Surface the report as a step summary
+          {
+            echo '## TS ↔ Rust drift summary'
+            echo
+            echo '```'
+            grep -A 100 'drift summary' /tmp/drift.txt | head -40 || echo 'no drift report'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload drift artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-report
+          path: /tmp/drift.txt
+          retention-days: 14

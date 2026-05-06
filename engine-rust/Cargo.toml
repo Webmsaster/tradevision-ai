@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["ftmo-engine-core", "ftmo-engine-cli"]
+exclude = ["ftmo-engine-core/fuzz"]
 
 [workspace.package]
 version = "0.1.0"
