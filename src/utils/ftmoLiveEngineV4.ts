@@ -404,9 +404,13 @@ export function loadState(stateDir: string, cfgLabel: string): FtmoLiveStateV4 {
             (pos as OpenPositionV4).entryBarIdx = anchor;
           }
         }
-        obj.schemaVersion = SCHEMA_VERSION;
+        // R67 audit fix: hardcode 3, not SCHEMA_VERSION. If/when SCHEMA_VERSION
+        // bumps to 4, a v2 state would skip directly to 4 without ever running
+        // the v3→v4 migration. Each migration step must target its specific
+        // next-version literal so chains compose correctly.
+        obj.schemaVersion = 3;
         console.warn(
-          `[V4] in-place schema migration v2 → v${SCHEMA_VERSION} for ${cfgLabel} ` +
+          `[V4] in-place schema migration v2 → v3 for ${cfgLabel} ` +
             `(entryBarIdx re-anchored to state.barsSeen=${anchor} for ${obj.openPositions.length} open position(s))`,
         );
       }
@@ -1085,7 +1089,13 @@ export function pollLive(
       typeof cfg.challengeStartTs === "number" && cfg.challengeStartTs > 0
         ? cfg.challengeStartTs
         : lastBar.openTime;
-    state.lastBarOpenTime = lastBar.openTime;
+    // R67 audit fix: do NOT set lastBarOpenTime here. If pollLive throws
+    // mid-tick after this point, lastBarOpenTime was persisted but
+    // barsSeen=0 so the idempotency guard below doesn't trip — the bar
+    // gets re-processed on next poll with potentially half-corrupt state
+    // (dayPeak/challengePeak already anchored from the crashed tick).
+    // Instead, lastBarOpenTime is set only at successful end-of-poll
+    // (line ~1861 in the bookkeeping section).
     state.dayStart = state.equity;
     // Round 57 V4-3 (Fix 3): defensive — clamp the initial peak anchors
     // to ≥ 1.0. If a state-corruption (or partial-write race) had set
@@ -1128,9 +1138,16 @@ export function pollLive(
   // DL fails or tripping false ones. Log + skip the rollover; on the
   // next forward-progressing bar the normal `>` branch will fire.
   if (newDay < state.day) {
+    // R67 audit fix: a regressed bar was being processed normally below,
+    // so any new entry's `entryDay = dayIndex(matched.entryTime, ...)` would
+    // be the regressed (older/negative) value and pollute state.tradingDays.
+    // Mark the bar as seen and short-circuit — same effect as the idempotency
+    // guard for already-processed bars.
     result.notes.push(
-      `time regression detected: newDay=${newDay} state.day=${state.day} — keeping current dayStart/dayPeak`,
+      `time regression detected: newDay=${newDay} state.day=${state.day} — skipping bar`,
     );
+    state.lastBarOpenTime = lastBar.openTime;
+    return result;
   } else if (newDay > state.day) {
     state.day = newDay;
     state.dayStart = state.equity;
@@ -1417,7 +1434,18 @@ export function pollLive(
     state.mtmEquity >= 1 + cfg.profitTarget
   ) {
     state.firstTargetHitDay = state.day;
-    state.pausedAtTarget = !!cfg.pauseAtTargetReached;
+    // R67 audit fix: when closeAllOnTargetReached=true but
+    // pauseAtTargetReached=false (config misuse), the close-all force-loop
+    // below was gated on BOTH flags, so it never ran → Pass-Lock silently
+    // failed. Force-set pausedAtTarget when close-all-on-target is on so
+    // the lock is always coherent regardless of the pause flag's value.
+    state.pausedAtTarget =
+      !!cfg.pauseAtTargetReached || !!cfg.closeAllOnTargetReached;
+    if (cfg.closeAllOnTargetReached && !cfg.pauseAtTargetReached) {
+      result.notes.push(
+        "config note: closeAllOnTargetReached=true forces pauseAtTargetReached behavior for coherent Pass-Lock",
+      );
+    }
     result.targetHit = true;
     // Round 60 Pass-Lock-Mode: force-close all open positions immediately on
     // first target-hit. Mathematically lossless at the moment of trigger

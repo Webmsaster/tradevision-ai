@@ -75,13 +75,11 @@ fn finish_signal(
             return None;
         }
     }
-    state.loss_streak_by_asset_dir.insert(
-        key,
-        crate::state::LossStreakEntry {
-            streak: 0,
-            cd_until_bars_seen: state.bars_seen + src.cooldown_bars,
-        },
-    );
+    // R67 audit fix: was inserting cooldown BEFORE eff_risk gate. If eff_risk
+    // ≤ 0 the signal is dropped, but the cooldown was still installed → next
+    // `cooldown_bars` worth of bars block legitimate signals on this asset/dir.
+    // Move cooldown-insert below all the "may return None" gates so only
+    // emitted signals install the cooldown.
     let factor = resolve_sizing_factor(state, cfg, last.open_time);
     let mut eff_risk = asset.risk_frac * factor * src.size_mult;
     if !cfg.bypass_live_caps {
@@ -98,6 +96,13 @@ fn finish_signal(
         PositionSide::Long => (last.close * (1.0 - stop_pct), last.close * (1.0 + tp_pct)),
         PositionSide::Short => (last.close * (1.0 + stop_pct), last.close * (1.0 - tp_pct)),
     };
+    state.loss_streak_by_asset_dir.insert(
+        key,
+        crate::state::LossStreakEntry {
+            streak: 0,
+            cd_until_bars_seen: state.bars_seen + src.cooldown_bars,
+        },
+    );
     Some(PollSignal {
         symbol: asset.symbol.clone(),
         source_symbol: source_symbol.to_string(),

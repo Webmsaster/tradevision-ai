@@ -184,7 +184,22 @@ pub fn step_bar(
         if state.day_start > 0.0 && !state.open_positions.is_empty() {
             let mut pre_mtm = state.equity;
             for pos in state.open_positions.iter() {
-                let Some(&price) = prices_by_source.get(&pos.source_symbol) else { continue };
+                // R67 audit fix: fall back to last_known_price when current
+                // feed is missing. Original code skipped feedless positions
+                // entirely, undercounting unrealised loss → guardian could
+                // fail to fire when a 30%-underwater position briefly lost
+                // its feed. Conservative-bias = false-negative fix.
+                let price = match prices_by_source
+                    .get(&pos.source_symbol)
+                    .copied()
+                    .or(pos.last_known_price)
+                {
+                    Some(p) if p.is_finite() && p > 0.0 => p,
+                    _ => continue,
+                };
+                if !(pos.entry_price.is_finite()) || pos.entry_price <= 0.0 {
+                    continue;
+                }
                 let raw_pnl = match pos.direction {
                     crate::position::PositionSide::Long => (price - pos.entry_price) / pos.entry_price,
                     crate::position::PositionSide::Short => (pos.entry_price - price) / pos.entry_price,
@@ -327,6 +342,12 @@ pub fn step_bar(
                 ));
             }
             apply_exits(state, &mut to_close, cfg, last_bar_time, &mut result);
+            // R67 audit fix: refresh mtm_equity to match realised after
+            // close-all. Without this, state.mtm_equity retained the stale
+            // pre-close value (from step 4) which could diverge from
+            // state.equity if close_price ≠ tp_price. Subsequent same-bar
+            // standalone-pass-checks reading mtm_equity would be wrong.
+            state.mtm_equity = state.equity;
         }
         // FTMO pass: target hit AND minTradingDays satisfied.
         if state.trading_days.len() >= cfg.min_trading_days as usize {

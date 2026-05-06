@@ -120,13 +120,10 @@ pub fn detect_forex_mr(
             return None;
         }
     }
-    state.loss_streak_by_asset_dir.insert(
-        key,
-        LossStreakEntry {
-            streak: 0,
-            cd_until_bars_seen: state.bars_seen + params.cooldown_bars,
-        },
-    );
+    // R67 audit fix: was installing cooldown BEFORE the live-cap stop_pct check
+    // and eff_risk ≤ 0 check below. Both could return None, but cooldown was
+    // already set → blocked legitimate next-bar signals. Moved cooldown-insert
+    // to just before the final Some(PollSignal) construction.
 
     // Stop_pct via optional ATR-stop.
     let mut stop_pct = params.stop_pct;
@@ -160,6 +157,13 @@ pub fn detect_forex_mr(
         PositionSide::Long => (last.close * (1.0 - stop_pct), last.close * (1.0 + params.tp_pct)),
         PositionSide::Short => (last.close * (1.0 + stop_pct), last.close * (1.0 - params.tp_pct)),
     };
+    state.loss_streak_by_asset_dir.insert(
+        key,
+        LossStreakEntry {
+            streak: 0,
+            cd_until_bars_seen: state.bars_seen + params.cooldown_bars,
+        },
+    );
     Some(PollSignal {
         symbol: asset.symbol.clone(),
         source_symbol: source_symbol.to_string(),

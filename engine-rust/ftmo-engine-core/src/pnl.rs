@@ -26,6 +26,13 @@ pub struct EffPnl {
 /// Compute realised effPnl for a position closing at `exit_price`. Includes
 /// PTP partial-realised blend.
 pub fn compute_eff_pnl(pos: &OpenPosition, exit_price: f64, cfg: &EngineConfig) -> EffPnl {
+    // R67 audit fix: guard against entry_price ≤ 0 / non-finite. Without this,
+    // a corrupted state file or a synthetic-test 0-priced asset produces NaN,
+    // which propagates into state.equity and silently disables all failure
+    // checks (NaN comparisons return false → challenge never ends).
+    if !(pos.entry_price.is_finite()) || pos.entry_price <= 0.0 {
+        return EffPnl { raw_pnl: 0.0, eff_pnl: 0.0 };
+    }
     let mut raw_pnl = match pos.direction {
         PositionSide::Long => (exit_price - pos.entry_price) / pos.entry_price,
         PositionSide::Short => (pos.entry_price - exit_price) / pos.entry_price,
@@ -60,10 +67,26 @@ pub fn compute_mtm_equity(
 ) -> f64 {
     let mut mtm = state.equity;
     for pos in state.open_positions.iter_mut() {
-        let Some(&price) = prices_by_source.get(&pos.source_symbol) else {
-            continue;
+        // R67 audit: fall back to last_known_price when current feed missing.
+        // Original code skipped feedless positions entirely, undercounting
+        // unrealised loss → DailyEquityGuardian could fail to fire when a
+        // 30%-underwater position briefly loses its feed.
+        let price = match prices_by_source
+            .get(&pos.source_symbol)
+            .copied()
+            .or(pos.last_known_price)
+        {
+            Some(p) if p.is_finite() && p > 0.0 => p,
+            _ => continue, // truly no price known and no fallback
         };
-        pos.last_known_price = Some(price);
+        if prices_by_source.contains_key(&pos.source_symbol) {
+            pos.last_known_price = Some(price);
+        }
+        // R67 audit fix: guard against entry_price ≤ 0 / non-finite (NaN
+        // poisoning of state.equity, see compute_eff_pnl).
+        if !(pos.entry_price.is_finite()) || pos.entry_price <= 0.0 {
+            continue;
+        }
         let mut raw_pnl = match pos.direction {
             PositionSide::Long => (price - pos.entry_price) / pos.entry_price,
             PositionSide::Short => (pos.entry_price - price) / pos.entry_price,

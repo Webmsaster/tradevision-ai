@@ -348,6 +348,14 @@ def update_controls(updater) -> dict:
 # =============================================================================
 # MT5 connection — with reconnect
 # =============================================================================
+# R67 audit: cache expected_login as int so the steady-state warm path
+# (mt5_ensure_connected, called every poll cycle ~30s) can verify the MT5
+# terminal hasn't silently switched accounts mid-session — broker session
+# restart, manual user re-login, Windows fast-user-switch can route Account-A
+# signals onto Account-B funds while the TCP socket stays alive.
+_EXPECTED_LOGIN_INT: Optional[int] = None
+
+
 def mt5_init_with_retry() -> bool:
     """Try to initialize. On success returns True. Caller handles retry.
 
@@ -398,6 +406,11 @@ def mt5_init_with_retry() -> bool:
                     except Exception:
                         pass
                     sys.exit(2)
+                # R67 audit: cache expected login as int so the warm path
+                # in mt5_ensure_connected() can re-validate every cycle
+                # without re-parsing the env var.
+                global _EXPECTED_LOGIN_INT
+                _EXPECTED_LOGIN_INT = expected
             else:
                 # No expected login configured — log a one-line warning so
                 # multi-account operators see it, but don't fail.
@@ -417,6 +430,25 @@ def mt5_ensure_connected() -> bool:
     """Check if MT5 is still connected. If not, try to reconnect. Blocks until success."""
     info = mt5.account_info()
     if info is not None:
+        # R67 audit fix: re-validate FTMO_EXPECTED_LOGIN on every cycle.
+        # mt5_init_with_retry() validates only on cold-init; the steady-state
+        # path here (called every ~30s) was just `if info is not None: return`
+        # → silent account-drift leaked through.
+        if _EXPECTED_LOGIN_INT is not None and int(info.login) != _EXPECTED_LOGIN_INT:
+            log_event(
+                "mt5_account_changed_mid_session",
+                got=int(info.login),
+                want=_EXPECTED_LOGIN_INT,
+                level="error",
+            )
+            tg_send(
+                f"🔴 <b>MT5 account drift mid-session!</b>\nGot login <code>{int(info.login)}</code>, expected <code>{_EXPECTED_LOGIN_INT}</code>.\nExecutor exiting — will NOT trade on wrong account."
+            )
+            try:
+                mt5.shutdown()
+            except Exception:
+                pass
+            sys.exit(2)
         return True
     log_event("mt5_disconnected", action="attempting_reconnect")
     tg_send(f"⚠️ <b>MT5 Disconnected</b>\nExecutor attempting reconnect every {RECONNECT_BACKOFF_SEC}s…")
@@ -1326,7 +1358,7 @@ def place_short_market(
     return place_market_order(binance_symbol, "short", risk_frac, stop_pct, tp_pct, account_equity, comment)
 
 
-def close_position(ticket: int) -> bool:
+def close_position(ticket: int, exit_reason_override: Optional[str] = None) -> bool:
     """Close an open position by ticket. Returns True only on confirmed close.
 
     Phase 84 (R51-PY-C1): when `mt5.positions_get(ticket=...)` returns
@@ -1380,17 +1412,22 @@ def close_position(ticket: int) -> bool:
         sl = getattr(pos, "sl", None)
         tp = getattr(pos, "tp", None)
         actual = result.price
-        # Determine which exit was hit (if any). MT5 doesn't tell us so we
-        # infer from proximity: exit price closer to TP within 1 spread →
-        # tp; closer to SL → stop; else manual.
-        exit_reason = "manual"
-        if sl and tp and entry_price:
+        # R67 audit fix: caller can pass an explicit exit_reason_override for
+        # NON-broker-driven closes (emergency-close-all, kill-switch, time-exit,
+        # news-blackout, hold-expired). Original code always inferred "tp" or
+        # "stop" from price-proximity → corrupted the live-vs-backtest drift
+        # pipeline by tagging every emergency exit as a TP/SL hit with bogus
+        # slippage_bps. Only fall back to proximity-inference when caller
+        # signals an actual broker-driven close ("auto" or None for legacy
+        # callers — but legacy paths should be migrated to pass explicit reason).
+        if exit_reason_override and exit_reason_override not in ("auto",):
+            exit_reason = exit_reason_override
+        elif sl and tp and entry_price:
             tp_dist = abs(actual - tp) if tp else float("inf")
             sl_dist = abs(actual - sl) if sl else float("inf")
-            if tp_dist < sl_dist:
-                exit_reason = "tp"
-            else:
-                exit_reason = "stop"
+            exit_reason = "tp" if tp_dist < sl_dist else "stop"
+        else:
+            exit_reason = "manual"
         slippage_bps = None
         planned_exit = None
         if exit_reason == "tp" and tp:
@@ -1474,11 +1511,22 @@ def check_target_and_pause(current_equity: float) -> bool:
         state["target_hit_date"] = today
         write_pause_state(state)
         log_event("target_hit", equity=current_equity, target=target_equity)
+        # R67 audit fix (Bug-Audit-Round): R60 PASSLOCK closeAllOnTargetReached
+        # was implemented in V4 backtest engine (see project_round60_engine_patches.md)
+        # but was NOT propagated to the live Python executor. The full +6.62pp
+        # PASSLOCK pass-rate edge depends on locking equity at first target hit
+        # by force-closing all positions — otherwise positions can drift back
+        # below target, breaking the give_back-elimination guarantee.
+        # Gate via FTMO_PASSLOCK env (default ON for R60+ champion configs).
+        passlock = os.environ.get("FTMO_PASSLOCK", "1").lower() in ("1", "true", "yes")
+        if passlock:
+            _emergency_close_all_positions("target_reached_passlock_R60")
         tg_send(
             f"🎯 <b>+{PROFIT_TARGET_PCT*100:.0f}% TARGET HIT!</b>\n"
             f"Equity: <b>${current_equity:,.2f}</b> (start ${CHALLENGE_START_BALANCE:,.0f})\n"
             f"🛑 <b>BOT PAUSED</b> — no more risk trades.\n"
-            f"⏳ Waiting for {MIN_TRADING_DAYS} trading-day minimum.\n"
+            + ("🔒 <b>PASSLOCK</b> — all positions force-closed.\n" if passlock else "")
+            + f"⏳ Waiting for {MIN_TRADING_DAYS} trading-day minimum.\n"
             f"Daily ping trades will be placed to clock the rule."
         )
     return state["target_hit"]
@@ -2327,7 +2375,7 @@ def _apply_time_exit(pos: dict, now_ms: int) -> bool:
         log_event("time_exit_close", ticket=pos["ticket"],
                   bars_held=int(bars_held), unrealized=unrealized,
                   min_gain_abs=min_gain_abs)
-        if close_position(pos["ticket"]):
+        if close_position(pos["ticket"], exit_reason_override="time_exit"):
             tg_send(
                 f"⏳ <b>Time-exit close</b>\n"
                 f"{pos['signalAsset']} ticket <code>{pos['ticket']}</code>\n"
@@ -2474,8 +2522,11 @@ def _emergency_close_all_positions(reason: str) -> None:
     open_positions = read_json(OPEN_POS_PATH, {"positions": []})
     closed = 0
     failed_positions: list[dict] = []
+    # R67 audit fix: pass explicit exit_reason so the drift-monitor pipeline
+    # doesn't tag emergency closes as TP/SL hits with bogus slippage.
+    emergency_reason_tag = f"emergency:{reason[:32]}"
     for pos in open_positions.get("positions", []):
-        if close_position(pos["ticket"]):
+        if close_position(pos["ticket"], exit_reason_override=emergency_reason_tag):
             closed += 1
         else:
             failed_positions.append(pos)
@@ -2507,7 +2558,7 @@ def manage_open_positions() -> None:
             continue
         if now_ms >= pos.get("max_hold_until", 0):
             log_event("hold_expired", ticket=pos["ticket"])
-            if close_position(pos["ticket"]):
+            if close_position(pos["ticket"], exit_reason_override="hold_expired"):
                 tg_send(f"⏱ <b>Hold Expired — Closed</b>\n{pos['signalAsset']} ticket <code>{pos['ticket']}</code>")
             continue
         # Round 11: time-exit short-circuits before any other management.
@@ -2595,7 +2646,7 @@ def handle_kill_request() -> bool:
     closed = 0
     for pos in positions or []:
         if pos.magic == 231:
-            if close_position(pos.ticket):
+            if close_position(pos.ticket, exit_reason_override="kill_request"):
                 closed += 1
     def _apply(c: dict) -> dict:
         c["killRequested"] = False
@@ -2747,15 +2798,32 @@ def check_news_auto_close() -> None:
     positions and pause new entries briefly.
     """
     data = read_json(NEWS_PATH, {"events": []})
-    events = data.get("events", [])
-    if not events:
+    raw_events = data.get("events", [])
+    if not raw_events:
         return
+
+    # R67 audit fix: coerce timestamps to int once up-front. Original code
+    # only coerced in the inclusion filter; downstream `e["timestamp"] in
+    # _news_closes_announced` set-membership and `_news_closes_announced.add`
+    # used the raw value. If the Node news-service ever emits timestamps as
+    # strings (Zod-coerce, JSON.stringify quirks), the de-dupe set would
+    # silently fail (every poll = new alert) and the eviction `<` mixes
+    # str/int → TypeError. Drop malformed events with a warn.
+    events: list[dict] = []
+    for e in raw_events:
+        ts_raw = e.get("timestamp", 0)
+        try:
+            ts = int(ts_raw)
+        except (TypeError, ValueError):
+            log_event("news_event_invalid_ts", raw=str(ts_raw)[:80], level="warn")
+            continue
+        events.append({**e, "timestamp": ts})
 
     now_ms = int(time.time() * 1000)
     threshold_ms = NEWS_CLOSE_MINUTES_BEFORE * 60 * 1000
     incoming = [
         e for e in events
-        if 0 <= (int(e.get("timestamp", 0)) - now_ms) <= threshold_ms
+        if 0 <= (e["timestamp"] - now_ms) <= threshold_ms
         and e.get("impact") == "High"
     ]
     if not incoming:
@@ -2789,7 +2857,7 @@ def check_news_auto_close() -> None:
                 f"In {mins_to} min — flattening {len(bot_positions)} position(s) now.",
             )
         for pos in bot_positions:
-            close_position(pos.ticket)
+            close_position(pos.ticket, exit_reason_override="news_blackout")
 
 
 def check_consistency_rule() -> None:
