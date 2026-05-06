@@ -1,0 +1,22 @@
+[package]
+name = "ftmo-engine-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+fs2.workspace = true
+smallvec.workspace = true
+
+[dev-dependencies]
+proptest = "1.5"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "step_bar_throughput"
+harness = false
