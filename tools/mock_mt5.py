@@ -68,12 +68,25 @@ _STATE = {
     # R67 audit: mutable login so tests can simulate mid-session account drift
     # (broker session restart, manual user re-login, multi-terminal mix-up).
     "login": 999999,
+    # R67-r11: configurable deal-entry tag emitted on close. Real MT5 returns
+    # DEAL_ENTRY_OUT in Netting-Mode but DEAL_ENTRY_INOUT / DEAL_ENTRY_OUT_BY in
+    # Hedge-Mode (FTMO accounts can be either). Tests can flip this via
+    # _set_close_deal_entry() to exercise both code paths in the executor's
+    # deal-history reconciliation.
+    "close_deal_entry": DEAL_ENTRY_OUT,
 }
 
 
 def _set_login(login: int) -> None:
     """Test helper: inject a new login id to simulate account drift mid-session."""
     _STATE["login"] = int(login)
+
+
+def _set_close_deal_entry(entry: int) -> None:
+    """Test helper: choose which DEAL_ENTRY_* tag the mock emits on position
+    close. Use DEAL_ENTRY_OUT for Netting-Mode, DEAL_ENTRY_INOUT / OUT_BY for
+    Hedge-Mode scenarios."""
+    _STATE["close_deal_entry"] = int(entry)
 
 # Lightweight Binance price cache (symbol -> (price, fetched_at_ms))
 _PRICE_CACHE: dict[str, tuple[float, int]] = {}
@@ -341,7 +354,9 @@ def order_send(request: dict) -> OrderResult | None:
         fill_price = info.ask if pos.type == POSITION_TYPE_SELL else info.bid
         pnl = _compute_pnl(pos, fill_price)
         _STATE["balance"] += pnl
-        _record_deal(pos, fill_price, pnl, DEAL_ENTRY_OUT)
+        # R67-r11: Hedge-Mode support — emit configurable deal entry tag.
+        close_entry = _STATE.get("close_deal_entry", DEAL_ENTRY_OUT)
+        _record_deal(pos, fill_price, pnl, close_entry)
         del _STATE["positions"][position_id]
         return OrderResult(retcode=TRADE_RETCODE_DONE, order=position_id, price=fill_price, comment="mock close")
 

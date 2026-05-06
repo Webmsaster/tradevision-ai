@@ -361,12 +361,20 @@ export function calculateSharpeRatio(trades: Trade[]): number {
     }
     const spanMs = mx - mn;
     const years = spanMs / (365.25 * 24 * 60 * 60 * 1000);
-    // Below ~36 days the inferred rate is too noisy; keep the default.
+    // Below ~36 days the inferred rate is too noisy; keep the default and
+    // emit a once-per-call warning so callers know the result is unreliable.
+    if (years < 0.1) {
+      console.warn(
+        "[calculateSharpeRatio] sample <36 days; annualization noisy. Sharpe may be unreliable.",
+      );
+    }
     if (years >= 0.1) {
       // Use exitTimes.length (the validated, finite-date count) — not
       // trades.length — so trades with malformed exitDates don't inflate
       // the inferred frequency.
-      const tradesPerYear = exitTimes.length / Math.max(years, 1e-9);
+      // Round 11 audit: `Math.max(years, 1e-9)` is dead code — the
+      // surrounding `if (years >= 0.1)` block already guarantees years > 0.
+      const tradesPerYear = exitTimes.length / years;
       annualisationFactor = Math.sqrt(tradesPerYear);
     }
   }

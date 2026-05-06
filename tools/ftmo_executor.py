@@ -1244,8 +1244,15 @@ def place_market_order(
     if not mt5.symbol_select(ftmo_symbol, True):
         return OrderResult(False, None, f"symbol_select failed for {ftmo_symbol}", None, None)
     info = mt5.symbol_info(ftmo_symbol)
-    if info is None or info.bid == 0 or info.ask == 0:
+    if info is None:
         return OrderResult(False, None, f"symbol_info not ready for {ftmo_symbol}", None, None)
+    # R67-r11: source the entry quote from the live tick instead of the cached
+    # symbol_info bid/ask. symbol_info() can return stale mid-quotes (cached up
+    # to a few ticks old), while symbol_info_tick() is always the freshest L1
+    # snapshot. We still keep `info` for tick_size/digits/volume_step lookups.
+    tick = mt5.symbol_info_tick(ftmo_symbol)
+    if tick is None or tick.bid <= 0 or tick.ask <= 0:
+        return OrderResult(False, None, f"no live tick for {ftmo_symbol}", None, None)
 
     # Hard-cap risk_frac before sizing — defends against legacy 200% formula.
     if risk_frac > RISK_FRAC_HARD_CAP:
@@ -1256,12 +1263,12 @@ def place_market_order(
         risk_frac = RISK_FRAC_HARD_CAP
 
     if direction == "short":
-        entry_price = info.bid
+        entry_price = tick.bid
         stop_price = entry_price * (1 + stop_pct)
         tp_price = entry_price * (1 - tp_pct)
         order_type = mt5.ORDER_TYPE_SELL
     elif direction == "long":
-        entry_price = info.ask
+        entry_price = tick.ask
         stop_price = entry_price * (1 - stop_pct)
         tp_price = entry_price * (1 + tp_pct)
         order_type = mt5.ORDER_TYPE_BUY

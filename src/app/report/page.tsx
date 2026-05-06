@@ -7,7 +7,11 @@ import {
 } from "@/utils/calculations";
 import { TradeStats, PerformanceByTime } from "@/types/trade";
 import { useTradeStorage } from "@/hooks/useTradeStorage";
-import { formatCurrency, formatFinite } from "@/utils/formatters";
+import {
+  formatCurrency,
+  formatFinite,
+  formatShortDate,
+} from "@/utils/formatters";
 
 export default function ReportPage() {
   const { trades, isLoading } = useTradeStorage();
@@ -203,7 +207,7 @@ export default function ReportPage() {
               .slice(0, 50)
               .map((t) => (
                 <tr key={t.id}>
-                  <td>{new Date(t.exitDate).toLocaleDateString()}</td>
+                  <td>{formatShortDate(t.exitDate, { displayInUTC: true })}</td>
                   <td>{t.pair}</td>
                   <td>{t.direction.toUpperCase()}</td>
                   <td>${t.entryPrice.toFixed(2)}</td>

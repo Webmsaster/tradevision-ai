@@ -27,8 +27,11 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 
-const CACHE_PATH =
-  process.env.FF_NEWS_CACHE ?? "scripts/cache_forex_2h/ff_news_cache.json";
+function getCachePath(): string {
+  return (
+    process.env.FF_NEWS_CACHE ?? "scripts/cache_forex_2h/ff_news_cache.json"
+  );
+}
 const CACHE_TTL_MS = 6 * 3600_000;
 
 export interface NewsEvent {
@@ -58,10 +61,11 @@ interface FFEntry {
  */
 function readCachedNews(): NewsEvent[] | null {
   try {
-    if (!existsSync(CACHE_PATH)) return null;
-    const stat = statSync(CACHE_PATH);
+    const cachePath = getCachePath();
+    if (!existsSync(cachePath)) return null;
+    const stat = statSync(cachePath);
     if (Date.now() - stat.mtimeMs > CACHE_TTL_MS) return null;
-    const raw = readFileSync(CACHE_PATH, "utf-8");
+    const raw = readFileSync(cachePath, "utf-8");
     const parsed = JSON.parse(raw) as NewsEvent[];
     if (!Array.isArray(parsed)) return null;
     return parsed;
@@ -72,9 +76,10 @@ function readCachedNews(): NewsEvent[] | null {
 
 function writeCachedNews(events: NewsEvent[]): void {
   try {
-    const dir = dirname(CACHE_PATH);
+    const cachePath = getCachePath();
+    const dir = dirname(cachePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(CACHE_PATH, JSON.stringify(events), "utf-8");
+    writeFileSync(cachePath, JSON.stringify(events), "utf-8");
   } catch {
     // Cache is best-effort — never fail the live load on cache-write
     // errors (e.g. read-only FS).

@@ -16,6 +16,7 @@ import { existsSync, readFileSync, statSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { isPlaceholderSupabaseUrl } from "@/lib/supabase";
 import { isRateLimited } from "@/utils/distributedRateLimit";
 import { pragueDay } from "@/utils/ftmoDaytrade24h";
 
@@ -109,8 +110,7 @@ async function isAuthenticated(): Promise<{
       !bypassWarned.logged &&
       process.env.NEXT_PUBLIC_SUPABASE_URL &&
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY &&
-      process.env.NEXT_PUBLIC_SUPABASE_URL !==
-        "https://your-project.supabase.co"
+      !isPlaceholderSupabaseUrl(process.env.NEXT_PUBLIC_SUPABASE_URL)
     ) {
       bypassWarned.logged = true;
       console.warn(

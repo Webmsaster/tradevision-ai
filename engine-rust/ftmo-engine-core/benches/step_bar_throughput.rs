@@ -6,7 +6,8 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::collections::HashMap;
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
+use std::hint::black_box;
 use ftmo_engine_core::config::{AssetConfig, EngineConfig, MeanReversionSource};
 use ftmo_engine_core::harness::{step_bar, BarInput};
 use ftmo_engine_core::indicators::atr;

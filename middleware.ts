@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
+import { isPlaceholderSupabaseUrl } from "@/lib/supabase";
 
 /**
  * Round 54 (Finding #3): per-request CSP nonce. Replaces the static
@@ -52,6 +53,7 @@ function buildCsp(nonce: string): string {
     "worker-src 'self'",
     "manifest-src 'self'",
     "object-src 'none'",
+    "report-uri /api/csp-report",
   ].join("; ");
 }
 
@@ -86,7 +88,7 @@ export async function middleware(request: NextRequest) {
   // Skip Supabase-session refresh if Supabase is not configured, but
   // STILL set the CSP response header so XSS mitigation applies in
   // unauthenticated / local-only mode.
-  if (!url || !key || url === "https://your-project.supabase.co") {
+  if (!url || !key || isPlaceholderSupabaseUrl(url)) {
     const resp = NextResponse.next({ request: { headers: requestHeaders } });
     resp.headers.set("Content-Security-Policy", csp);
     return resp;

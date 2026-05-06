@@ -48,6 +48,13 @@ export function detectRevengeTrade(trades: Trade[]): AIInsight | null {
 
   const sorted = [...trades].sort(compareByExitDate);
 
+  let worst: {
+    increasePercent: number;
+    prev1: Trade;
+    prev2: Trade;
+    current: Trade;
+  } | null = null;
+
   for (let i = 2; i < sorted.length; i++) {
     const prev1 = sorted[i - 2];
     const prev2 = sorted[i - 1];
@@ -67,25 +74,33 @@ export function detectRevengeTrade(trades: Trade[]): AIInsight | null {
         const increasePercent = Math.round(
           ((currentSize - prevAvgSize) / prevAvgSize) * 100,
         );
-
-        return {
-          id: generateId(),
-          type: "warning",
-          title: "Revenge Trading Detected",
-          description:
-            `After consecutive losses on ${prev1!.pair} (${prev1!.pnl.toFixed(2)}) and ${prev2!.pair} (${prev2!.pnl.toFixed(2)}), ` +
-            `your position size increased by ${increasePercent}% on your next trade (${current!.pair}). ` +
-            `This pattern of increasing size after losses is a hallmark of revenge trading and often leads to even larger drawdowns. ` +
-            `Consider stepping away after consecutive losses or enforcing a fixed position-sizing rule.`,
-          severity: 8,
-          relatedTrades: [prev1!.id, prev2!.id, current!.id],
-          category: "revenge-trading",
-        };
+        if (!worst || increasePercent > worst.increasePercent) {
+          worst = {
+            increasePercent,
+            prev1: prev1!,
+            prev2: prev2!,
+            current: current!,
+          };
+        }
       }
     }
   }
 
-  return null;
+  if (!worst) return null;
+
+  return {
+    id: generateId(),
+    type: "warning",
+    title: "Revenge Trading Detected",
+    description:
+      `After consecutive losses on ${worst.prev1.pair} (${worst.prev1.pnl.toFixed(2)}) and ${worst.prev2.pair} (${worst.prev2.pnl.toFixed(2)}), ` +
+      `your position size increased by ${worst.increasePercent}% on your next trade (${worst.current.pair}). ` +
+      `This pattern of increasing size after losses is a hallmark of revenge trading and often leads to even larger drawdowns. ` +
+      `Consider stepping away after consecutive losses or enforcing a fixed position-sizing rule.`,
+    severity: 8,
+    relatedTrades: [worst.prev1.id, worst.prev2.id, worst.current.id],
+    category: "revenge-trading",
+  };
 }
 
 /**
@@ -199,6 +214,14 @@ export function detectOverleverageAfterWins(trades: Trade[]): AIInsight | null {
 
   const sorted = [...trades].sort(compareByExitDate);
 
+  let worst: {
+    increasePercent: number;
+    streak: Trade[];
+    current: Trade;
+    avgStreakLeverage: number;
+    nextLeverage: number;
+  } | null = null;
+
   for (let i = 3; i < sorted.length; i++) {
     const streak = [sorted[i - 3], sorted[i - 2], sorted[i - 1]];
     const allWins = streak.every((t) => t!.pnl > 0);
@@ -218,24 +241,33 @@ export function detectOverleverageAfterWins(trades: Trade[]): AIInsight | null {
       const increasePercent = Math.round(
         ((nextLeverage - avgStreakLeverage) / avgStreakLeverage) * 100,
       );
-
-      return {
-        id: generateId(),
-        type: "warning",
-        title: "Overleveraging After Winning Streak",
-        description:
-          `After ${streak.length} consecutive wins, you increased your leverage by ${increasePercent}% ` +
-          `(from an average of ${avgStreakLeverage.toFixed(1)}x to ${nextLeverage}x on ${sorted[i]!.pair}). ` +
-          `Winning streaks can create overconfidence, leading to outsized risk when the streak inevitably ends. ` +
-          `Keep your leverage consistent regardless of recent results to protect against large drawdowns.`,
-        severity: 7,
-        relatedTrades: [...streak.map((t) => t!.id), sorted[i]!.id],
-        category: "overleverage",
-      };
+      if (!worst || increasePercent > worst.increasePercent) {
+        worst = {
+          increasePercent,
+          streak: streak.map((t) => t!),
+          current: sorted[i]!,
+          avgStreakLeverage,
+          nextLeverage,
+        };
+      }
     }
   }
 
-  return null;
+  if (!worst) return null;
+
+  return {
+    id: generateId(),
+    type: "warning",
+    title: "Overleveraging After Winning Streak",
+    description:
+      `After ${worst.streak.length} consecutive wins, you increased your leverage by ${worst.increasePercent}% ` +
+      `(from an average of ${worst.avgStreakLeverage.toFixed(1)}x to ${worst.nextLeverage}x on ${worst.current.pair}). ` +
+      `Winning streaks can create overconfidence, leading to outsized risk when the streak inevitably ends. ` +
+      `Keep your leverage consistent regardless of recent results to protect against large drawdowns.`,
+    severity: 7,
+    relatedTrades: [...worst.streak.map((t) => t.id), worst.current.id],
+    category: "overleverage",
+  };
 }
 
 /**
@@ -879,9 +911,19 @@ export function detectBestSetup(trades: Trade[]): AIInsight | null {
   }
 
   if (!best) return null;
-  const meanAvg = overallAvg / totalCount;
 
-  if (best.avgPnl <= 0 || best.avgPnl < meanAvg * 1.25) return null;
+  // Round 11 audit: original `best.avgPnl < meanAvg * 1.25` flips sign when
+  // overall mean is negative — a barely-positive setup against a deeply
+  // negative mean would always pass, yielding noisy "edge" insights.
+  // Compare the best setup against the average of the OTHER setups and
+  // require a meaningful gap relative to the larger reference magnitude.
+  const otherTotal = overallAvg - best.avgPnl * best.trades.length;
+  const otherCount = totalCount - best.trades.length;
+  const otherAvg = otherCount > 0 ? otherTotal / otherCount : 0;
+  if (best.avgPnl <= 0 || best.avgPnl <= otherAvg) return null;
+  const gap = best.avgPnl - otherAvg;
+  const ref = Math.max(Math.abs(otherAvg), best.avgPnl);
+  if (gap < ref * 0.25) return null;
 
   return {
     id: generateId(),

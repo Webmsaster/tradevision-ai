@@ -248,8 +248,26 @@ function DriftDashboardInner() {
 
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 30_000);
-    return () => clearInterval(t);
+    const t = setInterval(() => {
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState === "visible"
+      ) {
+        refresh();
+      }
+    }, 30_000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVis);
+    }
+    return () => {
+      clearInterval(t);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVis);
+      }
+    };
   }, [refresh]);
 
   const onTfChange = (newSlug: string) => {
@@ -269,8 +287,14 @@ function DriftDashboardInner() {
           <div className="text-xs mt-2 opacity-70">
             Tip: enable the dashboard with{" "}
             <code className="font-mono">FTMO_MONITOR_ENABLED=1</code> when
-            starting Next.
+            starting Next. Auto-retry every 30s while tab is visible.
           </div>
+          <button
+            onClick={refresh}
+            className="mt-3 px-3 py-1 bg-surface hover:bg-surface/70 rounded text-xs"
+          >
+            Retry now
+          </button>
         </div>
       </div>
     );
@@ -366,6 +390,17 @@ function Header({
     <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-3 border-b border-surface/40">
       <div className="flex items-center gap-3 flex-wrap">
         <h1 className="text-2xl sm:text-3xl font-bold">Drift Dashboard</h1>
+        {(() => {
+          const ageMs = Date.now() - new Date(data.meta.generatedAt).getTime();
+          if (Number.isFinite(ageMs) && ageMs > 5 * 60_000) {
+            return (
+              <span className="px-2 py-0.5 rounded text-xs bg-loss/30 text-loss border border-loss/50">
+                ⚠ STALE ({fmtTimeAgo(data.meta.generatedAt)})
+              </span>
+            );
+          }
+          return null;
+        })()}
         <span
           className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-bold tracking-wide ${statusColor}`}
         >

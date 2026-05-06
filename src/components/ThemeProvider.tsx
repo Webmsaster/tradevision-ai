@@ -73,6 +73,21 @@ export default function ThemeProvider({ children }: { children: ReactNode }) {
     }
   }, [theme]);
 
+  // Cross-tab sync: when a sibling tab clears the saved theme (logout in
+  // another tab), fall back to the system preference here too.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "tradevision-theme" && e.newValue === null) {
+        const sysLight =
+          typeof window !== "undefined" &&
+          window.matchMedia?.("(prefers-color-scheme: light)").matches;
+        setTheme(sysLight ? "light" : "dark");
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
   // R5/R6 deferred-fix: theme leaked across logout because the React state
   // outlived the auth session. Detect the logged-in → logged-out edge and
   // reset to the default (system preference) so the next user sees a clean

@@ -120,9 +120,13 @@ async function cacheFirst(request, cacheName) {
 async function networkFirst(request, cacheName) {
   try {
     const networkResponse = await fetch(request);
-    // Respect Cache-Control: no-store / private — never cache opt-outs
-    const cc = networkResponse.headers.get('cache-control') || '';
-    if (networkResponse.ok && !cc.includes('no-store') && !cc.includes('private')) {
+    // Respect Cache-Control: no-store / private / no-cache — never cache opt-outs
+    // Proper directive parsing: split on ',', trim, drop "=value" suffix so
+    // headers like `private, max-age=0` and `no-cache="set-cookie"` work.
+    const cc = networkResponse.headers.get('cache-control');
+    const directives = (cc || '').toLowerCase().split(',').map((d) => d.trim().split('=')[0]);
+    const noCache = directives.includes('no-store') || directives.includes('private') || directives.includes('no-cache');
+    if (networkResponse.ok && !noCache) {
       const cache = await caches.open(cacheName);
       cache.put(request, networkResponse.clone());
     }

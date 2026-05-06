@@ -1930,5 +1930,136 @@ def test_read_json_missing_file_returns_fallback_silently(monkeypatch, tmp_path)
     assert tg_calls == [], "missing file is not corruption — no alert expected"
 
 
+
+# ============================================================================
+# Round 60 audit (2026-05-06): place_market_order retcode handling
+# ============================================================================
+def test_place_market_order_no_money_triggers_margin_halve(monkeypatch):
+    """retcode 10019 NO_MONEY in order_check → _fit_lot_to_margin halves
+    the lot until it fits, then order_send succeeds with the smaller lot."""
+    import ftmo_executor as exe
+
+    # Force LIVE-mode path so _fit_lot_to_margin actually runs (mock skips it).
+    monkeypatch.setattr(exe, "MOCK_MODE", False)
+    exe._SYMBOL_CACHE.clear()
+
+    info = FakeSpreadSymbolInfo(
+        ask=2001.0, bid=1999.0, spread=20, point=0.01,
+        tick_size=0.01, tick_value=0.01,
+        volume_min=0.01, volume_max=100.0, volume_step=0.01,
+    )
+    monkeypatch.setattr(exe.mt5, "symbol_info", lambda s: info)
+    monkeypatch.setattr(exe.mt5, "symbol_select", lambda s, e: True)
+
+    # order_check returns 10019 twice, then OK — proves halve-loop fires.
+    check_calls = {"n": 0, "lots": []}
+
+    class FakeCheck:
+        def __init__(self, retcode):
+            self.retcode = retcode
+            self.comment = ""
+
+    def fake_check(req):
+        check_calls["n"] += 1
+        check_calls["lots"].append(req["volume"])
+        return FakeCheck(10019) if check_calls["n"] <= 2 else FakeCheck(0)
+
+    monkeypatch.setattr(exe.mt5, "order_check", fake_check, raising=False)
+
+    sent = {}
+
+    class FakeSendRes:
+        def __init__(self):
+            self.retcode = exe.mt5.TRADE_RETCODE_DONE
+            self.order = 7777
+            self.price = 2001.30
+            self.comment = ""
+
+    def fake_send(req):
+        sent["lot"] = req["volume"]
+        return FakeSendRes()
+
+    monkeypatch.setattr(exe.mt5, "order_send", fake_send)
+
+    res = exe.place_market_order(
+        binance_symbol="BTCUSDT",
+        direction="long",
+        risk_frac=0.01,
+        stop_pct=0.01,
+        tp_pct=0.02,
+        account_equity=100000.0,
+        comment="no_money_test",
+    )
+    assert res.ok, f"order failed: {res.error}"
+    assert check_calls["n"] >= 3, "expected at least 2 halve attempts + 1 success"
+    # Each halve must shrink the lot.
+    lots = check_calls["lots"]
+    assert lots[1] < lots[0], f"halve did not shrink lot: {lots}"
+    assert lots[2] < lots[1], f"second halve did not shrink lot: {lots}"
+    # And the final order_send used the smaller, fitted lot.
+    assert sent["lot"] == lots[-1]
+
+
+def test_place_market_order_market_closed_no_retry(monkeypatch):
+    """retcode 10021 MARKET_CLOSED in order_check → _fit_lot_to_margin
+    must NOT halve (it's not a margin issue). Function returns the original
+    lot, and order_send surfaces the failure."""
+    import ftmo_executor as exe
+
+    monkeypatch.setattr(exe, "MOCK_MODE", False)
+    exe._SYMBOL_CACHE.clear()
+
+    info = FakeSpreadSymbolInfo(
+        ask=2001.0, bid=1999.0, spread=20, point=0.01,
+        tick_size=0.01, tick_value=0.01,
+        volume_min=0.01, volume_max=100.0, volume_step=0.01,
+    )
+    monkeypatch.setattr(exe.mt5, "symbol_info", lambda s: info)
+    monkeypatch.setattr(exe.mt5, "symbol_select", lambda s, e: True)
+
+    check_calls = {"n": 0, "lots": []}
+
+    class FakeCheck:
+        def __init__(self, retcode):
+            self.retcode = retcode
+            self.comment = "market closed"
+
+    def fake_check(req):
+        check_calls["n"] += 1
+        check_calls["lots"].append(req["volume"])
+        return FakeCheck(10021)  # MARKET_CLOSED
+
+    monkeypatch.setattr(exe.mt5, "order_check", fake_check, raising=False)
+
+    class FakeSendRes:
+        def __init__(self):
+            self.retcode = 10021
+            self.order = 0
+            self.price = 0.0
+            self.comment = "market closed"
+
+    def fake_send(req):
+        return FakeSendRes()
+
+    monkeypatch.setattr(exe.mt5, "order_send", fake_send)
+
+    res = exe.place_market_order(
+        binance_symbol="BTCUSDT",
+        direction="long",
+        risk_frac=0.01,
+        stop_pct=0.01,
+        tp_pct=0.02,
+        account_equity=100000.0,
+        comment="market_closed_test",
+    )
+    # No retry: exactly one order_check call, lot unchanged.
+    assert check_calls["n"] == 1, (
+        f"expected exactly 1 check (no halve retry), got {check_calls['n']}"
+    )
+    # Order failed because order_send surfaced the 10021.
+    assert not res.ok
+    assert res.error is not None and "10021" in res.error
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

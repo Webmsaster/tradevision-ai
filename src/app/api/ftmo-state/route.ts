@@ -192,7 +192,7 @@ export async function GET() {
   const ruleProgress = {
     dailyLossUsed: Math.max(0, -dailyLossPct / 0.05), // 0 = no loss, 1 = at -5%
     totalLossUsed: Math.max(0, -totalLossPct / 0.1), // 0 = no loss, 1 = at -10%
-    profitTargetProgress: Math.max(0, Math.min(1, totalGainPct / 0.1)), // 0 = start, 1 = hit +10%
+    profitTargetProgress: Math.max(0, Math.min(1, totalGainPct / 0.08)), // 0 = start, 1 = hit +8% (FTMO Normal target)
     dailyLossPct,
     totalLossPct,
     totalGainPct,

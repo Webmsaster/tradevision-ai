@@ -45,9 +45,13 @@ export default function AccountSwitcher() {
     loadFromStorage();
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail;
-      if (detail?.accounts) setAccounts(detail.accounts);
+      if (detail?.accounts) {
+        setAccounts(detail.accounts);
+      } else {
+        // Fallback: third-party dispatchers may omit accounts in detail.
+        loadFromStorage();
+      }
       if (detail?.activeAccountId) setActiveId(detail.activeAccountId);
-      if (!detail) loadFromStorage();
     };
     window.addEventListener(SETTINGS_CHANGED_EVENT, handler);
     window.addEventListener("storage", loadFromStorage);

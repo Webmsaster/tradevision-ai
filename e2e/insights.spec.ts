@@ -2,6 +2,12 @@ import { test, expect } from "@playwright/test";
 import { gotoAndWaitForApp, loadSampleData, waitForAppReady } from "./helpers";
 
 test.describe("AI Insights", () => {
+  test.beforeEach(async ({ page }) => {
+    await gotoAndWaitForApp(page, "/insights");
+    await page.evaluate(() => localStorage.clear());
+    await page.reload({ waitUntil: "domcontentloaded" });
+  });
+
   test("should display empty state when no trades exist", async ({ page }) => {
     await gotoAndWaitForApp(page, "/insights");
     await page.evaluate(() => localStorage.clear());

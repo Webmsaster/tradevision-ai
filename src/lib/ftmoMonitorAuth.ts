@@ -16,6 +16,7 @@
  *   - Otherwise: require `auth.getUser()` to return a session user.
  */
 import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { isPlaceholderSupabaseUrl } from "@/lib/supabase";
 
 const bypassWarned = { logged: false };
 
@@ -31,8 +32,7 @@ export async function requireFtmoMonitorAuth(): Promise<{
       !bypassWarned.logged &&
       process.env.NEXT_PUBLIC_SUPABASE_URL &&
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY &&
-      process.env.NEXT_PUBLIC_SUPABASE_URL !==
-        "https://your-project.supabase.co"
+      !isPlaceholderSupabaseUrl(process.env.NEXT_PUBLIC_SUPABASE_URL)
     ) {
       bypassWarned.logged = true;
       console.warn(

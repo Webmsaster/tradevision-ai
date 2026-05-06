@@ -47,6 +47,7 @@ const sharedEnv = {
   FTMO_START_BALANCE: "100000",
   TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHAT_ID,
+  FTMO_TELEGRAM_BOT_MASTER: "1", // single-account: always master
 };
 
 module.exports = {

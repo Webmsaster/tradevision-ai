@@ -9,7 +9,7 @@ import {
 } from "@/utils/calculations";
 import { TradeStats, PerformanceByTime } from "@/types/trade";
 import { useTradeStorage } from "@/hooks/useTradeStorage";
-import { formatFinite } from "@/utils/formatters";
+import { formatFinite, formatShortDate } from "@/utils/formatters";
 import StatCard from "@/components/StatCard";
 import Skeleton from "@/components/Skeleton";
 
@@ -181,7 +181,9 @@ export default function AnalyticsPage() {
               </div>
               <div className="analytics-highlight-meta">
                 <span>
-                  {new Date(stats.bestTrade.exitDate).toLocaleDateString()}
+                  {formatShortDate(stats.bestTrade.exitDate, {
+                    displayInUTC: true,
+                  })}
                 </span>
                 <span>{stats.bestTrade.direction.toUpperCase()}</span>
               </div>
@@ -203,7 +205,9 @@ export default function AnalyticsPage() {
               </div>
               <div className="analytics-highlight-meta">
                 <span>
-                  {new Date(stats.worstTrade.exitDate).toLocaleDateString()}
+                  {formatShortDate(stats.worstTrade.exitDate, {
+                    displayInUTC: true,
+                  })}
                 </span>
                 <span>{stats.worstTrade.direction.toUpperCase()}</span>
               </div>

@@ -372,6 +372,15 @@ export async function saveTradeToSupabase(
   return true;
 }
 
+/**
+ * Soft-delete a trade. Audit-trail enforcement lives entirely on the client
+ * via the `.is("deleted_at", null)` filter on the UPDATE WHERE clause (see
+ * Round 7 / R67-r5). DO NOT re-introduce a DB trigger to enforce this — the
+ * R67-r3 attempt was reverted in `migration_round67_audit_trigger_drop.sql`
+ * because it broke the legitimate UPSERT-resolve-to-UPDATE re-import path.
+ * The only sanctioned un-tombstone path is the explicit
+ * `update({ deleted_at: null })` in saveBulkTradesToSupabase.
+ */
 export async function deleteTradeFromSupabase(
   supabase: SupabaseClient,
   tradeId: string,

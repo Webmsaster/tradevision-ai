@@ -108,131 +108,137 @@ export function EquityChartSection({ data }: { data: EquityCurveData }) {
           <LegendDot color="#ef4444" label="DL/TL caps" />
         </div>
       </div>
-      <div className="h-[320px] sm:h-[400px]">
-        <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart
-            data={merged}
-            margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
-          >
-            <CartesianGrid stroke="#2a2f3a" strokeDasharray="3 3" />
-            <XAxis
-              dataKey="day"
-              tick={{ fill: "#94a3b8", fontSize: 11 }}
-              label={{
-                value: "Challenge day",
-                position: "insideBottom",
-                offset: -2,
-                fill: "#94a3b8",
-                fontSize: 11,
-              }}
-            />
-            <YAxis
-              tick={{ fill: "#94a3b8", fontSize: 11 }}
-              tickFormatter={(v) => `${v}%`}
-              domain={["dataMin - 2", "dataMax + 2"]}
-            />
-            <Tooltip
-              contentStyle={{
-                background: "#0f1623",
-                border: "1px solid #2a2f3a",
-                borderRadius: 8,
-                fontSize: 12,
-              }}
-              labelStyle={{ color: "#e6edf3" }}
-              formatter={(v, name) => {
-                if (typeof v === "number") {
-                  return [fmtPct(v), String(name)];
-                }
-                if (Array.isArray(v) && v.length === 2) {
-                  const lo = Number(v[0]);
-                  const hi = Number(v[1]);
-                  if (Number.isFinite(lo) && Number.isFinite(hi)) {
-                    return [`${fmtPct(lo)} … ${fmtPct(hi)}`, String(name)];
-                  }
-                }
-                return [String(v ?? "—"), String(name)];
-              }}
-              labelFormatter={(label) => `Day ${label}`}
-            />
-            <Area
-              type="monotone"
-              dataKey="band"
-              stroke="none"
-              fill="#60a5fa"
-              fillOpacity={0.18}
-              isAnimationActive={false}
-              name="band"
-            />
-            <Line
-              type="monotone"
-              dataKey="median"
-              stroke="#60a5fa"
-              strokeWidth={1.5}
-              strokeDasharray="4 4"
-              dot={false}
-              isAnimationActive={false}
-              name="median"
-            />
-            <Line
-              type="monotone"
-              dataKey="live"
-              stroke="#10b981"
-              strokeWidth={2.5}
-              dot={{ r: 3, fill: "#10b981" }}
-              connectNulls
-              isAnimationActive={false}
-              name="live"
-            />
-            <ReferenceLine
-              y={data.equity.targetPct}
-              stroke="#10b981"
-              strokeDasharray="2 2"
-              label={{
-                value: `+${data.equity.targetPct}% target`,
-                fill: "#10b981",
-                fontSize: 10,
-                position: "right",
-              }}
-            />
-            <ReferenceLine
-              y={data.equity.tlCapPct}
-              stroke="#ef4444"
-              strokeDasharray="2 2"
-              label={{
-                value: "-10% TL",
-                fill: "#ef4444",
-                fontSize: 10,
-                position: "right",
-              }}
-            />
-            <ReferenceLine
-              y={data.equity.dlCapPct}
-              stroke="#f59e0b"
-              strokeDasharray="2 2"
-              label={{
-                value: "-5% DL",
-                fill: "#f59e0b",
-                fontSize: 10,
-                position: "right",
-              }}
-            />
-            {newsByDay.map((m, i) => (
-              <ReferenceLine
-                key={`${m.day}-${i}`}
-                x={m.day}
-                stroke="#a78bfa"
-                strokeDasharray="2 4"
+      {merged.length === 0 ? (
+        <div className="h-[320px] flex items-center justify-center text-txt/60 text-sm">
+          No backtest band loaded — check FTMO_TF slug
+        </div>
+      ) : (
+        <div className="h-[320px] sm:h-[400px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart
+              data={merged}
+              margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
+            >
+              <CartesianGrid stroke="#2a2f3a" strokeDasharray="3 3" />
+              <XAxis
+                dataKey="day"
+                tick={{ fill: "#94a3b8", fontSize: 11 }}
                 label={{
-                  value: m.label,
-                  fill: "#a78bfa",
-                  fontSize: 9,
-                  position: "top",
+                  value: "Challenge day",
+                  position: "insideBottom",
+                  offset: -2,
+                  fill: "#94a3b8",
+                  fontSize: 11,
                 }}
               />
-            ))}
-          </ComposedChart>
-        </ResponsiveContainer>
-      </div>
+              <YAxis
+                tick={{ fill: "#94a3b8", fontSize: 11 }}
+                tickFormatter={(v) => `${v}%`}
+                domain={["dataMin - 2", "dataMax + 2"]}
+              />
+              <Tooltip
+                contentStyle={{
+                  background: "#0f1623",
+                  border: "1px solid #2a2f3a",
+                  borderRadius: 8,
+                  fontSize: 12,
+                }}
+                labelStyle={{ color: "#e6edf3" }}
+                formatter={(v, name) => {
+                  if (typeof v === "number") {
+                    return [fmtPct(v), String(name)];
+                  }
+                  if (Array.isArray(v) && v.length === 2) {
+                    const lo = Number(v[0]);
+                    const hi = Number(v[1]);
+                    if (Number.isFinite(lo) && Number.isFinite(hi)) {
+                      return [`${fmtPct(lo)} … ${fmtPct(hi)}`, String(name)];
+                    }
+                  }
+                  return [String(v ?? "—"), String(name)];
+                }}
+                labelFormatter={(label) => `Day ${label}`}
+              />
+              <Area
+                type="monotone"
+                dataKey="band"
+                stroke="none"
+                fill="#60a5fa"
+                fillOpacity={0.18}
+                isAnimationActive={false}
+                name="band"
+              />
+              <Line
+                type="monotone"
+                dataKey="median"
+                stroke="#60a5fa"
+                strokeWidth={1.5}
+                strokeDasharray="4 4"
+                dot={false}
+                isAnimationActive={false}
+                name="median"
+              />
+              <Line
+                type="monotone"
+                dataKey="live"
+                stroke="#10b981"
+                strokeWidth={2.5}
+                dot={{ r: 3, fill: "#10b981" }}
+                connectNulls
+                isAnimationActive={false}
+                name="live"
+              />
+              <ReferenceLine
+                y={data.equity.targetPct}
+                stroke="#10b981"
+                strokeDasharray="2 2"
+                label={{
+                  value: `+${data.equity.targetPct}% target`,
+                  fill: "#10b981",
+                  fontSize: 10,
+                  position: "right",
+                }}
+              />
+              <ReferenceLine
+                y={data.equity.tlCapPct}
+                stroke="#ef4444"
+                strokeDasharray="2 2"
+                label={{
+                  value: "-10% TL",
+                  fill: "#ef4444",
+                  fontSize: 10,
+                  position: "right",
+                }}
+              />
+              <ReferenceLine
+                y={data.equity.dlCapPct}
+                stroke="#f59e0b"
+                strokeDasharray="2 2"
+                label={{
+                  value: "-5% DL",
+                  fill: "#f59e0b",
+                  fontSize: 10,
+                  position: "right",
+                }}
+              />
+              {newsByDay.map((m, i) => (
+                <ReferenceLine
+                  key={`${m.day}-${i}`}
+                  x={m.day}
+                  stroke="#a78bfa"
+                  strokeDasharray="2 4"
+                  label={{
+                    value: m.label,
+                    fill: "#a78bfa",
+                    fontSize: 9,
+                    position: "top",
+                  }}
+                />
+              ))}
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      )}
     </section>
   );
 }
