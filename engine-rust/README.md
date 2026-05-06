@@ -58,25 +58,33 @@ hits + paused, but Rust didn't, leading to 25 of 50 windows where Rust
 matched equity exactly but never declared `passed=true` because the
 trading-days threshold was never reached.
 
-### Full sweep: 136 windows (R28_V6_PASSLOCK Champion reproduction)
+### Full sweep: 136 windows (R28_V6_PASSLOCK Champion reproduction) — **🎯 BIT-PRECISE PARITY**
 
-After dumping the entire 136-window sweep that produced the live R28_V6_PASSLOCK
-champion 63.24% pass-rate:
+| Metric      | TS V4-Sim           | Rust harness                     |
+| ----------- | ------------------- | -------------------------------- |
+| Pass-rate   | **63.50%** (87/137) | **63.50%** (87/137) ✅ identical |
+| Pass-match  | —                   | **137 / 137 = 100%** ✅          |
+| Median Δeq  | —                   | **0.0000pp**                     |
+| Mean Δeq    | —                   | **0.0000pp**                     |
+| Max \|Δeq\| | —                   | **0.0000**                       |
 
-| Metric                              | TS V4-Sim                                                                              | Rust harness            |
-| ----------------------------------- | -------------------------------------------------------------------------------------- | ----------------------- |
-| Pass-rate                           | **63.50%** (87/137 windows) — matches R28_V6_PASSLOCK champion 63.24% within ±0.3pp ✅ | **51.82%** (71/137)     |
-| Pass-match (agreement on pass/fail) | —                                                                                      | **121/137 = 88.3%**     |
-| Median Δeq                          | —                                                                                      | **0.00pp**              |
-| Mean Δeq                            | —                                                                                      | -0.65pp                 |
-| Max \|Δeq\|                         | —                                                                                      | 16.42pp (DPTS outliers) |
+Rust reproduces TS V4-Sim **bit-precisely** on all 137 windows of the
+champion sweep. Every position open/close, every equity update, every
+day-rollover, every PASSLOCK trigger — identical.
 
-**Reading:** TS reproduces the documented champion within rounding. Rust
-agrees with TS on the pass/fail outcome of 121/137 windows (88.3%); the
-remaining 16 windows all show the same `dailyPeakTrailingStop` cumulative
-state-drift pattern that causes the w2 outlier. Closing those needs
-TS-side per-bar state instrumentation. Acceptable for backtest-speedup
-primary use case where a 88% second-opinion is already invaluable.
+Two final bugs closed via per-bar state-diff (`tests/state_diff.rs`,
+re-runnable with `STATE_DIFF_FIXTURE=path.json`):
+
+1. **MTM update timing.** Rust ran MTM update BEFORE exits; TS pollLive
+   line 1361-1382 runs it AFTER exits. With Rust order, mtm/dayPeak
+   missed the equity-jump from a same-bar TP'd close and lagged
+   permanently. Fixed by moving MTM update to post-exits.
+2. **Target-hit predicate.** Rust required only `state.equity ≥
+profit_target`; TS line 1414 requires BOTH `state.equity ≥
+profit_target` AND `state.mtmEquity ≥ profit_target`. Rust's looser
+   check fired target-hit prematurely when one TP'd trade pushed
+   realised over the threshold while other positions were still
+   underwater, causing PASSLOCK to lock in a sub-target equity.
 
 ### Performance
 

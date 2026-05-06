@@ -163,37 +163,43 @@ pub fn step_bar(
         return result;
     }
 
-    // 4. MTM update.
+    // Build prices_by_source ONCE — used by guardian, exit-check and
+    // post-exit MTM. Matches TS pollLive line 1361-1378 (exact match
+    // at last_bar_time, fall back to most-recent-at-or-before).
     let prices_by_source: HashMap<String, f64> = input
         .candles_by_source
         .iter()
         .filter_map(|(k, arr)| {
-            find_candle_at_time(arr, last_bar_time).map(|c| (k.clone(), c.close))
+            let chosen = find_candle_at_time(arr, last_bar_time)
+                .or_else(|| find_candle_at_or_before(arr, last_bar_time));
+            chosen.map(|c| (k.clone(), c.close))
         })
         .collect();
-    state.mtm_equity = compute_mtm_equity(state, &prices_by_source, cfg);
-    if state.mtm_equity > state.day_peak {
-        state.day_peak = state.mtm_equity;
-    }
-    if state.mtm_equity > state.challenge_peak {
-        state.challenge_peak = state.mtm_equity;
-    }
 
-    // 4b. V5R dailyEquityGuardian — when intraday MTM drops to -trigger_pct
-    //     from start-of-day, force-close every open position so realised
-    //     loss is capped at the trigger (preserving the buffer to the 5%
-    //     daily-loss hard stop).
+    // 4a. dailyEquityGuardian (V5R) — checked on a PRE-exit MTM snapshot
+    //     because the guard's purpose is to fire while positions are still
+    //     open. Computes the snapshot inline so we don't mutate
+    //     pos.last_known_price prematurely.
     if let Some(g) = cfg.daily_equity_guardian {
         if state.day_start > 0.0 && !state.open_positions.is_empty() {
-            let day_pnl = (state.mtm_equity - state.day_start) / state.day_start;
+            let mut pre_mtm = state.equity;
+            for pos in state.open_positions.iter() {
+                let Some(&price) = prices_by_source.get(&pos.source_symbol) else { continue };
+                let raw_pnl = match pos.direction {
+                    crate::position::PositionSide::Long => (price - pos.entry_price) / pos.entry_price,
+                    crate::position::PositionSide::Short => (pos.entry_price - price) / pos.entry_price,
+                };
+                let unrealised = (raw_pnl * cfg.leverage * pos.eff_risk)
+                    .max(crate::pnl::GAP_TAIL_MULT * pos.eff_risk);
+                pre_mtm *= 1.0 + unrealised;
+            }
+            let day_pnl = (pre_mtm - state.day_start) / state.day_start;
             if day_pnl <= -g.trigger_pct {
                 let mut closes: Vec<(usize, crate::exit::ExitOutcome)> = vec![];
                 for (idx, pos) in state.open_positions.iter().enumerate() {
-                    let exit_price = input
-                        .candles_by_source
+                    let exit_price = prices_by_source
                         .get(&pos.source_symbol)
-                        .and_then(|arr| find_candle_at_time(arr, last_bar_time))
-                        .map(|c| c.close)
+                        .copied()
                         .or(pos.last_known_price)
                         .unwrap_or(pos.entry_price);
                     closes.push((
@@ -207,19 +213,26 @@ pub fn step_bar(
                     day_pnl * 100.0,
                     g.trigger_pct * 100.0
                 ));
-                // Re-MTM after force-close.
-                state.mtm_equity = state.equity;
             }
         }
     }
 
-    // 5. Exit-check loop.
+    // 5. Exit-check loop. Per TS pollLive line 1264-1353 — exits run
+    //    BEFORE the per-bar MTM recompute so post-exit state.mtm_equity
+    //    accurately reflects only the still-open positions. Earlier Rust
+    //    order (MTM → exits) caused mtm/dayPeak/challengePeak to lag
+    //    every bar with an exit, accumulating into the w2-style drift.
     let mut exits: Vec<(usize, crate::exit::ExitOutcome)> = vec![];
     for (idx, pos) in state.open_positions.iter_mut().enumerate() {
         let Some(arr) = input.candles_by_source.get(&pos.source_symbol) else {
             continue;
         };
-        let Some(candle) = find_candle_at_time(arr, last_bar_time) else {
+        // Same exact-match-then-fallback as TS pollLive line 1273-1283 —
+        // a lagging feed still gets its exit-check on the most-recent
+        // available candle.
+        let Some(candle) = find_candle_at_time(arr, last_bar_time)
+            .or_else(|| find_candle_at_or_before(arr, last_bar_time))
+        else {
             continue;
         };
         let atr_at_bar = input
@@ -238,6 +251,18 @@ pub fn step_bar(
         }
     }
     apply_exits(state, &mut exits, cfg, last_bar_time, &mut result);
+
+    // POST-EXIT MTM update — matches TS pollLive line 1361-1382. After
+    // exits update state.equity, recompute MTM over the REMAINING open
+    // positions and lift dayPeak/challengePeak. With no positions left
+    // (e.g. all-TP'd), mtm == equity by construction.
+    state.mtm_equity = compute_mtm_equity(state, &prices_by_source, cfg);
+    if state.mtm_equity > state.day_peak {
+        state.day_peak = state.mtm_equity;
+    }
+    if state.mtm_equity > state.challenge_peak {
+        state.challenge_peak = state.mtm_equity;
+    }
 
     // 6. Target / DL / TL fail-check (realised equity).
     let total_loss_floor = 1.0 - cfg.max_total_loss;
@@ -267,11 +292,19 @@ pub fn step_bar(
         }
     }
 
-    if state.equity >= 1.0 + cfg.profit_target {
+    // Target-hit detection. TS pollLive line 1414 requires BOTH realised
+    // AND mark-to-market equity to clear the target before declaring
+    // "first target hit". Rust previously checked only realised, which
+    // fired prematurely when a single TP'd trade pushed realised over
+    // the threshold while other positions were still underwater. With
+    // PASSLOCK, that premature target-hit closed all positions and
+    // paused — sometimes locking in a sub-target equity (the w108 bug).
+    if state.equity >= 1.0 + cfg.profit_target
+        && state.mtm_equity >= 1.0 + cfg.profit_target
+        && state.first_target_hit_day.is_none()
+    {
         result.target_hit = true;
-        if state.first_target_hit_day.is_none() {
-            state.first_target_hit_day = Some(state.day);
-        }
+        state.first_target_hit_day = Some(state.day);
         // 7. Pause-after-target latch.
         if cfg.pause_at_target_reached {
             state.paused_at_target = true;

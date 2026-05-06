@@ -39,6 +39,10 @@ interface Args {
   warmup: number;
   stepDays: number;
   out: string;
+  // Diagnostic: when true, writes a `state_per_bar` field with per-bar
+  // snapshots of (mtm, dayPeak, equity, day, openCount). Used to find
+  // first-divergence bar between TS and Rust harness state.
+  debugState: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -48,6 +52,7 @@ function parseArgs(argv: string[]): Args {
     warmup: 5000,
     stepDays: 14,
     out: "engine-rust/ftmo-engine-core/tests/golden/r28v6_window0.json",
+    debugState: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -61,6 +66,7 @@ function parseArgs(argv: string[]): Args {
     else if (arg === "--warmup") a.warmup = parseInt(argv[++i]!, 10);
     else if (arg === "--step") a.stepDays = parseInt(argv[++i]!, 10);
     else if (arg === "--out") a.out = argv[++i]!;
+    else if (arg === "--debug-state") a.debugState = true;
   }
   return a;
 }
@@ -135,6 +141,7 @@ async function main() {
   // Re-implement the simulate-loop with signal capture.
   const state: FtmoLiveStateV4 = initialState(args.config);
   const signalsByBar: Record<string, unknown[]> = {};
+  const stateByBar: Record<string, unknown> = {};
   let challengeEnded = false;
   let passed = false;
   let failReason: string | null = null;
@@ -160,6 +167,21 @@ async function main() {
         tpPct: s.tpPct,
         effRisk: s.effRisk,
       }));
+    }
+    if (args.debugState) {
+      stateByBar[String(i)] = {
+        equity: state.equity,
+        mtmEquity: state.mtmEquity,
+        dayPeak: state.dayPeak,
+        challengePeak: state.challengePeak,
+        day: state.day,
+        dayStart: state.dayStart,
+        openCount: state.openPositions.length,
+        tradingDaysCount: state.tradingDays.length,
+        firstTargetHitDay: state.firstTargetHitDay,
+        pausedAtTarget: state.pausedAtTarget,
+        stoppedReason: state.stoppedReason,
+      };
     }
     if (r.challengeEnded) {
       challengeEnded = true;
@@ -187,6 +209,7 @@ async function main() {
     warmup: args.warmup,
     bars_by_source: trimmed,
     signals_by_bar: signalsByBar,
+    state_per_bar: args.debugState ? stateByBar : undefined,
     expected: {
       passed,
       challenge_ended: challengeEnded,
