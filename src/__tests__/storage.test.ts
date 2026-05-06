@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   saveTrades,
   loadTrades,
@@ -56,6 +56,10 @@ beforeEach(() => {
       delete store[key];
     }),
   });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("saveTrades / loadTrades", () => {

@@ -168,10 +168,20 @@ export default function ImportPage() {
       accountId: activeAccountId,
     }));
     const count = await importTrades(fresh);
-    setNotification({
-      message: `Loaded ${count} sample trade${count !== 1 ? "s" : ""}.`,
-      type: "success",
-    });
+    if (count === 0) {
+      // R8 fix: previously showed "Loaded 0 sample trades." as success — now
+      // surface as error so the user actually notices the silent failure.
+      setNotification({
+        message:
+          "No sample trades were imported. They may already exist for this account, or storage is unavailable.",
+        type: "error",
+      });
+    } else {
+      setNotification({
+        message: `Loaded ${count} sample trade${count !== 1 ? "s" : ""}.`,
+        type: "success",
+      });
+    }
   }
 
   // ---------------------------------------------------------------------------

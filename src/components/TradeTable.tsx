@@ -236,7 +236,9 @@ export default function TradeTable({
                 }}
                 style={{ cursor: "pointer" }}
               >
-                <td>{formatTradeDate(trade.exitDate)}</td>
+                <td>
+                  {formatTradeDate(trade.exitDate, { displayInUTC: true })}
+                </td>
                 <td>{trade.pair}</td>
                 <td>
                   <span

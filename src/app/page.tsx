@@ -148,7 +148,13 @@ export default function DashboardPage() {
           : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
       accountId: activeAccountId,
     }));
-    await importTrades(fresh);
+    // R8 fix: surface count to user — silent zero-import was confusing.
+    const count = await importTrades(fresh);
+    if (count === 0) {
+      console.warn(
+        "[Dashboard] handleLoadSampleData imported 0 trades — possible dedup or storage failure.",
+      );
+    }
   };
 
   /**

@@ -883,18 +883,18 @@ export interface FtmoDaytrade24hConfig {
 function spreadCrossAssetFilter(
   base: NonNullable<FtmoDaytrade24hConfig["crossAssetFilter"]> | undefined,
 ): NonNullable<FtmoDaytrade24hConfig["crossAssetFilter"]> {
-  // R67-r8: previously threw on undefined base which broke module-load if a
-  // future config forgot to define crossAssetFilter on the parent. Throw was
-  // too aggressive \u2014 surface the dev error via warn but return {} so the
-  // module still loads and other configs keep working. Empty-object cast is
-  // safe because consumers spread into a parent that already has the same
-  // (non-optional) keys, so missing fields would only get re-introduced from
-  // the parent\u2019s defaults.
+  // R67-r9 audit fix: REVERT R8 weakening. The R8 warn-and-return-empty
+  // approach silently propagates `undefined` into all consumers (symbol,
+  // emaFastPeriod, emaSlowPeriod are required-non-optional in the type),
+  // producing silent NaN cascades through ema()/aligned[symbol] lookups.
+  // Throw is fail-fast and correct \u2014 module-load crash is the RIGHT
+  // failure mode for a dev typo; the empty-object workaround makes
+  // backtests silently produce wrong numbers. If a future config legitimately
+  // wants to spread without a base, that's a code-smell to address upstream.
   if (!base) {
-    console.warn(
-      "[ftmoDaytrade24h] spreadCrossAssetFilter called with undefined base \u2014 define crossAssetFilter on the parent config first. Returning empty object.",
+    throw new Error(
+      "spreadCrossAssetFilter called with undefined base \u2014 define crossAssetFilter on the parent config first. Refusing to silently propagate undefined fields.",
     );
-    return {} as NonNullable<FtmoDaytrade24hConfig["crossAssetFilter"]>;
   }
   return { ...base };
 }

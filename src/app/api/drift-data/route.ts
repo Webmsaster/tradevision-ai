@@ -17,6 +17,7 @@ import { join, resolve } from "node:path";
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 import { isRateLimited } from "@/utils/distributedRateLimit";
+import { pragueDay } from "@/utils/ftmoDaytrade24h";
 
 // ---------------------------------------------------------------------------
 // Config / constants
@@ -363,7 +364,9 @@ function reconstructEquityHistory(
     const t = new Date(e.ts).getTime();
     if (!Number.isFinite(t)) continue;
     if (firstTs === null) firstTs = t;
-    const day = Math.floor((t - firstTs) / (24 * 3600 * 1000));
+    // R8 fix: Prague-day-aware bucketing (matches engine + Python executor;
+    // raw UTC-ms floor was off-by-one on DST boundaries).
+    const day = pragueDay(t) - pragueDay(firstTs);
     points.push({
       ts: e.ts,
       day,
@@ -380,7 +383,8 @@ function reconstructEquityHistory(
   const lastTsMs = new Date(lastTs).getTime();
   if (Number.isFinite(lastTsMs)) {
     if (firstTs === null) firstTs = lastTsMs;
-    const lastDay = Math.floor((lastTsMs - firstTs) / (24 * 3600 * 1000));
+    // R8 fix: Prague-day-aware bucketing (see above).
+    const lastDay = pragueDay(lastTsMs) - pragueDay(firstTs);
     // De-dupe if the last reset already covers today's equity
     const last = points[points.length - 1];
     if (!last || last.equityUsd !== liveEquityUsd || last.day !== lastDay) {

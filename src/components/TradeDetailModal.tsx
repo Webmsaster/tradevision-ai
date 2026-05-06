@@ -172,13 +172,13 @@ export default function TradeDetailModal({
           <div className="trade-detail-item">
             <span className="trade-detail-item-label">Entry Date</span>
             <span className="trade-detail-item-value">
-              {formatDetailDate(trade.entryDate)}
+              {formatDetailDate(trade.entryDate, { displayInUTC: true })}
             </span>
           </div>
           <div className="trade-detail-item">
             <span className="trade-detail-item-label">Exit Date</span>
             <span className="trade-detail-item-value">
-              {formatDetailDate(trade.exitDate)}
+              {formatDetailDate(trade.exitDate, { displayInUTC: true })}
             </span>
           </div>
           <div className="trade-detail-item">

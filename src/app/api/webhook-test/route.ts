@@ -301,8 +301,17 @@ export async function POST(request: Request) {
       });
     }
 
+    // R67-r9 audit fix: log injection via body.platform. Body is user-supplied
+    // JSON, only TS-typed (runtime unchecked). Allowlist the platform value
+    // before composing the log line — without this, an attacker can inject
+    // newlines + fake log entries via `{"platform": "evil\nFAKE: ..."}`.
+    const platformSafe = ["discord", "telegram", "custom"].includes(
+      body?.platform as string,
+    )
+      ? (body!.platform as string)
+      : "custom";
     console.info(
-      `[webhook-test] ip=${ip} host=${parsed.host} platform=${body?.platform ?? "custom"} status=${resp.status} latencyMs=${latencyMs}`,
+      `[webhook-test] ip=${ip} host=${parsed.host} platform=${platformSafe} status=${resp.status} latencyMs=${latencyMs}`,
     );
     return NextResponse.json({ ok: true, status: resp.status, latencyMs });
   } catch (err) {

@@ -9,7 +9,7 @@
  * Task E: handleRemoveAccount no off-by-one — fallback uses post-filter
  *         array (WARNING)
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import React from "react";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 
@@ -168,6 +168,10 @@ describe("Round 9 / Task D — importTrades skips content-duplicates", () => {
     vi.resetModules();
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("skips the second import when content matches an existing trade", async () => {
     const { renderHook, act: rhAct } = await import("@testing-library/react");
     const { useTradeStorage } = await import("@/hooks/useTradeStorage");
@@ -266,6 +270,10 @@ describe("Round 9 / Task A+B — Settings page webhook test handler", () => {
         } as unknown as Response),
       ),
     );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   async function renderSettings() {
@@ -399,6 +407,10 @@ describe("Round 9 / Task E — handleRemoveAccount post-filter fallback", () => 
       }),
     });
     vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("removes first account and falls back to a remaining (NOT removed) account id", async () => {

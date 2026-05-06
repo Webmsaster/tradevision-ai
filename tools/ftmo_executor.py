@@ -498,7 +498,20 @@ def check_ftmo_rules(current_equity: float, day_start_equity: float) -> Optional
     new orders well before the actual FTMO -5% / -10% caps. Emergency-close
     of OPEN positions is handled separately in sync_account_state with a
     larger buffer (see DL_EMERGENCY_BUFFER / TL_EMERGENCY_BUFFER).
+
+    R67-r9 audit: zero-divisor guard on day_start_equity. Without this, a
+    corrupt daily-reset.json (or fresh-boot before the first daily-reset
+    write) returns 0.0 → ZeroDivisionError → crashes the trade loop. Now
+    we refuse to entry-check rather than crash, blocking new entries until
+    next reset cycle restores valid state.
     """
+    if not day_start_equity or day_start_equity <= 0:
+        log_event(
+            "ftmo_rules_invalid_day_start",
+            day_start_equity=day_start_equity,
+            level="warn",
+        )
+        return "invalid day_start_equity — refusing to entry-check"
     daily_pct = (current_equity - day_start_equity) / day_start_equity
     # 0.005 → 0.010 (block at -4.0% instead of -4.5%): crypto can move 0.5%
     # in a 30-second poll window, that buffer was too tight to prevent breach.
@@ -2713,7 +2726,13 @@ _last_dd_warn_sent = [""]  # date of last dd warn sent, to avoid spam
 
 
 def sample_equity_history(current_equity_usd: float) -> None:
-    """Append equity snapshot to equity-history.jsonl every EQUITY_HISTORY_INTERVAL_SEC."""
+    """Append equity snapshot to equity-history.jsonl every EQUITY_HISTORY_INTERVAL_SEC.
+
+    R67-r9 audit: was missing rotation, lock, and fsync — at 288 lines/day
+    × ~150 bytes ≈ 16MB/year per account, the file grew unbounded. Now
+    rotated via _rotate_jsonl_if_needed (20MB cap), fsync'd for
+    crash-durability, and lock-protected against future concurrent writers.
+    """
     now = time.time()
     if now - _last_equity_snapshot[0] < EQUITY_HISTORY_INTERVAL_SEC:
         return
@@ -2724,8 +2743,21 @@ def sample_equity_history(current_equity_usd: float) -> None:
         "equity_usd": current_equity_usd,
         "equity_pct": (current_equity_usd - CHALLENGE_START_BALANCE) / CHALLENGE_START_BALANCE,
     }
-    with open(EQUITY_HISTORY_PATH, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+    line = json.dumps(entry) + "\n"
+    lock_path = STATE_DIR / "equity-history.lock"
+    try:
+        with _file_lock(lock_path, timeout_sec=2.0, stale_sec=2.0):
+            _rotate_jsonl_if_needed(EQUITY_HISTORY_PATH, max_mb=20)
+            with open(EQUITY_HISTORY_PATH, "a", encoding="utf-8") as f:
+                f.write(line)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+    except Exception as e:
+        # Don't crash the main loop on equity-history persistence failure.
+        log_event("equity_history_write_failed", error=str(e), level="warn")
 
 
 def check_circuit_breaker() -> Optional[str]:
