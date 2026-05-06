@@ -64,8 +64,13 @@ export function isValidTrade(obj: unknown): obj is Trade {
     typeof t.quantity === "number" &&
     Number.isFinite(t.quantity) &&
     t.quantity > 0 &&
+    // R67-r8 audit: dates must be parseable to a finite epoch-ms. Without
+    // this, JSON re-imports with naive EU strings ("15.04.2026") slipped
+    // through and propagated NaN through all stats/aggregates downstream.
     typeof t.entryDate === "string" &&
+    Number.isFinite(new Date(t.entryDate).getTime()) &&
     typeof t.exitDate === "string" &&
+    Number.isFinite(new Date(t.exitDate).getTime()) &&
     typeof t.pnl === "number" &&
     Number.isFinite(t.pnl) &&
     typeof t.pnlPercent === "number" &&

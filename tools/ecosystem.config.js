@@ -84,8 +84,13 @@ module.exports = {
         FTMO_BNB_SYMBOL: "BNBUSD",
         FTMO_ADA_SYMBOL: "ADAUSD",
         FTMO_DOGE_SYMBOL: "DOGEUSD",
-        // Phase 62 (R45-CFG-Low): typo fix `AVAUSD` → `AVAXUSD`.
-        FTMO_AVAX_SYMBOL: "AVAXUSD",
+        // R67-r8 audit: REVERT inverse-regression. User-verified 2026-04-27
+        // (FTMO MT5 Symbols dialog screenshot, see reference_ftmo_mt5_tickers.md):
+        // FTMO ticker is AVAUSD (no X). The "Phase 62 typo fix" went the
+        // wrong direction. ftmo_executor.py:140 default is correct AVAUSD.
+        // With AVAXUSD: mt5.symbol_info("AVAXUSD") → None → AVAX silently
+        // dropped. Don't "fix" this back without verifying MT5 dialog.
+        FTMO_AVAX_SYMBOL: "AVAUSD",
       },
       autorestart: true,
       max_restarts: 50,

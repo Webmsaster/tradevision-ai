@@ -98,11 +98,14 @@ export async function syncServerTime(
       const data = (await res.json()) as { serverTime?: number };
       if (typeof data.serverTime === "number") {
         serverTimeOffset = data.serverTime - Date.now();
-        lastSyncMs = Date.now();
       }
     } catch {
       // Keep existing offset on network/timeout errors.
     } finally {
+      // R67-r8: throttle even on failure to prevent retry storms during
+      // Binance outages — without this, every signedGet() during an outage
+      // would re-issue /fapi/v1/time and pile up failed fetches.
+      lastSyncMs = Date.now();
       inFlight = null;
     }
     return serverTimeOffset;

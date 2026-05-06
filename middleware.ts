@@ -42,6 +42,16 @@ function buildCsp(nonce: string): string {
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
+    // R67-r8 audit: explicit fallbacks for non-script contexts. Without
+    // these, the PWA service-worker (/sw.js) and manifest could be silently
+    // blocked under strict CSP because `worker-src` falls back through
+    // child-src/default-src and Chrome historically had quirks where
+    // 'strict-dynamic' on script-src propagated to worker creation.
+    // object-src 'none' kills <object>/<embed> Flash-style XSS — does NOT
+    // fall back from default-src in older browsers, so explicit set required.
+    "worker-src 'self'",
+    "manifest-src 'self'",
+    "object-src 'none'",
   ].join("; ");
 }
 

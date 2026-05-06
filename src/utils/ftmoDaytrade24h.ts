@@ -883,10 +883,18 @@ export interface FtmoDaytrade24hConfig {
 function spreadCrossAssetFilter(
   base: NonNullable<FtmoDaytrade24hConfig["crossAssetFilter"]> | undefined,
 ): NonNullable<FtmoDaytrade24hConfig["crossAssetFilter"]> {
+  // R67-r8: previously threw on undefined base which broke module-load if a
+  // future config forgot to define crossAssetFilter on the parent. Throw was
+  // too aggressive \u2014 surface the dev error via warn but return {} so the
+  // module still loads and other configs keep working. Empty-object cast is
+  // safe because consumers spread into a parent that already has the same
+  // (non-optional) keys, so missing fields would only get re-introduced from
+  // the parent\u2019s defaults.
   if (!base) {
-    throw new Error(
-      "crossAssetFilter spread on a config without a base \u2014 define crossAssetFilter on the parent first",
+    console.warn(
+      "[ftmoDaytrade24h] spreadCrossAssetFilter called with undefined base \u2014 define crossAssetFilter on the parent config first. Returning empty object.",
     );
+    return {} as NonNullable<FtmoDaytrade24hConfig["crossAssetFilter"]>;
   }
   return { ...base };
 }

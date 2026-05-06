@@ -301,6 +301,9 @@ export async function POST(request: Request) {
       });
     }
 
+    console.info(
+      `[webhook-test] ip=${ip} host=${parsed.host} platform=${body?.platform ?? "custom"} status=${resp.status} latencyMs=${latencyMs}`,
+    );
     return NextResponse.json({ ok: true, status: resp.status, latencyMs });
   } catch (err) {
     const latencyMs = Date.now() - startedAt;

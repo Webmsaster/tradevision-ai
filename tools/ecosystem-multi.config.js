@@ -126,7 +126,8 @@ function buildAppPair(envFile, accountLabel) {
         FTMO_BNB_SYMBOL: "BNBUSD",
         FTMO_ADA_SYMBOL: "ADAUSD",
         FTMO_DOGE_SYMBOL: "DOGEUSD",
-        FTMO_AVAX_SYMBOL: "AVAXUSD",
+        // R67-r8: AVAUSD (no X) per FTMO MT5 dialog (2026-04-27).
+        FTMO_AVAX_SYMBOL: "AVAUSD",
       },
       autorestart: true,
       max_restarts: 50,

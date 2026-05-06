@@ -77,12 +77,23 @@ export default function ThemeProvider({ children }: { children: ReactNode }) {
   // outlived the auth session. Detect the logged-in → logged-out edge and
   // reset to the default (system preference) so the next user sees a clean
   // slate instead of the previous user's dark/light choice.
+  // R67-r8 audit fix: readSystemPreference reads localStorage which still
+  // holds the prev user's theme (R6's signOut clears it but theme-persist
+  // effect ran AFTER, re-writing it). Clear localStorage FIRST, then read
+  // pure system preference (matchMedia only).
   useEffect(() => {
     const currId = user?.id ?? null;
     if (prevUserRef.current && !currId) {
       // logout transition
-      const next = readSystemPreference();
-      setTheme(next);
+      try {
+        localStorage.removeItem("tradevision-theme");
+      } catch {
+        /* ignore — Safari-ITP/quota */
+      }
+      const sysLight =
+        typeof window !== "undefined" &&
+        window.matchMedia?.("(prefers-color-scheme: light)").matches;
+      setTheme(sysLight ? "light" : "dark");
     }
     prevUserRef.current = currId;
   }, [user]);

@@ -7,7 +7,8 @@ import CSVImport from "@/components/CSVImport";
 import ConfirmDialog from "@/components/ConfirmDialog";
 
 export default function ImportPage() {
-  const { trades, importTrades, clearAll, setAllTrades } = useTradeStorage();
+  const { trades, importTrades, clearAll, setAllTrades, activeAccountId } =
+    useTradeStorage();
   const [notification, setNotification] = useState<{
     message: string;
     type: "success" | "error";
@@ -155,7 +156,18 @@ export default function ImportPage() {
   // ---------------------------------------------------------------------------
   async function handleLoadSampleData() {
     const { sampleTrades } = await import("@/data/sampleTrades");
-    const count = await importTrades(sampleTrades);
+    // R67-r8: stamp fresh UUIDs + activeAccountId so samples are visible
+    // under the current account and won't collide on UUID PK if pushed to
+    // cloud (same fix as dashboard's R7 sample loader).
+    const fresh = sampleTrades.map((t) => ({
+      ...t,
+      id:
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      accountId: activeAccountId,
+    }));
+    const count = await importTrades(fresh);
     setNotification({
       message: `Loaded ${count} sample trade${count !== 1 ? "s" : ""}.`,
       type: "success",

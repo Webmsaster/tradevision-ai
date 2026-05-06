@@ -74,13 +74,16 @@ export function __resetTelegramSuppression(): void {
 }
 
 /**
- * Force-clear the suppression state from outside (supervisor / admin
- * endpoint after the operator has confirmed the token is valid again).
- * Unlike `__resetTelegramSuppression` this is a public API — exported with
- * a `__` prefix to keep callers honest about the recovery intent.
+ * Force-clear the suppression state from outside (supervisor after the
+ * operator has confirmed the token is valid again). Unlike
+ * `__resetTelegramSuppression` this is a public API — exported with a `__`
+ * prefix to keep callers honest about the recovery intent.
  *
  * R67-r4: pairs with the new expanding-cooldown logic so an operator does
  * not have to wait the full 24h cap after rotating a bot token.
+ *
+ * R67-r8: dedicated admin-endpoint deferred to R9 (will land alongside the
+ * actual route file).
  */
 export function __forceClearTelegramSuppression(): void {
   clearSuppression();

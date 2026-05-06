@@ -166,7 +166,11 @@ for (let start = WARMUP; start + winBars <= minBars; start += stepBars) {
         source_symbol: sym,
         bar_idx: idx,
         features,
-        ticket_id: `${sig.entryTime}-${sig.symbol}`,
+        // R67-r8 audit fix: match the engine's ticketId format exactly
+        // (ftmoLiveEngineV4.ts:1831 = `${asset.symbol}@${matched.entryTime}@${matched.direction}`).
+        // R7 used `${sig.entryTime}-${sig.symbol}` which would never match
+        // closes → ZERO labeled rows → ML training silently bombs.
+        ticket_id: `${sig.symbol}@${sig.entryTime}@${sig.direction}`,
         emitted_at_ts: c.openTime,
       });
     }
