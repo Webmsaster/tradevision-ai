@@ -23,3 +23,4 @@ chrono.workspace = true
 anyhow.workspace = true
 csv.workspace = true
 rayon.workspace = true
+mimalloc.workspace = true

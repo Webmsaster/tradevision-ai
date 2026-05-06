@@ -1,6 +1,9 @@
 //! criterion benchmarks for the harness `step_bar` hot path. Three
 //! profiles: idle (no signals), breakout-driven, and mean-reversion.
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::collections::HashMap;
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
@@ -9,7 +12,8 @@ use ftmo_engine_core::harness::{step_bar, BarInput};
 use ftmo_engine_core::indicators::atr;
 use ftmo_engine_core::signal::PollSignal;
 use ftmo_engine_core::signals_breakout::{detect_breakout, BreakoutParams};
-use ftmo_engine_core::signals_meanrev::detect_mean_reversion;
+use ftmo_engine_core::indicators::rsi;
+use ftmo_engine_core::signals_meanrev::{detect_mean_reversion, detect_mean_reversion_with_rsi};
 use ftmo_engine_core::state::EngineState;
 use ftmo_engine_core::Candle;
 
@@ -132,6 +136,9 @@ fn bench_meanrev(c: &mut Criterion) {
         cooldown_bars: 8,
         size_mult: 0.5,
     };
+    // Pre-compute RSI ONCE per window (was: per-bar inside the detector).
+    let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
+    let rsi_full = rsi(&closes, src.period as usize);
     c.bench_function("step_bar_meanrev_2000", |b| {
         b.iter(|| {
             let mut state = EngineState::initial(&cfg.label);
@@ -139,15 +146,19 @@ fn bench_meanrev(c: &mut Criterion) {
             feed.insert("BTCUSDT".into(), Vec::with_capacity(N_BARS));
             let mut atr_feed: HashMap<String, Vec<Option<f64>>> = HashMap::new();
             atr_feed.insert("BTCUSDT".into(), Vec::with_capacity(N_BARS));
+            let mut rsi_feed: Vec<Option<f64>> = Vec::with_capacity(N_BARS);
             for i in 0..N_BARS {
                 feed.get_mut("BTCUSDT").unwrap().push(candles[i]);
                 atr_feed.get_mut("BTCUSDT").unwrap().push(atr_series[i]);
+                rsi_feed.push(rsi_full[i]);
                 let arr = feed.get("BTCUSDT").unwrap();
-                let signals: Vec<PollSignal> =
-                    match detect_mean_reversion(&mut state, &cfg, &asset, "BTCUSDT", arr, &src) {
-                        Some(s) => vec![s],
-                        None => vec![],
-                    };
+                let signals: Vec<PollSignal> = match detect_mean_reversion_with_rsi(
+                    &mut state, &cfg, &asset, "BTCUSDT", arr, &rsi_feed, &src,
+                ) {
+                    Some(s) => vec![s],
+                    None => vec![],
+                };
+                let _ = detect_mean_reversion; // silence unused-import warning
                 let _ = step_bar(
                     &mut state,
                     &BarInput {

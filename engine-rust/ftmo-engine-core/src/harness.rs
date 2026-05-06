@@ -257,11 +257,11 @@ pub fn step_bar(
         return result;
     }
     // Ping-day bookkeeping (R57 V4-3 Fix 5): after target hits + paused,
-    // every new calendar day counts toward minTradingDays via the
-    // ping-trade pattern (real-world bot pings broker daily). Mirrors TS
-    // pollLive line 1498-1503.
+    // every new calendar day counts toward minTradingDays. Reuses the
+    // day_index already computed above as `new_day` — saves a chrono-tz
+    // round-trip per bar in the paused-after-target phase.
     if state.paused_at_target && state.first_target_hit_day.is_some() {
-        let ping_day = day_index(last_bar_time, state.challenge_start_ts) as u32;
+        let ping_day = new_day as u32;
         if !state.trading_days.contains(&ping_day) {
             state.trading_days.push(ping_day);
         }

@@ -1,46 +1,63 @@
 # engine-rust performance notes
 
-Phase 8 of the roadmap (zero-copy slices + SmallVec adoption) is partially
-landed. The dependency is wired (`smallvec` workspace dep) so future
-adoptions don't require Cargo changes. Concrete optimisation work is
-**deferred until criterion benchmarks identify real hotspots** — premature
-SmallVec / lifetime gymnastics for hand-waved gains is the wrong order.
+## Current state (post optimisation pass)
+
+`step_bar` throughput on 2000-bar synthetic candle stream:
+
+| Profile                | Before optimisations | After      | Speedup   |
+| ---------------------- | -------------------- | ---------- | --------- |
+| idle (no signals)      | 708 µs               | **220 µs** | **3.2×**  |
+| breakout signals       | 728 µs               | **241 µs** | **3.0×**  |
+| mean-reversion signals | 6370 µs              | **363 µs** | **17.5×** |
+
+Two changes delivered the gains:
+
+1. **`prague_offset_ms` allocation removal.** The original implementation
+   called `format("%H").to_string()` on a chrono datetime twice per
+   invocation, then parsed the resulting Strings back to integers. With
+   `day_index` running ~3 times per bar, that's 6 String allocs per bar
+   = ~12k allocs per 2000-bar window. Replaced with direct `.hour()`
+   reads — zero allocations. Single biggest win across all profiles.
+
+2. **RSI pre-cache for mean-reversion detector.** Original
+   `detect_mean_reversion` recomputed the full RSI series O(N) per bar,
+   making it O(N²) over a window. New `detect_mean_reversion_with_rsi`
+   takes a pre-computed series and just reads two indices. 8× win on
+   mean-reversion alone.
 
 ## Already in (Phase 1-7)
 
-- Pre-allocation: bench/sweep call `Vec::with_capacity(hi - lo)` for
-  per-window feed buffers.
-- `trim_inline` runs every step_bar so `state.kelly_pnls` /
-  `state.closed_trades` stay bounded.
-- `chrono-tz` Prague-offset is computed via `Intl`-style lookup once per
-  bar (not per-position).
+- mimalloc as global allocator on all binaries (`ftmo-engine`, `ftmo-bench`,
+  `ftmo-sweep`, criterion bench harness). Marginal here (~1-2%) because
+  the engine is not allocator-bound, but the dependency is wired.
+- ATR pre-computation: bench / sweep / golden_runner / drift_summary all
+  precompute once per window.
+- Smallvec workspace dep wired (used in harness internals).
+- `trim_inline` per step keeps state.kelly_pnls / closed_trades bounded.
 
-## Measured (rough)
+## Likely-next wins (criterion-gated)
 
-- `target/release/ftmo-bench --signals breakout`: ~2-4M bars/sec on 8 threads
-- `target/release/ftmo-bench --signals none`: ~8M bars/sec on 8 threads
-- `target/release/ftmo-sweep --signals breakout`: ~3M bars/sec; ~1ms per
-  300-bar window
+1. **`SmallVec<[PollSignal; 2]>` for `BarInput.signals`** — typical
+   per-bar emission is 0-1 signals. Current Vec on every call has small
+   alloc overhead. Internal-only refactor; should be safe.
 
-## Likely-next wins (criterion will confirm)
+2. **Pass `&[Candle]` instead of `&HashMap<String, Vec<Candle>>`** —
+   would require BarInput type signature change and a CandleSource trait
+   abstraction. Estimated 2× win on top of current state. Defer until
+   after the obvious low-hanging fruit is exhausted.
 
-1. **Pass `&[Candle]` instead of `&HashMap<String, Vec<Candle>>`** —
-   touching BarInput type signature breaks all callers, so should be done
-   together with a CandleSource trait abstraction. Estimated win 2-5×.
-2. **`SmallVec<[PollSignal; 2]>` for `BarInput.signals`** — typical
-   per-bar emission is 0-1 signals. Same as (1), needs API plumbing.
-3. **`SmallVec<[(usize, ExitOutcome); 4]>` for internal apply_exits**
-   buffers. Internal-only; safe to land first. Estimated 5-10% win.
-4. **Replace `BTreeMap` in `engine::run_window` with `HashMap`** for
-   non-deterministic-key but faster-lookup paths.
-5. **Vectorise ATR / RSI computation** with `wide` SIMD crate. Likely
-   20-40% on indicator-heavy detectors.
+3. **SIMD ATR / RSI via `wide` crate** — would help full-history Kelly
+   and chandelier ATR recomputation. Diminishing returns now that
+   pre-cache is done.
 
-Run criterion to baseline before optimising:
+4. **Object pool for `ExitOutcome` / `PollSignal` allocations** — the
+   `apply_exits` internal Vec gets reallocated per bar. SmallVec or a
+   reusable scratch buffer would eliminate it.
+
+## Run criterion to track progress
 
 ```bash
 cd engine-rust && cargo bench --bench step_bar_throughput
 ```
 
-Compare `target/criterion/step_bar_*/report/index.html` between baseline
-and optimised commits.
+Compare `target/criterion/step_bar_*/report/index.html` between commits.

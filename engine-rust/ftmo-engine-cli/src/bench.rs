@@ -14,6 +14,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use anyhow::{anyhow, Result};
 use ftmo_engine_core::config::{AssetConfig, EngineConfig};
 use ftmo_engine_core::harness::{step_bar, BarInput};

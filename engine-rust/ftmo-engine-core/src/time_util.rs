@@ -2,7 +2,7 @@
 //! `src/utils/ftmoLiveEngineV4.ts` (`pragueOffsetMs`, `dayIndex`, `lsKey`,
 //! `findCandleAtTime`).
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use chrono_tz::Europe::Prague;
 
 use crate::candle::Candle;
@@ -18,15 +18,10 @@ pub fn prague_offset_ms(ts_ms: i64) -> i64 {
         Some(t) => t,
         None => return 3_600_000,
     };
-    let prague = utc.with_timezone(&Prague);
-    let prague_hour = prague.format("%H").to_string();
-    let Ok(prague_hour) = prague_hour.parse::<i64>() else {
-        return 3_600_000;
-    };
-    let utc_hour = utc.format("%H").to_string();
-    let Ok(utc_hour) = utc_hour.parse::<i64>() else {
-        return 3_600_000;
-    };
+    // Direct hour() reads — no String allocations (was: format("%H").to_string()
+    // + parse, two allocs per call).
+    let prague_hour = utc.with_timezone(&Prague).hour() as i64;
+    let utc_hour = utc.hour() as i64;
     let mut diff = prague_hour - utc_hour;
     if diff > 12 {
         diff -= 24;
