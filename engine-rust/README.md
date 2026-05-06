@@ -38,12 +38,25 @@ through golden_runner / drift_summary / drift_diagnose:
 | w3     | -12.79% | -12.79% | **0.00pp** ✅   | false / false  | 8 / 8            |
 | w4     | -7.84%  | -7.84%  | **0.00pp** ✅   | false / false  | 2 / 2            |
 
-**4/5 perfect parity** (was 3/5). w2 still drifts — `dailyPeakTrailingStop`
-fires more aggressively in Rust on long-running windows due to per-bar
-state divergence accumulating after many bars. The drift-diagnose test
-(`tests/drift_diagnose.rs`) instruments per-bar skip-counter for further
-debug. Hypothesis verified by stripping DPTS from the cfg → 25/25 trades
-match TS exactly. The remaining gap is a state-tracking timing diff.
+**4/5 perfect parity** (was 3/5). w2 still drifts.
+
+### Larger sample: 50-window drift sweep
+
+After **2 substantive bug fixes** (anchor-handling + ping-day bookkeeping
+for paused-after-target runs):
+
+| Metric                            | Value                                               |
+| --------------------------------- | --------------------------------------------------- |
+| pass-match (rust_pass == ts_pass) | **43 / 51 = 84.3%** (was 35.3% pre-ping-day-fix)    |
+| median Δeq                        | **0.00pp**                                          |
+| mean Δeq                          | -1.36pp                                             |
+| max\|Δeq\|                        | 16.42pp (single outlier — w2 dailyPeakTrailingStop) |
+
+The ping-day fix (R57 V4-3 Fix 5) was a substantial bug: TS's pollLive
+accumulates `tradingDays` via the daily ping-trade pattern after target
+hits + paused, but Rust didn't, leading to 25 of 50 windows where Rust
+matched equity exactly but never declared `passed=true` because the
+trading-days threshold was never reached.
 
 | Suite                                               | Count              | What it covers                                                                                       |
 | --------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------- |

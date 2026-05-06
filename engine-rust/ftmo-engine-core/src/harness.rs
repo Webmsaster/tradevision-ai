@@ -256,6 +256,17 @@ pub fn step_bar(
         bookkeep(state, last_bar_time, cfg);
         return result;
     }
+    // Ping-day bookkeeping (R57 V4-3 Fix 5): after target hits + paused,
+    // every new calendar day counts toward minTradingDays via the
+    // ping-trade pattern (real-world bot pings broker daily). Mirrors TS
+    // pollLive line 1498-1503.
+    if state.paused_at_target && state.first_target_hit_day.is_some() {
+        let ping_day = day_index(last_bar_time, state.challenge_start_ts) as u32;
+        if !state.trading_days.contains(&ping_day) {
+            state.trading_days.push(ping_day);
+        }
+    }
+
     if state.equity >= 1.0 + cfg.profit_target {
         result.target_hit = true;
         if state.first_target_hit_day.is_none() {
@@ -291,6 +302,21 @@ pub fn step_bar(
             bookkeep(state, last_bar_time, cfg);
             return result;
         }
+    }
+
+    // Standalone pass-check (TS line 1510) — fires every bar so a paused-
+    // after-target run can pass once ping-day accumulation catches
+    // trading_days up to min_trading_days.
+    if state.equity >= 1.0 + cfg.profit_target
+        && state.mtm_equity >= 1.0 + cfg.profit_target
+        && state.trading_days.len() >= cfg.min_trading_days as usize
+    {
+        result.target_hit = true;
+        result.passed = true;
+        result.challenge_ended = true;
+        state.stopped_reason = None;
+        bookkeep(state, last_bar_time, cfg);
+        return result;
     }
 
     // 7. Entry-side gates that block ALL new entries this bar.
