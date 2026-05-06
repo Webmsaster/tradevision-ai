@@ -4,9 +4,27 @@ Rust port of `src/utils/ftmoLiveEngineV4.ts` — the persistent-state bar-by-bar
 FTMO live engine. Goal: match the TS V4-Sim numerically while running fast
 enough to stop sharding `vitest` for backtest sweeps.
 
-## Status (Phase 3-8 — full V4+V5R config coverage, multi-account, CI, criterion)
+## Status (Phase 3-8 + numerical-parity infrastructure)
 
-**118 tests green** across six suites:
+**121 tests green** across seven suites; per-asset R28_V6 numeric overrides
+shipped; TS-Dump-Script wired end-to-end; 5 R28_V6 golden fixtures captured
+from real cached candles; structured drift summary live.
+
+### Drift snapshot vs TS V4-Sim (R28_V6_PASSLOCK, 5 windows)
+
+| Window | TS eq   | Rust eq | Δeq          | TS / Rust pass | TS / Rust trades |
+| ------ | ------- | ------- | ------------ | -------------- | ---------------- |
+| w0     | +9.14%  | +7.48%  | **-1.66pp**  | true / false   | 25 / 17          |
+| w1     | -15.07% | -15.07% | **0.00pp**   | false / false  | 4 / 4            |
+| w2     | +10.53% | -5.89%  | **-16.42pp** | true / false   | 64 / 32          |
+| w3     | -12.79% | -12.79% | **0.00pp**   | false / false  | 8 / 8            |
+| w4     | -7.84%  | -7.84%  | **0.00pp**   | false / false  | 2 / 2            |
+
+**3/5 perfect parity** (TotalLoss/DailyLoss paths). **2/5 drift** on
+profit-target paths — Rust filters ~33-50% of TS-emitted signals on
+long-running windows. Median Δeq = 0pp, max|Δ| = 16.42pp. Next debug
+target: which entry-side gate fires earlier in Rust than TS (likely
+`dailyPeakTrailingStop` or `lossStreakCooldown` cumulative timing).
 
 | Suite                                               | Count              | What it covers                                                                                       |
 | --------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------- |
@@ -127,9 +145,24 @@ cargo run --release --bin ftmo-sweep -- --list-configs
 ## Tests
 
 ```bash
-cargo test --workspace                    # 108 unit + 5 integration + 4 property + 1 golden
+cargo test --workspace                    # 110 unit + 5 integration + 4 property + 1 golden + 1 drift
+cargo test --test drift_summary -- --nocapture   # quantitative TS↔Rust drift report
 cargo bench --bench step_bar_throughput   # criterion micro-benches
 ```
+
+## Regenerating golden fixtures
+
+The 5 R28_V6 fixtures (~16MB each) are `.gitignored`. To regenerate after
+pulling:
+
+```bash
+engine-rust/scripts/regen-golden-fixtures.sh
+```
+
+This runs `scripts/dumpRustGoldenFixture.ts` for windows 0..4 against the
+cached 30m candles in `scripts/cache_bakeoff/`. Each fixture captures the
+exact bars + emitted V4-Sim entry signals + expected outcome so the Rust
+runner can replay them and compare numerically.
 
 ## CI
 

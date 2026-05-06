@@ -63,6 +63,49 @@ fn make_assets(symbols: &[&str], risk_frac: f64) -> Vec<AssetConfig> {
         .collect()
 }
 
+/// Per-asset tp_pct overrides for the R28_V6 family (from
+/// `ftmoDaytrade24h.ts:R28_V6` PTP-design comment, 2026-05-03):
+///
+///   BTC/BNB/ADA/BCH/ETC : 0.00825   (small-TP cohort, PTP inert)
+///   ETH                : 0.011
+///   AAVE               : 0.01375    (mid-TP, PTP fires)
+///   XRP                : 0.0165
+///   LTC                : 0.01925    (large-TP, PTP fires)
+fn r28_v6_tp_for(symbol: &str) -> f64 {
+    match symbol {
+        "BTC-TREND" | "BNB-TREND" | "ADA-TREND" | "BCH-TREND" | "ETC-TREND" => 0.00825,
+        "ETH-TREND" => 0.011,
+        "AAVE-TREND" => 0.01375,
+        "XRP-TREND" => 0.0165,
+        "LTC-TREND" => 0.01925,
+        _ => 0.022, // safe default for V5_TITANIUM expansion assets
+    }
+}
+
+/// Apply R28_V6 per-asset tp_pct overrides to a config's asset list.
+fn apply_r28_v6_per_asset(cfg: &mut EngineConfig) {
+    for asset in cfg.assets.iter_mut() {
+        asset.tp_pct = Some(r28_v6_tp_for(&asset.symbol));
+    }
+}
+
+/// Per-asset tp_pct for V5_TITANIUM expansion (4 extra assets vs R28_V6).
+/// Values inherited from V5_DIAMOND base (ftmoDaytrade24h.ts:V5_DIAMOND):
+///   SOL/DOGE/LINK/AVAX/RUNE  : 0.04 base × 0.55 = 0.022
+fn v5_titanium_tp_for(symbol: &str) -> f64 {
+    match symbol {
+        // R28_V6 cohort uses same numbers
+        "BTC-TREND" | "BNB-TREND" | "ADA-TREND" | "BCH-TREND" | "ETC-TREND" => 0.00825,
+        "ETH-TREND" => 0.011,
+        "AAVE-TREND" => 0.01375,
+        "XRP-TREND" => 0.0165,
+        "LTC-TREND" => 0.01925,
+        // V5_TITANIUM expansion (uniform 0.022)
+        "SOL-TREND" | "DOGE-TREND" | "LINK-TREND" | "AVAX-TREND" | "RUNE-TREND" => 0.022,
+        _ => 0.022,
+    }
+}
+
 fn quartz_lite_base() -> EngineConfig {
     let mut cfg = EngineConfig::r28_v6_passlock_template();
     cfg.assets = make_assets(R28_V6_BASKET, 0.4);
@@ -93,11 +136,20 @@ fn quartz_lite_base() -> EngineConfig {
 }
 
 /// R28_V6_PASSLOCK (R60 champion). Adds `closeAllOnTargetReached` to lock
-/// realised gains the moment realised equity hits target.
+/// realised gains the moment realised equity hits target. Per-asset
+/// tp_pct overrides applied (×0.55 of V5_QUARTZ baseline — see
+/// `r28_v6_tp_for`). PTP triggerPct=0.012 so small-TP assets go full-TP
+/// while large-TP assets partial-close at the cushion threshold.
 pub fn r28_v6_passlock() -> EngineConfig {
     let mut cfg = quartz_lite_base();
     cfg.label = "R28_V6_PASSLOCK".into();
     cfg.close_all_on_target_reached = true;
+    apply_r28_v6_per_asset(&mut cfg);
+    // R28_V6 PTP: triggerPct=0.012, closeFraction=0.7 (per audit-trail comment).
+    cfg.partial_take_profit = Some(crate::config::PartialTakeProfit {
+        trigger_pct: 0.012,
+        close_fraction: 0.7,
+    });
     cfg
 }
 
@@ -106,6 +158,11 @@ pub fn r28_v6() -> EngineConfig {
     let mut cfg = quartz_lite_base();
     cfg.label = "R28_V6".into();
     cfg.close_all_on_target_reached = false;
+    apply_r28_v6_per_asset(&mut cfg);
+    cfg.partial_take_profit = Some(crate::config::PartialTakeProfit {
+        trigger_pct: 0.012,
+        close_fraction: 0.7,
+    });
     cfg
 }
 
@@ -114,6 +171,9 @@ pub fn v5_titanium() -> EngineConfig {
     let mut cfg = quartz_lite_base();
     cfg.label = "V5_TITANIUM".into();
     cfg.assets = make_assets(V5_TITANIUM_BASKET, 0.4);
+    for asset in cfg.assets.iter_mut() {
+        asset.tp_pct = Some(v5_titanium_tp_for(&asset.symbol));
+    }
     cfg.close_all_on_target_reached = false;
     cfg
 }
@@ -124,6 +184,9 @@ pub fn v5_amber() -> EngineConfig {
     cfg.label = "V5_AMBER".into();
     let basket: Vec<&str> = V5_TITANIUM_BASKET.iter().copied().filter(|s| *s != "RUNE-TREND").collect();
     cfg.assets = make_assets(&basket, 0.4);
+    for asset in cfg.assets.iter_mut() {
+        asset.tp_pct = Some(v5_titanium_tp_for(&asset.symbol));
+    }
     cfg.close_all_on_target_reached = false;
     cfg
 }
@@ -208,5 +271,33 @@ mod tests {
                 "selector {s:?} did not resolve"
             );
         }
+    }
+
+    #[test]
+    fn r28_v6_per_asset_tp_pct() {
+        let cfg = r28_v6_passlock();
+        let by_sym: std::collections::HashMap<&str, f64> = cfg
+            .assets
+            .iter()
+            .map(|a| (a.symbol.as_str(), a.tp_pct.unwrap()))
+            .collect();
+        // Small-TP cohort
+        assert!((by_sym["BTC-TREND"] - 0.00825).abs() < 1e-9);
+        assert!((by_sym["BNB-TREND"] - 0.00825).abs() < 1e-9);
+        assert!((by_sym["ETC-TREND"] - 0.00825).abs() < 1e-9);
+        // Mid
+        assert!((by_sym["ETH-TREND"] - 0.011).abs() < 1e-9);
+        assert!((by_sym["AAVE-TREND"] - 0.01375).abs() < 1e-9);
+        // Large
+        assert!((by_sym["XRP-TREND"] - 0.0165).abs() < 1e-9);
+        assert!((by_sym["LTC-TREND"] - 0.01925).abs() < 1e-9);
+    }
+
+    #[test]
+    fn r28_v6_ptp_design_present() {
+        let cfg = r28_v6_passlock();
+        let ptp = cfg.partial_take_profit.unwrap();
+        assert!((ptp.trigger_pct - 0.012).abs() < 1e-9);
+        assert!((ptp.close_fraction - 0.7).abs() < 1e-9);
     }
 }

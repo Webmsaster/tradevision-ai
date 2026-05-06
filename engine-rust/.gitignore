@@ -1,3 +1,10 @@
 /target
 **/*.rs.bk
 *.pdb
+
+# TS-dumped golden fixtures — large (~16MB each), regenerable via
+# scripts/dumpRustGoldenFixture.ts. Hand-crafted fixtures (anything
+# without a `r28v6_` or other dump-prefix) ARE tracked.
+ftmo-engine-core/tests/golden/r28v6_*.json
+ftmo-engine-core/tests/golden/v5_*.json
+ftmo-engine-core/tests/golden/dumped*.json
