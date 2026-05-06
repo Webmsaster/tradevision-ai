@@ -394,11 +394,16 @@ export async function deleteTradeFromSupabase(
     }
     return true;
   }
+  // R67 audit (Round 2): also filter `is("deleted_at", null)` to prevent
+  // a redundant UPDATE rewriting deleted_at when the row is already
+  // tombstoned. Application-side audit-trail protection (the RLS UPDATE
+  // policy was loosened to allow UPSERT-resolve-to-UPDATE on tombstones).
   const updateQuery = supabase
     .from("trades")
     .update({ deleted_at: nowIso })
     .eq("id", tradeId)
-    .eq("user_id", userId);
+    .eq("user_id", userId)
+    .is("deleted_at", null);
   let { error } = await updateQuery;
   if (error) {
     if (softDeleteAvailable !== true && isUndefinedDeletedAtColumn(error)) {

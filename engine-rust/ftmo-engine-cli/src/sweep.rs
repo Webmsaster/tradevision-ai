@@ -65,16 +65,25 @@ fn main() -> Result<()> {
     let mut out_path: Option<PathBuf> = None;
     let mut signals = SignalSrc::Breakout;
 
+    // R67 audit (Round 2): replace `args.next().unwrap()` with `ok_or_else`
+    // — `ftmo-sweep --candles` (no path follows) panics with the usual Rust
+    // backtrace. Now exits cleanly with a one-line error.
     let mut args = std::env::args().skip(1);
+    macro_rules! need {
+        ($flag:expr) => {
+            args.next()
+                .ok_or_else(|| anyhow!(concat!($flag, " requires a value")))?
+        };
+    }
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--candles" => candles_path = Some(PathBuf::from(args.next().unwrap())),
-            "--config" => config_selector = Some(args.next().unwrap()),
-            "--windows" => windows = args.next().unwrap().parse()?,
-            "--threads" => threads = Some(args.next().unwrap().parse()?),
-            "--out" => out_path = Some(PathBuf::from(args.next().unwrap())),
+            "--candles" => candles_path = Some(PathBuf::from(need!("--candles"))),
+            "--config" => config_selector = Some(need!("--config")),
+            "--windows" => windows = need!("--windows").parse()?,
+            "--threads" => threads = Some(need!("--threads").parse()?),
+            "--out" => out_path = Some(PathBuf::from(need!("--out"))),
             "--signals" => {
-                signals = match args.next().unwrap().as_str() {
+                signals = match need!("--signals").as_str() {
                     "none" => SignalSrc::None,
                     "breakout" => SignalSrc::Breakout,
                     "meanrev" => SignalSrc::MeanRev,

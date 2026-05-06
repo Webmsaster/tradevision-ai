@@ -14,12 +14,15 @@ create policy "Users can view their own trades"
   on trades for select
   using (auth.uid() = user_id and deleted_at is null);
 
--- UPDATE: prevent re-tombstoning a row that's already soft-deleted (would
--- overwrite the deleted_at timestamp + audit-trail).
+-- UPDATE: keep allowing UPDATE on tombstoned rows so UPSERT-resolve-to-UPDATE
+-- on a soft-deleted row succeeds (CSV/JSON re-import of previously-deleted
+-- trades on another device). Audit-trail protection of `deleted_at` moves to
+-- application-side (storage.ts deleteTradeFromSupabase already filters
+-- `.is("deleted_at", null)` so double-delete is a no-op).
 drop policy if exists "Users can update their own trades" on trades;
 create policy "Users can update their own trades"
   on trades for update
-  using (auth.uid() = user_id and deleted_at is null)
+  using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
 -- INSERT/DELETE policies unchanged: INSERT correctly only checks user_id,

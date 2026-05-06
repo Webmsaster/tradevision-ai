@@ -79,9 +79,15 @@ create policy "Users can insert their own trades"
   on trades for insert
   with check (auth.uid() = user_id);
 
+-- R67 audit (Round 2): UPDATE allowed on tombstoned rows too. The R67-r1
+-- attempt to block re-tombstoning broke UPSERT-resolve-to-UPDATE on a
+-- soft-deleted row → CSV/JSON re-imports of trades the user previously
+-- deleted on another machine fail silently with PostgREST 42501. Audit-
+-- protection of the deleted_at column moves to application-side logic
+-- (storage.ts deleteTradeFromSupabase already checks `is deleted_at null`).
 create policy "Users can update their own trades"
   on trades for update
-  using (auth.uid() = user_id and deleted_at is null)
+  using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
 create policy "Users can delete their own trades"

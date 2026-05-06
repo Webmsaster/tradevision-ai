@@ -202,7 +202,12 @@ function renderPieLabel({
 function buildDistributionData(trades: Trade[]): BucketDatum[] {
   if (trades.length === 0) return [];
 
-  const pnls = trades.map((t) => t.pnl);
+  // R67 audit (Round 2): filter NaN/Infinity pnls up-front. A single corrupt
+  // trade (NaN pnl from a broken import / zero margin in calculatePnl) made
+  // absMax = NaN → step = NaN → buckets[Math.floor(NaN/NaN)] = undefined →
+  // the `!`-assertion crashed the chart. Filter then bail-out if empty.
+  const pnls = trades.map((t) => t.pnl).filter((v) => Number.isFinite(v));
+  if (pnls.length === 0) return [];
   // R7 fix #C: avoid Math.min/max(...arr) spread — RangeError stack overflow at
   // ~100k+ array length on V8. Single-pass reduce is also faster on large
   // inputs and constant-stack.

@@ -1452,15 +1452,14 @@ export function pollLive(
     // (mtm ≥ target by predicate, so realised post-close ≥ target), but
     // eliminates downstream Day-30-force-close drag-down failures.
     //
-    // Round 60 audit (2026-05-05): require pauseAtTargetReached=true.
-    // Without pause, the close-all fires once but new entries remain
-    // allowed → equity-lock leaks through subsequent fresh trades.
-    // firstTargetHitDay !== null also blocks re-fire of this branch.
-    if (
-      cfg.closeAllOnTargetReached &&
-      cfg.pauseAtTargetReached &&
-      state.openPositions.length > 0
-    ) {
+    // R67 audit (Round 2): drop the `cfg.pauseAtTargetReached` co-gate. The
+    // R67-r1 fix above already force-sets `state.pausedAtTarget = true` when
+    // closeAllOnTargetReached=true (see line ~1442), so the entries-block is
+    // coherent. The original co-gate halved the PASSLOCK edge for the misuse
+    // case (closeAll=true, pause=false): pausedAtTarget was set but force-
+    // close skipped → drift-back below target until SL/TP/maxDays.
+    // firstTargetHitDay !== null still blocks re-fire of this branch.
+    if (cfg.closeAllOnTargetReached && state.openPositions.length > 0) {
       for (let i = state.openPositions.length - 1; i >= 0; i--) {
         const pos = state.openPositions[i]!;
         const cs = candlesByAsset[pos.sourceSymbol];

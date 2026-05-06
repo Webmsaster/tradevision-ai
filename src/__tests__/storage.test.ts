@@ -390,13 +390,13 @@ function makeSupabaseMock(opts: {
     return Promise.resolve({ error: null });
   });
 
+  // R67 audit (Round 2): deleteTradeFromSupabase chain extended with
+  // .is("deleted_at", null) to skip redundant updates on already-tombstoned
+  // rows. Mock now handles the longer chain: .update().eq().eq().is().
   let updateEqCalls = 0;
   const updateChain: Record<string, unknown> = {};
   updateChain.eq = vi.fn(() => {
     updateEqCalls += 1;
-    if (updateEqCalls >= 2) {
-      return Promise.resolve({ error: opts.updateError ?? null });
-    }
     return updateChain;
   });
   updateChain.is = vi.fn(() =>

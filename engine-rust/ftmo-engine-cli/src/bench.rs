@@ -52,14 +52,22 @@ fn main() -> Result<()> {
     let mut windows: usize = 1;
     let mut threads: Option<usize> = None;
     let mut signals = SignalSrc::None;
+    // R67 audit (Round 2): same `unwrap on None` panic-on-missing-arg as
+    // sweep.rs — replaced with anyhow ok_or_else.
     let mut args = std::env::args().skip(1);
+    macro_rules! need {
+        ($flag:expr) => {
+            args.next()
+                .ok_or_else(|| anyhow!(concat!($flag, " requires a value")))?
+        };
+    }
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--candles" => candles_path = Some(PathBuf::from(args.next().unwrap())),
-            "--windows" => windows = args.next().unwrap().parse()?,
-            "--threads" => threads = Some(args.next().unwrap().parse()?),
+            "--candles" => candles_path = Some(PathBuf::from(need!("--candles"))),
+            "--windows" => windows = need!("--windows").parse()?,
+            "--threads" => threads = Some(need!("--threads").parse()?),
             "--signals" => {
-                signals = match args.next().unwrap().as_str() {
+                signals = match need!("--signals").as_str() {
                     "none" => SignalSrc::None,
                     "breakout" => SignalSrc::Breakout,
                     other => return Err(anyhow!("unknown --signals: {other}")),
@@ -67,6 +75,9 @@ fn main() -> Result<()> {
             }
             other => return Err(anyhow!("unknown arg: {other}")),
         }
+    }
+    if windows == 0 {
+        return Err(anyhow!("--windows must be ≥ 1"));
     }
     let candles_path = candles_path.ok_or_else(|| anyhow!("--candles is required"))?;
     let candles = loader::load_candles_json(&candles_path)?;

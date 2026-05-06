@@ -75,7 +75,21 @@ interface ClosedEvent {
   close_price: number;
   entry_price?: number;
   planned_exit?: number;
-  exit_reason?: "tp" | "stop" | "manual";
+  // R67 audit (Round 2): exit_reason now includes the explicit overrides
+  // added in tools/ftmo_executor.py close_position. Without these in the
+  // type union, the drift-monitor undercounted PASSLOCK/time/news closes
+  // → tp/stop counts < total recent → winRate based on tpCount/recent
+  // was systematically wrong, and expected_pnl_pct fell to 0 → drift
+  // looked artificially green. Now treated as broker-driven realises.
+  exit_reason?:
+    | "tp"
+    | "stop"
+    | "manual"
+    | "time_exit"
+    | "hold_expired"
+    | "news_blackout"
+    | "kill_request"
+    | string; // "emergency:..." prefix from _emergency_close_all_positions
   slippage_bps?: number | null;
   symbol?: string;
   volume?: number;

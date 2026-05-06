@@ -71,13 +71,20 @@ export function useSignalTracking({
   confidence,
   currentPrice,
 }: UseSignalTrackingParams): UseSignalTrackingResult {
-  const [tracked, setTracked] = useState<TrackedSignal[]>([]);
+  // R67 audit fix (Round 2): use lazy initializer instead of mount-effect.
+  // Previously: useState([]) + useEffect(() => setTracked(loadStored())).
+  // The recording-effect (line ~87) and price-watcher (line ~138) start in
+  // parallel on the same first render with `tracked: []`. If `snapshot`
+  // already exists at mount (typical — parent renders with stored snapshot),
+  // the recording-effect runs BEFORE the load-effect commits and overwrites
+  // the persisted set with [newSignal]. All previously-tracked signals
+  // disappear on every mount where a fresh signal fires simultaneously.
+  // Lazy init reads localStorage synchronously during the first render so
+  // initial state is correct before any effect runs.
+  const [tracked, setTracked] = useState<TrackedSignal[]>(() =>
+    typeof window !== "undefined" ? loadStored() : [],
+  );
   const lastRecordedActionRef = useRef<string | null>(null);
-
-  // Load once on mount
-  useEffect(() => {
-    setTracked(loadStored());
-  }, []);
 
   // Record new signals (flip to long/short with SL/TP)
   // Phase 33 (React Audit Bug 2): removed `tracked` from deps. Was causing

@@ -290,6 +290,18 @@ export function mapCSVToTrades(
     ) {
       continue;
     }
+    // R67 audit (Round 2): magnitude-cap. Excel exports dates as serial
+    // numbers (e.g. 44927 = 2023-01-01); if the user mismaps a date column
+    // to Quantity, parseLocaleNumber returns 44927 as a valid number and a
+    // single trade can balloon PnL by billions. Clamp absurd magnitudes —
+    // no realistic crypto/forex trade has size > 1e9 units or price > 1e9.
+    if (entryPrice > 1e9 || exitPrice > 1e9 || quantity > 1e9) {
+      addWarning(
+        "magnitude-cap",
+        "Skipped rows with absurd magnitudes (>1e9). Likely an Excel serial-date in the wrong column.",
+      );
+      continue;
+    }
 
     // Parse direction -------------------------------------------------
     // Round 57 fix #3: support German (kauf/verkauf), MT4-numeric (0/1),

@@ -157,14 +157,8 @@ pub fn detect_mean_reversion(
             return None;
         }
     }
-    state.loss_streak_by_asset_dir.insert(
-        key,
-        crate::state::LossStreakEntry {
-            streak: 0,
-            cd_until_bars_seen: state.bars_seen + src.cooldown_bars,
-        },
-    );
-
+    // R67 audit (Round 2): same cooldown-before-eff_risk-gate bug as
+    // finish_signal — fixed identically by moving cooldown insert below.
     // Sizing — apply the engine factor pipeline, then the MR-specific multiplier.
     let last = candles[i];
     let factor = resolve_sizing_factor(state, cfg, last.open_time);
@@ -183,6 +177,13 @@ pub fn detect_mean_reversion(
         PositionSide::Long => (last.close * (1.0 - stop_pct), last.close * (1.0 + tp_pct)),
         PositionSide::Short => (last.close * (1.0 + stop_pct), last.close * (1.0 - tp_pct)),
     };
+    state.loss_streak_by_asset_dir.insert(
+        key,
+        crate::state::LossStreakEntry {
+            streak: 0,
+            cd_until_bars_seen: state.bars_seen + src.cooldown_bars,
+        },
+    );
     Some(PollSignal {
         symbol: asset.symbol.clone(),
         source_symbol: source_symbol.to_string(),
