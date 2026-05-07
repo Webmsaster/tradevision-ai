@@ -101,6 +101,52 @@ function sanitizePayload(input: unknown): Record<string, unknown> | null {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  // R67-RR5-Round2 audit fix (HIGH): same-origin gate. Without this, any
+  // cross-site page can POST log entries via simple-CORS (text/plain
+  // bypasses preflight) and flood Vercel logs / log-drains with
+  // attacker-controlled strings. We accept origin OR referer matching
+  // our deployment host. sendBeacon DOES set Origin so same-origin POSTs
+  // from the app pass; cross-site won't.
+  const origin = request.headers.get("origin");
+  const referer = request.headers.get("referer");
+  const host = request.headers.get("host");
+  const allowedHostFromEnv =
+    process.env.VERCEL_URL || process.env.NEXT_PUBLIC_SITE_URL;
+  const allowedHosts = new Set<string>();
+  if (host) allowedHosts.add(host.toLowerCase());
+  if (allowedHostFromEnv) {
+    try {
+      const parsed = allowedHostFromEnv.startsWith("http")
+        ? new URL(allowedHostFromEnv)
+        : new URL(`https://${allowedHostFromEnv}`);
+      allowedHosts.add(parsed.host.toLowerCase());
+    } catch {
+      /* ignore malformed env */
+    }
+  }
+  let originHost = "";
+  if (origin) {
+    try {
+      originHost = new URL(origin).host.toLowerCase();
+    } catch {
+      /* malformed origin → treat as untrusted */
+    }
+  }
+  let refererHost = "";
+  if (referer) {
+    try {
+      refererHost = new URL(referer).host.toLowerCase();
+    } catch {
+      /* malformed referer → treat as untrusted */
+    }
+  }
+  const sameOrigin =
+    (originHost && allowedHosts.has(originHost)) ||
+    (!origin && refererHost && allowedHosts.has(refererHost));
+  if (!sameOrigin) {
+    return new NextResponse(null, { status: 403 });
+  }
+
   const ip =
     request.headers.get("x-vercel-forwarded-for")?.split(",")[0]?.trim() ||
     request.headers.get("x-real-ip") ||

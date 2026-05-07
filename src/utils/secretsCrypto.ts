@@ -136,30 +136,59 @@ function toArrayBuffer(src: Uint8Array): ArrayBuffer {
   return ab;
 }
 
+// R67-RR2-Round2 audit fix: per-process derived-key cache. PBKDF2 250k
+// iterations is intentionally slow (~50-150ms per call); fireWebhook
+// previously re-derived on EVERY trade event, blocking the main thread
+// for 2.5-7s on a 50-trade CSV import. Cache is keyed by userKey + salt
+// (base64) so different salts (= different envelopes) still re-derive
+// once, then re-use. Map is module-local so a second tab gets its own
+// cache (acceptable — no cross-tab security concern, just perf).
+const derivedKeyCache = new Map<string, Promise<CryptoKey>>();
+
+// Test-only: reset the cache between cases.
+export const __resetDerivedKeyCacheForTests = (): void => {
+  derivedKeyCache.clear();
+};
+
+function bytesToB64ForCacheKey(b: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < b.byteLength; i += 1) s += String.fromCharCode(b[i]!);
+  return btoa(s);
+}
+
 async function deriveAesKey(
   userKey: string,
   salt: Uint8Array,
 ): Promise<CryptoKey> {
+  const cacheKey = `${userKey}|${bytesToB64ForCacheKey(salt)}`;
+  const cached = derivedKeyCache.get(cacheKey);
+  if (cached) return cached;
   const subtle = globalThis.crypto.subtle;
-  const baseKey = await subtle.importKey(
-    "raw",
-    new TextEncoder().encode(userKey),
-    { name: "PBKDF2" },
-    false,
-    ["deriveKey"],
-  );
-  return subtle.deriveKey(
-    {
-      name: "PBKDF2",
-      salt: toArrayBuffer(salt),
-      iterations: PBKDF2_ITERATIONS,
-      hash: "SHA-256",
-    },
-    baseKey,
-    { name: "AES-GCM", length: KEY_LENGTH_BITS },
-    false,
-    ["encrypt", "decrypt"],
-  );
+  const promise = (async () => {
+    const baseKey = await subtle.importKey(
+      "raw",
+      toArrayBuffer(new TextEncoder().encode(userKey)),
+      { name: "PBKDF2" },
+      false,
+      ["deriveKey"],
+    );
+    return subtle.deriveKey(
+      {
+        name: "PBKDF2",
+        salt: toArrayBuffer(salt),
+        iterations: PBKDF2_ITERATIONS,
+        hash: "SHA-256",
+      },
+      baseKey,
+      { name: "AES-GCM", length: KEY_LENGTH_BITS },
+      false,
+      ["encrypt", "decrypt"],
+    );
+  })();
+  derivedKeyCache.set(cacheKey, promise);
+  // Drop on derive-failure so retries can succeed under intermittent fault.
+  promise.catch(() => derivedKeyCache.delete(cacheKey));
+  return promise;
 }
 
 // ---- Public API --------------------------------------------------------

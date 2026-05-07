@@ -75,6 +75,18 @@ function AnalyticsPageInner() {
     () => searchParams.get("dateTo") ?? "",
   );
 
+  // R67-RR6-Round2 audit fix: one-way URL → state sync for in-place URL
+  // changes (shared link clicks while the component stays mounted).
+  // Without this, an external URL change to ?dateFrom=... would be
+  // overwritten by the state→URL effect below using the now-stale state.
+  const urlDateFrom = searchParams.get("dateFrom") ?? "";
+  const urlDateTo = searchParams.get("dateTo") ?? "";
+  useEffect(() => {
+    if (urlDateFrom !== dateFrom) setDateFrom(urlDateFrom);
+    if (urlDateTo !== dateTo) setDateTo(urlDateTo);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlDateFrom, urlDateTo]);
+
   // Push filter state back into URL — keep behaviour-equivalent when no
   // filters are set (no params land in the URL bar).
   useEffect(() => {

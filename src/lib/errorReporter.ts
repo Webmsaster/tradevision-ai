@@ -59,12 +59,24 @@ const IS_TEST =
  */
 const BEARER_RE = /Bearer\s+[A-Za-z0-9._\-]+/g;
 const JWT_RE = /eyJ[A-Za-z0-9._\-]{20,}/g;
+// R67-RR5-Round2 audit fix (MED): opaque Supabase token shapes that
+// don't match JWT/Bearer. refresh_token is a 20+-char base64url after
+// `refresh_token=` / `refresh_token: `; PAT (`sbp_...`) and project
+// secret (`sb-secret-...`) are long-lived account-takeover primitives.
+const SUPABASE_PAT_RE = /\bsbp?_[A-Za-z0-9]{20,}\b/g;
+const SUPABASE_SECRET_RE = /\bsb-secret-[A-Za-z0-9]{20,}\b/g;
+const REFRESH_TOKEN_RE = /(refresh[_-]?token)["'=:\s]+([A-Za-z0-9._\-]{20,})/gi;
+const ACCESS_TOKEN_RE = /(access[_-]?token)["'=:\s]+([A-Za-z0-9._\-]{20,})/gi;
 
 export function redactSensitive(s: string): string {
   if (!s) return s;
   let out = redactToken(s);
   out = out.replace(BEARER_RE, "Bearer <REDACTED>");
   out = out.replace(JWT_RE, "<REDACTED_JWT>");
+  out = out.replace(SUPABASE_PAT_RE, "<REDACTED_SBP>");
+  out = out.replace(SUPABASE_SECRET_RE, "<REDACTED_SB_SECRET>");
+  out = out.replace(REFRESH_TOKEN_RE, "$1=<REDACTED>");
+  out = out.replace(ACCESS_TOKEN_RE, "$1=<REDACTED>");
   return out;
 }
 
@@ -117,6 +129,29 @@ function buildMessagePayload(
   };
 }
 
+// R67-RR5-Round2 audit fix (HIGH): client-side token-bucket throttle.
+// Without this, a render-loop firing 1000 errors/sec saturates the
+// browser sendBeacon queue (~64KB total pooled) and the keepalive-fetch
+// quota — actual root-cause errors get DROPPED while noise accumulates.
+// 10 reports per 10s is plenty: anything beyond is duplicate noise from
+// a runaway loop; the real signal is in the first few captures.
+const CLIENT_RATE_WINDOW_MS = 10_000;
+const CLIENT_RATE_MAX = 10;
+let clientRateBucket: number[] = [];
+
+function clientThrottled(now: number): boolean {
+  clientRateBucket = clientRateBucket.filter(
+    (t) => now - t < CLIENT_RATE_WINDOW_MS,
+  );
+  if (clientRateBucket.length >= CLIENT_RATE_MAX) return true;
+  clientRateBucket.push(now);
+  return false;
+}
+
+export const __resetClientRateBucketForTests = (): void => {
+  clientRateBucket = [];
+};
+
 async function transmit(payload: ErrorReportPayload): Promise<void> {
   // Dev / test: just log loudly. Don't open network at all.
   if (IS_DEV || IS_TEST) {
@@ -133,6 +168,10 @@ async function transmit(payload: ErrorReportPayload): Promise<void> {
     }
     return;
   }
+
+  // R67-RR5-Round2: drop excess reports before they hit sendBeacon —
+  // saturated queues silently drop real errors otherwise.
+  if (clientThrottled(Date.now())) return;
 
   // Prod: POST to the log-error route. Use sendBeacon when available —
   // it survives page-unload (router navigation, tab close) which a fetch

@@ -177,10 +177,13 @@ function canReadArbitrarySlug(auth: {
 }): boolean {
   if (auth.reason === "bypass") return true;
   if (auth.reason === "no-auth-backend") return true;
-  const adminEmail = process.env.FTMO_ADMIN_EMAIL;
+  // R67-RR3-Round2 audit fix: trim env value + caller email so
+  // whitespace (CRLF from Windows .env, trailing space from shell heredoc)
+  // doesn't fail-closed-lock-out the legit admin.
+  const adminEmail = process.env.FTMO_ADMIN_EMAIL?.trim();
   if (!adminEmail) return false;
   if (!auth.email) return false;
-  return auth.email.toLowerCase() === adminEmail.toLowerCase();
+  return auth.email.trim().toLowerCase() === adminEmail.toLowerCase();
 }
 
 // ---------------------------------------------------------------------------

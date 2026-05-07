@@ -54,7 +54,10 @@ export async function POST(request: Request) {
     );
   }
 
-  const adminEmail = process.env.FTMO_ADMIN_EMAIL;
+  // R67-RR3-Round2 audit fix: trim env value to defend against trailing
+  // CRLF/whitespace from Windows .env / shell heredoc that would lock
+  // out the legit admin.
+  const adminEmail = process.env.FTMO_ADMIN_EMAIL?.trim();
   if (!adminEmail) {
     return NextResponse.json(
       { ok: false, error: "endpoint_disabled" },
@@ -95,7 +98,7 @@ export async function POST(request: Request) {
       { status: 401 },
     );
   }
-  if (userEmail.toLowerCase() !== adminEmail.toLowerCase()) {
+  if (userEmail.trim().toLowerCase() !== adminEmail.toLowerCase()) {
     return NextResponse.json(
       { ok: false, error: "forbidden" },
       { status: 403 },

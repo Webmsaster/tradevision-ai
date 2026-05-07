@@ -64,6 +64,32 @@ function InsightsPageInner() {
     () => searchParams.get("dateTo") ?? "",
   );
 
+  // R67-RR6-Round2 audit fix: one-way URL → state sync. The component
+  // stays mounted across same-route URL changes (shared link click,
+  // newsletter deep-link), so the `useState(initializer)` only fires
+  // once at first mount. Without this effect, an externally-triggered
+  // URL change to ?filter=positive while the component already shows
+  // ?filter=warning state would be silently overwritten back to
+  // ?filter=warning by the state→URL effect below.
+  const urlFilter = searchParams.get("filter");
+  const urlCategory = searchParams.get("category") ?? "";
+  const urlDateFrom = searchParams.get("dateFrom") ?? "";
+  const urlDateTo = searchParams.get("dateTo") ?? "";
+  useEffect(() => {
+    if (isFilterType(urlFilter) && urlFilter !== activeFilter) {
+      setActiveFilter(urlFilter);
+    } else if (urlFilter === null && activeFilter !== "all") {
+      setActiveFilter("all");
+    }
+    if (urlCategory !== selectedCategory) setSelectedCategory(urlCategory);
+    if (urlDateFrom !== dateFrom) setDateFrom(urlDateFrom);
+    if (urlDateTo !== dateTo) setDateTo(urlDateTo);
+    // We INTENTIONALLY only depend on the URL values here; state values
+    // live in the *forward* sync below. The if-equals guards break the
+    // potential ping-pong loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlFilter, urlCategory, urlDateFrom, urlDateTo]);
+
   // R67-Final: push filter state back into the URL so reload preserves it.
   // Default values (filter=all, empty category, empty dates) emit no
   // params — URL stays clean and behaviour-equivalent when nothing is set.
