@@ -288,6 +288,14 @@ export function mapCSVToTrades(
       exitPrice <= 0 ||
       quantity <= 0
     ) {
+      // R67-r14 audit: surface zero/negative numeric drops so the user
+      // doesn't see "N rows skipped" with no idea why. Common causes are
+      // mismapped columns (date in price field) or broker exports with
+      // balance-only rows (deposit/withdraw with price=0).
+      addWarning(
+        "zero-or-negative-numeric",
+        "Skipped rows with zero or negative price/quantity — check column mapping (date field accidentally mapped to a numeric column?) or filter out balance/deposit rows from your broker export.",
+      );
       continue;
     }
     // R67 audit (Round 2): magnitude-cap. Excel exports dates as serial

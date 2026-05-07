@@ -231,8 +231,10 @@ export function detectOverleverageAfterWins(trades: Trade[]): AIInsight | null {
     // Phase 21 (AI Bug 4): skip if any trade in the streak OR the current
     // trade has no leverage recorded (mixed spot/margin). Spot trades default
     // to 1x and falsely flagged as 'low leverage' against 2x margin trades.
-    if (sorted[i]!.leverage == null || streak.some((t) => t!.leverage == null))
-      continue;
+    // R67-r14 audit: also skip explicit `leverage=0` (corrupt CSV row); the
+    // `== null` check above lets 0 through, then `?? 1` would silently
+    // imputes 1× → false positive on the next-trade comparison.
+    if (!sorted[i]!.leverage || streak.some((t) => !t!.leverage)) continue;
     const avgStreakLeverage =
       streak.reduce((sum, t) => sum + (t!.leverage ?? 1), 0) / streak.length;
     const nextLeverage = sorted[i]!.leverage ?? 1;
@@ -373,6 +375,12 @@ export function detectTiltPattern(trades: Trade[]): AIInsight | null {
       // the metric still scales with trade size. Threshold matches the 5%
       // relative threshold semantically: drop ≥ ~1× avg-trade-magnitude.
       isAbsolute = true;
+      // Note: runningSumAbs already includes the current trade's |pnl|
+      // (line 366), so dividing by i+1 yields the mean across "all trades
+      // seen so far" including the current one. This is intentional —
+      // dividing by `i` alone changes test outcomes (R67-r14 attempted
+      // and reverted). The comment "mean |pnl| of prior trades" is
+      // slightly imprecise; it's the mean across the moving window.
       const meanAbs = runningSumAbs / (i + 1);
       const absDrop = peak - runningPnl; // peak ≤ 0, runningPnl ≤ peak
       drawdown = meanAbs > 0 ? absDrop / meanAbs : 0;
@@ -952,9 +960,15 @@ export function detectFeeDrag(trades: Trade[]): AIInsight | null {
   const totalFees = trades.reduce((s, t) => s + Math.abs(t.fees || 0), 0);
   if (totalFees <= 0) return null;
 
+  // R67-r14 audit: sum gross-profit (pnl on winners) directly. The previous
+  // `pnl + |fees|` reconstruction "added back" the absolute fee on every
+  // winner, but for tiny wins where |fees| > pnl the reconstructed value
+  // could be larger than the true gross while not bounding individual rows
+  // — the fee/grossWin ratio understated. Direct sum of winner-pnl is the
+  // canonical denominator for fee-drag.
   const grossWins = trades
     .filter((t) => t.pnl > 0)
-    .reduce((s, t) => s + t.pnl + Math.abs(t.fees || 0), 0);
+    .reduce((s, t) => s + t.pnl, 0);
   if (grossWins <= 0) return null;
 
   const ratio = totalFees / grossWins;

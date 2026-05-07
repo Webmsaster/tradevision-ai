@@ -413,9 +413,14 @@ export function loadState(stateDir: string, cfgLabel: string): FtmoLiveStateV4 {
             (pos as OpenPositionV4).entryBarIdx = anchor;
           }
         }
-        obj.schemaVersion = SCHEMA_VERSION;
+        // R67-r14 audit fix (regression of R67-r1): migration chains must
+        // target the literal *next* version, not the current SCHEMA_VERSION.
+        // V4.ts:411 was patched to hardcode 3; V5R.ts was missed. Without
+        // this, a future bump to SCHEMA_VERSION=4 would mark a v2 state as
+        // already-v4 and skip the v3→v4 step entirely.
+        obj.schemaVersion = 3;
         console.warn(
-          `[V4] in-place schema migration v2 → v${SCHEMA_VERSION} for ${cfgLabel} ` +
+          `[V5R] in-place schema migration v2 → v3 for ${cfgLabel} ` +
             `(entryBarIdx re-anchored to state.barsSeen=${anchor} for ${obj.openPositions.length} open position(s))`,
         );
       }

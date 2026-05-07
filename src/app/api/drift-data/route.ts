@@ -656,11 +656,17 @@ export async function GET(req: NextRequest) {
     equity_at_day_start_usd?: number;
     snapped_at?: string;
   }>(stateDir, "daily-reset.json", {});
-  const peakState = readJson<{ peak_equity?: number; peak_at?: string }>(
-    stateDir,
-    "peak-state.json",
-    {},
-  );
+  // R67-r14 audit fix (HIGH): Python writes `challenge-peak.json` with
+  // `peak_equity_usd` + `last_update_ts` (see ftmo_executor.py:900,
+  // update_challenge_peak). The API was reading the wrong file
+  // (`peak-state.json`) which never gets produced in production →
+  // `peakUsd` always fell back to live-equity, and `peakAt` was always
+  // null (showed "Challenge peak at —" forever, hiding real drawdowns
+  // vs all-time peak).
+  const peakState = readJson<{
+    peak_equity_usd?: number;
+    last_update_ts?: string;
+  }>(stateDir, "challenge-peak.json", {});
   const openPosRaw = readJson<{ positions: OpenPosition[] }>(
     stateDir,
     "open-positions.json",
@@ -724,7 +730,7 @@ export async function GET(req: NextRequest) {
   else if (dailyPnlPct <= -FTMO_DAILY_LOSS_CAP * 100) passStatus = "failed";
 
   const peakUsd =
-    peakState.peak_equity ?? Math.max(liveEquityUsd, startBalanceUsd);
+    peakState.peak_equity_usd ?? Math.max(liveEquityUsd, startBalanceUsd);
   const newsMarkers = extractNewsMarkers(executorLog);
   const recentEvents = executorLog.slice(-20).reverse();
   const positions = annotatePositions(openPosRaw.positions);
@@ -757,6 +763,17 @@ export async function GET(req: NextRequest) {
         currentTfSlug: tfSlug ?? "",
         startBalanceUsd,
         generatedAt: new Date().toISOString(),
+        // R67-r14 audit fix (HIGH): expose the actual bot-write timestamp
+        // (latest executor-log event, fallback account update). The page
+        // STALE-badge previously checked `generatedAt` which is set by
+        // this API on every response — a dead Python bot + live Next API
+        // always looked fresh. Now we surface the bot's clock.
+        botLastWriteAt:
+          (executorLog.length > 0
+            ? (executorLog[executorLog.length - 1]?.ts ?? null)
+            : null) ??
+          (account as { updated_at?: string }).updated_at ??
+          null,
       },
       header: {
         challengeName: BACKTEST_REF.name,
@@ -774,7 +791,7 @@ export async function GET(req: NextRequest) {
         dailyPnlPct,
         totalPnlPct,
         peakUsd,
-        peakAt: peakState.peak_at ?? null,
+        peakAt: peakState.last_update_ts ?? null,
         dlCapPct: -FTMO_DAILY_LOSS_CAP * 100,
         tlCapPct: -FTMO_TOTAL_LOSS_CAP * 100,
         targetPct: FTMO_PROFIT_TARGET * 100,

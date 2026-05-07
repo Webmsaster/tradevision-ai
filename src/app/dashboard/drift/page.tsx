@@ -122,6 +122,10 @@ interface DriftData {
     currentTfSlug: string;
     startBalanceUsd: number;
     generatedAt: string;
+    /** R67-r14: actual bot-write timestamp (from latest executor-log event
+     * or account.updated_at). Null if the bot never wrote any state. Used
+     * by the STALE-badge instead of generatedAt. */
+    botLastWriteAt: string | null;
   };
   header: {
     challengeName: string;
@@ -391,11 +395,22 @@ function Header({
       <div className="flex items-center gap-3 flex-wrap">
         <h1 className="text-2xl sm:text-3xl font-bold">Drift Dashboard</h1>
         {(() => {
-          const ageMs = Date.now() - new Date(data.meta.generatedAt).getTime();
+          // R67-r14 audit fix (HIGH): use bot-write timestamp, not API
+          // response timestamp. A dead Python bot + live Next API always
+          // looked fresh because `generatedAt` was set per response.
+          const botTs = data.meta.botLastWriteAt;
+          if (!botTs) {
+            return (
+              <span className="px-2 py-0.5 rounded text-xs bg-loss/30 text-loss border border-loss/50">
+                ⚠ NO BOT DATA
+              </span>
+            );
+          }
+          const ageMs = Date.now() - new Date(botTs).getTime();
           if (Number.isFinite(ageMs) && ageMs > 5 * 60_000) {
             return (
               <span className="px-2 py-0.5 rounded text-xs bg-loss/30 text-loss border border-loss/50">
-                ⚠ STALE ({fmtTimeAgo(data.meta.generatedAt)})
+                ⚠ STALE ({fmtTimeAgo(botTs)})
               </span>
             );
           }

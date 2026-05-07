@@ -87,6 +87,21 @@ const TF_DISPATCH: Record<string, TfTag> = {
   "2h-trend-v5-quartz-lite-r28-v5-v4engine": "30m",
   "2h-trend-v5-quartz-lite-r28-v6": "30m",
   "2h-trend-v5-quartz-lite-r28-v6-v4engine": "30m",
+  // R67-r14 audit fix (KRITISCH): PASSLOCK family + all R60 sister selectors
+  // were missing → fall-through caught them with the "2h-trend" rule → bot
+  // polled every 2h while the underlying CFG.timeframe is 30m → 75% of bar
+  // boundaries missed live, drastic undertrade vs backtest. Champion is
+  // `r28-v6-passlock` per CLAUDE.md.
+  "2h-trend-v5-r28-v6-passlock": "30m",
+  "2h-trend-v5-r28-v6-corrcap2": "30m",
+  "2h-trend-v5-r28-v6-lscool48": "30m",
+  "2h-trend-v5-r28-v6-todcutoff18": "30m",
+  "2h-trend-v5-r28-v6-voltp-aggr": "30m",
+  "2h-trend-v5-r28-v6-idlt30": "30m",
+  "2h-trend-v5-r28-v6-combo-pl-idlt": "30m",
+  "2h-trend-v5-r28-v6-passlock-dayrisk50": "30m",
+  "2h-trend-v5-r28-v6-passlock-dayrisk70": "30m",
+  "2h-trend-v5-r28-v6-passlock-dayrisk50-2d": "30m",
   "2h-trend-breakout-v1": "30m",
   "2h-trend-v5-quartz-step2": "30m",
   "2h-trend-v5-topaz": "30m",
@@ -114,7 +129,18 @@ const TF_DISPATCH: Record<string, TfTag> = {
 
 function resolveTf(envValue: string | undefined): TfTag {
   if (envValue && TF_DISPATCH[envValue]) return TF_DISPATCH[envValue];
-  // Fall-through rule: any other "2h-trend-*" gets 2h (legacy V231 family).
+  // R67-r14 audit fix: fail-LOUD on unrecognised `2h-trend-v5-*` selectors
+  // instead of silently routing to 2h. The previous fall-through hid the
+  // PASSLOCK polling bug for an entire R60 deploy cycle. Mirrors the V231
+  // CFG_REGISTRY fail-loud pattern (ftmoLiveSignalV231.ts:595).
+  if (envValue?.startsWith("2h-trend-v5-")) {
+    throw new Error(
+      `[ftmoLiveService] FTMO_TF="${envValue}" not registered in TF_DISPATCH. ` +
+        `Add an explicit 30m/1h/2h/4h mapping — falling through to "2h" silently ` +
+        `caused a 30m-config to poll every 2h in production (Round 67 audit).`,
+    );
+  }
+  // Legacy non-v5 prefix rule: still routes to 2h.
   if (envValue?.startsWith("2h-trend")) return "2h";
   return "4h"; // ultimate default
 }

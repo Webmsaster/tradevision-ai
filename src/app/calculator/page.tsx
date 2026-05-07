@@ -1,22 +1,34 @@
-'use client';
+"use client";
 
-import { useState, useMemo } from 'react';
-import StatCard from '@/components/StatCard';
+import { useState, useMemo } from "react";
+import StatCard from "@/components/StatCard";
 
-type Direction = 'long' | 'short';
+type Direction = "long" | "short";
 
 const RISK_PRESETS = [0.5, 1, 2, 3];
+
+// R67-r14 audit fix: DE-locale users typing "1,5" lost the value because
+// parseFloat returns NaN on a comma decimal. Browser-spec for type=number
+// is locale-dependent — many setups submit the raw "1,5" string. Replace
+// the first comma with a dot before parsing; existing dot-decimal still
+// works. Returns 0 for empty/invalid so callers can keep the `|| 0` guard.
+function parseLocaleNum(raw: string): number {
+  if (!raw) return 0;
+  const normalised = raw.replace(",", ".");
+  const v = parseFloat(normalised);
+  return Number.isFinite(v) ? v : 0;
+}
 
 export default function CalculatorPage() {
   const [accountBalance, setAccountBalance] = useState<number>(10000);
   const [riskPercent, setRiskPercent] = useState<number>(1);
   const [entryPrice, setEntryPrice] = useState<number>(0);
   const [stopLoss, setStopLoss] = useState<number>(0);
-  const [takeProfit, setTakeProfit] = useState<string>('');
-  const [direction, setDirection] = useState<Direction>('long');
+  const [takeProfit, setTakeProfit] = useState<string>("");
+  const [direction, setDirection] = useState<Direction>("long");
   const [leverage, setLeverage] = useState<number>(1);
 
-  const takeProfitNum = takeProfit !== '' ? parseFloat(takeProfit) : null;
+  const takeProfitNum = takeProfit !== "" ? parseLocaleNum(takeProfit) : null;
 
   const calculations = useMemo(() => {
     const slDistance = Math.abs(entryPrice - stopLoss);
@@ -63,7 +75,7 @@ export default function CalculatorPage() {
 
     let liquidationPrice: number | null = null;
     if (leverage > 1) {
-      if (direction === 'long') {
+      if (direction === "long") {
         liquidationPrice = entryPrice * (1 - 1 / leverage);
       } else {
         liquidationPrice = entryPrice * (1 + 1 / leverage);
@@ -82,7 +94,15 @@ export default function CalculatorPage() {
       liquidationPrice,
       valid: true,
     };
-  }, [accountBalance, riskPercent, entryPrice, stopLoss, takeProfitNum, direction, leverage]);
+  }, [
+    accountBalance,
+    riskPercent,
+    entryPrice,
+    stopLoss,
+    takeProfitNum,
+    direction,
+    leverage,
+  ]);
 
   // Risk:Reward bar widths
   const rrBarWidths = useMemo(() => {
@@ -100,12 +120,12 @@ export default function CalculatorPage() {
   }, [calculations.rrRatio, calculations.valid]);
 
   function fmt(n: number, decimals = 2): string {
-    if (!isFinite(n) || isNaN(n)) return '0.00';
+    if (!isFinite(n) || isNaN(n)) return "0.00";
     return n.toFixed(decimals);
   }
 
   function fmtUnits(n: number): string {
-    if (!isFinite(n) || isNaN(n)) return '0';
+    if (!isFinite(n) || isNaN(n)) return "0";
     if (n >= 1) return n.toFixed(4);
     if (n >= 0.0001) return n.toFixed(6);
     return n.toFixed(8);
@@ -116,7 +136,13 @@ export default function CalculatorPage() {
       <div className="page-header">
         <div>
           <h1 className="page-title">Risk Calculator</h1>
-          <p style={{ color: 'var(--text-secondary)', marginTop: 4, fontSize: '0.9rem' }}>
+          <p
+            style={{
+              color: "var(--text-secondary)",
+              marginTop: 4,
+              fontSize: "0.9rem",
+            }}
+          >
             Calculate optimal position sizes based on your risk tolerance
           </p>
         </div>
@@ -130,20 +156,26 @@ export default function CalculatorPage() {
           <div className="calc-form-grid">
             {/* Account Balance */}
             <div className="input-group">
-              <label htmlFor="calc-balance" className="input-label">Account Balance ($)</label>
+              <label htmlFor="calc-balance" className="input-label">
+                Account Balance ($)
+              </label>
               <input
                 id="calc-balance"
                 className="input"
                 type="number"
                 min={0}
                 value={accountBalance}
-                onChange={(e) => setAccountBalance(parseFloat(e.target.value) || 0)}
+                onChange={(e) =>
+                  setAccountBalance(parseLocaleNum(e.target.value))
+                }
               />
             </div>
 
             {/* Risk Per Trade */}
             <div className="input-group">
-              <label htmlFor="calc-risk" className="input-label">Risk Per Trade (%)</label>
+              <label htmlFor="calc-risk" className="input-label">
+                Risk Per Trade (%)
+              </label>
               <input
                 id="calc-risk"
                 className="input"
@@ -153,8 +185,9 @@ export default function CalculatorPage() {
                 step={0.1}
                 value={riskPercent}
                 onChange={(e) => {
-                  const val = parseFloat(e.target.value);
-                  if (!isNaN(val)) setRiskPercent(Math.min(10, Math.max(0.1, val)));
+                  const val = parseLocaleNum(e.target.value);
+                  if (Number.isFinite(val) && val > 0)
+                    setRiskPercent(Math.min(10, Math.max(0.1, val)));
                 }}
               />
               <div className="calc-presets">
@@ -162,7 +195,7 @@ export default function CalculatorPage() {
                   <button
                     key={preset}
                     type="button"
-                    className={`calc-preset-btn${riskPercent === preset ? ' active' : ''}`}
+                    className={`calc-preset-btn${riskPercent === preset ? " active" : ""}`}
                     onClick={() => setRiskPercent(preset)}
                   >
                     {preset}%
@@ -173,37 +206,43 @@ export default function CalculatorPage() {
 
             {/* Entry Price */}
             <div className="input-group">
-              <label htmlFor="calc-entry" className="input-label">Entry Price ($)</label>
+              <label htmlFor="calc-entry" className="input-label">
+                Entry Price ($)
+              </label>
               <input
                 id="calc-entry"
                 className="input"
                 type="number"
                 min={0}
                 step="any"
-                value={entryPrice || ''}
+                value={entryPrice || ""}
                 placeholder="0.00"
-                onChange={(e) => setEntryPrice(parseFloat(e.target.value) || 0)}
+                onChange={(e) => setEntryPrice(parseLocaleNum(e.target.value))}
               />
             </div>
 
             {/* Stop Loss */}
             <div className="input-group">
-              <label htmlFor="calc-stoploss" className="input-label">Stop Loss Price ($)</label>
+              <label htmlFor="calc-stoploss" className="input-label">
+                Stop Loss Price ($)
+              </label>
               <input
                 id="calc-stoploss"
                 className="input"
                 type="number"
                 min={0}
                 step="any"
-                value={stopLoss || ''}
+                value={stopLoss || ""}
                 placeholder="0.00"
-                onChange={(e) => setStopLoss(parseFloat(e.target.value) || 0)}
+                onChange={(e) => setStopLoss(parseLocaleNum(e.target.value))}
               />
             </div>
 
             {/* Take Profit */}
             <div className="input-group">
-              <label htmlFor="calc-takeprofit" className="input-label">Take Profit Price ($) - optional</label>
+              <label htmlFor="calc-takeprofit" className="input-label">
+                Take Profit Price ($) - optional
+              </label>
               <input
                 id="calc-takeprofit"
                 className="input"
@@ -218,7 +257,9 @@ export default function CalculatorPage() {
 
             {/* Leverage */}
             <div className="input-group">
-              <label htmlFor="calc-leverage" className="input-label">Leverage</label>
+              <label htmlFor="calc-leverage" className="input-label">
+                Leverage
+              </label>
               <input
                 id="calc-leverage"
                 className="input"
@@ -226,7 +267,15 @@ export default function CalculatorPage() {
                 min={1}
                 step={1}
                 value={leverage}
-                onChange={(e) => setLeverage(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                onChange={(e) => {
+                  // R67-r14 audit: parseFloat (not parseInt) so forex 1.5×
+                  // leverage works; min cap at 1, finite-guard, comma-decimal
+                  // via parseLocaleNum.
+                  const val = parseLocaleNum(e.target.value);
+                  setLeverage(
+                    Math.max(1, Number.isFinite(val) && val > 0 ? val : 1),
+                  );
+                }}
               />
             </div>
 
@@ -236,27 +285,29 @@ export default function CalculatorPage() {
               <div className="calc-direction-toggle">
                 <button
                   type="button"
-                  className={`calc-direction-btn${direction === 'long' ? ' active-long' : ''}`}
-                  onClick={() => setDirection('long')}
+                  className={`calc-direction-btn${direction === "long" ? " active-long" : ""}`}
+                  onClick={() => setDirection("long")}
                 >
                   Long
                 </button>
                 <button
                   type="button"
-                  className={`calc-direction-btn${direction === 'short' ? ' active-short' : ''}`}
-                  onClick={() => setDirection('short')}
+                  className={`calc-direction-btn${direction === "short" ? " active-short" : ""}`}
+                  onClick={() => setDirection("short")}
                 >
                   Short
                 </button>
               </div>
-              {entryPrice > 0 && stopLoss > 0 && (
-                (direction === 'long' && stopLoss >= entryPrice) ||
-                (direction === 'short' && stopLoss <= entryPrice)
-              ) && (
-                <p className="calc-sl-warning">
-                  Stop Loss should be {direction === 'long' ? 'below' : 'above'} entry price for a {direction} position.
-                </p>
-              )}
+              {entryPrice > 0 &&
+                stopLoss > 0 &&
+                ((direction === "long" && stopLoss >= entryPrice) ||
+                  (direction === "short" && stopLoss <= entryPrice)) && (
+                  <p className="calc-sl-warning">
+                    Stop Loss should be{" "}
+                    {direction === "long" ? "below" : "above"} entry price for a{" "}
+                    {direction} position.
+                  </p>
+                )}
             </div>
           </div>
         </div>
@@ -267,24 +318,28 @@ export default function CalculatorPage() {
           <div className="calc-results-grid">
             <StatCard
               label="Position Size"
-              value={calculations.valid ? fmtUnits(calculations.positionSize) : '-'}
+              value={
+                calculations.valid ? fmtUnits(calculations.positionSize) : "-"
+              }
               suffix=" units"
             />
             <StatCard
               label="Position Value"
-              value={calculations.valid ? fmt(calculations.positionValue) : '-'}
+              value={calculations.valid ? fmt(calculations.positionValue) : "-"}
               prefix="$"
             />
             {leverage > 1 && (
               <StatCard
                 label="Margin Required"
-                value={calculations.valid ? fmt(calculations.marginRequired) : '-'}
+                value={
+                  calculations.valid ? fmt(calculations.marginRequired) : "-"
+                }
                 prefix="$"
               />
             )}
             <StatCard
               label="Max Loss"
-              value={calculations.valid ? fmt(calculations.maxLoss) : '-'}
+              value={calculations.valid ? fmt(calculations.maxLoss) : "-"}
               prefix="$"
               variant="loss"
             />
@@ -293,29 +348,31 @@ export default function CalculatorPage() {
               value={
                 calculations.valid && calculations.potentialProfit !== null
                   ? fmt(calculations.potentialProfit)
-                  : '-'
+                  : "-"
               }
-              prefix={calculations.potentialProfit !== null ? '$' : ''}
-              variant={calculations.potentialProfit !== null ? 'profit' : 'default'}
+              prefix={calculations.potentialProfit !== null ? "$" : ""}
+              variant={
+                calculations.potentialProfit !== null ? "profit" : "default"
+              }
             />
           </div>
 
           {/* Risk:Reward visualization */}
           <div className="glass-card calc-rr-bar">
             <div className="calc-rr-header">
-              <span style={{ color: 'var(--loss)' }}>
-                Risk: ${calculations.valid ? fmt(calculations.maxLoss) : '0.00'}
+              <span style={{ color: "var(--loss)" }}>
+                Risk: ${calculations.valid ? fmt(calculations.maxLoss) : "0.00"}
               </span>
-              <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+              <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>
                 {calculations.rrRatio !== null
                   ? `1 : ${fmt(calculations.rrRatio)}`
-                  : 'Risk : Reward'}
+                  : "Risk : Reward"}
               </span>
-              <span style={{ color: 'var(--profit)' }}>
+              <span style={{ color: "var(--profit)" }}>
                 Reward: $
                 {calculations.valid && calculations.potentialProfit !== null
                   ? fmt(calculations.potentialProfit)
-                  : '0.00'}
+                  : "0.00"}
               </span>
             </div>
             <div className="calc-rr-track">
@@ -330,40 +387,53 @@ export default function CalculatorPage() {
             </div>
             <div
               style={{
-                display: 'flex',
-                justifyContent: 'space-between',
+                display: "flex",
+                justifyContent: "space-between",
                 marginTop: 8,
-                fontSize: '0.75rem',
-                color: 'var(--text-muted)',
+                fontSize: "0.75rem",
+                color: "var(--text-muted)",
               }}
             >
-              <span>SL Distance: {calculations.valid ? fmt(calculations.slDistancePercent) : '0.00'}%</span>
-              <span>Risk Amount: ${calculations.valid ? fmt(calculations.riskAmount) : '0.00'}</span>
+              <span>
+                SL Distance:{" "}
+                {calculations.valid
+                  ? fmt(calculations.slDistancePercent)
+                  : "0.00"}
+                %
+              </span>
+              <span>
+                Risk Amount: $
+                {calculations.valid ? fmt(calculations.riskAmount) : "0.00"}
+              </span>
             </div>
           </div>
 
           {/* Liquidation Price warning */}
-          {leverage > 1 && calculations.valid && calculations.liquidationPrice !== null && (
-            <div className="calc-liquidation">
-              <div className="calc-liquidation-title">
-                Liquidation Price ({direction === 'long' ? 'Long' : 'Short'} {leverage}x)
+          {leverage > 1 &&
+            calculations.valid &&
+            calculations.liquidationPrice !== null && (
+              <div className="calc-liquidation">
+                <div className="calc-liquidation-title">
+                  Liquidation Price ({direction === "long" ? "Long" : "Short"}{" "}
+                  {leverage}x)
+                </div>
+                <div className="calc-liquidation-value">
+                  ${fmt(calculations.liquidationPrice)}
+                </div>
+                <p
+                  style={{
+                    fontSize: "0.75rem",
+                    color: "var(--text-muted)",
+                    marginTop: 6,
+                    lineHeight: 1.4,
+                  }}
+                >
+                  Your position will be liquidated if the price reaches this
+                  level. This is an estimate and does not account for fees or
+                  funding rates.
+                </p>
               </div>
-              <div className="calc-liquidation-value">
-                ${fmt(calculations.liquidationPrice)}
-              </div>
-              <p
-                style={{
-                  fontSize: '0.75rem',
-                  color: 'var(--text-muted)',
-                  marginTop: 6,
-                  lineHeight: 1.4,
-                }}
-              >
-                Your position will be liquidated if the price reaches this level.
-                This is an estimate and does not account for fees or funding rates.
-              </p>
-            </div>
-          )}
+            )}
         </div>
       </div>
     </div>

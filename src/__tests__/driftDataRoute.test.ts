@@ -53,12 +53,16 @@ beforeAll(() => {
     }),
   );
 
-  // Peak-state
+  // Peak-state — R67-r14 audit fix: API now reads `challenge-peak.json`
+  // (the file Python actually writes via update_challenge_peak) instead
+  // of the never-produced `peak-state.json`. Field names mirror the
+  // Python writer: `peak_equity_usd` + `last_update_ts`.
   fs.writeFileSync(
-    path.join(testStateDir, "peak-state.json"),
+    path.join(testStateDir, "challenge-peak.json"),
     JSON.stringify({
-      peak_equity: 103_000,
-      peak_at: "2026-04-26T12:00:00Z",
+      peak_equity_usd: 103_000,
+      last_update_ts: "2026-04-26T12:00:00Z",
+      started_at: "2026-04-26",
     }),
   );
 

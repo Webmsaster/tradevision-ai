@@ -1268,6 +1268,12 @@ export function pollLive(
     if (!passed && result.failReason !== "feed_lost") {
       result.failReason = "time";
     }
+    // R67-r14 audit: API contract is "failReason is non-null only on
+    // failure". A passed window with stale feed_lost from an earlier code
+    // path could mis-classify downstream. Clear on pass.
+    if (passed) {
+      result.failReason = null;
+    }
     // Phase 59 (R44-V4-13): increment barsSeen + lastBarOpenTime so a
     // re-poll on the same bar is idempotent. Without this, a follow-up
     // tick re-ran day-rollover and could overwrite stoppedReason="time"
