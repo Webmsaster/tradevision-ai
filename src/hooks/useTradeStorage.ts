@@ -554,14 +554,43 @@ export function useTradeStorage() {
 
   const replaceTrades = useCallback(
     async (newTrades: Trade[]) => {
-      saveTrades(newTrades);
-      setAllTrades(newTrades);
+      // R67-R18 (R15-A1): the /import "Replace mode" used to wipe ALL
+      // accounts' cloud trades — `clearAllSupabaseTrades(supabase, userId)`
+      // soft-deleted every row owned by the user, even ones for accounts
+      // the user wasn't actively viewing. A trader with FTMO-Step1 +
+      // FTMO-Step2 + Personal accounts who re-imported their FTMO-Step1
+      // backup lost the other two accounts' cloud copies (local survived,
+      // but a fresh device pull would show only Step1).
+      //
+      // Fix: scope the wipe to the active account only and stamp incoming
+      // trades with that account so the soft-delete and the re-import
+      // operate on the same scope. Local storage already mirrors the merge
+      // because saveTrades writes the whole `merged` array — but here we
+      // need to MERGE rather than blow away local-other-account data too,
+      // so we union the new trades for this account with the existing
+      // trades for the other accounts.
+      const stamped = newTrades.map((t) => ({
+        ...t,
+        accountId: t.accountId || activeAccountId,
+      }));
+      // Local: union with trades for other accounts so a Replace into
+      // FTMO-Step1 doesn't blow away Personal-account local rows.
+      const existingLocal = loadTrades();
+      const otherAccountTrades = existingLocal.filter(
+        (t) => (t.accountId ?? "default") !== activeAccountId,
+      );
+      const merged = [...otherAccountTrades, ...stamped];
+      saveTrades(merged);
+      setAllTrades(merged);
       if (isCloud) {
         try {
-          // Clear existing cloud data first to prevent stale trades from persisting
-          await clearAllSupabaseTrades(supabase!, user!.id);
-          if (newTrades.length > 0) {
-            await saveBulkTradesToSupabase(supabase!, newTrades, user!.id);
+          // Clear existing cloud data for THIS account only — leave other
+          // accounts intact. Pre-stamping above guarantees `accountId` is
+          // set on every incoming row, so the subsequent bulk-upsert lands
+          // under the same account_id we just cleared.
+          await clearAllSupabaseTrades(supabase!, user!.id, activeAccountId);
+          if (stamped.length > 0) {
+            await saveBulkTradesToSupabase(supabase!, stamped, user!.id);
           }
         } catch (err) {
           console.error("Cloud sync failed for setAllTrades:", err);
@@ -571,7 +600,7 @@ export function useTradeStorage() {
         }
       }
     },
-    [isCloud, supabase, user],
+    [isCloud, supabase, user, activeAccountId],
   );
 
   const dismissSyncError = useCallback(() => setSyncError(null), []);

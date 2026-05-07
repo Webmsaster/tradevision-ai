@@ -67,6 +67,10 @@ function isSafeScreenshotUrl(url: string): boolean {
 
 function formatHoldTime(entryDate: string, exitDate: string): string {
   const diffMs = new Date(exitDate).getTime() - new Date(entryDate).getTime();
+  // R67-R18: guard against NaN crash. `new Date("invalid").getTime()` returns
+  // NaN, and `Math.floor(NaN / 60000)` is NaN — rendered as "NaNh NaNm".
+  // Show an em-dash instead so the modal stays clean on corrupt dates.
+  if (!Number.isFinite(diffMs)) return "—";
   const totalMinutes = Math.floor(diffMs / 60000);
   const totalHours = Math.floor(totalMinutes / 60);
   const days = Math.floor(totalHours / 24);

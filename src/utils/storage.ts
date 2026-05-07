@@ -527,7 +527,42 @@ async function uploadChunked(
   return { ok: true, failedFromIndex: null };
 }
 
-export async function saveBulkTradesToSupabase(
+// R67-R18 (R17-A3): module-scope serializer for ALL bulk-upserts. The
+// existing `drainOnce` lock in useTradeStorage only covered the mount-time
+// retry-queue drain; concurrent direct calls to saveBulkTradesToSupabase
+// (e.g. /import "Replace mode" → replaceTrades, or two CSV imports fired
+// in quick succession) raced on the SAME retry queue: thread A reads the
+// queue, thread B reads it, A writes survivors, B writes its survivors
+// over A's — A's pending rows are silently lost.
+//
+// Pattern: chain every call onto a single Promise so all bulk uploads run
+// strictly sequentially within this process. The chain swallows errors so
+// one failing call doesn't poison the next; each invocation still resolves
+// with its own boolean. No timeout / cancellation needed: callers already
+// time-out at the network layer (Supabase client default 30s) and a
+// hanging upload would block subsequent calls in a way that's strictly
+// safer than the current race.
+let bulkSerialized: Promise<unknown> = Promise.resolve();
+
+export function _resetBulkSerializerForTests(): void {
+  bulkSerialized = Promise.resolve();
+}
+
+export function saveBulkTradesToSupabase(
+  supabase: SupabaseClient,
+  trades: Trade[],
+  userId: string,
+): Promise<boolean> {
+  const next = bulkSerialized.then(() =>
+    _saveBulkTradesToSupabaseUnlocked(supabase, trades, userId),
+  );
+  // Keep the chain alive even on rejection so a thrown error in one call
+  // doesn't block subsequent calls forever.
+  bulkSerialized = next.catch(() => undefined);
+  return next;
+}
+
+async function _saveBulkTradesToSupabaseUnlocked(
   supabase: SupabaseClient,
   trades: Trade[],
   userId: string,
@@ -587,6 +622,17 @@ export async function saveBulkTradesToSupabase(
 export async function clearAllSupabaseTrades(
   supabase: SupabaseClient,
   userId: string,
+  // R67-R18 (R15-A1): optional `accountId` scopes the wipe to a single
+  // account. The /import page "Replace mode" calls this from `replaceTrades`
+  // and previously deleted ALL accounts' trades, not just the active one —
+  // so a user with FTMO-Step1 + FTMO-Step2 + Personal accounts who
+  // re-imported their FTMO-Step1 backup wiped Step2 + Personal too.
+  // Passing `accountId` adds an `.eq("account_id", accountId)` filter so
+  // only rows owned by that account are tombstoned. Omitting the param
+  // preserves the previous behaviour (full per-user wipe) for the
+  // explicit "Clear all data" button which is documented to nuke
+  // everything.
+  accountId?: string,
 ): Promise<boolean> {
   // Phase 95 (R54-STO-7): soft-delete batch. Falls back to hard-delete
   // for pre-migration DBs.
@@ -596,28 +642,33 @@ export async function clearAllSupabaseTrades(
   // already seen the soft-delete column work.
   const nowIso = new Date().toISOString();
   if (softDeleteAvailable === false) {
-    const hardDel = await supabase
-      .from("trades")
-      .delete()
-      .eq("user_id", userId);
+    let hardDelQuery = supabase.from("trades").delete().eq("user_id", userId);
+    if (accountId !== undefined) {
+      hardDelQuery = hardDelQuery.eq("account_id", accountId);
+    }
+    const hardDel = await hardDelQuery;
     if (hardDel.error) {
       console.error("Failed to clear trades from Supabase:", hardDel.error);
       return false;
     }
     return true;
   }
-  let { error } = await supabase
+  let updateQuery = supabase
     .from("trades")
     .update({ deleted_at: nowIso })
-    .eq("user_id", userId)
-    .is("deleted_at", null);
+    .eq("user_id", userId);
+  if (accountId !== undefined) {
+    updateQuery = updateQuery.eq("account_id", accountId);
+  }
+  let { error } = await updateQuery.is("deleted_at", null);
   if (error) {
     if (softDeleteAvailable !== true && isUndefinedDeletedAtColumn(error)) {
       softDeleteAvailable = false;
-      const hardDel = await supabase
-        .from("trades")
-        .delete()
-        .eq("user_id", userId);
+      let hardDelQuery = supabase.from("trades").delete().eq("user_id", userId);
+      if (accountId !== undefined) {
+        hardDelQuery = hardDelQuery.eq("account_id", accountId);
+      }
+      const hardDel = await hardDelQuery;
       error = hardDel.error;
     }
   } else {

@@ -401,13 +401,16 @@ describe("Round 60 — Edge Cases (closeAllOnTargetReached)", () => {
     expect(state.openPositions.length).toBe(0);
     expect(r.decision.closes.length).toBe(1);
     const closed = state.closedTrades[state.closedTrades.length - 1]!;
-    // Fallback chain: lastKnownPrice undefined → entryPrice → rawPnl=0 → effPnl=0.
+    // Fallback chain: lastKnownPrice undefined → entryPrice → priceMove=0.
+    // R67-r17 (R15-A7 fix): broker round-trip commission (costBp=5 → 5bp)
+    // is now charged → rawPnl = -0.0005 (and effPnl = -0.0005 × 5 × 0.1 =
+    // -0.00025) instead of the pre-fix 0/0. Mirrors backtest realism.
     expect(closed.exitPrice).toBe(3000);
-    expect(closed.rawPnl).toBe(0);
-    expect(closed.effPnl).toBe(0);
+    expect(closed.rawPnl).toBeCloseTo(-0.0005, 9);
+    expect(closed.effPnl).toBeCloseTo(-0.00025, 9);
     expect(closed.exitReason).toBe("manual");
-    // Equity unchanged because effPnl=0.
-    expect(state.equity).toBeCloseTo(1.09, 6);
+    // Equity drops by exactly the round-trip commission charge.
+    expect(state.equity).toBeCloseTo(1.09 * (1 - 0.00025), 9);
   });
 
   it("idempotency: re-poll same bar after firstTargetHit → no double close", () => {

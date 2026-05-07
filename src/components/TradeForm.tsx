@@ -45,6 +45,27 @@ function fromDatetimeLocal(value: string): string {
   return d.toISOString();
 }
 
+// R67-R18: DE-locale users typing "1,5" lost the value because parseFloat
+// returns NaN on a comma decimal. Replace the first comma with a dot before
+// parsing; existing dot-decimal still works. Returns 0 for empty/invalid.
+// Mirrors `parseLocaleNum` in src/app/calculator/page.tsx.
+function parseLocaleNum(raw: string): number {
+  if (!raw) return 0;
+  const normalised = raw.replace(",", ".");
+  const v = parseFloat(normalised);
+  return Number.isFinite(v) ? v : 0;
+}
+
+// R67-R18: normalise pair input on submit — trim, uppercase, strip spaces /
+// dashes / underscores. Applied at submit-time (not on every keystroke) so
+// users can still type freely.
+function normalisePair(raw: string): string {
+  return raw
+    .trim()
+    .toUpperCase()
+    .replace(/[\s\-_]+/g, "");
+}
+
 export default function TradeForm({
   isOpen,
   onClose,
@@ -164,13 +185,15 @@ export default function TradeForm({
 
   // ---- live PnL preview ----
   const pnlPreview = useMemo(() => {
-    const ep = parseFloat(entryPrice);
-    const xp = parseFloat(exitPrice);
-    const qty = parseFloat(quantity);
-    const lev = parseFloat(leverage);
-    const f = parseFloat(fees);
+    // R67-R18: parseLocaleNum (DE comma decimal). Returns 0 on NaN/empty so
+    // the early-return guard below still catches blank fields.
+    const ep = parseLocaleNum(entryPrice);
+    const xp = parseLocaleNum(exitPrice);
+    const qty = parseLocaleNum(quantity);
+    const lev = parseLocaleNum(leverage);
+    const f = parseLocaleNum(fees);
 
-    if (isNaN(ep) || isNaN(xp) || isNaN(qty) || ep <= 0 || qty <= 0) {
+    if (ep <= 0 || qty <= 0 || !exitPrice) {
       return null;
     }
 
@@ -180,8 +203,8 @@ export default function TradeForm({
       entryPrice: ep,
       exitPrice: xp,
       quantity: qty,
-      leverage: isNaN(lev) || lev <= 0 ? 1 : lev,
-      fees: isNaN(f) ? 0 : f,
+      leverage: lev > 0 ? lev : 1,
+      fees: f >= 0 ? f : 0,
       entryDate: "",
       exitDate: "",
       notes: "",
@@ -196,38 +219,28 @@ export default function TradeForm({
     const newErrors: Record<string, string> = {};
 
     if (!pair.trim()) newErrors.pair = "Pair is required";
-    if (
-      !entryPrice ||
-      isNaN(parseFloat(entryPrice)) ||
-      parseFloat(entryPrice) <= 0
-    )
+    // R67-R18: parseLocaleNum (DE comma decimal). parseLocaleNum returns 0
+    // for empty/invalid, so checking <= 0 catches both blank and NaN cases.
+    const epNum = parseLocaleNum(entryPrice);
+    if (!entryPrice || epNum <= 0 || epNum > 1e12) {
       newErrors.entryPrice = "Valid entry price is required";
-    if (
-      !exitPrice ||
-      isNaN(parseFloat(exitPrice)) ||
-      parseFloat(exitPrice) <= 0
-    )
+    }
+    const xpNum = parseLocaleNum(exitPrice);
+    if (!exitPrice || xpNum <= 0 || xpNum > 1e12) {
       newErrors.exitPrice = "Valid exit price is required";
+    }
     // R8: guard against Infinity / NaN / absurd magnitudes (1e12 cap).
-    const qtyNum = parseFloat(quantity);
-    if (!quantity || !Number.isFinite(qtyNum) || qtyNum <= 0 || qtyNum > 1e12)
+    const qtyNum = parseLocaleNum(quantity);
+    if (!quantity || qtyNum <= 0 || qtyNum > 1e12)
       newErrors.quantity = "Valid quantity is required";
-    const epNum = parseFloat(entryPrice);
-    if (entryPrice && (!Number.isFinite(epNum) || epNum <= 0 || epNum > 1e12)) {
-      newErrors.entryPrice = "Valid entry price is required";
-    }
-    const xpNum = parseFloat(exitPrice);
-    if (exitPrice && (!Number.isFinite(xpNum) || xpNum <= 0 || xpNum > 1e12)) {
-      newErrors.exitPrice = "Valid exit price is required";
-    }
-    const feesNum = parseFloat(fees);
-    if (fees && (!Number.isFinite(feesNum) || feesNum < 0 || feesNum > 1e9)) {
+    const feesNum = parseLocaleNum(fees);
+    if (fees && (feesNum < 0 || feesNum > 1e9)) {
       newErrors.fees = "Valid fees value required";
     }
     // R8 Task B: validateLeverage on submit — flag fallback if user typed
     // something unparseable (Infinity, NaN, negative, 0).
     if (leverage !== "") {
-      const { fallback } = validateLeverage(parseFloat(leverage));
+      const { fallback } = validateLeverage(parseLocaleNum(leverage));
       if (fallback) newErrors.leverage = "Invalid leverage value";
     }
     if (!entryDate) newErrors.entryDate = "Entry date is required";
@@ -246,6 +259,17 @@ export default function TradeForm({
     }
 
     setErrors(newErrors);
+    // R67-R18: focus the first invalid field for keyboard / a11y users.
+    // Defer to next tick so React has flushed the `error` className before
+    // querying the DOM. typeof check guards against SSR.
+    if (Object.keys(newErrors).length > 0 && typeof document !== "undefined") {
+      requestAnimationFrame(() => {
+        const target = document.querySelector<HTMLElement>(
+          '.form-input.error, [aria-invalid="true"]',
+        );
+        target?.focus();
+      });
+    }
     return Object.keys(newErrors).length === 0;
   }
 
@@ -258,11 +282,12 @@ export default function TradeForm({
     setSubmitting(true);
 
     try {
-      const ep = parseFloat(entryPrice);
-      const xp = parseFloat(exitPrice);
-      const qty = parseFloat(quantity);
-      const lev = parseFloat(leverage) || 1;
-      const f = parseFloat(fees) || 0;
+      // R67-R18: parseLocaleNum (DE comma decimal) on all 5 numeric fields.
+      const ep = parseLocaleNum(entryPrice);
+      const xp = parseLocaleNum(exitPrice);
+      const qty = parseLocaleNum(quantity);
+      const lev = parseLocaleNum(leverage) || 1;
+      const f = parseLocaleNum(fees);
       // R8 Task A: cap individual tag length (50) and total count (20) so
       // pathological imports/pasted data can't blow up the trade record.
       const parsedTags = tags
@@ -273,7 +298,9 @@ export default function TradeForm({
         .slice(0, 20);
 
       const tradeBase = {
-        pair: pair.trim(),
+        // R67-R18: normalise pair on submit (trim + uppercase + strip
+        // spaces / dashes / underscores). E.g. "btc-usdt " → "BTCUSDT".
+        pair: normalisePair(pair),
         direction,
         entryPrice: ep,
         exitPrice: xp,

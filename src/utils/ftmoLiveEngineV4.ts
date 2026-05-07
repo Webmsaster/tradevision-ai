@@ -975,11 +975,34 @@ function processPositionExit(
 /**
  * Compute realised effPnl for a closed position. Uses cfg.leverage and
  * pos.effRisk. Includes PTP partial-realised blend.
+ *
+ * R67-r17 (R15-A7 KRITISCH fix, 2026-05-07): apply broker execution costs to
+ * `rawPnl` so live-engine matches backtest realism. Previously the live engine
+ * charged 0bp roundtrip while the backtest deducts costBp×2 + slippageBp×2 +
+ * swap-per-day per crossing → ~76bp/trade drag missing → 9-15pp pass-rate
+ * inflation on R28_V6 / PASSLOCK at 30 trades × 3-5× leverage.
+ *
+ * Cost model mirrors `ftmoDaytrade24h.ts` lines 4273/4626 (round-trip cost via
+ * entryEff/exitEff price-shift, equivalent to subtracting `costBp/10000` from
+ * `rawPnl` for the realised fraction) and lines 4655/4665 (slippage round-trip
+ * subtracted as `slippageBp/10000 × 2 × remainingFraction`) and lines
+ * 4667/4694 (swap charged per Prague-day overnight crossing). Funding-rate
+ * deduction (lines 4711-4740) is NOT replicated here because the live engine
+ * does not yet thread `fundingBySymbol` into pollLive — funding is currently
+ * only an entry-side filter for the live path.
+ *
+ * IMPORTANT: PTP partial-fills already realised entry+exit slippage at the
+ * partial leg (see `ftmoDaytrade24h.ts` line 4424 `ptpFillCost`). To avoid
+ * double-charging, slippage on the remainder applies only to the unclosed
+ * fraction. Cost (commission) is charged round-trip on the WHOLE position
+ * (PTP partial commission was already captured implicitly via the partial
+ * exitEff/entryEff blending). Swap accrues over the full hold regardless.
  */
 function computeEffPnl(
   pos: OpenPositionV4,
   exitPrice: number,
   cfg: FtmoDaytrade24hConfig,
+  exitTime?: number,
 ): { rawPnl: number; effPnl: number } {
   let rawPnl =
     pos.direction === "long"
@@ -994,6 +1017,53 @@ function computeEffPnl(
       .reduce((s, l) => s + l.closeFraction, 0);
     rawPnl = pos.ptpLevelsRealized + (1 - totalClosed) * rawPnl;
   }
+
+  // R67-r17: lookup per-asset broker cost fields (defaults: 0 if undefined).
+  const assetCfg = cfg.assets.find((a) => a.symbol === pos.symbol);
+  const costBp = assetCfg?.costBp ?? 0;
+  const slipBp = assetCfg?.slippageBp ?? 0;
+  const swapBpPerDay = assetCfg?.swapBpPerDay ?? 0;
+
+  // 1) Round-trip commission cost (entry + exit), in price-fraction terms.
+  //    Backtest applies via `entryEff = entry*(1+cost/2)` / `exitEff =
+  //    exitPrice*(1-cost/2)` which is equivalent to subtracting `cost` from
+  //    rawPnl up to O(cost²). For typical 5-50bp this matches within 0.001bp.
+  if (costBp > 0) {
+    rawPnl -= costBp / 10000;
+  }
+
+  // 2) Slippage on remainder. Backtest line 4665: applied only to the fraction
+  //    NOT already closed via PTP (partial leg paid its slippage at fill).
+  if (slipBp > 0) {
+    let remainingFraction = 1;
+    if (pos.ptpTriggered && cfg.partialTakeProfit) {
+      remainingFraction = 1 - cfg.partialTakeProfit.closeFraction;
+    } else if (pos.ptpLevelsRealized > 0 && cfg.partialTakeProfitLevels) {
+      const totalClosed = cfg.partialTakeProfitLevels
+        .slice(0, pos.ptpLevelIdx)
+        .reduce((s, l) => s + l.closeFraction, 0);
+      remainingFraction = Math.max(0, 1 - totalClosed);
+    }
+    rawPnl -= (slipBp / 10000) * 2 * remainingFraction;
+  }
+
+  // 3) Overnight swap, charged per UTC-midnight crossing while the position
+  //    was held. Mirrors backtest line 4667-4695. Triple-swap on Wed→Thu is
+  //    omitted here — crypto swap is symmetric and the simpler model
+  //    matches V4-Sim crypto behavior where Wed-Thu is a single crossing.
+  //    (Forex CFDs deviate but the crypto live engine is the only path
+  //    that exercises this code.)
+  if (swapBpPerDay > 0 && exitTime !== undefined) {
+    const MS_PER_DAY = 86_400_000;
+    // UTC-midnight crossings between entry and exit.
+    const entryDay = Math.floor(pos.entryTime / MS_PER_DAY);
+    const exitDay = Math.floor(exitTime / MS_PER_DAY);
+    const crossings = Math.max(0, exitDay - entryDay);
+    if (crossings > 0) {
+      rawPnl -= (swapBpPerDay / 10000) * crossings;
+    }
+  }
+
   const effPnl = Math.max(
     rawPnl * cfg.leverage * pos.effRisk,
     -pos.effRisk * 1.5,
@@ -1257,7 +1327,12 @@ export function pollLive(
           }
         }
       }
-      const { rawPnl, effPnl } = computeEffPnl(pos, exitPrice, cfg);
+      const { rawPnl, effPnl } = computeEffPnl(
+        pos,
+        exitPrice,
+        cfg,
+        lastBar.openTime,
+      );
       state.equity *= 1 + effPnl;
       const closed: ClosedTradeV4 = {
         ticketId: pos.ticketId,
@@ -1362,7 +1437,12 @@ export function pollLive(
       holdBars,
     );
     if (exit) {
-      const { rawPnl, effPnl } = computeEffPnl(pos, exit.exitPrice, cfg);
+      const { rawPnl, effPnl } = computeEffPnl(
+        pos,
+        exit.exitPrice,
+        cfg,
+        lastBar.openTime,
+      );
       void rawPnl;
       state.equity *= 1 + effPnl;
       const closed: ClosedTradeV4 = {
@@ -1525,7 +1605,12 @@ export function pollLive(
         if (exitPrice == null) {
           exitPrice = pos.lastKnownPrice ?? pos.entryPrice;
         }
-        const { rawPnl, effPnl } = computeEffPnl(pos, exitPrice, cfg);
+        const { rawPnl, effPnl } = computeEffPnl(
+          pos,
+          exitPrice,
+          cfg,
+          lastBar.openTime,
+        );
         state.equity *= 1 + effPnl;
         const closed: ClosedTradeV4 = {
           ticketId: pos.ticketId,
