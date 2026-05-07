@@ -109,6 +109,7 @@ fn build_assets(basket: &[&str]) -> Vec<AssetConfig> {
             max_equity_gain: None,
             hold_bars: None,
             invert_direction: false,
+            ..Default::default()
         })
         .collect()
 }

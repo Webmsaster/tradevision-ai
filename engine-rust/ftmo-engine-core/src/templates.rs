@@ -59,6 +59,9 @@ fn make_assets(symbols: &[&str], risk_frac: f64) -> Vec<AssetConfig> {
             max_equity_gain: None,
             hold_bars: None,
             invert_direction: false,
+            cost_bp: None,
+            slippage_bp: None,
+            swap_bp_per_day: None,
         })
         .collect()
 }

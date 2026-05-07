@@ -427,12 +427,62 @@ mod tests {
         ]);
         let mut p = long_pos(100.0);
         // Bar runs through levels 1 + 2 (high=102.5) but not 3 (would need 103).
-        let c = bar(100.5, 102.5, 100.0, 102.0);
+        // R67-r17: after partial realisation the stop is auto-moved to BE
+        // (=100), so candle.low must stay STRICTLY above 100 for the bar to
+        // not also fire the cross-detection.
+        let c = bar(100.5, 102.5, 100.5, 102.0);
         let r = process_position_exit(&mut p, &c, &cfg, None);
-        assert!(r.is_none());
+        assert!(r.is_none(), "no exit: stop pushed to BE, low strictly > BE");
         assert_eq!(p.ptp_level_idx, 2);
         // 0.25 * 0.01 + 0.25 * 0.02 = 0.0075 realised
         assert!((p.ptp_levels_realized - 0.0075).abs() < 1e-9);
+        // R67-r17 invariants: BE auto-shift + chandelier reset.
+        assert!(p.be_active, "BE should be activated after partial realise");
+        assert_eq!(p.stop_price, 100.0, "stop pushed to BE = entry");
+        assert_eq!(p.high_watermark, 102.0, "highWatermark reset to candle.close");
+    }
+
+    #[test]
+    fn multi_level_ptp_same_bar_stop_wins_without_gap() {
+        // R67-r17 BIT-PRECISE port: if stop also hit on a bar where the
+        // wick reached PTP without a gap-past-trigger, stop wins (matches
+        // single-tier branch + backtest 4228 conservatism).
+        let mut cfg = base_cfg();
+        cfg.partial_take_profit_levels = Some(vec![
+            PartialTakeProfitLevel { trigger_pct: 0.01, close_fraction: 0.25 },
+            PartialTakeProfitLevel { trigger_pct: 0.02, close_fraction: 0.25 },
+        ]);
+        let mut p = long_pos(100.0);
+        // Open between PTP and stop, wick to 102 (lvl 2 trigger), low to 98 (stop).
+        let c = bar(100.5, 102.5, 97.5, 98.5);
+        let r = process_position_exit(&mut p, &c, &cfg, None).unwrap();
+        assert_eq!(r.reason, ExitReason::Stop);
+        assert_eq!(p.ptp_level_idx, 0, "no PTP level realised — stop won");
+        assert_eq!(p.ptp_levels_realized, 0.0);
+    }
+
+    #[test]
+    fn multi_level_ptp_gap_past_trigger_realises_then_be() {
+        // Bar gaps past level-1 trigger → that level realises despite stop
+        // also being hit. Lvl 2 wick happens but no gap → lvl 2 NOT realised.
+        let mut cfg = base_cfg();
+        cfg.partial_take_profit_levels = Some(vec![
+            PartialTakeProfitLevel { trigger_pct: 0.01, close_fraction: 0.25 },
+            PartialTakeProfitLevel { trigger_pct: 0.02, close_fraction: 0.25 },
+        ]);
+        let mut p = long_pos(100.0);
+        // Gap-up open at 101.5 (>101 lvl1 trigger, <102 lvl2 trigger),
+        // wick high 102.5 (touches lvl 2 but no gap), low 98 (stop).
+        let c = bar(101.5, 102.5, 98.0, 99.0);
+        let r = process_position_exit(&mut p, &c, &cfg, None).unwrap();
+        // Lvl 1 realises (gap past), lvl 2 blocked by stop-guard.
+        assert_eq!(p.ptp_level_idx, 1);
+        assert!((p.ptp_levels_realized - 0.0025).abs() < 1e-12, "0.25 × 0.01 = 0.0025");
+        // BE shift activated → stop now 100. Candle.low=98 → cross fires at BE.
+        assert!(p.be_active);
+        assert_eq!(p.stop_price, 100.0);
+        assert_eq!(r.reason, ExitReason::Stop);
+        assert!((r.exit_price - 100.0).abs() < 1e-9, "exit at BE, not orig stop");
     }
 
     #[test]

@@ -974,6 +974,7 @@ mod tests {
             max_equity_gain: None,
             hold_bars: None,
             invert_direction: false,
+            ..Default::default()
         }];
         let mut state = EngineState::initial("x");
         state.challenge_start_ts = 1;

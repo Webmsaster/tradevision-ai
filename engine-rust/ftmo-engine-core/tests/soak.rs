@@ -37,6 +37,7 @@ fn sixty_day_soak_preserves_invariants() {
         max_equity_gain: None,
         hold_bars: None,
         invert_direction: false,
+        ..Default::default()
     }];
     cfg.max_days = SOAK_DAYS as u32 + 1;
     cfg.allowed_hours_utc = None; // never gate by hour during soak

@@ -21,7 +21,7 @@ impl Default for LiveCaps {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AssetConfig {
     pub symbol: String,
     #[serde(default, rename = "sourceSymbol")]

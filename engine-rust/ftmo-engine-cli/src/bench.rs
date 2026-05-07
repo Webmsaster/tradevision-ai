@@ -121,6 +121,7 @@ fn main() -> Result<()> {
         max_equity_gain: None,
         hold_bars: None,
         invert_direction: false,
+        ..Default::default()
     }];
     let cfg = Arc::new(cfg);
     let atr_series = Arc::new(atr(&candles, 14));

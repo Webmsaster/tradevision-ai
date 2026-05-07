@@ -49,6 +49,7 @@ fn cfg_with_assets() -> EngineConfig {
         max_equity_gain: None,
         hold_bars: None,
         invert_direction: false,
+        ..Default::default()
     }];
     cfg
 }

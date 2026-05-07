@@ -255,6 +255,117 @@ mod tests {
     }
 
     #[test]
+    fn eff_pnl_charges_round_trip_cost_bp() {
+        // R67-r18: roundtrip costBp subtracts directly from rawPnl.
+        let mut cfg = base_cfg();
+        cfg.assets.push(crate::config::AssetConfig {
+            symbol: "BTC-TREND".into(),
+            cost_bp: Some(30.0), // 30bp roundtrip
+            ..Default::default()
+        });
+        let pos = make_pos(PositionSide::Long, 100.0);
+        // raw = 0.04, minus 30bp/10000 = 0.003 → 0.037
+        // eff = 0.037 × 2 × 0.4 = 0.0296
+        let r = compute_eff_pnl(&pos, 104.0, &cfg);
+        assert!((r.raw_pnl - 0.037).abs() < 1e-12, "raw_pnl={}", r.raw_pnl);
+        assert!((r.eff_pnl - 0.0296).abs() < 1e-12, "eff_pnl={}", r.eff_pnl);
+    }
+
+    #[test]
+    fn eff_pnl_charges_slippage_round_trip_full_when_no_ptp() {
+        let mut cfg = base_cfg();
+        cfg.assets.push(crate::config::AssetConfig {
+            symbol: "BTC-TREND".into(),
+            slippage_bp: Some(8.0),
+            ..Default::default()
+        });
+        let pos = make_pos(PositionSide::Long, 100.0);
+        // raw = 0.04, minus 8bp/10000 × 2 × 1 = 0.0016 → 0.0384
+        let r = compute_eff_pnl(&pos, 104.0, &cfg);
+        assert!((r.raw_pnl - 0.0384).abs() < 1e-12);
+    }
+
+    #[test]
+    fn eff_pnl_slippage_only_on_remainder_after_single_ptp() {
+        // PTP partial leg already paid its slippage at fill — remainder gets
+        // (1 - close_fraction) × 2 × slippage charge.
+        let mut cfg = base_cfg();
+        cfg.partial_take_profit = Some(crate::config::PartialTakeProfit {
+            trigger_pct: 0.02,
+            close_fraction: 0.5,
+        });
+        cfg.assets.push(crate::config::AssetConfig {
+            symbol: "BTC-TREND".into(),
+            slippage_bp: Some(10.0),
+            ..Default::default()
+        });
+        let mut pos = make_pos(PositionSide::Long, 100.0);
+        pos.ptp_triggered = true;
+        pos.ptp_realized_pct = 0.5 * 0.02; // 50% closed at +2%
+        // raw blend: 0.01 + 0.5 × 0.04 = 0.03; minus 10bp/10000 × 2 × 0.5 = 0.001
+        // → raw 0.029, eff = 0.029 × 2 × 0.4 = 0.0232
+        let r = compute_eff_pnl(&pos, 104.0, &cfg);
+        assert!((r.raw_pnl - 0.029).abs() < 1e-12, "raw_pnl={}", r.raw_pnl);
+        assert!((r.eff_pnl - 0.0232).abs() < 1e-12);
+    }
+
+    #[test]
+    fn eff_pnl_charges_swap_per_midnight_crossing() {
+        // 3 UTC-midnight crossings × 4 bp/day = 12 bp deduction.
+        let mut cfg = base_cfg();
+        cfg.assets.push(crate::config::AssetConfig {
+            symbol: "BTC-TREND".into(),
+            swap_bp_per_day: Some(4.0),
+            ..Default::default()
+        });
+        let mut pos = make_pos(PositionSide::Long, 100.0);
+        const MS_DAY: i64 = 86_400_000;
+        pos.entry_time = 1_700_000_000_000;
+        // Exit 3 days later at midnight-crossing = 3 crossings.
+        let exit_time = pos.entry_time + 3 * MS_DAY;
+        let r = compute_eff_pnl_with_time(&pos, 104.0, &cfg, Some(exit_time));
+        // raw = 0.04 - 12bp/10000 = 0.0388
+        assert!((r.raw_pnl - 0.0388).abs() < 1e-12, "raw_pnl={}", r.raw_pnl);
+    }
+
+    #[test]
+    fn eff_pnl_swap_zero_when_intraday() {
+        let mut cfg = base_cfg();
+        cfg.assets.push(crate::config::AssetConfig {
+            symbol: "BTC-TREND".into(),
+            swap_bp_per_day: Some(4.0),
+            ..Default::default()
+        });
+        let mut pos = make_pos(PositionSide::Long, 100.0);
+        pos.entry_time = 1_700_000_000_000;
+        // Same UTC-day exit (no midnight crossing).
+        let exit_time = pos.entry_time + 60_000;
+        let r = compute_eff_pnl_with_time(&pos, 104.0, &cfg, Some(exit_time));
+        assert!((r.raw_pnl - 0.04).abs() < 1e-12);
+    }
+
+    #[test]
+    fn eff_pnl_combines_cost_slippage_swap_for_passlock_realism() {
+        // R67-r18 BIT-PRECISE check vs TS reference: with cost=30, slip=8,
+        // swap=4 (typical R28_V6 crypto) on a 4% winner held 1 day:
+        //   raw = 0.04 - 0.003 - 0.0016 - 0.0004 = 0.035
+        let mut cfg = base_cfg();
+        cfg.assets.push(crate::config::AssetConfig {
+            symbol: "BTC-TREND".into(),
+            cost_bp: Some(30.0),
+            slippage_bp: Some(8.0),
+            swap_bp_per_day: Some(4.0),
+            ..Default::default()
+        });
+        let mut pos = make_pos(PositionSide::Long, 100.0);
+        pos.entry_time = 1_700_000_000_000;
+        let exit_time = pos.entry_time + 86_400_000;
+        let r = compute_eff_pnl_with_time(&pos, 104.0, &cfg, Some(exit_time));
+        assert!((r.raw_pnl - 0.035).abs() < 1e-12, "raw_pnl={}", r.raw_pnl);
+        assert!((r.eff_pnl - 0.028).abs() < 1e-12, "eff_pnl={}", r.eff_pnl);
+    }
+
+    #[test]
     fn eff_pnl_blends_ptp_partial() {
         let mut cfg = base_cfg();
         cfg.partial_take_profit = Some(PartialTakeProfit {

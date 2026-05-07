@@ -26,6 +26,7 @@ fn run_once(seed: u64) -> (f64, usize, u32, u64) {
         max_equity_gain: None,
         hold_bars: None,
         invert_direction: false,
+        ..Default::default()
     }];
 
     // Synth candles seeded by `seed` (xorshift) — deterministic per seed.
