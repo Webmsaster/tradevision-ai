@@ -30,6 +30,11 @@ export const metadata: Metadata = {
   ],
   authors: [{ name: "TradeVision AI" }],
   manifest: "/manifest.json",
+  // R67-r22 audit fix: explicit canonical URL prevents duplicate-content
+  // indexing of Vercel preview branches (*-git-*-bay.vercel.app).
+  alternates: {
+    canonical: "/",
+  },
   icons: {
     icon: "/favicon.svg",
   },
@@ -37,6 +42,15 @@ export const metadata: Metadata = {
     title: "TradeVision AI | Trading Journal",
     description: "AI-powered trading journal and performance analyzer",
     type: "website",
+    images: ["/opengraph-image"],
+  },
+  // R67-r22 audit fix: explicit Twitter card type so X/Twitter doesn't
+  // fall back to a smaller summary card when openGraph alone is set.
+  twitter: {
+    card: "summary_large_image",
+    title: "TradeVision AI | Trading Journal",
+    description: "AI-powered trading journal and performance analyzer",
+    images: ["/opengraph-image"],
   },
 };
 
