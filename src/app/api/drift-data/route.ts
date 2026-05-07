@@ -768,12 +768,13 @@ export async function GET(req: NextRequest) {
         // STALE-badge previously checked `generatedAt` which is set by
         // this API on every response — a dead Python bot + live Next API
         // always looked fresh. Now we surface the bot's clock.
-        botLastWriteAt:
-          (executorLog.length > 0
-            ? (executorLog[executorLog.length - 1]?.ts ?? null)
-            : null) ??
-          (account as { updated_at?: string }).updated_at ??
-          null,
+        botLastWriteAt: (() => {
+          const lastEvt = executorLog[executorLog.length - 1];
+          if (lastEvt?.ts) return lastEvt.ts;
+          const acctTs = (account as unknown as { updated_at?: string })
+            .updated_at;
+          return acctTs ?? null;
+        })(),
       },
       header: {
         challengeName: BACKTEST_REF.name,

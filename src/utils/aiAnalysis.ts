@@ -21,6 +21,39 @@ function compareByExitDate(a: Trade, b: Trade): number {
   return a.id.localeCompare(b.id);
 }
 
+/**
+ * R67-r15 audit fix (perf HIGH): cached sort-by-exitDate.
+ *
+ * Of 17 detectors, 6 sort the trades array independently. At N=10k that's
+ * ~6×12ms = ~72ms wasted per insights render. We attach the sorted view
+ * to the input array via a non-enumerable Symbol so a single
+ * `generateAllInsights` call sorts once; detectors callable directly with
+ * unsorted data still work (cache miss → sort → cache).
+ *
+ * Symbol is non-enumerable so JSON.stringify, Object.keys etc. ignore it.
+ * Returned array is a new reference (not the input) so callers can sort
+ * further in place without disturbing the cache.
+ */
+const SORTED_BY_EXIT_DATE = Symbol("sortedByExitDate");
+
+function getSortedByExitDate(trades: Trade[]): Trade[] {
+  const holder = trades as Trade[] & { [SORTED_BY_EXIT_DATE]?: Trade[] };
+  const cached = holder[SORTED_BY_EXIT_DATE];
+  if (cached && cached.length === trades.length) return cached;
+  const sorted = [...trades].sort(compareByExitDate);
+  try {
+    Object.defineProperty(trades, SORTED_BY_EXIT_DATE, {
+      value: sorted,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  } catch {
+    // Frozen / sealed array — caching not possible, just return the sort.
+  }
+  return sorted;
+}
+
 function getHoldTimeMs(trade: Trade): number {
   return Math.max(
     0,
@@ -46,7 +79,7 @@ function getDayOfWeek(dateStr: string): number {
 export function detectRevengeTrade(trades: Trade[]): AIInsight | null {
   if (trades.length < 3) return null;
 
-  const sorted = [...trades].sort(compareByExitDate);
+  const sorted = getSortedByExitDate(trades);
 
   let worst: {
     increasePercent: number;
@@ -212,7 +245,7 @@ export function detectTimePatterns(trades: Trade[]): AIInsight | null {
 export function detectOverleverageAfterWins(trades: Trade[]): AIInsight | null {
   if (trades.length < 4) return null;
 
-  const sorted = [...trades].sort(compareByExitDate);
+  const sorted = getSortedByExitDate(trades);
 
   let worst: {
     increasePercent: number;
@@ -336,7 +369,7 @@ export function detectLossAversion(trades: Trade[]): AIInsight | null {
 export function detectTiltPattern(trades: Trade[]): AIInsight | null {
   if (trades.length < 6) return null;
 
-  const sorted = [...trades].sort(compareByExitDate);
+  const sorted = getSortedByExitDate(trades);
 
   let peak = 0;
   let runningPnl = 0;
@@ -706,7 +739,7 @@ export function detectImprovingPerformance(trades: Trade[]): AIInsight | null {
   // on virtually any 6-trade dataset by chance.
   if (trades.length < 20) return null;
 
-  const sorted = [...trades].sort(compareByExitDate);
+  const sorted = getSortedByExitDate(trades);
 
   const midpoint = Math.floor(sorted.length / 2);
   const firstHalf = sorted.slice(0, midpoint);
@@ -744,7 +777,7 @@ export function detectDecliningPerformance(trades: Trade[]): AIInsight | null {
   // Phase 21 (AI Bug 7): see detectImprovingPerformance — same 20-min threshold.
   if (trades.length < 20) return null;
 
-  const sorted = [...trades].sort(compareByExitDate);
+  const sorted = getSortedByExitDate(trades);
 
   const midpoint = Math.floor(sorted.length / 2);
   const firstHalf = sorted.slice(0, midpoint);
@@ -784,7 +817,7 @@ export function detectDecliningPerformance(trades: Trade[]): AIInsight | null {
 export function detectPairSwitching(trades: Trade[]): AIInsight | null {
   if (trades.length < 10) return null;
 
-  const sorted = [...trades].sort(compareByExitDate);
+  const sorted = getSortedByExitDate(trades);
 
   let switches = 0;
   for (let i = 1; i < sorted.length; i++) {

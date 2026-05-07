@@ -268,6 +268,14 @@ function tradeToDb(trade: Trade, userId: string) {
     // tampered client cannot inject javascript:/data:text/html URLs.
     screenshot_url: validateScreenshot(trade.screenshot) ?? null,
     account_id: trade.accountId ?? "default",
+    // R67-r15 audit fix (HIGH): un-tombstone re-imports. Without this
+    // field, an UPSERT-resolved-as-UPDATE on a previously soft-deleted
+    // row leaves `deleted_at` set, the SELECT-RLS hides the row, and
+    // the trade is silently invisible after reload despite appearing
+    // locally. The doc-comment at line 382 promised this fix; never
+    // landed. Setting `deleted_at: null` is a no-op for live rows and
+    // a resurrection for re-imports — the documented intent.
+    deleted_at: null,
   };
 }
 
