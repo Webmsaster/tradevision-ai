@@ -25,7 +25,21 @@ pub struct EffPnl {
 
 /// Compute realised effPnl for a position closing at `exit_price`. Includes
 /// PTP partial-realised blend.
+///
+/// `exit_time` is the UTC-millis timestamp of the closing bar; used by the
+/// per-asset swap-fee deduction (R67-r17). When `None` (e.g. a synthetic
+/// test that cannot be bothered to thread the bar time), swap is skipped —
+/// matches TS behaviour where `exitTime === undefined` short-circuits swap.
 pub fn compute_eff_pnl(pos: &OpenPosition, exit_price: f64, cfg: &EngineConfig) -> EffPnl {
+    compute_eff_pnl_with_time(pos, exit_price, cfg, None)
+}
+
+pub fn compute_eff_pnl_with_time(
+    pos: &OpenPosition,
+    exit_price: f64,
+    cfg: &EngineConfig,
+    exit_time: Option<i64>,
+) -> EffPnl {
     // R67 audit fix: guard against entry_price ≤ 0 / non-finite. Without this,
     // a corrupted state file or a synthetic-test 0-priced asset produces NaN,
     // which propagates into state.equity and silently disables all failure
@@ -52,6 +66,52 @@ pub fn compute_eff_pnl(pos: &OpenPosition, exit_price: f64, cfg: &EngineConfig) 
             raw_pnl = pos.ptp_levels_realized + (1.0 - total_closed) * raw_pnl;
         }
     }
+
+    // R67-r18 BIT-PRECISE parity port from TS `computeEffPnl` lines 1021-1065:
+    //   - Per-asset roundtrip cost  (`costBp/10000`) — full position size.
+    //   - Per-asset slippage roundtrip × 2 × remainingFraction (PTP partials
+    //     already paid their slippage at fill).
+    //   - Per-asset swap × N UTC-midnight crossings between entry and exit.
+    let asset_cfg = cfg.assets.iter().find(|a| a.symbol == pos.symbol);
+    let cost_bp = asset_cfg.and_then(|a| a.cost_bp).unwrap_or(0.0);
+    let slip_bp = asset_cfg.and_then(|a| a.slippage_bp).unwrap_or(0.0);
+    let swap_bp_per_day = asset_cfg.and_then(|a| a.swap_bp_per_day).unwrap_or(0.0);
+
+    if cost_bp > 0.0 {
+        raw_pnl -= cost_bp / 10_000.0;
+    }
+    if slip_bp > 0.0 {
+        let mut remaining_fraction = 1.0_f64;
+        if pos.ptp_triggered {
+            if let Some(ptp) = cfg.partial_take_profit {
+                remaining_fraction = 1.0 - ptp.close_fraction;
+            }
+        } else if pos.ptp_levels_realized > 0.0 {
+            if let Some(levels) = cfg.partial_take_profit_levels.as_ref() {
+                let total_closed: f64 = levels
+                    .iter()
+                    .take(pos.ptp_level_idx)
+                    .map(|l| l.close_fraction)
+                    .sum();
+                remaining_fraction = (1.0 - total_closed).max(0.0);
+            }
+        }
+        raw_pnl -= (slip_bp / 10_000.0) * 2.0 * remaining_fraction;
+    }
+    if swap_bp_per_day > 0.0 {
+        if let Some(exit_t) = exit_time {
+            const MS_PER_DAY: i64 = 86_400_000;
+            // Floor-div on both sides; subtract day-indices to match TS
+            // `Math.floor(t/MS_PER_DAY)` semantics for non-negative timestamps.
+            let entry_day = pos.entry_time.div_euclid(MS_PER_DAY);
+            let exit_day = exit_t.div_euclid(MS_PER_DAY);
+            let crossings = (exit_day - entry_day).max(0);
+            if crossings > 0 {
+                raw_pnl -= (swap_bp_per_day / 10_000.0) * crossings as f64;
+            }
+        }
+    }
+
     let eff_pnl = (raw_pnl * cfg.leverage * pos.eff_risk).max(GAP_TAIL_MULT * pos.eff_risk);
     EffPnl { raw_pnl, eff_pnl }
 }

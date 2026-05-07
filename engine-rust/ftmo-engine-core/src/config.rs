@@ -44,6 +44,20 @@ pub struct AssetConfig {
     /// Invert long/short signals — used by Forex MR strategies.
     #[serde(default, rename = "invertDirection")]
     pub invert_direction: bool,
+
+    // ─── R67-r17/r18: per-asset broker costs (used by `compute_eff_pnl`) ──
+    /// Round-trip commission in basis points. Subtracted from rawPnl as
+    /// `costBp/10000`. Mirrors `ftmoDaytrade24h.ts` line 4273/4626.
+    #[serde(default, rename = "costBp")]
+    pub cost_bp: Option<f64>,
+    /// One-side slippage in basis points; charged round-trip on the
+    /// remaining (un-PTP-closed) fraction. Mirrors backtest line 4655/4665.
+    #[serde(default, rename = "slippageBp")]
+    pub slippage_bp: Option<f64>,
+    /// Overnight swap in bp/day, charged per UTC-midnight crossing.
+    /// Mirrors backtest line 4667-4694.
+    #[serde(default, rename = "swapBpPerDay")]
+    pub swap_bp_per_day: Option<f64>,
 }
 
 /// Cross-asset filter — only allow signals if `symbol` is currently

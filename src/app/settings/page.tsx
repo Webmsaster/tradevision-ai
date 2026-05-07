@@ -291,17 +291,23 @@ export default function SettingsPage() {
   }
 
   function handleAddAccount() {
-    setSettings((prev) => {
-      const newAccount: Account = {
-        id: crypto.randomUUID(),
-        name: nextAccountName(prev.accounts),
-        broker: "",
-      };
-      return {
-        ...prev,
-        accounts: [...prev.accounts, newAccount],
-      };
-    });
+    // R67-r21 audit fix (HIGH): persist immediately after add so a
+    // subsequent radio-select on the new account doesn't reference a
+    // phantom ID. Previously the new account only landed in localStorage
+    // on Save click; switching to it via the radio (auto-persists
+    // activeAccountId) before Save left activeAccountId pointing at an
+    // ID not yet in accounts[].
+    const newAccount: Account = {
+      id: crypto.randomUUID(),
+      name: nextAccountName(settings.accounts),
+      broker: "",
+    };
+    const next = {
+      ...settings,
+      accounts: [...settings.accounts, newAccount],
+    };
+    setSettings(next);
+    saveSettings(next);
   }
 
   // Round-N audit: orphan-trade cleanup on account removal. The previous
@@ -334,14 +340,25 @@ export default function SettingsPage() {
           `Remove ${accountLabel}?\n\n` +
             `${orphanCount} trade${orphanCount === 1 ? "" : "s"} ` +
             `currently belong${orphanCount === 1 ? "s" : ""} to this account. ` +
-            `OK = migrate them to the "default" account.\n` +
+            `OK = migrate them to the surviving account.\n` +
             `Cancel = abort removal (no changes will be made).`,
         );
         if (!confirmed) return;
 
+        // R67-r21 audit fix (HIGH): migrate orphans to the FIRST
+        // SURVIVING account (post-removal), not the hardcoded "default"
+        // string. If the user has renamed/removed the original Main
+        // Account, "default" doesn't exist → orphans pointed at a
+        // non-existent ID and disappeared from the AccountSwitcher
+        // filter. The fallback to "default" is kept as a literal
+        // last-resort if nothing else remains (shouldn't happen because
+        // the function aborts at length<=1 on line 318).
+        const survivor =
+          settings.accounts.find((a) => a.id !== id)?.id ?? "default";
+
         // Step 3a: reassign in localStorage.
         const migrated = allTrades.map((t) =>
-          t.accountId === id ? { ...t, accountId: "default" } : t,
+          t.accountId === id ? { ...t, accountId: survivor } : t,
         );
         saveTrades(migrated);
 
@@ -352,7 +369,7 @@ export default function SettingsPage() {
           try {
             const { error } = await supabase
               .from("trades")
-              .update({ account_id: "default" })
+              .update({ account_id: survivor })
               .eq("user_id", user.id)
               .eq("account_id", id);
             if (error) {
@@ -606,6 +623,25 @@ export default function SettingsPage() {
                     }))
                   }
                 />
+                {/* R67-r21 audit fix: warn the user that Telegram webhook
+                    URLs contain a bot-token in plaintext localStorage —
+                    any XSS, browser extension, or shared-device user can
+                    read it. Encrypted-at-rest needs a WebCrypto refactor. */}
+                {settings.webhook.platform === "telegram" &&
+                  settings.webhook.url.includes("/bot") && (
+                    <p
+                      style={{
+                        marginTop: "8px",
+                        fontSize: "0.85rem",
+                        color: "var(--text-muted)",
+                      }}
+                    >
+                      ⚠️ Telegram URLs contain your bot token. This URL is
+                      stored in browser localStorage in plaintext — do not use
+                      on a shared device, and revoke the bot at @BotFather if
+                      you suspect a leak.
+                    </p>
+                  )}
               </div>
 
               <div>

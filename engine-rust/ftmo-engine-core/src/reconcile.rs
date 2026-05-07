@@ -10,7 +10,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::pnl::compute_eff_pnl;
+use crate::pnl::compute_eff_pnl_with_time;
 use crate::position::OpenPosition;
 use crate::state::{EngineState, KellyPnl};
 use crate::trade::{ClosedTrade, ExitReason};
@@ -68,7 +68,7 @@ pub fn ingest_offline_closures(
             continue;
         };
         let pos: OpenPosition = state.open_positions.remove(pos_idx);
-        let pnl = compute_eff_pnl(&pos, c.exit_price, cfg);
+        let pnl = compute_eff_pnl_with_time(&pos, c.exit_price, cfg, Some(c.exit_time));
         state.equity *= 1.0 + pnl.eff_pnl;
         let trade = ClosedTrade {
             ticket_id: pos.ticket_id.clone(),

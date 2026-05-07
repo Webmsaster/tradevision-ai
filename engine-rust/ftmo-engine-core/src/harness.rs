@@ -25,7 +25,7 @@ use crate::config::EngineConfig;
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use smallvec::SmallVec;
 
-use crate::pnl::{compute_eff_pnl, compute_mtm_equity, trim_inline};
+use crate::pnl::{compute_eff_pnl_with_time, compute_mtm_equity, trim_inline};
 use crate::position::OpenPosition;
 use crate::signal::{CloseIntent, PollDecision, PollSignal};
 use crate::state::{EngineState, KellyPnl, LossStreakEntry, StoppedReason};
@@ -648,7 +648,7 @@ fn apply_exits(
     exits.sort_by(|a, b| b.0.cmp(&a.0));
     for (idx, out) in exits.drain(..) {
         let pos = state.open_positions.remove(idx);
-        let pnl = compute_eff_pnl(&pos, out.exit_price, cfg);
+        let pnl = compute_eff_pnl_with_time(&pos, out.exit_price, cfg, Some(last_bar_time));
         // Compound realised equity.
         state.equity *= 1.0 + pnl.eff_pnl;
         let trade = ClosedTrade {

@@ -99,7 +99,20 @@ pub fn process_position_exit_with_held(
     }
 
     // 2b. Multi-level PTP.
+    // R67-r17 BIT-PRECISE port from TS lines 840-878:
+    //   1. Same-bar stop-guard: if stop also hit on this bar AND the bar
+    //      did NOT gap past the level trigger, stop wins for this level
+    //      (and all subsequent — they require a higher wick).
+    //   2. After at least one level realises: auto-move stop to BE
+    //      (direction-aware, only if entry is more favourable than current
+    //      stop), set be_active=true, reset high_watermark = candle.close
+    //      (parity with single-tier branch).
     if let Some(levels) = cfg.partial_take_profit_levels.as_ref() {
+        let stop_hit_multi = match pos.direction {
+            PositionSide::Long => candle.low <= pos.stop_price,
+            PositionSide::Short => candle.high >= pos.stop_price,
+        };
+        let mut realised_any = false;
         while pos.ptp_level_idx < levels.len() {
             let lvl = &levels[pos.ptp_level_idx];
             let trigger_price = match pos.direction {
@@ -113,8 +126,34 @@ pub fn process_position_exit_with_held(
             if !lvl_hit {
                 break;
             }
+            // Stop-guard: if stop also hit and we did not gap past the
+            // trigger, stop wins for THIS level (and all subsequent).
+            let gap_past_lvl = match pos.direction {
+                PositionSide::Long => candle.open >= trigger_price,
+                PositionSide::Short => candle.open <= trigger_price,
+            };
+            if stop_hit_multi && !gap_past_lvl {
+                break;
+            }
             pos.ptp_levels_realized += lvl.close_fraction * lvl.trigger_pct;
             pos.ptp_level_idx += 1;
+            realised_any = true;
+        }
+        if realised_any {
+            match pos.direction {
+                PositionSide::Long => {
+                    if pos.entry_price > pos.stop_price {
+                        pos.stop_price = pos.entry_price;
+                    }
+                }
+                PositionSide::Short => {
+                    if pos.entry_price < pos.stop_price {
+                        pos.stop_price = pos.entry_price;
+                    }
+                }
+            }
+            pos.be_active = true;
+            pos.high_watermark = candle.close;
         }
     }
 
