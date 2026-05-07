@@ -121,17 +121,30 @@ function fireWebhook(
           ).any([timeoutSignal, unmountSignal])
         : timeoutSignal
       : timeoutSignal;
+    // R67-r19 audit fix (HIGH): redirect:"manual" so a compromised /
+    // typo'd webhook host can't follow a 302 to an attacker-controlled
+    // target and exfiltrate the trade payload (pair / direction / PnL).
+    // Mirrors the server-side `/api/webhook-test` redirect-block.
     fetch(wh.url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
       signal,
-    }).catch((err) => {
-      // Round 6 audit (WARNING): ignore AbortError on unmount; the user
-      // navigated away mid-flight and we don't want to noise their console.
-      if (err instanceof Error && err.name === "AbortError") return;
-      console.error("Webhook delivery failed:", err);
-    }); // best-effort
+      redirect: "manual",
+    })
+      .then((resp) => {
+        if (resp.type === "opaqueredirect") {
+          console.warn(
+            "[webhook] dropped redirect response — refusing to follow",
+          );
+        }
+      })
+      .catch((err) => {
+        // Round 6 audit (WARNING): ignore AbortError on unmount; the user
+        // navigated away mid-flight and we don't want to noise their console.
+        if (err instanceof Error && err.name === "AbortError") return;
+        console.error("Webhook delivery failed:", err);
+      }); // best-effort
   } catch (err) {
     console.error("Webhook fire failed:", err);
   }

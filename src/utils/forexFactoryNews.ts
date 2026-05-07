@@ -28,11 +28,28 @@ import {
 import { dirname } from "node:path";
 
 function getCachePath(): string {
-  return (
-    process.env.FF_NEWS_CACHE ?? "scripts/cache_forex_2h/ff_news_cache.json"
-  );
+  // R67-r19 audit fix (KRITISCH): per-account cache so concurrent
+  // multi-account bots don't race on a single shared file. Priority:
+  //   1. explicit FF_NEWS_CACHE env (operator override)
+  //   2. FTMO_STATE_DIR + cache filename suffixed by FTMO_ACCOUNT_ID
+  //   3. legacy default `scripts/cache_forex_2h/ff_news_cache.json`
+  if (process.env.FF_NEWS_CACHE) return process.env.FF_NEWS_CACHE;
+  const stateDir = process.env.FTMO_STATE_DIR;
+  if (stateDir) {
+    const acctSuffix = process.env.FTMO_ACCOUNT_ID
+      ? `-${process.env.FTMO_ACCOUNT_ID.replace(/[^A-Za-z0-9_-]/g, "")}`
+      : "";
+    return `${stateDir}/ff_news_cache${acctSuffix}.json`;
+  }
+  return "scripts/cache_forex_2h/ff_news_cache.json";
 }
-const CACHE_TTL_MS = 6 * 3600_000;
+// R67-r19 audit fix: TTL env-tunable so backtest scripts can pin a
+// shorter window without recompiling.
+const CACHE_TTL_MS = (() => {
+  const env = process.env.FF_NEWS_CACHE_TTL_MS;
+  const parsed = env ? Number(env) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 6 * 3600_000;
+})();
 
 export interface NewsEvent {
   /** Unix ms timestamp */
@@ -297,7 +314,11 @@ export function filterNewsEvents(
       for (const c of pairToCurrencies(sym)) currencies.add(c);
     }
   } else {
-    currencies = new Set(opts.currencies ?? ["USD", "EUR", "GBP"]);
+    // R67-r19 audit fix (KRITISCH): JPY added to default set so crypto-yen
+    // and forex-yen pairs receive BoJ/Tankan blackouts when caller does
+    // not pass `affectedPairs`. Previous default would silently drop
+    // these events on, e.g., a BTCJPY day-trade strategy.
+    currencies = new Set(opts.currencies ?? ["USD", "EUR", "GBP", "JPY"]);
   }
   return events.filter(
     (e) => impacts.has(e.impact) && currencies.has(e.currency),
