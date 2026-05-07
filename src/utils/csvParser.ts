@@ -258,18 +258,10 @@ function parseDirection(raw: string): "long" | "short" | null {
   return null;
 }
 
-/**
- * R67-r22 audit fix: normalise broker symbols so `BTC/USDT`, `BTCUSDT`,
- * `BTC-USD`, `BTC USD` all collapse to one canonical key. Without this,
- * AI detector groupings (best-setup, pair-switch, consistent-pair) treat
- * the same instrument as multiple distinct symbols and stats fragment.
- */
-function normaliseSymbol(raw: string): string {
-  return raw
-    .trim()
-    .toUpperCase()
-    .replace(/[\s\-_/]/g, "");
-}
+// R67-RR1 audit fix: shared helper from `@/utils/symbol` — was previously
+// duplicated here AND in TradeForm with diverging regexes (TradeForm did
+// not strip `/`, leading to manual-vs-CSV stat-bucket fragmentation).
+import { normaliseSymbol } from "@/utils/symbol";
 
 /**
  * R67-r22 audit fix: parentheses-as-negative number convention used by

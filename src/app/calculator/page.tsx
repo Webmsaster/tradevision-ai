@@ -2,22 +2,17 @@
 
 import { useState, useMemo } from "react";
 import StatCard from "@/components/StatCard";
+import { parseLocaleNumberUI as parseLocaleNum } from "@/utils/parseLocaleNumber";
 
 type Direction = "long" | "short";
 
 const RISK_PRESETS = [0.5, 1, 2, 3];
 
-// R67-r14 audit fix: DE-locale users typing "1,5" lost the value because
-// parseFloat returns NaN on a comma decimal. Browser-spec for type=number
-// is locale-dependent — many setups submit the raw "1,5" string. Replace
-// the first comma with a dot before parsing; existing dot-decimal still
-// works. Returns 0 for empty/invalid so callers can keep the `|| 0` guard.
-function parseLocaleNum(raw: string): number {
-  if (!raw) return 0;
-  const normalised = raw.replace(",", ".");
-  const v = parseFloat(normalised);
-  return Number.isFinite(v) ? v : 0;
-}
+// R67-RR3: thousand-separator regression — the previous in-file helper used
+// `raw.replace(",", ".")` which only swapped the FIRST comma, so US "1,234.56"
+// became "1.234.56" → parseFloat 1.234 (1000× under-sized risk-amount).
+// Delegated to the audited Phase-46 strict parser via `parseLocaleNumberUI`
+// (csvParser.parseLocaleNumber, with 0-fallback for UI semantics).
 
 export default function CalculatorPage() {
   const [accountBalance, setAccountBalance] = useState<number>(10000);

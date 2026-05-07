@@ -1,4 +1,5 @@
 import { Trade, isValidTrade as isValidTradeShared } from "@/types/trade";
+import { normaliseSymbol as normaliseSymbolForHash } from "@/utils/symbol";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from "uuid";
 // Phase 41 (R44-UI-2): single source of truth for the trades-localStorage
@@ -134,8 +135,12 @@ export function tradeContentHash(t: Trade): string {
     const ms = Date.parse(s);
     return Number.isFinite(ms) ? String(ms) : s;
   };
+  // R67-RR1 audit fix (HIGH): hash by NORMALISED pair so re-import dedup
+  // works for users whose pre-R22 trades stored `BTC/USDT` raw — without
+  // this, the new CSV-imported `BTCUSDT` hashes differently and the user
+  // gets duplicates. Lower-case for legacy compatibility.
   const canonical = [
-    t.pair.toLowerCase(),
+    normaliseSymbolForHash(t.pair).toLowerCase(),
     t.direction,
     Number(t.entryPrice).toFixed(8),
     Number(t.exitPrice).toFixed(8),
@@ -241,8 +246,12 @@ function dbToTrade(row: Record<string, unknown>): Trade | null {
   };
 }
 
-function tradeToDb(trade: Trade, userId: string) {
-  return {
+function tradeToDb(
+  trade: Trade,
+  userId: string,
+  opts: { resurrect?: boolean } = {},
+) {
+  const base = {
     id: trade.id,
     user_id: userId,
     pair: trade.pair,
@@ -268,15 +277,17 @@ function tradeToDb(trade: Trade, userId: string) {
     // tampered client cannot inject javascript:/data:text/html URLs.
     screenshot_url: validateScreenshot(trade.screenshot) ?? null,
     account_id: trade.accountId ?? "default",
-    // R67-r15 audit fix (HIGH): un-tombstone re-imports. Without this
-    // field, an UPSERT-resolved-as-UPDATE on a previously soft-deleted
-    // row leaves `deleted_at` set, the SELECT-RLS hides the row, and
-    // the trade is silently invisible after reload despite appearing
-    // locally. The doc-comment at line 382 promised this fix; never
-    // landed. Setting `deleted_at: null` is a no-op for live rows and
-    // a resurrection for re-imports — the documented intent.
-    deleted_at: null,
   };
+  // R67-RR2 audit fix (HIGH): only emit `deleted_at: null` for the
+  // explicit re-import path. Previously every UPSERT wrote it
+  // unconditionally — a stale optimistic edit (Tab A deletes, Tab B
+  // edits before sync) resurrected the tombstone and broke the audit
+  // trail. Now `saveTradeToSupabase` (single-trade edit) defaults to
+  // resurrect:false → field omitted → existing tombstone preserved;
+  // `saveBulkTradesToSupabase` (CSV/JSON re-import path) passes
+  // resurrect:true to keep R15 un-tombstone behaviour for explicit
+  // user-initiated imports.
+  return opts.resurrect ? { ...base, deleted_at: null as string | null } : base;
 }
 
 // ---------------------------------------------------------------------------
@@ -597,7 +608,7 @@ async function _saveBulkTradesToSupabaseUnlocked(
       // writes lost the new payload while keeping the survivors.
       if (trades.length > 0) {
         survived.push({
-          rows: trades.map((t) => tradeToDb(t, userId)),
+          rows: trades.map((t) => tradeToDb(t, userId, { resurrect: true })),
           enqueuedAt: new Date().toISOString(),
         });
       }
@@ -609,7 +620,7 @@ async function _saveBulkTradesToSupabaseUnlocked(
   }
 
   if (trades.length === 0) return true;
-  const rows = trades.map((t) => tradeToDb(t, userId));
+  const rows = trades.map((t) => tradeToDb(t, userId, { resurrect: true }));
   const result = await uploadChunked(supabase, rows, CHUNK);
   if (!result.ok) {
     const remaining = rows.slice(result.failedFromIndex ?? 0);

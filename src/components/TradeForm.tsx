@@ -3,8 +3,10 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { Trade } from "@/types/trade";
 import { calculatePnl, validateLeverage } from "@/utils/calculations";
+import { normaliseSymbol } from "@/utils/symbol";
 import { useFocusTrap } from "@/hooks/useFocusTrap";
 import { FILE_SIZE } from "@/lib/constants";
+import { parseLocaleNumberUI as parseLocaleNum } from "@/utils/parseLocaleNumber";
 
 interface TradeFormProps {
   isOpen: boolean;
@@ -45,26 +47,20 @@ function fromDatetimeLocal(value: string): string {
   return d.toISOString();
 }
 
-// R67-R18: DE-locale users typing "1,5" lost the value because parseFloat
-// returns NaN on a comma decimal. Replace the first comma with a dot before
-// parsing; existing dot-decimal still works. Returns 0 for empty/invalid.
-// Mirrors `parseLocaleNum` in src/app/calculator/page.tsx.
-function parseLocaleNum(raw: string): number {
-  if (!raw) return 0;
-  const normalised = raw.replace(",", ".");
-  const v = parseFloat(normalised);
-  return Number.isFinite(v) ? v : 0;
-}
+// R67-RR3: thousand-separator regression — previous in-file helper used
+// `raw.replace(",", ".")` which only swapped the FIRST comma, so DE "1.234,56"
+// became "1.234.56" → parseFloat 1.234 (1000× wrong PnL persisted to DB).
+// Delegated to `parseLocaleNumberUI` (csvParser.parseLocaleNumber strict).
 
 // R67-R18: normalise pair input on submit — trim, uppercase, strip spaces /
-// dashes / underscores. Applied at submit-time (not on every keystroke) so
-// users can still type freely.
-function normalisePair(raw: string): string {
-  return raw
-    .trim()
-    .toUpperCase()
-    .replace(/[\s\-_]+/g, "");
-}
+// dashes / underscores / slashes. Applied at submit-time (not on every
+// keystroke) so users can still type freely.
+//
+// R67-RR1 audit fix: was duplicating the csvParser normaliser but
+// MISSING the `/` strip — manual-form `BTC/USDT` stayed un-normalised
+// while CSV-import `BTC/USDT` collapsed to `BTCUSDT`, fragmenting AI
+// detector groupings. Now both paths use the shared `normaliseSymbol`.
+const normalisePair = normaliseSymbol;
 
 export default function TradeForm({
   isOpen,

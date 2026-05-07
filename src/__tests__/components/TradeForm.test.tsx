@@ -176,7 +176,11 @@ describe("TradeForm", () => {
     expect(mockOnSubmit).toHaveBeenCalledTimes(1);
 
     const submittedTrade = mockOnSubmit.mock.calls[0]![0];
-    expect(submittedTrade.pair).toBe("ETH/USDT");
+    // R67-RR1 audit fix: TradeForm submit-time normaliseSymbol now
+    // collapses `/` (parity with csvParser). User-typed `ETH/USDT` is
+    // persisted as `ETHUSDT` so AI detector groupings don't fragment
+    // the same instrument across CSV vs manual entry.
+    expect(submittedTrade.pair).toBe("ETHUSDT");
     expect(submittedTrade.entryPrice).toBe(100);
     expect(submittedTrade.exitPrice).toBe(110);
     expect(submittedTrade.pnl).toBe(100);
