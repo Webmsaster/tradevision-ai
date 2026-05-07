@@ -230,7 +230,14 @@ export default function InsightsPage() {
 
       <div className="insights-list">
         {filteredInsights.map((insight, index) => (
-          <div key={insight.id} style={{ animationDelay: `${index * 0.1}s` }}>
+          <div
+            key={insight.id}
+            style={{
+              // R67-r23 audit fix: cap stagger at 1.5s so users with 50+
+              // insights don't wait 5+ seconds for the last card to fade in.
+              animationDelay: `${Math.min(index * 0.1, 1.5)}s`,
+            }}
+          >
             <InsightCard insight={insight} onViewTrades={handleViewTrades} />
           </div>
         ))}
