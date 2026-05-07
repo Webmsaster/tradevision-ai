@@ -235,6 +235,18 @@ export interface CSVImportResult {
 function parseDirection(raw: string): "long" | "short" | null {
   const v = raw.trim().toLowerCase();
   if (!v) return null;
+  // R67-r22 audit fix: reject MT4 statement "balance"/"credit"/"deposit"
+  // rows BEFORE the prefix-match (which would map "balance"→long via the
+  // 'b' branch and produce a ghost trade with Open===Close===deposit
+  // amount). Common in MT4 HTML→CSV statement exports.
+  if (
+    v === "balance" ||
+    v === "credit" ||
+    v === "deposit" ||
+    v === "withdrawal"
+  ) {
+    return null;
+  }
   // MT4 numeric convention: 0 = OP_BUY (long), 1 = OP_SELL (short).
   if (v === "0") return "long";
   if (v === "1") return "short";
@@ -244,6 +256,34 @@ function parseDirection(raw: string): "long" | "short" | null {
   if (c === "l" || c === "b" || c === "k") return "long";
   if (c === "s" || c === "v") return "short";
   return null;
+}
+
+/**
+ * R67-r22 audit fix: normalise broker symbols so `BTC/USDT`, `BTCUSDT`,
+ * `BTC-USD`, `BTC USD` all collapse to one canonical key. Without this,
+ * AI detector groupings (best-setup, pair-switch, consistent-pair) treat
+ * the same instrument as multiple distinct symbols and stats fragment.
+ */
+function normaliseSymbol(raw: string): string {
+  return raw
+    .trim()
+    .toUpperCase()
+    .replace(/[\s\-_/]/g, "");
+}
+
+/**
+ * R67-r22 audit fix: parentheses-as-negative number convention used by
+ * IBKR / TradeStation exports (e.g. `(45.67)` for a $45.67 loss).
+ * `parseLocaleNumber` regex rejects parentheses, so the row was silently
+ * counted under skippedRows. Pre-process here so a wrapped negative
+ * normalises to `-45.67` and parses cleanly.
+ */
+function unwrapParensNegative(raw: string): string {
+  const t = raw.trim();
+  if (t.length >= 2 && t.startsWith("(") && t.endsWith(")")) {
+    return "-" + t.slice(1, -1);
+  }
+  return raw;
 }
 
 /**
@@ -272,7 +312,9 @@ export function mapCSVToTrades(
 
   const trades: Trade[] = [];
   for (const row of data) {
-    const pair = sanitizeCSVField(row[mapping.pair] ?? "");
+    // R67-r22 audit fix: canonicalise pair on import so `BTC/USDT`,
+    // `BTCUSDT`, `BTC-USD`, `BTC_USDT` all collapse to one stat-bucket.
+    const pair = normaliseSymbol(sanitizeCSVField(row[mapping.pair] ?? ""));
     const entryPrice = parseLocaleNumber(row[mapping.entryPrice]);
     const exitPrice = parseLocaleNumber(row[mapping.exitPrice]);
     const quantity = parseLocaleNumber(row[mapping.quantity]);
@@ -366,7 +408,11 @@ export function mapCSVToTrades(
     const leverage =
       Number.isFinite(leverageRaw) && leverageRaw > 0 ? leverageRaw : 1;
 
-    const feesRaw = mapping.fees ? parseLocaleNumber(row[mapping.fees]) : NaN;
+    // R67-r22 audit fix: support IBKR/TradeStation parentheses-wrap for
+    // negative fees `(1.23)` → `-1.23`. parseLocaleNumber alone rejects.
+    const feesRaw = mapping.fees
+      ? parseLocaleNumber(unwrapParensNegative(row[mapping.fees] ?? ""))
+      : NaN;
     const fees = Number.isFinite(feesRaw) ? feesRaw : 0;
 
     // Calculate PnL ---------------------------------------------------

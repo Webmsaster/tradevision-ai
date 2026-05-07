@@ -137,7 +137,9 @@ describe("mapCSVToTrades", () => {
 
     const { trades } = mapCSVToTrades(data, PLATFORM_PRESETS.generic!);
     expect(trades).toHaveLength(1);
-    expect(trades[0]!.pair).toBe("BTC/USDT");
+    // R67-r22 audit fix: pair is normalised on import (BTC/USDT → BTCUSDT)
+    // so AI detector groupings collapse same-instrument variants.
+    expect(trades[0]!.pair).toBe("BTCUSDT");
     expect(trades[0]!.direction).toBe("long");
     expect(trades[0]!.entryPrice).toBe(50000);
     expect(trades[0]!.exitPrice).toBe(52000);

@@ -281,12 +281,19 @@ export default function SettingsPage() {
   // "Account 2"). Derive the next index from the highest existing
   // numeric suffix instead of from the array length.
   function nextAccountName(accounts: Account[]): string {
+    // R67-r22 audit fix (HINW): tighten regex to ANCHORED match so a
+    // user-renamed "Account 5 Backup" doesn't bump the next-index past
+    // 5 unintentionally. Plus cap-at-999 with UUID suffix to prevent
+    // a pathological loop on collisions.
     const maxN = Math.max(
       ...accounts.map((a) =>
-        parseInt(a.name.match(/Account (\d+)/)?.[1] ?? "0", 10),
+        parseInt(a.name.match(/^Account (\d+)$/)?.[1] ?? "0", 10),
       ),
       0,
     );
+    if (maxN >= 999) {
+      return `Account ${crypto.randomUUID().slice(0, 6)}`;
+    }
     return `Account ${maxN + 1}`;
   }
 

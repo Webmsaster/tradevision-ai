@@ -156,6 +156,18 @@ function getActiveAccountId(): string {
     if (raw) {
       const settings = JSON.parse(raw);
       if (settings.activeAccountId) return settings.activeAccountId;
+      // R67-r22 audit fix (MED): if no activeAccountId is persisted but
+      // accounts[] exists with a custom first entry (user renamed Main
+      // Account or removed `default`), fall back to the first existing
+      // account ID rather than the hardcoded literal "default" — which
+      // wouldn't filter to anything if the user has no `default` account.
+      if (
+        Array.isArray(settings.accounts) &&
+        settings.accounts.length > 0 &&
+        typeof settings.accounts[0]?.id === "string"
+      ) {
+        return settings.accounts[0].id;
+      }
     }
   } catch (err) {
     console.error("Failed to read active account ID:", err);

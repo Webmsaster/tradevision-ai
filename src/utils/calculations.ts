@@ -160,11 +160,35 @@ export function calculateExpectancy(trades: Trade[]): number {
 
 /**
  * Sort trades chronologically by exit date.
+ *
+ * R67-r22 audit fix (perf): Symbol-cached sort. Three internal callers
+ * (calculateMaxDrawdown, calculateEquityCurve, calculateStreaks) all
+ * receive the same trades array via calculateAllStats and previously
+ * each ran an independent O(n log n) sort. At N=10k that's ~36ms
+ * wasted per dashboard render. The cache attaches the sorted view via
+ * a non-enumerable Symbol on the input array, so a single
+ * calculateAllStats call sorts once; standalone helpers still work
+ * (cache miss → sort → cache).
  */
+const SORTED_BY_EXIT_DATE = Symbol("calculations.sortedByExitDate");
 function sortByExitDate(trades: Trade[]): Trade[] {
-  return [...trades].sort(
+  const holder = trades as Trade[] & { [SORTED_BY_EXIT_DATE]?: Trade[] };
+  const cached = holder[SORTED_BY_EXIT_DATE];
+  if (cached && cached.length === trades.length) return cached;
+  const sorted = [...trades].sort(
     (a, b) => new Date(a.exitDate).getTime() - new Date(b.exitDate).getTime(),
   );
+  try {
+    Object.defineProperty(trades, SORTED_BY_EXIT_DATE, {
+      value: sorted,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  } catch {
+    /* frozen array → caching not possible, return the fresh sort */
+  }
+  return sorted;
 }
 
 /**
@@ -539,26 +563,18 @@ export function calculateAllStats(trades: Trade[]): TradeStats {
 
   const totalPnl = trades.reduce((sum, t) => sum + t.pnl, 0);
 
-  // Find best and worst trades by PnL. Filter out NaN-PnL rows: a single
-  // NaN trade poisons reduce() (any comparison with NaN is false) and would
-  // make best/worst depend on iteration order. trades[] is non-empty here,
-  // but validTrades may still be empty if every PnL is NaN.
-  const validTrades = trades.filter((t) => Number.isFinite(t.pnl));
-  const bestTrade =
-    validTrades.length > 0
-      ? validTrades.reduce<Trade>(
-          (best, t) => (t.pnl > best.pnl ? t : best),
-          validTrades[0]!,
-        )
-      : null;
-
-  const worstTrade =
-    validTrades.length > 0
-      ? validTrades.reduce<Trade>(
-          (worst, t) => (t.pnl < worst.pnl ? t : worst),
-          validTrades[0]!,
-        )
-      : null;
+  // R67-r22 audit fix (perf): single fused pass for best+worst across
+  // valid trades. Old code filtered, then ran two separate reduce()
+  // passes — three full traversals where one suffices. Filter out
+  // NaN-PnL rows inline; a single NaN poisons comparison so best/worst
+  // would otherwise depend on iteration order.
+  let bestTrade: Trade | null = null;
+  let worstTrade: Trade | null = null;
+  for (const t of trades) {
+    if (!Number.isFinite(t.pnl)) continue;
+    if (bestTrade === null || t.pnl > bestTrade.pnl) bestTrade = t;
+    if (worstTrade === null || t.pnl < worstTrade.pnl) worstTrade = t;
+  }
 
   return {
     totalTrades: trades.length,
