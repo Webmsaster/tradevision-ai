@@ -125,9 +125,17 @@ export default function LoginPage() {
 
         <form onSubmit={handleSubmit} className="login-form">
           <div className="form-group">
-            <label className="form-label">Email</label>
+            {/* R67-r15 a11y fix: explicit htmlFor/id binds the label to the
+                input so screen-readers announce it; placeholder alone fails
+                WCAG 1.3.1 / 4.1.2. */}
+            <label htmlFor="login-email" className="form-label">
+              Email
+            </label>
             <input
+              id="login-email"
+              name="email"
               type="email"
+              autoComplete="email"
               className="form-input"
               placeholder="you@example.com"
               value={email}
@@ -137,9 +145,14 @@ export default function LoginPage() {
           </div>
 
           <div className="form-group">
-            <label className="form-label">Password</label>
+            <label htmlFor="login-password" className="form-label">
+              Password
+            </label>
             <input
+              id="login-password"
+              name="password"
               type="password"
+              autoComplete={isSignUp ? "new-password" : "current-password"}
               className="form-input"
               placeholder="Your password"
               value={password}

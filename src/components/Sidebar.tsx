@@ -5,6 +5,45 @@ import { usePathname } from "next/navigation";
 import { memo, useState, useEffect, useCallback } from "react";
 import { useTheme } from "@/components/ThemeProvider";
 import AccountSwitcher from "@/components/AccountSwitcher";
+import { useAuth } from "@/lib/auth-context";
+
+/**
+ * R67-r15 audit fix (HIGH): logout button. Without it, a Supabase session
+ * persisted on a shared device meant the next browser visitor was auto-
+ * logged in as the previous user with full RLS read/write access. Hidden
+ * when no user is authenticated (localStorage-only mode shows nothing).
+ */
+function SignOutButton() {
+  const { user, signOut } = useAuth();
+  if (!user) return null;
+  return (
+    <button
+      type="button"
+      className="sidebar-theme-toggle"
+      onClick={() => {
+        void signOut();
+      }}
+      title={`Sign out (${user.email ?? "current account"})`}
+    >
+      <svg
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+        <polyline points="16 17 21 12 16 7" />
+        <line x1="21" y1="12" x2="9" y2="12" />
+      </svg>
+      <span>Sign out</span>
+    </button>
+  );
+}
 
 const navItems = [
   {
@@ -379,6 +418,8 @@ export default function Sidebar() {
           )}
           <span>{theme === "dark" ? "Light Mode" : "Dark Mode"}</span>
         </button>
+
+        <SignOutButton />
 
         <div className="sidebar-footer">&copy; 2026 TradeVision</div>
       </aside>
