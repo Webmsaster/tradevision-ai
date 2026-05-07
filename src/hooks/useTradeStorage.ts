@@ -32,6 +32,15 @@ import {
 // settings "Test webhook" handler can share the exact same logic.
 import { isValidHttpsUrl } from "@/utils/urlSafety";
 
+// R67-Final (R19-A8 deferred MED): webhook URLs are encrypted-at-rest
+// in localStorage. The fire path decrypts in-memory before the network
+// call. See `src/utils/secretsCrypto.ts` for the v1 envelope spec.
+import {
+  decryptSecret,
+  isEncrypted,
+  resolveUserKey,
+} from "@/utils/secretsCrypto";
+
 // Round 8 audit (MEDIUM): client-side platform-URL match — defence in
 // depth alongside the same gate in /api/webhook-test. Returning false
 // silently drops the webhook fire (no toast — this only triggers when
@@ -70,10 +79,19 @@ function webhookPlatformMatches(platform: unknown, url: string): boolean {
 // leaking a TCP socket until the 5s timeout fired. We compose two
 // signals (timeout + unmount) via AbortSignal.any when available, and
 // fall back to a manual link otherwise.
-function fireWebhook(
+//
+// R67-Final (R19-A8): webhook URLs may be persisted as v1 encryption
+// envelopes (`enc:v1:...`). We decrypt in-memory via the same userKey
+// resolver the settings page uses (Supabase user.id when authenticated,
+// per-device random key when offline) — so the network call still sees
+// the plaintext URL. If decryption fails (wrong userKey, corrupted
+// ciphertext, no WebCrypto) we drop the webhook silently — never POST
+// the envelope by accident.
+async function fireWebhook(
   event: "onTradeAdd" | "onTradeEdit" | "onTradeDelete",
   trade: Trade | undefined,
   unmountSignal?: AbortSignal,
+  userId?: string | null,
 ) {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
@@ -81,11 +99,29 @@ function fireWebhook(
     const settings = JSON.parse(raw);
     const wh = settings.webhook;
     if (!wh?.enabled || !wh?.url || !wh.events?.[event]) return;
-    if (!isValidHttpsUrl(wh.url)) return;
+
+    // R67-Final: decrypt the persisted URL if it carries the v1 envelope.
+    // Plain URLs (legacy / migration window) pass through unchanged.
+    let plainUrl: string = wh.url;
+    if (isEncrypted(plainUrl)) {
+      const userKey = resolveUserKey(userId ?? null);
+      plainUrl = await decryptSecret(plainUrl, userKey);
+      if (!plainUrl) {
+        // Decryption failed — most common cause is a userKey mismatch
+        // (user signed out and the offline key was rotated, or signed
+        // in under a different account). Silently drop rather than
+        // leak the envelope to the network.
+        console.warn(
+          "[webhook] persisted URL could not be decrypted — dropping fire",
+        );
+        return;
+      }
+    }
+    if (!isValidHttpsUrl(plainUrl)) return;
     // Round 8 audit (MEDIUM): mirror the server-side platform-URL match
     // so a Discord-platform webhook pointed at a wrong host never even
     // leaves the browser.
-    if (!webhookPlatformMatches(wh.platform, wh.url)) return;
+    if (!webhookPlatformMatches(wh.platform, plainUrl)) return;
 
     const msg =
       event === "onTradeAdd"
@@ -125,7 +161,7 @@ function fireWebhook(
     // typo'd webhook host can't follow a 302 to an attacker-controlled
     // target and exfiltrate the trade payload (pair / direction / PnL).
     // Mirrors the server-side `/api/webhook-test` redirect-block.
-    fetch(wh.url, {
+    fetch(plainUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -460,10 +496,13 @@ export function useTradeStorage() {
       };
       const updated = addTradeLocal(tradeWithAccount);
       setAllTrades(updated);
-      fireWebhook(
+      // R67-Final: fireWebhook is now async (decrypt step). Float as
+      // best-effort — never block the CRUD path on the network round-trip.
+      void fireWebhook(
         "onTradeAdd",
         tradeWithAccount,
         webhookAbortRef.current?.signal,
+        user?.id ?? null,
       );
       if (isCloud) {
         try {
@@ -483,7 +522,12 @@ export function useTradeStorage() {
     async (trade: Trade) => {
       const updated = updateTradeLocal(trade);
       setAllTrades(updated);
-      fireWebhook("onTradeEdit", trade, webhookAbortRef.current?.signal);
+      void fireWebhook(
+        "onTradeEdit",
+        trade,
+        webhookAbortRef.current?.signal,
+        user?.id ?? null,
+      );
       if (isCloud) {
         try {
           await saveTradeToSupabase(supabase!, trade, user!.id);
@@ -503,10 +547,11 @@ export function useTradeStorage() {
       const removedTrade = allTradesRef.current.find((t) => t.id === tradeId);
       const updated = deleteTradeLocal(tradeId);
       setAllTrades(updated);
-      fireWebhook(
+      void fireWebhook(
         "onTradeDelete",
         removedTrade,
         webhookAbortRef.current?.signal,
+        user?.id ?? null,
       );
       if (isCloud) {
         try {

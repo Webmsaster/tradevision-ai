@@ -2705,7 +2705,25 @@ def _emergency_close_all_positions(reason: str) -> None:
     iterate `mt5.positions_get(magic=231)` and merge JSON metadata for the
     Telegram pretty-print.
     """
-    mt5_live = mt5.positions_get() or []
+    # R67-RR6 audit fix (MED): on MT5 disconnect, `mt5.positions_get()`
+    # returns None (vs empty list = "no positions"). The previous `or []`
+    # collapsed both into "nothing to close" → emergency-close no-op'd
+    # silently and OPEN_POS_PATH got wiped, losing the JSON-tracked
+    # tickets we'd need on next reconnect. Now we differentiate: None =
+    # connection lost → bail out, KEEP the OPEN_POS_PATH so the next
+    # cycle can retry once MT5 returns.
+    mt5_live = mt5.positions_get()
+    if mt5_live is None:
+        log_event(
+            "emergency_close_skipped_mt5_disconnect",
+            reason=reason,
+        )
+        tg_send(
+            "⚠️ <b>Emergency Close DEFERRED</b>\n"
+            f"MT5 disconnected — cannot enumerate live positions. Reason: "
+            f"{html_escape(reason)}. Will retry on next sync cycle."
+        )
+        return
     bot_positions = [p for p in mt5_live if getattr(p, "magic", 0) == 231]
     open_json = read_json(OPEN_POS_PATH, {"positions": []}).get("positions", [])
     json_by_ticket = {

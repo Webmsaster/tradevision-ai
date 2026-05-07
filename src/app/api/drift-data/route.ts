@@ -91,6 +91,18 @@ function isEnabled(): boolean {
  *     auth doesn't exist in this deployment.
  *   - `FTMO_MONITOR_AUTH_BYPASS=1` is set (escape hatch for local dev /
  *     headless-vps where the user IS the only one with shell access).
+ *
+ * R67-Final (R14-A7 close-out, 2026-05-07): cross-tenant slug enumeration
+ * mitigation. Previously any authenticated user could pass `?ftmo_tf=<slug>`
+ * and read another tenant's live equity by slug-guessing. Now:
+ *   - Returns the caller's email alongside `ok` so the GET handler can
+ *     enforce a per-user → allowed-slug policy.
+ *   - The handler restricts slug-based reads to the admin email
+ *     (`FTMO_ADMIN_EMAIL`); non-admin authenticated users can only read
+ *     the bot's default state-dir (no `?ftmo_tf=` param).
+ *   - This is the single-owner-VPS pattern. Multi-tenant SaaS deployments
+ *     would need a `user_ftmo_accounts` mapping table — deferred until a
+ *     real multi-tenant deployment exists.
  */
 // Round 60 (Security Audit Round 2): emit a once-per-process warning
 // when FTMO_MONITOR_AUTH_BYPASS is enabled while Supabase IS configured.
@@ -101,6 +113,7 @@ const bypassWarned = { logged: false };
 async function isAuthenticated(): Promise<{
   ok: boolean;
   reason?: string;
+  email?: string | null;
 }> {
   if (
     process.env.FTMO_MONITOR_AUTH_BYPASS === "1" ||
@@ -137,10 +150,37 @@ async function isAuthenticated(): Promise<{
   try {
     const { data, error } = await supabase.auth.getUser();
     if (error || !data?.user) return { ok: false };
-    return { ok: true };
+    return { ok: true, email: data.user.email ?? null };
   } catch {
     return { ok: false };
   }
+}
+
+/**
+ * R67-Final (R14-A7): admin-only slug-based reads.
+ *
+ * Returns true iff the caller is permitted to pass `?ftmo_tf=<slug>` and
+ * read an arbitrary state-dir. Rules:
+ *   - `bypass` reason (FTMO_MONITOR_AUTH_BYPASS=1) → permitted (single-owner
+ *     headless VPS, the env-var IS the admin gate).
+ *   - `no-auth-backend` reason → permitted (Supabase not configured;
+ *     localStorage-only deployment, nothing tenant-isolated to leak).
+ *   - Authenticated user → permitted ONLY if `FTMO_ADMIN_EMAIL` is set AND
+ *     matches the caller's email (case-insensitive).
+ *   - Otherwise → denied (403). Non-admin users are still allowed to read
+ *     the default state-dir (no slug param) — see GET handler.
+ */
+function canReadArbitrarySlug(auth: {
+  ok: boolean;
+  reason?: string;
+  email?: string | null;
+}): boolean {
+  if (auth.reason === "bypass") return true;
+  if (auth.reason === "no-auth-backend") return true;
+  const adminEmail = process.env.FTMO_ADMIN_EMAIL;
+  if (!adminEmail) return false;
+  if (!auth.email) return false;
+  return auth.email.toLowerCase() === adminEmail.toLowerCase();
 }
 
 // ---------------------------------------------------------------------------
@@ -635,6 +675,18 @@ export async function GET(req: NextRequest) {
   }
 
   const tfSlug = req.nextUrl.searchParams.get("ftmo_tf");
+  // R67-Final (R14-A7, 2026-05-07): cross-tenant slug enumeration close-out.
+  // Slug-based reads expose any state-dir on disk via name-guessing — restrict
+  // them to the admin email. Non-admin authenticated users can still read
+  // the default state-dir (no `?ftmo_tf=` param), which is the bot's own
+  // FTMO_STATE_DIR. Single-owner-VPS pattern; SaaS multi-tenant would need
+  // a `user_ftmo_accounts` mapping table (deferred).
+  if (tfSlug && !canReadArbitrarySlug(auth)) {
+    return NextResponse.json(
+      { error: "forbidden" },
+      { status: 403, headers: { "Cache-Control": "no-store" } },
+    );
+  }
   const resolved = resolveStateDir(tfSlug);
   if (!resolved) {
     return NextResponse.json(

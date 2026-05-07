@@ -191,6 +191,19 @@ function finiteOrUndef(v: unknown): number | undefined {
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
+/**
+ * R67-Final (R15-A3 perf): pre-parse a date string to epoch-ms once at
+ * the storage boundary so sort comparators and formatters can reuse the
+ * numeric cache instead of calling `new Date(...)` on every render.
+ * Returns `undefined` for unparseable strings so consumers fall back to
+ * the existing `new Date(t.exitDate)` path (and the type-guard rejects
+ * the row at validation time anyway).
+ */
+function parseDateMs(s: string): number | undefined {
+  const ms = Date.parse(s);
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
 function dbToTrade(row: Record<string, unknown>): Trade | null {
   // Phase 7 (Storage Bug 6): allow-list emotion / marketCondition; arbitrary
   // strings from the DB cast straight to Trade['emotion'] would let a future
@@ -219,6 +232,13 @@ function dbToTrade(row: Record<string, unknown>): Trade | null {
   }
   const direction: "long" | "short" = rawDirection;
   const rawAccountId = strOrUndef(row.account_id);
+  const entryDate = strOrEmpty(row.entry_date);
+  const exitDate = strOrEmpty(row.exit_date);
+  // R67-Final (R15-A3 perf): pre-parse dates ONCE at the DB→app
+  // boundary. Saves an N-per-render `new Date(...)` in sort comparators
+  // (TradeTable, dashboard, report) and date-formatters.
+  const entryMs = parseDateMs(entryDate);
+  const exitMs = parseDateMs(exitDate);
   return {
     id: strOrEmpty(row.id),
     pair: strOrEmpty(row.pair),
@@ -226,8 +246,8 @@ function dbToTrade(row: Record<string, unknown>): Trade | null {
     entryPrice: num(row.entry_price),
     exitPrice: num(row.exit_price),
     quantity: num(row.quantity),
-    entryDate: strOrEmpty(row.entry_date),
-    exitDate: strOrEmpty(row.exit_date),
+    entryDate,
+    exitDate,
     pnl: num(row.pnl),
     pnlPercent: num(row.pnl_percent),
     fees: num(row.fees),
@@ -243,6 +263,8 @@ function dbToTrade(row: Record<string, unknown>): Trade | null {
     screenshot: validateScreenshot(strOrUndef(row.screenshot_url)),
     accountId:
       rawAccountId && rawAccountId.length > 0 ? rawAccountId : "default",
+    ...(entryMs !== undefined ? { entryMs } : {}),
+    ...(exitMs !== undefined ? { exitMs } : {}),
   };
 }
 
@@ -705,15 +727,19 @@ export function saveTrades(trades: Trade[]): void {
   try {
     if (typeof window === "undefined") return;
 
-    // Separate screenshots from trade data
+    // Separate screenshots from trade data.
+    // R67-Final (R15-A3 perf): also strip the in-memory exitMs/entryMs
+    // cache before persisting — it's recomputed lazily on load
+    // (`loadTrades` re-populates it via `parseDateMs`). Keeps the
+    // localStorage footprint small for users with many trades.
     const screenshots: Record<string, string> = {};
     const tradesWithoutScreenshots = trades.map((t) => {
-      if (t.screenshot) {
-        screenshots[t.id] = t.screenshot;
-        const { screenshot: _, ...rest } = t;
+      const { screenshot, exitMs: _exitMs, entryMs: _entryMs, ...rest } = t;
+      if (screenshot) {
+        screenshots[t.id] = screenshot;
         return rest;
       }
-      return t;
+      return rest;
     });
 
     // Round 56 (R56-STO-1): isolate the trades-payload write so we can
@@ -846,11 +872,34 @@ export function loadTrades(): Trade[] {
         `[storage] loadTrades: dropped ${dropped} invalid row(s) of ${arr.length}`,
       );
     }
+    // R67-Final (R15-A3 perf): lazy-populate the exitMs/entryMs cache
+    // on load. Existing localStorage payloads written before this
+    // migration won't carry the cache; we compute it once here so all
+    // downstream consumers (TradeTable sort, formatters, calculations)
+    // can read the numeric value without re-parsing on every render.
     return valid.map((t) => {
+      const next: Trade =
+        t.exitMs === undefined || t.entryMs === undefined
+          ? {
+              ...t,
+              ...(t.entryMs === undefined
+                ? (() => {
+                    const ms = parseDateMs(t.entryDate);
+                    return ms !== undefined ? { entryMs: ms } : {};
+                  })()
+                : {}),
+              ...(t.exitMs === undefined
+                ? (() => {
+                    const ms = parseDateMs(t.exitDate);
+                    return ms !== undefined ? { exitMs: ms } : {};
+                  })()
+                : {}),
+            }
+          : t;
       if (screenshots[t.id]) {
-        return { ...t, screenshot: screenshots[t.id] };
+        return { ...next, screenshot: screenshots[t.id] };
       }
-      return t;
+      return next;
     });
   } catch (error) {
     console.error("Failed to load trades from localStorage:", error);

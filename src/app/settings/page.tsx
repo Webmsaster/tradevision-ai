@@ -7,7 +7,18 @@ import {
 } from "@/lib/constants";
 import { isValidHttpsUrl } from "@/utils/urlSafety";
 import { loadTrades, saveTrades } from "@/utils/storage";
+import { tradesToCsv } from "@/utils/csvExport";
 import { useAuth } from "@/lib/auth-context";
+import { useTradeStorage } from "@/hooks/useTradeStorage";
+// R67-Final (R19-A8 deferred MED): WebCrypto AES-GCM encryption-at-rest
+// for the bot-token-bearing webhook URL. See `src/utils/secretsCrypto.ts`
+// for threat-model + format spec.
+import {
+  decryptSecret,
+  encryptSecret,
+  isEncrypted,
+  resolveUserKey,
+} from "@/utils/secretsCrypto";
 
 // Round 9 audit (KRITISCH): client-side platform-URL match — defence in
 // depth alongside the same gate in /api/webhook-test. Discord webhooks
@@ -92,7 +103,14 @@ function isValidSettings(obj: unknown): obj is Settings {
 
   // Sanitize webhook
   const wh = s.webhook as Record<string, unknown>;
-  if (typeof wh.url === "string" && wh.url && !wh.url.startsWith("https://")) {
+  // R67-Final: accept either plaintext https:// URLs (legacy / migration)
+  // OR the v1 encryption envelope. Anything else is dropped + disabled.
+  if (
+    typeof wh.url === "string" &&
+    wh.url &&
+    !wh.url.startsWith("https://") &&
+    !wh.url.startsWith("enc:v1:")
+  ) {
     wh.url = "";
     wh.enabled = false;
   }
@@ -151,6 +169,42 @@ function saveSettings(settings: ReturnType<typeof loadSettings>) {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
 }
 
+// R67-Final: encrypt-on-write helper. Persists `settings` with the
+// webhook URL replaced by its v1 encryption envelope when:
+//   - WebCrypto is available, AND
+//   - the URL is non-empty plaintext (already-encrypted strings are
+//     kept verbatim — re-encrypting would needlessly burn entropy).
+//
+// Telegram + Discord URLs both contain a token in the path / query, so
+// we encrypt regardless of `platform`. Custom URLs are user-supplied
+// and may also carry an auth token (HMAC signature, JWT in the path);
+// encrypting them is strictly safer than not.
+async function saveSettingsEncrypted(
+  settings: Settings,
+  userKey: string,
+): Promise<Settings> {
+  const url = settings.webhook.url;
+  if (!url || isEncrypted(url)) {
+    saveSettings(settings);
+    return settings;
+  }
+  let storedUrl = url;
+  try {
+    storedUrl = await encryptSecret(url, userKey);
+  } catch (err) {
+    // encryptSecret swallows internally and returns plaintext on error;
+    // this catch is belt-and-braces so a hostile prototype can't bypass.
+    console.error("[settings] webhook URL encrypt failed:", err);
+    storedUrl = url;
+  }
+  const persisted: Settings = {
+    ...settings,
+    webhook: { ...settings.webhook, url: storedUrl },
+  };
+  saveSettings(persisted);
+  return persisted;
+}
+
 const DEFAULT_SETTINGS: Settings = {
   webhook: {
     enabled: false,
@@ -169,9 +223,47 @@ const DEFAULT_SETTINGS: Settings = {
   },
 };
 
+// R67-Final (R17-A8 deferred): build a filesystem-safe ISO timestamp slug
+// for export filenames. `:` is illegal on Windows / NTFS and triggers
+// browser sanitisation in the Save-As dialog, so we replace colons with
+// dashes. The trailing fractional ms are dropped for shorter names.
+// Result shape: `2026-05-07T18-15-00Z`.
+function isoTimestampSlug(now: Date = new Date()): string {
+  return now
+    .toISOString()
+    .replace(/\.\d{3}Z$/, "Z")
+    .replace(/:/g, "-");
+}
+
+// R67-Final: trigger a browser download with a Blob payload and the given
+// MIME type / filename. Centralised so CSV + JSON paths share the exact
+// same anchor-click + cleanup sequence (revokeObjectURL avoids leaking
+// memory in long-running settings sessions).
+function triggerDownload(filename: string, blob: Blob): void {
+  if (typeof window === "undefined") return;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 export default function SettingsPage() {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [saved, setSaved] = useState(false);
+  // R67-Final (R17-A8 deferred): user-visible status row for the Data
+  // Management buttons — surfaces success counts + failure reasons next
+  // to the action so the user gets immediate feedback (no toast yet).
+  const [dataMessage, setDataMessage] = useState<{
+    text: string;
+    variant: "success" | "error";
+  } | null>(null);
+  // R67-Final: trades + import/clear come from the canonical storage
+  // hook so cloud + localStorage stay in sync (same as /import page).
+  const { trades, importTrades, clearAll, activeAccountId } = useTradeStorage();
   // Round 9 audit (KRITISCH): testStatus drives the colour, testMessage
   // carries the human-readable copy. Decoupling them avoids the previous
   // `includes("success")` brittle string-match (broke on i18n / phrasing
@@ -187,16 +279,58 @@ export default function SettingsPage() {
   );
   const { supabase, user } = useAuth();
 
-  // Load persisted settings on client-side only
+  // Load persisted settings on client-side only.
+  //
+  // R67-Final: webhook URLs may be persisted in the v1 encryption
+  // envelope. Decrypt to plaintext for the in-memory `settings` state
+  // so the input field shows the readable URL. The persisted form
+  // stays encrypted until the user saves again (re-encrypted under the
+  // current userKey). If decryption fails (wrong userKey, e.g. user
+  // was previously offline and is now signed in), we drop the URL +
+  // disable the webhook so the user can re-enter it without confusion.
   useEffect(() => {
-    setSettings(loadSettings());
-  }, []);
+    let cancelled = false;
+    (async () => {
+      const persisted = loadSettings();
+      const url = persisted.webhook.url;
+      if (!url || !isEncrypted(url)) {
+        if (!cancelled) setSettings(persisted);
+        return;
+      }
+      const userKey = resolveUserKey(user?.id);
+      const plain = await decryptSecret(url, userKey);
+      if (cancelled) return;
+      if (!plain) {
+        // Decryption failed under the current userKey. Surface a hint
+        // via setTestMessage so the user understands why their URL is
+        // empty — silent drop is the worst-case scenario for trust.
+        console.warn(
+          "[settings] decrypt of persisted webhook URL failed — clearing",
+        );
+        setSettings({
+          ...persisted,
+          webhook: { ...persisted.webhook, url: "", enabled: false },
+        });
+        return;
+      }
+      setSettings({
+        ...persisted,
+        webhook: { ...persisted.webhook, url: plain },
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
 
-  function handleSave() {
-    saveSettings(settings);
+  async function handleSave() {
+    const userKey = resolveUserKey(user?.id);
+    await saveSettingsEncrypted(settings, userKey);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
-    // Dispatch event so other components can react
+    // Dispatch event so other components can react. We dispatch the
+    // PLAINTEXT in-memory `settings` so listeners (e.g. AccountSwitcher)
+    // continue to work without needing to know about the envelope.
     window.dispatchEvent(
       new CustomEvent(SETTINGS_CHANGED_EVENT, { detail: settings }),
     );
@@ -297,7 +431,7 @@ export default function SettingsPage() {
     return `Account ${maxN + 1}`;
   }
 
-  function handleAddAccount() {
+  async function handleAddAccount() {
     // R67-r21 audit fix (HIGH): persist immediately after add so a
     // subsequent radio-select on the new account doesn't reference a
     // phantom ID. Previously the new account only landed in localStorage
@@ -314,7 +448,11 @@ export default function SettingsPage() {
       accounts: [...settings.accounts, newAccount],
     };
     setSettings(next);
-    saveSettings(next);
+    // R67-Final: route through saveSettingsEncrypted so the in-flight
+    // plaintext webhook URL doesn't leak to localStorage on a side-effect
+    // Add-Account write.
+    const userKey = resolveUserKey(user?.id);
+    await saveSettingsEncrypted(next, userKey);
   }
 
   // Round-N audit: orphan-trade cleanup on account removal. The previous
@@ -477,6 +615,135 @@ export default function SettingsPage() {
     });
   }
 
+  // R67-Final (R17-A8 deferred): Data Management handlers. CSV + JSON
+  // exports REUSE `tradesToCsv` (canonical 22-column writer) and the
+  // same JSON envelope shape `{ exportDate, version, trades }` used by
+  // `exportToJSON` in storage.ts so a Settings export can be re-imported
+  // via /import → JSON without schema drift. Filename pattern is fixed
+  // to `tradevision-trades-<ISO>.csv|.json` so a sorted Downloads folder
+  // groups all backups together.
+  function handleExportCsv() {
+    if (trades.length === 0) {
+      setDataMessage({ text: "No trades to export.", variant: "error" });
+      return;
+    }
+    try {
+      const csv = tradesToCsv(trades);
+      // UTF-8 BOM up-front so Excel auto-detects encoding (matches
+      // csvExport.ts `downloadCsv` behaviour).
+      const blob = new Blob(["﻿" + csv], {
+        type: "text/csv;charset=utf-8",
+      });
+      triggerDownload(`tradevision-trades-${isoTimestampSlug()}.csv`, blob);
+      setDataMessage({
+        text: `Exported ${trades.length} trade${trades.length === 1 ? "" : "s"} as CSV.`,
+        variant: "success",
+      });
+    } catch (err) {
+      console.error("[settings] CSV export failed:", err);
+      setDataMessage({
+        text: `CSV export failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+        variant: "error",
+      });
+    }
+  }
+
+  function handleExportJson() {
+    if (trades.length === 0) {
+      setDataMessage({ text: "No trades to export.", variant: "error" });
+      return;
+    }
+    try {
+      // Same envelope as storage.ts/exportToJSON so the file can be
+      // re-imported via /import → JSON merge-or-replace.
+      const wrapper = {
+        exportDate: new Date().toISOString(),
+        version: "1.0",
+        trades,
+      };
+      const blob = new Blob([JSON.stringify(wrapper, null, 2)], {
+        type: "application/json",
+      });
+      triggerDownload(`tradevision-trades-${isoTimestampSlug()}.json`, blob);
+      setDataMessage({
+        text: `Exported ${trades.length} trade${trades.length === 1 ? "" : "s"} as JSON.`,
+        variant: "success",
+      });
+    } catch (err) {
+      console.error("[settings] JSON export failed:", err);
+      setDataMessage({
+        text: `JSON export failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+        variant: "error",
+      });
+    }
+  }
+
+  // R67-Final: mirrors the dashboard `handleLoadSampleData` pattern —
+  // dynamic-import the sample bundle, stamp fresh UUIDs + activeAccountId
+  // so rows are visible under the active account and don't collide on
+  // the cloud UUID PK.
+  async function handleLoadSampleData() {
+    try {
+      const { sampleTrades } = await import("@/data/sampleTrades");
+      const fresh = sampleTrades.map((t) => ({
+        ...t,
+        id:
+          typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        accountId: activeAccountId,
+      }));
+      const count = await importTrades(fresh);
+      if (count === 0) {
+        setDataMessage({
+          text: "No demo trades imported (already loaded for this account, or storage unavailable).",
+          variant: "error",
+        });
+      } else {
+        setDataMessage({
+          text: `Loaded ${count} demo trade${count === 1 ? "" : "s"}.`,
+          variant: "success",
+        });
+      }
+    } catch (err) {
+      console.error("[settings] sample data load failed:", err);
+      setDataMessage({
+        text: `Failed to load demo data: ${err instanceof Error ? err.message : "Unknown error"}`,
+        variant: "error",
+      });
+    }
+  }
+
+  // R67-Final: destructive — wipes all trades AND attached screenshots
+  // for the logged-in user (cloud + local). Confirm dialog spells out
+  // both side-effects so the user can't blame us for a "missing
+  // screenshot" after the fact. Uses native `confirm()` to keep the
+  // patch small (no ConfirmDialog dep) — the /import page already has
+  // the modal version for the marketing-grade flow.
+  async function handleClearAllData() {
+    const ok = window.confirm(
+      "Permanently delete ALL trading data?\n\n" +
+        `This wipes ${trades.length} trade${trades.length === 1 ? "" : "s"} ` +
+        `from your browser AND any attached screenshots. ` +
+        `If you are signed in, the cloud copy is removed too.\n\n` +
+        `This action cannot be undone.`,
+    );
+    if (!ok) return;
+    try {
+      await clearAll();
+      setDataMessage({
+        text: "All trading data has been cleared.",
+        variant: "success",
+      });
+    } catch (err) {
+      console.error("[settings] clearAll failed:", err);
+      setDataMessage({
+        text: `Failed to clear data: ${err instanceof Error ? err.message : "Unknown error"}`,
+        variant: "error",
+      });
+    }
+  }
+
   return (
     <div className="page-container">
       <div className="page-header">
@@ -630,10 +897,15 @@ export default function SettingsPage() {
                     }))
                   }
                 />
-                {/* R67-r21 audit fix: warn the user that Telegram webhook
-                    URLs contain a bot-token in plaintext localStorage —
-                    any XSS, browser extension, or shared-device user can
-                    read it. Encrypted-at-rest needs a WebCrypto refactor. */}
+                {/* R67-Final (R19-A8): the URL is now encrypted-at-rest
+                    in localStorage via WebCrypto AES-GCM (PBKDF2-derived
+                    key from the Supabase user.id, or a per-device random
+                    key when offline). The warning is retained but
+                    softened — encryption is defence-in-depth, NOT a
+                    substitute for trusting the device: an XSS payload
+                    with full DOM access can still read the in-memory
+                    plaintext, and offline mode keeps the key alongside
+                    the ciphertext (obfuscation only). */}
                 {settings.webhook.platform === "telegram" &&
                   settings.webhook.url.includes("/bot") && (
                     <p
@@ -643,10 +915,12 @@ export default function SettingsPage() {
                         color: "var(--text-muted)",
                       }}
                     >
-                      ⚠️ Telegram URLs contain your bot token. This URL is
-                      stored in browser localStorage in plaintext — do not use
-                      on a shared device, and revoke the bot at @BotFather if
-                      you suspect a leak.
+                      ⚠️ Telegram URLs contain your bot token. The URL is
+                      encrypted at rest in your browser (AES-GCM, per-account
+                      key). This protects against casual shared-device snooping
+                      and most extensions, but cannot defend against full XSS —
+                      if you suspect a leak, revoke the bot at @BotFather and
+                      rotate.
                     </p>
                   )}
               </div>
@@ -767,11 +1041,19 @@ export default function SettingsPage() {
                   // names) still require Save to commit.
                   const next = { ...settings, activeAccountId: account.id };
                   setSettings(next);
-                  try {
-                    localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
-                  } catch {
-                    /* quota / disabled storage — UI state still updates */
-                  }
+                  // R67-Final: route through saveSettingsEncrypted so the
+                  // in-memory plaintext webhook URL is encrypted-at-rest
+                  // even on this radio side-effect write. Errors fall
+                  // back to the previous direct setItem path so quota /
+                  // disabled storage doesn't break the radio UX.
+                  const userKey = resolveUserKey(user?.id);
+                  void saveSettingsEncrypted(next, userKey).catch(() => {
+                    try {
+                      localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+                    } catch {
+                      /* quota / disabled storage — UI state still updates */
+                    }
+                  });
                   window.dispatchEvent(
                     new CustomEvent(SETTINGS_CHANGED_EVENT, { detail: next }),
                   );
@@ -819,15 +1101,114 @@ export default function SettingsPage() {
         <button
           className="btn btn-secondary"
           style={{ marginTop: "12px" }}
-          onClick={handleAddAccount}
+          onClick={() => {
+            void handleAddAccount();
+          }}
         >
           + Add Account
         </button>
       </section>
 
+      {/* Data Management — R67-Final (R17-A8 deferred) */}
+      <section
+        className="glass-card"
+        style={{ padding: "24px", marginBottom: "20px" }}
+      >
+        <h2 style={{ fontSize: "1.1rem", marginBottom: "16px" }}>
+          Data Management
+        </h2>
+        <p
+          style={{
+            fontSize: "0.85rem",
+            color: "var(--text-muted)",
+            marginBottom: "16px",
+          }}
+        >
+          Export, restore demo data, or wipe everything. Exports include all
+          trades for the active account and round-trip safely with /import.
+        </p>
+        <p
+          style={{
+            fontSize: "0.85rem",
+            color: "var(--text-muted)",
+            marginBottom: "16px",
+          }}
+        >
+          You currently have <strong>{trades.length}</strong> trade
+          {trades.length === 1 ? "" : "s"} in this account.
+        </p>
+
+        <div
+          style={{
+            display: "flex",
+            gap: "12px",
+            flexWrap: "wrap",
+            marginBottom: "12px",
+          }}
+        >
+          <button
+            className="btn btn-primary"
+            onClick={handleExportCsv}
+            data-testid="data-export-csv"
+            disabled={trades.length === 0}
+          >
+            Export CSV
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={handleExportJson}
+            data-testid="data-export-json"
+            disabled={trades.length === 0}
+          >
+            Export JSON
+          </button>
+          <button
+            className="btn btn-secondary"
+            onClick={() => {
+              void handleLoadSampleData();
+            }}
+            data-testid="data-load-demo"
+          >
+            Load Demo Data
+          </button>
+          <button
+            className="btn btn-secondary"
+            onClick={() => {
+              void handleClearAllData();
+            }}
+            data-testid="data-clear-all"
+            style={{ color: "var(--loss)" }}
+          >
+            Clear All Data
+          </button>
+        </div>
+
+        {dataMessage && (
+          <p
+            data-testid="data-management-result"
+            data-test-status={dataMessage.variant}
+            style={{
+              fontSize: "0.85rem",
+              marginTop: "8px",
+              color:
+                dataMessage.variant === "success"
+                  ? "var(--profit)"
+                  : "var(--loss)",
+            }}
+          >
+            {dataMessage.text}
+          </p>
+        )}
+      </section>
+
       {/* Save Button */}
       <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-        <button className="btn btn-primary" onClick={handleSave}>
+        <button
+          className="btn btn-primary"
+          onClick={() => {
+            void handleSave();
+          }}
+        >
           Save Settings
         </button>
         {saved && (

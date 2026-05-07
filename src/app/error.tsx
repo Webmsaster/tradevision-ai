@@ -1,5 +1,8 @@
 "use client";
 
+import { useEffect } from "react";
+import { captureException } from "@/lib/errorReporter";
+
 // R67-r18 audit fix (WARNUNG): never render raw `error.message` in
 // production. Client-side errors can leak Supabase URLs, JWT fragments,
 // or internal paths. We surface the (already-sanitised by Next) `digest`
@@ -13,6 +16,16 @@ export default function GlobalError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  // R67-Final (deferred from R18-A4): forward to the Sentry-compatible
+  // facade. Runs once per error instance — the dependency array uses
+  // `error` directly, so a re-render with the same error won't re-fire.
+  useEffect(() => {
+    captureException(error, {
+      source: "app/error",
+      tags: { digest: error.digest ?? "none" },
+    });
+  }, [error]);
+
   const userMsg = IS_DEV
     ? error.message || "An unexpected error occurred."
     : "An unexpected error occurred.";

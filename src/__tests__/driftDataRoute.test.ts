@@ -335,4 +335,138 @@ describe("/api/drift-data route", () => {
       delete process.env.FTMO_MONITOR_AUTH_BYPASS;
     }
   });
+
+  // R67-Final (R14-A7, 2026-05-07): cross-tenant slug enumeration mitigation.
+  // Non-admin authenticated users must not be able to read arbitrary
+  // state-dirs via `?ftmo_tf=<slug>` — they could otherwise enumerate other
+  // tenants' live equity. Admin (FTMO_ADMIN_EMAIL match) keeps full access.
+  describe("R67-Final cross-tenant slug enumeration guard", () => {
+    it("blocks slug-based reads for non-admin authenticated users (403)", async () => {
+      process.env.FTMO_ADMIN_EMAIL = "admin@example.com";
+      vi.doMock("@/lib/supabase-server", () => ({
+        createServerSupabaseClient: async () => ({
+          auth: {
+            getUser: async () => ({
+              data: {
+                user: { id: "user-attacker", email: "attacker@example.com" },
+              },
+              error: null,
+            }),
+          },
+        }),
+      }));
+      try {
+        const { GET } = await import("@/app/api/drift-data/route");
+        const resp = await GET(makeReq("?ftmo_tf=2h-trend-v5-quartz-lite-r28"));
+        expect(resp.status).toBe(403);
+      } finally {
+        vi.doUnmock("@/lib/supabase-server");
+        delete process.env.FTMO_ADMIN_EMAIL;
+      }
+    });
+
+    it("allows slug-based reads for the admin email (200)", async () => {
+      process.env.FTMO_ADMIN_EMAIL = "admin@example.com";
+      vi.doMock("@/lib/supabase-server", () => ({
+        createServerSupabaseClient: async () => ({
+          auth: {
+            getUser: async () => ({
+              data: { user: { id: "user-admin", email: "admin@example.com" } },
+              error: null,
+            }),
+          },
+        }),
+      }));
+      try {
+        const { GET } = await import("@/app/api/drift-data/route");
+        const resp = await GET(makeReq("?ftmo_tf=2h-trend-v5-quartz-lite-r28"));
+        expect(resp.status).toBe(200);
+        const body = await resp.json();
+        expect(body.meta.currentTfSlug).toBe("2h-trend-v5-quartz-lite-r28");
+      } finally {
+        vi.doUnmock("@/lib/supabase-server");
+        delete process.env.FTMO_ADMIN_EMAIL;
+      }
+    });
+
+    it("admin email match is case-insensitive", async () => {
+      process.env.FTMO_ADMIN_EMAIL = "Admin@Example.com";
+      vi.doMock("@/lib/supabase-server", () => ({
+        createServerSupabaseClient: async () => ({
+          auth: {
+            getUser: async () => ({
+              data: { user: { id: "user-admin", email: "ADMIN@example.com" } },
+              error: null,
+            }),
+          },
+        }),
+      }));
+      try {
+        const { GET } = await import("@/app/api/drift-data/route");
+        const resp = await GET(makeReq("?ftmo_tf=2h-trend-v5-quartz-lite-r28"));
+        expect(resp.status).toBe(200);
+      } finally {
+        vi.doUnmock("@/lib/supabase-server");
+        delete process.env.FTMO_ADMIN_EMAIL;
+      }
+    });
+
+    it("non-admin can still read the default state-dir (no slug param)", async () => {
+      process.env.FTMO_ADMIN_EMAIL = "admin@example.com";
+      vi.doMock("@/lib/supabase-server", () => ({
+        createServerSupabaseClient: async () => ({
+          auth: {
+            getUser: async () => ({
+              data: {
+                user: { id: "user-tenant", email: "tenant@example.com" },
+              },
+              error: null,
+            }),
+          },
+        }),
+      }));
+      try {
+        const { GET } = await import("@/app/api/drift-data/route");
+        const resp = await GET(makeReq());
+        expect(resp.status).toBe(200);
+      } finally {
+        vi.doUnmock("@/lib/supabase-server");
+        delete process.env.FTMO_ADMIN_EMAIL;
+      }
+    });
+
+    it("blocks slug reads when FTMO_ADMIN_EMAIL is unset (fail-closed)", async () => {
+      // No FTMO_ADMIN_EMAIL → no user can pass a slug. Default-dir reads
+      // still work (covered above).
+      delete process.env.FTMO_ADMIN_EMAIL;
+      vi.doMock("@/lib/supabase-server", () => ({
+        createServerSupabaseClient: async () => ({
+          auth: {
+            getUser: async () => ({
+              data: { user: { id: "user-1", email: "anyone@example.com" } },
+              error: null,
+            }),
+          },
+        }),
+      }));
+      try {
+        const { GET } = await import("@/app/api/drift-data/route");
+        const resp = await GET(makeReq("?ftmo_tf=2h-trend-v5-quartz-lite-r28"));
+        expect(resp.status).toBe(403);
+      } finally {
+        vi.doUnmock("@/lib/supabase-server");
+      }
+    });
+
+    it("FTMO_MONITOR_AUTH_BYPASS=1 still allows slug reads (single-owner VPS)", async () => {
+      process.env.FTMO_MONITOR_AUTH_BYPASS = "1";
+      try {
+        const { GET } = await import("@/app/api/drift-data/route");
+        const resp = await GET(makeReq("?ftmo_tf=2h-trend-v5-quartz-lite-r28"));
+        expect(resp.status).toBe(200);
+      } finally {
+        delete process.env.FTMO_MONITOR_AUTH_BYPASS;
+      }
+    });
+  });
 });

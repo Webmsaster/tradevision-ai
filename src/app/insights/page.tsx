@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useMemo } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AIInsight } from "@/types/trade";
 import { generateAllInsights } from "@/utils/aiAnalysis";
 import { useTradeStorage } from "@/hooks/useTradeStorage";
@@ -9,13 +9,80 @@ import InsightCard from "@/components/InsightCard";
 
 type FilterType = "all" | "warning" | "positive" | "neutral";
 
+const FILTER_TYPES: ReadonlyArray<FilterType> = [
+  "all",
+  "warning",
+  "positive",
+  "neutral",
+];
+
+function isFilterType(v: string | null): v is FilterType {
+  return v !== null && (FILTER_TYPES as ReadonlyArray<string>).includes(v);
+}
+
+// R67-Final: useSearchParams() forces client-side bailout — Next requires
+// it under a Suspense boundary so the page can pre-render in the static
+// shell.
 export default function InsightsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="page-container">
+          <div className="page-header">
+            <h1 className="page-title">AI Insights</h1>
+            <p className="page-subtitle">
+              Pattern detection and trading behavior analysis
+            </p>
+          </div>
+        </div>
+      }
+    >
+      <InsightsPageInner />
+    </Suspense>
+  );
+}
+
+function InsightsPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { trades } = useTradeStorage();
-  const [activeFilter, setActiveFilter] = useState<FilterType>("all");
-  const [selectedCategory, setSelectedCategory] = useState<string>("");
-  const [dateFrom, setDateFrom] = useState<string>("");
-  const [dateTo, setDateTo] = useState<string>("");
+
+  // R67-Final: read initial filter state from URL so reload preserves it.
+  // Falls back to defaults if no params present, keeping behaviour
+  // equivalent to the pre-persistence version.
+  const [activeFilter, setActiveFilter] = useState<FilterType>(() => {
+    const v = searchParams.get("filter");
+    return isFilterType(v) ? v : "all";
+  });
+  const [selectedCategory, setSelectedCategory] = useState<string>(
+    () => searchParams.get("category") ?? "",
+  );
+  const [dateFrom, setDateFrom] = useState<string>(
+    () => searchParams.get("dateFrom") ?? "",
+  );
+  const [dateTo, setDateTo] = useState<string>(
+    () => searchParams.get("dateTo") ?? "",
+  );
+
+  // R67-Final: push filter state back into the URL so reload preserves it.
+  // Default values (filter=all, empty category, empty dates) emit no
+  // params — URL stays clean and behaviour-equivalent when nothing is set.
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (activeFilter !== "all") params.set("filter", activeFilter);
+    if (selectedCategory) params.set("category", selectedCategory);
+    if (dateFrom) params.set("dateFrom", dateFrom);
+    if (dateTo) params.set("dateTo", dateTo);
+    const qs = params.toString();
+    const next = qs ? `/insights?${qs}` : "/insights";
+    const current =
+      typeof window !== "undefined"
+        ? window.location.pathname + window.location.search
+        : "";
+    if (current !== next) {
+      router.replace(next, { scroll: false });
+    }
+  }, [activeFilter, selectedCategory, dateFrom, dateTo, router]);
 
   const handleViewTrades = (tradeIds: string[]) => {
     const params = new URLSearchParams({ highlight: tradeIds.join(",") });

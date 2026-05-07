@@ -27,6 +27,22 @@ export interface Trade {
   marketCondition?: "trending" | "ranging" | "volatile" | "calm";
   screenshot?: string; // base64 data URL of an attached chart screenshot
   accountId?: string; // for multi-account support
+  /**
+   * R67-Final (R15-A3 perf): pre-parsed exitDate epoch-ms cache. Computed
+   * at the storage boundary (`dbToTrade`) and lazy-populated by
+   * `loadTrades()` for localStorage payloads. Optional so existing
+   * localStorage data stays compatible. NEVER persisted — `tradeToDb`
+   * omits this field, and `saveTrades` writes the trade as-is (the cache
+   * is reconstituted on next load). Consumers that sort/format dates can
+   * prefer this cached number over `new Date(t.exitDate).getTime()` to
+   * avoid re-parsing on every render.
+   */
+  exitMs?: number;
+  /**
+   * R67-Final (R15-A3 perf): pre-parsed entryDate epoch-ms cache.
+   * See `exitMs` for semantics.
+   */
+  entryMs?: number;
 }
 
 /**
@@ -51,7 +67,19 @@ export function isValidTrade(obj: unknown): obj is Trade {
     (Array.isArray(t.tags) && t.tags.every((x) => typeof x === "string"));
   const accountIdValid =
     t.accountId === undefined || typeof t.accountId === "string";
+  // R67-Final (R15-A3 perf): exitMs/entryMs are an OPTIONAL pre-parsed
+  // numeric cache populated at the storage boundary. Tolerate either
+  // missing or finite-number values; reject anything else so corrupt
+  // payloads can't poison sorts/formatters.
+  const exitMsValid =
+    t.exitMs === undefined ||
+    (typeof t.exitMs === "number" && Number.isFinite(t.exitMs));
+  const entryMsValid =
+    t.entryMs === undefined ||
+    (typeof t.entryMs === "number" && Number.isFinite(t.entryMs));
   return (
+    exitMsValid &&
+    entryMsValid &&
     typeof t.id === "string" &&
     typeof t.pair === "string" &&
     (t.direction === "long" || t.direction === "short") &&
