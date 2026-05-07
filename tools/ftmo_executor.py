@@ -108,6 +108,56 @@ PING_LOT_SIZE = float(os.environ.get("FTMO_PING_LOT", "0.01"))  # tiny lot
 # DL on a single stop-out. Lowered to 0.05 to match the comment.
 RISK_FRAC_HARD_CAP = float(os.environ.get("FTMO_RISK_HARD_CAP", "0.05"))
 
+
+# R67-r12 audit fix (Hedge-Mode close-deal codes): closing deals on FTMO
+# Hedge-Mode accounts can have entry codes DEAL_ENTRY_INOUT (=2,
+# position-reversal) or DEAL_ENTRY_OUT_BY (=3, close-by-opposite) instead
+# of the default DEAL_ENTRY_OUT (=1). Round 58 already added this to
+# `reconcile_missing_positions`; the audit found the same fix was missing
+# in 5 other sites (yesterday-stats, recent-pnls, circuit-breaker,
+# consistency-rule, close-history-check). Centralised so all paths agree.
+_CLOSE_ENTRY_CODES = (
+    getattr(mt5, "DEAL_ENTRY_OUT", 1),
+    getattr(mt5, "DEAL_ENTRY_INOUT", 2),
+    getattr(mt5, "DEAL_ENTRY_OUT_BY", 3),
+)
+
+
+def _is_close_deal(d) -> bool:  # type: ignore[no-untyped-def]
+    """True if `d` is a position-closing deal (any FTMO mode)."""
+    return getattr(d, "entry", -1) in _CLOSE_ENTRY_CODES
+
+
+# R67-r12 audit fix (ORDER_FILLING_IOC hardcoded): probe the broker-allowed
+# filling modes per symbol so we don't permanently auto-pause when an FTMO
+# crypto symbol rejects IOC. `info.filling_mode` is a bitmask:
+#   bit 0 (1) = SYMBOL_FILLING_FOK
+#   bit 1 (2) = SYMBOL_FILLING_IOC
+# Cache per symbol since we call once per order. Falls through to IOC if
+# the bitmask is unset (treat as legacy hard-coded behaviour) so existing
+# Demo deploys behave identically.
+_FILLING_MODE_CACHE: dict[str, int] = {}
+
+
+def _pick_filling_mode(symbol: str):  # type: ignore[no-untyped-def]
+    """Return the safest order-filling constant for `symbol` based on
+    `mt5.symbol_info(symbol).filling_mode`. Caches per symbol."""
+    cached = _FILLING_MODE_CACHE.get(symbol)
+    if cached is not None:
+        return cached
+    info = mt5.symbol_info(symbol)
+    bitmask = getattr(info, "filling_mode", 0) if info is not None else 0
+    if bitmask & 1:  # FOK preferred — most FTMO crypto symbols
+        chosen = mt5.ORDER_FILLING_FOK
+    elif bitmask & 2:
+        chosen = mt5.ORDER_FILLING_IOC
+    else:
+        # Bitmask unset / unknown → fall back to RETURN (broker queues the
+        # remainder, never rejects on filling-mode mismatch).
+        chosen = getattr(mt5, "ORDER_FILLING_RETURN", mt5.ORDER_FILLING_IOC)
+    _FILLING_MODE_CACHE[symbol] = chosen
+    return chosen
+
 # Auto-pause after N consecutive failed orders (e.g. "no money" cascade).
 # Resets to 0 on the first successful order. Setting to 0 disables.
 ORDER_FAIL_AUTO_PAUSE = int(os.environ.get("FTMO_ORDER_FAIL_PAUSE", "3"))
@@ -1082,7 +1132,7 @@ def _get_yesterday_trade_stats(date_str: str) -> tuple[float, float, float, floa
         day_start = datetime(y, m, d, 0, 0, 0, tzinfo=timezone.utc)
         day_end = datetime(y, m, d, 23, 59, 59, tzinfo=timezone.utc)
         deals = mt5.history_deals_get(day_start, day_end) or []
-        closes = [d for d in deals if getattr(d, "magic", 0) == 231 and getattr(d, "entry", 0) == mt5.DEAL_ENTRY_OUT]
+        closes = [d for d in deals if getattr(d, "magic", 0) == 231 and _is_close_deal(d)]
         if not closes:
             return (0.0, 0.0, 0.0, 0.0, 0)
         profits = [d.profit for d in closes]
@@ -1347,7 +1397,7 @@ def place_market_order(
         "magic": 231,
         "comment": comment[:31],
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        "type_filling": _pick_filling_mode(ftmo_symbol),
     }
     result = mt5.order_send(request)
     if result is None:
@@ -1395,7 +1445,7 @@ def _fit_lot_to_margin(
             "tp": tp_price,
             "deviation": 20,
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": _pick_filling_mode(ftmo_symbol),
         }
         check = check_fn(req)
         if check is None:
@@ -1453,7 +1503,7 @@ def close_position(ticket: int, exit_reason_override: Optional[str] = None) -> b
             deals = mt5.history_deals_get(since, now) or []
             # entry deal has type=DEAL_ENTRY_IN; closing deal has DEAL_ENTRY_OUT.
             for d in deals:
-                if getattr(d, "position_id", None) == ticket and getattr(d, "entry", None) == mt5.DEAL_ENTRY_OUT:
+                if getattr(d, "position_id", None) == ticket and _is_close_deal(d):
                     return True
         except Exception as e:
             log_event("close_position_history_check_failed", ticket=ticket, error=str(e))
@@ -1480,7 +1530,7 @@ def close_position(ticket: int, exit_reason_override: Optional[str] = None) -> b
         "magic": 231,
         "comment": "iter231 close",
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        "type_filling": _pick_filling_mode(pos.symbol),
     }
     result = mt5.order_send(request)
     ok = result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
@@ -1666,8 +1716,28 @@ def maybe_place_ping_trade() -> None:
                         "type": mt5.ORDER_TYPE_SELL, "position": pos.ticket,
                         "price": tick2.bid, "deviation": 20, "magic": 232,
                         "comment": "iter236-ping-close",
+                        "type_filling": _pick_filling_mode(sym),
                     }
-                    mt5.order_send(close_request)
+                    # R67-r12 audit fix: check the close-leg result. Was
+                    # silently ignored, leaving an SL-less magic=232 ping
+                    # position open at MT5 if the close requoted/rejected.
+                    # We log it + leave the marker in place so the next
+                    # boot's reconcile picks it up.
+                    close_res = mt5.order_send(close_request)
+                    if close_res is None or getattr(close_res, "retcode", None) != mt5.TRADE_RETCODE_DONE:
+                        log_event(
+                            "ping_close_failed",
+                            ticket=getattr(pos, "ticket", None),
+                            retcode=getattr(close_res, "retcode", None),
+                        )
+                        tg_send(
+                            "⚠️ <b>Ping-close failed</b>\n"
+                            f"ticket <code>{getattr(pos, 'ticket', '?')}</code> "
+                            f"retcode={getattr(close_res, 'retcode', None)} — orphan ping position."
+                        )
+                        # Don't append to ping_dates and don't clear the
+                        # marker — boot reconcile will pick it up.
+                        return
             log_event("ping_trade_placed", date=today, symbol=sym, lot=PING_LOT_SIZE)
             state["ping_dates"].append(today)
             # Clear marker AFTER state is durably mutated; reconcile-on-boot
@@ -1994,7 +2064,17 @@ def _process_pending_signals_locked() -> None:
             tg_send(f"❌ <b>ORDER FAILED</b>\n{html_escape(sig['assetSymbol'])}\nError: {html_escape(result.error or 'unknown')}")
             # BUGFIX 2026-04-28: retry transient errors instead of silently dropping.
             err_str = (result.error or "").lower()
-            retryable_keywords = ["timeout", "no money", "requote", "off quotes", "trade disabled", "10027"]
+            # R67-r12 audit fix: add filling-mode mismatch keys (retcode 10030
+            # / "invalid order filling type"). Without this every order on a
+            # FOK-only crypto symbol failed once and was permanently dropped,
+            # quickly tripping `_bump_order_fail_counter` → auto-pause. The
+            # `_pick_filling_mode()` probe avoids the failure on the happy
+            # path, but if the broker briefly disagrees we still get a retry.
+            retryable_keywords = [
+                "timeout", "no money", "requote", "off quotes",
+                "trade disabled", "10027",
+                "invalid order filling", "unsupported filling", "10030",
+            ]
             is_retryable = any(k in err_str for k in retryable_keywords)
             retry_count = sig.get("_retryCount", 0)
             if is_retryable and retry_count < 5:
@@ -2165,7 +2245,7 @@ def _close_partial_lot(ticket: int, close_lot: float, reason: str) -> bool:
         "magic": 231,
         "comment": f"r11 {reason}"[:31],
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        "type_filling": _pick_filling_mode(pos.symbol),
     }
     result = mt5.order_send(request)
     ok = result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
@@ -2612,18 +2692,53 @@ def _emergency_close_all_positions(reason: str) -> None:
     OPEN_POS_PATH so the next loop retries — wiping unconditionally meant
     a single requote/timeout left an orphan position at MT5 with no
     further trail/time-exit/close attempt → equity could still breach.
+
+    R67-r12 audit fix (HIGH severity — affects PASSLOCK Pass-Lock guarantee):
+    primary source-of-truth is now MT5, not OPEN_POS_PATH. The JSON file can
+    be stale in two scenarios:
+      1. crash between order_send and manage_open_positions writeback,
+      2. PASSLOCK fires inside process_pending_signals before the next
+         manage-cycle wrote the new ticket to OPEN_POS_PATH.
+    With the old JSON-only iteration, fresh MT5 positions were missed,
+    state["target_hit"]=True still set, and the Pass-Lock-Mode bouted out
+    while live positions could still drag equity below target. We now
+    iterate `mt5.positions_get(magic=231)` and merge JSON metadata for the
+    Telegram pretty-print.
     """
-    open_positions = read_json(OPEN_POS_PATH, {"positions": []})
+    mt5_live = mt5.positions_get() or []
+    bot_positions = [p for p in mt5_live if getattr(p, "magic", 0) == 231]
+    open_json = read_json(OPEN_POS_PATH, {"positions": []}).get("positions", [])
+    json_by_ticket = {
+        p["ticket"]: p for p in open_json if isinstance(p, dict) and "ticket" in p
+    }
     closed = 0
     failed_positions: list[dict] = []
-    # R67 audit fix: pass explicit exit_reason so the drift-monitor pipeline
-    # doesn't tag emergency closes as TP/SL hits with bogus slippage.
+    # Pass explicit exit_reason so the drift-monitor pipeline doesn't tag
+    # emergency closes as TP/SL hits with bogus slippage.
     emergency_reason_tag = f"emergency:{reason[:32]}"
-    for pos in open_positions.get("positions", []):
-        if close_position(pos["ticket"], exit_reason_override=emergency_reason_tag):
+    for mt5_pos in bot_positions:
+        ticket = mt5_pos.ticket
+        meta = json_by_ticket.get(
+            ticket,
+            {
+                "ticket": ticket,
+                "signalAsset": getattr(mt5_pos, "symbol", "unknown"),
+            },
+        )
+        if close_position(ticket, exit_reason_override=emergency_reason_tag):
             closed += 1
         else:
-            failed_positions.append(pos)
+            failed_positions.append(meta)
+    # Also keep any JSON-tracked tickets whose MT5 record disappeared but
+    # we couldn't verify closure for (defensive — manage_open_positions
+    # treats `position_gone` as success, but if MT5 was unreachable we
+    # don't want to silently drop the row).
+    mt5_ticket_set = {p.ticket for p in bot_positions}
+    for ticket, meta in json_by_ticket.items():
+        if ticket not in mt5_ticket_set:
+            # Position no longer at MT5 — was already closed (SL/TP/manual).
+            # Drop from retry list.
+            continue
     if closed > 0:
         log_event("emergency_close", reason=reason, closed=closed, failed=len(failed_positions))
         tg_send(f"🚨 <b>Emergency Close {closed} positions</b>\nReason: {html_escape(reason)}")
@@ -2700,7 +2815,7 @@ def sync_account_state() -> None:
     )
     recent_pnls: list[float] = []
     if deals:
-        closes = [d for d in deals if d.magic == 231 and d.entry == mt5.DEAL_ENTRY_OUT]
+        closes = [d for d in deals if d.magic == 231 and _is_close_deal(d)]
         closes.sort(key=lambda d: d.time)
         for d in closes[-20:]:
             recent_pnls.append(d.profit / CHALLENGE_START_BALANCE)
@@ -2855,7 +2970,7 @@ def check_circuit_breaker() -> Optional[str]:
     if not deals:
         return None
 
-    closes = [d for d in deals if d.magic == 231 and d.entry == mt5.DEAL_ENTRY_OUT]
+    closes = [d for d in deals if d.magic == 231 and _is_close_deal(d)]
     closes.sort(key=lambda d: d.time)
 
     # Count consecutive losses from most recent
@@ -2989,7 +3104,7 @@ def check_consistency_rule() -> None:
     )
     if not deals:
         return
-    closes = [d for d in deals if d.magic == 231 and d.entry == mt5.DEAL_ENTRY_OUT]
+    closes = [d for d in deals if d.magic == 231 and _is_close_deal(d)]
     wins = [d for d in closes if d.profit > 0]
     if not wins:
         return

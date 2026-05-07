@@ -28,6 +28,7 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
   writeSync,
@@ -144,6 +145,25 @@ describe("ftmo signal alert", { timeout: 60_000 }, () => {
     const alert = detectLiveSignal(eth, btc, news);
     const rendered = renderAlert(alert);
     console.log(rendered);
+
+    // R67-r12 audit fix: rotate signal-alerts.log when it crosses 5 MB.
+    // Cron runs every 4h ≈ 6×/day; renderAlert() output ~500 B per run plus
+    // occasional multi-line signals → on a multi-year deploy the file grew
+    // unbounded. Mirrors the rotate-on-write pattern used by
+    // tools/ftmo_executor.py:_rotate_jsonl_if_needed().
+    try {
+      const SIZE_LIMIT_BYTES = 5 * 1024 * 1024;
+      if (existsSync(LOG_PATH) && statSync(LOG_PATH).size > SIZE_LIMIT_BYTES) {
+        const stamp = new Date()
+          .toISOString()
+          .replace(/[:.]/g, "-")
+          .replace(/Z$/, "");
+        renameSync(LOG_PATH, `${LOG_PATH}.${stamp}.rot`);
+      }
+    } catch (e) {
+      // Rotation is best-effort — never block the alert log on FS issues.
+      console.warn("[signal-alert] log rotation failed:", e);
+    }
 
     // Log every run
     appendFileSync(LOG_PATH, `\n${"=".repeat(60)}\n${rendered}\n`, "utf8");
