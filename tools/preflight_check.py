@@ -115,14 +115,35 @@ def check_account_id() -> tuple[bool, str]:
     return True, aid
 
 
-@check("FTMO_EXPECTED_LOGIN env var (R57 safety)", blocking=False)
-def check_expected_login() -> tuple[bool, str]:
-    el = os.environ.get("FTMO_EXPECTED_LOGIN")
-    if not el:
-        return False, "missing — bot will trade on whichever MT5 account is logged in (RISKY)"
-    if not el.isdigit():
-        return False, f"must be integer (FTMO MT5 login is numeric): {el!r}"
-    return True, f"{el} — bot will exit if MT5 connects to different account"
+# R67-R17 fix #3: gate this check as BLOCKING when FTMO_LIVE=1 so a
+# missing FTMO_EXPECTED_LOGIN cannot ship to a real funded account. In
+# demo/dev mode (FTMO_LIVE unset or 0) it stays a non-blocking warning.
+def check_expected_login() -> Result:
+    blocking = os.environ.get("FTMO_LIVE") == "1"
+    name = "FTMO_EXPECTED_LOGIN env var (R57 safety)"
+    try:
+        el = os.environ.get("FTMO_EXPECTED_LOGIN")
+        if not el:
+            msg = (
+                "missing — bot will trade on whichever MT5 account is logged in (RISKY)"
+                + (" [BLOCKING because FTMO_LIVE=1]" if blocking else "")
+            )
+            return Result(name, False, msg, blocking=blocking)
+        if not el.isdigit():
+            return Result(
+                name,
+                False,
+                f"must be integer (FTMO MT5 login is numeric): {el!r}",
+                blocking=blocking,
+            )
+        return Result(
+            name,
+            True,
+            f"{el} — bot will exit if MT5 connects to different account",
+            blocking=blocking,
+        )
+    except Exception as e:
+        return Result(name, False, f"check threw: {e}", blocking=blocking)
 
 
 @check("FTMO_START_BALANCE env var", blocking=True)

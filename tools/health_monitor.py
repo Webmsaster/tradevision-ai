@@ -37,6 +37,13 @@ from pathlib import Path
 from urllib import request as urlreq
 from urllib.error import HTTPError, URLError
 
+# R67-R17: cross-process file lock for alert-state mutex (prevents duplicate
+# Telegram alerts when multiple health_monitor cron jobs race on the same
+# state-dir). process_lock.file_lock writes a token sentinel and is safe
+# across processes.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from process_lock import file_lock  # noqa: E402
+
 
 # =============================================================================
 # Config
@@ -78,7 +85,16 @@ def _alert_state_path() -> Path:
     return _state_dir() / ".health_alerts.json"
 
 
+def _alert_lock_path() -> Path:
+    """Sentinel for cross-process mutex on the alert-state file (R67-R17)."""
+    return _state_dir() / ".health_alerts.lock"
+
+
 def _read_alert_state() -> dict[str, float]:
+    """Read alert state. Caller must hold ``file_lock(_alert_lock_path())``
+    when pairing this with a subsequent _write_alert_state to avoid lost
+    updates between concurrent health_monitor processes (R67-R17 fix #1).
+    """
     p = _alert_state_path()
     if not p.exists():
         return {}
@@ -89,40 +105,69 @@ def _read_alert_state() -> dict[str, float]:
 
 
 def _write_alert_state(state: dict[str, float]) -> None:
+    """Write alert state. Caller must hold ``file_lock(_alert_lock_path())``
+    (R67-R17 fix #1)."""
     p = _alert_state_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(state, indent=2))
 
 
 def _alert(error_type: str, msg: str) -> bool:
-    """Send Telegram alert if not throttled. Returns True if sent."""
-    state = _read_alert_state()
-    last = state.get(error_type, 0)
-    if time.time() - last < ALERT_COOLDOWN_SEC:
-        print(f"[health-monitor] suppressed {error_type} (last alert {int((time.time()-last)/60)}min ago)")
-        return False
+    """Send Telegram alert if not throttled. Returns True if sent.
+
+    R67-R17 fixes:
+      #1: read+write of alert-state guarded by cross-process file_lock so
+          two concurrent health_monitor runs cannot both pass the cooldown
+          check and double-fire.
+      #2: state-update happens ONLY when Telegram delivery actually
+          succeeded (HTTP 200). Previously a transient Telegram failure
+          would still bump last-alert timestamp, suppressing re-alerts for
+          30 min despite no alert being delivered.
+    """
+    # Phase 1: check cooldown + send. Hold lock only across read so two
+    # concurrent runs see consistent state at the cooldown decision point.
+    with file_lock(_alert_lock_path(), timeout_sec=2.0, stale_sec=30.0):
+        state = _read_alert_state()
+        last = state.get(error_type, 0)
+        if time.time() - last < ALERT_COOLDOWN_SEC:
+            print(f"[health-monitor] suppressed {error_type} (last alert {int((time.time()-last)/60)}min ago)")
+            return False
+
     token, chat = _telegram_creds()
     if not token or not chat:
+        # No creds: still record so we don't print the same message every minute.
+        # This is intentional — printing-only mode is local-debug, not delivery.
+        with file_lock(_alert_lock_path(), timeout_sec=2.0, stale_sec=30.0):
+            state = _read_alert_state()
+            state[error_type] = time.time()
+            _write_alert_state(state)
         print(f"[health-monitor] {error_type}: {msg} (no Telegram creds — printing only)")
-        state[error_type] = time.time()
-        _write_alert_state(state)
         return False
+
     aid = os.environ.get("FTMO_ACCOUNT_ID", "?")
     full_msg = f"🚨 [{aid}] {msg}"
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     data = json.dumps({"chat_id": chat, "text": full_msg}).encode("utf-8")
     req = urlreq.Request(url, data=data, headers={"Content-Type": "application/json"})
+
+    sent = False
     try:
         with urlreq.urlopen(req, timeout=5) as resp:
             if resp.status == 200:
-                state[error_type] = time.time()
-                _write_alert_state(state)
-                print(f"[health-monitor] alerted: {error_type}")
-                return True
+                sent = True
     except (HTTPError, URLError) as e:
         print(f"[health-monitor] Telegram failed: {_redact(str(e))}")
-    state[error_type] = time.time()
-    _write_alert_state(state)
+
+    if sent:
+        # Phase 2: only persist last-alert timestamp on confirmed delivery.
+        with file_lock(_alert_lock_path(), timeout_sec=2.0, stale_sec=30.0):
+            state = _read_alert_state()
+            state[error_type] = time.time()
+            _write_alert_state(state)
+        print(f"[health-monitor] alerted: {error_type}")
+        return True
+
+    # Delivery failed → leave state untouched so next run will retry.
     return False
 
 

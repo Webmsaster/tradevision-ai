@@ -44,7 +44,7 @@ let suppressUntilTs = 0;
 let suppressLogged = false;
 let consecutiveAuthFailures = 0;
 
-function redactToken(s: string): string {
+export function redactToken(s: string): string {
   return s.replace(TOKEN_REDACT_RE, "/bot<REDACTED>");
 }
 
@@ -222,7 +222,7 @@ export function htmlEscape(s: string): string {
  * Closes any tags still open at the truncation point so Telegram accepts
  * the message.
  */
-function safeTruncateHtml(text: string, maxLen: number): string {
+export function safeTruncateHtml(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text;
   let cut = maxLen;
   // Pull cut point back to before any "<" that opens an unclosed tag.

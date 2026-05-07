@@ -32,5 +32,15 @@ export async function createServerSupabaseClient() {
         }
       },
     },
+    // R67-r17 audit fix (HIGH): force Secure + SameSite=Lax on Supabase
+    // auth cookies in production. Default `httpOnly:false` is required for
+    // PKCE refresh in browser; we don't override it. Without `secure`,
+    // tokens travel over plain HTTP if a misconfigured domain serves the
+    // app un-TLS'd, exposing them to network attackers.
+    cookieOptions: {
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+    },
   });
 }

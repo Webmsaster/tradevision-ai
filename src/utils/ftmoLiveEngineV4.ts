@@ -821,7 +821,28 @@ function processPositionExit(
   }
 
   // 2b. Multi-level PTP.
+  // R67-r17 audit fix (HIGH): bring multi-level PTP to parity with the
+  // single-tier branch above. Recompute stopHit here because the
+  // single-tier `if (cfg.partialTakeProfit)` block above scopes its
+  // local stopHit to that branch.
+  //   1. Same-bar stop-guard. If stop also hit on this bar without a
+  //      gap-past-the-PTP-trigger, STOP wins — pessimistic engine
+  //      convention (matches single-tier line 808 + backtest 4228).
+  //      Without this, a bar that wicks up to PTP then crashes through
+  //      stop greedily booked partial gains AND took the stop loss.
+  //   2. After at least one level realises, auto-move stop to BE
+  //      (direction-aware) and set `pos.beActive=true`. Without this,
+  //      a multi-level config could fire all levels, lock partial
+  //      gains, then book a full -R loss on the remaining size when
+  //      the original stop fires.
+  //   3. Reset chandelier highWatermark to candle.close after partial
+  //      realisation (parity with line 819).
   if (cfg.partialTakeProfitLevels && cfg.partialTakeProfitLevels.length > 0) {
+    const stopHitMulti =
+      pos.direction === "long"
+        ? candle.low <= pos.stopPrice
+        : candle.high >= pos.stopPrice;
+    let realisedAny = false;
     while (pos.ptpLevelIdx < cfg.partialTakeProfitLevels.length) {
       const lvl = cfg.partialTakeProfitLevels[pos.ptpLevelIdx];
       const triggerPrice =
@@ -833,8 +854,26 @@ function processPositionExit(
           ? candle.high >= triggerPrice
           : candle.low <= triggerPrice;
       if (!lvlHit) break;
+      // Stop-guard: if stop also hit and we did not gap past the trigger,
+      // stop wins for THIS level (and all subsequent levels — they would
+      // require a higher wick than the one that already ended the trade).
+      const gapPastLvl =
+        pos.direction === "long"
+          ? candle.open >= triggerPrice
+          : candle.open <= triggerPrice;
+      if (stopHitMulti && !gapPastLvl) break;
       pos.ptpLevelsRealized += lvl!.closeFraction * lvl!.triggerPct;
       pos.ptpLevelIdx++;
+      realisedAny = true;
+    }
+    if (realisedAny) {
+      if (pos.direction === "long") {
+        if (pos.entryPrice > pos.stopPrice) pos.stopPrice = pos.entryPrice;
+      } else {
+        if (pos.entryPrice < pos.stopPrice) pos.stopPrice = pos.entryPrice;
+      }
+      pos.beActive = true;
+      pos.highWatermark = candle.close;
     }
   }
 

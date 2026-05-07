@@ -119,6 +119,16 @@ export async function middleware(request: NextRequest) {
         );
       },
     },
+    // R67-r17 audit fix (HIGH): force Secure + SameSite=Lax in production.
+    // Without `secure`, Supabase auth cookies travel over plain HTTP if a
+    // misconfigured domain serves un-TLS'd, exposing tokens to network
+    // attackers. httpOnly remains the SSR default (Supabase needs JS read
+    // for PKCE refresh).
+    cookieOptions: {
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+    },
   });
 
   // Refresh the session — this is the primary purpose of this middleware
