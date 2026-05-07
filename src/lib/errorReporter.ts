@@ -152,6 +152,44 @@ export const __resetClientRateBucketForTests = (): void => {
   clientRateBucket = [];
 };
 
+/**
+ * R67-Final (2026-05-07): if Sentry was initialised on the page (the
+ * client config sets `(window as any).__SENTRY__`), delegate the report
+ * to Sentry's SDK instead of POSTing to our in-house `/api/log-error`.
+ *
+ * The check is structural — we don't `import @sentry/nextjs` here so
+ * call-sites of this module stay tree-shake-friendly when Sentry is
+ * not enabled. We dynamically import only when the SDK is present.
+ */
+function sentryLoaded(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    !!(window as unknown as { __SENTRY__?: unknown }).__SENTRY__
+  );
+}
+
+async function delegateToSentry(payload: ErrorReportPayload): Promise<boolean> {
+  try {
+    const Sentry = await import("@sentry/nextjs");
+    const ctx = {
+      tags: payload.tags,
+      extra: payload.extra,
+      level: payload.level as "fatal" | "error" | "warning" | "info" | "debug",
+    };
+    if (payload.type === "exception") {
+      const err = new Error(payload.message);
+      if (payload.name) err.name = payload.name;
+      if (payload.stack) err.stack = payload.stack;
+      Sentry.captureException(err, ctx);
+    } else {
+      Sentry.captureMessage(payload.message, ctx);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function transmit(payload: ErrorReportPayload): Promise<void> {
   // Dev / test: just log loudly. Don't open network at all.
   if (IS_DEV || IS_TEST) {
@@ -167,6 +205,15 @@ async function transmit(payload: ErrorReportPayload): Promise<void> {
       );
     }
     return;
+  }
+
+  // R67-Final: if Sentry is loaded on the page, delegate to it. This
+  // is the migration switch — when DSN is set the SDK takes over the
+  // pipeline; when it's unset the existing /api/log-error path runs.
+  if (sentryLoaded()) {
+    const ok = await delegateToSentry(payload);
+    if (ok) return;
+    // fall through to sendBeacon if the dynamic import failed
   }
 
   // R67-RR5-Round2: drop excess reports before they hit sendBeacon —

@@ -19,6 +19,7 @@ import { createServerSupabaseClient } from "@/lib/supabase-server";
 import { isPlaceholderSupabaseUrl } from "@/lib/supabase";
 import { isRateLimited } from "@/utils/distributedRateLimit";
 import { pragueDay } from "@/utils/ftmoDaytrade24h";
+import { canUserReadSlug } from "@/lib/userFtmoAccounts";
 
 // ---------------------------------------------------------------------------
 // Config / constants
@@ -114,6 +115,12 @@ async function isAuthenticated(): Promise<{
   ok: boolean;
   reason?: string;
   email?: string | null;
+  userId?: string | null;
+  // R29 (2026-05-07): expose the live Supabase client so the GET handler
+  // can run the multi-tenant slug-mapping lookup as a SECOND chance after
+  // the admin-email FAST path. Returning it here avoids re-creating the
+  // SSR-cookied client (which would re-read cookies, slightly wasteful).
+  supabase?: Awaited<ReturnType<typeof createServerSupabaseClient>>;
 }> {
   if (
     process.env.FTMO_MONITOR_AUTH_BYPASS === "1" ||
@@ -150,7 +157,12 @@ async function isAuthenticated(): Promise<{
   try {
     const { data, error } = await supabase.auth.getUser();
     if (error || !data?.user) return { ok: false };
-    return { ok: true, email: data.user.email ?? null };
+    return {
+      ok: true,
+      email: data.user.email ?? null,
+      userId: data.user.id ?? null,
+      supabase,
+    };
   } catch {
     return { ok: false };
   }
@@ -679,16 +691,29 @@ export async function GET(req: NextRequest) {
 
   const tfSlug = req.nextUrl.searchParams.get("ftmo_tf");
   // R67-Final (R14-A7, 2026-05-07): cross-tenant slug enumeration close-out.
-  // Slug-based reads expose any state-dir on disk via name-guessing — restrict
-  // them to the admin email. Non-admin authenticated users can still read
-  // the default state-dir (no `?ftmo_tf=` param), which is the bot's own
-  // FTMO_STATE_DIR. Single-owner-VPS pattern; SaaS multi-tenant would need
-  // a `user_ftmo_accounts` mapping table (deferred).
+  // Multi-tenant SaaS users — admin sees all, regular users see only the
+  // slugs they're explicitly mapped to.
+  //
+  // FAST path: admin-email match (`FTMO_ADMIN_EMAIL`) or env-based bypass
+  //            for single-owner VPS / no-auth-backend deploys.
+  // SECOND chance (R29): if the FAST path fails AND tfSlug is provided,
+  //            consult the `user_ftmo_accounts` mapping table. RLS keeps
+  //            tenants isolated; a missing migration fails CLOSED (helper
+  //            returns false on any DB error).
+  // OTHERWISE: 403. Non-admin users without a mapping can still read the
+  //            default state-dir (no `?ftmo_tf=` param) which is the bot's
+  //            own FTMO_STATE_DIR.
   if (tfSlug && !canReadArbitrarySlug(auth)) {
-    return NextResponse.json(
-      { error: "forbidden" },
-      { status: 403, headers: { "Cache-Control": "no-store" } },
-    );
+    let mappedAllowed = false;
+    if (auth.userId && auth.supabase) {
+      mappedAllowed = await canUserReadSlug(auth.userId, tfSlug, auth.supabase);
+    }
+    if (!mappedAllowed) {
+      return NextResponse.json(
+        { error: "forbidden" },
+        { status: 403, headers: { "Cache-Control": "no-store" } },
+      );
+    }
   }
   const resolved = resolveStateDir(tfSlug);
   if (!resolved) {
