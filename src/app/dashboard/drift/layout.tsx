@@ -8,6 +8,12 @@
  */
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
+import type { Metadata } from "next";
+
+// R67-r20 audit fix: noindex meta even when env-flag gate is open.
+export const metadata: Metadata = {
+  robots: { index: false, follow: false },
+};
 
 export default function DriftDashboardLayout({
   children,

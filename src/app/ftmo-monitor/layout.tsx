@@ -11,6 +11,14 @@
  */
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
+import type { Metadata } from "next";
+
+// R67-r20 audit fix: explicit noindex for the monitor page even when the
+// env-flag gate is open. Robots.txt R15 already disallows the path; the
+// meta tag covers crawlers that ignore robots.txt.
+export const metadata: Metadata = {
+  robots: { index: false, follow: false },
+};
 
 export default function FtmoMonitorLayout({
   children,
