@@ -40,6 +40,20 @@ function _warnLeverageFallbackOnce(): void {
   }
 }
 
+// R67-r12: same once-per-process pattern for Sharpe-low-confidence warn.
+// Was previously fired on every render → console-spam in dashboards that
+// re-mount Stats sections frequently.
+let _sharpeShortSpanWarned = false;
+function _warnSharpeShortSpanOnce(): void {
+  if (_sharpeShortSpanWarned) return;
+  _sharpeShortSpanWarned = true;
+  if (typeof console !== "undefined") {
+    console.warn(
+      "[calculateSharpeRatio] sample <36 days; annualization noisy. Sharpe may be unreliable.",
+    );
+  }
+}
+
 /**
  * Calculate PnL and PnL percentage for a trade based on direction, prices,
  * quantity, leverage, and fees.
@@ -364,9 +378,7 @@ export function calculateSharpeRatio(trades: Trade[]): number {
     // Below ~36 days the inferred rate is too noisy; keep the default and
     // emit a once-per-call warning so callers know the result is unreliable.
     if (years < 0.1) {
-      console.warn(
-        "[calculateSharpeRatio] sample <36 days; annualization noisy. Sharpe may be unreliable.",
-      );
+      _warnSharpeShortSpanOnce();
     }
     if (years >= 0.1) {
       // Use exitTimes.length (the validated, finite-date count) — not

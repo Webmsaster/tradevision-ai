@@ -560,7 +560,11 @@ function EquityCard({ data }: { data: DriftData }) {
         <Stat
           label="Challenge peak"
           value={fmtUsd(e.peakUsd)}
-          sub={e.peakAt ? `at ${new Date(e.peakAt).toLocaleString()}` : "—"}
+          sub={
+            e.peakAt
+              ? `at ${new Date(e.peakAt).toLocaleString("en-US", { timeZone: "UTC" })} UTC`
+              : "—"
+          }
         />
         <Stat
           label="Daily-loss cap (-5%)"

@@ -62,6 +62,7 @@ export default function ReportPage() {
     year: "numeric",
     month: "long",
     day: "numeric",
+    timeZone: "UTC",
   });
 
   return (

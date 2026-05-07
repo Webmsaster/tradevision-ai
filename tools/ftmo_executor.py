@@ -1459,10 +1459,16 @@ def close_position(ticket: int, exit_reason_override: Optional[str] = None) -> b
             log_event("close_position_history_check_failed", ticket=ticket, error=str(e))
         return False
     pos = positions[0]
-    info = mt5.symbol_info(pos.symbol)
-    if info is None:
+    # R67-r12: source close-price from live tick (parity with entry-path
+    # R67-r11 fix). symbol_info().bid/ask can be 0 on weekend/market-closed
+    # gaps → MT5 retcode 10015 "Invalid price" or worst-case match on stale
+    # quote. symbol_info_tick() reflects current L1; refuse the close if no
+    # tick is available (caller will retry on next polling cycle).
+    tick = mt5.symbol_info_tick(pos.symbol)
+    if tick is None or tick.bid <= 0 or tick.ask <= 0:
+        log_event("close_position_no_tick", ticket=ticket, symbol=pos.symbol)
         return False
-    price = info.ask if pos.type == mt5.POSITION_TYPE_SELL else info.bid
+    price = tick.ask if pos.type == mt5.POSITION_TYPE_SELL else tick.bid
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": pos.symbol,
@@ -1633,7 +1639,8 @@ def maybe_place_ping_trade() -> None:
                 _clear_pending_order_marker(ping_marker)
                 return
             tick = mt5.symbol_info_tick(sym)
-            if tick is None:
+            # R67-r12: bid/ask>0 check (parity with R67-r11 entry-path).
+            if tick is None or tick.bid <= 0 or tick.ask <= 0:
                 log_event("ping_trade_failed", reason="no tick data")
                 _clear_pending_order_marker(ping_marker)
                 return
@@ -1652,7 +1659,7 @@ def maybe_place_ping_trade() -> None:
             for pos in positions:
                 if getattr(pos, "magic", 0) == 232:
                     tick2 = mt5.symbol_info_tick(sym)
-                    if tick2 is None:
+                    if tick2 is None or tick2.bid <= 0 or tick2.ask <= 0:
                         continue
                     close_request = {
                         "action": mt5.TRADE_ACTION_DEAL, "symbol": sym, "volume": pos.volume,
@@ -2141,7 +2148,12 @@ def _close_partial_lot(ticket: int, close_lot: float, reason: str) -> bool:
     close_lot = math.floor(close_lot / step) * step
     if close_lot < vol_min or close_lot >= pos.volume:
         return False  # too small or would close everything
-    price = info.ask if pos.type == mt5.POSITION_TYPE_SELL else info.bid
+    # R67-r12: live-tick price (same fix as close_position_at_market).
+    tick = mt5.symbol_info_tick(pos.symbol)
+    if tick is None or tick.bid <= 0 or tick.ask <= 0:
+        log_event("partial_close_no_tick", ticket=ticket, symbol=pos.symbol)
+        return False
+    price = tick.ask if pos.type == mt5.POSITION_TYPE_SELL else tick.bid
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": pos.symbol,
