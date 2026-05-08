@@ -21,6 +21,34 @@ impl Default for LiveCaps {
     }
 }
 
+/// R29 Round 5 — CVD divergence entry. Bullish: price=lookback-low AND
+/// CVD strictly above lookback-low. Bearish: price=lookback-high AND CVD
+/// strictly below lookback-high. CVD = cumsum(2×takerBuyVolume − volume).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct CvdEntry {
+    #[serde(rename = "lookbackBars")]
+    pub lookback_bars: u32,
+}
+
+/// R29 Round 5 — Volume-Imbalance entry. Long if takerBuyVolume/volume >= longMin
+/// (extreme buyer aggression); short if ratio <= 1 - longMin.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct VolImbalanceEntry {
+    #[serde(rename = "longMin")]
+    pub long_min: f64,
+}
+
+/// R29 Round 5 — Volume-Profile POC mean-reversion entry. POC = close of
+/// highest-volume bar within `windowBars`. Long if price is at least
+/// `minDistFromPocPct` BELOW POC; short if above by same margin.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct VolPocEntry {
+    #[serde(rename = "windowBars")]
+    pub window_bars: u32,
+    #[serde(rename = "minDistFromPocPct")]
+    pub min_dist_from_poc_pct: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AssetConfig {
     pub symbol: String,
@@ -58,6 +86,14 @@ pub struct AssetConfig {
     /// Mirrors backtest line 4667-4694.
     #[serde(default, rename = "swapBpPerDay")]
     pub swap_bp_per_day: Option<f64>,
+
+    // ─── R29 Round 5: order-flow / volume-profile entry triggers ──────
+    #[serde(default, rename = "cvdEntry")]
+    pub cvd_entry: Option<CvdEntry>,
+    #[serde(default, rename = "volImbalanceEntry")]
+    pub vol_imbalance_entry: Option<VolImbalanceEntry>,
+    #[serde(default, rename = "volPocEntry")]
+    pub vol_poc_entry: Option<VolPocEntry>,
 }
 
 /// Cross-asset filter — only allow signals if `symbol` is currently

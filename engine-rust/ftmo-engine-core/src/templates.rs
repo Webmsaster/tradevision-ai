@@ -62,6 +62,9 @@ fn make_assets(symbols: &[&str], risk_frac: f64) -> Vec<AssetConfig> {
             cost_bp: None,
             slippage_bp: None,
             swap_bp_per_day: None,
+            cvd_entry: None,
+            vol_imbalance_entry: None,
+            vol_poc_entry: None,
         })
         .collect()
 }
@@ -206,6 +209,47 @@ pub fn v5_topaz() -> EngineConfig {
     cfg
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// R29 Round 5 — Order-Flow / Volume-Profile templates. Built on the
+// R28_V6 + PASSLOCK base; only the per-asset entry trigger differs.
+// Mirrors `FTMO_DAYTRADE_24H_R28_V6_{CVD,VOLIMB,POC}` in
+// `src/utils/ftmoDaytrade24h.ts:8574-8649`.
+// ─────────────────────────────────────────────────────────────────────
+
+/// R29-R5 CVD divergence (24h lookback on 30m = 48 bars).
+pub fn r28_v6_cvd_template() -> EngineConfig {
+    let mut cfg = r28_v6_passlock();
+    cfg.label = "R28_V6_CVD".into();
+    for asset in cfg.assets.iter_mut() {
+        asset.cvd_entry = Some(crate::config::CvdEntry { lookback_bars: 48 });
+    }
+    cfg
+}
+
+/// R29-R5 Volume-Imbalance: extreme buyer-aggressive bars (≥ 62% taker-buy).
+pub fn r28_v6_volimb_template() -> EngineConfig {
+    let mut cfg = r28_v6_passlock();
+    cfg.label = "R28_V6_VOLIMB".into();
+    for asset in cfg.assets.iter_mut() {
+        asset.vol_imbalance_entry =
+            Some(crate::config::VolImbalanceEntry { long_min: 0.62 });
+    }
+    cfg
+}
+
+/// R29-R5 Volume-Profile POC mean-reversion (48h window, 1.5% offset).
+pub fn r28_v6_poc_template() -> EngineConfig {
+    let mut cfg = r28_v6_passlock();
+    cfg.label = "R28_V6_POC".into();
+    for asset in cfg.assets.iter_mut() {
+        asset.vol_poc_entry = Some(crate::config::VolPocEntry {
+            window_bars: 96,
+            min_dist_from_poc_pct: 0.015,
+        });
+    }
+    cfg
+}
+
 /// Resolve an `FTMO_TF` selector to an `EngineConfig` template. Returns
 /// `None` for unknown selectors — caller should fall back to JSON config.
 pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
@@ -217,6 +261,9 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-titanium" => v5_titanium(),
         "2h-trend-v5-amber" => v5_amber(),
         "2h-trend-v5-topaz" => v5_topaz(),
+        "r28_v6_cvd" => r28_v6_cvd_template(),
+        "r28_v6_volimb" => r28_v6_volimb_template(),
+        "r28_v6_poc" => r28_v6_poc_template(),
         _ => return None,
     })
 }
@@ -231,6 +278,9 @@ pub fn known_selectors() -> &'static [&'static str] {
         "2h-trend-v5-titanium",
         "2h-trend-v5-amber",
         "2h-trend-v5-topaz",
+        "r28_v6_cvd",
+        "r28_v6_volimb",
+        "r28_v6_poc",
     ]
 }
 

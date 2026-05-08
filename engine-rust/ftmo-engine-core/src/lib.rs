@@ -17,6 +17,7 @@ pub mod signals_breakout;
 pub mod signals_forex_mr;
 pub mod signals_meanrev;
 pub mod signals_r28v6;
+pub mod signals_r29r5;
 pub mod signals_trend;
 pub mod signals_v12;
 pub mod sizing;

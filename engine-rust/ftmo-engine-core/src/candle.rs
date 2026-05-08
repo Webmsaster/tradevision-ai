@@ -22,6 +22,12 @@ pub struct Candle {
     pub close_time: i64,
     #[serde(default = "default_is_final", rename = "isFinal")]
     pub is_final: bool,
+    /// Binance kline `taker_buy_base_asset_volume` — used by R29-R5 order-flow
+    /// entries (cvd, volume-imbalance). `None` means the feed didn't carry
+    /// it; detectors must fall back to `volume * 0.5` (matches TS:
+    /// `c.takerBuyVolume ?? c.volume * 0.5`).
+    #[serde(default, rename = "takerBuyVolume")]
+    pub taker_buy_volume: Option<f64>,
 }
 
 fn default_is_final() -> bool {
@@ -39,6 +45,7 @@ impl Candle {
             volume,
             close_time: 0,
             is_final: true,
+            taker_buy_volume: None,
         }
     }
 }
