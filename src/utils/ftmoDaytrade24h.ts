@@ -8219,6 +8219,187 @@ export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK: FtmoDaytrade24hConfig = {
   closeAllOnTargetReached: true,
 };
 
+// R29-iter-A (2026-05-07): PASSLOCK + Step-1-actual target (8% not 10%).
+// RESULT: 44.85% — broke engine semantics, -11pp vs plain PASSLOCK 55.88%.
+// Hypothesis WRONG: passlock-at-8% kills the +10% over-shoot tail that
+// drove PASSLOCK's edge. Don't promote.
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+  profitTarget: 0.08,
+};
+
+// R29-iter-B: pt08 (no PASSLOCK) + lossStreakCooldown.
+// pt08 alone is the hidden best at 56.62%. lscool48 alone is 53.68%.
+// Stacking: skip new entries 24h after 3 losses on top of step-1 target.
+export const FTMO_DAYTRADE_24H_R28_V6_PT08_LSCOOL: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  profitTarget: 0.08,
+  lossStreakCooldown: { afterLosses: 3, cooldownBars: 48 },
+};
+
+// R29-iter-C: pt08 + relaxed peakDrawdownThrottle.
+// R28_V4 base has tight (fromPeak:0.03, factor:0.15) — kicks in early
+// and sizes WAY down. R63 brainstorm proposed (0.07, 0.5) — relax both
+// trigger and dampening so winning streaks don't get throttled.
+export const FTMO_DAYTRADE_24H_R28_V6_PT08_PDR: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  profitTarget: 0.08,
+  peakDrawdownThrottle: { fromPeak: 0.07, factor: 0.5 },
+};
+
+// R29-iter-D: pt08 + tighter tpMult (×0.50 instead of R28_V6's ×0.55).
+// Memory says plateau is 0.55-0.59. Testing at the edge: ×0.50.
+// V6_R28 multiplies the V4 baseline tpPct by 0.55 — go one notch tighter.
+export const FTMO_DAYTRADE_24H_R28_V6_PT08_TIGHTTP: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4,
+  profitTarget: 0.08,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4.assets.map(
+    (a) => ({
+      ...a,
+      tpPct: (a.tpPct ?? 0.05) * 0.5,
+    }),
+  ),
+};
+
+// R29-iter-E: pt08 + asset-prune (drop AAVE — large-TP asset where PTP
+// is forced to fire partial; potentially the highest variance contributor).
+export const FTMO_DAYTRADE_24H_R28_V6_PT08_NO_AAVE: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  profitTarget: 0.08,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.filter(
+    (a) => a.symbol !== "AAVE-TREND",
+  ),
+};
+
+// R29-iter-F: pt08 + drop the 3 large-TP assets where PTP partial fires
+// (AAVE/XRP/LTC). Hypothesis: those are the high-variance wagers; without
+// them the basket is more uniform → smaller equity-curve drawdowns.
+export const FTMO_DAYTRADE_24H_R28_V6_PT08_CORE: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  profitTarget: 0.08,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.filter(
+    (a) =>
+      a.symbol !== "AAVE-TREND" &&
+      a.symbol !== "XRP-TREND" &&
+      a.symbol !== "LTC-TREND",
+  ),
+};
+
+// R29-iter-G: pt08 + drop XRP only.
+export const FTMO_DAYTRADE_24H_R28_V6_PT08_NO_XRP: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  profitTarget: 0.08,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.filter(
+    (a) => a.symbol !== "XRP-TREND",
+  ),
+};
+
+// R29-iter-H: pt08 + drop LTC only.
+export const FTMO_DAYTRADE_24H_R28_V6_PT08_NO_LTC: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  profitTarget: 0.08,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.filter(
+    (a) => a.symbol !== "LTC-TREND",
+  ),
+};
+
+// R29-iter-I: pt08 + only BTC + ETH (the 2 highest-liquidity).
+// Most concentrated; smallest diversification but highest individual edge.
+export const FTMO_DAYTRADE_24H_R28_V6_PT08_BTC_ETH: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  profitTarget: 0.08,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.filter(
+    (a) => a.symbol === "BTC-TREND" || a.symbol === "ETH-TREND",
+  ),
+};
+
+// R29-iter-J: pt08 + tighter dailyPeakTrailingStop (0.008 vs default 0.012).
+// Tightens give-back on intraday peaks — captures profits earlier.
+export const FTMO_DAYTRADE_24H_R28_V6_PT08_DPT_TIGHT: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  profitTarget: 0.08,
+  dailyPeakTrailingStop: { trailDistance: 0.008 },
+};
+
+// R29-iter-AMBER: V5_AMBER (14-asset basket) + pt08.
+export const FTMO_DAYTRADE_24H_V5_AMBER_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER,
+  profitTarget: 0.08,
+};
+
+// R29-iter-TITANIUM: V5_TITANIUM (14-asset, longer-history validated)
+// + pt08. Memory: 58.24% step=1d on 5.52y/1985 windows.
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+  profitTarget: 0.08,
+};
+
+// R29-iter-TOPAZ: V5_TOPAZ (14-asset minus RUNE) + pt08. Memory: 63.86%
+// step=3d. Sister to QUARTZ — strong defensive (TL=0).
+export const FTMO_DAYTRADE_24H_V5_TOPAZ_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TOPAZ,
+  profitTarget: 0.08,
+};
+
+// R29-iter-RUBIN: V5_RUBIN (14-asset) + pt08. Memory: 64.40% step=3d /
+// wr 86.72% / TL 0 — best step=3d in V5 family. Sister to TOPAZ.
+export const FTMO_DAYTRADE_24H_V5_RUBIN_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_RUBIN,
+  profitTarget: 0.08,
+};
+
+// R29-iter-OBSIDIAN: V5_OBSIDIAN (15-asset, TITANIUM + ARB) + pt08.
+// Memory: 60.56% step=1d / 61.41% step=3d on 1103-window 3.04y sample.
+export const FTMO_DAYTRADE_24H_V5_OBSIDIAN_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN,
+  profitTarget: 0.08,
+};
+
+// R29-iter-ZIRKON: V5_ZIRKON + pt08. Memory: 61.6% — top of V5 family.
+export const FTMO_DAYTRADE_24H_V5_ZIRKON_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ZIRKON,
+  profitTarget: 0.08,
+};
+
+// R29-iter-PLATINUM30M: V5_PLATINUM_30M + pt08.
+export const FTMO_DAYTRADE_24H_V5_PLATINUM_30M_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PLATINUM_30M,
+  profitTarget: 0.08,
+};
+
+// R29-iter-TITANIUM-noPT: stock V5_TITANIUM without pt08 modification.
+// Memory's pre-R9 was 58.24% step=1d. Worth testing if the engine
+// somehow handles default PT (0.10) better with TITANIUM's tpPct profile.
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_STOCK: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+};
+
+// R29-iter-OBSIDIAN-noPT: stock V5_OBSIDIAN without pt08.
+export const FTMO_DAYTRADE_24H_V5_OBSIDIAN_STOCK: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN,
+};
+
+// R29-iter-V12: V12_30M_OPT (4-asset: BTC + ETH-TREND + ETH-MR + SOL,
+// hybrid trend+mean-reversion). Memory: 97.99% pre-R9 bugfix. Even with
+// post-R9 drift -7pp, that's ~91% — well above 65% target.
+// Add pt08 (Step-1 actual) on top.
+export const FTMO_DAYTRADE_24H_V12_30M_OPT_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT,
+  profitTarget: 0.08,
+};
+
+// Stock variant without pt08 modification.
+export const FTMO_DAYTRADE_24H_V12_30M_OPT_STOCK: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT,
+};
+
+// V12_TURBO with pt08 (faster passing tail).
+export const FTMO_DAYTRADE_24H_V12_TURBO_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V12_TURBO_30M_OPT,
+  profitTarget: 0.08,
+};
+
 // V60_CORRCAP — correlationFilter maxOpenSameDirection=2 (3rd same-dir entry rejected).
 export const FTMO_DAYTRADE_24H_R28_V6_CORRCAP2: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
