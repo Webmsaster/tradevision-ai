@@ -8648,6 +8648,34 @@ export const FTMO_DAYTRADE_24H_R28_V6_POC_WIDE: FtmoDaytrade24hConfig = {
   ),
 };
 
+// =============================================================================
+// R29-R6: ADX Regime-Filter sweep (2026-05-08)
+// Tier-A candidate. Hypothesis: chop regimes (ADX<20) bleed trend strategy.
+// Filter entries when ADX below threshold to skip ranging markets.
+// =============================================================================
+
+/** R29-R6 PASSLOCK + adxFilter min=20 (skip chop). */
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_ADX20: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+  adxFilter: { period: 14, minAdx: 20 },
+};
+/** R29-R6 PASSLOCK + adxFilter min=25 (only trending). */
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_ADX25: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+  adxFilter: { period: 14, minAdx: 25 },
+};
+/** R29-R6 PASSLOCK + adxFilter min=30 (strong-trend only). */
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_ADX30: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+  adxFilter: { period: 14, minAdx: 30 },
+};
+/** R29-R6 PASSLOCK + adxFilter 25..60 (trending but cap parabolic tops). */
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_ADX25_60: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+    adxFilter: { period: 14, minAdx: 25, maxAdx: 60 },
+  };
+
 // V12_TURBO with pt08 (faster passing tail).
 export const FTMO_DAYTRADE_24H_V12_TURBO_PT08: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V12_TURBO_30M_OPT,
