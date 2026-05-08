@@ -8394,6 +8394,15 @@ export const FTMO_DAYTRADE_24H_V12_30M_OPT_STOCK: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT,
 };
 
+// R29-bugcheck: V12_30M_OPT_STOCK + liveCaps (Step-1 realism).
+// Audit found V12 chain inherits NO liveCaps; backtest pass-rate without
+// caps is bug-magic. Adding mandatory caps to verify whether 77% survives.
+export const FTMO_DAYTRADE_24H_V12_30M_OPT_STOCK_LIVECAPS: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT,
+    liveCaps: { maxStopPct: 0.05, maxRiskFrac: 0.4 },
+  };
+
 // V12_TURBO with pt08 (faster passing tail).
 export const FTMO_DAYTRADE_24H_V12_TURBO_PT08: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V12_TURBO_30M_OPT,
