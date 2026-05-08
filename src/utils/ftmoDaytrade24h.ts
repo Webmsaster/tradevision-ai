@@ -169,6 +169,37 @@ export interface Daytrade24hAssetCfg {
     volMaPeriod: number;
   };
   /**
+   * R29 Round 5 ORDER-FLOW: CVD divergence entry.
+   * CVD (Cumulative Volume Delta) = cumsum(2×takerBuyVolume − volume).
+   * Bullish divergence (long): price[i] = lookback-low BUT CVD[i] > lookback-low
+   * Bearish divergence (short): price[i] = lookback-high BUT CVD[i] < lookback-high
+   * Smart-money signal: aggressor side disagrees with price extreme.
+   * Requires Candle.takerBuyVolume (Binance klines provide it).
+   */
+  cvdEntry?: {
+    lookbackBars: number;
+  };
+  /**
+   * R29 Round 5 ORDER-FLOW: Volume-Imbalance entry.
+   * Long when current bar's takerBuyVolume / volume >= longMin (very buyer-aggressive).
+   * Short when ratio <= 1 - longMin (very seller-aggressive).
+   * Single-bar aggressor signal — trades on extreme imbalance candles.
+   */
+  volImbalanceEntry?: {
+    longMin: number; // e.g. 0.65 = ≥65% taker-buy
+  };
+  /**
+   * R29 Round 5 VOLUME-PROFILE: POC mean-reversion entry.
+   * Computes POC (highest-volume bar's close) over rolling windowBars window.
+   * Long when current close is at least minDistFromPocPct BELOW POC.
+   * Short when current close is at least minDistFromPocPct ABOVE POC.
+   * Bet: price reverts to high-volume value-area anchor.
+   */
+  volPocEntry?: {
+    windowBars: number;
+    minDistFromPocPct: number; // e.g. 0.015 = 1.5% below POC
+  };
+  /**
    * Source symbol for candle lookup, if different from `symbol`.
    * Lets two logical assets share the same underlying candles (e.g.
    * ETHUSDT mean-reversion and ETHUSDT momentum as virtual assets).
@@ -3698,6 +3729,9 @@ export function detectAsset(
     const nr7 = asset.nr7Entry;
     const mrEntry = asset.meanRevEntry;
     const boEntry = asset.breakoutEntry;
+    const cvdEntry = asset.cvdEntry;
+    const volImbEntry = asset.volImbalanceEntry;
+    const volPocEntry = asset.volPocEntry;
     // Pre-compute series for new signal generators (round 45/46).
     const mrRsiSeries: (number | null)[] | null = mrEntry
       ? rsi(
@@ -3725,7 +3759,11 @@ export function detectAsset(
                       boEntry.donchianPeriod,
                       boEntry.atrPeriod + boEntry.volMaPeriod,
                     ) + 1
-                  : triggerBars;
+                  : cvdEntry
+                    ? cvdEntry.lookbackBars + 1
+                    : volPocEntry
+                      ? volPocEntry.windowBars + 1
+                      : triggerBars;
     for (let i = startBar; i < candles.length - 1; i++) {
       if (i < cooldown) continue;
       // V5 re-entry: skip pattern check if within re-entry window after stop
@@ -3944,6 +3982,82 @@ export function detectAsset(
                 }
               }
             }
+          }
+        }
+      } else if (cvdEntry) {
+        // R29 Round 5 — CVD divergence over lookback window.
+        // Bullish: price[i] is the lookback-low BUT CVD is NOT lookback-low.
+        // Bearish: price[i] is the lookback-high BUT CVD is NOT lookback-high.
+        const lb = cvdEntry.lookbackBars;
+        if (i < lb) {
+          ok = false;
+        } else {
+          let cvd = 0;
+          let cvdMin = Infinity;
+          let cvdMax = -Infinity;
+          let priceMin = Infinity;
+          let priceMax = -Infinity;
+          for (let k = i - lb; k <= i; k++) {
+            const c = candles[k]!;
+            const tbv = c.takerBuyVolume ?? c.volume * 0.5;
+            cvd += 2 * tbv - c.volume;
+            if (cvd < cvdMin) cvdMin = cvd;
+            if (cvd > cvdMax) cvdMax = cvd;
+            if (c.close < priceMin) priceMin = c.close;
+            if (c.close > priceMax) priceMax = c.close;
+          }
+          // Use small tolerance (1e-9) since cvdMin gets reassigned at i if it
+          // is the new low; we want strict-greater logic.
+          if (direction === "long") {
+            const priceAtMin = candles[i]!.close <= priceMin + 1e-9;
+            const cvdAtMin = cvd <= cvdMin + 1e-6;
+            if (!priceAtMin || cvdAtMin) ok = false;
+          } else {
+            const priceAtMax = candles[i]!.close >= priceMax - 1e-9;
+            const cvdAtMax = cvd >= cvdMax - 1e-6;
+            if (!priceAtMax || cvdAtMax) ok = false;
+          }
+        }
+      } else if (volImbEntry) {
+        // R29 Round 5 — Volume-Imbalance: extreme aggressor ratio on bar i.
+        const c = candles[i]!;
+        const tbv = c.takerBuyVolume;
+        if (tbv === undefined || c.volume <= 0) {
+          ok = false;
+        } else {
+          const ratio = tbv / c.volume;
+          if (direction === "long" && ratio < volImbEntry.longMin) ok = false;
+          if (direction === "short" && ratio > 1 - volImbEntry.longMin)
+            ok = false;
+        }
+      } else if (volPocEntry) {
+        // R29 Round 5 — Volume-Profile POC mean-reversion.
+        // Find highest-volume bar in last windowBars; its close = POC.
+        // Long when current close is ≥ minDistFromPocPct below POC.
+        const wb = volPocEntry.windowBars;
+        if (i < wb) {
+          ok = false;
+        } else {
+          let pocVol = -1;
+          let pocClose = candles[i]!.close;
+          for (let k = i - wb; k <= i; k++) {
+            const c = candles[k]!;
+            if (c.volume > pocVol) {
+              pocVol = c.volume;
+              pocClose = c.close;
+            }
+          }
+          if (pocClose <= 0) {
+            ok = false;
+          } else {
+            const distPct = (pocClose - candles[i]!.close) / pocClose;
+            if (direction === "long" && distPct < volPocEntry.minDistFromPocPct)
+              ok = false;
+            if (
+              direction === "short" &&
+              distPct > -volPocEntry.minDistFromPocPct
+            )
+              ok = false;
           }
         }
       } else {
@@ -8402,6 +8516,137 @@ export const FTMO_DAYTRADE_24H_V12_30M_OPT_STOCK_LIVECAPS: FtmoDaytrade24hConfig
     ...FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT,
     liveCaps: { maxStopPct: 0.05, maxRiskFrac: 0.4 },
   };
+
+// R29 Round 4 — PASSLOCK variants of V5 sisters (closeAllOnTargetReached).
+export const FTMO_DAYTRADE_24H_V5_AMBER_PASSLOCK: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER,
+  closeAllOnTargetReached: true,
+};
+export const FTMO_DAYTRADE_24H_V5_OBSIDIAN_PASSLOCK: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN,
+  closeAllOnTargetReached: true,
+};
+export const FTMO_DAYTRADE_24H_V5_QUARTZ_LITE_R28_PASSLOCK: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28,
+    closeAllOnTargetReached: true,
+  };
+// R29 Round 4 — looser caps (still FTMO-compliant since maxStopPct < 5%
+// daily-loss when adjusted for 2× leverage).
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_LOOSE_CAPS: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+    closeAllOnTargetReached: true,
+    liveCaps: { maxStopPct: 0.06, maxRiskFrac: 0.5 },
+  };
+export const FTMO_DAYTRADE_24H_V5_AMBER_LOOSE_CAPS: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER,
+  liveCaps: { maxStopPct: 0.06, maxRiskFrac: 0.5 },
+};
+// R29 Round 4 — combine PT08 + PASSLOCK on top configs.
+export const FTMO_DAYTRADE_24H_V5_AMBER_PT08_PASSLOCK: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER,
+  closeAllOnTargetReached: true,
+  profitTarget: 0.08,
+};
+export const FTMO_DAYTRADE_24H_V5_OBSIDIAN_PT08_PASSLOCK: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN,
+    closeAllOnTargetReached: true,
+    profitTarget: 0.08,
+  };
+// R29 Round 4 — TREND_2H_V1 + PASSLOCK + PT08
+export const FTMO_DAYTRADE_24H_TREND_2H_V1_PASSLOCK_PT08: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V1,
+    closeAllOnTargetReached: true,
+    profitTarget: 0.08,
+  };
+
+// ─────────────────────────────────────────────────────────────────────
+// R29 Round 5 — Order-Flow / Volume-Profile signal classes (NEW).
+// First time these are tested. Built on R28_V6_PASSLOCK asset basket
+// (9 assets), keep liveCaps + closeAllOnTargetReached identical so the
+// only delta vs PASSLOCK (44.85%) is the entry trigger.
+// ─────────────────────────────────────────────────────────────────────
+
+/** R29-R5 CVD divergence (24h lookback on 30m = 48 bars). */
+export const FTMO_DAYTRADE_24H_R28_V6_CVD: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.map(
+    (a) => ({ ...a, cvdEntry: { lookbackBars: 48 } }),
+  ),
+};
+
+/** R29-R5 CVD divergence — short lookback (12h on 30m). */
+export const FTMO_DAYTRADE_24H_R28_V6_CVD_SHORT: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.map(
+    (a) => ({ ...a, cvdEntry: { lookbackBars: 24 } }),
+  ),
+};
+
+/** R29-R5 CVD divergence — long lookback (48h on 30m). */
+export const FTMO_DAYTRADE_24H_R28_V6_CVD_LONG: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.map(
+    (a) => ({ ...a, cvdEntry: { lookbackBars: 96 } }),
+  ),
+};
+
+/** R29-R5 Volume-Imbalance: extreme buyer-aggressive bars (≥ 62% taker-buy). */
+export const FTMO_DAYTRADE_24H_R28_V6_VOLIMB: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.map(
+    (a) => ({ ...a, volImbalanceEntry: { longMin: 0.62 } }),
+  ),
+};
+
+/** R29-R5 Volume-Imbalance — looser threshold (60%). */
+export const FTMO_DAYTRADE_24H_R28_V6_VOLIMB_LOOSE: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.map(
+    (a) => ({ ...a, volImbalanceEntry: { longMin: 0.6 } }),
+  ),
+};
+
+/** R29-R5 Volume-Imbalance — strict threshold (65%). */
+export const FTMO_DAYTRADE_24H_R28_V6_VOLIMB_STRICT: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.map(
+    (a) => ({ ...a, volImbalanceEntry: { longMin: 0.65 } }),
+  ),
+};
+
+/** R29-R5 Volume-Profile POC mean-reversion (48h window, 1.5% offset). */
+export const FTMO_DAYTRADE_24H_R28_V6_POC: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.map(
+    (a) => ({
+      ...a,
+      volPocEntry: { windowBars: 96, minDistFromPocPct: 0.015 },
+    }),
+  ),
+};
+
+/** R29-R5 Volume-Profile POC — wider window (96h) and larger offset (2%). */
+export const FTMO_DAYTRADE_24H_R28_V6_POC_WIDE: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.map(
+    (a) => ({
+      ...a,
+      volPocEntry: { windowBars: 192, minDistFromPocPct: 0.02 },
+    }),
+  ),
+};
 
 // V12_TURBO with pt08 (faster passing tail).
 export const FTMO_DAYTRADE_24H_V12_TURBO_PT08: FtmoDaytrade24hConfig = {
