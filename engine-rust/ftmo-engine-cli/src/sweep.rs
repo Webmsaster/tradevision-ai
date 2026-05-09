@@ -308,6 +308,8 @@ fn main() -> Result<()> {
     let mut signals = SignalSrc::Breakout;
     let mut signals_user_set = false;
     let mut step_days: Option<u32> = None; // overlap-window stride in DAYS
+    let mut trades_out: Option<PathBuf> = None;
+    let mut debug_window: Option<usize> = None;
     // R29-PassrateHunt: lightweight CLI overrides so a bash-orchestrated grid
     // sweep can probe parameter space without recompiling templates per run.
     // All overrides are post-template (applied after `template_by_selector`).
@@ -422,6 +424,8 @@ fn main() -> Result<()> {
             "--profit-target" => profit_target = Some(need!("--profit-target").parse()?),
             "--lscool-after" => lscool_after = Some(need!("--lscool-after").parse()?),
             "--lscool-bars" => lscool_bars = Some(need!("--lscool-bars").parse()?),
+            "--trades-out" => trades_out = Some(PathBuf::from(need!("--trades-out"))),
+            "--debug-window" => debug_window = Some(need!("--debug-window").parse()?),
             other => return Err(anyhow!("unknown arg: {other}")),
         }
     }
@@ -479,6 +483,8 @@ fn main() -> Result<()> {
             signals,
             signals_user_set,
             &overrides,
+            trades_out,
+            debug_window,
         );
     }
 
@@ -769,6 +775,8 @@ fn run_multi_asset(
     signals_mode: SignalSrc,
     signals_user_set: bool,
     overrides: &CfgOverrides,
+    trades_out: Option<PathBuf>,
+    debug_window: Option<usize>,
 ) -> Result<()> {
     let dir = candles_dir.ok_or_else(|| anyhow!("--candles-dir is required for multi-asset"))?;
     let symbols_str =
@@ -908,6 +916,10 @@ fn run_multi_asset(
         Some(p) => Some(BufWriter::new(File::create(p)?)),
         None => None,
     }));
+    let trades_writer: Arc<Mutex<Option<BufWriter<File>>>> = Arc::new(Mutex::new(match &trades_out {
+        Some(p) => Some(BufWriter::new(File::create(p)?)),
+        None => None,
+    }));
 
     let cfg = Arc::new(cfg);
     let aligned = Arc::new(aligned);
@@ -931,11 +943,18 @@ fn run_multi_asset(
                 symbols.as_ref(),
                 signals_mode,
                 writer.clone(),
+                trades_writer.clone(),
+                debug_window,
             )
         })
         .collect();
 
     if let Ok(mut g) = writer.lock() {
+        if let Some(w) = g.as_mut() {
+            w.flush()?;
+        }
+    }
+    if let Ok(mut g) = trades_writer.lock() {
         if let Some(w) = g.as_mut() {
             w.flush()?;
         }
@@ -985,6 +1004,8 @@ fn run_one_window(
     symbols: &[String],
     signals_mode: SignalSrc,
     writer: Arc<Mutex<Option<BufWriter<File>>>>,
+    trades_writer: Arc<Mutex<Option<BufWriter<File>>>>,
+    debug_window: Option<usize>,
 ) -> WindowResult {
     let win_started = Instant::now();
     let mut state = EngineState::initial(&cfg.label);
@@ -1041,6 +1062,239 @@ fn run_one_window(
             funding_feed.get_mut(sym).unwrap().push(f);
         }
     }
+
+    // R29-Bug-Audit-2026-05-09: phantom-trade pre-pass.
+    //
+    // TS V4-LIVE simulate calls `detectAsset` per bar with the FULL trimmed
+    // candle slice (warmup + window). detectAsset iterates chronologically
+    // and, after each found trade, advances `i` past the trade's exit bar
+    // (cooldown = exitBar + 1). This is per-direction. Effect: detectAsset
+    // implicitly tracks "in-flight" trades, suppressing new signals on the
+    // same asset+direction until the previous trade exits.
+    //
+    // Rust's detect_r28_v6 is stateless. Without phantom-trade simulation,
+    // the first window-bar signal fires even if a phantom from warmup
+    // would have suppressed it. Empirically this inflates pass-rate by
+    // ~7pp on small-basket configs (Hunter post-trade-exclusivity Rust
+    // 62.20% / TS 55.20%). Per-window proof: win=1 BTC at 1626028200000 in
+    // Rust (window first bar) vs at 1626040800000 in TS (after phantom
+    // exit).
+    //
+    // Fix: simulate phantom trades through the full warmup, tracking per
+    // (symbol, direction) "phantom open until bar i". On each window bar,
+    // suppress signals when their phantom is still open.
+    //
+    // Phantom simulation uses the same `detect_r28_v6` for entry and
+    // `process_position_exit_with_held` for exit, matching TS detectAsset
+    // bit-for-bit. The state passed to detector is a throw-away shadow.
+    use ftmo_engine_core::exit::process_position_exit_with_held;
+    use ftmo_engine_core::position::OpenPosition;
+    let phantom_open_until: HashMap<(String, ftmo_engine_core::position::PositionSide), usize> = {
+        let mut map = HashMap::new();
+        // Only run when default detector is active (per-asset entry types
+        // like CVD/POC/VolImb have their own non-overlap semantics).
+        if default_to_r28v6 {
+            for asset in cfg.assets.iter() {
+                let source = asset
+                    .source_symbol
+                    .clone()
+                    .unwrap_or_else(|| asset.symbol.replace("-TREND", "USDT"));
+                let candles_full = match aligned.get(&source) {
+                    Some(v) => v.as_slice(),
+                    None => continue,
+                };
+                let atr_full = atr_by_sym.get(&source).map(|v| v.as_slice());
+                let funding_full = funding_by_sym.get(&source).map(|v| v.as_slice());
+                let r28p = R28V6Params::default_for(asset, cfg);
+                let mut shadow_state = EngineState::initial("phantom");
+                let mut current_open: Option<(usize, OpenPosition)> = None;
+                // Iterate from warmup_lo+1 (need at least 1 prior bar for trigger)
+                // through `hi-1` so phantom that opens late in warmup but exits in
+                // window is correctly tracked across the boundary.
+                for i in (warmup_lo + 1)..hi {
+                    if let Some((entry_idx, ref mut pos)) = current_open.as_mut() {
+                        let candle = candles_full[i];
+                        let atr_at_bar = atr_full
+                            .and_then(|s| s.get(i).copied())
+                            .flatten();
+                        let bars_held = (i - *entry_idx) as u64;
+                        let exit = process_position_exit_with_held(
+                            pos, &candle, cfg, atr_at_bar, bars_held,
+                        );
+                        if exit.is_some() {
+                            current_open = None; // phantom exits, no signal at i
+                        }
+                    } else {
+                        // No phantom open — try to detect a new signal at bar i.
+                        let arr = &candles_full[..=i];
+                        let funding_slice = funding_full.map(|s| &s[..=i]);
+                        let r28in = R28V6Inputs {
+                            htf_closes: None,
+                            cross_asset_closes: None,
+                            news_events: None,
+                            funding_series: funding_slice,
+                        };
+                        let sig = detect_r28_v6(
+                            &mut shadow_state,
+                            cfg,
+                            asset,
+                            &source,
+                            arr,
+                            &r28p,
+                            &r28in,
+                        );
+                        if let Some(s) = sig {
+                            // Phantom opens at bar i (entry uses candles[i].open).
+                            let pos = OpenPosition {
+                                ticket_id: format!("phantom-{}-{}", source, i),
+                                symbol: s.symbol.clone(),
+                                source_symbol: s.source_symbol.clone(),
+                                direction: s.direction,
+                                entry_time: s.entry_time,
+                                entry_price: s.entry_price,
+                                initial_stop_pct: s.stop_pct,
+                                stop_price: s.stop_price,
+                                tp_price: s.tp_price,
+                                eff_risk: s.eff_risk,
+                                entry_bar_idx: i as u64,
+                                high_watermark: s.entry_price,
+                                be_active: false,
+                                ptp_triggered: false,
+                                ptp_realized_pct: 0.0,
+                                ptp_level_idx: 0,
+                                ptp_levels_realized: 0.0,
+                                last_known_price: Some(s.entry_price),
+                                trail_active: false,
+                                trail_peak: s.entry_price,
+                            };
+                            current_open = Some((i, pos));
+                            // Record phantom-open period — for window suppression.
+                            // The actual exit bar is unknown until we simulate forward,
+                            // so we provisionally mark "open until hi" and tighten when exit fires.
+                            map.insert((asset.symbol.clone(), s.direction), hi.saturating_sub(1));
+                        }
+                    }
+                }
+                // If phantom never closes, leave it open until hi-1 (suppresses entire window).
+                // If phantom did close, the latest entry in `map` should reflect the closure
+                // bar. Walk through second pass to correctly record exits.
+            }
+            // Second pass: rebuild map with EXACT exit bars per phantom trade.
+            // The first pass populated entries opportunistically — overwriting on each
+            // re-open. We need: for each (symbol, direction), the EXIT bar of the phantom
+            // that was open at window-start (lo). If no phantom open at lo, map entry should
+            // be missing (no suppression).
+            map.clear();
+            for asset in cfg.assets.iter() {
+                let source = asset
+                    .source_symbol
+                    .clone()
+                    .unwrap_or_else(|| asset.symbol.replace("-TREND", "USDT"));
+                let candles_full = match aligned.get(&source) {
+                    Some(v) => v.as_slice(),
+                    None => continue,
+                };
+                let atr_full = atr_by_sym.get(&source).map(|v| v.as_slice());
+                let funding_full = funding_by_sym.get(&source).map(|v| v.as_slice());
+                let r28p = R28V6Params::default_for(asset, cfg);
+                let mut shadow_state = EngineState::initial("phantom");
+                let mut current_open: Option<(usize, ftmo_engine_core::position::PositionSide, OpenPosition)> = None;
+                // R29-Bug-Audit Phase-2: 1-bar post-exit cooldown to mirror TS
+                // `cooldown = exitBar + 1` (ftmoDaytrade24h.ts:4998). Without
+                // this, Rust phantom re-fires 1 bar earlier than TS would,
+                // causing divergent phantom #2 entry prices and over-suppression.
+                let mut cooldown_until_iter: usize = 0;
+                for i in (warmup_lo + 1)..hi {
+                    if let Some((entry_idx, dir, ref mut pos)) = current_open.as_mut() {
+                        let candle = candles_full[i];
+                        let atr_at_bar = atr_full
+                            .and_then(|s| s.get(i).copied())
+                            .flatten();
+                        let bars_held = (i - *entry_idx) as u64;
+                        let exit = process_position_exit_with_held(
+                            pos, &candle, cfg, atr_at_bar, bars_held,
+                        );
+                        if exit.is_some() {
+                            // Phantom exited at bar i. The TS suppression
+                            // window in candle-index terms is
+                            //   [entry_bar, exit_bar+1] (incl. entry, incl. cooldown).
+                            // Real engine should not fire on (asset, dir) at any
+                            // bar i_main where i_main < exit_bar + 2 (the next
+                            // legitimate entry bar in TS convention).
+                            // Next-legitimate-entry bar in TS convention is i+2:
+                            //   exit at iter i, cooldown=i+1, next trigger at iter i+1
+                            //   blocked, entry at iter i+2 = entry-bar i+2.
+                            // Map value = first allowed i_main; suppression check
+                            // is `if i_main < phantom_open_until` (strict <).
+                            let next_allowed = i + 2;
+                            if *entry_idx < lo && next_allowed > lo {
+                                map.insert(
+                                    (asset.symbol.clone(), *dir),
+                                    next_allowed.max(lo),
+                                );
+                            }
+                            current_open = None;
+                            cooldown_until_iter = i + 2; // skip iter i+1 in next pass
+                        }
+                    } else {
+                        if i < cooldown_until_iter {
+                            continue;
+                        }
+                        let arr = &candles_full[..=i];
+                        let funding_slice = funding_full.map(|s| &s[..=i]);
+                        let r28in = R28V6Inputs {
+                            htf_closes: None,
+                            cross_asset_closes: None,
+                            news_events: None,
+                            funding_series: funding_slice,
+                        };
+                        let sig = detect_r28_v6(
+                            &mut shadow_state,
+                            cfg,
+                            asset,
+                            &source,
+                            arr,
+                            &r28p,
+                            &r28in,
+                        );
+                        if let Some(s) = sig {
+                            let pos = OpenPosition {
+                                ticket_id: format!("phantom-{}-{}", source, i),
+                                symbol: s.symbol.clone(),
+                                source_symbol: s.source_symbol.clone(),
+                                direction: s.direction,
+                                entry_time: s.entry_time,
+                                entry_price: s.entry_price,
+                                initial_stop_pct: s.stop_pct,
+                                stop_price: s.stop_price,
+                                tp_price: s.tp_price,
+                                eff_risk: s.eff_risk,
+                                entry_bar_idx: i as u64,
+                                high_watermark: s.entry_price,
+                                be_active: false,
+                                ptp_triggered: false,
+                                ptp_realized_pct: 0.0,
+                                ptp_level_idx: 0,
+                                ptp_levels_realized: 0.0,
+                                last_known_price: Some(s.entry_price),
+                                trail_active: false,
+                                trail_peak: s.entry_price,
+                            };
+                            current_open = Some((i, s.direction, pos));
+                        }
+                    }
+                }
+                // If phantom is still open at end of slice AND entered before
+                // window start, suppress for entire window.
+                if let Some((entry_idx, dir, _)) = current_open {
+                    if entry_idx < lo {
+                        map.insert((asset.symbol.clone(), dir), hi.saturating_sub(1));
+                    }
+                }
+            }
+        }
+        map
+    };
 
     for i in lo..hi {
         // Push current bar for every symbol.
@@ -1124,6 +1378,17 @@ fn run_one_window(
                 SignalSrc::None => None,
             };
             if let Some(s) = sig {
+                // R29-Bug-Audit-2026-05-09: phantom suppression. If a phantom
+                // trade from warmup is still open at the current bar `i`,
+                // skip the signal — TS detectAsset would have suppressed it
+                // via internal cooldown.
+                let key = (s.symbol.clone(), s.direction);
+                if let Some(&exit_bar) = phantom_open_until.get(&key) {
+                    if i < exit_bar {
+                        // Phantom still open; suppress.
+                        continue;
+                    }
+                }
                 signals_for_bar.push(s);
             }
         }
@@ -1178,6 +1443,26 @@ fn run_one_window(
         if let Some(w) = g.as_mut() {
             if let Ok(line) = serde_json::to_string(&report) {
                 let _ = writeln!(w, "{line}");
+            }
+        }
+    }
+    // Dump full closed_trades for this window when --trades-out (and
+    // optionally --debug-window) is set. One trade per JSONL line, prefixed
+    // with `win_idx`. Used for per-trade Rust↔TS audit on bug-suspect windows.
+    let dump_trades = match debug_window {
+        Some(target) => target == w_idx,
+        None => trades_writer.lock().map(|g| g.is_some()).unwrap_or(false),
+    };
+    if dump_trades {
+        if let Ok(mut g) = trades_writer.lock() {
+            if let Some(w) = g.as_mut() {
+                for t in &state.closed_trades {
+                    let mut line = serde_json::to_value(t).unwrap_or(serde_json::Value::Null);
+                    if let Some(o) = line.as_object_mut() {
+                        o.insert("winIdx".into(), serde_json::json!(w_idx));
+                    }
+                    let _ = writeln!(w, "{line}");
+                }
             }
         }
     }
