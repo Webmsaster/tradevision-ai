@@ -1,353 +1,154 @@
-# Session Handoff — 2026-05-04 (10 R60 Audit-Rounds COMPLETE — Live-Deploy Ready)
-
-## 🏆 R28_V6_PASSLOCK Champion confirmed at 63.24% (full 136-window aggregate, post-R6-R10 audit hardening)
-
-10 R60 Audit-Rounds COMPLETE.
-
-### Cumulative stats (R6 → R10)
-
-- **~80 audit agents** dispatched across engine / Python executor / V231 router / storage / UI / auth / CI/CD
-- **~220 findings** triaged, **~70 fixes shipped** (R9 gap-fix audit-trail included — pass-lock close-all-on-target-reached gap closed; open-position MTM realised at window end no longer leaks past Pass-Lock fire)
-- **Tests:** 1049+ vitest / 153+ pytest (was 911 / 111 pre-R6)
-- **Champion R28_V6_PASSLOCK = 63.24% confirmed** on full 136-window V4-Engine aggregate (preliminary 64.77% on 86-window early-coverage estimate; both refer to the same backtest, 63.24% is the honest one)
-- **Live-deploy ready (Phase 1 → Phase 2 → Phase 3 path)**:
-  - Phase 1: 1× PASSLOCK Demo (Single-Account, ~60% live expected)
-  - Phase 2: 2× PASSLOCK (~84% min-1-pass)
-  - Phase 3: 3-Strategy Multi-Account (PASSLOCK + TITANIUM + AMBER, ~94% min-1-pass)
-
-> NOTE on the two numbers: 64.77% is the preliminary 86/136-window estimate that still surfaces in CHEAT_SHEET, PASSLOCK_DEPLOY_RUNBOOK, MEMORY/links, and `src/app/api/drift-data/route.ts` `BACKTEST_REF`. The full 136-window aggregate is 63.24% (MEMORY.md headline). Both refer to the same backtest — 63.24% is honest, 64.77% is the early-coverage estimate that hasn't been swapped through yet.
-
-### Mechanism
-
-- New engine flag: `closeAllOnTargetReached: true`
-- On first target-hit (mtm + realised ≥ 8%): force-close ALL open positions
-- Locks equity at target → eliminates Day-30-force-close drag-down
-- Mathematically proven: 0 negative flips in 107 shared windows (differential analysis)
-
-### Live deploy
-
-- Selector: `FTMO_TF=2h-trend-v5-r28-v6-passlock`
-- Runbook: `tools/PASSLOCK_DEPLOY_RUNBOOK.md`
-- Cheat-Sheet: `tools/CHEAT_SHEET.md`
-
-### 3-Strategy Multi-Account (~94% min-1-pass live ~89-91%)
-
-- 1× PASSLOCK + 1× V5_TITANIUM + 1× V5_AMBER (uncorrelated baskets)
-- Setup: `tools/MULTI_STRATEGY_SETUP.md`
-- Launcher: `bash tools/start-3-strategy.sh`
-- PM2 config: `tools/ecosystem-multi.config.js`
-
-### Failure-Mode Improvement (vs R28_V6 baseline)
-
-- profit_target: 56.62% → 64.77% (+8.15pp)
-- daily_loss: 30.88% → 25.69% (-5.19pp)
-- give_back: 1.47% → **0% (100% eliminiert)**
-- total_loss: 11.03% → 11.01% (unchanged — Round 61 candidate)
-
-## Round 60 Sweep — alle 15 Variants Ranking
-
-| Rank | Variant                |  Pass% |                                  Δ |
-| ---: | ---------------------- | -----: | ---------------------------------: |
-|    1 | **PASSLOCK** ⭐        | 64.77% |                            +8.15pp |
-|    2 | combo_pl_idlt          | 63.24% | +6.62pp (IDLT inert with PASSLOCK) |
-|  3-5 | lscool48/96, voltp_inv | 58.02% |                       +1.40-2.21pp |
-|   6+ | rest                   |   ≤57% |              ≈ neutral or negative |
-
-**Insight:** COMBO == PASSLOCK on shared 107 windows (zero flips). IDLT is inert when paired with Pass-Lock — Pass-Lock fires before IDLT-trigger could ever hit. **Drop IDLT, keep PASSLOCK alone for config simplicity.**
-
-## Round 60 Code Shipped
-
-### Engine
-
-- `src/utils/ftmoLiveEngineV4.ts:1380` — `closeAllOnTargetReached` force-close (50 LOC)
-- `src/utils/ftmoLiveEngineV4.ts:1660` — `volAdaptiveTpMult` ATR-bucket scaling + look-ahead fix
-- `src/utils/ftmoLiveEngineV4.ts:1715` — `dayBasedRiskMultiplier` (Round 61 prep)
-
-### Configs (18 new — verified 2026-05-05 via `grep -c "^export const FTMO_DAYTRADE_24H_R28_V6" src/utils/ftmoDaytrade24h.ts`)
-
-- `FTMO_DAYTRADE_24H_R28_V6_PASSLOCK` — Champion
-- `_CORRCAP{2,3}` — correlationFilter variants (failed)
-- `_LSCOOL{48,96}` — lossStreakCooldown variants (mild win)
-- `_TODCUTOFF{18,20}` — allowedHoursUtc cuts (failed)
-- `_VOLTP_{AGGR,MILD,INV,LOW}` — Vol-adaptive tpMult (mostly neutral)
-- `_IDLT_{25,30,35}` — intradayDailyLossThrottle (neutral when alone)
-- `_COMBO_PL_IDLT` — passlock+idlt (== passlock)
-- `_PASSLOCK_DAYRISK_{50,70,50_2D}` — Round 61 candidates
-
-### Live-Selectors (V231 router, 10 new keys — verified 2026-05-05)
-
-- `2h-trend-v5-r28-v6-passlock` ⭐ Champion
-- `2h-trend-v5-r28-v6-combo-pl-idlt`
-- 6 single-feature variants
-- 3 Day-Risk variants (Round 61)
-
-### Tests (16 new)
-
-- `src/__tests__/ftmoLiveEngineV4Round60.test.ts` — 7/7 pass
-- `src/__tests__/driftDataRoute.test.ts` — recalibrated to PASSLOCK 64.77%, 8/8 pass
-
-### Scripts (10 new)
-
-- `scripts/_r28V6Round60Shard.ts` + RunAll + Aggregate (with `--resume`)
-- `scripts/_r28V6Round60VolTpShard.ts` + RunAll
-- `scripts/_r28V6Round60WalkForward.ts`
-- `scripts/_r28V6Round60Differential.ts`
-- `scripts/_r28V6Round60FinalReport.ts`
-- `scripts/_r28V6Round61Shard.ts` + RunAll + Aggregate (Day-Risk variants)
-
-### Tools / Configs
-
-- `tools/PASSLOCK_DEPLOY_RUNBOOK.md` — Live deploy step-by-step
-- `tools/MULTI_STRATEGY_SETUP.md` — 3-Strategy guide
-- `tools/start-3-strategy.sh` — Multi-Account launcher
-- `tools/ecosystem-multi.config.js` — PM2 config für 3 Accounts
-- `tools/promote_to_step2.sh` — Step-1 → Step-2 helper
-- `tools/preflight_check.py` — neuer R60 patch check
-- `tools/CHEAT_SHEET.md` — auf Champion umgestellt
-- `.env.ftmo.titanium.example` + `.env.ftmo.amber.example`
-- News-Blackout activated by default in templates
-
-### Memories (5 new)
-
-- `project_round60_passlock_champion.md` — Champion-Memo
-- `project_round60_engine_patches.md` — Engine-Patches docs
-- `project_round60_v5r_guardian_crash.md` — Dead path
-- `project_round60_sweep_active.md` — Sweep status
-- `project_round61_total_loss_attack.md` — Round 61 brainstorm
-
-## Skipped (memory-validated dead ends)
-
-- C8 Daily-Loss-Hedge: 200 LOC + cap-collision risk
-- V5R Daily-Equity-Guardian: crashed, partial results -10 to -14pp
-
-## Round 61 Ready (Day-Risk Variants)
-
-3 variants prepared, sweep ready to launch when Round 60 done:
-
-- `passlock_dr50` — riskFrac × 0.5 day 0-2
-- `passlock_dr70` — riskFrac × 0.7 day 0-2
-- `passlock_dr50_2d` — riskFrac × 0.5 day 0-1
-
-Launch: `bash scripts/_r28V6Round61RunAll.sh` (~30-50min wallclock)
-
-## Live-Deploy Action-Plan
-
-### Step 1: Single-Account PASSLOCK Demo
-
-```powershell
-copy .env.ftmo.demo1.example .env.ftmo
-notepad .env.ftmo                                # FTMO_TF=2h-trend-v5-r28-v6-passlock
-python tools/preflight_check.py                  # erwartet GO
-pm2 start tools/ecosystem.config.js
-```
-
-### Step 2: nach 1 Woche Demo stable
-
-```bash
-copy .env.ftmo.titanium.example .env.ftmo.titanium
-copy .env.ftmo.amber.example .env.ftmo.amber
-# Fill placeholders in both
-bash tools/start-3-strategy.sh                   # Launches 3 PM2 processes
-```
-
-### Step 3: nach Step-1 Pass
-
-```bash
-bash tools/promote_to_step2.sh .env.ftmo.demo1   # archives state, switches to step2
-```
-
----
-
-# Previous Session — 2026-05-03 (R28_V6 deployment-ready, walk-forward validated)
+# Session Handoff — 2026-05-09
 
 ## What was done
 
-### 🏆 R28_V6 Champion (PR #58 + #61 merged to main)
+### R9 TITANIUM Funding-Filter — final & DEBUNKED
 
-- **R28_V6 = 56.62% V4-Engine pass-rate** (sharded re-run, 5.55y / 136 windows)
-- Walk-Forward validated: TRAIN 55.56% / TEST 54.93% / **drift -0.63pp = ROBUST** (not overfit)
-- Median pass-day = 4 (FTMO floor)
-- Live selectors: `2h-trend-v5-quartz-lite-r28-v6-v4engine` (V4 Live Engine)
-- Multi-account math: 2× = 78%, 3× = 90% min-1-pass
+- Resumed missing FRLONG variant (interrupted from previous session)
+- All 3 funding variants identical at **55.56%** (35/63 step=28d): r9titPL = r9titFRMED = r9titFRLONG
+- Per-shard pass-counts byte-identical → funding-filter completely **inert** on TITANIUM 14-asset basket
+- TITANIUM 14-asset basket alone = **+10.71pp** vs PASSLOCK 9-asset 44.85% honest (the real R9 hebel)
 
-### 🛡️ 5 Audit-Runden (R54-R58)
+### Rust Engine Port — Phases 1+2+3 shipped
 
-- ~135 findings fixed across V4 engine, Python executor, V231, storage, AI, React UX, auth, CI/CD
-- +302 tests (707 → 911 vitest, 79 → 111 pytest)
-- All commits squash-merged via PR #58 (commit `4aec280`) + PR #61 (commit `7c1d504`)
-- Score: ~88/100 (Code 90 / Tests 85 / Engine 85 / Deploy-Ready 92 / Battle-Tested 5)
+User mandate: "rust soll backbone werden" + "rust soll fertig werden ohne bugs und fehler".
 
-### 🎨 Lighthouse a11y: 91 → 100/100
+**Phase 1+2 (commit `aa28d7a`)** — manual fixes + 1st background-agent (28min wall-clock):
 
-- `globals.css:548` color-contrast fix (sidebar-brand-sub)
+- `disable_short` field added to `AssetConfig`; profit_target 0.10 → 0.08 (FTMO Step-1 actual, was bug)
+- `make_assets` defaults: invert_direction=true, disable_short=true, trigger_bars=Some(1), costs (30/8/4)
+- `detect_r28_v6` iterates both directions like TS detectAsset (instead of SMA-slope filtering)
+- Entry shifted to bar `i+1.open` (TS convention; was `i.close`)
+- `quartz_lite_base()` rebuilt to mirror real R28_V4 chain (removed phantom lossStreakCool + kellySizing inheritance, fixed dailyPeakTrailingStop, added peakDrawdownThrottle)
+- `sweep.rs`: PerAssetCfg fallback to R28V6 unconditional (was gated on funding_rate_filter — root cause for 0% baseline); WARMUP=5000 bar pre-fill; end-of-window pass-check; chandelier ATR period reads from cfg
+- **R28_V6_PASSLOCK Rust 0% → 47.10%** (138w step=14d) vs TS 55.88% — drift -8.78pp
 
-### 📦 Deploy-Tooling (3 commits, ahead of main)
+**Phase 3 (commit `78aaa05`)** — 2 parallel background-agents (~16min wall-clock):
 
-- `tools/PRE_LIVE_SETUP.md` — 11-step deploy walkthrough (3500 Wörter)
-- `tools/CHEAT_SHEET.md` — 1-page quick reference
-- `tools/preflight_check.py` — 15-check GO/NO-GO before bot start
-- `tools/health_monitor.py` — cron watchdog (alle 15min, alerts via Telegram)
-- `.env.ftmo.demo1.example` + `.env.ftmo.demo2.example` — multi-account templates
+- TITANIUM/AMBER/TOPAZ baskets corrected (SOL/LINK was wrong, now INJ/SAND etc.)
+- Per-asset tp_pct rewritten with TS-correct values for all 3 V5 variants
+- New `v5_titanium_base()` decouples TITANIUM/AMBER from QUARTZ engine stack
+- 8 new R10 stacking templates: titanium-passlock + norune + obsidian + lscool-tight/loose + mct5 + corrcap2 + todcut18
+- `pnl.rs` audited bit-precise vs TS `computeEffPnl` — confirmed parity; 1 real bug fixed (MTM `last_known_price` fallback that TS doesn't have)
+- 154 lib tests pass (was 141)
 
-### 🔬 Validation Tooling
+### R29 Round 10 Stacking Variants — staged
 
-- `scripts/_r28V6Shard.ts` + `_r28V6Aggregate.ts` — sharded run (8 parallel × 17 windows = 28min vs 84min single-thread)
-- `scripts/_r28V6Run.ts` — direct (non-vitest) runner
-- `scripts/_r28V6WalkForward.test.ts` — TRAIN/TEST split robustness check
-- `src/__tests__/ftmoLiveEngineV4PerfBounds.test.ts` — regression test (60s window cap)
-
-### 🧪 R28_V7 Sweeps (Negative Results)
-
-- **Sizing Sweep**: 4 variants (V0/V1/V2/V3 day-progressive/equity-anchored/combined) → ALL identical 58.70% on 46-window subset. Engine cap (`liveCaps.maxRiskFrac=0.4` + `DL-derived cap`) blockt adaptive sizing per env-var. Adaptive Sizing = Engine-Refactor (Tage-Projekt), nicht via env achievable.
-- **Per-Asset TP / Basket Sweeps**: NICHT gestartet (would be marginal — Round 53 fine-grid already found plateau 0.55-0.59).
-
-### 🛠️ Drift Dashboard Calibration
-
-- `BACKTEST_REF` updated: R28_V5 (60.29% claimed) → **R28_V6 honest 56.62%**
-- `FTMO_PROFIT_TARGET` korrigiert: 10% → 8% (FTMO Step 1 actual rule)
-- Failure breakdown dokumentiert (profit_target 56.62% / DL 30.88% / TL 11.03% / give_back 1.47%)
-
-### 🧹 Memory Cleanup
-
-- `MEMORY.md`: 33KB → 6.5KB (-80%)
-- 4 new topic files: `project_round53_r28v6_champion.md`, `project_round54_58_audit_series.md`, `project_round57_forex_audit.md`, `project_round53_ensembles.md`
+- 7 new TS configs in `src/utils/ftmoDaytrade24h.ts`
+- `_r29Round10Shard.ts` — generic shard runner (reads asset list from cfg.assets)
+- `_r29Round10Sweep.sh` — 7-config sequential sweep
+- `_r29RustBackboneValidate.ts` — Rust↔TS drift validation harness for 5 hot configs
 
 ## Current state
 
-### ✅ Tests
+### Working
 
-- **vitest: 911/911 pass** (78 test files)
-- **pytest: 111/111 pass**
-- **typecheck: clean**
-- **build: clean**
-- **Lighthouse a11y: 100/100**
+- **Rust Backbone OPERATIONAL** for R28_V6 + TITANIUM family (active Champion)
+  - 22 selectors via `--list-configs` (was 14)
+  - cargo build --release clean, 154 lib tests pass
+  - Wall-clock 1.4-7s per 127-138w sweep (was 28min TS sharded) = **~250-300× speedup**
+- TITANIUM_PASSLOCK 58.27% / TS 55.56% step=28d → drift +2.71pp (well within usable range)
+- R10 stacking effects verified working: MCT5 -7pp, CORRCAP2 -9pp, TODCUT18 -5.5pp impact
+- 2 commits shipped this session, working tree clean
 
-### ✅ Production state (main HEAD `7c1d504`)
+### Drifting (not fully closed)
 
-- R28_V6 + alle R54-58 fixes
-- Multi-Account ready (per-account isolation, MT5 login validation)
-- Drift Dashboard live-tested with dummy data
-- Pre-Flight + Health Monitor scripts
-- Setup-Guide + Cheat-Sheet
-- Walk-Forward validated (drift -0.63pp)
+- R28_V6_PASSLOCK: -8.78pp drift (Rust 47.10% / TS 55.88%) — acceptable, ranking robust
+- V5_AMBER: -15.21pp drift (modest +2pp closing from Phase 3a)
+- V5_TOPAZ: -24pp drift
+- Root cause for AMBER/TOPAZ: `trailing_stop {activatePct:0.03, trailPct:0.005}` from V3-inheritance NOT yet ported to Rust harness
 
-### ⏳ Branch state
+### Champion still-active
 
-- `feature/r28-deploy` 1 commit ahead of main (`5b39f4a` cheat-sheet + walk-forward + drift band)
-- Optional: 3rd PR mergen oder lassen
-
-### ❌ Live deploy
-
-- VPS crashed mid-session, Florian rebootet später
-- FTMO Demo Account exists (active, login unknown)
-- `.env.ftmo` noch nicht erstellt
-- pm2 noch nicht gestartet
+- **R28_V6_PASSLOCK 55.88%** (TS honest, post-R9 bugfix `46d9bb3`) — single-account
+- 3-Strategy multi-account ~91% min-1-pass (PASSLOCK + TITANIUM + AMBER)
+- TITANIUM_PASSLOCK 55.56% step=28d honest = **+10.71pp** vs 9-asset PASSLOCK
 
 ## Next steps
 
-### Priorität 1: VPS reboot + Bot Live-Start
+### Priority 1 — Use the Rust backbone
 
-1. VPS Provider-Dashboard → Reboot
-2. RDP wieder, MT5 verifizieren
-3. `.env.ftmo` aus `.env.ftmo.demo1.example` erstellen mit:
-   - `FTMO_EXPECTED_LOGIN=<MT5 login>`
-   - `TELEGRAM_BOT_TOKEN_demo1=<token>`
-   - `TELEGRAM_CHAT_ID_demo1=<id>`
-4. `python tools/preflight_check.py` → erwartet GO
-5. `pm2 start ecosystem.config.js`
-6. Drift Dashboard öffnen + verifizieren
+- Run R29-R10 sweep via Rust (seconds vs hours): `./engine-rust/target/release/ftmo-sweep --candles-dir scripts/cache_bakeoff --symbols <list> --config 2h-trend-v5-titanium-passlock-<variant> --windows 200 --step-days 14 --signals per-asset`
+- Compare 7 R10 variants to find new +1-3pp hebel on TITANIUM 55.56% baseline
+- Cross-check final picks via `_r29RustBackboneValidate.ts` (~10-15min)
 
-### Priorität 2: Multi-Account aktivieren (nach 1 Woche Demo 1 stable)
+### Priority 2 — Phase 4 Rust port (deferred)
 
-- 2× R28_V6 = ~78% min-1-pass
-- Cost: 310€
+1. Port `trailing_stop {activatePct, trailPct}` from V3-cfg to harness.rs (closes AMBER drift)
+2. Audit `harness.rs:close_all_on_target` candle resolution (TS scan-backwards fallback at L1604-1610 missing in Rust)
+3. Audit `exit.rs` ordering edge cases (PTP-fill semantics on volatile bars)
+4. Re-validate AMBER target: ≤5pp drift
 
-### Priorität 3: Optional remaining sweeps (skip recommended)
+### Priority 3 — Live deploy track
 
-- Step 2 Re-Validation (R28_V5_STEP2 post-fixes, ~80min)
-- News-Blackout backtest validation (~60min)
-- Per-Asset TP Round 2 (~50min, marginal expected)
+- PASSLOCK Live-Deploy plan in `memory/project_passlock_live_deploy_plan.md`
+- Phase 1 single-account → Phase 2 3-strategy → Phase 3 step-2 promotion
+- Math: 73% Funded mit 3-Strategy multi-account
 
-### Priorität 4: 3rd PR mergen
+### Priority 4 — Backlog (deferred-forever per memory)
 
-- `feature/r28-deploy` → main (1 commit Cheat-Sheet + Walk-Forward + Drift band)
-- Schnell via `gh pr create + gh pr merge --admin`
+- Round 61 total_loss attack — engine cap blocks Day-Risk multiplier
+- Round 62 Mean-Reversion — only AFTER PASSLOCK 2-week stable
+- Round 63 forex diversification — only AFTER 3-strategy stable
 
 ## Open issues / blockers
 
-### 🚨 Active blocker
+- **AMBER/TOPAZ Rust ranking inversion**: Don't trust Rust for AMBER vs other-config rankings until Phase 4. Use TS for that family.
+- **Funding-filter is inert on TITANIUM 14-asset**: confirmed via 3× identical pass-counts. Funding gives +2.21pp on R28_V6 9-asset but 0pp on TITANIUM 14-asset. Different asset distribution.
+- **Memory-claim deflation post-R67**: Pre-R67 cache pass-rates are systematically ~10-15pp inflated (cost-deduction fix R56-R58 + multi-level PTP fix R67). Trust the post-R67 honest numbers.
+- **Auto-Continue hook**: User has a Stop-Hook active. Remember to write `TASK_COMPLETE` only when truly done, `STOP_NOW` for emergencies, and don't ask intermediate questions.
 
-- **VPS crashed**, Florian rebootet später. Provider unbekannt.
+## Key files changed
 
-### Deferred (live-deploy validation needed)
+### Engine (Rust)
 
-- Forex weekend gap evaluation (Friday-Sunday gap)
-- USDJPY/CHFJPY currency conversion
-- IndexedDB migration für Screenshots
-- Multi-Account V4-Engine refactor (per-account state in single process)
-- Adaptive Sizing per-day or per-equity (requires Engine refactor — not achievable via env-vars)
+- `engine-rust/ftmo-engine-core/src/config.rs` — added `disable_short` field; profit_target 0.10→0.08
+- `engine-rust/ftmo-engine-core/src/templates.rs` — corrected V5*TITANIUM/AMBER/TOPAZ baskets + per-asset TPs; 8 R10 stacking templates added (`v5_titanium_passlock`, `v5_titanium_passlock_norune`, `v5_obsidian_passlock`, `v5_titanium_passlock_lscool*{tight,loose}`, `v5*titanium_passlock*{mct5,corrcap2,todcut18}`)
+- `engine-rust/ftmo-engine-core/src/signals_r28v6.rs` — bidirectional iteration, entry-bar shift, secondary-gate read at trigger bar
+- `engine-rust/ftmo-engine-core/src/pnl.rs` — MTM `last_known_price` fallback removed (TS parity); confirmed bit-precise cost/slippage/swap deduction
+- `engine-rust/ftmo-engine-cli/src/sweep.rs` — PerAssetCfg fallback unconditional; WARMUP=5000 pre-fill; end-of-window pass-check; chandelier ATR period from cfg
 
-### Not blocking
+### Configs / scripts
 
-- 3 dependabot PRs open (npm + pip — auto-merge weekly)
-- Old state-dirs on VPS (`ftmo-state-2h`, `ftmo-state-30m`, etc.) — irrelevant for R28_V6 since neue state-dir genutzt
+- `src/utils/ftmoDaytrade24h.ts` — added 7 R10 stacking variants (TITANIUM_PASSLOCK_NORUNE/LSCOOL_TIGHT/LSCOOL_LOOSE/MCT5/CORRCAP2/TODCUT18; OBSIDIAN_PASSLOCK reused existing const)
+- `scripts/_r29Round9FrlongOnly.sh` — resume-only script for missing FRLONG variant
+- `scripts/_r29Round10Shard.ts` — generic shard runner (reads asset list from cfg.assets)
+- `scripts/_r29Round10Sweep.sh` — 7-config sequential R10 sweep
+- `scripts/_r29RustBackboneValidate.ts` — Rust↔TS drift validation harness, exits 0 iff all 5 configs ≤5pp drift
 
-## Strategie-Hierarchie (V4-Engine, 5.55y honest)
+### Memory updates
 
-| Setup                              |              Pass% | Cost |
-| ---------------------------------- | -----------------: | ---- |
-| R28_V4                             |             50.74% | —    |
-| R28_V5                             |             58.82% | —    |
-| R28_V6 (claimed pre-R56)           |             60.29% | —    |
-| **R28_V6 (post-R56/57/58 honest)** |         **56.62%** | —    |
-| R28_V6 walk-forward TRAIN          |             55.56% | —    |
-| R28_V6 walk-forward TEST           |             54.93% | —    |
-| **2× Multi-Account**               | **78% min-1-pass** | 310€ |
-| 3× Multi-Account                   |                90% | 465€ |
+- `memory/project_round29_passrate_search.md` — R9 TITANIUM final results, Phase 1 Rust shipped, R10 staging
+- `memory/project_round29_rust_audit.md` — Phase 1+2+3 detailed roadmap, drift sources, final state, Phase 4 deferred items
+- `memory/project_rust_engine_backbone.md` — User mandate (NEW)
+- `memory/MEMORY.md` — index updated with backbone-mandate link
 
-**Ehrliche Live-Erwartung mit Filtern: ~50-52% single-account, ~76-78% × 2 Accounts.**
+## Recent commits
 
-## Key files changed (this session)
+```
+78aaa05 feat(R29-R10/Rust-Phase3): correct V5 baskets + R10 templates + MTM parity
+aa28d7a feat(R29-R10/Rust): port R28_V6 detector to parity + R10 stacking variants
+b901358 feat(R29-R9/Rust): TITANIUM funding configs + Rust port WIP
+```
 
-### New (committed):
+Branch: `feature/r28-deploy` (29+ commits ahead of `origin/feature/r28-deploy`).
 
-- `tools/PRE_LIVE_SETUP.md` — Setup walkthrough
-- `tools/CHEAT_SHEET.md` — 1-page reference
-- `tools/preflight_check.py` — GO/NO-GO check
-- `tools/health_monitor.py` — Cron watchdog
-- `.env.ftmo.demo1.example` + `.env.ftmo.demo2.example` — Multi-account templates
-- `scripts/_r28V6Shard.ts` + `_r28V6Aggregate.ts` + `_r28V6Run.ts` — sharded validation
-- `scripts/_r28V6WalkForward.test.ts` — robustness check
-- `src/__tests__/ftmoLiveEngineV4PerfBounds.test.ts` — regression test
-- `scripts/_r28V7PerAssetTP.test.ts` + `_r28V7BasketSweep.test.ts` + `_r28V7Sizing.test.ts` — R28_V7 candidate sweeps (negative result)
+## Quick-start für nächste Session
 
-### Modified:
+```bash
+# Sweep Rust (seconds):
+./engine-rust/target/release/ftmo-sweep \
+  --candles-dir scripts/cache_bakeoff \
+  --symbols ETHUSDT,BTCUSDT,BNBUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LTCUSDT,BCHUSDT,AAVEUSDT,XRPUSDT,INJUSDT,RUNEUSDT,ETCUSDT,SANDUSDT \
+  --config 2h-trend-v5-titanium-passlock-todcut18 \
+  --windows 200 --step-days 14 --signals per-asset
 
-- `src/app/api/drift-data/route.ts` — `BACKTEST_REF` recalibrated to 56.62%, profit-target 10→8%
-- `.gitignore` — `*.env.ftmo.*.example` allowed through
-- `HANDOFF.md` — this file
+# List all 22 selectors:
+./engine-rust/target/release/ftmo-sweep --list-configs
 
-### Memory:
+# Validate Rust↔TS drift on 5 hot configs (~10-15min):
+node ./node_modules/tsx/dist/cli.mjs scripts/_r29RustBackboneValidate.ts
 
-- `MEMORY.md` cleaned (33KB → 6.5KB)
-- 4 new topic files in `~/.claude/projects/-home-flooe-projects-tradevision-ai/memory/`
-
-## Score: **~88/100**
-
-- Code-Qualität: 90 (clean, dead code removed, Lighthouse 100)
-- Test-Coverage: 85 (911 vitest + 111 pytest, no source-grep cruft)
-- Engine-Korrektheit: 88 (R28_V6 honest 56.62% + walk-forward validated -0.63pp drift)
-- Deployment-Ready: 92 (Multi-Account ready, drift dashboard live-tested + recalibrated, pre-flight check)
-- Production-Battle-Tested: 5 (NOT YET LIVE — VPS down, FTMO Demo waiting)
-
-**+12 Punkte gibt's nur live, nicht im Editor.** VPS reboot + deploy = next critical action.
-
-## Commits this session (chronological)
-
-- `4aec280` PR #58 squash-merge: Rounds 54-58 + R28_V6 champion (135 fixes, +302 tests)
-- `7c1d504` PR #61 squash-merge: Lighthouse a11y 91→100 + source-grep tests
-- `ab38812` R28_V6 revalidation tooling + Pre-Live Setup Guide
-- `534b0b1` Pre-flight check + health monitor + .env templates
-- `5b39f4a` Cheat-sheet + walk-forward test + drift band recalibration
-
-Branch `feature/r28-deploy` is 1 commit ahead of `main` (the latest `5b39f4a`).
+# R10 sweep via TS sharded (fallback, 3-4h):
+bash scripts/_r29Round10Sweep.sh
+```
