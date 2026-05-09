@@ -64,6 +64,27 @@ struct WindowResult {
     elapsed_ms: f64,
 }
 
+/// R29-Stage-B multi-signal stacking. When set, the per-asset signal loop
+/// fires the named extra detectors in addition to the default per-asset
+/// dispatch (R28V6 / cvd / volimb / poc). Each detector emits at most one
+/// signal per asset per bar, but multi-detector means up to 3-4 signals
+/// per asset per bar reach the harness — MCT cap arbitrates.
+#[derive(Default, Debug, Clone)]
+struct MultiSignalCfg {
+    also_meanrev: bool,
+    also_breakout: bool,
+    mr_period: Option<u32>,
+    mr_oversold: Option<f64>,
+    mr_overbought: Option<f64>,
+    mr_cooldown: Option<u64>,
+    mr_size_mult: Option<f64>,
+    /// Phantom-trade pre-pass: opt-in (default off). Mirrors TS detectAsset
+    /// internal cooldown across warmup boundary, but at ~1000× CPU cost
+    /// because the per-asset detector iterates O(N_bars²) per window. Use
+    /// for parity-validation runs; not for fast parameter sweeps.
+    phantom_suppress: bool,
+}
+
 /// R29-PassrateHunt: post-template config mutations. Bundle all override
 /// flags into a single struct so `run_multi_asset` doesn't grow N more args.
 #[derive(Default, Debug, Clone)]
@@ -341,6 +362,14 @@ fn main() -> Result<()> {
     let mut profit_target: Option<f64> = None;
     let mut lscool_after: Option<u32> = None;
     let mut lscool_bars: Option<u64> = None;
+    let mut phantom_suppress: bool = false;
+    let mut also_fire_meanrev: bool = false;
+    let mut also_fire_breakout: bool = false;
+    let mut mr_period: Option<u32> = None;
+    let mut mr_oversold: Option<f64> = None;
+    let mut mr_overbought: Option<f64> = None;
+    let mut mr_cooldown: Option<u64> = None;
+    let mut mr_size_mult: Option<f64> = None;
 
     // R67 audit (Round 2): replace `args.next().unwrap()` with `ok_or_else`
     // — `ftmo-sweep --candles` (no path follows) panics with the usual Rust
@@ -426,6 +455,14 @@ fn main() -> Result<()> {
             "--lscool-bars" => lscool_bars = Some(need!("--lscool-bars").parse()?),
             "--trades-out" => trades_out = Some(PathBuf::from(need!("--trades-out"))),
             "--debug-window" => debug_window = Some(need!("--debug-window").parse()?),
+            "--phantom-suppress" => phantom_suppress = true,
+            "--also-fire-meanrev" => also_fire_meanrev = true,
+            "--also-fire-breakout" => also_fire_breakout = true,
+            "--mr-period" => mr_period = Some(need!("--mr-period").parse()?),
+            "--mr-oversold" => mr_oversold = Some(need!("--mr-oversold").parse()?),
+            "--mr-overbought" => mr_overbought = Some(need!("--mr-overbought").parse()?),
+            "--mr-cooldown" => mr_cooldown = Some(need!("--mr-cooldown").parse()?),
+            "--mr-size-mult" => mr_size_mult = Some(need!("--mr-size-mult").parse()?),
             other => return Err(anyhow!("unknown arg: {other}")),
         }
     }
@@ -485,6 +522,16 @@ fn main() -> Result<()> {
             &overrides,
             trades_out,
             debug_window,
+            MultiSignalCfg {
+                also_meanrev: also_fire_meanrev,
+                also_breakout: also_fire_breakout,
+                mr_period,
+                mr_oversold,
+                mr_overbought,
+                mr_cooldown,
+                mr_size_mult,
+                phantom_suppress,
+            },
         );
     }
 
@@ -777,6 +824,7 @@ fn run_multi_asset(
     overrides: &CfgOverrides,
     trades_out: Option<PathBuf>,
     debug_window: Option<usize>,
+    multi_signal: MultiSignalCfg,
 ) -> Result<()> {
     let dir = candles_dir.ok_or_else(|| anyhow!("--candles-dir is required for multi-asset"))?;
     let symbols_str =
@@ -926,6 +974,7 @@ fn run_multi_asset(
     let atr_by_sym = Arc::new(atr_by_sym);
     let funding_by_sym = Arc::new(funding_by_sym);
     let symbols = Arc::new(symbols);
+    let multi_signal = Arc::new(multi_signal);
 
     let started = Instant::now();
     let reports: Vec<WindowResult> = win_plans
@@ -945,6 +994,7 @@ fn run_multi_asset(
                 writer.clone(),
                 trades_writer.clone(),
                 debug_window,
+                multi_signal.as_ref(),
             )
         })
         .collect();
@@ -1006,6 +1056,7 @@ fn run_one_window(
     writer: Arc<Mutex<Option<BufWriter<File>>>>,
     trades_writer: Arc<Mutex<Option<BufWriter<File>>>>,
     debug_window: Option<usize>,
+    multi_signal: &MultiSignalCfg,
 ) -> WindowResult {
     let win_started = Instant::now();
     let mut state = EngineState::initial(&cfg.label);
@@ -1091,9 +1142,11 @@ fn run_one_window(
     use ftmo_engine_core::position::OpenPosition;
     let phantom_open_until: HashMap<(String, ftmo_engine_core::position::PositionSide), usize> = {
         let mut map = HashMap::new();
-        // Only run when default detector is active (per-asset entry types
-        // like CVD/POC/VolImb have their own non-overlap semantics).
-        if default_to_r28v6 {
+        // Only run when default detector is active AND user opt-in via
+        // --phantom-suppress. Phantom pre-pass is O(N²) per asset and adds
+        // ~1000× CPU cost — keep it off by default for fast parameter sweeps,
+        // turn on for parity-validation runs.
+        if default_to_r28v6 && multi_signal.phantom_suppress {
             for asset in cfg.assets.iter() {
                 let source = asset
                     .source_symbol
@@ -1390,6 +1443,53 @@ fn run_one_window(
                     }
                 }
                 signals_for_bar.push(s);
+            }
+
+            // R29-Stage-B: extra detectors fired in PARALLEL when
+            // requested. Each emits at most one signal per asset per bar;
+            // multi-detector means trend + mean-rev (or breakout) signals
+            // can both reach the harness for the same asset on the same
+            // bar. The harness's per-asset+direction trade-exclusivity
+            // gate (commit 50194dc) ensures only one position opens.
+            if multi_signal.also_meanrev
+                && matches!(signals_mode, SignalSrc::PerAssetCfg)
+                && default_to_r28v6
+            {
+                let arr = match feed.get(&source) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                let mr_src = ftmo_engine_core::config::MeanReversionSource {
+                    period: multi_signal.mr_period.unwrap_or(14),
+                    oversold: multi_signal.mr_oversold.unwrap_or(25.0),
+                    overbought: multi_signal.mr_overbought.unwrap_or(75.0),
+                    cooldown_bars: multi_signal.mr_cooldown.unwrap_or(8),
+                    size_mult: multi_signal.mr_size_mult.unwrap_or(0.5),
+                };
+                if let Some(s) =
+                    detect_mean_reversion(&mut state, cfg, asset, &source, arr, &mr_src)
+                {
+                    let key = (s.symbol.clone(), s.direction);
+                    if let Some(&exit_bar) = phantom_open_until.get(&key) {
+                        if i < exit_bar {
+                            continue;
+                        }
+                    }
+                    signals_for_bar.push(s);
+                }
+            }
+            if multi_signal.also_breakout
+                && matches!(signals_mode, SignalSrc::PerAssetCfg)
+                && default_to_r28v6
+            {
+                let arr = match feed.get(&source) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                let bp = BreakoutParams::from_cfg(cfg, asset);
+                if let Some(s) = detect_breakout(&mut state, cfg, asset, &source, arr, &bp) {
+                    signals_for_bar.push(s);
+                }
             }
         }
 
