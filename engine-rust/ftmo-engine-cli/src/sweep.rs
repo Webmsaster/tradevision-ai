@@ -64,6 +64,165 @@ struct WindowResult {
     elapsed_ms: f64,
 }
 
+/// R29-PassrateHunt: post-template config mutations. Bundle all override
+/// flags into a single struct so `run_multi_asset` doesn't grow N more args.
+#[derive(Default, Debug, Clone)]
+struct CfgOverrides {
+    tp_mult: Option<f64>,
+    stop_pct: Option<f64>,
+    mct: Option<u32>,
+    trail_activate: Option<f64>,
+    trail_pct: Option<f64>,
+    leverage: Option<f64>,
+    hold_bars: Option<u32>,
+    hours: Option<String>,
+    dows: Option<String>,
+    drop_symbols: Option<String>,
+    keep_symbols: Option<String>,
+    disable_trail: bool,
+    disable_passlock: bool,
+    enable_passlock: bool,
+    be_threshold: Option<f64>,
+    funding_max_long: Option<f64>,
+    funding_min_short: Option<f64>,
+    adaptive_tp: Option<String>,
+}
+
+fn apply_overrides(
+    cfg: &mut ftmo_engine_core::config::EngineConfig,
+    ov: &CfgOverrides,
+) -> Result<()> {
+    use ftmo_engine_core::config::{FundingRateFilter, BreakEven, TrailingStop};
+
+    if let Some(m) = ov.tp_mult {
+        for a in cfg.assets.iter_mut() {
+            if let Some(t) = a.tp_pct {
+                a.tp_pct = Some(t * m);
+            } else {
+                a.tp_pct = Some(cfg.tp_pct * m);
+            }
+        }
+    }
+    if let Some(s) = ov.stop_pct {
+        cfg.stop_pct = s;
+        for a in cfg.assets.iter_mut() {
+            a.stop_pct = Some(s);
+        }
+    }
+    if let Some(m) = ov.mct {
+        cfg.max_concurrent_trades = Some(m);
+    }
+    if let Some(l) = ov.leverage {
+        cfg.leverage = l;
+    }
+    if let Some(h) = ov.hold_bars {
+        cfg.hold_bars = h;
+        for a in cfg.assets.iter_mut() {
+            a.hold_bars = Some(h);
+        }
+    }
+    if ov.disable_trail {
+        cfg.trailing_stop = None;
+    } else {
+        let act = ov.trail_activate;
+        let pct = ov.trail_pct;
+        if act.is_some() || pct.is_some() {
+            let cur = cfg.trailing_stop.unwrap_or(TrailingStop {
+                activate_pct: 0.03,
+                trail_pct: 0.005,
+            });
+            cfg.trailing_stop = Some(TrailingStop {
+                activate_pct: act.unwrap_or(cur.activate_pct),
+                trail_pct: pct.unwrap_or(cur.trail_pct),
+            });
+        }
+    }
+    if ov.disable_passlock {
+        cfg.close_all_on_target_reached = false;
+    }
+    if ov.enable_passlock {
+        cfg.close_all_on_target_reached = true;
+    }
+    if let Some(t) = ov.be_threshold {
+        cfg.break_even = Some(BreakEven { threshold: t });
+    }
+    if let Some(csv) = &ov.hours {
+        let v: Vec<u32> = csv
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        cfg.allowed_hours_utc = Some(v);
+    }
+    if let Some(csv) = &ov.dows {
+        let v: Vec<u32> = csv
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        cfg.allowed_dows_utc = Some(v);
+    }
+    if let Some(csv) = &ov.drop_symbols {
+        let drop: std::collections::HashSet<String> = csv
+            .split(',')
+            .map(|s| s.trim().to_uppercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        cfg.assets.retain(|a| {
+            let bare = a.symbol.replace("-TREND", "");
+            let src = a
+                .source_symbol
+                .clone()
+                .unwrap_or_default()
+                .replace("USDT", "");
+            !drop.contains(&bare) && !drop.contains(&src)
+        });
+    }
+    if let Some(csv) = &ov.keep_symbols {
+        let keep: std::collections::HashSet<String> = csv
+            .split(',')
+            .map(|s| s.trim().to_uppercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        cfg.assets.retain(|a| {
+            let bare = a.symbol.replace("-TREND", "");
+            let src = a
+                .source_symbol
+                .clone()
+                .unwrap_or_default()
+                .replace("USDT", "");
+            keep.contains(&bare) || keep.contains(&src)
+        });
+    }
+    if ov.funding_max_long.is_some() || ov.funding_min_short.is_some() {
+        cfg.funding_rate_filter = Some(FundingRateFilter {
+            max_funding_for_long: ov.funding_max_long,
+            min_funding_for_short: ov.funding_min_short,
+        });
+    }
+    if let Some(csv) = &ov.adaptive_tp {
+        // Format: "BTC:0.025,ETH:0.030,..."
+        for pair in csv.split(',') {
+            let mut sp = pair.splitn(2, ':');
+            let key = sp.next().map(|s| s.trim().to_uppercase()).unwrap_or_default();
+            let val: Option<f64> = sp.next().and_then(|s| s.trim().parse().ok());
+            if key.is_empty() || val.is_none() {
+                continue;
+            }
+            for a in cfg.assets.iter_mut() {
+                let bare = a.symbol.replace("-TREND", "");
+                let src = a
+                    .source_symbol
+                    .clone()
+                    .unwrap_or_default()
+                    .replace("USDT", "");
+                if bare == key || src == key {
+                    a.tp_pct = val;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 enum SignalSrc {
     None,
@@ -92,6 +251,27 @@ fn main() -> Result<()> {
     let mut signals = SignalSrc::Breakout;
     let mut signals_user_set = false;
     let mut step_days: Option<u32> = None; // overlap-window stride in DAYS
+    // R29-PassrateHunt: lightweight CLI overrides so a bash-orchestrated grid
+    // sweep can probe parameter space without recompiling templates per run.
+    // All overrides are post-template (applied after `template_by_selector`).
+    let mut override_tp_mult: Option<f64> = None;
+    let mut override_stop_pct: Option<f64> = None;
+    let mut override_mct: Option<u32> = None;
+    let mut override_trail_activate: Option<f64> = None;
+    let mut override_trail_pct: Option<f64> = None;
+    let mut override_leverage: Option<f64> = None;
+    let mut override_hold_bars: Option<u32> = None;
+    let mut override_hours: Option<String> = None; // CSV "2,4,6,..."
+    let mut override_dows: Option<String> = None;  // CSV "1,2,3,4,5"
+    let mut drop_symbols: Option<String> = None;   // CSV "RUNE,SAND"
+    let mut keep_symbols: Option<String> = None;   // CSV "BTC,ETH,..." (whitelist)
+    let mut disable_trail: bool = false;
+    let mut disable_passlock: bool = false;
+    let mut enable_passlock: bool = false;
+    let mut be_threshold: Option<f64> = None;      // add break-even
+    let mut funding_max_long: Option<f64> = None;
+    let mut funding_min_short: Option<f64> = None;
+    let mut adaptive_tp_per_asset: Option<String> = None; // "BTC:0.025,ETH:0.030"
 
     // R67 audit (Round 2): replace `args.next().unwrap()` with `ok_or_else`
     // — `ftmo-sweep --candles` (no path follows) panics with the usual Rust
@@ -134,6 +314,37 @@ fn main() -> Result<()> {
                 }
                 return Ok(());
             }
+            // R29-PassrateHunt overrides
+            "--override-tp-mult" => override_tp_mult = Some(need!("--override-tp-mult").parse()?),
+            "--override-stop-pct" => override_stop_pct = Some(need!("--override-stop-pct").parse()?),
+            "--override-mct" => override_mct = Some(need!("--override-mct").parse()?),
+            "--override-trail-activate" => {
+                override_trail_activate = Some(need!("--override-trail-activate").parse()?)
+            }
+            "--override-trail-pct" => {
+                override_trail_pct = Some(need!("--override-trail-pct").parse()?)
+            }
+            "--override-leverage" => {
+                override_leverage = Some(need!("--override-leverage").parse()?)
+            }
+            "--override-hold-bars" => {
+                override_hold_bars = Some(need!("--override-hold-bars").parse()?)
+            }
+            "--override-hours" => override_hours = Some(need!("--override-hours")),
+            "--override-dows" => override_dows = Some(need!("--override-dows")),
+            "--drop-symbols" => drop_symbols = Some(need!("--drop-symbols")),
+            "--keep-symbols" => keep_symbols = Some(need!("--keep-symbols")),
+            "--disable-trail" => disable_trail = true,
+            "--disable-passlock" => disable_passlock = true,
+            "--enable-passlock" => enable_passlock = true,
+            "--be-threshold" => be_threshold = Some(need!("--be-threshold").parse()?),
+            "--funding-max-long" => {
+                funding_max_long = Some(need!("--funding-max-long").parse()?)
+            }
+            "--funding-min-short" => {
+                funding_min_short = Some(need!("--funding-min-short").parse()?)
+            }
+            "--adaptive-tp" => adaptive_tp_per_asset = Some(need!("--adaptive-tp")),
             other => return Err(anyhow!("unknown arg: {other}")),
         }
     }
@@ -148,6 +359,27 @@ fn main() -> Result<()> {
             .ok();
     }
 
+    let overrides = CfgOverrides {
+        tp_mult: override_tp_mult,
+        stop_pct: override_stop_pct,
+        mct: override_mct,
+        trail_activate: override_trail_activate,
+        trail_pct: override_trail_pct,
+        leverage: override_leverage,
+        hold_bars: override_hold_bars,
+        hours: override_hours,
+        dows: override_dows,
+        drop_symbols,
+        keep_symbols,
+        disable_trail,
+        disable_passlock,
+        enable_passlock,
+        be_threshold,
+        funding_max_long,
+        funding_min_short,
+        adaptive_tp: adaptive_tp_per_asset,
+    };
+
     if candles_dir.is_some() || symbols_arg.is_some() {
         return run_multi_asset(
             candles_dir,
@@ -159,6 +391,7 @@ fn main() -> Result<()> {
             out_path,
             signals,
             signals_user_set,
+            &overrides,
         );
     }
 
@@ -437,6 +670,7 @@ fn finalise_report(reports: &[WindowResult], windows: usize, started: Instant) {
 // ───────────────── Multi-asset (R29-R5) path ────────────────────────
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn run_multi_asset(
     candles_dir: Option<PathBuf>,
     funding_dir: Option<PathBuf>,
@@ -447,6 +681,7 @@ fn run_multi_asset(
     out_path: Option<PathBuf>,
     signals_mode: SignalSrc,
     signals_user_set: bool,
+    overrides: &CfgOverrides,
 ) -> Result<()> {
     let dir = candles_dir.ok_or_else(|| anyhow!("--candles-dir is required for multi-asset"))?;
     let symbols_str =
@@ -464,8 +699,10 @@ fn run_multi_asset(
     // entry-fields only exist in templates that pre-baked them.
     let selector = config_selector
         .ok_or_else(|| anyhow!("--config is required (e.g. r28_v6_cvd, r28_v6_volimb, r28_v6_poc)"))?;
-    let cfg = templates::template_by_selector(&selector)
+    let mut cfg = templates::template_by_selector(&selector)
         .ok_or_else(|| anyhow!("unknown selector: {selector}"))?;
+    // R29-PassrateHunt: apply CLI overrides post-template.
+    apply_overrides(&mut cfg, overrides)?;
 
     // Load candles per symbol.
     let mut candles_by_sym: HashMap<String, Vec<Candle>> = HashMap::new();
