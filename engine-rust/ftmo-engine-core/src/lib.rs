@@ -6,6 +6,7 @@ pub mod exit;
 pub mod drift;
 pub mod harness;
 pub mod indicators;
+pub mod ml_gate;
 pub mod news;
 pub mod persist;
 pub mod reconcile;

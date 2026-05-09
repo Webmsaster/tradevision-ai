@@ -64,6 +64,66 @@ struct WindowResult {
     elapsed_ms: f64,
 }
 
+fn ml_features_for_signal(
+    series: &MlFeatureSeries,
+    bar_idx: usize,
+    asset_idx: usize,
+    direction_long: bool,
+    entry_time_ms: i64,
+) -> [f64; 13] {
+    let i = bar_idx;
+    let close = series.closes.get(i).copied().unwrap_or(0.0);
+    let close5 = series.closes.get(i.saturating_sub(5)).copied().unwrap_or(close);
+    let close20 = series.closes.get(i.saturating_sub(20)).copied().unwrap_or(close);
+    let prior5 = if close5 > 0.0 { (close - close5) / close5 } else { 0.0 };
+    let prior20 = if close20 > 0.0 { (close - close20) / close20 } else { 0.0 };
+    let atr_pct = match (series.atr14.get(i).copied().flatten(), close) {
+        (Some(a), c) if c > 0.0 => a / c,
+        _ => 0.0,
+    };
+    let slope = |s: &[Option<f64>], lookback: usize| -> f64 {
+        let cur = s.get(i).copied().flatten();
+        let prev = s.get(i.saturating_sub(lookback)).copied().flatten();
+        match (cur, prev) {
+            (Some(c), Some(p)) if p != 0.0 => (c - p) / p,
+            _ => 0.0,
+        }
+    };
+    use chrono::{DateTime, Datelike, Timelike, Utc};
+    let dt = DateTime::<Utc>::from_timestamp_millis(entry_time_ms);
+    let (hour, dow) = match dt {
+        Some(t) => (t.hour() as f64, t.weekday().num_days_from_sunday() as f64),
+        None => (0.0, 0.0),
+    };
+    [
+        series.rsi14.get(i).copied().flatten().unwrap_or(0.0),
+        series.rsi28.get(i).copied().flatten().unwrap_or(0.0),
+        series.adx14.get(i).copied().flatten().unwrap_or(0.0),
+        atr_pct,
+        slope(&series.sma20, 20),
+        slope(&series.sma50, 50),
+        slope(&series.sma200, 200),
+        hour,
+        dow,
+        prior5,
+        prior20,
+        asset_idx as f64,
+        if direction_long { 1.0 } else { 0.0 },
+    ]
+}
+
+/// R29-Track-B3 pre-computed feature series per symbol.
+struct MlFeatureSeries {
+    rsi14: Vec<Option<f64>>,
+    rsi28: Vec<Option<f64>>,
+    adx14: Vec<Option<f64>>,
+    atr14: Vec<Option<f64>>,
+    sma20: Vec<Option<f64>>,
+    sma50: Vec<Option<f64>>,
+    sma200: Vec<Option<f64>>,
+    closes: Vec<f64>,
+}
+
 /// R29-Stage-B multi-signal stacking. When set, the per-asset signal loop
 /// fires the named extra detectors in addition to the default per-asset
 /// dispatch (R28V6 / cvd / volimb / poc). Each detector emits at most one
@@ -83,6 +143,10 @@ struct MultiSignalCfg {
     /// because the per-asset detector iterates O(N_bars²) per window. Use
     /// for parity-validation runs; not for fast parameter sweeps.
     phantom_suppress: bool,
+    /// R29-Track-B3 ML signal-gate: arc-shared model and threshold. None →
+    /// gate disabled.
+    ml_model: Option<Arc<ftmo_engine_core::ml_gate::MlModel>>,
+    ml_threshold: f64,
 }
 
 /// R29-PassrateHunt: post-template config mutations. Bundle all override
@@ -363,6 +427,9 @@ fn main() -> Result<()> {
     let mut lscool_after: Option<u32> = None;
     let mut lscool_bars: Option<u64> = None;
     let mut phantom_suppress: bool = false;
+    let mut ml_model_path: Option<PathBuf> = None;
+    let mut ml_threshold: f64 = 0.0;
+    let mut start_after_ts: Option<i64> = None;
     let mut also_fire_meanrev: bool = false;
     let mut also_fire_breakout: bool = false;
     let mut mr_period: Option<u32> = None;
@@ -456,6 +523,9 @@ fn main() -> Result<()> {
             "--trades-out" => trades_out = Some(PathBuf::from(need!("--trades-out"))),
             "--debug-window" => debug_window = Some(need!("--debug-window").parse()?),
             "--phantom-suppress" => phantom_suppress = true,
+            "--ml-model" => ml_model_path = Some(PathBuf::from(need!("--ml-model"))),
+            "--ml-threshold" => ml_threshold = need!("--ml-threshold").parse()?,
+            "--start-after-ts" => start_after_ts = Some(need!("--start-after-ts").parse()?),
             "--also-fire-meanrev" => also_fire_meanrev = true,
             "--also-fire-breakout" => also_fire_breakout = true,
             "--mr-period" => mr_period = Some(need!("--mr-period").parse()?),
@@ -522,6 +592,7 @@ fn main() -> Result<()> {
             &overrides,
             trades_out,
             debug_window,
+            start_after_ts,
             MultiSignalCfg {
                 also_meanrev: also_fire_meanrev,
                 also_breakout: also_fire_breakout,
@@ -531,6 +602,21 @@ fn main() -> Result<()> {
                 mr_cooldown,
                 mr_size_mult,
                 phantom_suppress,
+                ml_model: match &ml_model_path {
+                    Some(p) => {
+                        let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
+                            p.to_string_lossy().as_ref(),
+                        )
+                        .map_err(|e| anyhow!("ml model load: {e}"))?;
+                        eprintln!(
+                            "[ml-gate] loaded {} trees, AUC={:.4}, baseline winRate={:.3}, threshold={:.2}",
+                            m.n_trees, m.validation_auc, m.win_rate_baseline, ml_threshold
+                        );
+                        Some(Arc::new(m))
+                    }
+                    None => None,
+                },
+                ml_threshold,
             },
         );
     }
@@ -824,6 +910,7 @@ fn run_multi_asset(
     overrides: &CfgOverrides,
     trades_out: Option<PathBuf>,
     debug_window: Option<usize>,
+    start_after_ts: Option<i64>,
     multi_signal: MultiSignalCfg,
 ) -> Result<()> {
     let dir = candles_dir.ok_or_else(|| anyhow!("--candles-dir is required for multi-asset"))?;
@@ -883,6 +970,36 @@ fn run_multi_asset(
         .iter()
         .map(|(s, cs)| (s.clone(), atr(cs, chand_period)))
         .collect();
+
+    // R29-Track-B3 ML feature series. Pre-compute per symbol once, reused
+    // across all windows. Match feature layout in `_mlTrainClassifier.py`.
+    let ml_features_by_sym: HashMap<String, MlFeatureSeries> = if multi_signal
+        .ml_model
+        .is_some()
+    {
+        use ftmo_engine_core::detector_filters::adx as adx_fn;
+        use ftmo_engine_core::indicators::{atr as atr_fn, rsi as rsi_fn, sma as sma_fn};
+        let mut map = HashMap::new();
+        for (sym, cs) in aligned.iter() {
+            let closes: Vec<f64> = cs.iter().map(|c| c.close).collect();
+            map.insert(
+                sym.clone(),
+                MlFeatureSeries {
+                    rsi14: rsi_fn(&closes, 14),
+                    rsi28: rsi_fn(&closes, 28),
+                    adx14: adx_fn(cs, 14),
+                    atr14: atr_fn(cs, 14),
+                    sma20: sma_fn(&closes, 20),
+                    sma50: sma_fn(&closes, 50),
+                    sma200: sma_fn(&closes, 200),
+                    closes,
+                },
+            );
+        }
+        map
+    } else {
+        HashMap::new()
+    };
 
     // R29-R7: load + forward-fill funding-rate series per symbol, aligned
     // to the same openTime sequence as `aligned`. Missing files become
@@ -958,6 +1075,23 @@ fn run_multi_asset(
             })
             .collect()
     };
+    // R29-Track-B4: filter windows whose start time is before user-supplied
+    // cutoff (out-of-sample test mode for ML-gated runs). aligned_times[lo]
+    // is the open_time of bar lo.
+    let win_plans: Vec<(usize, usize)> = if let Some(cutoff) = start_after_ts {
+        win_plans
+            .into_iter()
+            .filter(|(lo, _)| {
+                aligned_times
+                    .get(*lo)
+                    .copied()
+                    .map(|t| t >= cutoff)
+                    .unwrap_or(false)
+            })
+            .collect()
+    } else {
+        win_plans
+    };
     let actual_windows = win_plans.len();
 
     let writer: Arc<Mutex<Option<BufWriter<File>>>> = Arc::new(Mutex::new(match &out_path {
@@ -975,6 +1109,7 @@ fn run_multi_asset(
     let funding_by_sym = Arc::new(funding_by_sym);
     let symbols = Arc::new(symbols);
     let multi_signal = Arc::new(multi_signal);
+    let ml_features_by_sym = Arc::new(ml_features_by_sym);
 
     let started = Instant::now();
     let reports: Vec<WindowResult> = win_plans
@@ -995,6 +1130,7 @@ fn run_multi_asset(
                 trades_writer.clone(),
                 debug_window,
                 multi_signal.as_ref(),
+                ml_features_by_sym.as_ref(),
             )
         })
         .collect();
@@ -1057,6 +1193,7 @@ fn run_one_window(
     trades_writer: Arc<Mutex<Option<BufWriter<File>>>>,
     debug_window: Option<usize>,
     multi_signal: &MultiSignalCfg,
+    ml_features_by_sym: &HashMap<String, MlFeatureSeries>,
 ) -> WindowResult {
     let win_started = Instant::now();
     let mut state = EngineState::initial(&cfg.label);
@@ -1440,6 +1577,32 @@ fn run_one_window(
                     if i < exit_bar {
                         // Phantom still open; suppress.
                         continue;
+                    }
+                }
+                // R29-Track-B3: ML signal-gate. Predict P(win) and skip
+                // signals whose probability falls below the threshold.
+                if let Some(model) = multi_signal.ml_model.as_ref() {
+                    if let Some(series) = ml_features_by_sym.get(&source) {
+                        let asset_idx = cfg
+                            .assets
+                            .iter()
+                            .position(|a| a.symbol == s.symbol)
+                            .unwrap_or(0);
+                        let direction_long = matches!(
+                            s.direction,
+                            ftmo_engine_core::position::PositionSide::Long
+                        );
+                        let feats = ml_features_for_signal(
+                            series,
+                            i,
+                            asset_idx,
+                            direction_long,
+                            s.entry_time,
+                        );
+                        let p_win = model.predict_proba(&feats);
+                        if p_win < multi_signal.ml_threshold {
+                            continue;
+                        }
                     }
                 }
                 signals_for_bar.push(s);
