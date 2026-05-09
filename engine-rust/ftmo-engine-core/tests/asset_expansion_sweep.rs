@@ -182,6 +182,7 @@ fn run_window(
                 htf_closes: Some(&htf_closes),
                 cross_asset_closes: if src == "BTCUSDT" { None } else { Some(&btc_closes) },
                 news_events: None,
+                funding_series: None,
             };
             let mut state_clone = state.clone();
             if let Some(s) = detect_r28_v6(

@@ -59,12 +59,15 @@ fn make_assets(symbols: &[&str], risk_frac: f64) -> Vec<AssetConfig> {
             max_equity_gain: None,
             hold_bars: None,
             invert_direction: false,
+            trigger_bars: None,
             cost_bp: None,
             slippage_bp: None,
             swap_bp_per_day: None,
             cvd_entry: None,
             vol_imbalance_entry: None,
             vol_poc_entry: None,
+            max_funding_for_long: None,
+            min_funding_for_short: None,
         })
         .collect()
 }
@@ -250,6 +253,57 @@ pub fn r28_v6_poc_template() -> EngineConfig {
     cfg
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// R29 Round 7 — funding-rate-filter templates. Stack with PASSLOCK base.
+// Mirrors `FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_{FRMED,FRLONG,FRMILD,FRSTRICT}`
+// in `src/utils/ftmoDaytrade24h.ts:8696-8719`. R29-R7 result: PASSLOCK 44.85%
+// → FRMED 47.06% (+2.21pp).
+// ─────────────────────────────────────────────────────────────────────
+
+/// R29-R7 PASSLOCK + funding (mild: skip longs >0.1%, shorts <-0.05%).
+pub fn r28_v6_passlock_frmild_template() -> EngineConfig {
+    let mut cfg = r28_v6_passlock();
+    cfg.label = "R28_V6_PASSLOCK_FRMILD".into();
+    cfg.funding_rate_filter = Some(crate::config::FundingRateFilter {
+        max_funding_for_long: Some(0.001),
+        min_funding_for_short: Some(-0.0005),
+    });
+    cfg
+}
+
+/// R29-R7 PASSLOCK + funding (medium: top/bottom 5%). +2.21pp vs PASSLOCK.
+pub fn r28_v6_passlock_frmed_template() -> EngineConfig {
+    let mut cfg = r28_v6_passlock();
+    cfg.label = "R28_V6_PASSLOCK_FRMED".into();
+    cfg.funding_rate_filter = Some(crate::config::FundingRateFilter {
+        max_funding_for_long: Some(0.0005),
+        min_funding_for_short: Some(-0.0003),
+    });
+    cfg
+}
+
+/// R29-R7 PASSLOCK + funding (strict: top 25%).
+pub fn r28_v6_passlock_frstrict_template() -> EngineConfig {
+    let mut cfg = r28_v6_passlock();
+    cfg.label = "R28_V6_PASSLOCK_FRSTRICT".into();
+    cfg.funding_rate_filter = Some(crate::config::FundingRateFilter {
+        max_funding_for_long: Some(0.0003),
+        min_funding_for_short: Some(-0.0002),
+    });
+    cfg
+}
+
+/// R29-R7 PASSLOCK + funding (long-only — neg-tail too rare to gate).
+pub fn r28_v6_passlock_frlong_template() -> EngineConfig {
+    let mut cfg = r28_v6_passlock();
+    cfg.label = "R28_V6_PASSLOCK_FRLONG".into();
+    cfg.funding_rate_filter = Some(crate::config::FundingRateFilter {
+        max_funding_for_long: Some(0.0005),
+        min_funding_for_short: None,
+    });
+    cfg
+}
+
 /// Resolve an `FTMO_TF` selector to an `EngineConfig` template. Returns
 /// `None` for unknown selectors — caller should fall back to JSON config.
 pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
@@ -264,6 +318,10 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "r28_v6_cvd" => r28_v6_cvd_template(),
         "r28_v6_volimb" => r28_v6_volimb_template(),
         "r28_v6_poc" => r28_v6_poc_template(),
+        "r28_v6_passlock_frmild" => r28_v6_passlock_frmild_template(),
+        "r28_v6_passlock_frmed" => r28_v6_passlock_frmed_template(),
+        "r28_v6_passlock_frstrict" => r28_v6_passlock_frstrict_template(),
+        "r28_v6_passlock_frlong" => r28_v6_passlock_frlong_template(),
         _ => return None,
     })
 }
@@ -281,6 +339,10 @@ pub fn known_selectors() -> &'static [&'static str] {
         "r28_v6_cvd",
         "r28_v6_volimb",
         "r28_v6_poc",
+        "r28_v6_passlock_frmild",
+        "r28_v6_passlock_frmed",
+        "r28_v6_passlock_frstrict",
+        "r28_v6_passlock_frlong",
     ]
 }
 
@@ -357,5 +419,42 @@ mod tests {
         let ptp = cfg.partial_take_profit.unwrap();
         assert!((ptp.trigger_pct - 0.012).abs() < 1e-9);
         assert!((ptp.close_fraction - 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn frmed_template_has_both_thresholds() {
+        let cfg = r28_v6_passlock_frmed_template();
+        assert_eq!(cfg.label, "R28_V6_PASSLOCK_FRMED");
+        let f = cfg.funding_rate_filter.expect("FRMED must set filter");
+        assert!((f.max_funding_for_long.unwrap() - 0.0005).abs() < 1e-12);
+        assert!((f.min_funding_for_short.unwrap() - (-0.0003)).abs() < 1e-12);
+        // Inherits PASSLOCK semantics.
+        assert!(cfg.close_all_on_target_reached);
+        assert_eq!(cfg.assets.len(), 9);
+    }
+
+    #[test]
+    fn frlong_template_only_sets_long_threshold() {
+        let cfg = r28_v6_passlock_frlong_template();
+        assert_eq!(cfg.label, "R28_V6_PASSLOCK_FRLONG");
+        let f = cfg.funding_rate_filter.expect("FRLONG must set filter");
+        assert!((f.max_funding_for_long.unwrap() - 0.0005).abs() < 1e-12);
+        assert!(f.min_funding_for_short.is_none());
+        assert!(cfg.close_all_on_target_reached);
+    }
+
+    #[test]
+    fn frmild_and_frstrict_templates_resolve() {
+        let mild = r28_v6_passlock_frmild_template();
+        let strict = r28_v6_passlock_frstrict_template();
+        assert!((mild.funding_rate_filter.unwrap().max_funding_for_long.unwrap() - 0.001).abs() < 1e-12);
+        assert!((strict.funding_rate_filter.unwrap().max_funding_for_long.unwrap() - 0.0003).abs() < 1e-12);
+    }
+
+    #[test]
+    fn frmed_selector_resolves() {
+        let cfg = template_by_selector("r28_v6_passlock_frmed").unwrap();
+        assert_eq!(cfg.label, "R28_V6_PASSLOCK_FRMED");
+        assert!(cfg.funding_rate_filter.is_some());
     }
 }

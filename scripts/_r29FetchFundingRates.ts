@@ -15,13 +15,29 @@ const CACHE_DIR = "scripts/cache_bakeoff";
 const SYMBOLS = [
   "AAVEUSDT",
   "ADAUSDT",
+  "AVAXUSDT",
   "BCHUSDT",
   "BNBUSDT",
   "BTCUSDT",
+  "DOGEUSDT",
   "ETCUSDT",
   "ETHUSDT",
+  "INJUSDT",
   "LTCUSDT",
+  "RUNEUSDT",
+  "SANDUSDT",
+  "SOLUSDT",
   "XRPUSDT",
+  // Also: ALGO, ATOM, ARB, DOT, LINK, NEAR, STX, TRX, UNI for completeness
+  "ALGOUSDT",
+  "ATOMUSDT",
+  "ARBUSDT",
+  "DOTUSDT",
+  "LINKUSDT",
+  "NEARUSDT",
+  "STXUSDT",
+  "TRXUSDT",
+  "UNIUSDT",
 ];
 
 // Cover full candle range with buffer.

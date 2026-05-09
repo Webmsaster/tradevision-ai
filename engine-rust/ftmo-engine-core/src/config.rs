@@ -73,6 +73,12 @@ pub struct AssetConfig {
     #[serde(default, rename = "invertDirection")]
     pub invert_direction: bool,
 
+    /// Per-asset N-consecutive-close trigger override; falls back to
+    /// `cfg.trigger_bars`. Mirrors `asset.triggerBars ?? cfg.triggerBars`
+    /// in `src/utils/ftmoDaytrade24h.ts:3608`. None = use cfg.trigger_bars.
+    #[serde(default, rename = "triggerBars")]
+    pub trigger_bars: Option<u32>,
+
     // ─── R67-r17/r18: per-asset broker costs (used by `compute_eff_pnl`) ──
     /// Round-trip commission in basis points. Subtracted from rawPnl as
     /// `costBp/10000`. Mirrors `ftmoDaytrade24h.ts` line 4273/4626.
@@ -94,6 +100,14 @@ pub struct AssetConfig {
     pub vol_imbalance_entry: Option<VolImbalanceEntry>,
     #[serde(default, rename = "volPocEntry")]
     pub vol_poc_entry: Option<VolPocEntry>,
+
+    // ─── R29 Round 7: per-asset funding-rate filter overrides ─────────
+    /// Per-asset override of `cfg.funding_rate_filter.max_funding_for_long`.
+    #[serde(default, rename = "maxFundingForLong")]
+    pub max_funding_for_long: Option<f64>,
+    /// Per-asset override of `cfg.funding_rate_filter.min_funding_for_short`.
+    #[serde(default, rename = "minFundingForShort")]
+    pub min_funding_for_short: Option<f64>,
 }
 
 /// Cross-asset filter — only allow signals if `symbol` is currently
@@ -284,6 +298,25 @@ pub struct CorrelationFilter {
     pub max_open_same_direction: u32,
 }
 
+/// R29-R7: per-perp funding-rate crowdedness gate. The current funding rate
+/// (8h-cycle, ~0.0001 = 1bp = 0.01%) for the asset is consulted at signal
+/// time. Long entries are skipped when funding > `max_funding_for_long`
+/// (longs would overpay shorts). Short entries are skipped when funding
+/// < `min_funding_for_short` (shorts would overpay longs).
+///
+/// Per-asset overrides via `AssetConfig::max_funding_for_long` /
+/// `AssetConfig::min_funding_for_short` shadow these top-level numbers.
+///
+/// Mirrors `FtmoDaytrade24hConfig.fundingRateFilter` in
+/// `src/utils/ftmoDaytrade24h.ts` (lines 886-889 + 4219-4238 gate logic).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+pub struct FundingRateFilter {
+    #[serde(default, rename = "maxFundingForLong")]
+    pub max_funding_for_long: Option<f64>,
+    #[serde(default, rename = "minFundingForShort")]
+    pub min_funding_for_short: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineConfig {
     /// Cosmetic label used by state files / logs.
@@ -372,6 +405,9 @@ pub struct EngineConfig {
     #[serde(default, rename = "closeAllOnTargetReached")]
     pub close_all_on_target_reached: bool,
 
+    #[serde(default, rename = "fundingRateFilter")]
+    pub funding_rate_filter: Option<FundingRateFilter>,
+
     #[serde(default, rename = "crossAssetFilter")]
     pub cross_asset_filter: Option<CrossAssetFilter>,
     #[serde(default, rename = "crossAssetFiltersExtra")]
@@ -412,7 +448,11 @@ impl EngineConfig {
             tp_pct: 0.04,
             stop_pct: 0.02,
             hold_bars: 24,
-            trigger_bars: 0,
+            // R28_V6 inherits `triggerBars: 1` from the V1 root config
+            // (`ftmoDaytrade24h.ts:6484`). Mean-reversion family: invert is
+            // false on every R28_V6 asset, so the default rule = "1 red bar
+            // → long, 1 green bar → short" (with SMA-slow regime gate).
+            trigger_bars: 1,
             profit_target: 0.10,
             max_daily_loss: 0.05,
             max_total_loss: 0.10,
@@ -440,6 +480,7 @@ impl EngineConfig {
             daily_peak_trailing_stop: None,
             challenge_peak_trailing_stop: None,
             max_concurrent_trades: None,
+            funding_rate_filter: None,
             cross_asset_filter: None,
             cross_asset_filters_extra: None,
             vol_adaptive_tp_mult: None,

@@ -1,41 +1,23 @@
 /**
- * R29 Round 8 — stacking shard runner.
+ * R29-R9 — funding-rate filter on V5_TITANIUM 14-asset basket.
  *
- * Loads candles + funding-rate, builds cross-sectional momentum + regime
- * masks (HMM-light), AND-combines, runs simulate() with both funding and
- * the combined entry-allowed mask piped through.
- *
- * Mask configuration is hardcoded per slug (different slugs produce
- * different filter combinations) so the shard runner doesn't depend
- * on the slow ftmoDaytrade24h.ts re-import for thresholds.
- *
- * Usage: <CONFIG_NAME> <slug> <shard_idx> <shard_count> <mask_mode> [stepDays]
- *   mask_mode: "crossmom" | "regime" | "stacked" | "none"
- *   stepDays: window step in days, default 14. Set to 28 for fast iteration
- *   (halves window count 136→68, halves sweep wall-clock).
+ * Same logic as _r29Round7Shard.ts but uses TITANIUM symbol list.
+ * Step-days configurable via 5th CLI arg (default 14).
  */
 import * as cfgModule from "../src/utils/ftmoDaytrade24h";
 import { simulate } from "../src/utils/ftmoLiveEngineV4";
 import type { Candle } from "../src/utils/indicators";
 import { readFileSync, writeFileSync, appendFileSync } from "node:fs";
-import {
-  buildCrossMomentumMask,
-  buildRegimeMask,
-  andMasks,
-} from "./_r29MaskBuilders";
 
 const CACHE_DIR = "scripts/cache_bakeoff";
 const CONFIG_NAME = process.argv[2] ?? "";
 const SLUG = process.argv[3] ?? "";
 const SHARD_IDX = parseInt(process.argv[4] ?? "0", 10);
 const SHARD_COUNT = parseInt(process.argv[5] ?? "1", 10);
-const MASK_MODE = process.argv[6] ?? "stacked";
-const STEP_DAYS = parseInt(process.argv[7] ?? "14", 10);
+const STEP_DAYS = parseInt(process.argv[6] ?? "14", 10);
 
 if (!CONFIG_NAME || !SLUG) {
-  console.error(
-    "usage: <CONFIG_NAME> <slug> <shard_idx> <shard_count> <mask_mode>",
-  );
+  console.error("usage: <CONFIG> <slug> <shard_idx> <count> [stepDays]");
   process.exit(2);
 }
 
@@ -50,16 +32,22 @@ if (!cfg) {
 const OUT_FILE = `${CACHE_DIR}/r29_${SLUG}_shard_${SHARD_IDX}.jsonl`;
 writeFileSync(OUT_FILE, "");
 
+// V5_TITANIUM 14-asset universe.
 const SYMBOLS = [
-  "AAVEUSDT",
-  "ADAUSDT",
-  "BCHUSDT",
-  "BNBUSDT",
-  "BTCUSDT",
-  "ETCUSDT",
   "ETHUSDT",
+  "BTCUSDT",
+  "BNBUSDT",
+  "ADAUSDT",
+  "DOGEUSDT",
+  "AVAXUSDT",
   "LTCUSDT",
+  "BCHUSDT",
+  "AAVEUSDT",
   "XRPUSDT",
+  "INJUSDT",
+  "RUNEUSDT",
+  "ETCUSDT",
+  "SANDUSDT",
 ];
 
 interface FundingPt {
@@ -112,30 +100,6 @@ function loadAligned() {
 }
 
 const { aligned, fundingByAsset, minBars } = loadAligned();
-
-// Build masks based on mode.
-let entryAllowed: Record<string, (boolean | null)[]> | undefined;
-if (MASK_MODE === "crossmom") {
-  // 7d return on 30m candles = 7*48 = 336 bars. Top-3/bottom-3 of 9 assets.
-  entryAllowed = buildCrossMomentumMask(aligned, 336, 3);
-} else if (MASK_MODE === "regime") {
-  entryAllowed = buildRegimeMask(aligned, {
-    volLookback: 48, // 24h vol
-    percentileWindow: 480, // 10d rolling rank
-    minPct: 25,
-    maxPct: 80,
-  });
-} else if (MASK_MODE === "stacked") {
-  const cm = buildCrossMomentumMask(aligned, 336, 3);
-  const rg = buildRegimeMask(aligned, {
-    volLookback: 48,
-    percentileWindow: 480,
-    minPct: 25,
-    maxPct: 80,
-  });
-  entryAllowed = andMasks(cm, rg);
-}
-
 const winBars = cfg.maxDays * 48;
 const stepBars = STEP_DAYS * 48;
 const WARMUP = 5000;
@@ -149,18 +113,12 @@ for (let start = WARMUP; start + winBars <= minBars; start += stepBars) {
   }
   const trimmed: Record<string, Candle[]> = {};
   const trimmedFunding: Record<string, (number | null)[]> = {};
-  const trimmedAllowed: Record<string, (boolean | null)[]> = {};
   for (const k of Object.keys(aligned)) {
     trimmed[k] = aligned[k]!.slice(start - WARMUP, start + winBars);
     trimmedFunding[k] = fundingByAsset[k]!.slice(
       start - WARMUP,
       start + winBars,
     );
-    if (entryAllowed)
-      trimmedAllowed[k] = entryAllowed[k]!.slice(
-        start - WARMUP,
-        start + winBars,
-      );
   }
   const r = simulate(
     trimmed,
@@ -169,7 +127,6 @@ for (let start = WARMUP; start + winBars <= minBars; start += stepBars) {
     WARMUP + winBars,
     SLUG,
     trimmedFunding,
-    entryAllowed ? trimmedAllowed : undefined,
   );
   appendFileSync(
     OUT_FILE,
@@ -185,5 +142,5 @@ for (let start = WARMUP; start + winBars <= minBars; start += stepBars) {
 }
 
 console.log(
-  `[shard ${SHARD_IDX}/${SHARD_COUNT}] ${SLUG}/${MASK_MODE} done in ${((Date.now() - t0) / 1000).toFixed(0)}s`,
+  `[shard ${SHARD_IDX}/${SHARD_COUNT}] ${SLUG} done in ${((Date.now() - t0) / 1000).toFixed(0)}s`,
 );

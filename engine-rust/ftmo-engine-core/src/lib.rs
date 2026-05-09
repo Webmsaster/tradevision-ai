@@ -31,9 +31,10 @@ pub use candle::Candle;
 pub use config::{
     AdaptiveSizingTier, AssetConfig, AtrStop, BreakEven, ChandelierExit, CorrelationFilter,
     CrossAssetFilter, DailyEquityGuardian, DayProgressiveTier, DrawdownShield, EngineConfig,
-    IntradayDailyLossThrottle, KellySizing, KellyTier, LiveCaps, LossStreakCooldown,
-    MeanReversionSource, PartialTakeProfit, PartialTakeProfitLevel, PeakDrawdownThrottle,
-    PeakTrailingStop, PingReliability, ReentryAfterStop, TimeBoost, VolAdaptiveTpMult,
+    FundingRateFilter, IntradayDailyLossThrottle, KellySizing, KellyTier, LiveCaps,
+    LossStreakCooldown, MeanReversionSource, PartialTakeProfit, PartialTakeProfitLevel,
+    PeakDrawdownThrottle, PeakTrailingStop, PingReliability, ReentryAfterStop, TimeBoost,
+    VolAdaptiveTpMult,
 };
 pub use engine::run_window;
 pub use position::{OpenPosition, PositionSide};

@@ -27,6 +27,70 @@ use crate::signal::PollSignal;
 use crate::sizing::resolve_sizing_factor;
 use crate::state::EngineState;
 
+/// R29-R7: gate entry on perp funding-rate crowdedness.
+///
+/// Returns `true` if the entry is allowed (filter inactive or rate within
+/// thresholds), `false` if the entry must be skipped.
+///
+/// Mirrors the TS gate in `src/utils/ftmoDaytrade24h.ts:4219-4238`:
+///   - Active if `cfg.funding_rate_filter` is Some, OR `asset.max_funding_for_long`
+///     is Some, OR `asset.min_funding_for_short` is Some.
+///   - Per-asset overrides shadow cfg.
+///   - For `long` direction: skip iff `f > maxFL` (some maxFL set AND f > it).
+///   - For `short` direction: skip iff `f < minFS`.
+///   - If funding_series is missing, or the bar's value is None, or no
+///     threshold applies in this direction → gate inactive (allow).
+pub fn funding_filter_allows(
+    cfg: &EngineConfig,
+    asset: &AssetConfig,
+    direction: PositionSide,
+    funding_series: Option<&[Option<f64>]>,
+    bar_index: usize,
+) -> bool {
+    let cfg_filter = cfg.funding_rate_filter.as_ref();
+    // Fast path: no filter active anywhere — allow everything.
+    if cfg_filter.is_none()
+        && asset.max_funding_for_long.is_none()
+        && asset.min_funding_for_short.is_none()
+    {
+        return true;
+    }
+    // Need a funding series to evaluate the gate.
+    let series = match funding_series {
+        Some(s) => s,
+        None => return true,
+    };
+    // Bar value must exist (forward-fill may not have caught up).
+    let f = match series.get(bar_index).and_then(|v| *v) {
+        Some(v) => v,
+        None => return true,
+    };
+    // Per-asset overrides shadow cfg-level thresholds.
+    let max_fl = asset
+        .max_funding_for_long
+        .or_else(|| cfg_filter.and_then(|f| f.max_funding_for_long));
+    let min_fs = asset
+        .min_funding_for_short
+        .or_else(|| cfg_filter.and_then(|f| f.min_funding_for_short));
+    match direction {
+        PositionSide::Long => {
+            if let Some(max) = max_fl {
+                if f > max {
+                    return false;
+                }
+            }
+        }
+        PositionSide::Short => {
+            if let Some(min) = min_fs {
+                if f < min {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
 pub struct R28V6Params {
     pub fast_period: usize,
     pub slow_period: usize,
@@ -81,6 +145,11 @@ pub struct R28V6Inputs<'a> {
     pub cross_asset_closes: Option<&'a [f64]>,
     /// Active news-blackout list.
     pub news_events: Option<&'a [NewsEvent]>,
+    /// R29-R7: per-bar funding-rate series (forward-filled from 8h funding
+    /// events to candle openTimes). `None` element = no funding data yet for
+    /// that bar (skip the gate, don't reject the entry). Length must match
+    /// `candles.len()`.
+    pub funding_series: Option<&'a [Option<f64>]>,
 }
 
 pub fn detect_r28_v6(
@@ -114,12 +183,58 @@ pub fn detect_r28_v6(
         direction = direction.opposite();
     }
 
-    // 2. Pullback-recovery trigger via SMA(fast).
-    let sma_fast = sma(&closes, params.fast_period);
-    let cur_fast = sma_fast[i]?;
-    let triggered = match direction {
-        PositionSide::Long => last.low <= cur_fast && last.close > cur_fast,
-        PositionSide::Short => last.high >= cur_fast && last.close < cur_fast,
+    // 2. Entry trigger.
+    //
+    // The TS reference (`ftmoDaytrade24h.ts:4067-4082`) treats
+    // N-consecutive close-comparison as the **default** entry rule and
+    // falls through to it after the alternative entry families
+    // (Donchian / BB-KC / MA-cross / CVD / VolImbalance / VolPOC / …)
+    // opt out. Here we mirror that ordering: when `triggerBars > 0`
+    // (resolved via per-asset override → cfg fallback), require N
+    // consecutive bars of the appropriate colour; otherwise fall back to
+    // the SMA-fast pullback-recovery trigger that shipped earlier with
+    // the Rust port.
+    //
+    // Comparison logic (mirrors TS):
+    //   long  + invert=false → close[i-k] < close[i-k-1] for ALL k (N reds)
+    //   long  + invert=true  → close[i-k] > close[i-k-1] for ALL k (N greens)
+    //   short + invert=false → close[i-k] > close[i-k-1] for ALL k (N greens)
+    //   short + invert=true  → close[i-k] < close[i-k-1] for ALL k (N reds)
+    //
+    // The TS branch sets `ok=false` on the *opposite-colour* comparison,
+    // so `ok` stays true only if EVERY one of the N bars matches the
+    // correct colour — which is exactly what `all_match` captures below.
+    let trigger_bars = asset.trigger_bars.unwrap_or(cfg.trigger_bars);
+    let triggered = if trigger_bars > 0 {
+        let n = trigger_bars as usize;
+        if i < n {
+            return None;
+        }
+        let invert = asset.invert_direction;
+        let mut all_match = true;
+        for k in 0..n {
+            let cur = candles[i - k].close;
+            let prev = candles[i - k - 1].close;
+            let bar_ok = match (direction, invert) {
+                (PositionSide::Long, false) => cur < prev, // N reds → MR long
+                (PositionSide::Long, true) => cur > prev,  // N greens → momentum long
+                (PositionSide::Short, false) => cur > prev, // N greens → MR short
+                (PositionSide::Short, true) => cur < prev, // N reds → momentum short
+            };
+            if !bar_ok {
+                all_match = false;
+                break;
+            }
+        }
+        all_match
+    } else {
+        // Fallback: SMA-fast pullback-recovery (legacy Rust default).
+        let sma_fast = sma(&closes, params.fast_period);
+        let cur_fast = sma_fast[i]?;
+        match direction {
+            PositionSide::Long => last.low <= cur_fast && last.close > cur_fast,
+            PositionSide::Short => last.high >= cur_fast && last.close < cur_fast,
+        }
     };
     if !triggered {
         return None;
@@ -176,6 +291,14 @@ pub fn detect_r28_v6(
         if crate::news::in_blackout(last.open_time, events).is_some() {
             return None;
         }
+    }
+
+    // 8b. R29-R7: Funding-rate filter (perp futures crowdedness).
+    // Mirrors `ftmoDaytrade24h.ts` lines 4219-4238. We consult the gate only
+    // if EITHER `cfg.funding_rate_filter` OR a per-asset override is set —
+    // otherwise the gate is dormant. Per-asset overrides shadow cfg.
+    if !funding_filter_allows(cfg, asset, direction, inputs.funding_series, candles.len() - 1) {
+        return None;
     }
 
     // 9. Stop-pct via optional ATR-stop.
@@ -291,6 +414,7 @@ mod tests {
             htf_closes: None,
             cross_asset_closes: None,
             news_events: None,
+            funding_series: None,
         };
         assert!(detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs).is_none());
     }
@@ -298,7 +422,10 @@ mod tests {
     #[test]
     fn fires_on_uptrend_with_pullback() {
         let mut s = EngineState::initial("x");
-        let cfg = cfg();
+        // This test targets the SMA-fast pullback-recovery FALLBACK path —
+        // disable the consecutive-close trigger by zeroing trigger_bars.
+        let mut cfg = cfg();
+        cfg.trigger_bars = 0;
         let a = asset();
         // Loosen filters for this synthetic test.
         let mut p = R28V6Params::default_for(&a, &cfg);
@@ -316,6 +443,7 @@ mod tests {
             htf_closes: None,
             cross_asset_closes: None,
             news_events: None,
+            funding_series: None,
         };
         let sig = detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs);
         assert!(sig.is_some(), "expected long fire");
@@ -325,7 +453,11 @@ mod tests {
     #[test]
     fn news_blackout_blocks_entry() {
         let mut s = EngineState::initial("x");
-        let cfg = cfg();
+        // Disable consecutive trigger so we exercise the pullback-recovery
+        // path (the trigger would otherwise pre-empt news-blackout because
+        // the trigger gate runs before news in the pipeline).
+        let mut cfg = cfg();
+        cfg.trigger_bars = 0;
         let a = asset();
         let mut p = R28V6Params::default_for(&a, &cfg);
         p.adx_min = None;
@@ -348,7 +480,306 @@ mod tests {
             htf_closes: None,
             cross_asset_closes: None,
             news_events: Some(&events),
+            funding_series: None,
         };
         assert!(detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs).is_none());
+    }
+
+    /// R29-R7: cfg.funding_rate_filter active + funding > maxFL → long blocked,
+    /// short still allowed. Mirrors the TS gate at ftmoDaytrade24h.ts:4219-4238.
+    #[test]
+    fn signals_r28v6_funding_filter() {
+        // ── Long-side test: uptrend + crowded-long funding → blocked ──
+        let mut s = EngineState::initial("x");
+        let mut cfg = cfg();
+        // Funding-filter test exercises the SMA-fast pullback-recovery
+        // path — disable the consecutive-close trigger.
+        cfg.trigger_bars = 0;
+        cfg.funding_rate_filter = Some(crate::config::FundingRateFilter {
+            max_funding_for_long: Some(0.0005),
+            min_funding_for_short: Some(-0.0003),
+        });
+        let a = asset();
+        let mut p = R28V6Params::default_for(&a, &cfg);
+        p.adx_min = None;
+        p.choppiness_max = None;
+        p.rsi_long_max = None;
+        // Down-ramp drives RSI ≈ 0 which trips the default short_min=30 gate
+        // and would mask the funding-filter assertion below; clear it.
+        p.rsi_short_min = None;
+
+        let mut candles = ramp(80, 100.0, 0.5);
+        let last = candles.last_mut().unwrap();
+        last.low = 130.0;
+        last.high = 145.0;
+        last.close = 144.0;
+
+        // Build crowded-long funding series: 0.001 (= 10bp, > maxFL=0.0005).
+        let funding: Vec<Option<f64>> = (0..candles.len()).map(|_| Some(0.001)).collect();
+        let inputs_long_blocked = R28V6Inputs {
+            htf_closes: None,
+            cross_asset_closes: None,
+            news_events: None,
+            funding_series: Some(&funding),
+        };
+        assert!(
+            detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs_long_blocked)
+                .is_none(),
+            "long must be blocked when funding > maxFL"
+        );
+
+        // ── Same trend but funding inside threshold (0.0001 < 0.0005) → fires.
+        let funding_ok: Vec<Option<f64>> = (0..candles.len()).map(|_| Some(0.0001)).collect();
+        let inputs_long_ok = R28V6Inputs {
+            htf_closes: None,
+            cross_asset_closes: None,
+            news_events: None,
+            funding_series: Some(&funding_ok),
+        };
+        let mut s2 = EngineState::initial("x");
+        let sig = detect_r28_v6(&mut s2, &cfg, &a, "BTCUSDT", &candles, &p, &inputs_long_ok);
+        assert!(sig.is_some(), "long should fire when funding within threshold");
+        assert_eq!(sig.unwrap().direction, PositionSide::Long);
+
+        // ── Short-side test: downtrend + funding < minFS → blocked ──
+        let mut s3 = EngineState::initial("x");
+        let mut candles_dn = ramp(80, 200.0, -0.5);
+        let last = candles_dn.last_mut().unwrap();
+        last.high = 170.0;
+        last.low = 155.0;
+        last.close = 156.0;
+        let funding_neg: Vec<Option<f64>> =
+            (0..candles_dn.len()).map(|_| Some(-0.001)).collect();
+        let inputs_short_blocked = R28V6Inputs {
+            htf_closes: None,
+            cross_asset_closes: None,
+            news_events: None,
+            funding_series: Some(&funding_neg),
+        };
+        assert!(
+            detect_r28_v6(&mut s3, &cfg, &a, "BTCUSDT", &candles_dn, &p, &inputs_short_blocked)
+                .is_none(),
+            "short must be blocked when funding < minFS"
+        );
+
+        // ── FRLONG variant (only maxFL set) — short side is dormant. ──
+        let mut cfg_frlong = cfg.clone();
+        cfg_frlong.funding_rate_filter = Some(crate::config::FundingRateFilter {
+            max_funding_for_long: Some(0.0005),
+            min_funding_for_short: None,
+        });
+        let mut s4 = EngineState::initial("x");
+        // Even with extremely negative funding, FRLONG must allow shorts.
+        let funding_extreme_neg: Vec<Option<f64>> =
+            (0..candles_dn.len()).map(|_| Some(-0.05)).collect();
+        let inputs_short_frlong = R28V6Inputs {
+            htf_closes: None,
+            cross_asset_closes: None,
+            news_events: None,
+            funding_series: Some(&funding_extreme_neg),
+        };
+        let sig_short = detect_r28_v6(
+            &mut s4,
+            &cfg_frlong,
+            &a,
+            "BTCUSDT",
+            &candles_dn,
+            &p,
+            &inputs_short_frlong,
+        );
+        assert!(sig_short.is_some(), "FRLONG must not gate shorts");
+    }
+
+    /// Per-asset overrides shadow cfg-level thresholds.
+    #[test]
+    fn signals_r28v6_funding_filter_per_asset_override() {
+        // cfg threshold tight (0.0001), per-asset override loose (0.001).
+        // Funding=0.0008 > cfg.max but < asset.max → entry should fire.
+        let mut s = EngineState::initial("x");
+        let mut cfg = cfg();
+        // Per-asset funding override test uses pullback-recovery path.
+        cfg.trigger_bars = 0;
+        cfg.funding_rate_filter = Some(crate::config::FundingRateFilter {
+            max_funding_for_long: Some(0.0001),
+            min_funding_for_short: None,
+        });
+        let mut a = asset();
+        a.max_funding_for_long = Some(0.001);
+        let mut p = R28V6Params::default_for(&a, &cfg);
+        p.adx_min = None;
+        p.choppiness_max = None;
+        p.rsi_long_max = None;
+
+        let mut candles = ramp(80, 100.0, 0.5);
+        let last = candles.last_mut().unwrap();
+        last.low = 130.0;
+        last.high = 145.0;
+        last.close = 144.0;
+        let funding: Vec<Option<f64>> = (0..candles.len()).map(|_| Some(0.0008)).collect();
+        let inputs = R28V6Inputs {
+            htf_closes: None,
+            cross_asset_closes: None,
+            news_events: None,
+            funding_series: Some(&funding),
+        };
+        let sig = detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs);
+        assert!(sig.is_some(), "per-asset override should permit entry");
+    }
+
+    /// `funding_filter_allows` returns true when no filter is configured
+    /// (fast-path).
+    #[test]
+    fn funding_filter_dormant_when_unconfigured() {
+        let cfg = cfg();
+        let a = asset();
+        assert!(funding_filter_allows(&cfg, &a, PositionSide::Long, None, 0));
+        let funding: Vec<Option<f64>> = vec![Some(1.0); 5];
+        assert!(funding_filter_allows(
+            &cfg,
+            &a,
+            PositionSide::Long,
+            Some(&funding),
+            2
+        ));
+    }
+
+    /// Funding-series None / out-of-range / explicit-None bar → gate dormant.
+    #[test]
+    fn funding_filter_skips_when_series_missing() {
+        let mut cfg = cfg();
+        cfg.funding_rate_filter = Some(crate::config::FundingRateFilter {
+            max_funding_for_long: Some(0.0001),
+            min_funding_for_short: None,
+        });
+        let a = asset();
+        // series=None → allow
+        assert!(funding_filter_allows(&cfg, &a, PositionSide::Long, None, 5));
+        // bar_index out of range → allow
+        let funding: Vec<Option<f64>> = vec![Some(0.001); 3];
+        assert!(funding_filter_allows(
+            &cfg,
+            &a,
+            PositionSide::Long,
+            Some(&funding),
+            10
+        ));
+        // bar value None → allow
+        let funding_with_gap: Vec<Option<f64>> = vec![None; 5];
+        assert!(funding_filter_allows(
+            &cfg,
+            &a,
+            PositionSide::Long,
+            Some(&funding_with_gap),
+            2
+        ));
+    }
+
+    /// Default consecutive-close trigger fires Long when `cfg.trigger_bars=N`
+    /// red bars precede the current bar, with `invert_direction=false` and an
+    /// upward SMA-slow slope. Mirrors `ftmoDaytrade24h.ts:4067-4082`.
+    #[test]
+    fn consecutive_red_bars_after_uptrend_fires_long() {
+        let mut s = EngineState::initial("x");
+        let mut cfg = cfg();
+        cfg.trigger_bars = 3; // require 3 consecutive red closes
+        let a = asset(); // invert_direction = false → MR-style long on reds
+        let mut p = R28V6Params::default_for(&a, &cfg);
+        p.adx_min = None;
+        p.choppiness_max = None;
+        p.rsi_long_max = None;
+
+        // Build a 80-bar uptrend (so SMA-slow slopes UP → direction=Long),
+        // then append 3 consecutive red bars at the end (close strictly
+        // decreasing). Candles 0..76 ramp up; 77/78/79 step down.
+        let mut candles = ramp(80, 100.0, 0.5);
+        // Anchor the pre-pullback close so the first red bar starts strictly
+        // above its predecessor.
+        candles[76].close = 138.0;
+        candles[76].high = 138.5;
+        candles[76].low = 137.5;
+        // 3 consecutive red bars: 138 → 137 → 136 → 135.
+        for (k, close) in [137.0_f64, 136.0, 135.0].iter().enumerate() {
+            let c = &mut candles[77 + k];
+            c.close = *close;
+            c.high = close + 0.5;
+            c.low = close - 0.5;
+        }
+        let inputs = R28V6Inputs {
+            htf_closes: None,
+            cross_asset_closes: None,
+            news_events: None,
+            funding_series: None,
+        };
+        let sig = detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs);
+        assert!(sig.is_some(), "3 consecutive red bars after uptrend should fire long");
+        assert_eq!(sig.unwrap().direction, PositionSide::Long);
+    }
+
+    /// Same setup but only 2 consecutive reds (last bar bounces back up) →
+    /// trigger must NOT fire under `trigger_bars=3`.
+    #[test]
+    fn insufficient_consecutive_reds_does_not_fire() {
+        let mut s = EngineState::initial("x");
+        let mut cfg = cfg();
+        cfg.trigger_bars = 3;
+        let a = asset();
+        let mut p = R28V6Params::default_for(&a, &cfg);
+        p.adx_min = None;
+        p.choppiness_max = None;
+        p.rsi_long_max = None;
+
+        let mut candles = ramp(80, 100.0, 0.5);
+        candles[76].close = 138.0;
+        // 2 reds + 1 green (close at index 79 must be > index 78).
+        candles[77].close = 137.0;
+        candles[78].close = 136.0;
+        candles[79].close = 137.5; // green: violates the consecutive rule
+        for c in &mut candles[77..80] {
+            c.high = c.close + 0.5;
+            c.low = c.close - 0.5;
+        }
+        let inputs = R28V6Inputs {
+            htf_closes: None,
+            cross_asset_closes: None,
+            news_events: None,
+            funding_series: None,
+        };
+        let sig = detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs);
+        assert!(
+            sig.is_none(),
+            "trigger must require ALL N bars to be the right colour"
+        );
+    }
+
+    /// Per-asset `trigger_bars` override beats `cfg.trigger_bars`.
+    #[test]
+    fn per_asset_trigger_bars_override_takes_precedence() {
+        let mut s = EngineState::initial("x");
+        let mut cfg = cfg();
+        cfg.trigger_bars = 5; // would be hard to satisfy
+        let mut a = asset();
+        a.trigger_bars = Some(1); // override: only 1 red bar needed
+        let mut p = R28V6Params::default_for(&a, &cfg);
+        p.adx_min = None;
+        p.choppiness_max = None;
+        p.rsi_long_max = None;
+
+        let mut candles = ramp(80, 100.0, 0.5);
+        // Single red last bar.
+        candles[78].close = 138.0;
+        candles[79].close = 137.0;
+        for c in &mut candles[78..80] {
+            c.high = c.close + 0.5;
+            c.low = c.close - 0.5;
+        }
+        let inputs = R28V6Inputs {
+            htf_closes: None,
+            cross_asset_closes: None,
+            news_events: None,
+            funding_series: None,
+        };
+        let sig = detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs);
+        assert!(sig.is_some(), "per-asset trigger_bars=1 should permit entry");
+        assert_eq!(sig.unwrap().direction, PositionSide::Long);
     }
 }

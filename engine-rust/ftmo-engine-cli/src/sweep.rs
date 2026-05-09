@@ -38,6 +38,7 @@ use ftmo_engine_core::indicators::atr;
 use ftmo_engine_core::signal::PollSignal;
 use ftmo_engine_core::signals_breakout::{detect_breakout, BreakoutParams};
 use ftmo_engine_core::signals_meanrev::detect_mean_reversion;
+use ftmo_engine_core::signals_r28v6::{detect_r28_v6, R28V6Inputs, R28V6Params};
 use ftmo_engine_core::signals_r29r5::{
     detect_cvd_divergence, detect_vol_imbalance, detect_vol_poc,
 };
@@ -69,15 +70,20 @@ enum SignalSrc {
     Breakout,
     MeanRev,
     Trend,
+    /// R29-R7: R28_V6 trend-pullback detector (consults
+    /// `cfg.funding_rate_filter` when funding-series is supplied).
+    R28V6,
     /// Multi-asset mode dispatches per-asset based on the config field set
-    /// (cvd_entry / vol_imbalance_entry / vol_poc_entry). Fallback per asset
-    /// is "none".
+    /// (cvd_entry / vol_imbalance_entry / vol_poc_entry). When no per-asset
+    /// entry-type is set BUT the cfg has `funding_rate_filter` configured,
+    /// falls back to `detect_r28_v6` so the funding gate gets honoured.
     PerAssetCfg,
 }
 
 fn main() -> Result<()> {
     let mut candles_path: Option<PathBuf> = None;
     let mut candles_dir: Option<PathBuf> = None;
+    let mut funding_dir: Option<PathBuf> = None;
     let mut symbols_arg: Option<String> = None;
     let mut config_selector: Option<String> = None;
     let mut windows: usize = 8;
@@ -103,6 +109,7 @@ fn main() -> Result<()> {
         match a.as_str() {
             "--candles" => candles_path = Some(PathBuf::from(need!("--candles"))),
             "--candles-dir" => candles_dir = Some(PathBuf::from(need!("--candles-dir"))),
+            "--funding-dir" => funding_dir = Some(PathBuf::from(need!("--funding-dir"))),
             "--symbols" => symbols_arg = Some(need!("--symbols")),
             "--config" => config_selector = Some(need!("--config")),
             "--windows" => windows = need!("--windows").parse()?,
@@ -116,6 +123,7 @@ fn main() -> Result<()> {
                     "breakout" => SignalSrc::Breakout,
                     "meanrev" => SignalSrc::MeanRev,
                     "trend" => SignalSrc::Trend,
+                    "r28v6" => SignalSrc::R28V6,
                     "per-asset" => SignalSrc::PerAssetCfg,
                     other => return Err(anyhow!("unknown --signals: {other}")),
                 };
@@ -143,6 +151,7 @@ fn main() -> Result<()> {
     if candles_dir.is_some() || symbols_arg.is_some() {
         return run_multi_asset(
             candles_dir,
+            funding_dir,
             symbols_arg,
             config_selector,
             windows,
@@ -305,6 +314,31 @@ fn run_single_asset(
                             None => vec![],
                         }
                     }
+                    SignalSrc::R28V6 => {
+                        // Single-asset path: no funding-data plumbing here
+                        // (funding-rate filter is a multi-asset feature).
+                        // Detector still runs and respects every other gate.
+                        let arr = feed.get(symbol.as_str()).unwrap();
+                        let r28p = R28V6Params::default_for(&asset, cfg.as_ref());
+                        let r28in = R28V6Inputs {
+                            htf_closes: None,
+                            cross_asset_closes: None,
+                            news_events: None,
+                            funding_series: None,
+                        };
+                        match detect_r28_v6(
+                            &mut state,
+                            cfg.as_ref(),
+                            &asset,
+                            symbol.as_str(),
+                            arr,
+                            &r28p,
+                            &r28in,
+                        ) {
+                            Some(s) => vec![s],
+                            None => vec![],
+                        }
+                    }
                 };
                 let r = step_bar(
                     &mut state,
@@ -361,6 +395,7 @@ fn signal_label(s: SignalSrc) -> &'static str {
         SignalSrc::Breakout => "breakout",
         SignalSrc::MeanRev => "meanrev",
         SignalSrc::Trend => "trend",
+        SignalSrc::R28V6 => "r28v6",
         SignalSrc::PerAssetCfg => "per-asset",
     }
 }
@@ -388,8 +423,10 @@ fn finalise_report(reports: &[WindowResult], windows: usize, started: Instant) {
 
 // ───────────────── Multi-asset (R29-R5) path ────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn run_multi_asset(
     candles_dir: Option<PathBuf>,
+    funding_dir: Option<PathBuf>,
     symbols_arg: Option<String>,
     config_selector: Option<String>,
     windows: usize,
@@ -450,13 +487,40 @@ fn run_multi_asset(
         .map(|(s, cs)| (s.clone(), atr(cs, 14)))
         .collect();
 
+    // R29-R7: load + forward-fill funding-rate series per symbol, aligned
+    // to the same openTime sequence as `aligned`. Missing files become
+    // `vec![None; n]` so detectors see "no data → gate dormant" semantics.
+    let funding_by_sym: HashMap<String, Vec<Option<f64>>> = match &funding_dir {
+        Some(fd) => {
+            let mut map = HashMap::new();
+            for sym in symbols.iter() {
+                let candles_for_sym = aligned.get(sym).expect("aligned missing sym");
+                let pts = loader::load_funding(fd, sym)?;
+                let series = match pts {
+                    Some(p) => loader::align_funding(candles_for_sym, &p),
+                    None => vec![None; candles_for_sym.len()],
+                };
+                map.insert(sym.clone(), series);
+            }
+            map
+        }
+        None => symbols
+            .iter()
+            .map(|s| {
+                let n = aligned.get(s).map(|v| v.len()).unwrap_or(0);
+                (s.clone(), vec![None; n])
+            })
+            .collect(),
+    };
+
     let total_bars = aligned_times.len();
     println!(
-        "ftmo-sweep (multi-asset): {} symbols × {} bars; cfg={}; {} threads",
+        "ftmo-sweep (multi-asset): {} symbols × {} bars; cfg={}; {} threads; funding={}",
         symbols.len(),
         total_bars,
         cfg.label,
         rayon::current_num_threads(),
+        if funding_dir.is_some() { "yes" } else { "no" },
     );
 
     // Effective signal mode default for multi-asset: PerAssetCfg unless user
@@ -503,6 +567,7 @@ fn run_multi_asset(
     let cfg = Arc::new(cfg);
     let aligned = Arc::new(aligned);
     let atr_by_sym = Arc::new(atr_by_sym);
+    let funding_by_sym = Arc::new(funding_by_sym);
     let symbols = Arc::new(symbols);
 
     let started = Instant::now();
@@ -517,6 +582,7 @@ fn run_multi_asset(
                 cfg.as_ref(),
                 aligned.as_ref(),
                 atr_by_sym.as_ref(),
+                funding_by_sym.as_ref(),
                 symbols.as_ref(),
                 signals_mode,
                 writer.clone(),
@@ -570,6 +636,7 @@ fn run_one_window(
     cfg: &ftmo_engine_core::config::EngineConfig,
     aligned: &HashMap<String, Vec<Candle>>,
     atr_by_sym: &HashMap<String, Vec<Option<f64>>>,
+    funding_by_sym: &HashMap<String, Vec<Option<f64>>>,
     symbols: &[String],
     signals_mode: SignalSrc,
     writer: Arc<Mutex<Option<BufWriter<File>>>>,
@@ -581,10 +648,23 @@ fn run_one_window(
     // Per-symbol growing feed (slice of aligned[lo..i] up to current bar).
     let mut feed: HashMap<String, Vec<Candle>> = HashMap::new();
     let mut atr_feed: HashMap<String, Vec<Option<f64>>> = HashMap::new();
+    let mut funding_feed: HashMap<String, Vec<Option<f64>>> = HashMap::new();
     for sym in symbols.iter() {
         feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
         atr_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
+        funding_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
     }
+
+    // R29-R7: when cfg has funding_rate_filter set but no per-asset entry-type
+    // is configured (PASSLOCK_FRMED/FRLONG family), default the dispatch to
+    // the R28V6 detector so the gate gets honoured.
+    let default_to_r28v6 = matches!(signals_mode, SignalSrc::PerAssetCfg)
+        && cfg.funding_rate_filter.is_some()
+        && cfg.assets.iter().all(|a| {
+            a.cvd_entry.is_none()
+                && a.vol_imbalance_entry.is_none()
+                && a.vol_poc_entry.is_none()
+        });
 
     let mut last_passed = false;
     let mut last_fail: Option<String> = None;
@@ -596,6 +676,11 @@ fn run_one_window(
             feed.get_mut(sym).unwrap().push(c);
             let a = atr_by_sym.get(sym).expect("atr missing sym")[i];
             atr_feed.get_mut(sym).unwrap().push(a);
+            let f = funding_by_sym
+                .get(sym)
+                .and_then(|s| s.get(i).copied())
+                .flatten();
+            funding_feed.get_mut(sym).unwrap().push(f);
         }
 
         // Build signals: one detector pass per asset entry, dispatched off
@@ -618,6 +703,16 @@ fn run_one_window(
                         detect_vol_imbalance(&mut state, cfg, asset, &source, arr, &p)
                     } else if let Some(p) = asset.vol_poc_entry {
                         detect_vol_poc(&mut state, cfg, asset, &source, arr, &p)
+                    } else if default_to_r28v6 {
+                        let r28p = R28V6Params::default_for(asset, cfg);
+                        let funding = funding_feed.get(&source).map(|v| v.as_slice());
+                        let r28in = R28V6Inputs {
+                            htf_closes: None,
+                            cross_asset_closes: None,
+                            news_events: None,
+                            funding_series: funding,
+                        };
+                        detect_r28_v6(&mut state, cfg, asset, &source, arr, &r28p, &r28in)
                     } else {
                         None
                     }
@@ -629,6 +724,17 @@ fn run_one_window(
                 SignalSrc::Trend => {
                     let tp = TrendParams::from_cfg(cfg, asset);
                     detect_trend_pullback(&mut state, cfg, asset, &source, arr, &tp)
+                }
+                SignalSrc::R28V6 => {
+                    let r28p = R28V6Params::default_for(asset, cfg);
+                    let funding = funding_feed.get(&source).map(|v| v.as_slice());
+                    let r28in = R28V6Inputs {
+                        htf_closes: None,
+                        cross_asset_closes: None,
+                        news_events: None,
+                        funding_series: funding,
+                    };
+                    detect_r28_v6(&mut state, cfg, asset, &source, arr, &r28p, &r28in)
                 }
                 SignalSrc::MeanRev => {
                     let src = cfg.mean_reversion_source.unwrap_or(

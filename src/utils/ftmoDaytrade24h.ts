@@ -8718,6 +8718,34 @@ export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_FRLONG: FtmoDaytrade24hConfig = {
   fundingRateFilter: { maxFundingForLong: 0.0005 },
 };
 
+// =============================================================================
+// R29-R9: funding-rate filter on V5_TITANIUM 14-asset basket (2026-05-09)
+// Hypothesis: bigger basket + funding crowdedness gate may stack additively.
+// =============================================================================
+
+/** R29-R9 V5_TITANIUM + closeAllOnTargetReached (PASSLOCK semantics). */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+  closeAllOnTargetReached: true,
+};
+/** R29-R9 V5_TITANIUM + PASSLOCK + funding (medium thresholds). */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_FRMED: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    fundingRateFilter: {
+      maxFundingForLong: 0.0005,
+      minFundingForShort: -0.0003,
+    },
+  };
+/** R29-R9 V5_TITANIUM + PASSLOCK + funding (long-only). */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_FRLONG: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    fundingRateFilter: { maxFundingForLong: 0.0005 },
+  };
+
 // V12_TURBO with pt08 (faster passing tail).
 export const FTMO_DAYTRADE_24H_V12_TURBO_PT08: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V12_TURBO_30M_OPT,

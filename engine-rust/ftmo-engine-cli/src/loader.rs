@@ -80,3 +80,90 @@ pub fn load_basket(
     }
     Ok(out)
 }
+
+/// R29-R7 funding-rate point: `{ "t": fundingTime_ms, "r": fundingRate }`.
+/// Files under `scripts/cache_bakeoff/{SYMBOL}_funding.json` follow this shape.
+#[allow(dead_code)]
+#[derive(serde::Deserialize, Clone, Copy, Debug)]
+pub struct FundingPt {
+    pub t: i64,
+    pub r: f64,
+}
+
+/// Load `{dir}/{symbol}_funding.json` if it exists. Returns `Ok(None)`
+/// when the file is missing — callers should treat that as "no filter
+/// data available" and fall through (the gate becomes dormant).
+#[allow(dead_code)]
+pub fn load_funding(dir: &Path, symbol: &str) -> Result<Option<Vec<FundingPt>>> {
+    let p = dir.join(format!("{symbol}_funding.json"));
+    if !p.exists() {
+        return Ok(None);
+    }
+    let f = File::open(&p).with_context(|| format!("opening {}", p.display()))?;
+    let pts: Vec<FundingPt> = serde_json::from_reader(BufReader::new(f))
+        .with_context(|| format!("parsing funding JSON in {}", p.display()))?;
+    Ok(Some(pts))
+}
+
+/// Forward-fill funding rates onto a candle openTime sequence. For each
+/// candle at time `c.open_time`, find the largest fundingTime ≤ openTime
+/// — that's the funding-rate active during the candle (paid every 8h cycle).
+/// Returns `None` for candles before the first funding event.
+///
+/// Mirrors `alignFunding` in `scripts/_r29Round7Shard.ts:61-77`.
+#[allow(dead_code)]
+pub fn align_funding(candles: &[Candle], funding: &[FundingPt]) -> Vec<Option<f64>> {
+    let mut out = Vec::with_capacity(candles.len());
+    let mut f_idx = 0usize;
+    let mut cur: Option<f64> = None;
+    for c in candles {
+        let t = c.open_time;
+        while f_idx < funding.len() && funding[f_idx].t <= t {
+            cur = Some(funding[f_idx].r);
+            f_idx += 1;
+        }
+        out.push(cur);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candle(t: i64) -> Candle {
+        Candle::new(t, 1.0, 1.0, 1.0, 1.0, 0.0)
+    }
+
+    #[test]
+    fn align_funding_forward_fills() {
+        // Funding events at t=10, 20, 30 → rates 0.1, 0.2, 0.3.
+        let funding = vec![
+            FundingPt { t: 10, r: 0.1 },
+            FundingPt { t: 20, r: 0.2 },
+            FundingPt { t: 30, r: 0.3 },
+        ];
+        // Candles at t=5 (no event yet), t=15 (event 1), t=25 (event 2),
+        // t=35 (event 3), t=40 (still event 3).
+        let candles: Vec<Candle> = [5, 15, 25, 35, 40].iter().map(|t| candle(*t)).collect();
+        let aligned = align_funding(&candles, &funding);
+        assert_eq!(aligned, vec![None, Some(0.1), Some(0.2), Some(0.3), Some(0.3)]);
+    }
+
+    #[test]
+    fn align_funding_handles_exact_match() {
+        // Event-time == openTime → that candle should see the rate
+        // (TS uses ≤ not <).
+        let funding = vec![FundingPt { t: 100, r: 0.5 }];
+        let candles = vec![candle(100), candle(101)];
+        let aligned = align_funding(&candles, &funding);
+        assert_eq!(aligned, vec![Some(0.5), Some(0.5)]);
+    }
+
+    #[test]
+    fn align_funding_empty_funding_returns_none() {
+        let candles: Vec<Candle> = (0..5).map(|t| candle(t)).collect();
+        let aligned = align_funding(&candles, &[]);
+        assert_eq!(aligned, vec![None; 5]);
+    }
+}
