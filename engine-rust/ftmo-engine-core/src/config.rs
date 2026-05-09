@@ -69,9 +69,18 @@ pub struct AssetConfig {
     /// Per-asset time-exit override (in bars). Falls back to `cfg.hold_bars`.
     #[serde(default, rename = "holdBars")]
     pub hold_bars: Option<u32>,
-    /// Invert long/short signals — used by Forex MR strategies.
+    /// Invert long/short signals — used by Forex MR strategies and the
+    /// V5_TREND family (every R28_V6/V5_TITANIUM asset has this enabled in
+    /// `ftmoDaytrade24h.ts`, see V1 root config lines 6491-6604).
     #[serde(default, rename = "invertDirection")]
     pub invert_direction: bool,
+
+    /// Drop short-direction signals entirely. The V5_TREND family runs
+    /// long-only post-invert (so an "engine short" on a non-inverted asset
+    /// or vice-versa is silently dropped). Mirrors `disableShort` in
+    /// `ftmoDaytrade24h.ts:101` (every TREND asset has this true).
+    #[serde(default, rename = "disableShort")]
+    pub disable_short: bool,
 
     /// Per-asset N-consecutive-close trigger override; falls back to
     /// `cfg.trigger_bars`. Mirrors `asset.triggerBars ?? cfg.triggerBars`
@@ -449,11 +458,15 @@ impl EngineConfig {
             stop_pct: 0.02,
             hold_bars: 24,
             // R28_V6 inherits `triggerBars: 1` from the V1 root config
-            // (`ftmoDaytrade24h.ts:6484`). Mean-reversion family: invert is
-            // false on every R28_V6 asset, so the default rule = "1 red bar
-            // → long, 1 green bar → short" (with SMA-slow regime gate).
+            // (`ftmoDaytrade24h.ts:6484`). EVERY V5_TREND asset has
+            // `invertDirection: true` + `disableShort: true` so the
+            // effective rule is "1 green bar after up-trend slope → long;
+            // shorts dropped entirely". `make_assets` sets these flags.
             trigger_bars: 1,
-            profit_target: 0.10,
+            // V1 root config (ftmoDaytrade24h.ts:6607) explicitly sets the
+            // Step-1 target to 0.08 ("FTMO Step 1 target = 8% (not 10%)").
+            // The 0.10 was wrong — produced overly easy targets in Rust sim.
+            profit_target: 0.08,
             max_daily_loss: 0.05,
             max_total_loss: 0.10,
             min_trading_days: 4,
@@ -504,7 +517,8 @@ mod tests {
     #[test]
     fn template_is_passlock_shape() {
         let cfg = EngineConfig::r28_v6_passlock_template();
-        assert_eq!(cfg.profit_target, 0.10);
+        // FTMO Step-1 target: 8% (set in V1 root in ftmoDaytrade24h.ts:6607).
+        assert!((cfg.profit_target - 0.08).abs() < 1e-12);
         assert_eq!(cfg.max_daily_loss, 0.05);
         assert!(cfg.pause_at_target_reached);
         assert!(cfg.close_all_on_target_reached);

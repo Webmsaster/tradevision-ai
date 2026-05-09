@@ -117,6 +117,12 @@ pub struct R28V6Params {
 }
 
 impl R28V6Params {
+    /// Default-mirror the TS R28_V6 family: NONE of the secondary gates
+    /// (ADX, choppiness, RSI) are active on PASSLOCK / V5_TITANIUM /
+    /// V5_AMBER (verified live on R28_V6_PASSLOCK 2026-05-09 — `adxFilter`,
+    /// `rsiFilter`, `choppinessFilter` all `undefined`). Only the V5R / V2
+    /// branch wires these. Caller mutates the field if their config does
+    /// activate the gate.
     pub fn default_for(asset: &AssetConfig, cfg: &EngineConfig) -> Self {
         Self {
             fast_period: 20,
@@ -124,13 +130,13 @@ impl R28V6Params {
             stop_pct: asset.stop_pct.unwrap_or(cfg.stop_pct),
             tp_pct: asset.tp_pct.unwrap_or(cfg.tp_pct),
             base_risk_frac: asset.risk_frac,
-            adx_period: Some(14),
-            adx_min: Some(20.0),
-            choppiness_period: Some(14),
-            choppiness_max: Some(61.8), // golden-ratio cutoff often used
-            rsi_period: Some(14),
-            rsi_long_max: Some(70.0),
-            rsi_short_min: Some(30.0),
+            adx_period: None,
+            adx_min: None,
+            choppiness_period: None,
+            choppiness_max: None,
+            rsi_period: None,
+            rsi_long_max: None,
+            rsi_short_min: None,
             htf_fast: 9,
             htf_slow: 21,
         }
@@ -161,29 +167,67 @@ pub fn detect_r28_v6(
     params: &R28V6Params,
     inputs: &R28V6Inputs<'_>,
 ) -> Option<PollSignal> {
+    // R29-Rust-Phase2 fix: TS detector (`ftmoDaytrade24h.ts:3715`) iterates
+    // both directions and gates each via `disable_long`/`disable_short`.
+    // The previous Rust path computed direction from SMA-slow slope and
+    // post-inverted it — that gated entries on a slope agreement that the
+    // TS detector NEVER consults, killing roughly half the signal stream
+    // (TS fires on green-bar bursts regardless of trend; Rust required
+    // SMA-slow to be sloping the "right" way too).
+    let invert = asset.invert_direction;
+    let candidates: &[PositionSide] = if asset.disable_short {
+        &[PositionSide::Long]
+    } else {
+        &[PositionSide::Long, PositionSide::Short]
+    };
+
+    for &direction in candidates {
+        if let Some(sig) = try_detect_direction(
+            state,
+            cfg,
+            asset,
+            source_symbol,
+            candles,
+            params,
+            inputs,
+            direction,
+            invert,
+        ) {
+            return Some(sig);
+        }
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_detect_direction(
+    state: &mut EngineState,
+    cfg: &EngineConfig,
+    asset: &AssetConfig,
+    source_symbol: &str,
+    candles: &[Candle],
+    params: &R28V6Params,
+    inputs: &R28V6Inputs<'_>,
+    direction: PositionSide,
+    invert: bool,
+) -> Option<PollSignal> {
     if candles.len() < params.slow_period + 4 {
         return None;
     }
     let i = candles.len() - 1;
     let last = candles[i];
+    // R29-Rust-Phase2: TS uses `entryBar = i + 1` so the trigger pattern
+    // ends at i-1 (the bar before entry) and the entry uses candles[i].open
+    // as price + candles[i].open_time as entry-time. The Rust slice gives
+    // us candles[..=i]; we treat candles[i] as the entry-bar and require
+    // the trigger pattern to land on candles[..i].
+    if i < 1 {
+        return None;
+    }
+    let trigger_idx = i - 1;
     let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
 
-    // 1. Trend direction from slow SMA slope.
-    let sma_slow = sma(&closes, params.slow_period);
-    let cur_slow = sma_slow[i]?;
-    let prev_slow = sma_slow[i - 1]?;
-    let mut direction = if cur_slow > prev_slow {
-        PositionSide::Long
-    } else if cur_slow < prev_slow {
-        PositionSide::Short
-    } else {
-        return None;
-    };
-    if asset.invert_direction {
-        direction = direction.opposite();
-    }
-
-    // 2. Entry trigger.
+    // 1. Entry trigger.
     //
     // The TS reference (`ftmoDaytrade24h.ts:4067-4082`) treats
     // N-consecutive close-comparison as the **default** entry rule and
@@ -200,21 +244,16 @@ pub fn detect_r28_v6(
     //   long  + invert=true  → close[i-k] > close[i-k-1] for ALL k (N greens)
     //   short + invert=false → close[i-k] > close[i-k-1] for ALL k (N greens)
     //   short + invert=true  → close[i-k] < close[i-k-1] for ALL k (N reds)
-    //
-    // The TS branch sets `ok=false` on the *opposite-colour* comparison,
-    // so `ok` stays true only if EVERY one of the N bars matches the
-    // correct colour — which is exactly what `all_match` captures below.
     let trigger_bars = asset.trigger_bars.unwrap_or(cfg.trigger_bars);
     let triggered = if trigger_bars > 0 {
         let n = trigger_bars as usize;
-        if i < n {
+        if trigger_idx < n {
             return None;
         }
-        let invert = asset.invert_direction;
         let mut all_match = true;
         for k in 0..n {
-            let cur = candles[i - k].close;
-            let prev = candles[i - k - 1].close;
+            let cur = candles[trigger_idx - k].close;
+            let prev = candles[trigger_idx - k - 1].close;
             let bar_ok = match (direction, invert) {
                 (PositionSide::Long, false) => cur < prev, // N reds → MR long
                 (PositionSide::Long, true) => cur > prev,  // N greens → momentum long
@@ -228,7 +267,8 @@ pub fn detect_r28_v6(
         }
         all_match
     } else {
-        // Fallback: SMA-fast pullback-recovery (legacy Rust default).
+        // Fallback: SMA-fast pullback-recovery (legacy Rust default —
+        // operates on the full slice including bar `i`).
         let sma_fast = sma(&closes, params.fast_period);
         let cur_fast = sma_fast[i]?;
         match direction {
@@ -240,18 +280,23 @@ pub fn detect_r28_v6(
         return None;
     }
 
-    // 3. RSI gate.
+    // 2. RSI gate (consult value at trigger bar — same reference frame as TS).
     if let Some(period) = params.rsi_period {
         let series = rsi(&closes, period);
-        if !rsi_filter_allows(series[i], direction, params.rsi_long_max, params.rsi_short_min) {
+        if !rsi_filter_allows(
+            series[trigger_idx],
+            direction,
+            params.rsi_long_max,
+            params.rsi_short_min,
+        ) {
             return None;
         }
     }
 
-    // 4. ADX gate (require trend strength).
+    // 3. ADX gate (require trend strength).
     if let (Some(p), Some(min)) = (params.adx_period, params.adx_min) {
         let series = adx(candles, p);
-        if let Some(v) = series[i] {
+        if let Some(v) = series[trigger_idx] {
             if v < min {
                 return None;
             }
@@ -260,24 +305,24 @@ pub fn detect_r28_v6(
         }
     }
 
-    // 5. Choppiness gate.
+    // 4. Choppiness gate.
     if let (Some(p), Some(max)) = (params.choppiness_period, params.choppiness_max) {
         let series = choppiness_index(candles, p);
-        if let Some(v) = series[i] {
+        if let Some(v) = series[trigger_idx] {
             if v > max {
                 return None;
             }
         }
     }
 
-    // 6. HTF trend confluence.
+    // 5. HTF trend confluence.
     if let Some(htf_closes) = inputs.htf_closes {
         if !htf_trend_allows(htf_closes, params.htf_fast, params.htf_slow, direction) {
             return None;
         }
     }
 
-    // 7. Cross-asset filter.
+    // 6. Cross-asset filter.
     if let (Some(filter), Some(cross_closes)) =
         (cfg.cross_asset_filter.as_ref(), inputs.cross_asset_closes)
     {
@@ -286,42 +331,41 @@ pub fn detect_r28_v6(
         }
     }
 
-    // 8. News-blackout.
+    // 7. News-blackout — TS keys on entry-bar's open_time (= candles[i]).
     if let Some(events) = inputs.news_events {
         if crate::news::in_blackout(last.open_time, events).is_some() {
             return None;
         }
     }
 
-    // 8b. R29-R7: Funding-rate filter (perp futures crowdedness).
-    // Mirrors `ftmoDaytrade24h.ts` lines 4219-4238. We consult the gate only
-    // if EITHER `cfg.funding_rate_filter` OR a per-asset override is set —
-    // otherwise the gate is dormant. Per-asset overrides shadow cfg.
-    if !funding_filter_allows(cfg, asset, direction, inputs.funding_series, candles.len() - 1) {
+    // 7b. R29-R7: Funding-rate filter — consults trigger-bar value.
+    if !funding_filter_allows(cfg, asset, direction, inputs.funding_series, trigger_idx) {
         return None;
     }
 
-    // 9. Stop-pct via optional ATR-stop.
+    // 8. Stop-pct via optional ATR-stop. TS reads ATR at the trigger bar
+    //    (one before entry) per `ftmoDaytrade24h.ts:R54-V4-6` to avoid
+    //    entry-bar look-ahead — mirror that here.
     let mut stop_pct = params.stop_pct;
     if let Some(at) = cfg.atr_stop {
         let series = atr(candles, at.period as usize);
-        if let Some(a) = series[i] {
-            let atr_stop = (at.stop_mult * a) / last.close.max(1e-9);
+        if let Some(a) = series[trigger_idx] {
+            let atr_stop = (at.stop_mult * a) / last.open.max(1e-9);
             stop_pct = stop_pct.max(atr_stop);
         }
     }
-    // 10. R60 vol-adaptive TP.
+    // 9. R60 vol-adaptive TP.
     let mut tp_pct = params.tp_pct;
     if let Some(va) = cfg.vol_adaptive_tp_mult {
         let series = atr(candles, va.atr_period as usize);
-        if let Some(a) = series[i] {
-            let atr_pct = a / last.close.max(1e-9);
+        if let Some(a) = series[trigger_idx] {
+            let atr_pct = a / last.open.max(1e-9);
             if atr_pct >= va.atr_pct_above {
                 tp_pct *= va.factor;
             }
         }
     }
-    // 11. Live-caps.
+    // 10. Live-caps.
     if !cfg.bypass_live_caps {
         if let Some(caps) = cfg.live_caps.as_ref() {
             if stop_pct > caps.max_stop_pct {
@@ -330,7 +374,7 @@ pub fn detect_r28_v6(
         }
     }
 
-    // 12. Sizing pipeline.
+    // 11. Sizing pipeline.
     let factor = resolve_sizing_factor(state, cfg, last.open_time);
     let mut eff_risk = params.base_risk_frac * factor;
     if !cfg.bypass_live_caps {
@@ -341,20 +385,25 @@ pub fn detect_r28_v6(
     if eff_risk <= 0.0 {
         return None;
     }
+    // R29-Rust-Phase2: entry uses bar-i's OPEN price (matches TS line 4394
+    // `entry = eb!.open` where eb = candles[i+1]). entry_time is bar-i's
+    // open_time so the harness routes the signal to this bar's step_bar
+    // call.
+    let entry_price = last.open;
     let (stop_price, tp_price) = match direction {
-        PositionSide::Long => (last.close * (1.0 - stop_pct), last.close * (1.0 + tp_pct)),
-        PositionSide::Short => (last.close * (1.0 + stop_pct), last.close * (1.0 - tp_pct)),
+        PositionSide::Long => (entry_price * (1.0 - stop_pct), entry_price * (1.0 + tp_pct)),
+        PositionSide::Short => (entry_price * (1.0 + stop_pct), entry_price * (1.0 - tp_pct)),
     };
     let chandelier_atr = cfg.chandelier_exit.and_then(|ce| {
         let series = atr(candles, ce.period as usize);
-        series[i]
+        series[trigger_idx]
     });
     Some(PollSignal {
         symbol: asset.symbol.clone(),
         source_symbol: source_symbol.to_string(),
         direction,
         entry_time: last.open_time,
-        entry_price: last.close,
+        entry_price,
         stop_price,
         tp_price,
         stop_pct,
@@ -402,9 +451,13 @@ mod tests {
         let cfg = cfg();
         let a = asset();
         let mut p = R28V6Params::default_for(&a, &cfg);
-        p.choppiness_max = Some(40.0); // tighter
+        // Both period AND max must be configured for the gate to fire (the
+        // pre-Phase2 detector relied on its SMA-slow direction filter to
+        // collapse this case to None — no longer present).
+        p.choppiness_period = Some(14);
+        p.choppiness_max = Some(40.0);
 
-        // Flat noise → high CI → blocked.
+        // Flat alternating noise → high CI → blocked.
         let mut candles: Vec<Candle> = Vec::new();
         for i in 0..70 {
             let alt = if i % 2 == 0 { 100.5 } else { 99.5 };
@@ -675,10 +728,11 @@ mod tests {
     }
 
     /// Default consecutive-close trigger fires Long when `cfg.trigger_bars=N`
-    /// red bars precede the current bar, with `invert_direction=false` and an
-    /// upward SMA-slow slope. Mirrors `ftmoDaytrade24h.ts:4067-4082`.
+    /// red bars precede the entry bar, with `invert_direction=false`. R29-
+    /// Rust-Phase2 shift: trigger pattern lands on `i-1..i-1-N`, entry on
+    /// candles[i].open — mirrors TS `ftmoDaytrade24h.ts:4067-4082` + 4346.
     #[test]
-    fn consecutive_red_bars_after_uptrend_fires_long() {
+    fn consecutive_red_bars_before_entry_fires_long() {
         let mut s = EngineState::initial("x");
         let mut cfg = cfg();
         cfg.trigger_bars = 3; // require 3 consecutive red closes
@@ -688,22 +742,26 @@ mod tests {
         p.choppiness_max = None;
         p.rsi_long_max = None;
 
-        // Build a 80-bar uptrend (so SMA-slow slopes UP → direction=Long),
-        // then append 3 consecutive red bars at the end (close strictly
-        // decreasing). Candles 0..76 ramp up; 77/78/79 step down.
+        // Build a 80-bar uptrend then append 3 reds ending at index 78
+        // (the trigger-bar). Index 79 is the entry-bar (open used as fill).
         let mut candles = ramp(80, 100.0, 0.5);
-        // Anchor the pre-pullback close so the first red bar starts strictly
-        // above its predecessor.
-        candles[76].close = 138.0;
-        candles[76].high = 138.5;
-        candles[76].low = 137.5;
-        // 3 consecutive red bars: 138 → 137 → 136 → 135.
-        for (k, close) in [137.0_f64, 136.0, 135.0].iter().enumerate() {
-            let c = &mut candles[77 + k];
+        // Anchor the pre-pullback close so the first red starts strictly
+        // above its predecessor (index 75 → index 76 must descend).
+        candles[75].close = 138.5;
+        candles[75].high = 139.0;
+        candles[75].low = 138.0;
+        // 3 consecutive reds: 138.5 → 138 → 137 → 136 (index 76/77/78).
+        for (k, close) in [138.0_f64, 137.0, 136.0].iter().enumerate() {
+            let c = &mut candles[76 + k];
             c.close = *close;
             c.high = close + 0.5;
             c.low = close - 0.5;
         }
+        // Entry bar (79) — its OPEN is the fill price. Make it neutral.
+        candles[79].open = 136.0;
+        candles[79].close = 136.0;
+        candles[79].high = 136.5;
+        candles[79].low = 135.5;
         let inputs = R28V6Inputs {
             htf_closes: None,
             cross_asset_closes: None,
@@ -711,11 +769,17 @@ mod tests {
             funding_series: None,
         };
         let sig = detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs);
-        assert!(sig.is_some(), "3 consecutive red bars after uptrend should fire long");
-        assert_eq!(sig.unwrap().direction, PositionSide::Long);
+        assert!(sig.is_some(), "3 consecutive red bars before entry should fire long");
+        let sig = sig.unwrap();
+        assert_eq!(sig.direction, PositionSide::Long);
+        assert!(
+            (sig.entry_price - 136.0).abs() < 1e-9,
+            "entry price = candles[i].open = 136.0, got {}",
+            sig.entry_price
+        );
     }
 
-    /// Same setup but only 2 consecutive reds (last bar bounces back up) →
+    /// Same setup but the trigger pattern is broken (index 78 is green) →
     /// trigger must NOT fire under `trigger_bars=3`.
     #[test]
     fn insufficient_consecutive_reds_does_not_fire() {
@@ -729,12 +793,12 @@ mod tests {
         p.rsi_long_max = None;
 
         let mut candles = ramp(80, 100.0, 0.5);
+        candles[75].close = 138.5;
+        // 2 reds + 1 green at the trigger window (76, 77, 78).
         candles[76].close = 138.0;
-        // 2 reds + 1 green (close at index 79 must be > index 78).
         candles[77].close = 137.0;
-        candles[78].close = 136.0;
-        candles[79].close = 137.5; // green: violates the consecutive rule
-        for c in &mut candles[77..80] {
+        candles[78].close = 137.5; // green: violates the consecutive rule
+        for c in &mut candles[76..79] {
             c.high = c.close + 0.5;
             c.low = c.close - 0.5;
         }

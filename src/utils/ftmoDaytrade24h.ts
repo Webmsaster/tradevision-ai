@@ -8746,6 +8746,67 @@ export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_FRLONG: FtmoDaytrade24hConfi
     fundingRateFilter: { maxFundingForLong: 0.0005 },
   };
 
+// =============================================================================
+// R29-R10 (2026-05-09) — TITANIUM 14-asset = 55.56% step=28d post-R67-honest
+// (R9 confirmed: 35/63 PL = 35/63 FRMED = 35/63 FRLONG, funding-filter inert).
+// Stack basket-level / state-level / time-level filters on the +10.7pp
+// TITANIUM hebel.
+// =============================================================================
+
+/** R29-R10a: TITANIUM minus RUNE (13 assets) — greedy ablation. */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_NORUNE: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM.assets.filter(
+      (a) => a.symbol !== "RUNE-TREND",
+    ),
+  };
+
+/** R29-R10b: TITANIUM + ARB = OBSIDIAN basket (15 assets) + PASSLOCK.
+ *  Re-uses the existing OBSIDIAN_PASSLOCK declaration above (line ~8533).
+ *  No new const here — selectors-by-name resolve to that one. */
+
+/** R29-R10c: TITANIUM + PASSLOCK + LSCOOL tighter (afterLosses=1, cd=400). */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_LSCOOL_TIGHT: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    lossStreakCooldown: { afterLosses: 1, cooldownBars: 400 },
+  };
+
+/** R29-R10d: TITANIUM + PASSLOCK + LSCOOL looser (afterLosses=3, cd=96). */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_LSCOOL_LOOSE: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    lossStreakCooldown: { afterLosses: 3, cooldownBars: 96 },
+  };
+
+/** R29-R10e: TITANIUM + PASSLOCK + tighter maxConcurrent (5 instead of 10). */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_MCT5: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    maxConcurrentTrades: 5,
+  };
+
+/** R29-R10f: TITANIUM + PASSLOCK + correlationFilter maxOpenSameDir=2. */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_CORRCAP2: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    correlationFilter: { maxOpenSameDirection: 2 },
+  };
+
+/** R29-R10g: TITANIUM + PASSLOCK + drop late hours (no entry after 18 UTC). */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_TODCUT18: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    allowedHoursUtc: [4, 6, 8, 10, 14, 18],
+  };
+
 // V12_TURBO with pt08 (faster passing tail).
 export const FTMO_DAYTRADE_24H_V12_TURBO_PT08: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V12_TURBO_30M_OPT,

@@ -356,6 +356,19 @@ fn run_single_asset(
                     break;
                 }
             }
+            // End-of-window pass-check — mirrors TS simulate() tail.
+            let mut last_passed = last_passed;
+            if !last_passed && state.stopped_reason.is_none() {
+                let target_hit = state.first_target_hit_day.is_some()
+                    && state.trading_days.len() >= cfg.min_trading_days as usize;
+                let final_equity_floor = 1.0 + cfg.profit_target * 0.5;
+                let give_back_too_far = target_hit
+                    && state.equity.is_finite()
+                    && state.equity < final_equity_floor;
+                if target_hit && !give_back_too_far {
+                    last_passed = true;
+                }
+            }
             let report = WindowResult {
                 win_idx: w,
                 config_label: cfg.label.clone(),
@@ -480,11 +493,15 @@ fn run_multi_asset(
         aligned.insert(sym.clone(), aligned_v);
     }
 
-    // Pre-compute ATR per symbol (period=14 — V231 default; per-asset
-    // detectors don't need it but step_bar reads it for chandelier exits).
+    // Pre-compute ATR per symbol. Use cfg.chandelier_exit.period when set so
+    // the harness's chandelier-trail uses the ATR period that the config asks
+    // for (R28_V6_PASSLOCK: 56). With the previous hard-coded period=14, the
+    // chandelier ran on a much shorter ATR than TS → tighter trail stops →
+    // earlier exits → meaningful drift on V5_QUARTZ-family configs.
+    let chand_period = cfg.chandelier_exit.map(|c| c.period as usize).unwrap_or(14);
     let atr_by_sym: HashMap<String, Vec<Option<f64>>> = aligned
         .iter()
-        .map(|(s, cs)| (s.clone(), atr(cs, 14)))
+        .map(|(s, cs)| (s.clone(), atr(cs, chand_period)))
         .collect();
 
     // R29-R7: load + forward-fill funding-rate series per symbol, aligned
@@ -535,13 +552,17 @@ fn run_multi_asset(
     // total_bars (matches single-asset behaviour). With `--step-days`, we
     // emit overlapping windows starting every step_days×48 bars (30m bars),
     // each running until challenge ends or hitting cfg.max_days.
-    let bars_per_day: usize = 48; // 30m bars; this matches the R28_V6 30m basket.
+    // Match TS shard plan: windows start at bar `WARMUP + w*stride` and run
+    // for `max_days*48` bars. The detector consumes the WARMUP bars before
+    // the window-start to seed indicators (mirrors `_r28V6Round60Shard.ts`).
+    const WIN_PLAN_WARMUP: usize = 5000;
+    let bars_per_day: usize = 48; // 30m bars; matches the R28_V6 30m basket.
     let win_plans: Vec<(usize, usize)> = if let Some(sd) = step_days {
         let stride = (sd as usize) * bars_per_day;
         let max_w_bars = cfg.max_days as usize * bars_per_day;
         (0..windows)
             .map(|w| {
-                let lo = w * stride;
+                let lo = WIN_PLAN_WARMUP + w * stride;
                 let hi = (lo + max_w_bars).min(total_bars);
                 (lo, hi)
             })
@@ -655,11 +676,16 @@ fn run_one_window(
         funding_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
     }
 
-    // R29-R7: when cfg has funding_rate_filter set but no per-asset entry-type
-    // is configured (PASSLOCK_FRMED/FRLONG family), default the dispatch to
-    // the R28V6 detector so the gate gets honoured.
+    // PerAssetCfg dispatch: prefer per-asset entry-type (cvd/volimb/poc)
+    // when set; otherwise fall through to the default R28_V6 detector.
+    //
+    // R29-R7 originally gated this default on `cfg.funding_rate_filter.is_some()`
+    // so only PASSLOCK_FRMED/FRLONG would route to R28V6. That made every
+    // plain R28_V6_PASSLOCK / V5_TITANIUM sweep produce zero signals (no
+    // per-asset entry-type → falls through to `None`), which masked the
+    // detector behind a 0% pass-rate. The funding-filter precondition is
+    // dropped so the default R28V6 fallback covers the whole V5_TREND family.
     let default_to_r28v6 = matches!(signals_mode, SignalSrc::PerAssetCfg)
-        && cfg.funding_rate_filter.is_some()
         && cfg.assets.iter().all(|a| {
             a.cvd_entry.is_none()
                 && a.vol_imbalance_entry.is_none()
@@ -668,6 +694,29 @@ fn run_one_window(
 
     let mut last_passed = false;
     let mut last_fail: Option<String> = None;
+
+    // R29-Rust-Phase2: pre-fill feed with WARMUP bars BEFORE the challenge
+    // window. The TS shard test (`scripts/_r28V6Round60Shard.ts:112`) runs
+    // simulate(slice, cfg, WARMUP, WARMUP+winBars) with WARMUP=5000, giving
+    // the detector ~5000 bars of indicator history before the challenge
+    // starts. Without it the Rust detector sees an empty buffer at bar lo
+    // and silently no-ops for the first ~slow_period bars (50 bars on V5);
+    // worse, ATR / SMA series are computed on a stunted history vs TS.
+    const WARMUP: usize = 5000;
+    let warmup_lo = lo.saturating_sub(WARMUP);
+    for i in warmup_lo..lo {
+        for sym in symbols.iter() {
+            let c = aligned.get(sym).expect("aligned missing sym")[i];
+            feed.get_mut(sym).unwrap().push(c);
+            let a = atr_by_sym.get(sym).expect("atr missing sym")[i];
+            atr_feed.get_mut(sym).unwrap().push(a);
+            let f = funding_by_sym
+                .get(sym)
+                .and_then(|s| s.get(i).copied())
+                .flatten();
+            funding_feed.get_mut(sym).unwrap().push(f);
+        }
+    }
 
     for i in lo..hi {
         // Push current bar for every symbol.
@@ -769,6 +818,24 @@ fn run_one_window(
             last_passed = r.passed;
             last_fail = r.fail_reason.map(|f| format!("{f:?}"));
             break;
+        }
+    }
+
+    // R29-Rust-Phase2: end-of-window pass-check — mirrors TS `simulate()`
+    // tail at `ftmoLiveEngineV4.ts:2185-2198`. Without this, windows whose
+    // bar count is short of `cfg.max_days` (e.g. 28×48 bars on a 30-day
+    // max_days config) never trigger the harness force-close path; any
+    // mid-run target-hit was silently discarded as `passed=false`.
+    let mut last_passed = last_passed;
+    if !last_passed && state.stopped_reason.is_none() {
+        let target_hit = state.first_target_hit_day.is_some()
+            && state.trading_days.len() >= cfg.min_trading_days as usize;
+        let final_equity_floor = 1.0 + cfg.profit_target * 0.5;
+        let give_back_too_far = target_hit
+            && state.equity.is_finite()
+            && state.equity < final_equity_floor;
+        if target_hit && !give_back_too_far {
+            last_passed = true;
         }
     }
 

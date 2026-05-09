@@ -12,8 +12,8 @@
 //! caller needs bit-precise per-asset numbers they should load JSON.
 
 use crate::config::{
-    AssetConfig, BreakEven, ChandelierExit, EngineConfig, KellySizing, KellyTier,
-    LiveCaps, LossStreakCooldown, PartialTakeProfit, PeakTrailingStop,
+    AssetConfig, BreakEven, ChandelierExit, EngineConfig, LiveCaps, PartialTakeProfit,
+    PeakDrawdownThrottle, PeakTrailingStop,
 };
 
 const R28_V6_BASKET: &[&str] = &[
@@ -45,24 +45,38 @@ const V5_TITANIUM_BASKET: &[&str] = &[
     "RUNE-TREND",
 ];
 
+/// Build per-asset configs for the V5_TREND family. Every TREND asset in
+/// `ftmoDaytrade24h.ts` (V1 root, lines 6491-6604, propagated through
+/// V2→V3→V4→V5→QUARTZ→QUARTZ_LITE→R28_V4→R28_V6) carries the same fixed
+/// per-asset stack:
+///
+///   costBp=30, slippageBp=8, swapBpPerDay=4
+///   triggerBars=1, invertDirection=true, disableShort=true
+///   stopPct=0.05, tpPct=0.07 (overridden later by R28_V6 multipliers)
+///
+/// Pre-2026-05-09 the Rust port set `invert_direction=false` and left
+/// costs at None, which made the engine reproduce the *wrong* strategy
+/// (pullback-recovery, no fees) and was the dominant source of the
+/// PASSLOCK Rust=0% / TS=44.85% gap diagnosed in the R29 drift audit.
 fn make_assets(symbols: &[&str], risk_frac: f64) -> Vec<AssetConfig> {
     symbols
         .iter()
         .map(|s| AssetConfig {
             symbol: (*s).to_string(),
             source_symbol: Some(s.replace("-TREND", "USDT")),
-            tp_pct: None, // inherit from cfg
+            tp_pct: None, // inherit from cfg / overrides applied by callers
             stop_pct: None,
             risk_frac,
             activate_after_day: None,
             min_equity_gain: None,
             max_equity_gain: None,
             hold_bars: None,
-            invert_direction: false,
-            trigger_bars: None,
-            cost_bp: None,
-            slippage_bp: None,
-            swap_bp_per_day: None,
+            invert_direction: true,
+            disable_short: true,
+            trigger_bars: Some(1),
+            cost_bp: Some(30.0),
+            slippage_bp: Some(8.0),
+            swap_bp_per_day: Some(4.0),
             cvd_entry: None,
             vol_imbalance_entry: None,
             vol_poc_entry: None,
@@ -118,29 +132,43 @@ fn v5_titanium_tp_for(symbol: &str) -> f64 {
     }
 }
 
+/// Base R28_V4 config (parent of R28_V6 / PASSLOCK chain). Mirrors
+/// `FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4` in
+/// `src/utils/ftmoDaytrade24h.ts:8201-8208` plus the engine stack
+/// inherited from V5_QUARTZ (atrStop p56m2 + chandelier p56m2 + breakEven 3%
+/// + hours [4,6,8,10,14,18,22]).
+///
+/// Pre-2026-05-09 the Rust template inherited from the V13_LIVEFIRST_30M
+/// config (loss_streak_cooldown(2,200) + kelly_sizing + max_concurrent=10),
+/// none of which exist in the actual TS R28_V6/PASSLOCK chain. Result: a
+/// big chunk of TS-allowed entries were silently throttled in Rust.
+/// daily_peak_trailing_stop was also wrong (0.02 vs TS R28_V4's 0.012).
 fn quartz_lite_base() -> EngineConfig {
     let mut cfg = EngineConfig::r28_v6_passlock_template();
     cfg.assets = make_assets(R28_V6_BASKET, 0.4);
     cfg.tp_pct = 0.04;
     cfg.stop_pct = 0.02;
     cfg.leverage = 2.0;
-    cfg.hold_bars = 1200;
+    // V1 root + per-asset holdBars=240 (40h on 2h, 120h on 30m). V4-Sim
+    // disables time-exit anyway; this only matters as a fallback ceiling.
+    cfg.hold_bars = 240;
     cfg.live_caps = Some(LiveCaps { max_stop_pct: 0.05, max_risk_frac: 0.4 });
     cfg.atr_stop = Some(crate::config::AtrStop { period: 56, stop_mult: 2.0 });
     cfg.chandelier_exit = Some(ChandelierExit { period: 56, mult: 2.0, min_move_r: Some(0.5) });
     cfg.break_even = Some(BreakEven { threshold: 0.03 });
-    cfg.partial_take_profit = Some(PartialTakeProfit { trigger_pct: 0.02, close_fraction: 0.3 });
-    cfg.daily_peak_trailing_stop = Some(PeakTrailingStop { trail_distance: 0.02 });
-    cfg.loss_streak_cooldown = Some(LossStreakCooldown { after_losses: 2, cooldown_bars: 200 });
-    cfg.kelly_sizing = Some(KellySizing {
-        window_size: 10,
-        min_trades: 5,
-        tiers: vec![
-            KellyTier { win_rate_above: 0.7, multiplier: 1.5 },
-            KellyTier { win_rate_above: 0.5, multiplier: 1.0 },
-            KellyTier { win_rate_above: 0.0, multiplier: 0.6 },
-        ],
-    });
+    // R28_V4 override: triggerPct 0.02, closeFraction 0.7. R28_V6 keeps the
+    // same shape but lifts trigger to 0.012; that override happens in
+    // `r28_v6_passlock()` / `r28_v6()` below.
+    cfg.partial_take_profit = Some(PartialTakeProfit { trigger_pct: 0.02, close_fraction: 0.7 });
+    // R28_V4 override: 0.012 (not the V5_QUARTZ_LITE 0.02). −40% trail
+    // distance — much earlier give-back lock.
+    cfg.daily_peak_trailing_stop = Some(PeakTrailingStop { trail_distance: 0.012 });
+    // R28_V4 → R28_V6 inherits this throttle: scale risk DOWN to 15% when
+    // equity drops 3% below all-time peak.
+    cfg.peak_drawdown_throttle = Some(PeakDrawdownThrottle { from_peak: 0.03, factor: 0.15 });
+    // V5_ZIRKON (TS line 7293) overrides maxConcurrentTrades=10 — propagates
+    // through V5_AMBER → V5_QUARTZ → V5_QUARTZ_LITE → R28_V4 → R28_V6 →
+    // PASSLOCK. Earlier value (6) was V1 root, but the chain bumps it.
     cfg.max_concurrent_trades = Some(10);
     cfg.allowed_hours_utc = Some(vec![4, 6, 8, 10, 14, 18, 22]);
     cfg.pause_at_target_reached = true;
