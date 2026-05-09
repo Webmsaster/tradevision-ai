@@ -1120,6 +1120,14 @@ export function pollLive(
   cfg: FtmoDaytrade24hConfig,
   // For test harness: precomputed ATR series. Optional in live (we compute on the fly).
   atrSeriesByAsset?: Record<string, (number | null)[]>,
+  // R29-R7: per-asset funding-rate series, pre-aligned to candle indices.
+  // When provided, detectAsset uses cfg.fundingRateFilter / asset overrides
+  // to skip entries on extreme funding (perp-futures crowdedness signal).
+  fundingByAsset?: Record<string, (number | null)[]>,
+  // R29-R8: per-asset entry-allowed mask. When series[i] === false at the
+  // current bar, detectAsset skips the entry. Used for cross-sectional
+  // momentum, regime classifiers, ML gates — anything pre-computed.
+  entryAllowedByAsset?: Record<string, (boolean | null)[]>,
 ): PollResult {
   const result: PollResult = {
     decision: { closes: [], opens: [] },
@@ -1788,7 +1796,23 @@ export function pollLive(
       // detectAsset accepts a slice — we pass the whole array (live convention).
       let trades: Daytrade24hTrade[];
       try {
-        trades = detectAsset(candles, asset, cfg, crossCandles, extra);
+        const fundingFull = fundingByAsset?.[sourceKey];
+        const fundingSlice = fundingFull
+          ? fundingFull.slice(0, candles.length)
+          : undefined;
+        const allowedFull = entryAllowedByAsset?.[sourceKey];
+        const allowedSlice = allowedFull
+          ? allowedFull.slice(0, candles.length)
+          : undefined;
+        trades = detectAsset(
+          candles,
+          asset,
+          cfg,
+          crossCandles,
+          extra,
+          fundingSlice,
+          allowedSlice,
+        );
       } catch (err) {
         result.skipped.push({
           asset: asset.symbol,
@@ -2061,6 +2085,12 @@ export function simulate(
   startBar: number,
   endBar: number,
   cfgLabel = "sim",
+  // R29-R7: optional per-asset funding-rate series (pre-aligned to candle indices).
+  // Forward to pollLive → detectAsset for fundingRateFilter evaluation.
+  fundingByAsset?: Record<string, (number | null)[]>,
+  // R29-R8: optional per-asset entry-allowed boolean mask (cross-sectional
+  // momentum, regime classifier, ML). Forward to pollLive → detectAsset.
+  entryAllowedByAsset?: Record<string, (boolean | null)[]>,
 ): SimulateResult {
   const state = initialState(cfgLabel);
 
@@ -2088,7 +2118,30 @@ export function simulate(
         slicedAtr[k] = atrSeriesByAsset[k]!.slice(0, i + 1);
       }
     }
-    const r = pollLive(state, sliceByAsset, cfg, slicedAtr);
+    // R29-R7: slice per-asset funding series to match candle slice (1:1 align).
+    let slicedFunding: Record<string, (number | null)[]> | undefined;
+    if (fundingByAsset) {
+      slicedFunding = {};
+      for (const k of Object.keys(fundingByAsset)) {
+        slicedFunding[k] = fundingByAsset[k]!.slice(0, i + 1);
+      }
+    }
+    // R29-R8: slice per-asset entry-allowed mask to match candle slice.
+    let slicedAllowed: Record<string, (boolean | null)[]> | undefined;
+    if (entryAllowedByAsset) {
+      slicedAllowed = {};
+      for (const k of Object.keys(entryAllowedByAsset)) {
+        slicedAllowed[k] = entryAllowedByAsset[k]!.slice(0, i + 1);
+      }
+    }
+    const r = pollLive(
+      state,
+      sliceByAsset,
+      cfg,
+      slicedAtr,
+      slicedFunding,
+      slicedAllowed,
+    );
     if (r.challengeEnded) {
       if (r.passed) {
         return {

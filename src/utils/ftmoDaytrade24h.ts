@@ -3596,6 +3596,10 @@ export function detectAsset(
   crossAssetCandles?: Candle[],
   extraCrossAssetCandles?: Record<string, Candle[]>,
   fundingSeries?: (number | null)[],
+  // R29-R8: external boolean mask. When series[i] === false, no entry is
+  // allowed at bar i. Used for cross-sectional momentum gates, regime
+  // classifiers, ML predictions — anything pre-computed outside detect.
+  entryAllowed?: (boolean | null)[],
 ): Daytrade24hTrade[] {
   const out: Daytrade24hTrade[] = [];
   const tpPct = asset.tpPct ?? cfg.tpPct;
@@ -4180,6 +4184,10 @@ export function detectAsset(
               (candles[i]!.closeTime - candles[i]!.openTime);
         if (cfg.newsBlackoutSet.has(refTime)) continue;
       }
+
+      // R29-R8: external entry-allowed mask (cross-sectional momentum,
+      // regime classifier, ML gate, etc.). When false, skip this bar.
+      if (entryAllowed && entryAllowed[i] === false) continue;
 
       // ADX regime gate
       if (adxSeries && cfg.adxFilter) {
@@ -8675,6 +8683,40 @@ export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_ADX25_60: FtmoDaytrade24hConfig =
     ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
     adxFilter: { period: 14, minAdx: 25, maxAdx: 60 },
   };
+
+// =============================================================================
+// R29-R7: funding-rate-filter sweep (2026-05-09)
+// External signal class: Binance Futures funding-rate as crowdedness gate.
+// Hypothesis: extreme funding-rate-positive = crowded long → skip new longs
+// (mean-reversion incoming). Extreme negative = crowded short → skip shorts.
+// Distribution stats (BTC/ETH): p95 ≈ 5bps, p99 ≈ 11bps, p1 ≈ -1.7bps,
+// median 1bp. Negative-tail rare → asymmetric thresholds.
+// =============================================================================
+
+/** R29-R7 PASSLOCK + funding (mild: skip longs >0.1%, shorts <-0.05%). */
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_FRMILD: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+  fundingRateFilter: { maxFundingForLong: 0.001, minFundingForShort: -0.0005 },
+};
+/** R29-R7 PASSLOCK + funding (medium: top/bottom 5%). */
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_FRMED: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+  fundingRateFilter: { maxFundingForLong: 0.0005, minFundingForShort: -0.0003 },
+};
+/** R29-R7 PASSLOCK + funding (strict: top 25%). */
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_FRSTRICT: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+    fundingRateFilter: {
+      maxFundingForLong: 0.0003,
+      minFundingForShort: -0.0002,
+    },
+  };
+/** R29-R7 PASSLOCK + funding (long-only — neg-tail too rare to gate). */
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_FRLONG: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+  fundingRateFilter: { maxFundingForLong: 0.0005 },
+};
 
 // V12_TURBO with pt08 (faster passing tail).
 export const FTMO_DAYTRADE_24H_V12_TURBO_PT08: FtmoDaytrade24hConfig = {
