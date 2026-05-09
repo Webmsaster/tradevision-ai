@@ -86,13 +86,26 @@ struct CfgOverrides {
     funding_max_long: Option<f64>,
     funding_min_short: Option<f64>,
     adaptive_tp: Option<String>,
+    pdd_from_peak: Option<f64>,
+    pdd_factor: Option<f64>,
+    dpts_trail: Option<f64>,
+    cpts_trail: Option<f64>,
+    idl_threshold: Option<f64>,
+    idl_factor: Option<f64>,
+    min_trading_days: Option<u32>,
+    profit_target: Option<f64>,
+    lscool_after: Option<u32>,
+    lscool_bars: Option<u64>,
 }
 
 fn apply_overrides(
     cfg: &mut ftmo_engine_core::config::EngineConfig,
     ov: &CfgOverrides,
 ) -> Result<()> {
-    use ftmo_engine_core::config::{FundingRateFilter, BreakEven, TrailingStop};
+    use ftmo_engine_core::config::{
+        BreakEven, FundingRateFilter, IntradayDailyLossThrottle, LossStreakCooldown,
+        PeakDrawdownThrottle, PeakTrailingStop, TrailingStop,
+    };
 
     if let Some(m) = ov.tp_mult {
         for a in cfg.assets.iter_mut() {
@@ -198,6 +211,50 @@ fn apply_overrides(
             min_funding_for_short: ov.funding_min_short,
         });
     }
+    if let Some(t) = ov.profit_target {
+        cfg.profit_target = t;
+    }
+    if let Some(d) = ov.min_trading_days {
+        cfg.min_trading_days = d;
+    }
+    if ov.pdd_from_peak.is_some() || ov.pdd_factor.is_some() {
+        let cur = cfg.peak_drawdown_throttle.unwrap_or(PeakDrawdownThrottle {
+            from_peak: 0.03,
+            factor: 0.15,
+        });
+        cfg.peak_drawdown_throttle = Some(PeakDrawdownThrottle {
+            from_peak: ov.pdd_from_peak.unwrap_or(cur.from_peak),
+            factor: ov.pdd_factor.unwrap_or(cur.factor),
+        });
+    }
+    if let Some(d) = ov.dpts_trail {
+        cfg.daily_peak_trailing_stop = Some(PeakTrailingStop { trail_distance: d });
+    }
+    if let Some(d) = ov.cpts_trail {
+        cfg.challenge_peak_trailing_stop = Some(PeakTrailingStop { trail_distance: d });
+    }
+    if ov.idl_threshold.is_some() || ov.idl_factor.is_some() {
+        let cur = cfg.intraday_daily_loss_throttle.unwrap_or(IntradayDailyLossThrottle {
+            soft_loss_threshold: 0.025,
+            hard_loss_threshold: 0.04,
+            soft_factor: 0.5,
+        });
+        cfg.intraday_daily_loss_throttle = Some(IntradayDailyLossThrottle {
+            soft_loss_threshold: cur.soft_loss_threshold,
+            hard_loss_threshold: ov.idl_threshold.unwrap_or(cur.hard_loss_threshold),
+            soft_factor: ov.idl_factor.unwrap_or(cur.soft_factor),
+        });
+    }
+    if ov.lscool_after.is_some() || ov.lscool_bars.is_some() {
+        let cur = cfg.loss_streak_cooldown.unwrap_or(LossStreakCooldown {
+            after_losses: 3,
+            cooldown_bars: 96,
+        });
+        cfg.loss_streak_cooldown = Some(LossStreakCooldown {
+            after_losses: ov.lscool_after.unwrap_or(cur.after_losses),
+            cooldown_bars: ov.lscool_bars.unwrap_or(cur.cooldown_bars),
+        });
+    }
     if let Some(csv) = &ov.adaptive_tp {
         // Format: "BTC:0.025,ETH:0.030,..."
         for pair in csv.split(',') {
@@ -272,6 +329,16 @@ fn main() -> Result<()> {
     let mut funding_max_long: Option<f64> = None;
     let mut funding_min_short: Option<f64> = None;
     let mut adaptive_tp_per_asset: Option<String> = None; // "BTC:0.025,ETH:0.030"
+    let mut pdd_from_peak: Option<f64> = None;   // peak_drawdown_throttle.from_peak
+    let mut pdd_factor: Option<f64> = None;      // peak_drawdown_throttle.factor
+    let mut dpts_trail: Option<f64> = None;      // daily_peak_trailing_stop.trail_distance
+    let mut cpts_trail: Option<f64> = None;      // challenge_peak_trailing_stop.trail_distance
+    let mut idl_threshold: Option<f64> = None;   // intraday_daily_loss_throttle.hard_loss_threshold
+    let mut idl_factor: Option<f64> = None;      // intraday_daily_loss_throttle.size_factor
+    let mut min_trading_days: Option<u32> = None;
+    let mut profit_target: Option<f64> = None;
+    let mut lscool_after: Option<u32> = None;
+    let mut lscool_bars: Option<u64> = None;
 
     // R67 audit (Round 2): replace `args.next().unwrap()` with `ok_or_else`
     // — `ftmo-sweep --candles` (no path follows) panics with the usual Rust
@@ -345,6 +412,16 @@ fn main() -> Result<()> {
                 funding_min_short = Some(need!("--funding-min-short").parse()?)
             }
             "--adaptive-tp" => adaptive_tp_per_asset = Some(need!("--adaptive-tp")),
+            "--pdd-from-peak" => pdd_from_peak = Some(need!("--pdd-from-peak").parse()?),
+            "--pdd-factor" => pdd_factor = Some(need!("--pdd-factor").parse()?),
+            "--dpts-trail" => dpts_trail = Some(need!("--dpts-trail").parse()?),
+            "--cpts-trail" => cpts_trail = Some(need!("--cpts-trail").parse()?),
+            "--idl-threshold" => idl_threshold = Some(need!("--idl-threshold").parse()?),
+            "--idl-factor" => idl_factor = Some(need!("--idl-factor").parse()?),
+            "--min-trading-days" => min_trading_days = Some(need!("--min-trading-days").parse()?),
+            "--profit-target" => profit_target = Some(need!("--profit-target").parse()?),
+            "--lscool-after" => lscool_after = Some(need!("--lscool-after").parse()?),
+            "--lscool-bars" => lscool_bars = Some(need!("--lscool-bars").parse()?),
             other => return Err(anyhow!("unknown arg: {other}")),
         }
     }
@@ -378,6 +455,16 @@ fn main() -> Result<()> {
         funding_max_long,
         funding_min_short,
         adaptive_tp: adaptive_tp_per_asset,
+        pdd_from_peak,
+        pdd_factor,
+        dpts_trail,
+        cpts_trail,
+        idl_threshold,
+        idl_factor,
+        min_trading_days,
+        profit_target,
+        lscool_after,
+        lscool_bars,
     };
 
     if candles_dir.is_some() || symbols_arg.is_some() {
