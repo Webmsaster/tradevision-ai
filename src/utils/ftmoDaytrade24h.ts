@@ -8746,6 +8746,97 @@ export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_FRLONG: FtmoDaytrade24hConfi
     fundingRateFilter: { maxFundingForLong: 0.0005 },
   };
 
+/** R29-Hunter ablation: drop only (no hours/trail/tp changes). */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_HUNTER_DROPONLY: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM.assets.filter(
+      (a) =>
+        ![
+          "DOGE-TREND",
+          "ETH-TREND",
+          "INJ-TREND",
+          "ADA-TREND",
+          "RUNE-TREND",
+        ].includes(a.symbol),
+    ),
+  };
+
+/** R29-Hunter ablation: drop + hours only. */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_HUNTER_DROPHOURS: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM.assets.filter(
+      (a) =>
+        ![
+          "DOGE-TREND",
+          "ETH-TREND",
+          "INJ-TREND",
+          "ADA-TREND",
+          "RUNE-TREND",
+        ].includes(a.symbol),
+    ),
+    allowedHoursUtc: [2, 4, 6, 10, 14, 18, 20, 22],
+  };
+
+/** R29-Hunter ablation: drop + trail only. */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_HUNTER_DROPTRAIL: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM.assets.filter(
+      (a) =>
+        ![
+          "DOGE-TREND",
+          "ETH-TREND",
+          "INJ-TREND",
+          "ADA-TREND",
+          "RUNE-TREND",
+        ].includes(a.symbol),
+    ),
+    trailingStop: { activatePct: 0.03, trailPct: 0.001 },
+  };
+
+/**
+ * R29-Hunter — TS shadow of `v5_titanium_passlock_hunter` (Rust 66.14% step=14d).
+ *
+ * Built specifically to cross-validate the Rust mass-sweep winner via the TS
+ * V4-LIVE engine. If Rust's 66.14% is honest, TS should produce the same
+ * pass-rate (within the documented -0.44pp drift on TITANIUM_PASSLOCK family).
+ *
+ * Modifications from V5_TITANIUM_PASSLOCK baseline (14-asset, 55.56% step=28d
+ * TS-honest):
+ *   1. Drop 5 assets: DOGE, ETH, INJ, ADA, RUNE → 9-asset basket
+ *   2. allowedHoursUtc: [2,4,6,8,10,12,14,18,20,22] → [2,4,6,10,14,18,20,22]
+ *      (drop hours 8 & 12)
+ *   3. trailingStop.trailPct: 0.005 → 0.001 (5× tighter)
+ *   4. Per-asset tp_pct override on ETC: 0.035 → 0.020
+ */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_HUNTER: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM.assets
+      .filter(
+        (a) =>
+          ![
+            "DOGE-TREND",
+            "ETH-TREND",
+            "INJ-TREND",
+            "ADA-TREND",
+            "RUNE-TREND",
+          ].includes(a.symbol),
+      )
+      .map((a) => ({
+        ...a,
+        tpPct: a.symbol === "ETC-TREND" ? 0.02 : a.tpPct,
+      })),
+    allowedHoursUtc: [2, 4, 6, 10, 14, 18, 20, 22],
+    trailingStop: { activatePct: 0.03, trailPct: 0.001 },
+  };
+
 // =============================================================================
 // R29-R10 (2026-05-09) — TITANIUM 14-asset = 55.56% step=28d post-R67-honest
 // (R9 confirmed: 35/63 PL = 35/63 FRMED = 35/63 FRLONG, funding-filter inert).
