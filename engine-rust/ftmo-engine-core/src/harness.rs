@@ -327,12 +327,22 @@ pub fn step_bar(
         // 8. R60 close-all-on-target.
         if cfg.close_all_on_target_reached && !state.open_positions.is_empty() {
             // Close every remaining position at last bar's close.
+            //
+            // R67-rust-Phase-4.2: TS scan-backwards fallback at
+            // ftmoLiveEngineV4.ts L1604-1610 was missing here. Earlier code
+            // only attempted exact-match (`find_candle_at_time`) and then
+            // bailed straight to `last_known_price`, but TS first tries an
+            // exact match, and if that misses, scans backwards for the most
+            // recent candle ≤ `last_bar_time`. This matters when the active
+            // asset is mid-warmup or has an asymmetric time series so the
+            // perfect-match candle isn't yet present. `find_candle_at_or_before`
+            // already covers BOTH cases (exact + scan-back) in a single call.
             let mut to_close: Vec<(usize, crate::exit::ExitOutcome)> = vec![];
             for (idx, pos) in state.open_positions.iter().enumerate() {
                 let exit_price = input
                     .candles_by_source
                     .get(&pos.source_symbol)
-                    .and_then(|arr| find_candle_at_time(arr, last_bar_time))
+                    .and_then(|arr| find_candle_at_or_before(arr, last_bar_time))
                     .map(|c| c.close)
                     .or(pos.last_known_price)
                     .unwrap_or(pos.entry_price);
@@ -619,6 +629,8 @@ pub fn step_bar(
                 ptp_level_idx: 0,
                 ptp_levels_realized: 0.0,
                 last_known_price: Some(sig.entry_price),
+                trail_active: false,
+                trail_peak: sig.entry_price,
             };
             result.decision.opens.push(sig.clone());
             state.open_positions.push(pos);
@@ -1063,6 +1075,8 @@ mod tests {
                 ptp_level_idx: 0,
                 ptp_levels_realized: 0.0,
                 last_known_price: None,
+                trail_active: false,
+                trail_peak: 0.0,
             });
         }
         let mut candles = HashMap::new();
@@ -1117,6 +1131,8 @@ mod tests {
             ptp_level_idx: 0,
             ptp_levels_realized: 0.0,
             last_known_price: None,
+            trail_active: false,
+            trail_peak: 0.0,
         });
         let mut candles = HashMap::new();
         // Close at 96 → unrealised raw=-4%, eff=-0.032 → MTM = 0.968 → day_pnl=-3.2% < -2%.
@@ -1167,6 +1183,8 @@ mod tests {
             ptp_level_idx: 0,
             ptp_levels_realized: 0.0,
             last_known_price: None,
+            trail_active: false,
+            trail_peak: 0.0,
         });
         let mut candles = HashMap::new();
         candles.insert(
@@ -1236,6 +1254,8 @@ mod tests {
             ptp_level_idx: 0,
             ptp_levels_realized: 0.0,
             last_known_price: None,
+            trail_active: false,
+            trail_peak: 0.0,
         });
         // Equity already at exactly target after the position closes: realised=1.0,
         // unrealised at +3% gives MTM = 1.03 (won't trigger realised target, but

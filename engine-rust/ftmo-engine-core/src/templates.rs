@@ -13,7 +13,7 @@
 
 use crate::config::{
     AssetConfig, BreakEven, ChandelierExit, CorrelationFilter, EngineConfig, LiveCaps,
-    LossStreakCooldown, PartialTakeProfit, PeakDrawdownThrottle, PeakTrailingStop,
+    LossStreakCooldown, PartialTakeProfit, PeakDrawdownThrottle, PeakTrailingStop, TrailingStop,
 };
 
 const R28_V6_BASKET: &[&str] = &[
@@ -262,6 +262,10 @@ fn quartz_lite_base() -> EngineConfig {
     cfg.max_concurrent_trades = Some(10);
     cfg.allowed_hours_utc = Some(vec![4, 6, 8, 10, 14, 18, 22]);
     cfg.pause_at_target_reached = true;
+    // V3-inherited trailingStop {activatePct: 3%, trailPct: 0.5%}. None of V4,
+    // V5, V5_QUARTZ, V5_QUARTZ_LITE, R28_V4 or R28_V6 override it. Closes the
+    // -8.78pp Rust↔TS drift on R28_V6_PASSLOCK observed post-Phase-3.
+    cfg.trailing_stop = Some(TrailingStop { activate_pct: 0.03, trail_pct: 0.005 });
     cfg
 }
 
@@ -328,6 +332,11 @@ fn v5_titanium_base() -> EngineConfig {
     cfg.allowed_hours_utc = Some(vec![2, 4, 6, 8, 10, 12, 14, 18, 20, 22]);
     cfg.pause_at_target_reached = true;
     cfg.close_all_on_target_reached = false;
+    // V3-inherited trailingStop {activatePct: 3%, trailPct: 0.5%}. Same chain
+    // V4 → V5 → V5_PRO → V5_GOLD → V5_DIAMOND → V5_PLATINUM → V5_PLATINUM_30M
+    // → V5_TITANIUM (none override). Closes the -15.21pp drift on V5_AMBER and
+    // -24pp on V5_TOPAZ.
+    cfg.trailing_stop = Some(TrailingStop { activate_pct: 0.03, trail_pct: 0.005 });
     cfg
 }
 
@@ -810,6 +819,26 @@ mod tests {
             cfg.allowed_hours_utc.as_ref().unwrap(),
             &vec![4u32, 6, 8, 10, 14, 18]
         );
+    }
+
+    #[test]
+    fn v3_inherited_trailing_stop_propagates() {
+        // V3 sets trailingStop {3%, 0.5%}; the V4/V5 chain inherits without
+        // override. Confirm both engine bases (quartz_lite + v5_titanium)
+        // carry the field, and a representative leaf inherits it.
+        for cfg in [
+            r28_v6_passlock(),
+            r28_v6(),
+            v5_titanium(),
+            v5_amber(),
+            v5_topaz(),
+            v5_titanium_passlock(),
+            v5_obsidian_passlock(),
+        ] {
+            let ts = cfg.trailing_stop.expect("trailing_stop must propagate");
+            assert!((ts.activate_pct - 0.03).abs() < 1e-12, "{}: activate_pct", cfg.label);
+            assert!((ts.trail_pct - 0.005).abs() < 1e-12, "{}: trail_pct", cfg.label);
+        }
     }
 
     #[test]

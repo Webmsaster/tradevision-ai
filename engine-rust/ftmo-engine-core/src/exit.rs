@@ -242,7 +242,46 @@ pub fn process_position_exit_with_held(
         }
     }
 
-    // 6. Optional time-exit. V4-Sim disables this for parity; V5R/Backtest engines
+    // 6. POST-CROSS TrailingStop — only updates state if the position
+    //    survived this bar's SL/TP cross. Mirrors `ftmoDaytrade24h.ts:4670-4691`
+    //    where trailingStop runs AFTER the cross-detection block at L4587-4619.
+    //    Tightened stop affects the NEXT bar's cross, not the current — TS
+    //    semantic prevents same-bar premature stop-outs when the bar wicks
+    //    below the trail-stop after closing higher than the previous peak.
+    if let Some(trail) = cfg.trailing_stop {
+        let unrealized = match pos.direction {
+            PositionSide::Long => (candle.close - pos.entry_price) / pos.entry_price,
+            PositionSide::Short => (pos.entry_price - candle.close) / pos.entry_price,
+        };
+        if !pos.trail_active && unrealized >= trail.activate_pct {
+            pos.trail_active = true;
+            pos.trail_peak = candle.close;
+        }
+        if pos.trail_active {
+            match pos.direction {
+                PositionSide::Long => {
+                    if candle.close > pos.trail_peak {
+                        pos.trail_peak = candle.close;
+                    }
+                    let trail_stop = pos.trail_peak * (1.0 - trail.trail_pct);
+                    if trail_stop > pos.stop_price {
+                        pos.stop_price = trail_stop;
+                    }
+                }
+                PositionSide::Short => {
+                    if candle.close < pos.trail_peak {
+                        pos.trail_peak = candle.close;
+                    }
+                    let trail_stop = pos.trail_peak * (1.0 + trail.trail_pct);
+                    if trail_stop < pos.stop_price {
+                        pos.stop_price = trail_stop;
+                    }
+                }
+            }
+        }
+    }
+
+    // 7. Optional time-exit. V4-Sim disables this for parity; V5R/Backtest engines
     //    may opt in via `cfg.time_exit_enabled`. The hold-bars limit comes from
     //    the per-asset override or `cfg.hold_bars` fallback.
     if cfg.time_exit_enabled {
@@ -264,6 +303,7 @@ mod tests {
     use super::*;
     use crate::config::{
         BreakEven, ChandelierExit, EngineConfig, PartialTakeProfit, PartialTakeProfitLevel,
+        TrailingStop,
     };
 
     fn base_cfg() -> EngineConfig {
@@ -290,6 +330,8 @@ mod tests {
             ptp_level_idx: 0,
             ptp_levels_realized: 0.0,
             last_known_price: None,
+            trail_active: false,
+            trail_peak: 0.0,
         }
     }
 
@@ -491,5 +533,71 @@ mod tests {
         let mut p = long_pos(100.0);
         let c = bar(100.0, 100.5, 99.5, 100.0);
         assert!(process_position_exit(&mut p, &c, &cfg, None).is_none());
+    }
+
+    // ─── trailingStop port — parity with `ftmoDaytrade24h.ts:4670-4691` ──
+
+    #[test]
+    fn trailing_stop_arms_on_activate_pct() {
+        // Long: entry=100, activatePct=3%. Bar closes at 103 → trail arms,
+        // trail_peak=103, trail_stop = 103 × (1 − 0.005) = 102.485.
+        let mut cfg = base_cfg();
+        cfg.trailing_stop = Some(TrailingStop { activate_pct: 0.03, trail_pct: 0.005 });
+        let mut p = long_pos(100.0);
+        // Bar low must stay strictly above the new stop so we observe arming
+        // without triggering the cross.
+        let c = bar(102.0, 103.5, 102.6, 103.0);
+        let r = process_position_exit(&mut p, &c, &cfg, None);
+        assert!(r.is_none());
+        assert!(p.trail_active);
+        assert!((p.trail_peak - 103.0).abs() < 1e-9);
+        assert!((p.stop_price - 102.485).abs() < 1e-9);
+    }
+
+    #[test]
+    fn trailing_stop_does_not_arm_below_threshold() {
+        let mut cfg = base_cfg();
+        cfg.trailing_stop = Some(TrailingStop { activate_pct: 0.03, trail_pct: 0.005 });
+        let mut p = long_pos(100.0);
+        // Close at 102 = +2% favourable, below 3% threshold.
+        let c = bar(101.5, 102.2, 101.0, 102.0);
+        let r = process_position_exit(&mut p, &c, &cfg, None);
+        assert!(r.is_none());
+        assert!(!p.trail_active);
+        assert!((p.stop_price - 98.0).abs() < 1e-9, "stop unchanged");
+    }
+
+    #[test]
+    fn trailing_stop_only_tightens_long() {
+        // After arming at 103, a lower close (102) must NOT lower the stop.
+        let mut cfg = base_cfg();
+        cfg.trailing_stop = Some(TrailingStop { activate_pct: 0.03, trail_pct: 0.005 });
+        let mut p = long_pos(100.0);
+        let c1 = bar(102.0, 103.5, 102.6, 103.0);
+        process_position_exit(&mut p, &c1, &cfg, None);
+        let stop_after_arm = p.stop_price;
+        // Subsequent bar: lower close at 102.8. Bar low must stay strictly
+        // above the trail-stop (102.485) so cross does not fire.
+        let c2 = bar(102.9, 103.2, 102.6, 102.8);
+        let r = process_position_exit(&mut p, &c2, &cfg, None);
+        assert!(r.is_none());
+        assert!((p.trail_peak - 103.0).abs() < 1e-9, "peak unchanged on lower close");
+        assert!((p.stop_price - stop_after_arm).abs() < 1e-9, "stop monotone");
+    }
+
+    #[test]
+    fn trailing_stop_short_arms_and_tightens() {
+        // Short: entry=100, close=97 → unrealised +3%, arms. trail_peak=97,
+        // trail_stop = 97 × 1.005 = 97.485.
+        let mut cfg = base_cfg();
+        cfg.trailing_stop = Some(TrailingStop { activate_pct: 0.03, trail_pct: 0.005 });
+        let mut p = short_pos(100.0);
+        // Bar high must stay strictly BELOW the new stop so cross doesn't fire.
+        let c = bar(98.0, 97.4, 96.5, 97.0);
+        let r = process_position_exit(&mut p, &c, &cfg, None);
+        assert!(r.is_none());
+        assert!(p.trail_active);
+        assert!((p.trail_peak - 97.0).abs() < 1e-9);
+        assert!((p.stop_price - 97.485).abs() < 1e-9);
     }
 }

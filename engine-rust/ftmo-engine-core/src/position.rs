@@ -69,6 +69,14 @@ pub struct OpenPosition {
     /// is available on the final bar.
     #[serde(default, rename = "lastKnownPrice", skip_serializing_if = "Option::is_none")]
     pub last_known_price: Option<f64>,
+    /// Per-position trailing-stop arming flag. Mirrors `trailActive` in
+    /// `ftmoDaytrade24h.ts:4498`. Flips once unrealised >= `cfg.trailing_stop.activate_pct`.
+    #[serde(default, rename = "trailActive")]
+    pub trail_active: bool,
+    /// Best favourable close since trailing-stop armed (long: max close,
+    /// short: min close). Defaults to `entry_price` to mirror TS init.
+    #[serde(default, rename = "trailPeak")]
+    pub trail_peak: f64,
 }
 
 impl OpenPosition {
@@ -103,6 +111,8 @@ mod tests {
             ptp_level_idx: 0,
             ptp_levels_realized: 0.0,
             last_known_price: None,
+            trail_active: false,
+            trail_peak: 100.0,
         }
     }
 

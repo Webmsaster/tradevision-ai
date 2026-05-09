@@ -51,6 +51,8 @@ fn v5r_guardian_closes_on_intraday_drawdown() {
         ptp_level_idx: 0,
         ptp_levels_realized: 0.0,
         last_known_price: None,
+        trail_active: false,
+        trail_peak: 0.0,
     });
 
     let mut feed: HashMap<String, Vec<Candle>> = HashMap::new();
@@ -141,6 +143,8 @@ fn v5r_reentry_after_stop_with_mean_rev_size_mult() {
         ptp_level_idx: 0,
         ptp_levels_realized: 0.0,
         last_known_price: None,
+        trail_active: false,
+        trail_peak: 0.0,
     });
 
     let mut feed: HashMap<String, Vec<Candle>> = HashMap::new();

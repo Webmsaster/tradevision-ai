@@ -145,6 +145,8 @@ mod tests {
             ptp_level_idx: 0,
             ptp_levels_realized: 0.0,
             last_known_price: None,
+            trail_active: false,
+            trail_peak: 0.0,
         });
         let closures = vec![OfflineClosure {
             ticket_id: "t1".into(),

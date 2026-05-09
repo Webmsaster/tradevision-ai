@@ -301,6 +301,18 @@ pub struct PeakTrailingStop {
     pub trail_distance: f64,
 }
 
+/// Per-position trailing-stop. Activates after unrealised P&L >=
+/// `activate_pct`, then drags the dynamic stop `trail_pct` below the running
+/// peak `close`. Mirrors `cfg.trailingStop` in `ftmoDaytrade24h.ts:587-590`,
+/// processed bar-by-bar in `ftmoDaytrade24h.ts:4670-4691`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct TrailingStop {
+    #[serde(rename = "activatePct")]
+    pub activate_pct: f64,
+    #[serde(rename = "trailPct")]
+    pub trail_pct: f64,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct CorrelationFilter {
     #[serde(rename = "maxOpenSameDirection")]
@@ -402,6 +414,8 @@ pub struct EngineConfig {
     pub daily_peak_trailing_stop: Option<PeakTrailingStop>,
     #[serde(default, rename = "challengePeakTrailingStop")]
     pub challenge_peak_trailing_stop: Option<PeakTrailingStop>,
+    #[serde(default, rename = "trailingStop")]
+    pub trailing_stop: Option<TrailingStop>,
 
     #[serde(default, rename = "maxConcurrentTrades")]
     pub max_concurrent_trades: Option<u32>,
@@ -492,6 +506,7 @@ impl EngineConfig {
             correlation_filter: None,
             daily_peak_trailing_stop: None,
             challenge_peak_trailing_stop: None,
+            trailing_stop: None,
             max_concurrent_trades: None,
             funding_rate_filter: None,
             cross_asset_filter: None,
