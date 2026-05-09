@@ -548,6 +548,31 @@ pub fn step_bar(
                 }
             }
 
+            // R29-Bug-Audit-2026-05-09: per-asset+direction trade-exclusivity gate.
+            // Mirror of `detectAsset` internal cooldown at
+            // `ftmoDaytrade24h.ts:4987-4998` (`cooldown = exitBar + 1`). TS
+            // detector advances `i` past every trade's exit bar, preventing a
+            // second long/short on the same asset until after the previous
+            // trade exits. The Rust port had no such gate, so the entry-loop
+            // would happily open a second BTC-long while the first was still
+            // open — producing duplicate positions on the same asset+direction
+            // that PASSLOCK then closed in bulk. On 9-asset DROPONLY this
+            // inflated pass-rate by ~+8pp vs the TS V4-LIVE shadow (per win=1
+            // diff: Rust 9 trades pass +8.29% / TS 6 trades daily_loss -7.19%).
+            // The TS gate is direction-specific (long has its own cooldown,
+            // short has its own — both can run simultaneously per asset).
+            if state
+                .open_positions
+                .iter()
+                .any(|p| p.symbol == sig.symbol && p.direction == sig.direction)
+            {
+                result.skipped.push(crate::signal::PollSkip {
+                    asset: sig.symbol.clone(),
+                    reason: "trade-exclusivity: same asset+direction already open".into(),
+                });
+                continue;
+            }
+
             // V5R reentryAfterStop — slot present + within window?
             let key = ls_key(&sig.symbol, sig.direction);
             let mut reentry_scale: Option<f64> = None;
