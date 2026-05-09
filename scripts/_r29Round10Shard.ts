@@ -143,6 +143,18 @@ for (let start = WARMUP; start + winBars <= minBars; start += stepBars) {
       finalEquityPct: r.finalEquityPct,
     }) + "\n",
   );
+  // Optional trade dump for Rust↔TS audit. Set TRADES_OUT_FILE env to a path
+  // and the closedTrades array gets appended one-per-line with `winIdx`.
+  // Optionally narrow with DEBUG_WINDOW=<n> so only that window dumps.
+  const tradesOut = process.env.TRADES_OUT_FILE;
+  const debugWindow = process.env.DEBUG_WINDOW
+    ? parseInt(process.env.DEBUG_WINDOW, 10)
+    : null;
+  if (tradesOut && (debugWindow === null || debugWindow === winIdx)) {
+    for (const t of r.trades) {
+      appendFileSync(tradesOut, JSON.stringify({ ...t, winIdx }) + "\n");
+    }
+  }
   winIdx++;
 }
 
