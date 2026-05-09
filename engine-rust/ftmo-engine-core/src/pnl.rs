@@ -118,8 +118,9 @@ pub fn compute_eff_pnl_with_time(
 
 /// Mark-to-market equity = realised + Σ unrealised at the current bar.
 /// Mutates `pos.last_known_price` for every position whose source symbol
-/// has a price — Round 58 fix: gives a non-entryPrice fallback for
-/// end-of-window force-close on broken feeds.
+/// has a price on this tick — TS `ftmoLiveEngineV4.ts` line 605 parity.
+/// Positions whose feed is missing this tick are skipped (NOT blended via
+/// last_known_price) to match TS `computeMtmEquity` semantics.
 pub fn compute_mtm_equity(
     state: &mut EngineState,
     prices_by_source: &HashMap<String, f64>,
@@ -127,23 +128,21 @@ pub fn compute_mtm_equity(
 ) -> f64 {
     let mut mtm = state.equity;
     for pos in state.open_positions.iter_mut() {
-        // R67 audit: fall back to last_known_price when current feed missing.
-        // Original code skipped feedless positions entirely, undercounting
-        // unrealised loss → DailyEquityGuardian could fail to fire when a
-        // 30%-underwater position briefly loses its feed.
-        let price = match prices_by_source
-            .get(&pos.source_symbol)
-            .copied()
-            .or(pos.last_known_price)
-        {
+        // R29-R10 PARITY FIX: TS `computeMtmEquity` (ftmoLiveEngineV4.ts
+        // lines 599-605) skips feedless positions outright — it does NOT
+        // fall back to last_known_price. The earlier "R67 audit" fallback
+        // diverged from TS reference and depressed Rust pass-rate vs TS
+        // (47.10% vs 55.88% on R28_V6_PASSLOCK 138-w sweep). Match TS:
+        // feed missing on this tick → skip position from MTM blend.
+        let price = match prices_by_source.get(&pos.source_symbol).copied() {
             Some(p) if p.is_finite() && p > 0.0 => p,
-            _ => continue, // truly no price known and no fallback
+            _ => continue,
         };
-        if prices_by_source.contains_key(&pos.source_symbol) {
-            pos.last_known_price = Some(price);
-        }
-        // R67 audit fix: guard against entry_price ≤ 0 / non-finite (NaN
-        // poisoning of state.equity, see compute_eff_pnl).
+        // TS line 605: track most recent observed close so end-of-window
+        // force-close has a fallback. Only updated when feed has a price.
+        pos.last_known_price = Some(price);
+        // Guard against entry_price ≤ 0 / non-finite (NaN poisoning of
+        // state.equity, see compute_eff_pnl).
         if !(pos.entry_price.is_finite()) || pos.entry_price <= 0.0 {
             continue;
         }
@@ -404,6 +403,20 @@ mod tests {
         assert!((mtm - 1.016).abs() < 1e-9);
         // last_known_price was tracked
         assert_eq!(state.open_positions[0].last_known_price, Some(102.0));
+    }
+
+    #[test]
+    fn mtm_equity_skips_feedless_position_no_lkp_fallback() {
+        // R29-R10 PARITY: TS computeMtmEquity (ftmoLiveEngineV4.ts L599-605)
+        // has NO fallback to lastKnownPrice — feedless positions skipped.
+        let cfg = base_cfg();
+        let mut state = EngineState::initial("x");
+        let mut pos = make_pos(PositionSide::Long, 100.0);
+        pos.last_known_price = Some(50.0); // would imply -50% unrealised loss
+        state.open_positions.push(pos);
+        let prices = HashMap::new(); // no current price
+        // Without fallback, MTM unchanged (skips position).
+        assert_eq!(compute_mtm_equity(&mut state, &prices, &cfg), state.equity);
     }
 
     #[test]
