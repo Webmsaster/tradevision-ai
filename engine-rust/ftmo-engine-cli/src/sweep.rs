@@ -71,7 +71,10 @@ fn ml_features_for_signal(
     direction_long: bool,
     entry_time_ms: i64,
 ) -> [f64; 13] {
-    let i = bar_idx;
+    // R29-Audit-2026-05-10: CRITICAL FIX — use bar BEFORE entry. At entry
+    // time (= candles[bar_idx].open_time) bar `bar_idx` has just started;
+    // its close/high/low are FUTURE. Read features at i = bar_idx - 1.
+    let i = bar_idx.saturating_sub(1);
     let close = series.closes.get(i).copied().unwrap_or(0.0);
     let close5 = series.closes.get(i.saturating_sub(5)).copied().unwrap_or(close);
     let close20 = series.closes.get(i.saturating_sub(20)).copied().unwrap_or(close);

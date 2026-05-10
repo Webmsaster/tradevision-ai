@@ -113,8 +113,15 @@ for (const [assetIdx, asset] of (
   );
 
   for (const t of trades) {
-    const i = candles.findIndex((c) => c.openTime === t.entryTime);
-    if (i < 200) continue; // need 200 bars history for sma200 slope
+    const entryIdx = candles.findIndex((c) => c.openTime === t.entryTime);
+    if (entryIdx < 201) continue; // need 200 bars history for sma200 slope
+    // R29-Audit-2026-05-10: CRITICAL FIX. Entry happens at candles[entryIdx].open.
+    // At decision time (bar entryIdx's open_time), bars [0..entryIdx-1] are
+    // fully known but bar `entryIdx` is JUST STARTING — its close/high/low
+    // are FUTURE. Compute all features at bar i = entryIdx-1 (last fully
+    // closed bar). Otherwise the model sees the entry bar's complete
+    // movement and gets a free look at the trade's first-bar direction.
+    const i = entryIdx - 1;
     const px = candles[i]!.close;
     const px5 = candles[i - 5]?.close ?? px;
     const px20 = candles[i - 20]?.close ?? px;
