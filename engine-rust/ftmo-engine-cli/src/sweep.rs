@@ -441,6 +441,7 @@ fn main() -> Result<()> {
     let mut start_after_ts: Option<i64> = None;
     let mut random_gate_keep: Option<f64> = None;
     let mut random_gate_seed: u64 = 42;
+    let mut timeframe: Option<String> = None;
     let mut also_fire_meanrev: bool = false;
     let mut also_fire_breakout: bool = false;
     let mut mr_period: Option<u32> = None;
@@ -543,6 +544,7 @@ fn main() -> Result<()> {
             "--random-gate-seed" => {
                 random_gate_seed = need!("--random-gate-seed").parse()?;
             }
+            "--timeframe" => timeframe = Some(need!("--timeframe")),
             "--also-fire-meanrev" => also_fire_meanrev = true,
             "--also-fire-breakout" => also_fire_breakout = true,
             "--mr-period" => mr_period = Some(need!("--mr-period").parse()?),
@@ -610,6 +612,7 @@ fn main() -> Result<()> {
             trades_out,
             debug_window,
             start_after_ts,
+            timeframe.clone(),
             MultiSignalCfg {
                 also_meanrev: also_fire_meanrev,
                 also_breakout: also_fire_breakout,
@@ -930,6 +933,7 @@ fn run_multi_asset(
     trades_out: Option<PathBuf>,
     debug_window: Option<usize>,
     start_after_ts: Option<i64>,
+    timeframe: Option<String>,
     multi_signal: MultiSignalCfg,
 ) -> Result<()> {
     let dir = candles_dir.ok_or_else(|| anyhow!("--candles-dir is required for multi-asset"))?;
@@ -956,7 +960,7 @@ fn run_multi_asset(
     // Load candles per symbol.
     let mut candles_by_sym: HashMap<String, Vec<Candle>> = HashMap::new();
     for sym in &symbols {
-        let p = locate_candle_file(&dir, sym)?;
+        let p = locate_candle_file_tf(&dir, sym, timeframe.as_deref())?;
         let candles = loader::load_candles(&p)?;
         candles_by_sym.insert(sym.clone(), candles);
     }
@@ -1072,7 +1076,18 @@ fn run_multi_asset(
     // for `max_days*48` bars. The detector consumes the WARMUP bars before
     // the window-start to seed indicators (mirrors `_r28V6Round60Shard.ts`).
     const WIN_PLAN_WARMUP: usize = 5000;
-    let bars_per_day: usize = 48; // 30m bars; matches the R28_V6 30m basket.
+    // R29-Audit-2026-05-10: bars_per_day was hardcoded to 48 (30m). For 5m
+    // it's 288, for 1h 24, for 2h 12, for 4h 6. Derive from --timeframe
+    // flag; default 30m to preserve back-compat.
+    let bars_per_day: usize = match timeframe.as_deref() {
+        Some("5m") => 288,
+        Some("15m") => 96,
+        Some("30m") | None => 48,
+        Some("1h") => 24,
+        Some("2h") => 12,
+        Some("4h") => 6,
+        Some(other) => return Err(anyhow!("unknown --timeframe: {other}")),
+    };
     let win_plans: Vec<(usize, usize)> = if let Some(sd) = step_days {
         let stride = (sd as usize) * bars_per_day;
         let max_w_bars = cfg.max_days as usize * bars_per_day;
@@ -1170,15 +1185,36 @@ fn run_multi_asset(
 }
 
 fn locate_candle_file(dir: &Path, symbol: &str) -> Result<PathBuf> {
-    // Convention: <dir>/<SYMBOL>_<TF>.json — pick first match.
-    for ext in &["_30m.json", "_1h.json", "_2h.json", "_4h.json", "_15m.json"] {
+    locate_candle_file_tf(dir, symbol, None)
+}
+
+fn locate_candle_file_tf(
+    dir: &Path,
+    symbol: &str,
+    timeframe: Option<&str>,
+) -> Result<PathBuf> {
+    // R29-Audit-2026-05-10: timeframe-aware candle lookup. With --timeframe,
+    // use the matching `_<tf>.json` and ERROR if missing — earlier code
+    // would silently fall back to 30m which produced silent timeframe
+    // mixing on configs that were tuned for one TF but ran on another.
+    let preferred: &[&str] = match timeframe {
+        Some("5m") => &["_5m.json"],
+        Some("15m") => &["_15m.json"],
+        Some("30m") => &["_30m.json"],
+        Some("1h") => &["_1h.json"],
+        Some("2h") => &["_2h.json"],
+        Some("4h") => &["_4h.json"],
+        _ => &["_30m.json", "_1h.json", "_2h.json", "_4h.json", "_15m.json"],
+    };
+    for ext in preferred {
         let p = dir.join(format!("{symbol}{ext}"));
         if p.exists() {
             return Ok(p);
         }
     }
     Err(anyhow!(
-        "no candle file for symbol {symbol} in {}",
+        "no candle file for symbol {symbol} (tf={:?}) in {}",
+        timeframe,
         dir.display()
     ))
 }

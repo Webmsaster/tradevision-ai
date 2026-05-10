@@ -482,6 +482,26 @@ pub fn v5_titanium_passlock_todcut18() -> EngineConfig {
     cfg
 }
 
+/// R29-5M baseline — V5_TITANIUM_PASSLOCK shape but with periods scaled
+/// to 5m bars (×6 vs 30m). Mostly a starting point for 5m sweeps;
+/// untuned vs 30m-native params.
+///
+/// Scaling rationale:
+///   - 30m has 48 bars/day, 5m has 288 → ratio 6
+///   - hold_bars 240 (=5 days @ 30m) → 1440 (=5 days @ 5m)
+///   - All else unchanged: tp 4%, stop 5%, leverage 2x, MCT 6
+pub fn v5_titanium_passlock_5m() -> EngineConfig {
+    let mut cfg = v5_titanium_passlock();
+    cfg.label = "V5_TITANIUM_PASSLOCK_5M".into();
+    cfg.hold_bars = 1440; // 5 days × 288 5m-bars
+    for asset in cfg.assets.iter_mut() {
+        if asset.hold_bars.is_some() {
+            asset.hold_bars = Some(1440);
+        }
+    }
+    cfg
+}
+
 /// R29-Hunter — 65%+ pass-rate hunt winner (2026-05-09).
 ///
 /// Discovery via mass parameter sweep on V5_TITANIUM_PASSLOCK:
@@ -653,6 +673,7 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-titanium-passlock-todcut18" => v5_titanium_passlock_todcut18(),
         // R29-Hunter (2026-05-09 mass-sweep winner @ step=14d 66.14%)
         "2h-trend-v5-titanium-passlock-hunter" => v5_titanium_passlock_hunter(),
+        "2h-trend-v5-titanium-passlock-5m" => v5_titanium_passlock_5m(),
         _ => return None,
     })
 }
@@ -685,6 +706,8 @@ pub fn known_selectors() -> &'static [&'static str] {
         "2h-trend-v5-titanium-passlock-todcut18",
         // R29-Hunter
         "2h-trend-v5-titanium-passlock-hunter",
+        // R29 5m
+        "2h-trend-v5-titanium-passlock-5m",
     ]
 }
 
