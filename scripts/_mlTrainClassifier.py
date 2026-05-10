@@ -43,6 +43,11 @@ FEATURES = [
     "prior20_return",
     "asset_id",
     "direction_long",
+    # R29-R2.5: funding-rate at last 8h event ≤ entry bar (perpetual carry
+    # cost). Long pays positive, short earns it. Magnitude 5–30bp/trade —
+    # not free signal but tilts edge near regime flips. Null when no
+    # funding bar precedes entry; sklearn replaces with 0 (≈ neutral).
+    "funding_rate",
 ]
 
 
@@ -95,7 +100,13 @@ def main():
         n_jobs=-1,
     )
     clf.fit(X_tr, y_tr)
-    proba = clf.predict_proba(X_va)[:, 1]
+    if list(clf.classes_) != [0, 1]:
+        raise RuntimeError(
+            f"unexpected clf.classes_ = {clf.classes_} — Rust loader assumes [0, 1]; "
+            "training labels must be binary 0/1 with both classes present"
+        )
+    pos_idx = int(np.where(clf.classes_ == 1)[0][0])
+    proba = clf.predict_proba(X_va)[:, pos_idx]
     auc = roc_auc_score(y_va, proba)
     print(f"validation AUC = {auc:.4f}")
 
@@ -123,10 +134,10 @@ def main():
     # Simple recursive walker.
     def dump_tree(t, node=0):
         if t.children_left[node] == -1:
-            return {
-                "leaf": True,
-                "value": float(t.value[node][0][1] / t.value[node][0].sum()),
-            }
+            counts = t.value[node][0]
+            total = counts.sum()
+            p_win = float(counts[pos_idx] / total) if total > 0 else float(y.mean())
+            return {"leaf": True, "value": p_win}
         return {
             "feature": int(t.feature[node]),
             "threshold": float(t.threshold[node]),

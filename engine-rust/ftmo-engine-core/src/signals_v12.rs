@@ -75,7 +75,7 @@ pub fn detect_v12(
     } else {
         return None;
     };
-    if asset.invert_direction {
+    if asset.effective_invert_direction(cfg) {
         direction = direction.opposite();
     }
 

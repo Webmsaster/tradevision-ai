@@ -124,9 +124,16 @@ impl R28V6Params {
     /// branch wires these. Caller mutates the field if their config does
     /// activate the gate.
     pub fn default_for(asset: &AssetConfig, cfg: &EngineConfig) -> Self {
+        // R29-R3.2: scale bar-counted periods by `30 / cfg.bar_minutes` so a
+        // 5m run gets the same wall-clock SMA window the 30m R28_V6 family
+        // was tuned for (20-bar @ 30m = 600min ⇒ 120-bar @ 5m).
+        let scale = 30.0 / (cfg.bar_minutes.max(1) as f64);
+        let scale_period = |p: usize| -> usize {
+            ((p as f64) * scale).round().max(1.0) as usize
+        };
         Self {
-            fast_period: 20,
-            slow_period: 50,
+            fast_period: scale_period(20),
+            slow_period: scale_period(50),
             stop_pct: asset.stop_pct.unwrap_or(cfg.stop_pct),
             tp_pct: asset.tp_pct.unwrap_or(cfg.tp_pct),
             base_risk_frac: asset.risk_frac,
@@ -137,8 +144,8 @@ impl R28V6Params {
             rsi_period: None,
             rsi_long_max: None,
             rsi_short_min: None,
-            htf_fast: 9,
-            htf_slow: 21,
+            htf_fast: scale_period(9),
+            htf_slow: scale_period(21),
         }
     }
 }
@@ -174,7 +181,7 @@ pub fn detect_r28_v6(
     // TS detector NEVER consults, killing roughly half the signal stream
     // (TS fires on green-bar bursts regardless of trend; Rust required
     // SMA-slow to be sloping the "right" way too).
-    let invert = asset.invert_direction;
+    let invert = asset.effective_invert_direction(cfg);
     let candidates: &[PositionSide] = if asset.disable_short {
         &[PositionSide::Long]
     } else {
@@ -443,6 +450,30 @@ mod tests {
                 Candle::new(i as i64 * 1800_000, p, p + 0.5, p - 0.5, p, 0.0)
             })
             .collect()
+    }
+
+    #[test]
+    fn periods_scale_with_bar_minutes() {
+        // R29-R3.2 regression: 5m bar → 6× more bars to cover the same
+        // wall-clock window the 30m baseline was tuned for.
+        let a = asset();
+        let mut cfg30 = cfg();
+        cfg30.bar_minutes = 30;
+        let p30 = R28V6Params::default_for(&a, &cfg30);
+        assert_eq!(p30.fast_period, 20);
+        assert_eq!(p30.slow_period, 50);
+
+        let mut cfg5 = cfg();
+        cfg5.bar_minutes = 5;
+        let p5 = R28V6Params::default_for(&a, &cfg5);
+        assert_eq!(p5.fast_period, 120);
+        assert_eq!(p5.slow_period, 300);
+
+        let mut cfg2h = cfg();
+        cfg2h.bar_minutes = 120;
+        let p2h = R28V6Params::default_for(&a, &cfg2h);
+        assert_eq!(p2h.fast_period, 5);
+        assert_eq!(p2h.slow_period, 13);
     }
 
     #[test]

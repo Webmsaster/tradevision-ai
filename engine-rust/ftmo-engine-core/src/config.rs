@@ -119,6 +119,17 @@ pub struct AssetConfig {
     pub min_funding_for_short: Option<f64>,
 }
 
+impl AssetConfig {
+    /// Resolves the effective invert flag, mirroring TS
+    /// `asset.invertDirection ?? cfg.invertDirection ?? false`
+    /// (`ftmoDaytrade24h.ts:3609`). Per-asset `true` always wins; if every
+    /// asset leaves the field at its `false` default, run-config-level
+    /// `cfg.invertDirection: true` flips the whole basket.
+    pub fn effective_invert_direction(&self, cfg: &EngineConfig) -> bool {
+        self.invert_direction || cfg.invert_direction
+    }
+}
+
 /// Cross-asset filter — only allow signals if `symbol` is currently
 /// trending in `direction`. Trend determined by EMA(fast_period) vs EMA(slow_period)
 /// on `symbol`'s candle stream supplied at runtime.
@@ -428,6 +439,21 @@ pub struct EngineConfig {
     #[serde(default, rename = "closeAllOnTargetReached")]
     pub close_all_on_target_reached: bool,
 
+    /// Run-config-level invert fallback. Mirrors `cfg.invertDirection ?? false`
+    /// in `ftmoDaytrade24h.ts:3609` — per-asset `invertDirection` overrides
+    /// this; templates that set every asset explicitly leave this `false`.
+    #[serde(default, rename = "invertDirection")]
+    pub invert_direction: bool,
+
+    /// R29-R3.2: nominal bar duration in minutes for the run. Defaults to 30
+    /// (matches the 30m-native R28_V6/V5_TITANIUM/AMBER family). Detectors
+    /// that quote periods in *bars* (SMA fast/slow, ATR, RSI, prior-N return,
+    /// CVD lookback) must scale by `bar_minutes / 30` so a 5m run gets the
+    /// same time-window the 30m configs were tuned for. Templates set this
+    /// alongside `hold_bars` etc. when constructing a non-30m variant.
+    #[serde(default = "default_bar_minutes", rename = "barMinutes")]
+    pub bar_minutes: u32,
+
     #[serde(default, rename = "fundingRateFilter")]
     pub funding_rate_filter: Option<FundingRateFilter>,
 
@@ -458,6 +484,10 @@ pub struct EngineConfig {
 
 fn default_start_balance() -> f64 {
     100_000.0
+}
+
+fn default_bar_minutes() -> u32 {
+    30
 }
 
 impl EngineConfig {
@@ -516,6 +546,8 @@ impl EngineConfig {
             time_exit_enabled: false,
             pause_at_target_reached: true,
             close_all_on_target_reached: true,
+            invert_direction: false,
+            bar_minutes: 30,
             daily_equity_guardian: None,
             bypass_live_caps: false,
             day_progressive_sizing: None,
@@ -547,5 +579,26 @@ mod tests {
         let back: EngineConfig = serde_json::from_str(&s).unwrap();
         assert_eq!(back.label, cfg.label);
         assert_eq!(back.profit_target, cfg.profit_target);
+    }
+
+    #[test]
+    fn effective_invert_falls_back_to_cfg_level() {
+        // Regression test for R29-R3.9 — TS does
+        // `asset.invertDirection ?? cfg.invertDirection ?? false`
+        // (`ftmoDaytrade24h.ts:3609`); Rust must honor the cfg-level fallback
+        // when no per-asset override is set.
+        let mut cfg = EngineConfig::r28_v6_passlock_template();
+        cfg.invert_direction = true;
+        let asset = AssetConfig { invert_direction: false, ..Default::default() };
+        assert!(asset.effective_invert_direction(&cfg));
+
+        // Per-asset `true` works when cfg fallback is off (existing path).
+        let cfg2 = EngineConfig::r28_v6_passlock_template();
+        let asset2 = AssetConfig { invert_direction: true, ..Default::default() };
+        assert!(asset2.effective_invert_direction(&cfg2));
+
+        // Both off → no invert.
+        let asset3 = AssetConfig::default();
+        assert!(!asset3.effective_invert_direction(&cfg2));
     }
 }

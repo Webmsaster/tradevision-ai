@@ -103,8 +103,11 @@ fn passlock_closes_on_target_after_min_days() {
     let r2 = step_bar(&mut state, &input(&feed, &atr_feed, vec![]), &cfg);
     // TP cross: exitPrice = tpPrice 105 → raw=0.05, eff=0.04. equity = 1.04.
     assert!((state.equity - 1.04).abs() < 1e-9, "equity={}", state.equity);
-    // tradingDays remains [0] — entry-days only count, not exit-days.
-    assert_eq!(state.trading_days, vec![0]);
+    // tradingDays = [0, 1]: 0 from entry on day 0, 1 from R29-R3.8 ping-day
+    // push on first target-hit bar (matches TS V4 line 1663-1668; under
+    // pause_at_target_reached=true the post-target ping accumulator credits
+    // today even when no entry has been stamped yet).
+    assert_eq!(state.trading_days, vec![0, 1]);
     assert!(state.closed_trades.len() == 1);
     // Target hit AND minTradingDays=1 satisfied → passed.
     assert!(r2.target_hit);

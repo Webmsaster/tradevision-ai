@@ -19,6 +19,7 @@
 //!   [10] prior20_return
 //!   [11] asset_id
 //!   [12] direction_long
+//!   [13] funding_rate (R29-R2.5; perpetual carry; null→0 = neutral)
 //!
 //! NaN/None at training time was nan_to_num→0; do the same here.
 
@@ -70,6 +71,7 @@ pub const EXPECTED_FEATURES: &[&str] = &[
     "prior20_return",
     "asset_id",
     "direction_long",
+    "funding_rate",
 ];
 
 impl MlModel {

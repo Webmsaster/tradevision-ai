@@ -70,21 +70,32 @@ fn ml_features_for_signal(
     asset_idx: usize,
     direction_long: bool,
     entry_time_ms: i64,
-) -> [f64; 13] {
+    bar_minutes: u32,
+    funding_at_bar: Option<f64>,
+) -> [f64; 14] {
     // R29-Audit-2026-05-10: CRITICAL FIX — use bar BEFORE entry. At entry
     // time (= candles[bar_idx].open_time) bar `bar_idx` has just started;
     // its close/high/low are FUTURE. Read features at i = bar_idx - 1.
     let i = bar_idx.saturating_sub(1);
+    // R29-R3.3: prior-N return is anchored in *wall-clock minutes*, not bars,
+    // so the same trained model sees the same look-back window across TFs.
+    // Trained on 30m: 5-bar = 150min, 20-bar = 600min. Map to current TF.
+    let scale = (30.0 / (bar_minutes.max(1) as f64)).round().max(1.0) as usize;
+    let lb_short = 5 * scale;
+    let lb_long = 20 * scale;
     let close = series.closes.get(i).copied().unwrap_or(0.0);
-    let close5 = series.closes.get(i.saturating_sub(5)).copied().unwrap_or(close);
-    let close20 = series.closes.get(i.saturating_sub(20)).copied().unwrap_or(close);
+    let close5 = series.closes.get(i.saturating_sub(lb_short)).copied().unwrap_or(close);
+    let close20 = series.closes.get(i.saturating_sub(lb_long)).copied().unwrap_or(close);
     let prior5 = if close5 > 0.0 { (close - close5) / close5 } else { 0.0 };
     let prior20 = if close20 > 0.0 { (close - close20) / close20 } else { 0.0 };
     let atr_pct = match (series.atr14.get(i).copied().flatten(), close) {
         (Some(a), c) if c > 0.0 => a / c,
         _ => 0.0,
     };
-    let slope = |s: &[Option<f64>], lookback: usize| -> f64 {
+    let slope = |s: &[Option<f64>], lookback_30m: usize| -> f64 {
+        // R29-R3.3: lookback comes in 30m-native bar units; scale by
+        // `30 / bar_minutes` for the actual run TF.
+        let lookback = lookback_30m * scale;
         let cur = s.get(i).copied().flatten();
         let prev = s.get(i.saturating_sub(lookback)).copied().flatten();
         match (cur, prev) {
@@ -112,6 +123,9 @@ fn ml_features_for_signal(
         prior20,
         asset_idx as f64,
         if direction_long { 1.0 } else { 0.0 },
+        // R29-R2.5: forward-filled funding rate at bar_idx-1; null→0
+        // matches `nan_to_num(0.0)` in `_mlTrainClassifier.py`.
+        funding_at_bar.unwrap_or(0.0),
     ]
 }
 
@@ -996,6 +1010,13 @@ fn run_multi_asset(
 
     // R29-Track-B3 ML feature series. Pre-compute per symbol once, reused
     // across all windows. Match feature layout in `_mlTrainClassifier.py`.
+    //
+    // R29-R3.3: scale all bar-counted periods by `30 / bar_minutes` so a
+    // model trained on 30m candles still sees the same wall-clock window
+    // when run on 5m / 2h / 4h. (Wraps `_mlTrainingDataGen.ts:170` which is
+    // 30m-native.) The ML model file itself is timeframe-agnostic; the
+    // feature pipeline does the scaling at runtime.
+    let ml_scale = (30.0 / (cfg.bar_minutes.max(1) as f64)).round().max(1.0) as usize;
     let ml_features_by_sym: HashMap<String, MlFeatureSeries> = if multi_signal
         .ml_model
         .is_some()
@@ -1008,13 +1029,13 @@ fn run_multi_asset(
             map.insert(
                 sym.clone(),
                 MlFeatureSeries {
-                    rsi14: rsi_fn(&closes, 14),
-                    rsi28: rsi_fn(&closes, 28),
-                    adx14: adx_fn(cs, 14),
-                    atr14: atr_fn(cs, 14),
-                    sma20: sma_fn(&closes, 20),
-                    sma50: sma_fn(&closes, 50),
-                    sma200: sma_fn(&closes, 200),
+                    rsi14: rsi_fn(&closes, 14 * ml_scale),
+                    rsi28: rsi_fn(&closes, 28 * ml_scale),
+                    adx14: adx_fn(cs, 14 * ml_scale),
+                    atr14: atr_fn(cs, 14 * ml_scale),
+                    sma20: sma_fn(&closes, 20 * ml_scale),
+                    sma50: sma_fn(&closes, 50 * ml_scale),
+                    sma200: sma_fn(&closes, 200 * ml_scale),
                     closes,
                 },
             );
@@ -1280,12 +1301,11 @@ fn run_one_window(
     // per-asset entry-type → falls through to `None`), which masked the
     // detector behind a 0% pass-rate. The funding-filter precondition is
     // dropped so the default R28V6 fallback covers the whole V5_TREND family.
-    let default_to_r28v6 = matches!(signals_mode, SignalSrc::PerAssetCfg)
-        && cfg.assets.iter().all(|a| {
-            a.cvd_entry.is_none()
-                && a.vol_imbalance_entry.is_none()
-                && a.vol_poc_entry.is_none()
-        });
+    //
+    // R29-R3.6: the global `default_to_r28v6` (all-or-nothing) gate was
+    // replaced by per-asset `asset_uses_r28v6_fallback` (defined below)
+    // so a single cvd/volimb/poc asset no longer disables phantom-suppress
+    // and extra-detector pipelines for the whole basket.
 
     let mut last_passed = false;
     let mut last_fail: Option<String> = None;
@@ -1339,14 +1359,34 @@ fn run_one_window(
     // bit-for-bit. The state passed to detector is a throw-away shadow.
     use ftmo_engine_core::exit::process_position_exit_with_held;
     use ftmo_engine_core::position::OpenPosition;
+    // R29-R3.6 fix: phantom-pass should run per-asset in PerAssetCfg/R28V6
+    // mode whenever the asset falls through to the r28v6 default detector.
+    // Earlier `default_to_r28v6` was a global all-or-nothing gate: ONE asset
+    // with cvd_entry silenced phantom-suppress for ALL fallback assets in the
+    // basket, which leaked warmup-phantom-suppression bias into mixed configs.
+    let phantom_pass_eligible = matches!(signals_mode, SignalSrc::PerAssetCfg | SignalSrc::R28V6);
+    let asset_uses_r28v6_fallback = |a: &ftmo_engine_core::config::AssetConfig| -> bool {
+        match signals_mode {
+            SignalSrc::R28V6 => true,
+            SignalSrc::PerAssetCfg => {
+                a.cvd_entry.is_none()
+                    && a.vol_imbalance_entry.is_none()
+                    && a.vol_poc_entry.is_none()
+            }
+            _ => false,
+        }
+    };
     let phantom_open_until: HashMap<(String, ftmo_engine_core::position::PositionSide), usize> = {
         let mut map = HashMap::new();
-        // Only run when default detector is active AND user opt-in via
-        // --phantom-suppress. Phantom pre-pass is O(N²) per asset and adds
-        // ~1000× CPU cost — keep it off by default for fast parameter sweeps,
-        // turn on for parity-validation runs.
-        if default_to_r28v6 && multi_signal.phantom_suppress {
+        // Only run when at least one asset uses the r28v6 fallback AND user
+        // opted in via --phantom-suppress. Phantom pre-pass is O(N²) per asset
+        // and adds ~1000× CPU cost — keep it off by default for fast parameter
+        // sweeps, turn on for parity-validation runs.
+        if phantom_pass_eligible && multi_signal.phantom_suppress {
             for asset in cfg.assets.iter() {
+                if !asset_uses_r28v6_fallback(asset) {
+                    continue;
+                }
                 let source = asset
                     .source_symbol
                     .clone()
@@ -1438,6 +1478,9 @@ fn run_one_window(
             // be missing (no suppression).
             map.clear();
             for asset in cfg.assets.iter() {
+                if !asset_uses_r28v6_fallback(asset) {
+                    continue;
+                }
                 let source = asset
                     .source_symbol
                     .clone()
@@ -1632,60 +1675,73 @@ fn run_one_window(
                 }
                 SignalSrc::None => None,
             };
-            if let Some(s) = sig {
-                // R29-Bug-Audit-2026-05-09: phantom suppression. If a phantom
-                // trade from warmup is still open at the current bar `i`,
-                // skip the signal — TS detectAsset would have suppressed it
-                // via internal cooldown.
-                let key = (s.symbol.clone(), s.direction);
-                if let Some(&exit_bar) = phantom_open_until.get(&key) {
-                    if i < exit_bar {
-                        // Phantom still open; suppress.
-                        continue;
-                    }
-                }
-                // R29-Audit: random-gate sanity check. Drop the signal with
-                // (1 - keep_frac) probability. Deterministic per signal so
-                // results are reproducible. Used to confirm ML gain isn't
-                // just trade-count reduction.
-                if let Some(keep) = multi_signal.random_gate_keep {
-                    let mut h = std::hash::DefaultHasher::new();
-                    use std::hash::{Hash, Hasher};
-                    multi_signal.random_gate_seed.hash(&mut h);
-                    s.entry_time.hash(&mut h);
-                    s.symbol.hash(&mut h);
-                    let v = (h.finish() & 0xffff_ffff) as f64 / (1u64 << 32) as f64;
-                    if v >= keep {
-                        continue;
-                    }
-                }
-                // R29-Track-B3: ML signal-gate. Predict P(win) and skip
-                // signals whose probability falls below the threshold.
-                if let Some(model) = multi_signal.ml_model.as_ref() {
-                    if let Some(series) = ml_features_by_sym.get(&source) {
-                        let asset_idx = cfg
-                            .assets
-                            .iter()
-                            .position(|a| a.symbol == s.symbol)
-                            .unwrap_or(0);
-                        let direction_long = matches!(
-                            s.direction,
-                            ftmo_engine_core::position::PositionSide::Long
-                        );
-                        let feats = ml_features_for_signal(
-                            series,
-                            i,
-                            asset_idx,
-                            direction_long,
-                            s.entry_time,
-                        );
-                        let p_win = model.predict_proba(&feats);
-                        if p_win < multi_signal.ml_threshold {
-                            continue;
+            // R29-R3.7: post-detection gate chain (phantom-suppress +
+            // random-gate + ML-gate). Earlier this lived inline in the
+            // primary detector branch only; CVD/VOLIMB/POC went through the
+            // same primary branch but the also_meanrev / also_breakout
+            // extra-detector branches below bypassed both random- and ML-
+            // gates. Extracted into a single helper so every signal path
+            // applies the same gates.
+            let push_with_gates =
+                |s: ftmo_engine_core::signal::PollSignal,
+                 signals_for_bar: &mut Vec<ftmo_engine_core::signal::PollSignal>| {
+                    let key = (s.symbol.clone(), s.direction);
+                    if let Some(&exit_bar) = phantom_open_until.get(&key) {
+                        if i < exit_bar {
+                            return;
                         }
                     }
-                }
-                signals_for_bar.push(s);
+                    if let Some(keep) = multi_signal.random_gate_keep {
+                        let mut h = std::hash::DefaultHasher::new();
+                        use std::hash::{Hash, Hasher};
+                        multi_signal.random_gate_seed.hash(&mut h);
+                        s.entry_time.hash(&mut h);
+                        s.symbol.hash(&mut h);
+                        let v = (h.finish() & 0xffff_ffff) as f64 / (1u64 << 32) as f64;
+                        if v >= keep {
+                            return;
+                        }
+                    }
+                    if let Some(model) = multi_signal.ml_model.as_ref() {
+                        if let Some(series) = ml_features_by_sym.get(&source) {
+                            let asset_idx = cfg
+                                .assets
+                                .iter()
+                                .position(|a| a.symbol == s.symbol)
+                                .unwrap_or(0);
+                            let direction_long = matches!(
+                                s.direction,
+                                ftmo_engine_core::position::PositionSide::Long
+                            );
+                            // R29-R2.5: read forward-filled funding at bar
+                            // i-1 (last fully closed bar). Aligned with
+                            // training-time `findFundingAt(candles[i].openTime)`
+                            // in `_mlTrainingDataGen.ts`.
+                            let funding_idx = i.saturating_sub(1);
+                            let funding_at = funding_feed
+                                .get(&source)
+                                .and_then(|s| s.get(funding_idx).copied())
+                                .flatten();
+                            let feats = ml_features_for_signal(
+                                series,
+                                i,
+                                asset_idx,
+                                direction_long,
+                                s.entry_time,
+                                cfg.bar_minutes,
+                                funding_at,
+                            );
+                            let p_win = model.predict_proba(&feats);
+                            if p_win < multi_signal.ml_threshold {
+                                return;
+                            }
+                        }
+                    }
+                    signals_for_bar.push(s);
+                };
+
+            if let Some(s) = sig {
+                push_with_gates(s, &mut signals_for_bar);
             }
 
             // R29-Stage-B: extra detectors fired in PARALLEL when
@@ -1696,7 +1752,7 @@ fn run_one_window(
             // gate (commit 50194dc) ensures only one position opens.
             if multi_signal.also_meanrev
                 && matches!(signals_mode, SignalSrc::PerAssetCfg)
-                && default_to_r28v6
+                && asset_uses_r28v6_fallback(asset)
             {
                 let arr = match feed.get(&source) {
                     Some(v) => v,
@@ -1712,18 +1768,12 @@ fn run_one_window(
                 if let Some(s) =
                     detect_mean_reversion(&mut state, cfg, asset, &source, arr, &mr_src)
                 {
-                    let key = (s.symbol.clone(), s.direction);
-                    if let Some(&exit_bar) = phantom_open_until.get(&key) {
-                        if i < exit_bar {
-                            continue;
-                        }
-                    }
-                    signals_for_bar.push(s);
+                    push_with_gates(s, &mut signals_for_bar);
                 }
             }
             if multi_signal.also_breakout
                 && matches!(signals_mode, SignalSrc::PerAssetCfg)
-                && default_to_r28v6
+                && asset_uses_r28v6_fallback(asset)
             {
                 let arr = match feed.get(&source) {
                     Some(v) => v,
@@ -1731,7 +1781,7 @@ fn run_one_window(
                 };
                 let bp = BreakoutParams::from_cfg(cfg, asset);
                 if let Some(s) = detect_breakout(&mut state, cfg, asset, &source, arr, &bp) {
-                    signals_for_bar.push(s);
+                    push_with_gates(s, &mut signals_for_bar);
                 }
             }
         }

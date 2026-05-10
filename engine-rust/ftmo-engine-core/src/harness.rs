@@ -330,6 +330,19 @@ pub fn step_bar(
         if cfg.pause_at_target_reached {
             state.paused_at_target = true;
         }
+        // R29-R3.8 fix: TS sets `pausedAtTarget` (line 1575-1576) BEFORE
+        // ping-day bookkeeping (line 1663-1668) so the first-target-hit bar
+        // counts toward `tradingDays`. Rust runs ping-day above the target-
+        // hit branch, so today never gets pushed on the first-hit bar.
+        // Mirror TS's same-bar push here so the standalone pass-check below
+        // can clear `min_trading_days` on the first-hit bar when no entry
+        // had previously stamped today.
+        if state.paused_at_target {
+            let ping_day = new_day as u32;
+            if !state.trading_days.contains(&ping_day) {
+                state.trading_days.push(ping_day);
+            }
+        }
         // 8. R60 close-all-on-target.
         if cfg.close_all_on_target_reached && !state.open_positions.is_empty() {
             // Close every remaining position at last bar's close.

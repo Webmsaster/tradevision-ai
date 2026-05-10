@@ -86,7 +86,12 @@ pub fn detect_cvd_divergence(
     candles: &[Candle],
     params: &CvdEntry,
 ) -> Option<PollSignal> {
-    let lb = params.lookback_bars as usize;
+    // R29-R3.4: CVD lookback is config-quoted in *bars*, but the wall-clock
+    // window changes by TF. Scale by `30 / cfg.bar_minutes` so a 30m-tuned
+    // 20-bar (=10h) lookback still measures 10h on 5m (120 bars) or 2h
+    // (5 bars). Templates may set the param at any TF; this normalises.
+    let scale = (30.0 / (cfg.bar_minutes.max(1) as f64)).round().max(1.0) as usize;
+    let lb = (params.lookback_bars as usize) * scale;
     if candles.len() < lb + 2 {
         return None;
     }
@@ -179,7 +184,9 @@ pub fn detect_vol_poc(
     candles: &[Candle],
     params: &VolPocEntry,
 ) -> Option<PollSignal> {
-    let wb = params.window_bars as usize;
+    // R29-R3.4: same TF-scaling as CVD lookback above.
+    let scale = (30.0 / (cfg.bar_minutes.max(1) as f64)).round().max(1.0) as usize;
+    let wb = (params.window_bars as usize) * scale;
     if candles.len() < wb + 2 {
         return None;
     }

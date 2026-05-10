@@ -494,6 +494,10 @@ pub fn v5_titanium_passlock_5m() -> EngineConfig {
     let mut cfg = v5_titanium_passlock();
     cfg.label = "V5_TITANIUM_PASSLOCK_5M".into();
     cfg.hold_bars = 1440; // 5 days × 288 5m-bars
+    // R29-R3.2: tells detectors to scale bar-counted periods (SMA fast/slow,
+    // CVD lookback, prior-N return) by 30/5 = 6× so a 5m run sees the same
+    // wall-clock window the 30m baseline was tuned for.
+    cfg.bar_minutes = 5;
     for asset in cfg.assets.iter_mut() {
         if asset.hold_bars.is_some() {
             asset.hold_bars = Some(1440);
