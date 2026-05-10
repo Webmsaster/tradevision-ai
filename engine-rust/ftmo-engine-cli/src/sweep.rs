@@ -1097,7 +1097,14 @@ fn run_multi_asset(
                 let hi = (lo + max_w_bars).min(total_bars);
                 (lo, hi)
             })
-            .filter(|(lo, hi)| *hi > *lo + bars_per_day)
+            // R29-Audit-Round3.1: TS shard rejects windows where
+            // `start + winBars > minBars` (strict). Earlier Rust filter
+            // `hi > lo + bars_per_day` accepted truncated 1-day stub
+            // windows that TS never sees, deflating pass-rate. Match TS
+            // by requiring the FULL `max_w_bars` window length. Guard
+            // against the `lo > hi` underflow that bit windows where the
+            // requested `--windows` exceeds available capacity.
+            .filter(|(lo, hi)| *hi >= *lo + max_w_bars)
             .collect()
     } else {
         let win_size = total_bars / windows.max(1);
@@ -1575,7 +1582,12 @@ fn run_one_window(
                         detect_vol_imbalance(&mut state, cfg, asset, &source, arr, &p)
                     } else if let Some(p) = asset.vol_poc_entry {
                         detect_vol_poc(&mut state, cfg, asset, &source, arr, &p)
-                    } else if default_to_r28v6 {
+                    } else {
+                        // R29-Audit-Round3.7: per-asset fallback to R28V6
+                        // default. Earlier `default_to_r28v6` was a global
+                        // all-or-nothing: ONE asset with cvd_entry silenced
+                        // ALL others. Now each asset that doesn't set an
+                        // alt entry-type falls through individually.
                         let r28p = R28V6Params::default_for(asset, cfg);
                         let funding = funding_feed.get(&source).map(|v| v.as_slice());
                         let r28in = R28V6Inputs {
@@ -1585,8 +1597,6 @@ fn run_one_window(
                             funding_series: funding,
                         };
                         detect_r28_v6(&mut state, cfg, asset, &source, arr, &r28p, &r28in)
-                    } else {
-                        None
                     }
                 }
                 SignalSrc::Breakout => {

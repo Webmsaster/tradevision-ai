@@ -52,21 +52,72 @@ pub struct MlModel {
     pub validation_auc: f64,
 }
 
+/// R29-Audit-Round2.5: expected feature ordering. Inference computes
+/// features in this exact order (sweep.rs::ml_features_for_signal). If
+/// the trained model's `features` field deviates, predictions silently
+/// score against wrong tree splits. Validate at load time.
+pub const EXPECTED_FEATURES: &[&str] = &[
+    "rsi14",
+    "rsi28",
+    "adx14",
+    "atr14_pct",
+    "sma20_slope",
+    "sma50_slope",
+    "sma200_slope",
+    "hour",
+    "dow",
+    "prior5_return",
+    "prior20_return",
+    "asset_id",
+    "direction_long",
+];
+
 impl MlModel {
     pub fn load_from_path(path: &str) -> std::io::Result<Self> {
         let bytes = std::fs::read(path)?;
-        serde_json::from_slice(&bytes)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        let model: Self = serde_json::from_slice(&bytes)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        // Hard-fail on feature-order mismatch — silent reorder is the
+        // most insidious model-vs-engine drift.
+        if model.features.len() != EXPECTED_FEATURES.len()
+            || model
+                .features
+                .iter()
+                .zip(EXPECTED_FEATURES)
+                .any(|(a, b)| a != b)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "ML model feature order mismatch: model={:?} expected={:?}",
+                    model.features, EXPECTED_FEATURES
+                ),
+            ));
+        }
+        Ok(model)
     }
 
     /// Average P(win=1) across all trees in the forest.
+    ///
+    /// R29-Audit-Round2.4: training pipeline does `nan_to_num(0.0)` on
+    /// features before fitting (`_mlTrainClassifier.py`), so the trees
+    /// never saw NaN at split time. At inference, raw features may
+    /// contain NaN (e.g. warmup-bar indicator missing). Without this
+    /// substitution, `NaN <= threshold` evaluates to `false` and the
+    /// tree always routes right — silent prediction drift vs training.
+    /// We mirror the training-time substitution here once at the entry
+    /// point so the per-tree traversal stays cheap.
     pub fn predict_proba(&self, features: &[f64]) -> f64 {
         if self.trees.is_empty() {
             return self.win_rate_baseline;
         }
+        let cleaned: Vec<f64> = features
+            .iter()
+            .map(|&v| if v.is_finite() { v } else { 0.0 })
+            .collect();
         let mut sum = 0.0_f64;
         for tree in &self.trees {
-            sum += traverse(tree, features);
+            sum += traverse(tree, &cleaned);
         }
         sum / self.trees.len() as f64
     }

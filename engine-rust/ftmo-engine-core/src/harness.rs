@@ -280,8 +280,14 @@ pub fn step_bar(
     }
 
     // 6. Target / DL / TL fail-check (realised equity).
-    let total_loss_floor = 1.0 - cfg.max_total_loss;
-    let daily_loss_floor = state.day_start * (1.0 - cfg.max_daily_loss);
+    //
+    // R29-Audit-Round1.7: TS V4-LIVE uses `<= floor + 1e-9` (L1535/1545)
+    // — exact-equality bars where equity == floor PASS (1 ULP slack).
+    // Earlier Rust used strict `<= floor` and failed those windows where
+    // TS passed. The `- 1e-9` from the Rust floor is the equivalent.
+    const FAIL_EPSILON: f64 = 1e-9;
+    let total_loss_floor = 1.0 - cfg.max_total_loss - FAIL_EPSILON;
+    let daily_loss_floor = state.day_start * (1.0 - cfg.max_daily_loss) - FAIL_EPSILON;
     if state.equity <= total_loss_floor {
         state.stopped_reason = Some(StoppedReason::TotalLoss);
         result.fail_reason = Some(FailReason::TotalLoss);
@@ -616,12 +622,19 @@ pub fn step_bar(
             }
             // MaxConcurrentTrades cap (re-checked per signal so mid-bar opens
             // correctly bump the count for subsequent matches).
+            //
+            // R29-Audit-Round1.6: when MCT trips, ALL remaining signals on
+            // this bar are blocked (the open count won't shrink until next
+            // bar). TS V4-LIVE simulate uses `mctBreakOuter = true; break`.
+            // Earlier `continue` here let downstream signals run through
+            // every per-asset/cross-asset/LSC/correlation gate uselessly,
+            // emitting bogus skip-reasons.
             if state.open_positions.len() >= max_concurrent {
                 result.skipped.push(crate::signal::PollSkip {
                     asset: sig.symbol.clone(),
                     reason: "MCT cap mid-bar".into(),
                 });
-                continue;
+                break;
             }
             // Day-tracking — entry date counts toward minTradingDays.
             if !state.trading_days.contains(&state.day) {
