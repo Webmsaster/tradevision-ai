@@ -147,6 +147,12 @@ struct MultiSignalCfg {
     /// gate disabled.
     ml_model: Option<Arc<ftmo_engine_core::ml_gate::MlModel>>,
     ml_threshold: f64,
+    /// R29-Audit: random-gate sanity check. When set to Some(f), each signal
+    /// is kept with probability f (deterministic per `random_gate_seed +
+    /// entry_time + symbol_hash`). Used to confirm ML "wins" come from signal
+    /// quality, not trade-count reduction.
+    random_gate_keep: Option<f64>,
+    random_gate_seed: u64,
 }
 
 /// R29-PassrateHunt: post-template config mutations. Bundle all override
@@ -430,6 +436,8 @@ fn main() -> Result<()> {
     let mut ml_model_path: Option<PathBuf> = None;
     let mut ml_threshold: f64 = 0.0;
     let mut start_after_ts: Option<i64> = None;
+    let mut random_gate_keep: Option<f64> = None;
+    let mut random_gate_seed: u64 = 42;
     let mut also_fire_meanrev: bool = false;
     let mut also_fire_breakout: bool = false;
     let mut mr_period: Option<u32> = None;
@@ -526,6 +534,12 @@ fn main() -> Result<()> {
             "--ml-model" => ml_model_path = Some(PathBuf::from(need!("--ml-model"))),
             "--ml-threshold" => ml_threshold = need!("--ml-threshold").parse()?,
             "--start-after-ts" => start_after_ts = Some(need!("--start-after-ts").parse()?),
+            "--random-gate-keep" => {
+                random_gate_keep = Some(need!("--random-gate-keep").parse()?);
+            }
+            "--random-gate-seed" => {
+                random_gate_seed = need!("--random-gate-seed").parse()?;
+            }
             "--also-fire-meanrev" => also_fire_meanrev = true,
             "--also-fire-breakout" => also_fire_breakout = true,
             "--mr-period" => mr_period = Some(need!("--mr-period").parse()?),
@@ -617,6 +631,8 @@ fn main() -> Result<()> {
                     None => None,
                 },
                 ml_threshold,
+                random_gate_keep,
+                random_gate_seed,
             },
         );
     }
@@ -1576,6 +1592,21 @@ fn run_one_window(
                 if let Some(&exit_bar) = phantom_open_until.get(&key) {
                     if i < exit_bar {
                         // Phantom still open; suppress.
+                        continue;
+                    }
+                }
+                // R29-Audit: random-gate sanity check. Drop the signal with
+                // (1 - keep_frac) probability. Deterministic per signal so
+                // results are reproducible. Used to confirm ML gain isn't
+                // just trade-count reduction.
+                if let Some(keep) = multi_signal.random_gate_keep {
+                    let mut h = std::hash::DefaultHasher::new();
+                    use std::hash::{Hash, Hasher};
+                    multi_signal.random_gate_seed.hash(&mut h);
+                    s.entry_time.hash(&mut h);
+                    s.symbol.hash(&mut h);
+                    let v = (h.finish() & 0xffff_ffff) as f64 / (1u64 << 32) as f64;
+                    if v >= keep {
                         continue;
                     }
                 }
