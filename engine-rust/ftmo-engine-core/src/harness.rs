@@ -706,6 +706,20 @@ pub fn step_bar(
                 continue;
             }
 
+            // R29-Drift-Audit-2026-05-12 (REVERTED): the post-exit 1-bar
+            // cooldown patch was a misinterpretation. TS detectAsset's
+            // internal cooldown only affects WHICH trades the detector
+            // produces in its full-history pass; TS V4-Sim then filters
+            // by `entryTime === lastBar.openTime`, so the cooldown only
+            // matters for back-to-back same-bar+1 entries — which the
+            // existing open-position trade-exclusivity gate already
+            // covers because the prior trade is still open until end-of-
+            // bar in TS too. Adding bars_seen-based gating dropped
+            // 5 windows on the 38-window step=14 spot-check (10/38 vs
+            // 13/38 baseline). Reverted to baseline; the residual ~2.6pp
+            // drift is exit-handler-path divergence (atrStop/chandelier/
+            // trailingStop precedence, not signal generation).
+
             // V5R reentryAfterStop — slot present + within window?
             let key = ls_key(&sig.symbol, sig.direction);
             let mut reentry_scale: Option<f64> = None;

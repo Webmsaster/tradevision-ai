@@ -1462,15 +1462,26 @@ fn run_one_window(
     //
     // Rust's detect_r28_v6 is stateless. Without phantom-trade simulation,
     // the first window-bar signal fires even if a phantom from warmup
-    // would have suppressed it. Empirically this inflates pass-rate by
-    // ~7pp on small-basket configs (Hunter post-trade-exclusivity Rust
-    // 62.20% / TS 55.20%). Per-window proof: win=1 BTC at 1626028200000 in
-    // Rust (window first bar) vs at 1626040800000 in TS (after phantom
-    // exit).
+    // would have suppressed it. The phantom-suppress flag was added to
+    // simulate this stateful cooldown.
     //
-    // Fix: simulate phantom trades through the full warmup, tracking per
-    // (symbol, direction) "phantom open until bar i". On each window bar,
-    // suppress signals when their phantom is still open.
+    // ⚠️ 2026-05-12 AUDIT: The earlier "+7pp inflation" claim (Hunter
+    // 62.20% Rust / 55.20% TS) is now suspected to be **inverted**.
+    // Direct R28_V6_PASSLOCK comparison shows phantom-suppress UNDER-counts:
+    //   - Rust WITH    --phantom-suppress: 13.16% (5/38, step=14d)
+    //   - Rust WITHOUT --phantom-suppress: 34.21% (13/38)
+    //   - TS V4-Sim (no phantom logic):    36.84% (14/38)
+    // Phantom-suppress blocks legitimate entries that TS V4 takes by
+    // accident-of-stateless-detect, so it **deflates** Rust pass-rate by
+    // ~23pp on R28_V6_PASSLOCK. The TS detectAsset trade-exclusivity is
+    // ALSO not bar-perfect (TS slice-from-zero re-detects all warmup
+    // phantoms each call, so trade-exclusivity only filters the LAST
+    // detected trade chain). Phantom-suppress as currently implemented
+    // does NOT match TS semantics — keep default OFF.
+    //
+    // For PARITY: --phantom-suppress should remain off. Use it only to
+    // study whether stateful trade-exclusivity (TS-style) would change
+    // sweep results — it almost always lowers them.
     //
     // Phantom simulation uses the same `detect_r28_v6` for entry and
     // `process_position_exit_with_held` for exit, matching TS detectAsset
