@@ -63,7 +63,19 @@ done
 
 echo "" | tee -a "$LOG"
 echo "=== SORTED ===" | tee -a "$LOG"
-grep -B1 "passed=" "$LOG" | paste - - - | awk -F'\t' '{ split($1, a, " "); split($3, b, " "); split(b[1], c, "%"); split(c[1], d, "("); print d[2] " " a[2] " " a[3] }' | sort -rg | tee -a "$LOG"
+# Use awk state machine: capture label line ("=== cfg (...) ==="), then on
+# next passed= line emit "PCT  LABEL". This is immune to extra interleaved
+# lines (bars/sec banner, Rust sweep banner re-print, etc.) that broke the
+# previous `grep -B1 | paste - - -` pairing.
+awk '
+  /^=== / { match($0, /=== ([^ ]+)/, m); if (m[1] != "") label = m[1]; next }
+  /passed=/ {
+    if (label != "" && match($0, /\(([0-9.]+)%\)/, p)) {
+      print p[1] "  " label
+      label = ""
+    }
+  }
+' "$LOG" | sort -rg | tee -a "$LOG"
 
 # Finalize: atomic move to shared log location (last writer wins, no torn writes)
 cp -f "$LOG" "$LOG_FINAL"

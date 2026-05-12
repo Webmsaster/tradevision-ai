@@ -60,6 +60,96 @@ export function detectLiveSignal(
 ): SignalAlert {
   const reasons: string[] = [];
 
+  // R4-A1 audit fix #1 (CRITICAL): warmup/length guard. Without this, an empty
+  // or short-loaded `btcCandles` array (e.g. Binance short-load to 2 bars)
+  // dereferences `btcCandles[-1].close` and throws an unhandled error inside
+  // the cron job. Also: regime detection needs ≥ 16 bars to evaluate EMA15
+  // smoothing + 24h-momentum (6 bars back) AND the ETH 2-green sequence
+  // needs ≥ 3 bars; below either threshold the result is silently garbage
+  // (mom24h=0 forces iter212-MR, the 2-green check ?? Infinity short-circuits
+  // to false). Refuse to alert below the warmup floor.
+  const MIN_BTC_BARS = 16; // EMA15 needs ~15-bar tail + mom24h(6) lookback
+  const MIN_ETH_BARS = 3; // b0 + b1 + 1 lookback for 2-green sequence
+  if (btcCandles.length < MIN_BTC_BARS || ethCandles.length < MIN_ETH_BARS) {
+    return mkNoSignal(
+      "BEAR_CHOP",
+      "iter212",
+      [
+        `Warmup gate: btc=${btcCandles.length} (need ${MIN_BTC_BARS}), eth=${ethCandles.length} (need ${MIN_ETH_BARS})`,
+      ],
+      `insufficient warmup bars (btc=${btcCandles.length}, eth=${ethCandles.length})`,
+      {
+        btcClose: btcCandles[btcCandles.length - 1]?.close ?? 0,
+        btcEma10: 0,
+        btcEma15: 0,
+        btcUptrend: false,
+        btcMom24h: 0,
+        ethClose: ethCandles[ethCandles.length - 1]?.close ?? 0,
+      },
+    );
+  }
+
+  // R4-A1 audit fix #2 (HIGH): refuse to fire on a still-forming bar.
+  // `loadBinanceHistory` sets `isFinal = closeTime < Date.now()` but
+  // `detectLiveSignal` previously ignored that flag — a cron run that fires
+  // <1ms after kline-API serves an in-progress next bar would alert on a
+  // partial candle. Drop the trailing bar if not final.
+  const lastBtcRaw = btcCandles[btcCandles.length - 1]!;
+  const lastEthRaw = ethCandles[ethCandles.length - 1]!;
+  if (lastBtcRaw.isFinal === false || lastEthRaw.isFinal === false) {
+    return mkNoSignal(
+      "BEAR_CHOP",
+      "iter212",
+      [
+        `Finality gate: trailing bar still forming (btc.isFinal=${lastBtcRaw.isFinal}, eth.isFinal=${lastEthRaw.isFinal})`,
+      ],
+      "trailing bar not yet closed",
+      {
+        btcClose: lastBtcRaw.close,
+        btcEma10: 0,
+        btcEma15: 0,
+        btcUptrend: false,
+        btcMom24h: 0,
+        ethClose: lastEthRaw.close,
+      },
+    );
+  }
+
+  // R4-A1 audit fix #3 (MED): TF-consistency check. Detector assumes 4h bars
+  // for entryOpenTime / mom24h / maxHold maths. If the caller accidentally
+  // passes 30m or 1h bars (mixed-TF refactor regression), every offset breaks
+  // silently. Verify the spacing between the last two bars is in [3.5h, 4.5h]
+  // to tolerate Binance kline closeTime-edge ms-drift but reject other TFs.
+  const FOUR_H_MS = 4 * 3_600_000;
+  const TF_TOL_MS = 30 * 60_000; // ±30 min
+  const btcSpacing =
+    btcCandles[btcCandles.length - 1]!.openTime -
+    btcCandles[btcCandles.length - 2]!.openTime;
+  const ethSpacing =
+    ethCandles[ethCandles.length - 1]!.openTime -
+    ethCandles[ethCandles.length - 2]!.openTime;
+  if (
+    Math.abs(btcSpacing - FOUR_H_MS) > TF_TOL_MS ||
+    Math.abs(ethSpacing - FOUR_H_MS) > TF_TOL_MS
+  ) {
+    return mkNoSignal(
+      "BEAR_CHOP",
+      "iter212",
+      [
+        `TF gate: detector expects 4h bars but got btcΔ=${(btcSpacing / 3_600_000).toFixed(2)}h, ethΔ=${(ethSpacing / 3_600_000).toFixed(2)}h`,
+      ],
+      "candle timeframe mismatch (expected 4h)",
+      {
+        btcClose: lastBtcRaw.close,
+        btcEma10: 0,
+        btcEma15: 0,
+        btcUptrend: false,
+        btcMom24h: 0,
+        ethClose: lastEthRaw.close,
+      },
+    );
+  }
+
   // ---------- Regime detection ----------
   const btcCloses = btcCandles.map((c) => c.close);
   const btcEma10Arr = ema(btcCloses, 10);

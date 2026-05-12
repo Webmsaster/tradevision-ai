@@ -79,13 +79,22 @@ interface Result {
   finalEquityMed: number;
 }
 
+// Bug-Audit Round 4: linear-interpolated quantile (mirror of fixes in
+// _r28V6Aggregate.ts + _r28V6Run.ts). `Math.floor(q*N)` had an off-by-one
+// (q=0.9, N=10 → idx=9 = max, not 90th-percentile) AND for q=1 it returned
+// `sorted[N]` = undefined (the !-bang masked the bug). All three sister
+// scripts now use the same exact-percentile algorithm.
 function quantile(sorted: number[], q: number): number {
-  if (sorted.length === 0) return 0;
-  const idx = Math.min(
-    sorted.length - 1,
-    Math.max(0, Math.floor(q * sorted.length)),
-  );
-  return sorted[idx]!;
+  const n = sorted.length;
+  if (n === 0) return 0;
+  if (n === 1) return sorted[0]!;
+  const qc = Math.min(1, Math.max(0, q));
+  const pos = (n - 1) * qc;
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  if (lo === hi) return sorted[lo]!;
+  const frac = pos - lo;
+  return sorted[lo]! * (1 - frac) + sorted[hi]! * frac;
 }
 
 function run(

@@ -13,6 +13,8 @@ Covers:
 """
 from __future__ import annotations
 
+# pyright: reportArgumentType=false, reportPossiblyUnboundVariable=false, reportMissingImports=false
+
 import json
 import os
 import sys
@@ -1335,7 +1337,7 @@ def test_get_challenge_day_dst_spring_forward_safe(monkeypatch):
 
         # Build a `datetime` proxy whose `.now(tz)` we control.
         class FrozenDatetime(datetime):
-            _frozen_now = None
+            _frozen_now: "datetime | None" = None
 
             @classmethod
             def now(cls, tz=None):
@@ -1379,7 +1381,7 @@ def test_get_challenge_day_dst_fall_back_safe(monkeypatch):
         exe.CHALLENGE_START_DATE = "2026-10-23T00:00:00"
 
         class FrozenDatetime(datetime):
-            _frozen_now = None
+            _frozen_now: "datetime | None" = None
 
             @classmethod
             def now(cls, tz=None):
@@ -2059,6 +2061,85 @@ def test_place_market_order_market_closed_no_retry(monkeypatch):
     # Order failed because order_send surfaced the 10021.
     assert not res.ok
     assert res.error is not None and "10021" in res.error
+
+
+# ============================================================================
+# Round 4 audit (Python FTMO executor)
+# ============================================================================
+def test_passlock_race_check_target_idempotent(monkeypatch, tmp_path):
+    """Bug-Audit Round 4 (HIGH): check_target_and_pause MUST be safe to call
+    every poll cycle. Second call after target_hit=True is set must NOT
+    re-trigger _emergency_close_all_positions or re-send Telegram.
+
+    Closes the PASSLOCK race window: previously check_target_and_pause was
+    only invoked from inside _process_pending_signals_locked, so if equity
+    crossed the profit-target mid-cycle via a PTP fire, trailing-stop tick
+    or natural SL/TP exit, the closeAllOnTargetReached enforcement was
+    delayed by one poll interval (up to POLL_INTERVAL_SEC seconds) during
+    which the equity could drift back below target. Fixed by hoisting the
+    check into main_loop's per-iteration block — but only safe if the
+    function is idempotent. This test guards that invariant.
+    """
+    import ftmo_executor as exe
+
+    exe.STATE_DIR = tmp_path
+    exe.PAUSE_STATE_PATH = tmp_path / "pause-state.json"
+
+    emergency_calls: list[str] = []
+    tg_calls: list[str] = []
+    monkeypatch.setattr(exe, "_emergency_close_all_positions", lambda r: emergency_calls.append(r))
+    monkeypatch.setattr(exe, "tg_send", lambda msg, **kw: tg_calls.append(msg))
+    monkeypatch.setattr(exe, "PAUSE_AT_TARGET", True)
+    monkeypatch.setattr(exe, "PROFIT_TARGET_PCT", 0.10)
+    monkeypatch.setattr(exe, "CHALLENGE_START_BALANCE", 100_000.0)
+
+    # First call: equity well over the +10% target → target_hit fires.
+    paused_1 = exe.check_target_and_pause(110_500.0)
+    assert paused_1 is True
+    assert len(emergency_calls) == 1, "first crossing must trigger emergency close"
+    assert len(tg_calls) == 1, "first crossing must send exactly one Telegram alert"
+
+    # Second call (same poll-loop or next iteration): still over target → must
+    # short-circuit on state["target_hit"] without re-triggering anything.
+    paused_2 = exe.check_target_and_pause(111_000.0)
+    assert paused_2 is True
+    assert len(emergency_calls) == 1, "second call MUST NOT re-emergency-close (idempotency)"
+    assert len(tg_calls) == 1, "second call MUST NOT re-alert Telegram (idempotency)"
+
+    # Third call: equity has drifted BACK below target (e.g. a residual
+    # position closed at SL between cycles) — PASSLOCK guarantee still
+    # holds because state["target_hit"] remains True from the original
+    # crossing → bot stays paused, no positions allowed.
+    paused_3 = exe.check_target_and_pause(99_500.0)
+    assert paused_3 is True, "PASSLOCK must stay sticky once target was hit"
+    assert len(emergency_calls) == 1
+    assert len(tg_calls) == 1
+
+
+def test_default_direction_is_long_not_short(monkeypatch):
+    """Bug-Audit Round 4 (MED): when a signal omits the 'direction' field,
+    place-order path must default to 'long' to match engine convention
+    (_apply_trailing_stop/_apply_break_even/_apply_chandelier_stop all
+    default to 'long'). Previously process_pending_signals defaulted to
+    'short' which would open the wrong side on legacy/malformed signals.
+
+    We verify the divergent constant by inspecting the SOURCE — full
+    process_pending_signals exercise requires a heavy MT5 mock stack
+    already covered by other tests; this guards the regression cheaply.
+    """
+    import ftmo_executor as exe
+    import inspect
+    src = inspect.getsource(exe._process_pending_signals_locked)
+    # Must contain the corrected long-default.
+    assert 'sig.get("direction", "long")' in src, (
+        "process_pending_signals must default missing direction to 'long' "
+        "to match engine convention. Old 'short' default could open the "
+        "wrong side on legacy/malformed signals."
+    )
+    # Must NOT contain the buggy short-default.
+    assert 'sig.get("direction", "short")' not in src, (
+        "found legacy 'short' default — re-introduced regression"
+    )
 
 
 if __name__ == "__main__":

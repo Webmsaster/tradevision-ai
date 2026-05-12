@@ -17,6 +17,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { redactToken as sharedRedactToken } from "../src/utils/telegramRedact";
 
 function envFor(
   varBase: string,
@@ -114,20 +115,10 @@ async function main() {
   const chunks = splitChunks(text);
 
   // R1-A1 audit fix: redact bot token from any logged error message.
-  // Without this, DNS / TLS / fetch errors that include the request URL
-  // dump the bot token straight into stderr / cron mail.
-  // R3-A1 audit fix #1: also redact any token shape returned in URL-encoded
-  // or re-formatted form (proxies sometimes percent-encode `:` or wrap the
-  // token in `bot…`). Pattern matches every Telegram token regardless of
-  // surrounding chars.
-  const TOKEN_RE = /\d{8,12}:[A-Za-z0-9_-]{20,}/g;
-  const redact = (s: string) => {
-    if (!s) return s;
-    let out = s;
-    if (token) out = out.split(token).join("***");
-    out = out.replace(TOKEN_RE, "***");
-    return out;
-  };
+  // R3-A1 audit fix #1: redact URL-encoded / re-formatted token shapes too.
+  // R4-A1 audit fix: logic moved to `src/utils/telegramRedact.ts` so the
+  // same redact behaviour can be unit-tested independently of the cron job.
+  const redact = (s: string) => sharedRedactToken(s, token);
   for (const chunk of chunks) {
     // R1-A1 audit fix: 429 backoff + 401/404 fail-loud + 15s timeout. The
     // previous code dropped 429 silently (no Retry-After respect) and would

@@ -59,15 +59,19 @@ type TfTag = "5m" | "15m" | "30m" | "1h" | "2h" | "4h";
 const TF_DISPATCH: Record<string, TfTag> = {
   // 5m
   "5m-live": "5m",
+  "5m-live-v2": "5m",
+  "5m-live-v3": "5m",
   // 15m
   "15m": "15m",
   "15m-live": "15m",
   "15m-live-v1": "15m",
   "15m-live-v2": "15m",
+  "15m-live-v3": "15m",
   // 30m direct
   "30m": "30m",
   "30m-live": "30m",
   "30m-live-v1": "30m",
+  "30m-live-v2": "30m",
   "30m-turbo": "30m",
   // 30m-tuned configs that wear a "2h-trend-" badge — DO NOT REMOVE without
   // verifying the underlying CFG.timeframe! (Round 12 R72)
@@ -154,13 +158,16 @@ const TF_DISPATCH: Record<string, TfTag> = {
   "1h": "1h",
   "1h-live": "1h",
   "1h-live-v1": "1h",
+  "1h-live-v2": "1h",
   // 2h
   "2h": "2h",
   "2h-live": "2h",
   "2h-live-v1": "2h",
+  "2h-live-v2": "2h",
   // 4h
   "4h-live": "4h",
   "4h-live-v1": "4h",
+  "4h-live-v2": "4h",
   "4h-trend": "4h",
 };
 
@@ -179,6 +186,18 @@ function resolveTf(envValue: string | undefined): TfTag {
   }
   // Legacy non-v5 prefix rule: still routes to 2h.
   if (envValue?.startsWith("2h-trend")) return "2h";
+  // R29 Round 4 audit fix (R4-Bug #3): unrecognised `*-live-*` selectors
+  // (e.g. *-live-v3, *-live-v4, future variants) were silently routing to
+  // 4h default — catastrophic when the cfg.timeframe is 5m/15m/30m. Add
+  // mappings explicitly above. Mirrors the v5 fail-loud pattern.
+  if (envValue && /^(5m|15m|30m|1h|2h|4h)-live(-v\d+)?$/.test(envValue)) {
+    throw new Error(
+      `[ftmoLiveService] FTMO_TF="${envValue}" looks like a live-cap selector ` +
+        `but is not registered in TF_DISPATCH. Add an explicit mapping — ` +
+        `falling through to "4h" silently caused a 5m/15m/30m-config to poll ` +
+        `every 4h in production (Round 4 audit).`,
+    );
+  }
   return "4h"; // ultimate default
 }
 
@@ -759,12 +778,27 @@ async function runOneCheck(): Promise<DetectionResult> {
   // R60 sister selectors: 2h-trend-v5-r28-v6-{passlock,corrcap2,lscool48,
   // todcutoff18,voltp-aggr,idlt30,combo-pl-idlt,passlock-dayrisk*,…}
   const isR28V6Sister = /^2h-trend-v5-r28-v6-[a-z0-9-]+$/.test(ftmoTf);
+  // R29 Round 4 audit fix (R4-Bug #1, KRITISCH): PASSLOCK sister selectors
+  // (titanium/amber/obsidian/quartz-lite-r28 + step2) carry
+  // `closeAllOnTargetReached: true`, which is a V4-Engine-only flag. The
+  // V231 legacy path silently ignores it → live runs without the Pass-Lock
+  // mechanism, costing ~8pp pass-rate (the whole point of the 3-Strategy
+  // Multi-Account plan). Route any cfg with `closeAllOnTargetReached` AND
+  // any cfg explicitly carrying a PASSLOCK selector through V4-Engine.
+  const isExplicitPasslockSister =
+    ftmoTf === "2h-trend-v5-titanium-passlock" ||
+    ftmoTf === "2h-trend-v5-amber-passlock" ||
+    ftmoTf === "2h-trend-v5-obsidian-passlock" ||
+    ftmoTf === "2h-trend-v5-quartz-lite-r28-passlock" ||
+    ftmoTf === "2h-trend-v5-quartz-lite-r28-step2";
   // R10 audit fix: any LSC-using config must route through V4 engine — the
   // legacy V231 path does NOT honor lossStreakCooldown. Catches misnamed selectors.
   const useV4Engine =
     ftmoTf.endsWith("-v4engine") ||
     isBreakoutV1 ||
     isR28V6Sister ||
+    isExplicitPasslockSister ||
+    !!getActiveCfg().closeAllOnTargetReached ||
     !!getActiveCfg().lossStreakCooldown;
   let result: DetectionResult;
   if (useV4Engine) {

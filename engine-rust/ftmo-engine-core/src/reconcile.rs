@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::pnl::compute_eff_pnl_with_time;
 use crate::position::OpenPosition;
 use crate::state::{EngineState, KellyPnl};
+use crate::time_util::day_index;
 use crate::trade::{ClosedTrade, ExitReason};
 
 const RECONCILE_FILENAME: &str = "closed-during-offline.json";
@@ -70,6 +71,23 @@ pub fn ingest_offline_closures(
         let pos: OpenPosition = state.open_positions.remove(pos_idx);
         let pnl = compute_eff_pnl_with_time(&pos, c.exit_price, cfg, Some(c.exit_time));
         state.equity *= 1.0 + pnl.eff_pnl;
+        // R29-R4.2 PARITY FIX: entry_day was hardcoded to 0, which corrupts
+        // any downstream analytics that bucket trades by entry-day. We
+        // already have entry_time + challenge_start_ts, so compute it
+        // exactly like apply_exits does in harness.rs (Prague-aware day).
+        // exit day was also wrong: state.day reflects the LIVE poll day at
+        // the time of reconcile, NOT the day the trade exited. Use the
+        // offline-closure's exit_time via day_index for accuracy.
+        let entry_day_idx = if state.challenge_start_ts > 0 {
+            day_index(pos.entry_time, state.challenge_start_ts).max(0) as u32
+        } else {
+            0
+        };
+        let exit_day_idx = if state.challenge_start_ts > 0 {
+            day_index(c.exit_time, state.challenge_start_ts).max(0) as u32
+        } else {
+            state.day
+        };
         let trade = ClosedTrade {
             ticket_id: pos.ticket_id.clone(),
             symbol: pos.symbol.clone(),
@@ -81,8 +99,8 @@ pub fn ingest_offline_closures(
             raw_pnl: pnl.raw_pnl,
             eff_pnl: pnl.eff_pnl,
             exit_reason: c.exit_reason,
-            day: state.day,
-            entry_day: 0, // unknown without full bar context — caller can backfill if needed
+            day: exit_day_idx,
+            entry_day: entry_day_idx,
         };
         if cfg.kelly_sizing.is_some() {
             state

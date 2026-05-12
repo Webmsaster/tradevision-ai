@@ -187,13 +187,20 @@ for (let start = WARMUP; start + winBars <= minBars; start += stepBars) {
   // Optional trade dump for Rust↔TS audit. Set TRADES_OUT_FILE env to a path
   // and the closedTrades array gets appended one-per-line with `winIdx`.
   // Optionally narrow with DEBUG_WINDOW=<n> so only that window dumps.
+  // Bug-Audit Round 4: per-shard suffix on the output path. Without this,
+  // 8 parallel shards all `appendFileSync` to the SAME file. POSIX guarantees
+  // atomic writes only up to PIPE_BUF (4096 bytes on Linux); a trade record
+  // with timestamps + price fields can exceed that, so concurrent shards
+  // would interleave bytes mid-line and corrupt the JSONL. Each shard now
+  // writes to `<path>.shard<idx>.jsonl` so aggregators can glob them later.
   const tradesOut = process.env.TRADES_OUT_FILE;
   const debugWindow = process.env.DEBUG_WINDOW
     ? parseInt(process.env.DEBUG_WINDOW, 10)
     : null;
   if (tradesOut && (debugWindow === null || debugWindow === winIdx)) {
+    const shardedTradesOut = `${tradesOut}.shard${SHARD_IDX}.jsonl`;
     for (const t of r.trades) {
-      appendFileSync(tradesOut, JSON.stringify({ ...t, winIdx }) + "\n");
+      appendFileSync(shardedTradesOut, JSON.stringify({ ...t, winIdx }) + "\n");
     }
   }
   winIdx++;

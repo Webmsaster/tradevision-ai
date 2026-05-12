@@ -1990,7 +1990,16 @@ def _process_pending_signals_locked() -> None:
             })
             continue
 
-        direction = sig.get("direction", "short")
+        # Bug-Audit Round 4: default to "long" (not "short") on missing
+        # direction field. Engine convention (see _apply_trailing_stop /
+        # _apply_break_even / _apply_chandelier_stop at lines 2279/2393/2461)
+        # uniformly defaults to "long" — keeping the place-order path on
+        # "short" was a divergent, silent legacy bias that could open the
+        # wrong side on a legacy/malformed signal. R28_V6 trend-cont config
+        # is long-biased, so "long" is the safer default if direction is
+        # absent for any reason. Required-fields validation does NOT
+        # currently cover "direction", so silent fallback was reachable.
+        direction = sig.get("direction", "long")
         regime = sig.get("regime", "BEAR_CHOP")
         tag = "iter213-bull" if regime == "BULL" else "iter231"
 
@@ -3768,6 +3777,24 @@ def main_loop() -> None:
                     # the gate triggers at the correct moment.
                     if DPT_ENABLED:
                         update_day_peak(acct["equity"])
+                    # Bug-Audit Round 4 (HIGH severity — PASSLOCK race):
+                    # check_target_and_pause was ONLY called from inside
+                    # _process_pending_signals_locked, so if equity crossed
+                    # the profit-target mid-cycle via a PTP partial fire,
+                    # trailing-stop tick, or natural SL/TP exit, the pause
+                    # flag was not set until the NEXT signal-processing
+                    # call — leaving a poll-interval-wide window where new
+                    # positions could be opened OR existing positions could
+                    # drift back below target without the closeAllOn-
+                    # TargetReached PASSLOCK firing. We now run the check
+                    # once per loop iteration BEFORE manage_open_positions
+                    # / process_pending_signals so the equity-crossing is
+                    # caught in the same cycle. check_target_and_pause is
+                    # idempotent: subsequent calls after target_hit=True
+                    # short-circuit on `state["passed"]` or the early
+                    # `target_hit` write+log block, so this only fires
+                    # the emergency-close-all on the FIRST detection.
+                    check_target_and_pause(acct["equity"])
 
                 # Circuit breaker (may trip → set paused)
                 check_circuit_breaker()

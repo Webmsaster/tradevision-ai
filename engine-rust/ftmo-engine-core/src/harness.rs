@@ -350,7 +350,15 @@ pub fn step_bar(
     // epsilon to the floor (i.e. raise the floor by 1e-9 → fail earlier).
     const FAIL_EPSILON: f64 = 1e-9;
     let total_loss_floor = 1.0 - cfg.max_total_loss + FAIL_EPSILON;
-    let daily_loss_floor = state.day_start * (1.0 - cfg.max_daily_loss) + FAIL_EPSILON;
+    // R29-R4.1 PARITY FIX: TS L1576-1579 compares the RATIO
+    //   (equity - dayStart) / dayStart <= -mdl + 1e-9
+    // Algebraically: equity <= dayStart*(1 - mdl) + dayStart*1e-9. The earlier
+    // Rust floor added a bare 1e-9 (not dayStart*1e-9), making Rust slightly
+    // MORE LENIENT than TS at the daily-loss boundary when day_start > 1
+    // (post-profit). With day_start ≈ 1.08 the gap is 0.08e-9 ≈ ULP-scale —
+    // microscopic but a real parity drift on f64 boundary equity values.
+    let daily_loss_floor =
+        state.day_start * (1.0 - cfg.max_daily_loss) + state.day_start.max(0.0) * FAIL_EPSILON;
     if state.equity <= total_loss_floor {
         state.stopped_reason = Some(StoppedReason::TotalLoss);
         result.fail_reason = Some(FailReason::TotalLoss);
@@ -454,7 +462,21 @@ pub fn step_bar(
             state.mtm_equity = state.equity;
         }
         // FTMO pass: target hit AND minTradingDays satisfied.
-        if state.trading_days.len() >= cfg.min_trading_days as usize {
+        //
+        // R29-R4.3 PARITY FIX: TS V4 L1708-1719 requires BOTH realised AND
+        // mtm equity to STILL clear the target at this gate. Earlier Rust
+        // only checked `trading_days.len() >= min_trading_days`, relying on
+        // the algebraic equivalence "post-close-all equity == pre-close-all
+        // mtm". That equivalence holds when GAP_TAIL did not bind on any
+        // closure — but if close_price triggered the floor on a position
+        // where unrealised did NOT (different sign-of-floor regimes are
+        // possible at the boundary), equity post-close can drop below the
+        // target while pre-close mtm cleared it. Defensive parity gate
+        // matches TS exactly.
+        if state.equity >= 1.0 + cfg.profit_target
+            && state.mtm_equity >= 1.0 + cfg.profit_target
+            && state.trading_days.len() >= cfg.min_trading_days as usize
+        {
             result.passed = true;
             result.challenge_ended = true;
             bookkeep(state, last_bar_time, cfg);

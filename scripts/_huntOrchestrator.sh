@@ -29,6 +29,24 @@ MASTER_LOG_FINAL=/tmp/hunt_master.log
 : > "$MASTER_LOG"
 trap 'cp -f "$MASTER_LOG" "$MASTER_LOG_FINAL" 2>/dev/null || true; rm -f "$MASTER_LOG.partial"' EXIT INT TERM
 
+# Rotate per-phase logs if they exceed 50 MB — prevents months of hunts
+# from growing /tmp unbounded (Bug-Audit R4 finding). Keep last 3 rotated.
+rotate_log() {
+  local f="$1"
+  [ -f "$f" ] || return 0
+  local sz
+  sz=$(wc -c < "$f" 2>/dev/null || echo 0)
+  if [ "$sz" -gt 52428800 ]; then  # 50 MB
+    mv -f "$f.2" "$f.3" 2>/dev/null || true
+    mv -f "$f.1" "$f.2" 2>/dev/null || true
+    mv -f "$f"   "$f.1" 2>/dev/null || true
+  fi
+}
+for f in /tmp/hunt_phase1.log /tmp/hunt_phase1b.log /tmp/hunt_phase2.log \
+         /tmp/hunt_phase3.log /tmp/hunt_master.log; do
+  rotate_log "$f"
+done
+
 phase() {
   echo "" | tee -a "$MASTER_LOG"
   echo "############ $1 @ $(date +%T) ############" | tee -a "$MASTER_LOG"
@@ -47,24 +65,37 @@ if [ ! -s /tmp/hunt_phase1b.log ]; then
   bash scripts/_huntPhase1b.sh 2>&1 | tail -25 | tee -a "$MASTER_LOG"
 fi
 
-# Combine Phase 1 + 1b results, pick top candidates ≥56% to forward to Phase 2
+# Combine Phase 1 + 1b results, pick top candidates ≥56% to forward to Phase 2.
+# Use awk state-machine (not `grep -B1 | paste`) because Phase 1's `tail -3`
+# emits bars/trades + Rust banner lines between the label and the passed= line.
+# The old paste-pairing matched bars-line with passed-line → TOP_CONFIGS always
+# empty → orchestrator aborted before Phase 2 (Bug-Audit R4, 2026-05-12).
+parse_ranking() {
+  awk '
+    /^=== / { match($0, /=== ([^ ]+)/, m); if (m[1] != "") label = m[1]; next }
+    /passed=/ {
+      if (label != "" && match($0, /\(([0-9.]+)%\)/, p)) {
+        print p[1] "  " label
+        label = ""
+      }
+    }
+  ' "$1"
+}
+
 phase "PHASE 1+1b RANKING"
 {
-  grep -B1 "passed=" /tmp/hunt_phase1.log 2>/dev/null || true
-  grep -B1 "passed=" /tmp/hunt_phase1b.log 2>/dev/null || true
-} | paste -d'|' - - | awk -F'|' '{
-  match($1, /=== ([^ ]+) /, lab);
-  match($2, /\(([0-9.]+)%\)/, pct);
-  if (lab[1] != "" && pct[1] != "") print pct[1] "  " lab[1];
-}' | sort -rn | tee /tmp/hunt_ranked.txt | head -15 | tee -a "$MASTER_LOG"
+  [ -s /tmp/hunt_phase1.log ]  && parse_ranking /tmp/hunt_phase1.log
+  [ -s /tmp/hunt_phase1b.log ] && parse_ranking /tmp/hunt_phase1b.log
+} | sort -rn | tee /tmp/hunt_ranked.txt | head -15 | tee -a "$MASTER_LOG"
 
 # Pick candidates: any TEMPLATE config (not parameter override) ≥ 56%.
-# Parameter overrides need re-validation through env-flagged sweeps.
-TOP_CONFIGS=$(grep -B1 "passed=" /tmp/hunt_phase1.log 2>/dev/null | paste -d'|' - - | awk -F'|' '{
-  match($1, /=== ([^ ]+) /, lab);
-  match($2, /\(([0-9.]+)%\)/, pct);
-  if (lab[1] != "" && pct[1] + 0 >= 56) print pct[1] " " lab[1];
-}' | sort -rn | awk '{print $2}' | head -3)
+# Parameter overrides (Phase 1b) need re-validation through env-flagged sweeps.
+# Only filter Phase 1 (template configs).
+TOP_CONFIGS=$(parse_ranking /tmp/hunt_phase1.log \
+  | awk '$1 + 0 >= 56 { print $0 }' \
+  | sort -rn \
+  | awk '{print $2}' \
+  | head -3)
 
 if [ -z "$TOP_CONFIGS" ]; then
   echo "No Phase 1 candidates ≥56% found — aborting before Phase 2." | tee -a "$MASTER_LOG"

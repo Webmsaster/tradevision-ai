@@ -40,6 +40,7 @@ import {
   filterNewsEvents,
 } from "../src/utils/forexFactoryNews";
 import { detectLiveSignal, renderAlert } from "../src/utils/ftmoSignalDetector";
+import { redactToken as sharedRedactToken } from "../src/utils/telegramRedact";
 
 const LOG_PATH = "signal-alerts.log";
 const STATE_PATH = "signal-alerts.state.json";
@@ -102,12 +103,11 @@ function saveState(s: SignalState, path: string = STATE_PATH) {
 // regex — proxies sometimes percent-encode `:` or wrap the token in `bot…`.
 // Pattern `<8-12 digit bot-id>:<>=20 url-safe chars>` matches every Telegram
 // token regardless of surrounding chars.
+// R4-A1 audit fix: logic extracted into `src/utils/telegramRedact.ts` so a
+// unit test (telegramRedact.test.ts) can verify the behaviour without
+// running the heavy cron-job test.
 function redactToken(s: string, token: string): string {
-  if (!s) return s;
-  let out = s;
-  if (token) out = out.split(token).join("***");
-  out = out.replace(/\d{8,12}:[A-Za-z0-9_-]{20,}/g, "***");
-  return out;
+  return sharedRedactToken(s, token);
 }
 
 // R1-A1 audit fix: per-account env lookup, mirrors driftTelegram.ts.

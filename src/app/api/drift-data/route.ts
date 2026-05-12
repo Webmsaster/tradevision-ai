@@ -298,7 +298,15 @@ async function discoverStateDirs(
     const allowed = await getAllowedSlugsForUser(auth.userId, auth.supabase);
     const allowedSet = new Set(allowed);
     return all.filter((s) => allowedSet.has(s));
-  } catch {
+  } catch (e) {
+    // R4 audit: surface mapping-lookup failures so operators can spot a
+    // broken RLS / missing migration in a multi-tenant deploy. Previously
+    // silent → tenants saw an empty picker with no diagnostic.
+    console.warn(
+      `[drift-data] discoverStateDirs slug-filter failed for user ${auth.userId}: ${
+        (e as Error).message ?? e
+      } — returning [] (fail-closed)`,
+    );
     return [];
   }
 }
@@ -321,12 +329,24 @@ function readJson<T>(stateDir: string, name: string, fallback: T): T {
 
 // R67-RR3 (Bug-Audit Round 3): process-wide cache so we don't re-read the
 // entire JSONL on every request when nothing changed. Key = absolute path,
-// value = {mtimeMs, size, entries}. With 60 polls/min the executor log
+// value = {mtimeMs, size, ino, entries}. With 60 polls/min the executor log
 // barely grows between adjacent requests; a stat-only check avoids the
 // multi-MB read+parse cycle on >99% of calls.
+//
+// R4 audit (2026-05-12): added `ino` to the cache key. Python rotates the
+// log via `path.rename(archive)` + open(append) → a NEW inode is created
+// at the same path. Without an inode check, a worst-case rotation-then-
+// rewrite (e.g. crash-restart that re-populates the file to the same size
+// at the same mtime second) could serve the OLD parse for the NEW file.
+// `ino` is the authoritative identity of the underlying file.
 const _jsonlCache = new Map<
   string,
-  { mtimeMs: number; size: number; entries: Record<string, unknown>[] }
+  {
+    mtimeMs: number;
+    size: number;
+    ino: number;
+    entries: Record<string, unknown>[];
+  }
 >();
 const JSONL_TAIL_BYTES = 256 * 1024; // 256 KiB tail window (~ last few hundred events)
 
@@ -341,11 +361,14 @@ function readJsonl(
     const stat = statSync(p);
     if (stat.size > JSONL_MAX_BYTES) return [];
     // Fast path: file unchanged since last read → reuse cached parse.
+    // R4 audit: include inode so a rotated-then-rewritten file at the same
+    // path can never reuse a stale parse.
     const cached = _jsonlCache.get(p);
     if (
       cached &&
       cached.mtimeMs === stat.mtimeMs &&
-      cached.size === stat.size
+      cached.size === stat.size &&
+      cached.ino === stat.ino
     ) {
       // Slice to maxEntries in case caller asks for fewer than we cached.
       return cached.entries.slice(-maxEntries);
@@ -384,18 +407,21 @@ function readJsonl(
         // skip malformed
       }
     }
-    // Cache the parsed entries keyed by (mtimeMs,size) so the next call
-    // can short-circuit.
+    // Cache the parsed entries keyed by (mtimeMs,size,ino) so the next call
+    // can short-circuit. R4 audit: ino added — see comment on _jsonlCache.
     _jsonlCache.set(p, {
       mtimeMs: stat.mtimeMs,
       size: stat.size,
+      ino: stat.ino,
       entries: out,
     });
     // Cap cache to last 32 files (multi-tenant slug enumeration could
-    // otherwise grow it unbounded).
-    if (_jsonlCache.size > 32) {
+    // otherwise grow it unbounded). R4 audit: use >= so the post-insert
+    // size is bounded at 32, not 33 (off-by-one).
+    while (_jsonlCache.size > 32) {
       const firstKey = _jsonlCache.keys().next().value;
       if (firstKey) _jsonlCache.delete(firstKey);
+      else break;
     }
     return out;
   } catch {

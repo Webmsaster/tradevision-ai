@@ -7197,6 +7197,10 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM: FtmoDaytrade24hConfi
     };
     return {
       ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PLATINUM_30M,
+      // R29 Round 4 audit fix (R4-Bug #2): V5_PLATINUM_30M inherits from V5_V1
+      // chain (no atrStop). atrStop is mandatory for FTMO-realistic backtests
+      // per CLAUDE.md. Mirror V5_QUARTZ p56/m2 (same 30m timeframe basket).
+      atrStop: { period: 56, stopMult: 2 },
       assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PLATINUM_30M.assets.map(
         (a) => ({
           ...a,
@@ -8526,13 +8530,22 @@ export const FTMO_DAYTRADE_24H_V12_30M_OPT_STOCK_LIVECAPS: FtmoDaytrade24hConfig
   };
 
 // R29 Round 4 — PASSLOCK variants of V5 sisters (closeAllOnTargetReached).
+// R29 Round 4 audit fix (R4-Bug #2): V5_TITANIUM / V5_AMBER / V5_OBSIDIAN
+// inherit from V5_PLATINUM_30M → V5_PLATINUM → … → V5_V1 chain and never
+// pick up `atrStop` (which V5_QUARTZ adds on a parallel branch). Per
+// CLAUDE.md, atrStop is mandatory for FTMO-realistic configs — add it
+// explicitly to the PASSLOCK siblings so the validator passes and live
+// trades get the volatility-adaptive stop. atrStop {period:56, stopMult:2}
+// mirrors V5_QUARTZ (same 30m timeframe basket).
 export const FTMO_DAYTRADE_24H_V5_AMBER_PASSLOCK: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER,
   closeAllOnTargetReached: true,
+  atrStop: { period: 56, stopMult: 2 },
 };
 export const FTMO_DAYTRADE_24H_V5_OBSIDIAN_PASSLOCK: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN,
   closeAllOnTargetReached: true,
+  atrStop: { period: 56, stopMult: 2 },
 };
 export const FTMO_DAYTRADE_24H_V5_QUARTZ_LITE_R28_PASSLOCK: FtmoDaytrade24hConfig =
   {
@@ -8723,10 +8736,14 @@ export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_FRLONG: FtmoDaytrade24hConfig = {
 // Hypothesis: bigger basket + funding crowdedness gate may stack additively.
 // =============================================================================
 
-/** R29-R9 V5_TITANIUM + closeAllOnTargetReached (PASSLOCK semantics). */
+/** R29-R9 V5_TITANIUM + closeAllOnTargetReached (PASSLOCK semantics).
+ * R29 Round 4 audit fix: add atrStop (V5_TITANIUM inherits from V5_PLATINUM
+ * chain which has no atrStop). Mirrors V5_QUARTZ p56/m2 — required for
+ * FTMO-realistic backtest per CLAUDE.md. */
 export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
   closeAllOnTargetReached: true,
+  atrStop: { period: 56, stopMult: 2 },
 };
 /** R29-R9 V5_TITANIUM + PASSLOCK + funding (medium thresholds). */
 export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_FRMED: FtmoDaytrade24hConfig =

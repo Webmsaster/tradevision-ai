@@ -469,4 +469,145 @@ describe("/api/drift-data route", () => {
       }
     });
   });
+
+  // R4 audit (2026-05-12, Bug-Audit Round 4 — Multi-Account State):
+  // end-to-end multi-tenant isolation for `meta.availableTfSlugs`. A
+  // non-admin authenticated user must only see the slugs they're mapped
+  // to in `user_ftmo_accounts` — never the full set of slugs that exist
+  // on disk (which would let them enumerate other tenants' bot names +
+  // liveness via the drift-data /403 timing channel afterwards).
+  describe("R4 cross-tenant slug picker isolation", () => {
+    it("non-admin user only sees their mapped slugs in availableTfSlugs", async () => {
+      // The default state-dir from beforeAll is already on disk; add a
+      // sibling so the picker has two slugs to discriminate between.
+      const cwd = process.cwd();
+      const siblingDir = path.join(cwd, "ftmo-state-tenant-b-only");
+      fs.mkdirSync(siblingDir, { recursive: true });
+      fs.writeFileSync(path.join(siblingDir, "account.json"), "{}");
+
+      // Mock supabase: authenticated tenant-A user; `user_ftmo_accounts`
+      // returns only `tenant-a-only` for them.
+      vi.doMock("@/lib/supabase-server", () => ({
+        createServerSupabaseClient: async () => ({
+          auth: {
+            getUser: async () => ({
+              data: { user: { id: "user-tenant-a", email: "a@example.com" } },
+              error: null,
+            }),
+          },
+          from: (_table: string) => ({
+            select: () => ({
+              eq: (col: string, val: string) => {
+                if (col === "user_id" && val === "user-tenant-a") {
+                  // Match getAllowedSlugsForUser pattern (single .eq → array)
+                  return Promise.resolve({
+                    data: [{ tf_slug: "tenant-a-only" }],
+                    error: null,
+                  });
+                }
+                return Promise.resolve({ data: [], error: null });
+              },
+            }),
+          }),
+        }),
+      }));
+      try {
+        // Also create a tenant-a-only dir so the picker can include it.
+        const tenantADir = path.join(cwd, "ftmo-state-tenant-a-only");
+        fs.mkdirSync(tenantADir, { recursive: true });
+        fs.writeFileSync(path.join(tenantADir, "account.json"), "{}");
+        try {
+          const { GET } = await import("@/app/api/drift-data/route");
+          const resp = await GET(makeReq());
+          expect(resp.status).toBe(200);
+          const body = await resp.json();
+          // Non-admin must see ONLY `tenant-a-only` — not `tenant-b-only`,
+          // not the default "" slug, not any of the other prod state-dirs.
+          expect(body.meta.availableTfSlugs).toContain("tenant-a-only");
+          expect(body.meta.availableTfSlugs).not.toContain("tenant-b-only");
+        } finally {
+          fs.rmSync(tenantADir, { recursive: true, force: true });
+        }
+      } finally {
+        vi.doUnmock("@/lib/supabase-server");
+        fs.rmSync(siblingDir, { recursive: true, force: true });
+      }
+    });
+
+    it("admin sees every slug discoverable on disk", async () => {
+      const cwd = process.cwd();
+      const t1 = path.join(cwd, "ftmo-state-admin-vis-1");
+      const t2 = path.join(cwd, "ftmo-state-admin-vis-2");
+      fs.mkdirSync(t1, { recursive: true });
+      fs.mkdirSync(t2, { recursive: true });
+      process.env.FTMO_ADMIN_EMAIL = "admin@example.com";
+      vi.doMock("@/lib/supabase-server", () => ({
+        createServerSupabaseClient: async () => ({
+          auth: {
+            getUser: async () => ({
+              data: {
+                user: { id: "u-admin", email: "admin@example.com" },
+              },
+              error: null,
+            }),
+          },
+        }),
+      }));
+      try {
+        const { GET } = await import("@/app/api/drift-data/route");
+        const resp = await GET(makeReq());
+        expect(resp.status).toBe(200);
+        const body = await resp.json();
+        expect(body.meta.availableTfSlugs).toContain("admin-vis-1");
+        expect(body.meta.availableTfSlugs).toContain("admin-vis-2");
+      } finally {
+        vi.doUnmock("@/lib/supabase-server");
+        delete process.env.FTMO_ADMIN_EMAIL;
+        fs.rmSync(t1, { recursive: true, force: true });
+        fs.rmSync(t2, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // R4 audit (2026-05-12): readJsonl cache invalidation on file rotation.
+  // Python rotates executor-log.jsonl by `path.rename(archive)` + reopen,
+  // creating a new inode at the same path. Without an inode in the cache
+  // key, a worst-case rotation-then-rewrite to identical (mtime, size)
+  // would serve stale entries. With the R4 fix, the inode disambiguates.
+  describe("R4 readJsonl cache rotation safety", () => {
+    it("cache invalidates when the underlying inode changes", async () => {
+      // Use the FTMO_STATE_DIR from beforeAll which already has an
+      // executor-log.jsonl. Build module fresh, hit it once, rotate, hit
+      // again, and ensure the response reflects the post-rotation file.
+      const logPath = path.join(testStateDir, "executor-log.jsonl");
+      // First request: cache populated with v1 entries.
+      const { GET } = await import("@/app/api/drift-data/route");
+      const r1 = await GET(makeReq());
+      expect(r1.status).toBe(200);
+      const b1 = await r1.json();
+      expect(b1.recentEvents.length).toBeGreaterThan(0);
+      // Rotate: rename current away, write a new file with a single
+      // distinct marker event. New inode, possibly different mtime/size.
+      const archive = `${logPath}.r4-archive`;
+      fs.renameSync(logPath, archive);
+      try {
+        const marker = {
+          ts: new Date().toISOString(),
+          event: "r4_post_rotation_marker",
+        };
+        fs.writeFileSync(logPath, JSON.stringify(marker) + "\n");
+        const r2 = await GET(makeReq());
+        expect(r2.status).toBe(200);
+        const b2 = await r2.json();
+        // Must see the new marker event, NOT just the pre-rotation entries.
+        const sawMarker = (b2.recentEvents as Array<{ event: string }>).some(
+          (e) => e.event === "r4_post_rotation_marker",
+        );
+        expect(sawMarker).toBe(true);
+      } finally {
+        // Restore original log so subsequent tests pass.
+        fs.renameSync(archive, logPath);
+      }
+    });
+  });
 });

@@ -41,6 +41,30 @@ for (const name of shardFiles) {
 }
 const rows: Row[] = [...byWin.values()].sort((a, b) => a.winIdx - b.winIdx);
 
+// Bug-Audit Round 4: window-coverage gap detection. If a shard crashes
+// mid-run (OOM, SIGKILL, vitest-zombie pkill), the union of jsonl files
+// can have holes (e.g. shard 3 of 8 dies → windows 3, 11, 19, ... missing).
+// Without detection, the aggregator silently reports a smaller-than-real
+// denominator and an inflated rate. Walk the contiguous winIdx range and
+// list missing indices so the user can re-run only the dead shards.
+if (rows.length > 0) {
+  const maxIdx = rows[rows.length - 1]!.winIdx;
+  const present = new Set(rows.map((r) => r.winIdx));
+  const missing: number[] = [];
+  for (let i = 0; i <= maxIdx; i++) if (!present.has(i)) missing.push(i);
+  if (missing.length > 0) {
+    plog(
+      `⚠ WINDOW-COVERAGE GAPS: ${missing.length} missing winIdx (max seen=${maxIdx})`,
+    );
+    plog(
+      `  first 20 missing: ${missing.slice(0, 20).join(",")}${missing.length > 20 ? ", ..." : ""}`,
+    );
+    plog(
+      `  Hint: re-run the shard whose (winIdx % SHARD_COUNT) matches those indices.`,
+    );
+  }
+}
+
 const windows = rows.length;
 const passes = rows.filter((r) => r.passed).length;
 const rate = (passes / windows) * 100;

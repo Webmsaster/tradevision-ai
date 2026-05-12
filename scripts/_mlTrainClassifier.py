@@ -109,12 +109,20 @@ def main():
     )
 
     # Random Forest — fast, robust, exports easily as decision rules.
+    # R29-Audit-Round4 2026-05-12 (Bug-3 fix): class_weight="balanced" —
+    # trade-data win rates sit at 35-45%, so the minority class ("win") is
+    # under-fit by default. Balanced weights scale each class inversely to
+    # its frequency in y_tr; the resulting forest predicts higher P(win)
+    # for borderline-positive feature regions instead of collapsing to the
+    # majority class. Pair this with a calibrated threshold (see threshold
+    # sweep below).
     clf = RandomForestClassifier(
         n_estimators=200,
         max_depth=8,
         min_samples_leaf=20,
         random_state=42,
         n_jobs=-1,
+        class_weight="balanced",
     )
     clf.fit(X_tr, y_tr)
     if list(clf.classes_) != [0, 1]:
@@ -129,7 +137,15 @@ def main():
 
     # Threshold tuning: find threshold where signals above threshold have
     # >= 50% win-rate (so we keep those, filter out the rest).
+    #
+    # R29-Audit-Round4 2026-05-12 (Bug-4 caveat): the threshold below is
+    # tuned on the same VALIDATION fold whose AUC we report — so the
+    # numbers printed are post-selection-bias. Use this sweep only as a
+    # ranking guide. For deployment, run a separate walk-forward sweep
+    # over `--ml-threshold` in the Rust sweeper to confirm the pick holds
+    # out-of-sample.
     print("\nThreshold sweep (predicted P(win) → kept trades' actual win-rate):")
+    print("  (CAVEAT: tuned on the same val fold; do not use as a held-out estimate)")
     thresholds = [0.10, 0.12, 0.15, 0.17, 0.20, 0.22, 0.25, 0.30, 0.35, 0.40]
     for t in thresholds:
         keep = proba >= t

@@ -168,14 +168,35 @@ impl MlModel {
     /// tree always routes right — silent prediction drift vs training.
     /// We mirror the training-time substitution here once at the entry
     /// point so the per-tree traversal stays cheap.
+    ///
+    /// R29-Audit-Round4 2026-05-12 (Bug-5 fix): cold-start guard. If the
+    /// caller has no model-prepared features (e.g. all zeros, returned by
+    /// `ml_features_for_signal` during warmup), the forest predicts a
+    /// deterministic single leaf — slamming P(win) far from the asset's
+    /// baseline. We detect the all-zero case here and return
+    /// `win_rate_baseline` instead, so the gate never drops a trade purely
+    /// because the indicators weren't warmed up yet.
     pub fn predict_proba(&self, features: &[f64]) -> f64 {
         if self.trees.is_empty() {
             return self.win_rate_baseline;
         }
-        let cleaned: Vec<f64> = features
-            .iter()
-            .map(|&v| if v.is_finite() { v } else { 0.0 })
-            .collect();
+        // R29-Audit-Round4 2026-05-12 (Bug-7 fix): heap-alloc-free
+        // cleaning. Previous implementation allocated a Vec<f64> per
+        // call; with ~2000 signals × 200 trees in a sweep that's 400k
+        // unnecessary allocations. EXPECTED_FEATURES.len() is fixed and
+        // small, so we stack-allocate.
+        let mut cleaned = [0.0_f64; EXPECTED_FEATURES.len()];
+        let n = features.len().min(cleaned.len());
+        let mut all_zero = true;
+        for (i, &v) in features.iter().take(n).enumerate() {
+            cleaned[i] = if v.is_finite() { v } else { 0.0 };
+            if cleaned[i] != 0.0 {
+                all_zero = false;
+            }
+        }
+        if all_zero {
+            return self.win_rate_baseline;
+        }
         let mut sum = 0.0_f64;
         for tree in &self.trees {
             sum += traverse(tree, &cleaned);
@@ -184,21 +205,27 @@ impl MlModel {
     }
 }
 
+/// R29-Audit-Round4 2026-05-12 (Bug-2 fix): iterative tree traversal.
+/// The previous recursive implementation was a Stack-Overflow time-bomb at
+/// max_depth=20+ trees and burned an unnecessary frame per branch on the
+/// hot path. sklearn trees are still acyclic, but unbalanced splits with
+/// min_samples_leaf=20 can produce paths far longer than the configured
+/// max_depth would suggest. Iteration eliminates both risks; the function
+/// stays inlineable.
 fn traverse(node: &TreeNode, features: &[f64]) -> f64 {
-    match node {
-        TreeNode::Leaf { value, .. } => *value,
-        TreeNode::Branch {
-            feature,
-            threshold,
-            left,
-            right,
-        } => {
-            let v = features.get(*feature).copied().unwrap_or(0.0);
-            // sklearn convention: go left if value <= threshold
-            if v <= *threshold {
-                traverse(left, features)
-            } else {
-                traverse(right, features)
+    let mut cur = node;
+    loop {
+        match cur {
+            TreeNode::Leaf { value, .. } => return *value,
+            TreeNode::Branch {
+                feature,
+                threshold,
+                left,
+                right,
+            } => {
+                let v = features.get(*feature).copied().unwrap_or(0.0);
+                // sklearn convention: go left if value <= threshold
+                cur = if v <= *threshold { left } else { right };
             }
         }
     }
@@ -279,6 +306,59 @@ mod tests {
         // config symbol "ETH-TREND" normalises to "ETH" then "ETHUSDT".
         assert_eq!(m.asset_id_for("ETH-TREND"), Some(3));
         assert_eq!(m.asset_id_for("UNKNOWN"), None);
+    }
+
+    #[test]
+    fn predict_returns_baseline_on_all_zero_features() {
+        // R29-Audit-Round4 (Bug-5 fix): when caller hands us a zero-vector
+        // (cold-start / fallback), we must NOT route deterministically to
+        // a single leaf. Return baseline so the gate is a no-op.
+        let m = MlModel {
+            model_type: "rf".into(),
+            n_trees: 1,
+            features: vec!["x".into()],
+            trees: vec![TreeNode::Branch {
+                feature: 0,
+                threshold: 5.0,
+                left: Box::new(TreeNode::Leaf {
+                    leaf: true,
+                    value: 0.1,
+                }),
+                right: Box::new(TreeNode::Leaf {
+                    leaf: true,
+                    value: 0.9,
+                }),
+            }],
+            win_rate_baseline: 0.42,
+            validation_auc: 0.0,
+            schema_version: EXPECTED_SCHEMA_VERSION,
+            asset_id_map: HashMap::new(),
+        };
+        let zeros = vec![0.0_f64; EXPECTED_FEATURES.len()];
+        assert_eq!(m.predict_proba(&zeros), 0.42);
+    }
+
+    #[test]
+    fn traverse_handles_deep_unbalanced_tree() {
+        // R29-Audit-Round4 (Bug-2 fix): build a left-spine 200-deep tree
+        // and confirm iterative traversal does not blow the stack and
+        // returns the correct leaf.
+        let mut node: TreeNode = TreeNode::Leaf {
+            leaf: true,
+            value: 0.77,
+        };
+        for _ in 0..200 {
+            node = TreeNode::Branch {
+                feature: 0,
+                threshold: 10.0,
+                left: Box::new(node),
+                right: Box::new(TreeNode::Leaf {
+                    leaf: true,
+                    value: 0.99,
+                }),
+            };
+        }
+        assert!((traverse(&node, &[1.0]) - 0.77).abs() < 1e-9);
     }
 
     #[test]
