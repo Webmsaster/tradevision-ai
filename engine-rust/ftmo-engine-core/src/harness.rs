@@ -315,13 +315,20 @@ pub fn step_bar(
 
     // 6. Target / DL / TL fail-check (realised equity).
     //
-    // R29-Audit-Round1.7: TS V4-LIVE uses `<= floor + 1e-9` (L1535/1545)
-    // — exact-equality bars where equity == floor PASS (1 ULP slack).
-    // Earlier Rust used strict `<= floor` and failed those windows where
-    // TS passed. The `- 1e-9` from the Rust floor is the equivalent.
+    // R29-Audit-Round2.1: TS V4-LIVE at L1535/1545 trips when
+    //   `equity <= 1 - maxTotalLoss + 1e-9` (and the daily-loss analogue),
+    // meaning the engine FAILS when equity is AT or above the floor by up
+    // to one ULP — i.e. the +1e-9 makes fail-detection STRICTER (catches
+    // exact-floor + 1 ULP). The earlier Rust round-1 comment got the sign
+    // backwards: subtracting 1e-9 from the floor made Rust MORE LENIENT
+    // than TS — windows that TS fails at exact-floor (equity = floor) were
+    // passing in Rust because `state.equity <= floor - 1e-9` requires
+    // equity to fall further than TS demands. This is a candidate driver
+    // of the +10.94pp Hunter / Rust→TS drift. Match TS by ADDING the
+    // epsilon to the floor (i.e. raise the floor by 1e-9 → fail earlier).
     const FAIL_EPSILON: f64 = 1e-9;
-    let total_loss_floor = 1.0 - cfg.max_total_loss - FAIL_EPSILON;
-    let daily_loss_floor = state.day_start * (1.0 - cfg.max_daily_loss) - FAIL_EPSILON;
+    let total_loss_floor = 1.0 - cfg.max_total_loss + FAIL_EPSILON;
+    let daily_loss_floor = state.day_start * (1.0 - cfg.max_daily_loss) + FAIL_EPSILON;
     if state.equity <= total_loss_floor {
         state.stopped_reason = Some(StoppedReason::TotalLoss);
         result.fail_reason = Some(FailReason::TotalLoss);
@@ -361,7 +368,19 @@ pub fn step_bar(
         result.target_hit = true;
         state.first_target_hit_day = Some(state.day);
         // 7. Pause-after-target latch.
-        if cfg.pause_at_target_reached {
+        //
+        // R29-Audit-Round2.2: TS V4 L1575-1576 sets
+        //   `state.pausedAtTarget = !!pauseAtTarget || !!closeAllOnTarget`
+        // — closeAllOnTarget=true ALONE forces pause behaviour, so the
+        // ping-day push at L343-348 (TS L1663-1668) keeps satisfying
+        // min_trading_days post-target. The earlier Rust gate
+        // (`if pause_at_target_reached`) silently dropped the latch when
+        // a config used closeAllOnTarget=true + pauseAtTarget=false (a
+        // misconfiguration, but supported in TS for coherent Pass-Lock).
+        // Without the latch, ping-day push at L374-379 also no-ops and
+        // the standalone-pass-check below can starve on min_trading_days
+        // → false-negative pass on otherwise-target-hit windows.
+        if cfg.pause_at_target_reached || cfg.close_all_on_target_reached {
             state.paused_at_target = true;
         }
         // R29-R3.8 fix: TS sets `pausedAtTarget` (line 1575-1576) BEFORE

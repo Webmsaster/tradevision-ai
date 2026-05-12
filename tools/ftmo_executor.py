@@ -141,7 +141,16 @@ _FILLING_MODE_CACHE: dict[str, int] = {}
 
 def _pick_filling_mode(symbol: str):  # type: ignore[no-untyped-def]
     """Return the safest order-filling constant for `symbol` based on
-    `mt5.symbol_info(symbol).filling_mode`. Caches per symbol."""
+    `mt5.symbol_info(symbol).filling_mode`. Caches per symbol.
+
+    Bug-Audit Round 2: if the very first call happens before MT5 has the
+    symbol selected (`info is None` or `filling_mode == 0`), the previous
+    code poisoned the cache with the RETURN fallback for the rest of the
+    process lifetime — and every subsequent order_send tripped retcode
+    10030 "invalid order filling type" on FOK-only crypto pairs. Now we
+    only cache a positive-bitmask result; an unknown probe falls through
+    to RETURN for THIS call but does NOT pollute the cache.
+    """
     cached = _FILLING_MODE_CACHE.get(symbol)
     if cached is not None:
         return cached
@@ -149,14 +158,16 @@ def _pick_filling_mode(symbol: str):  # type: ignore[no-untyped-def]
     bitmask = getattr(info, "filling_mode", 0) if info is not None else 0
     if bitmask & 1:  # FOK preferred — most FTMO crypto symbols
         chosen = mt5.ORDER_FILLING_FOK
-    elif bitmask & 2:
+        _FILLING_MODE_CACHE[symbol] = chosen
+        return chosen
+    if bitmask & 2:
         chosen = mt5.ORDER_FILLING_IOC
-    else:
-        # Bitmask unset / unknown → fall back to RETURN (broker queues the
-        # remainder, never rejects on filling-mode mismatch).
-        chosen = getattr(mt5, "ORDER_FILLING_RETURN", mt5.ORDER_FILLING_IOC)
-    _FILLING_MODE_CACHE[symbol] = chosen
-    return chosen
+        _FILLING_MODE_CACHE[symbol] = chosen
+        return chosen
+    # Bitmask unset / unknown → fall back to RETURN for THIS call. Do NOT
+    # cache so the next call (after symbol_select() has populated the
+    # bitmask) re-probes and picks the real broker-supported mode.
+    return getattr(mt5, "ORDER_FILLING_RETURN", mt5.ORDER_FILLING_IOC)
 
 # Auto-pause after N consecutive failed orders (e.g. "no money" cascade).
 # Resets to 0 on the first successful order. Setting to 0 disables.
@@ -1247,7 +1258,15 @@ def compute_lot_size(symbol_info: Any, risk_frac: float, stop_pct: float, accoun
     tick_value = symbol_info.trade_tick_value or 1.0
     # BUGFIX 2026-04-28: use direction-aware fill price (ask for long, bid for short)
     # Wide spreads otherwise undersize the stop-distance and oversize the lot.
-    if direction == "short":
+    # Bug-Audit Round 2: parity with R67-r11 — prefer freshest L1 from
+    # symbol_info_tick over the cached symbol_info.bid/ask. symbol_info()
+    # mid-quotes can be tens-of-ticks stale during fast moves and would
+    # mis-size the lot in a way that breaches risk on the actual fill.
+    sym_name = getattr(symbol_info, "name", None)
+    live_tick = mt5.symbol_info_tick(sym_name) if sym_name else None
+    if live_tick is not None and live_tick.bid > 0 and live_tick.ask > 0:
+        current_price = live_tick.bid if direction == "short" else live_tick.ask
+    elif direction == "short":
         current_price = symbol_info.bid if symbol_info.bid else 0
     else:
         current_price = symbol_info.ask if symbol_info.ask else 0
@@ -2148,7 +2167,15 @@ def _process_pending_signals_locked() -> None:
 
 
 def _modify_position_sl(ticket: int, new_sl: float) -> bool:
-    """Modify SL of an open position via MT5 SLTP request."""
+    """Modify SL of an open position via MT5 SLTP request.
+
+    Bug-Audit Round 2: previously the request always echoed `float(pos.tp)` —
+    if `pos.tp == 0` (e.g. broker dropped the TP, or a previous SLTP-modify
+    cleared it) MT5 rejects with retcode 10016 "Invalid stops" or, worse,
+    silently kills the TP entirely. Now we omit the TP field unless we have
+    a non-zero one, so the broker keeps the existing TP. Also: single-shot
+    retry on transient REQUOTE/timeout retcodes (10004/10008/10021).
+    """
     live = mt5.positions_get(ticket=ticket)
     if not live:
         return False
@@ -2161,19 +2188,41 @@ def _modify_position_sl(ticket: int, new_sl: float) -> bool:
         tick_size = float(getattr(info, "trade_tick_size", 0.0) or getattr(info, "point", 0.0) or 0.0)
         digits = int(getattr(info, "digits", 0) or 0)
         sl_rounded = _round_to_tick(sl_rounded, tick_size, digits)
-    request = {
+    request: dict = {
         "action": mt5.TRADE_ACTION_SLTP,
         "symbol": pos.symbol,
         "position": ticket,
         "sl": sl_rounded,
-        "tp": float(pos.tp),
         "magic": 231,
     }
-    result = mt5.order_send(request)
-    if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-        log_event("sl_modify_failed", ticket=ticket, retcode=getattr(result, "retcode", None), error=getattr(result, "comment", ""))
+    # Only include tp when broker has a non-zero TP set; sending tp=0 is
+    # interpreted as "cancel the TP" by most MT5 builds.
+    existing_tp = float(getattr(pos, "tp", 0.0) or 0.0)
+    if existing_tp > 0:
+        request["tp"] = existing_tp
+    # First attempt + one retry on transient retcodes.
+    transient_retcodes = {
+        getattr(mt5, "TRADE_RETCODE_REQUOTE", 10004),
+        getattr(mt5, "TRADE_RETCODE_PRICE_OFF", 10021),
+        getattr(mt5, "TRADE_RETCODE_TIMEOUT", 10008),
+    }
+    for attempt in range(2):
+        result = mt5.order_send(request)
+        if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
+            return True
+        retcode = getattr(result, "retcode", None)
+        if attempt == 0 and retcode in transient_retcodes:
+            time.sleep(0.25)
+            continue
+        log_event(
+            "sl_modify_failed",
+            ticket=ticket,
+            retcode=retcode,
+            error=getattr(result, "comment", ""),
+            attempt=attempt + 1,
+        )
         return False
-    return True
+    return False
 
 
 def _apply_trailing_stop(pos: dict) -> dict:

@@ -288,6 +288,16 @@ def refresh_from_api(
         _log("api response missing economicCalendar list")
         return 0
 
+    # Bug-Audit Round 2: cap upstream list length defensively. Finnhub
+    # historically returns ~150-300 events per 90-day window; if the API
+    # ever pages incorrectly or starts returning per-day batches we don't
+    # want to spend O(N) CPU per poll, and a malicious / corrupted payload
+    # should not be able to balloon the in-process loop.
+    MAX_RAW_EVENTS = 5000
+    if len(events_raw) > MAX_RAW_EVENTS:
+        _log(f"api returned {len(events_raw)} events — capping at {MAX_RAW_EVENTS}")
+        events_raw = events_raw[:MAX_RAW_EVENTS]
+
     written: list[dict] = []
     seen: set[tuple[str, str]] = set()
     for entry in events_raw:
