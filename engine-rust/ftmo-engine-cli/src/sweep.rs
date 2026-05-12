@@ -1038,6 +1038,44 @@ fn run_multi_asset(
     // R29-PassrateHunt: apply CLI overrides post-template.
     apply_overrides(&mut cfg, overrides)?;
 
+    // R29-Hunt-Audit 2026-05-12 (CRITICAL fix): restrict alignment to the
+    // ACTIVE source-symbol set after --drop-symbols / --keep-symbols pruning
+    // of `cfg.assets`. Previously `align_open_times` intersected ALL files
+    // listed in --symbols, which silently clipped history to the
+    // shortest-history asset even when that asset was dropped from
+    // cfg.assets. Concrete example: champion sweep passes `--symbols
+    // ETH..,...ARBUSDT,...` with `--drop-symbols ARBUSDT` — ARB had only
+    // 2.4y data (first bar 2023-03-23) vs BTC/ETH 5.5y (2020-08), so the
+    // common-intersection window collapsed by ~3 years even though no ARB
+    // signal would ever be evaluated. That artificially inflated the
+    // per-asset stride density on the remaining basket (more 2023+ recency-
+    // bias) and reduced effective backtest sample.
+    //
+    // Fix: derive the active source set from cfg.assets AFTER overrides.
+    // Keep `symbols` for legacy CLI compatibility but only load + align
+    // the ones cfg.assets actually trades. Symbols passed via --symbols
+    // that aren't in cfg.assets are silently skipped (matches the existing
+    // `feed.get(&source) → None → continue` semantic in run_one_window).
+    let active_sources: std::collections::HashSet<String> = cfg
+        .assets
+        .iter()
+        .map(|a| {
+            a.source_symbol
+                .clone()
+                .unwrap_or_else(|| a.symbol.replace("-TREND", "USDT"))
+        })
+        .collect();
+    let symbols: Vec<String> = symbols
+        .into_iter()
+        .filter(|s| active_sources.contains(s))
+        .collect();
+    if symbols.is_empty() {
+        return Err(anyhow!(
+            "post-override symbol set is empty (cfg.assets vs --symbols intersection); \
+             check --drop-symbols / --keep-symbols vs --symbols"
+        ));
+    }
+
     // Load candles per symbol.
     let mut candles_by_sym: HashMap<String, Vec<Candle>> = HashMap::new();
     for sym in &symbols {
