@@ -569,3 +569,204 @@ describe("ftmoLiveEngineV4 Round 57 V4-3 fixes", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 });
+
+describe("Round 60 — State-persistence edge cases (Task B audit)", () => {
+  // Edge 1: forward compat — schemaVersion higher than known (e.g. v4 produced
+  // by a future deploy). Must NOT silently downgrade and overwrite — backup +
+  // fresh state, so an accidental rollback never destroys newer data.
+  it("future schemaVersion (v3 → v4) backs up and returns fresh state", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "v4-r60-future-"));
+    const filePath = path.join(tmpDir, "v4-engine.json");
+
+    const futureState = {
+      schemaVersion: 4, // newer than current SCHEMA_VERSION=3
+      cfgLabel: "test-future",
+      createdAt: 1735689600000,
+      updatedAt: 1735689600000,
+      lastBarOpenTime: 0,
+      challengeStartTs: 0,
+      equity: 1.5,
+      mtmEquity: 1.5,
+      day: 0,
+      dayStart: 1.0,
+      dayPeak: 1.0,
+      challengePeak: 1.5,
+      openPositions: [],
+      tradingDays: [],
+      firstTargetHitDay: null,
+      pausedAtTarget: false,
+      lossStreakByAssetDir: {},
+      kellyPnls: [],
+      closedTrades: [],
+      barsSeen: 100,
+      stoppedReason: null,
+      // Hypothetical future field we want to preserve via backup.
+      newV4OnlyField: { foo: "bar" },
+    };
+    fs.writeFileSync(filePath, JSON.stringify(futureState), "utf-8");
+
+    const loaded = loadState(tmpDir, "test-future");
+    // Fresh state — equity reset to 1.0 (NOT silently using the newer 1.5).
+    expect(loaded.schemaVersion).toBe(3);
+    expect(loaded.equity).toBe(1.0);
+    expect(loaded.barsSeen).toBe(0);
+    // Original file was renamed to a backup (forensic preservation).
+    expect(fs.existsSync(filePath)).toBe(false);
+    const backups = fs
+      .readdirSync(tmpDir)
+      .filter((f) => f.includes(".backup."));
+    expect(backups.length).toBe(1);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Edge 2: malformed JSON → corrupt-backup branch fires after retry. Without
+  // the backup, a single bad write would silently wipe live challenge state
+  // with no forensic trail.
+  it("malformed JSON backed up to .corrupt.* and replaced with fresh state", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "v4-r60-corrupt-"));
+    const filePath = path.join(tmpDir, "v4-engine.json");
+    fs.writeFileSync(filePath, "{not valid json,,,", "utf-8");
+
+    const loaded = loadState(tmpDir, "test-corrupt");
+    expect(loaded.schemaVersion).toBe(3);
+    expect(loaded.cfgLabel).toBe("test-corrupt");
+    expect(loaded.equity).toBe(1.0);
+    expect(fs.existsSync(filePath)).toBe(false);
+    const corruptBackups = fs
+      .readdirSync(tmpDir)
+      .filter((f) => f.includes(".corrupt."));
+    expect(corruptBackups.length).toBe(1);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Edge 3: JSON parses but yields a primitive (string/number/null). Phase 35
+  // R44-V4-2 added an explicit object-guard; without it the cast crashes the
+  // engine hours later when fields are read.
+  it("non-object JSON (primitive) is treated as corrupt, not crash later", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "v4-r60-prim-"));
+    const filePath = path.join(tmpDir, "v4-engine.json");
+    fs.writeFileSync(filePath, '"this is a string, not an object"', "utf-8");
+
+    const loaded = loadState(tmpDir, "test-prim");
+    expect(loaded.schemaVersion).toBe(3);
+    expect(loaded.equity).toBe(1.0);
+    expect(typeof loaded).toBe("object");
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Edge 4: cfgLabel mismatch (different FTMO_TF env) → backup + fresh. We
+  // explicitly assert the backup file is preserved so an operator can recover
+  // the previous challenge state if they accidentally swapped labels.
+  it("cfgLabel mismatch on otherwise valid state backs up before reset", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "v4-r60-mismatch-"));
+    const filePath = path.join(tmpDir, "v4-engine.json");
+
+    const validButOtherLabel = {
+      schemaVersion: 3,
+      cfgLabel: "challenge-A",
+      createdAt: 1735689600000,
+      updatedAt: 1735689600000,
+      lastBarOpenTime: 0,
+      challengeStartTs: 0,
+      equity: 1.07, // mid-challenge — must NOT be lost without backup
+      mtmEquity: 1.07,
+      day: 5,
+      dayStart: 1.06,
+      dayPeak: 1.07,
+      challengePeak: 1.07,
+      openPositions: [],
+      tradingDays: [0, 1, 2, 3, 4, 5],
+      firstTargetHitDay: null,
+      pausedAtTarget: false,
+      lossStreakByAssetDir: {},
+      kellyPnls: [],
+      closedTrades: [],
+      barsSeen: 60,
+      stoppedReason: null,
+    };
+    fs.writeFileSync(filePath, JSON.stringify(validButOtherLabel), "utf-8");
+
+    const loaded = loadState(tmpDir, "challenge-B");
+    // New label → fresh state, but the OLD file is preserved as a backup.
+    expect(loaded.cfgLabel).toBe("challenge-B");
+    expect(loaded.equity).toBe(1.0);
+    expect(fs.existsSync(filePath)).toBe(false);
+    const backups = fs
+      .readdirSync(tmpDir)
+      .filter((f) => f.includes(".backup."));
+    expect(backups.length).toBe(1);
+    // Backup still contains the original mid-challenge equity.
+    const backed = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, backups[0]!), "utf-8"),
+    );
+    expect(backed.cfgLabel).toBe("challenge-A");
+    expect(backed.equity).toBe(1.07);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Edge 5: cross-process race — two saveState calls racing on the same dir.
+  // With the atomic rename + per-pid + random-suffix tmpfile (R44-V4 / Phase 14),
+  // both writes complete and the final file is one of the two valid serialisations
+  // (NEVER a partial / interleaved blob). saveState is intra-process, so we
+  // simulate the race by issuing two back-to-back saves with differing state.
+  it("two saveState calls back-to-back yield a valid (non-partial) final file", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "v4-r60-race-"));
+
+    const stateA = initialState("test-race");
+    stateA.equity = 1.111;
+    const stateB = initialState("test-race");
+    stateB.equity = 2.222;
+
+    saveState(stateA, tmpDir);
+    saveState(stateB, tmpDir);
+
+    // Final file MUST parse cleanly (no half-written content) and equal one
+    // of the two serialised values — atomic rename guarantees this.
+    const reloaded = loadState(tmpDir, "test-race");
+    expect(reloaded.equity).toBe(2.222);
+    expect(reloaded.cfgLabel).toBe("test-race");
+
+    // No leftover .tmp.* files — the cleanup branch (R44-V4-4) ran on success.
+    const orphans = fs.readdirSync(tmpDir).filter((f) => f.includes(".tmp."));
+    expect(orphans.length).toBe(0);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Edge 6: empty-file (zero bytes) → JSON.parse throws → corrupt branch.
+  // Common after a power-cut between fs.openSync and fs.writeSync.
+  it("zero-byte state file triggers corrupt-backup, not silent crash", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "v4-r60-empty-"));
+    const filePath = path.join(tmpDir, "v4-engine.json");
+    fs.writeFileSync(filePath, "", "utf-8");
+
+    const loaded = loadState(tmpDir, "test-empty");
+    expect(loaded.schemaVersion).toBe(3);
+    expect(loaded.equity).toBe(1.0);
+    const corruptBackups = fs
+      .readdirSync(tmpDir)
+      .filter((f) => f.includes(".corrupt."));
+    expect(corruptBackups.length).toBe(1);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Edge 7: missing state-dir entirely → loadState must NOT crash, returns
+  // fresh state without attempting to create the dir (saveState owns dir-init).
+  it("missing state-dir returns fresh state without throwing", () => {
+    const nonExistent = path.join(
+      os.tmpdir(),
+      `v4-r60-missing-${Date.now()}-${Math.random()}`,
+    );
+    expect(fs.existsSync(nonExistent)).toBe(false);
+
+    const loaded = loadState(nonExistent, "test-missing");
+    expect(loaded.schemaVersion).toBe(3);
+    expect(loaded.equity).toBe(1.0);
+    expect(loaded.cfgLabel).toBe("test-missing");
+  });
+});

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
+import { isPlaceholderSupabaseUrl } from "@/lib/supabase";
 
 /**
  * Round 54 (Finding #3): per-request CSP nonce. Replaces the static
@@ -42,6 +43,17 @@ function buildCsp(nonce: string): string {
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
+    // R67-r8 audit: explicit fallbacks for non-script contexts. Without
+    // these, the PWA service-worker (/sw.js) and manifest could be silently
+    // blocked under strict CSP because `worker-src` falls back through
+    // child-src/default-src and Chrome historically had quirks where
+    // 'strict-dynamic' on script-src propagated to worker creation.
+    // object-src 'none' kills <object>/<embed> Flash-style XSS — does NOT
+    // fall back from default-src in older browsers, so explicit set required.
+    "worker-src 'self'",
+    "manifest-src 'self'",
+    "object-src 'none'",
+    "report-uri /api/csp-report",
   ].join("; ");
 }
 
@@ -76,7 +88,7 @@ export async function middleware(request: NextRequest) {
   // Skip Supabase-session refresh if Supabase is not configured, but
   // STILL set the CSP response header so XSS mitigation applies in
   // unauthenticated / local-only mode.
-  if (!url || !key || url === "https://your-project.supabase.co") {
+  if (!url || !key || isPlaceholderSupabaseUrl(url)) {
     const resp = NextResponse.next({ request: { headers: requestHeaders } });
     resp.headers.set("Content-Security-Policy", csp);
     return resp;
@@ -106,6 +118,16 @@ export async function middleware(request: NextRequest) {
           supabaseResponse.cookies.set(name, value, options),
         );
       },
+    },
+    // R67-r17 audit fix (HIGH): force Secure + SameSite=Lax in production.
+    // Without `secure`, Supabase auth cookies travel over plain HTTP if a
+    // misconfigured domain serves un-TLS'd, exposing tokens to network
+    // attackers. httpOnly remains the SSR default (Supabase needs JS read
+    // for PKCE refresh).
+    cookieOptions: {
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
     },
   });
 

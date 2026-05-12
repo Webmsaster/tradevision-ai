@@ -33,10 +33,23 @@ function _warnLeverageFallbackOnce(): void {
   if (_leverageWarningEmitted) return;
   _leverageWarningEmitted = true;
   if (typeof console !== "undefined") {
-    // eslint-disable-next-line no-console
     console.warn(
       "[calculations] One or more trades had a missing/invalid leverage; falling back to 1x. " +
         "Validate your CSV import / TradeForm input.",
+    );
+  }
+}
+
+// R67-r12: same once-per-process pattern for Sharpe-low-confidence warn.
+// Was previously fired on every render → console-spam in dashboards that
+// re-mount Stats sections frequently.
+let _sharpeShortSpanWarned = false;
+function _warnSharpeShortSpanOnce(): void {
+  if (_sharpeShortSpanWarned) return;
+  _sharpeShortSpanWarned = true;
+  if (typeof console !== "undefined") {
+    console.warn(
+      "[calculateSharpeRatio] sample <36 days; annualization noisy. Sharpe may be unreliable.",
     );
   }
 }
@@ -107,13 +120,22 @@ export function calculateAvgWinLoss(trades: Trade[]): {
 
 /**
  * Calculate the risk/reward ratio (average win / average loss).
- * Returns 0 if there are no losing trades or no winning trades.
+ * Returns null when the ratio is undefined (no losses but wins → would be
+ * Infinity) so callers can render an explicit "N/A" instead of carrying
+ * a non-finite number through downstream math (formatting, charts, AI).
+ * Returns 0 if there are neither winning nor losing trades.
  */
-export function calculateRiskReward(trades: Trade[]): number {
+export function calculateRiskReward(trades: Trade[]): number | null {
   const { avgWin, avgLoss } = calculateAvgWinLoss(trades);
-  // No losses but wins → infinite R:R (UI should render as "∞" / "N/A").
-  if (avgLoss === 0) return avgWin > 0 ? Infinity : 0;
-  return avgWin / avgLoss;
+  if (avgLoss === 0) {
+    // Wins but no losses → undefined R:R; signal explicitly via null.
+    if (avgWin > 0) return null;
+    return 0;
+  }
+  const value = avgWin / avgLoss;
+  // Defensive: if FP arithmetic still produces a non-finite value, surface null.
+  if (!Number.isFinite(value)) return null;
+  return value;
 }
 
 /**
@@ -138,11 +160,35 @@ export function calculateExpectancy(trades: Trade[]): number {
 
 /**
  * Sort trades chronologically by exit date.
+ *
+ * R67-r22 audit fix (perf): Symbol-cached sort. Three internal callers
+ * (calculateMaxDrawdown, calculateEquityCurve, calculateStreaks) all
+ * receive the same trades array via calculateAllStats and previously
+ * each ran an independent O(n log n) sort. At N=10k that's ~36ms
+ * wasted per dashboard render. The cache attaches the sorted view via
+ * a non-enumerable Symbol on the input array, so a single
+ * calculateAllStats call sorts once; standalone helpers still work
+ * (cache miss → sort → cache).
  */
+const SORTED_BY_EXIT_DATE = Symbol("calculations.sortedByExitDate");
 function sortByExitDate(trades: Trade[]): Trade[] {
-  return [...trades].sort(
+  const holder = trades as Trade[] & { [SORTED_BY_EXIT_DATE]?: Trade[] };
+  const cached = holder[SORTED_BY_EXIT_DATE];
+  if (cached && cached.length === trades.length) return cached;
+  const sorted = [...trades].sort(
     (a, b) => new Date(a.exitDate).getTime() - new Date(b.exitDate).getTime(),
   );
+  try {
+    Object.defineProperty(trades, SORTED_BY_EXIT_DATE, {
+      value: sorted,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  } catch {
+    /* frozen array → caching not possible, return the fresh sort */
+  }
+  return sorted;
 }
 
 /**
@@ -328,7 +374,11 @@ export function calculateSharpeRatio(trades: Trade[]): number {
     returns.reduce((sum, r) => sum + (r - mean) ** 2, 0) / returns.length;
   const stdDev = Math.sqrt(variance);
 
-  if (stdDev === 0) return 0;
+  // FP-noise guard: identical-return series can produce stdDev ≈ 1e-15 from
+  // round-off in the variance accumulator, blowing up mean/stdDev to a huge
+  // bogus Sharpe. Treat anything below tolerance as zero.
+  const FP_TOLERANCE = 1e-12;
+  if (stdDev < FP_TOLERANCE) return 0;
 
   // Infer trades-per-year from the exit-date span.
   const exitTimes = trades
@@ -349,9 +399,18 @@ export function calculateSharpeRatio(trades: Trade[]): number {
     }
     const spanMs = mx - mn;
     const years = spanMs / (365.25 * 24 * 60 * 60 * 1000);
-    // Below ~36 days the inferred rate is too noisy; keep the default.
+    // Below ~36 days the inferred rate is too noisy; keep the default and
+    // emit a once-per-call warning so callers know the result is unreliable.
+    if (years < 0.1) {
+      _warnSharpeShortSpanOnce();
+    }
     if (years >= 0.1) {
-      const tradesPerYear = trades.length / years;
+      // Use exitTimes.length (the validated, finite-date count) — not
+      // trades.length — so trades with malformed exitDates don't inflate
+      // the inferred frequency.
+      // Round 11 audit: `Math.max(years, 1e-9)` is dead code — the
+      // surrounding `if (years >= 0.1)` block already guarantees years > 0.
+      const tradesPerYear = exitTimes.length / years;
       annualisationFactor = Math.sqrt(tradesPerYear);
     }
   }
@@ -504,16 +563,18 @@ export function calculateAllStats(trades: Trade[]): TradeStats {
 
   const totalPnl = trades.reduce((sum, t) => sum + t.pnl, 0);
 
-  // Find best and worst trades by PnL (caller guards trades.length > 0)
-  const bestTrade = trades.reduce<Trade>(
-    (best, t) => (t.pnl > best.pnl ? t : best),
-    trades[0]!,
-  );
-
-  const worstTrade = trades.reduce<Trade>(
-    (worst, t) => (t.pnl < worst.pnl ? t : worst),
-    trades[0]!,
-  );
+  // R67-r22 audit fix (perf): single fused pass for best+worst across
+  // valid trades. Old code filtered, then ran two separate reduce()
+  // passes — three full traversals where one suffices. Filter out
+  // NaN-PnL rows inline; a single NaN poisons comparison so best/worst
+  // would otherwise depend on iteration order.
+  let bestTrade: Trade | null = null;
+  let worstTrade: Trade | null = null;
+  for (const t of trades) {
+    if (!Number.isFinite(t.pnl)) continue;
+    if (bestTrade === null || t.pnl > bestTrade.pnl) bestTrade = t;
+    if (worstTrade === null || t.pnl < worstTrade.pnl) worstTrade = t;
+  }
 
   return {
     totalTrades: trades.length,

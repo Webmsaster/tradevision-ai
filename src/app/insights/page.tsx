@@ -1,38 +1,140 @@
-'use client';
+"use client";
 
-import { useState, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
-import { AIInsight } from '@/types/trade';
-import { generateAllInsights } from '@/utils/aiAnalysis';
-import { useTradeStorage } from '@/hooks/useTradeStorage';
-import InsightCard from '@/components/InsightCard';
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { AIInsight } from "@/types/trade";
+import { generateAllInsights } from "@/utils/aiAnalysis";
+import { useTradeStorage } from "@/hooks/useTradeStorage";
+import InsightCard from "@/components/InsightCard";
 
-type FilterType = 'all' | 'warning' | 'positive' | 'neutral';
+type FilterType = "all" | "warning" | "positive" | "neutral";
 
+const FILTER_TYPES: ReadonlyArray<FilterType> = [
+  "all",
+  "warning",
+  "positive",
+  "neutral",
+];
+
+function isFilterType(v: string | null): v is FilterType {
+  return v !== null && (FILTER_TYPES as ReadonlyArray<string>).includes(v);
+}
+
+// R67-Final: useSearchParams() forces client-side bailout — Next requires
+// it under a Suspense boundary so the page can pre-render in the static
+// shell.
 export default function InsightsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="page-container">
+          <div className="page-header">
+            <h1 className="page-title">AI Insights</h1>
+            <p className="page-subtitle">
+              Pattern detection and trading behavior analysis
+            </p>
+          </div>
+        </div>
+      }
+    >
+      <InsightsPageInner />
+    </Suspense>
+  );
+}
+
+function InsightsPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { trades } = useTradeStorage();
-  const [activeFilter, setActiveFilter] = useState<FilterType>('all');
-  const [selectedCategory, setSelectedCategory] = useState<string>('');
-  const [dateFrom, setDateFrom] = useState<string>('');
-  const [dateTo, setDateTo] = useState<string>('');
+
+  // R67-Final: read initial filter state from URL so reload preserves it.
+  // Falls back to defaults if no params present, keeping behaviour
+  // equivalent to the pre-persistence version.
+  const [activeFilter, setActiveFilter] = useState<FilterType>(() => {
+    const v = searchParams.get("filter");
+    return isFilterType(v) ? v : "all";
+  });
+  const [selectedCategory, setSelectedCategory] = useState<string>(
+    () => searchParams.get("category") ?? "",
+  );
+  const [dateFrom, setDateFrom] = useState<string>(
+    () => searchParams.get("dateFrom") ?? "",
+  );
+  const [dateTo, setDateTo] = useState<string>(
+    () => searchParams.get("dateTo") ?? "",
+  );
+
+  // R67-RR6-Round2 audit fix: one-way URL → state sync. The component
+  // stays mounted across same-route URL changes (shared link click,
+  // newsletter deep-link), so the `useState(initializer)` only fires
+  // once at first mount. Without this effect, an externally-triggered
+  // URL change to ?filter=positive while the component already shows
+  // ?filter=warning state would be silently overwritten back to
+  // ?filter=warning by the state→URL effect below.
+  const urlFilter = searchParams.get("filter");
+  const urlCategory = searchParams.get("category") ?? "";
+  const urlDateFrom = searchParams.get("dateFrom") ?? "";
+  const urlDateTo = searchParams.get("dateTo") ?? "";
+  useEffect(() => {
+    if (isFilterType(urlFilter) && urlFilter !== activeFilter) {
+      setActiveFilter(urlFilter);
+    } else if (urlFilter === null && activeFilter !== "all") {
+      setActiveFilter("all");
+    }
+    if (urlCategory !== selectedCategory) setSelectedCategory(urlCategory);
+    if (urlDateFrom !== dateFrom) setDateFrom(urlDateFrom);
+    if (urlDateTo !== dateTo) setDateTo(urlDateTo);
+    // We INTENTIONALLY only depend on the URL values here; state values
+    // live in the *forward* sync below. The if-equals guards break the
+    // potential ping-pong loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlFilter, urlCategory, urlDateFrom, urlDateTo]);
+
+  // R67-Final: push filter state back into the URL so reload preserves it.
+  // Default values (filter=all, empty category, empty dates) emit no
+  // params — URL stays clean and behaviour-equivalent when nothing is set.
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (activeFilter !== "all") params.set("filter", activeFilter);
+    if (selectedCategory) params.set("category", selectedCategory);
+    if (dateFrom) params.set("dateFrom", dateFrom);
+    if (dateTo) params.set("dateTo", dateTo);
+    const qs = params.toString();
+    const next = qs ? `/insights?${qs}` : "/insights";
+    const current =
+      typeof window !== "undefined"
+        ? window.location.pathname + window.location.search
+        : "";
+    if (current !== next) {
+      router.replace(next, { scroll: false });
+    }
+  }, [activeFilter, selectedCategory, dateFrom, dateTo, router]);
 
   const handleViewTrades = (tradeIds: string[]) => {
-    const params = new URLSearchParams({ highlight: tradeIds.join(',') });
+    const params = new URLSearchParams({ highlight: tradeIds.join(",") });
     router.push(`/trades?${params.toString()}`);
   };
 
-  // Filter trades by date range before generating insights
+  // Filter trades by date range before generating insights.
+  //
+  // R67-r21 audit fix: previously `new Date(dateTo)` parsed the bare
+  // YYYY-MM-DD as UTC midnight, then `.setHours(23,59,59,999)` applied
+  // the LOCAL TZ — in CET/CEST that produced 22:59:59 UTC on the
+  // following day, off by one hour. Charts/AI bucket in UTC, so the
+  // filter now also pins the boundary in UTC explicitly. Also: invalid
+  // input strings used to silently pass-through (`Invalid Date <` was
+  // always false → trade survived); we now skip the bound entirely
+  // when the parsed date is invalid so the user sees ALL trades, not
+  // a silent empty list.
   const filteredTrades = useMemo(() => {
     if (!dateFrom && !dateTo) return trades;
+    const fromMs = dateFrom ? Date.parse(dateFrom + "T00:00:00.000Z") : NaN;
+    const toMs = dateTo ? Date.parse(dateTo + "T23:59:59.999Z") : NaN;
     return trades.filter((trade) => {
-      const entryDate = new Date(trade.entryDate);
-      if (dateFrom && entryDate < new Date(dateFrom)) return false;
-      if (dateTo) {
-        const toEnd = new Date(dateTo);
-        toEnd.setHours(23, 59, 59, 999);
-        if (entryDate > toEnd) return false;
-      }
+      const entryMs = Date.parse(trade.entryDate);
+      if (!Number.isFinite(entryMs)) return false;
+      if (Number.isFinite(fromMs) && entryMs < fromMs) return false;
+      if (Number.isFinite(toMs) && entryMs > toMs) return false;
       return true;
     });
   }, [trades, dateFrom, dateTo]);
@@ -50,35 +152,37 @@ export default function InsightsPage() {
 
   const filteredInsights = useMemo(() => {
     let filtered =
-      activeFilter === 'all'
+      activeFilter === "all"
         ? insights
         : insights.filter((insight) => insight.type === activeFilter);
 
     if (selectedCategory) {
-      filtered = filtered.filter((insight) => insight.category === selectedCategory);
+      filtered = filtered.filter(
+        (insight) => insight.category === selectedCategory,
+      );
     }
 
     return [...filtered].sort((a, b) => b.severity - a.severity);
   }, [insights, activeFilter, selectedCategory]);
 
   const warningCount = useMemo(
-    () => insights.filter((i) => i.type === 'warning').length,
-    [insights]
+    () => insights.filter((i) => i.type === "warning").length,
+    [insights],
   );
   const positiveCount = useMemo(
-    () => insights.filter((i) => i.type === 'positive').length,
-    [insights]
+    () => insights.filter((i) => i.type === "positive").length,
+    [insights],
   );
   const neutralCount = useMemo(
-    () => insights.filter((i) => i.type === 'neutral').length,
-    [insights]
+    () => insights.filter((i) => i.type === "neutral").length,
+    [insights],
   );
 
   const tabs: { key: FilterType; label: string; count: number }[] = [
-    { key: 'all', label: 'All', count: insights.length },
-    { key: 'warning', label: 'Warnings', count: warningCount },
-    { key: 'positive', label: 'Positive', count: positiveCount },
-    { key: 'neutral', label: 'Neutral', count: neutralCount },
+    { key: "all", label: "All", count: insights.length },
+    { key: "warning", label: "Warnings", count: warningCount },
+    { key: "positive", label: "Positive", count: positiveCount },
+    { key: "neutral", label: "Neutral", count: neutralCount },
   ];
 
   if (trades.length === 0) {
@@ -144,7 +248,9 @@ export default function InsightsPage() {
           >
             <option value="">All Categories</option>
             {categories.map((cat) => (
-              <option key={cat} value={cat}>{cat}</option>
+              <option key={cat} value={cat}>
+                {cat}
+              </option>
             ))}
           </select>
         </div>
@@ -170,9 +276,9 @@ export default function InsightsPage() {
           <button
             className="insights-filters-clear"
             onClick={() => {
-              setSelectedCategory('');
-              setDateFrom('');
-              setDateTo('');
+              setSelectedCategory("");
+              setDateFrom("");
+              setDateTo("");
             }}
           >
             Clear Filters
@@ -184,7 +290,7 @@ export default function InsightsPage() {
         {tabs.map((tab) => (
           <button
             key={tab.key}
-            className={`insights-tab${activeFilter === tab.key ? ' active' : ''}`}
+            className={`insights-tab${activeFilter === tab.key ? " active" : ""}`}
             onClick={() => setActiveFilter(tab.key)}
           >
             {tab.label}
@@ -219,7 +325,11 @@ export default function InsightsPage() {
         {filteredInsights.map((insight, index) => (
           <div
             key={insight.id}
-            style={{ animationDelay: `${index * 0.1}s` }}
+            style={{
+              // R67-r23 audit fix: cap stagger at 1.5s so users with 50+
+              // insights don't wait 5+ seconds for the last card to fade in.
+              animationDelay: `${Math.min(index * 0.1, 1.5)}s`,
+            }}
           >
             <InsightCard insight={insight} onViewTrades={handleViewTrades} />
           </div>

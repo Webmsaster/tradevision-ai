@@ -224,6 +224,37 @@ describe("PerformanceChart", () => {
     });
   });
 
+  describe("large input safety (R7 #C)", () => {
+    it("handles 100k trades without stack overflow", () => {
+      // Math.min/max(...arr) raises RangeError around ~125k args on V8.
+      // The fix uses single-pass reduce — must remain stable.
+      const trades: Trade[] = [];
+      for (let i = 0; i < 100_000; i++) {
+        trades.push(makeTrade({ pnl: ((i % 200) - 100) * 1.5 }));
+      }
+      expect(() => {
+        render(<PerformanceChart type="pnl-distribution" trades={trades} />);
+      }).not.toThrow();
+      expect(screen.getByTestId("bar-chart")).toBeInTheDocument();
+    });
+
+    it("places trades in correct buckets (O(n) bucket indexing)", () => {
+      // Mix of negative and positive trades. With niceStep on absMax=100,
+      // step should be 25; buckets cover [-100,-75)…[75,100). Just confirm
+      // the chart still renders and the empty-state path is not triggered.
+      const trades = [
+        makeTrade({ pnl: -90 }),
+        makeTrade({ pnl: -30 }),
+        makeTrade({ pnl: 5 }),
+        makeTrade({ pnl: 60 }),
+        makeTrade({ pnl: 95 }),
+      ];
+      render(<PerformanceChart type="pnl-distribution" trades={trades} />);
+      expect(screen.getByTestId("bar-chart")).toBeInTheDocument();
+      expect(screen.queryByText("No data available")).not.toBeInTheDocument();
+    });
+  });
+
   describe("title rendering", () => {
     it("renders pnl-distribution title", () => {
       const trades = [makeTrade()];

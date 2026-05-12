@@ -17,6 +17,8 @@ import {
   clearAllData,
   SCREENSHOTS_KEY,
   QUOTA_EXCEEDED_EVENT,
+  tradeContentHash,
+  buildContentHashSet,
 } from "@/utils/storage";
 import {
   loadTradesFromSupabase,
@@ -30,10 +32,66 @@ import {
 // settings "Test webhook" handler can share the exact same logic.
 import { isValidHttpsUrl } from "@/utils/urlSafety";
 
-// Fire webhook notification for trade events (best-effort, never blocks)
-function fireWebhook(
+// R67-Final (R19-A8 deferred MED): webhook URLs are encrypted-at-rest
+// in localStorage. The fire path decrypts in-memory before the network
+// call. See `src/utils/secretsCrypto.ts` for the v1 envelope spec.
+import {
+  decryptSecret,
+  isEncrypted,
+  resolveUserKey,
+} from "@/utils/secretsCrypto";
+
+// Round 8 audit (MEDIUM): client-side platform-URL match — defence in
+// depth alongside the same gate in /api/webhook-test. Returning false
+// silently drops the webhook fire (no toast — this only triggers when
+// the operator's settings panel is mis-configured, which the settings
+// "Test" button surfaces with a real error).
+function webhookPlatformMatches(platform: unknown, url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (platform === "discord") {
+    return (
+      parsed.hostname === "discord.com" &&
+      parsed.pathname.startsWith("/api/webhooks/")
+    );
+  }
+  if (platform === "telegram") {
+    return (
+      parsed.hostname === "api.telegram.org" &&
+      parsed.pathname.startsWith("/bot")
+    );
+  }
+  // "custom" or any other value: rely on isValidHttpsUrl alone.
+  return true;
+}
+
+// Fire webhook notification for trade events (best-effort, never blocks).
+//
+// Round 6 audit (WARNING): accept an `unmountSignal` from the calling hook
+// so an in-flight webhook POST is aborted when the component unmounts.
+// Previously the fetch held a reference to the unmounted React tree via
+// the `.catch` closure (the trade payload), occasionally producing
+// "setState on unmounted component" warnings under StrictMode and
+// leaking a TCP socket until the 5s timeout fired. We compose two
+// signals (timeout + unmount) via AbortSignal.any when available, and
+// fall back to a manual link otherwise.
+//
+// R67-Final (R19-A8): webhook URLs may be persisted as v1 encryption
+// envelopes (`enc:v1:...`). We decrypt in-memory via the same userKey
+// resolver the settings page uses (Supabase user.id when authenticated,
+// per-device random key when offline) — so the network call still sees
+// the plaintext URL. If decryption fails (wrong userKey, corrupted
+// ciphertext, no WebCrypto) we drop the webhook silently — never POST
+// the envelope by accident.
+async function fireWebhook(
   event: "onTradeAdd" | "onTradeEdit" | "onTradeDelete",
-  trade?: Trade,
+  trade: Trade | undefined,
+  unmountSignal?: AbortSignal,
+  userId?: string | null,
 ) {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
@@ -41,7 +99,29 @@ function fireWebhook(
     const settings = JSON.parse(raw);
     const wh = settings.webhook;
     if (!wh?.enabled || !wh?.url || !wh.events?.[event]) return;
-    if (!isValidHttpsUrl(wh.url)) return;
+
+    // R67-Final: decrypt the persisted URL if it carries the v1 envelope.
+    // Plain URLs (legacy / migration window) pass through unchanged.
+    let plainUrl: string = wh.url;
+    if (isEncrypted(plainUrl)) {
+      const userKey = resolveUserKey(userId ?? null);
+      plainUrl = await decryptSecret(plainUrl, userKey);
+      if (!plainUrl) {
+        // Decryption failed — most common cause is a userKey mismatch
+        // (user signed out and the offline key was rotated, or signed
+        // in under a different account). Silently drop rather than
+        // leak the envelope to the network.
+        console.warn(
+          "[webhook] persisted URL could not be decrypted — dropping fire",
+        );
+        return;
+      }
+    }
+    if (!isValidHttpsUrl(plainUrl)) return;
+    // Round 8 audit (MEDIUM): mirror the server-side platform-URL match
+    // so a Discord-platform webhook pointed at a wrong host never even
+    // leaves the browser.
+    if (!webhookPlatformMatches(wh.platform, plainUrl)) return;
 
     const msg =
       event === "onTradeAdd"
@@ -68,14 +148,39 @@ function fireWebhook(
     // Round 56 (Fix 4): 5s AbortSignal.timeout matches /api/webhook-test
     // convention — a hung user-supplied webhook URL can't block the trade
     // CRUD path forever.
-    fetch(wh.url, {
+    // Round 6 audit (WARNING): also abort on unmount.
+    const timeoutSignal = AbortSignal.timeout(5_000);
+    const signal: AbortSignal = unmountSignal
+      ? typeof (AbortSignal as { any?: unknown }).any === "function"
+        ? (
+            AbortSignal as unknown as { any: (s: AbortSignal[]) => AbortSignal }
+          ).any([timeoutSignal, unmountSignal])
+        : timeoutSignal
+      : timeoutSignal;
+    // R67-r19 audit fix (HIGH): redirect:"manual" so a compromised /
+    // typo'd webhook host can't follow a 302 to an attacker-controlled
+    // target and exfiltrate the trade payload (pair / direction / PnL).
+    // Mirrors the server-side `/api/webhook-test` redirect-block.
+    fetch(plainUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(5_000),
-    }).catch((err) => {
-      console.error("Webhook delivery failed:", err);
-    }); // best-effort
+      signal,
+      redirect: "manual",
+    })
+      .then((resp) => {
+        if (resp.type === "opaqueredirect") {
+          console.warn(
+            "[webhook] dropped redirect response — refusing to follow",
+          );
+        }
+      })
+      .catch((err) => {
+        // Round 6 audit (WARNING): ignore AbortError on unmount; the user
+        // navigated away mid-flight and we don't want to noise their console.
+        if (err instanceof Error && err.name === "AbortError") return;
+        console.error("Webhook delivery failed:", err);
+      }); // best-effort
   } catch (err) {
     console.error("Webhook fire failed:", err);
   }
@@ -87,6 +192,18 @@ function getActiveAccountId(): string {
     if (raw) {
       const settings = JSON.parse(raw);
       if (settings.activeAccountId) return settings.activeAccountId;
+      // R67-r22 audit fix (MED): if no activeAccountId is persisted but
+      // accounts[] exists with a custom first entry (user renamed Main
+      // Account or removed `default`), fall back to the first existing
+      // account ID rather than the hardcoded literal "default" — which
+      // wouldn't filter to anything if the user has no `default` account.
+      if (
+        Array.isArray(settings.accounts) &&
+        settings.accounts.length > 0 &&
+        typeof settings.accounts[0]?.id === "string"
+      ) {
+        return settings.accounts[0].id;
+      }
     }
   } catch (err) {
     console.error("Failed to read active account ID:", err);
@@ -143,6 +260,19 @@ export function useTradeStorage() {
     allTradesRef.current = allTrades;
   }, [allTrades]);
   const hasLoadedInitialDataRef = useRef(false);
+
+  // Round 6 audit (WARNING): single AbortController for all webhook
+  // dispatches. Abort on unmount so any in-flight POST is cancelled —
+  // prevents leaked sockets and StrictMode setState-on-unmounted warnings.
+  const webhookAbortRef = useRef<AbortController | null>(null);
+  if (webhookAbortRef.current === null) {
+    webhookAbortRef.current = new AbortController();
+  }
+  useEffect(() => {
+    return () => {
+      webhookAbortRef.current?.abort();
+    };
+  }, []);
 
   // Listen for settings changes to update active account
   // Round 58 Fix 2: removed redundant `setActiveAccountId(getActiveAccountId())`
@@ -266,8 +396,71 @@ export function useTradeStorage() {
           }
           const cloudTrades = await loadTradesFromSupabase(supabase!, user!.id);
           if (cancelled) return;
+          // R67 audit fix: mid-session login data-loss. If user signs in with
+          // anonymous local trades and a fresh cloud account (cloudTrades=[]),
+          // the original code would overwrite local with empty cloud and
+          // permanently lose those trades. Detect first-login + non-empty
+          // local + empty cloud and migrate the local set up before trusting
+          // cloud-as-source-of-truth.
+          if (cloudTrades.length === 0) {
+            const localTrades = loadTrades();
+            // R67 audit (Round 3): owner-stamp guard. Without this, if
+            // User A's clearAllData() failed silently (network glitch,
+            // localStorage error), User B's first login would migrate
+            // User A's left-over trades into User B's cloud — cross-user
+            // data leakage. Migration only proceeds when local data is
+            // tagged as anonymous (legitimate pre-login trades).
+            const localOwner =
+              typeof window !== "undefined"
+                ? (localStorage.getItem("tradevision-owner") ?? "anonymous")
+                : "anonymous";
+            const ownerOk = localOwner === "anonymous";
+            if (!ownerOk && localOwner !== user!.id) {
+              console.warn(
+                `[useTradeStorage] local owner=${localOwner} but logged-in user=${user!.id} — discarding local cache`,
+              );
+              setAllTrades([]);
+              saveTrades([]);
+              return;
+            }
+            if (localTrades.length > 0 && ownerOk) {
+              try {
+                const ok = await saveBulkTradesToSupabase(
+                  supabase!,
+                  localTrades,
+                  user!.id,
+                );
+                if (ok && typeof window !== "undefined") {
+                  // Stamp localStorage with new owner so re-mount is correct
+                  localStorage.setItem("tradevision-owner", user!.id);
+                }
+                if (cancelled) return;
+                if (ok) {
+                  setAllTrades(localTrades);
+                  return;
+                }
+                console.warn(
+                  "[useTradeStorage] local→cloud migration failed; keeping local",
+                );
+                setAllTrades(localTrades);
+                return;
+              } catch (e) {
+                if (cancelled) return;
+                console.error(
+                  "[useTradeStorage] local→cloud migration threw; keeping local",
+                  e,
+                );
+                setAllTrades(localTrades);
+                return;
+              }
+            }
+          }
           setAllTrades(cloudTrades);
           saveTrades(cloudTrades);
+          // R67-r3: stamp owner so future mounts can detect cross-user reuse
+          if (typeof window !== "undefined") {
+            localStorage.setItem("tradevision-owner", user!.id);
+          }
         } else {
           if (cancelled) return;
           setAllTrades(loadTrades());
@@ -303,7 +496,14 @@ export function useTradeStorage() {
       };
       const updated = addTradeLocal(tradeWithAccount);
       setAllTrades(updated);
-      fireWebhook("onTradeAdd", tradeWithAccount);
+      // R67-Final: fireWebhook is now async (decrypt step). Float as
+      // best-effort — never block the CRUD path on the network round-trip.
+      void fireWebhook(
+        "onTradeAdd",
+        tradeWithAccount,
+        webhookAbortRef.current?.signal,
+        user?.id ?? null,
+      );
       if (isCloud) {
         try {
           await saveTradeToSupabase(supabase!, tradeWithAccount, user!.id);
@@ -322,7 +522,12 @@ export function useTradeStorage() {
     async (trade: Trade) => {
       const updated = updateTradeLocal(trade);
       setAllTrades(updated);
-      fireWebhook("onTradeEdit", trade);
+      void fireWebhook(
+        "onTradeEdit",
+        trade,
+        webhookAbortRef.current?.signal,
+        user?.id ?? null,
+      );
       if (isCloud) {
         try {
           await saveTradeToSupabase(supabase!, trade, user!.id);
@@ -342,7 +547,12 @@ export function useTradeStorage() {
       const removedTrade = allTradesRef.current.find((t) => t.id === tradeId);
       const updated = deleteTradeLocal(tradeId);
       setAllTrades(updated);
-      fireWebhook("onTradeDelete", removedTrade);
+      void fireWebhook(
+        "onTradeDelete",
+        removedTrade,
+        webhookAbortRef.current?.signal,
+        user?.id ?? null,
+      );
       if (isCloud) {
         try {
           await deleteTradeFromSupabase(supabase!, tradeId, user!.id);
@@ -361,10 +571,26 @@ export function useTradeStorage() {
     async (newTrades: Trade[]) => {
       const existing = loadTrades();
       const existingIds = new Set(existing.map((t) => t.id));
-      // Auto-assign active account to imported trades
-      const unique = newTrades
-        .filter((t) => !existingIds.has(t.id))
-        .map((t) => ({ ...t, accountId: t.accountId || activeAccountId }));
+      // Round 9 audit (MEDIUM): content-hash dedupe.
+      // Each CSV row is freshly UUID'd at parse time, so the existingIds
+      // set never matched a re-imported row — every re-import multiplied
+      // duplicates. Build a Set of content-hashes from the user's
+      // existing trades and SKIP any incoming row whose content already
+      // exists. UUID-collisions remain handled by existingIds (they
+      // happen e.g. when importing your own JSON backup).
+      const existingContent = buildContentHashSet(existing);
+      // Auto-assign active account to imported trades. Then filter out
+      // both UUID-conflicts AND content-duplicates (CSV re-imports).
+      const unique: Trade[] = [];
+      const seenInBatch = new Set<string>();
+      for (const t of newTrades) {
+        if (existingIds.has(t.id)) continue;
+        const hash = tradeContentHash(t);
+        if (existingContent.has(hash)) continue;
+        if (seenInBatch.has(hash)) continue; // dedupe within the batch too
+        seenInBatch.add(hash);
+        unique.push({ ...t, accountId: t.accountId || activeAccountId });
+      }
       const merged = [...existing, ...unique];
       saveTrades(merged);
       setAllTrades(merged);
@@ -398,14 +624,43 @@ export function useTradeStorage() {
 
   const replaceTrades = useCallback(
     async (newTrades: Trade[]) => {
-      saveTrades(newTrades);
-      setAllTrades(newTrades);
+      // R67-R18 (R15-A1): the /import "Replace mode" used to wipe ALL
+      // accounts' cloud trades — `clearAllSupabaseTrades(supabase, userId)`
+      // soft-deleted every row owned by the user, even ones for accounts
+      // the user wasn't actively viewing. A trader with FTMO-Step1 +
+      // FTMO-Step2 + Personal accounts who re-imported their FTMO-Step1
+      // backup lost the other two accounts' cloud copies (local survived,
+      // but a fresh device pull would show only Step1).
+      //
+      // Fix: scope the wipe to the active account only and stamp incoming
+      // trades with that account so the soft-delete and the re-import
+      // operate on the same scope. Local storage already mirrors the merge
+      // because saveTrades writes the whole `merged` array — but here we
+      // need to MERGE rather than blow away local-other-account data too,
+      // so we union the new trades for this account with the existing
+      // trades for the other accounts.
+      const stamped = newTrades.map((t) => ({
+        ...t,
+        accountId: t.accountId || activeAccountId,
+      }));
+      // Local: union with trades for other accounts so a Replace into
+      // FTMO-Step1 doesn't blow away Personal-account local rows.
+      const existingLocal = loadTrades();
+      const otherAccountTrades = existingLocal.filter(
+        (t) => (t.accountId ?? "default") !== activeAccountId,
+      );
+      const merged = [...otherAccountTrades, ...stamped];
+      saveTrades(merged);
+      setAllTrades(merged);
       if (isCloud) {
         try {
-          // Clear existing cloud data first to prevent stale trades from persisting
-          await clearAllSupabaseTrades(supabase!, user!.id);
-          if (newTrades.length > 0) {
-            await saveBulkTradesToSupabase(supabase!, newTrades, user!.id);
+          // Clear existing cloud data for THIS account only — leave other
+          // accounts intact. Pre-stamping above guarantees `accountId` is
+          // set on every incoming row, so the subsequent bulk-upsert lands
+          // under the same account_id we just cleared.
+          await clearAllSupabaseTrades(supabase!, user!.id, activeAccountId);
+          if (stamped.length > 0) {
+            await saveBulkTradesToSupabase(supabase!, stamped, user!.id);
           }
         } catch (err) {
           console.error("Cloud sync failed for setAllTrades:", err);
@@ -415,7 +670,7 @@ export function useTradeStorage() {
         }
       }
     },
-    [isCloud, supabase, user],
+    [isCloud, supabase, user, activeAccountId],
   );
 
   const dismissSyncError = useCallback(() => setSyncError(null), []);
@@ -432,5 +687,9 @@ export function useTradeStorage() {
     importTrades,
     clearAll,
     setAllTrades: replaceTrades,
+    // R67-r7 audit: expose activeAccountId so callers (e.g. dashboard sample-
+    // data loader) can stamp new trades correctly without falling back to
+    // "default" (where they'd be invisible if user has a non-default account).
+    activeAccountId,
   };
 }

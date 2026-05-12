@@ -13,6 +13,8 @@ Covers:
 """
 from __future__ import annotations
 
+# pyright: reportArgumentType=false, reportPossiblyUnboundVariable=false, reportMissingImports=false
+
 import json
 import os
 import sys
@@ -1335,7 +1337,7 @@ def test_get_challenge_day_dst_spring_forward_safe(monkeypatch):
 
         # Build a `datetime` proxy whose `.now(tz)` we control.
         class FrozenDatetime(datetime):
-            _frozen_now = None
+            _frozen_now: "datetime | None" = None
 
             @classmethod
             def now(cls, tz=None):
@@ -1379,7 +1381,7 @@ def test_get_challenge_day_dst_fall_back_safe(monkeypatch):
         exe.CHALLENGE_START_DATE = "2026-10-23T00:00:00"
 
         class FrozenDatetime(datetime):
-            _frozen_now = None
+            _frozen_now: "datetime | None" = None
 
             @classmethod
             def now(cls, tz=None):
@@ -1659,6 +1661,50 @@ def test_mt5_init_exits_on_invalid_expected_login_string(monkeypatch):
     assert excinfo.value.code == 2
 
 
+def test_mt5_ensure_connected_exits_on_login_drift_mid_session(monkeypatch):
+    """R67: warm path must re-validate FTMO_EXPECTED_LOGIN every cycle.
+
+    Cold-init succeeds with login=999999. Then the broker silently re-routes
+    the terminal to a different account (mock injects login=42). The next
+    `mt5_ensure_connected()` call (which fires every ~30s in steady state)
+    must detect the drift, send a Telegram alert, and exit with code 2 so
+    PM2/systemd restarts the executor on the correct account.
+    """
+    import ftmo_executor as exe
+    import mock_mt5
+
+    # Reset the module-level cache so a previous test does not leak through.
+    exe._EXPECTED_LOGIN_INT = None
+    mock_mt5._set_login(999999)
+
+    monkeypatch.setattr(exe.mt5, "initialize", lambda *a, **k: True)
+    # Use the real mock account_info() so login changes propagate.
+    monkeypatch.setattr(exe.mt5, "account_info", mock_mt5.account_info)
+    mock_mt5._STATE["initialized"] = True
+
+    tg_calls: list[str] = []
+    monkeypatch.setattr(exe, "tg_send", lambda msg, **kw: tg_calls.append(msg) or True)
+    monkeypatch.setattr(exe, "log_event", lambda *a, **k: None)
+    monkeypatch.setenv("FTMO_EXPECTED_LOGIN", "999999")
+
+    # Cold init validates and caches the expected login.
+    assert exe.mt5_init_with_retry() is True
+    assert exe._EXPECTED_LOGIN_INT == 999999
+
+    # Simulate broker-side account drift mid-session.
+    mock_mt5._set_login(42)
+
+    with pytest.raises(SystemExit) as excinfo:
+        exe.mt5_ensure_connected()
+    assert excinfo.value.code == 2
+    assert any("drift" in m.lower() or "wrong" in m.lower() for m in tg_calls), tg_calls
+
+    # Cleanup so the leaked _STATE doesn't break subsequent tests.
+    mock_mt5._set_login(999999)
+    mock_mt5._STATE["initialized"] = False
+    exe._EXPECTED_LOGIN_INT = None
+
+
 # ============================================================================
 # Round 57 (2026-05-03): telegram_notify per-account env resolution
 # ============================================================================
@@ -1693,6 +1739,407 @@ def test_telegram_notify_falls_back_to_bare_env(monkeypatch):
 
     assert tn._resolve_account_env("BOT_TOKEN") == "shared"
     assert tn._resolve_account_env("CHAT_ID") == "shared-chat"
+
+
+# ============================================================================
+# Round 7 audit (2026-05-04): log_event lock + fsync, write_json dir-fsync,
+# read_json corruption marker
+# ============================================================================
+def test_log_event_acquires_file_lock(monkeypatch, tmp_path):
+    """log_event must wrap rotation+append under _file_lock to serialise
+    concurrent writers from multi-account same-FTMO_TF executors."""
+    import ftmo_executor as exe
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "EXECUTOR_LOG_PATH", tmp_path / "executor-log.jsonl")
+
+    calls: list[Path] = []
+    real_lock = exe._file_lock
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def spy_lock(lock_path, *args, **kwargs):
+        calls.append(Path(lock_path))
+        with real_lock(lock_path, *args, **kwargs):
+            yield
+
+    monkeypatch.setattr(exe, "_file_lock", spy_lock)
+
+    exe.log_event("test_event", level="info", foo="bar")
+
+    assert len(calls) == 1, f"expected exactly one lock acquire, got {len(calls)}"
+    assert calls[0].name == "executor-log.lock"
+    # And the line was actually appended
+    log = (tmp_path / "executor-log.jsonl").read_text(encoding="utf-8").strip()
+    parsed = json.loads(log)
+    assert parsed["event"] == "test_event"
+    assert parsed["foo"] == "bar"
+
+
+def test_log_event_fsyncs_after_append(monkeypatch, tmp_path):
+    """log_event must call os.fsync on the log fd so a power-loss doesn't
+    drop the most recent log lines (which usually narrate the crash cause)."""
+    import ftmo_executor as exe
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "EXECUTOR_LOG_PATH", tmp_path / "executor-log.jsonl")
+
+    fsynced_fds: list[int] = []
+    real_fsync = os.fsync
+
+    def spy_fsync(fd):
+        fsynced_fds.append(fd)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(exe.os, "fsync", spy_fsync)
+
+    exe.log_event("fsync_check")
+
+    # At least one fsync must have happened during log_event.
+    assert len(fsynced_fds) >= 1, "log_event did not fsync the log fd"
+
+
+def test_log_event_serialises_concurrent_writers(monkeypatch, tmp_path):
+    """Two threads logging at once must not produce interleaved bytes —
+    every line in the JSONL output must parse as valid JSON."""
+    import ftmo_executor as exe
+    import threading
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "EXECUTOR_LOG_PATH", tmp_path / "executor-log.jsonl")
+
+    def worker(idx: int):
+        for i in range(20):
+            exe.log_event("concurrent", worker=idx, i=i)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    lines = (tmp_path / "executor-log.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 80, f"expected 80 lines, got {len(lines)}"
+    for line in lines:
+        parsed = json.loads(line)  # raises if any line was corrupted
+        assert parsed["event"] == "concurrent"
+
+
+def test_write_json_fsyncs_parent_dir_on_posix(monkeypatch, tmp_path):
+    """On POSIX, write_json must fsync the parent dir after rename so the
+    dir-entry update survives a power-loss."""
+    if sys.platform == "win32":
+        pytest.skip("POSIX-only: Windows can't os.open() directories")
+
+    import ftmo_executor as exe
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+
+    fsync_calls: list[int] = []
+    real_fsync = os.fsync
+
+    def spy_fsync(fd):
+        fsync_calls.append(fd)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(exe.os, "fsync", spy_fsync)
+
+    target = tmp_path / "state.json"
+    exe.write_json(target, {"ok": True})
+
+    # Expect at least 2 fsyncs: file fd + parent-dir fd.
+    assert len(fsync_calls) >= 2, (
+        f"expected >=2 fsyncs (file + dir), got {len(fsync_calls)}"
+    )
+    assert json.loads(target.read_text()) == {"ok": True}
+
+
+def test_write_json_dir_fsync_swallows_oserror(monkeypatch, tmp_path):
+    """If os.open(parent_dir) raises (Windows / unsupported FS), write_json
+    must NOT propagate — it's best-effort durability."""
+    import ftmo_executor as exe
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+
+    real_open = os.open
+
+    def fake_open(path, flags, *args, **kwargs):
+        # Reject only the dir-fsync open (RDONLY on a directory)
+        if flags == os.O_RDONLY and Path(path).is_dir():
+            raise OSError("simulated: directory fsync not supported")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(exe.os, "open", fake_open)
+
+    target = tmp_path / "state.json"
+    # Should not raise.
+    exe.write_json(target, {"ok": True})
+    assert json.loads(target.read_text()) == {"ok": True}
+
+
+def test_read_json_renames_corrupt_and_returns_fallback(monkeypatch, tmp_path):
+    """On JSONDecodeError, read_json must rename the corrupt file to
+    `path.corrupt.<ts>` and return the fallback — never silently succeed."""
+    import ftmo_executor as exe
+
+    tg_calls: list[str] = []
+    monkeypatch.setattr(exe, "tg_send", lambda msg, **kw: tg_calls.append(msg))
+
+    corrupt_path = tmp_path / "pause-state.json"
+    corrupt_path.write_text("{not valid json", encoding="utf-8")
+
+    fallback = {"target_hit": False}
+    result = exe.read_json(corrupt_path, fallback)
+
+    assert result == fallback, "must return fallback on corruption"
+    assert not corrupt_path.exists(), "corrupt file must be renamed away"
+    # Find the rename target
+    siblings = list(tmp_path.glob("pause-state.json.corrupt.*"))
+    assert len(siblings) == 1, f"expected 1 corrupt-renamed file, got {siblings}"
+    assert siblings[0].read_text(encoding="utf-8") == "{not valid json"
+    # And Telegram was alerted
+    assert len(tg_calls) == 1
+    assert "corrupt" in tg_calls[0].lower()
+
+
+def test_read_json_telegram_failure_does_not_mask_fallback(monkeypatch, tmp_path):
+    """If tg_send blows up, read_json must still return the fallback —
+    Telegram is best-effort, corruption handling is not."""
+    import ftmo_executor as exe
+
+    def boom(*a, **kw):
+        raise RuntimeError("telegram down")
+
+    monkeypatch.setattr(exe, "tg_send", boom)
+
+    corrupt_path = tmp_path / "broken.json"
+    corrupt_path.write_text("garbage", encoding="utf-8")
+
+    result = exe.read_json(corrupt_path, {"fallback": True})
+    assert result == {"fallback": True}
+
+
+def test_read_json_missing_file_returns_fallback_silently(monkeypatch, tmp_path):
+    """Existing happy-path behavior: missing file → fallback, no Telegram."""
+    import ftmo_executor as exe
+
+    tg_calls: list[str] = []
+    monkeypatch.setattr(exe, "tg_send", lambda msg, **kw: tg_calls.append(msg))
+
+    result = exe.read_json(tmp_path / "nope.json", {"x": 1})
+    assert result == {"x": 1}
+    assert tg_calls == [], "missing file is not corruption — no alert expected"
+
+
+
+# ============================================================================
+# Round 60 audit (2026-05-06): place_market_order retcode handling
+# ============================================================================
+def test_place_market_order_no_money_triggers_margin_halve(monkeypatch):
+    """retcode 10019 NO_MONEY in order_check → _fit_lot_to_margin halves
+    the lot until it fits, then order_send succeeds with the smaller lot."""
+    import ftmo_executor as exe
+
+    # Force LIVE-mode path so _fit_lot_to_margin actually runs (mock skips it).
+    monkeypatch.setattr(exe, "MOCK_MODE", False)
+    exe._SYMBOL_CACHE.clear()
+
+    info = FakeSpreadSymbolInfo(
+        ask=2001.0, bid=1999.0, spread=20, point=0.01,
+        tick_size=0.01, tick_value=0.01,
+        volume_min=0.01, volume_max=100.0, volume_step=0.01,
+    )
+    monkeypatch.setattr(exe.mt5, "symbol_info", lambda s: info)
+    monkeypatch.setattr(exe.mt5, "symbol_select", lambda s, e: True)
+
+    # order_check returns 10019 twice, then OK — proves halve-loop fires.
+    check_calls = {"n": 0, "lots": []}
+
+    class FakeCheck:
+        def __init__(self, retcode):
+            self.retcode = retcode
+            self.comment = ""
+
+    def fake_check(req):
+        check_calls["n"] += 1
+        check_calls["lots"].append(req["volume"])
+        return FakeCheck(10019) if check_calls["n"] <= 2 else FakeCheck(0)
+
+    monkeypatch.setattr(exe.mt5, "order_check", fake_check, raising=False)
+
+    sent = {}
+
+    class FakeSendRes:
+        def __init__(self):
+            self.retcode = exe.mt5.TRADE_RETCODE_DONE
+            self.order = 7777
+            self.price = 2001.30
+            self.comment = ""
+
+    def fake_send(req):
+        sent["lot"] = req["volume"]
+        return FakeSendRes()
+
+    monkeypatch.setattr(exe.mt5, "order_send", fake_send)
+
+    res = exe.place_market_order(
+        binance_symbol="BTCUSDT",
+        direction="long",
+        risk_frac=0.01,
+        stop_pct=0.01,
+        tp_pct=0.02,
+        account_equity=100000.0,
+        comment="no_money_test",
+    )
+    assert res.ok, f"order failed: {res.error}"
+    assert check_calls["n"] >= 3, "expected at least 2 halve attempts + 1 success"
+    # Each halve must shrink the lot.
+    lots = check_calls["lots"]
+    assert lots[1] < lots[0], f"halve did not shrink lot: {lots}"
+    assert lots[2] < lots[1], f"second halve did not shrink lot: {lots}"
+    # And the final order_send used the smaller, fitted lot.
+    assert sent["lot"] == lots[-1]
+
+
+def test_place_market_order_market_closed_no_retry(monkeypatch):
+    """retcode 10021 MARKET_CLOSED in order_check → _fit_lot_to_margin
+    must NOT halve (it's not a margin issue). Function returns the original
+    lot, and order_send surfaces the failure."""
+    import ftmo_executor as exe
+
+    monkeypatch.setattr(exe, "MOCK_MODE", False)
+    exe._SYMBOL_CACHE.clear()
+
+    info = FakeSpreadSymbolInfo(
+        ask=2001.0, bid=1999.0, spread=20, point=0.01,
+        tick_size=0.01, tick_value=0.01,
+        volume_min=0.01, volume_max=100.0, volume_step=0.01,
+    )
+    monkeypatch.setattr(exe.mt5, "symbol_info", lambda s: info)
+    monkeypatch.setattr(exe.mt5, "symbol_select", lambda s, e: True)
+
+    check_calls = {"n": 0, "lots": []}
+
+    class FakeCheck:
+        def __init__(self, retcode):
+            self.retcode = retcode
+            self.comment = "market closed"
+
+    def fake_check(req):
+        check_calls["n"] += 1
+        check_calls["lots"].append(req["volume"])
+        return FakeCheck(10021)  # MARKET_CLOSED
+
+    monkeypatch.setattr(exe.mt5, "order_check", fake_check, raising=False)
+
+    class FakeSendRes:
+        def __init__(self):
+            self.retcode = 10021
+            self.order = 0
+            self.price = 0.0
+            self.comment = "market closed"
+
+    def fake_send(req):
+        return FakeSendRes()
+
+    monkeypatch.setattr(exe.mt5, "order_send", fake_send)
+
+    res = exe.place_market_order(
+        binance_symbol="BTCUSDT",
+        direction="long",
+        risk_frac=0.01,
+        stop_pct=0.01,
+        tp_pct=0.02,
+        account_equity=100000.0,
+        comment="market_closed_test",
+    )
+    # No retry: exactly one order_check call, lot unchanged.
+    assert check_calls["n"] == 1, (
+        f"expected exactly 1 check (no halve retry), got {check_calls['n']}"
+    )
+    # Order failed because order_send surfaced the 10021.
+    assert not res.ok
+    assert res.error is not None and "10021" in res.error
+
+
+# ============================================================================
+# Round 4 audit (Python FTMO executor)
+# ============================================================================
+def test_passlock_race_check_target_idempotent(monkeypatch, tmp_path):
+    """Bug-Audit Round 4 (HIGH): check_target_and_pause MUST be safe to call
+    every poll cycle. Second call after target_hit=True is set must NOT
+    re-trigger _emergency_close_all_positions or re-send Telegram.
+
+    Closes the PASSLOCK race window: previously check_target_and_pause was
+    only invoked from inside _process_pending_signals_locked, so if equity
+    crossed the profit-target mid-cycle via a PTP fire, trailing-stop tick
+    or natural SL/TP exit, the closeAllOnTargetReached enforcement was
+    delayed by one poll interval (up to POLL_INTERVAL_SEC seconds) during
+    which the equity could drift back below target. Fixed by hoisting the
+    check into main_loop's per-iteration block — but only safe if the
+    function is idempotent. This test guards that invariant.
+    """
+    import ftmo_executor as exe
+
+    exe.STATE_DIR = tmp_path
+    exe.PAUSE_STATE_PATH = tmp_path / "pause-state.json"
+
+    emergency_calls: list[str] = []
+    tg_calls: list[str] = []
+    monkeypatch.setattr(exe, "_emergency_close_all_positions", lambda r: emergency_calls.append(r))
+    monkeypatch.setattr(exe, "tg_send", lambda msg, **kw: tg_calls.append(msg))
+    monkeypatch.setattr(exe, "PAUSE_AT_TARGET", True)
+    monkeypatch.setattr(exe, "PROFIT_TARGET_PCT", 0.10)
+    monkeypatch.setattr(exe, "CHALLENGE_START_BALANCE", 100_000.0)
+
+    # First call: equity well over the +10% target → target_hit fires.
+    paused_1 = exe.check_target_and_pause(110_500.0)
+    assert paused_1 is True
+    assert len(emergency_calls) == 1, "first crossing must trigger emergency close"
+    assert len(tg_calls) == 1, "first crossing must send exactly one Telegram alert"
+
+    # Second call (same poll-loop or next iteration): still over target → must
+    # short-circuit on state["target_hit"] without re-triggering anything.
+    paused_2 = exe.check_target_and_pause(111_000.0)
+    assert paused_2 is True
+    assert len(emergency_calls) == 1, "second call MUST NOT re-emergency-close (idempotency)"
+    assert len(tg_calls) == 1, "second call MUST NOT re-alert Telegram (idempotency)"
+
+    # Third call: equity has drifted BACK below target (e.g. a residual
+    # position closed at SL between cycles) — PASSLOCK guarantee still
+    # holds because state["target_hit"] remains True from the original
+    # crossing → bot stays paused, no positions allowed.
+    paused_3 = exe.check_target_and_pause(99_500.0)
+    assert paused_3 is True, "PASSLOCK must stay sticky once target was hit"
+    assert len(emergency_calls) == 1
+    assert len(tg_calls) == 1
+
+
+def test_default_direction_is_long_not_short(monkeypatch):
+    """Bug-Audit Round 4 (MED): when a signal omits the 'direction' field,
+    place-order path must default to 'long' to match engine convention
+    (_apply_trailing_stop/_apply_break_even/_apply_chandelier_stop all
+    default to 'long'). Previously process_pending_signals defaulted to
+    'short' which would open the wrong side on legacy/malformed signals.
+
+    We verify the divergent constant by inspecting the SOURCE — full
+    process_pending_signals exercise requires a heavy MT5 mock stack
+    already covered by other tests; this guards the regression cheaply.
+    """
+    import ftmo_executor as exe
+    import inspect
+    src = inspect.getsource(exe._process_pending_signals_locked)
+    # Must contain the corrected long-default.
+    assert 'sig.get("direction", "long")' in src, (
+        "process_pending_signals must default missing direction to 'long' "
+        "to match engine convention. Old 'short' default could open the "
+        "wrong side on legacy/malformed signals."
+    )
+    # Must NOT contain the buggy short-default.
+    assert 'sig.get("direction", "short")' not in src, (
+        "found legacy 'short' default — re-introduced regression"
+    )
 
 
 if __name__ == "__main__":

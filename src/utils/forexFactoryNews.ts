@@ -24,12 +24,34 @@ import {
   writeFileSync,
   statSync,
   mkdirSync,
+  renameSync,
+  unlinkSync,
 } from "node:fs";
 import { dirname } from "node:path";
 
-const CACHE_PATH =
-  process.env.FF_NEWS_CACHE ?? "scripts/cache_forex_2h/ff_news_cache.json";
-const CACHE_TTL_MS = 6 * 3600_000;
+function getCachePath(): string {
+  // R67-r19 audit fix (KRITISCH): per-account cache so concurrent
+  // multi-account bots don't race on a single shared file. Priority:
+  //   1. explicit FF_NEWS_CACHE env (operator override)
+  //   2. FTMO_STATE_DIR + cache filename suffixed by FTMO_ACCOUNT_ID
+  //   3. legacy default `scripts/cache_forex_2h/ff_news_cache.json`
+  if (process.env.FF_NEWS_CACHE) return process.env.FF_NEWS_CACHE;
+  const stateDir = process.env.FTMO_STATE_DIR;
+  if (stateDir) {
+    const acctSuffix = process.env.FTMO_ACCOUNT_ID
+      ? `-${process.env.FTMO_ACCOUNT_ID.replace(/[^A-Za-z0-9_-]/g, "")}`
+      : "";
+    return `${stateDir}/ff_news_cache${acctSuffix}.json`;
+  }
+  return "scripts/cache_forex_2h/ff_news_cache.json";
+}
+// R67-r19 audit fix: TTL env-tunable so backtest scripts can pin a
+// shorter window without recompiling.
+const CACHE_TTL_MS = (() => {
+  const env = process.env.FF_NEWS_CACHE_TTL_MS;
+  const parsed = env ? Number(env) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 6 * 3600_000;
+})();
 
 export interface NewsEvent {
   /** Unix ms timestamp */
@@ -58,10 +80,11 @@ interface FFEntry {
  */
 function readCachedNews(): NewsEvent[] | null {
   try {
-    if (!existsSync(CACHE_PATH)) return null;
-    const stat = statSync(CACHE_PATH);
+    const cachePath = getCachePath();
+    if (!existsSync(cachePath)) return null;
+    const stat = statSync(cachePath);
     if (Date.now() - stat.mtimeMs > CACHE_TTL_MS) return null;
-    const raw = readFileSync(CACHE_PATH, "utf-8");
+    const raw = readFileSync(cachePath, "utf-8");
     const parsed = JSON.parse(raw) as NewsEvent[];
     if (!Array.isArray(parsed)) return null;
     return parsed;
@@ -71,10 +94,34 @@ function readCachedNews(): NewsEvent[] | null {
 }
 
 function writeCachedNews(events: NewsEvent[]): void {
+  // R1-A8 audit fix (Multi-Account State Mgmt round 1): atomic write so a
+  // concurrent multi-account reader (`readCachedNews` from another bot
+  // process running in the same FTMO_STATE_DIR) can never observe a
+  // half-written file — without the temp+rename pattern, a reader hitting
+  // the file mid-write would JSON.parse-throw and treat the cache as
+  // missing, triggering an unnecessary fresh fetch on every concurrent
+  // poll. Same pattern as ftmoLiveService.writeJSON.
   try {
-    const dir = dirname(CACHE_PATH);
+    const cachePath = getCachePath();
+    const dir = dirname(cachePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(CACHE_PATH, JSON.stringify(events), "utf-8");
+    const tmp = `${cachePath}.tmp.${process.pid}.${Math.floor(
+      Math.random() * 0xffffffff,
+    ).toString(16)}`;
+    let renamed = false;
+    try {
+      writeFileSync(tmp, JSON.stringify(events), "utf-8");
+      renameSync(tmp, cachePath);
+      renamed = true;
+    } finally {
+      if (!renamed) {
+        try {
+          unlinkSync(tmp);
+        } catch {
+          /* tmpfile already gone — safe */
+        }
+      }
+    }
   } catch {
     // Cache is best-effort — never fail the live load on cache-write
     // errors (e.g. read-only FS).
@@ -292,7 +339,11 @@ export function filterNewsEvents(
       for (const c of pairToCurrencies(sym)) currencies.add(c);
     }
   } else {
-    currencies = new Set(opts.currencies ?? ["USD", "EUR", "GBP"]);
+    // R67-r19 audit fix (KRITISCH): JPY added to default set so crypto-yen
+    // and forex-yen pairs receive BoJ/Tankan blackouts when caller does
+    // not pass `affectedPairs`. Previous default would silently drop
+    // these events on, e.g., a BTCJPY day-trade strategy.
+    currencies = new Set(opts.currencies ?? ["USD", "EUR", "GBP", "JPY"]);
   }
   return events.filter(
     (e) => impacts.has(e.impact) && currencies.has(e.currency),

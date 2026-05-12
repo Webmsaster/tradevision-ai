@@ -32,9 +32,15 @@ const ORIG_FETCH = globalThis.fetch;
 
 async function callRoute(body: unknown) {
   const { POST } = await import("@/app/api/webhook-test/route");
+  // R67-r7: route now requires same-origin (Origin header host === Host
+  // header). Mock both so the CSRF gate passes.
   const req = new Request("http://localhost/api/webhook-test", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Origin: "http://localhost",
+      Host: "localhost",
+    },
     body: JSON.stringify(body),
   });
   const resp = await POST(req);
@@ -51,7 +57,12 @@ describe("/api/webhook-test — input validation", () => {
     const { POST } = await import("@/app/api/webhook-test/route");
     const req = new Request("http://localhost/api/webhook-test", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        // R67-r7: same-origin headers required
+        Origin: "http://localhost",
+        Host: "localhost",
+      },
       body: "not-json",
     });
     const resp = await POST(req);
@@ -162,7 +173,7 @@ describe("/api/webhook-test — happy path + redirect refusal", () => {
 
     const { body } = await callRoute({
       url: "https://hooks.example.com/abc",
-      platform: "discord",
+      platform: "custom",
     });
     expect(body.ok).toBe(true);
     expect(body.status).toBe(200);
@@ -178,7 +189,10 @@ describe("/api/webhook-test — happy path + redirect refusal", () => {
       });
     }) as typeof fetch;
 
-    const { body } = await callRoute({ url: "https://hooks.example.com/r" });
+    const { body } = await callRoute({
+      url: "https://hooks.example.com/r",
+      platform: "custom",
+    });
     expect(body.ok).toBe(false);
     expect(body.error).toMatch(/redirect/i);
   });
@@ -188,18 +202,153 @@ describe("/api/webhook-test — happy path + redirect refusal", () => {
       return new Response("bad", { status: 500, statusText: "Server Error" });
     }) as typeof fetch;
 
-    const { body } = await callRoute({ url: "https://hooks.example.com/x" });
+    const { body } = await callRoute({
+      url: "https://hooks.example.com/x",
+      platform: "custom",
+    });
     expect(body.ok).toBe(false);
     expect(body.status).toBe(500);
   });
 
-  it("handles fetch errors gracefully", async () => {
+  it("handles fetch errors gracefully without leaking error details (Round 6 CRITICAL)", async () => {
+    // Round 6 audit: server-side error message must NEVER echo the
+    // underlying error (which leaks internal hostnames/IPs/cert paths).
+    // Verify the response surfaces the generic "Request failed" only.
+    const consoleSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
     globalThis.fetch = vi.fn(async () => {
-      throw new Error("ECONNRESET");
+      throw new Error("ECONNRESET to internal-host-10.2.0.5");
     }) as typeof fetch;
 
-    const { body } = await callRoute({ url: "https://hooks.example.com/y" });
+    const { body } = await callRoute({
+      url: "https://hooks.example.com/y",
+      platform: "custom",
+    });
     expect(body.ok).toBe(false);
-    expect(body.error).toMatch(/ECONNRESET/i);
+    expect(body.error).toBe("Request failed");
+    // Server-side log MUST still capture the specific error for ops.
+    expect(consoleSpy).toHaveBeenCalledWith(
+      "[webhook-test]",
+      expect.any(Error),
+    );
+    consoleSpy.mockRestore();
+  });
+
+  it("preserves the specific timeout message (operator UX)", async () => {
+    // Round 6 audit: timeout branch may stay specific — it tells the user
+    // "your URL hung", which is actionable and reveals nothing internal.
+    globalThis.fetch = vi.fn(async () => {
+      const err = new Error("Timed out");
+      err.name = "TimeoutError";
+      throw err;
+    }) as typeof fetch;
+
+    const { body } = await callRoute({
+      url: "https://hooks.example.com/t",
+      platform: "custom",
+    });
+    expect(body.ok).toBe(false);
+    expect(body.error).toMatch(/timed out/i);
+  });
+});
+
+/**
+ * Round 8 audit (MEDIUM): platform-URL match.
+ *
+ * When platform === "discord" we require hostname=discord.com +
+ * /api/webhooks/ path; "telegram" requires api.telegram.org + /bot path.
+ * "custom" stays unrestricted (already gated by isValidHttpsUrl).
+ */
+describe("/api/webhook-test — platform-URL match (Round 8)", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    mockLookup.mockReset();
+    mockLookup.mockResolvedValue([{ address: "1.1.1.1", family: 4 }]);
+  });
+
+  afterEach(() => {
+    globalThis.fetch = ORIG_FETCH;
+  });
+
+  it("rejects discord-platform with non-discord host", async () => {
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as typeof fetch;
+    const { resp, body } = await callRoute({
+      url: "https://hooks.example.com/abc",
+      platform: "discord",
+    });
+    expect(resp.status).toBe(400);
+    expect(body.ok).toBe(false);
+    expect(body.error).toMatch(/discord\.com/i);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects discord-platform with discord.com but wrong path", async () => {
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as typeof fetch;
+    const { body } = await callRoute({
+      url: "https://discord.com/api/users/@me",
+      platform: "discord",
+    });
+    expect(body.ok).toBe(false);
+    expect(body.error).toMatch(/discord/i);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("accepts discord-platform with proper webhook URL", async () => {
+    globalThis.fetch = vi.fn(
+      async () => new Response("ok", { status: 200 }),
+    ) as typeof fetch;
+    const { body } = await callRoute({
+      url: "https://discord.com/api/webhooks/123/abcdef",
+      platform: "discord",
+    });
+    expect(body.ok).toBe(true);
+  });
+
+  it("rejects telegram-platform with non-telegram host", async () => {
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as typeof fetch;
+    const { body } = await callRoute({
+      url: "https://hooks.example.com/bot123:abc/sendMessage",
+      platform: "telegram",
+    });
+    expect(body.ok).toBe(false);
+    expect(body.error).toMatch(/telegram/i);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects telegram-platform on api.telegram.org with wrong path", async () => {
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as typeof fetch;
+    const { body } = await callRoute({
+      url: "https://api.telegram.org/whatever",
+      platform: "telegram",
+    });
+    expect(body.ok).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("accepts telegram-platform with proper bot URL", async () => {
+    globalThis.fetch = vi.fn(
+      async () => new Response("ok", { status: 200 }),
+    ) as typeof fetch;
+    const { body } = await callRoute({
+      url: "https://api.telegram.org/bot123:abc/sendMessage",
+      platform: "telegram",
+    });
+    expect(body.ok).toBe(true);
+  });
+
+  it("custom platform stays unrestricted", async () => {
+    globalThis.fetch = vi.fn(
+      async () => new Response("ok", { status: 200 }),
+    ) as typeof fetch;
+    const { body } = await callRoute({
+      url: "https://my-self-hosted-webhook.example/in",
+      platform: "custom",
+    });
+    expect(body.ok).toBe(true);
   });
 });

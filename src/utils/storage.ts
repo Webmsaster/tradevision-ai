@@ -1,4 +1,5 @@
-import { Trade } from "@/types/trade";
+import { Trade, isValidTrade as isValidTradeShared } from "@/types/trade";
+import { normaliseSymbol as normaliseSymbolForHash } from "@/utils/symbol";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from "uuid";
 // Phase 41 (R44-UI-2): single source of truth for the trades-localStorage
@@ -112,6 +113,63 @@ const ALLOWED_MARKET_CONDITIONS = [
 ] as const;
 
 // ---------------------------------------------------------------------------
+// Round 9 audit (MEDIUM): content-hash for CSV-import dedupe.
+//
+// Re-importing the same CSV currently inserts duplicates because each row
+// is freshly UUID'd at parse time → the existing-id Set in importTrades
+// never sees a match. The fix: derive a deterministic hash from the
+// trade-content fields (pair / direction / prices / quantity / dates) and
+// skip rows whose hash already exists in the user's trade set. UUIDs
+// remain the row-id; the hash is purely a dedupe key.
+//
+// Hash is FNV-1a 32-bit over the canonical string — fast (no crypto
+// import on the client), collision-rate ~0 for the realistic per-user
+// trade volume (<1M rows). Returned as 8-char hex.
+// ---------------------------------------------------------------------------
+export function tradeContentHash(t: Trade): string {
+  // R67 audit (Round 3): normalize dates to epoch-ms so format drift
+  // (Supabase ISO with `+00:00` vs `Z`, with vs without milliseconds)
+  // doesn't change the hash on roundtrip → re-import dedup actually works.
+  // Prices fixed to 8 decimals to avoid float-stringification drift.
+  const toMs = (s: string): string => {
+    const ms = Date.parse(s);
+    return Number.isFinite(ms) ? String(ms) : s;
+  };
+  // R67-RR1 audit fix (HIGH): hash by NORMALISED pair so re-import dedup
+  // works for users whose pre-R22 trades stored `BTC/USDT` raw — without
+  // this, the new CSV-imported `BTCUSDT` hashes differently and the user
+  // gets duplicates. Lower-case for legacy compatibility.
+  const canonical = [
+    normaliseSymbolForHash(t.pair).toLowerCase(),
+    t.direction,
+    Number(t.entryPrice).toFixed(8),
+    Number(t.exitPrice).toFixed(8),
+    Number(t.quantity).toFixed(8),
+    toMs(t.entryDate),
+    toMs(t.exitDate),
+  ].join("|");
+  // FNV-1a 32-bit
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < canonical.length; i += 1) {
+    hash ^= canonical.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  // Coerce to unsigned 32-bit hex.
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * Round 9 audit (MEDIUM): build the dedupe-set from existing trades
+ * (cloud or local). Used by the import handler to skip rows whose
+ * content matches an already-stored trade.
+ */
+export function buildContentHashSet(trades: Trade[]): Set<string> {
+  const set = new Set<string>();
+  for (const t of trades) set.add(tradeContentHash(t));
+  return set;
+}
+
+// ---------------------------------------------------------------------------
 // Helper: convert between DB snake_case and app camelCase
 // ---------------------------------------------------------------------------
 
@@ -133,7 +191,20 @@ function finiteOrUndef(v: unknown): number | undefined {
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
-function dbToTrade(row: Record<string, unknown>): Trade {
+/**
+ * R67-Final (R15-A3 perf): pre-parse a date string to epoch-ms once at
+ * the storage boundary so sort comparators and formatters can reuse the
+ * numeric cache instead of calling `new Date(...)` on every render.
+ * Returns `undefined` for unparseable strings so consumers fall back to
+ * the existing `new Date(t.exitDate)` path (and the type-guard rejects
+ * the row at validation time anyway).
+ */
+function parseDateMs(s: string): number | undefined {
+  const ms = Date.parse(s);
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
+function dbToTrade(row: Record<string, unknown>): Trade | null {
   // Phase 7 (Storage Bug 6): allow-list emotion / marketCondition; arbitrary
   // strings from the DB cast straight to Trade['emotion'] would let a future
   // dangerouslySetInnerHTML render unfiltered values.
@@ -148,10 +219,26 @@ function dbToTrade(row: Record<string, unknown>): Trade {
     (ALLOWED_MARKET_CONDITIONS as readonly string[]).includes(rawMarket)
       ? (rawMarket as Trade["marketCondition"])
       : undefined;
+  // Round 6 audit (MEDIUM): previously any invalid direction silently
+  // fell back to "long" — corrupting the P&L sign for shorts that
+  // arrived with a typo'd column. Log + skip the row instead so the
+  // user sees data is missing rather than mis-categorised.
   const rawDirection = strOrUndef(row.direction);
-  const direction: "long" | "short" =
-    rawDirection === "short" ? "short" : "long";
+  if (rawDirection !== "long" && rawDirection !== "short") {
+    console.warn(
+      `[storage] dbToTrade: skipping row id=${strOrEmpty(row.id) || "<no-id>"} with invalid direction=${JSON.stringify(rawDirection)}`,
+    );
+    return null;
+  }
+  const direction: "long" | "short" = rawDirection;
   const rawAccountId = strOrUndef(row.account_id);
+  const entryDate = strOrEmpty(row.entry_date);
+  const exitDate = strOrEmpty(row.exit_date);
+  // R67-Final (R15-A3 perf): pre-parse dates ONCE at the DB→app
+  // boundary. Saves an N-per-render `new Date(...)` in sort comparators
+  // (TradeTable, dashboard, report) and date-formatters.
+  const entryMs = parseDateMs(entryDate);
+  const exitMs = parseDateMs(exitDate);
   return {
     id: strOrEmpty(row.id),
     pair: strOrEmpty(row.pair),
@@ -159,8 +246,8 @@ function dbToTrade(row: Record<string, unknown>): Trade {
     entryPrice: num(row.entry_price),
     exitPrice: num(row.exit_price),
     quantity: num(row.quantity),
-    entryDate: strOrEmpty(row.entry_date),
-    exitDate: strOrEmpty(row.exit_date),
+    entryDate,
+    exitDate,
     pnl: num(row.pnl),
     pnlPercent: num(row.pnl_percent),
     fees: num(row.fees),
@@ -176,11 +263,17 @@ function dbToTrade(row: Record<string, unknown>): Trade {
     screenshot: validateScreenshot(strOrUndef(row.screenshot_url)),
     accountId:
       rawAccountId && rawAccountId.length > 0 ? rawAccountId : "default",
+    ...(entryMs !== undefined ? { entryMs } : {}),
+    ...(exitMs !== undefined ? { exitMs } : {}),
   };
 }
 
-function tradeToDb(trade: Trade, userId: string) {
-  return {
+function tradeToDb(
+  trade: Trade,
+  userId: string,
+  opts: { resurrect?: boolean } = {},
+) {
+  const base = {
     id: trade.id,
     user_id: userId,
     pair: trade.pair,
@@ -207,6 +300,16 @@ function tradeToDb(trade: Trade, userId: string) {
     screenshot_url: validateScreenshot(trade.screenshot) ?? null,
     account_id: trade.accountId ?? "default",
   };
+  // R67-RR2 audit fix (HIGH): only emit `deleted_at: null` for the
+  // explicit re-import path. Previously every UPSERT wrote it
+  // unconditionally — a stale optimistic edit (Tab A deletes, Tab B
+  // edits before sync) resurrected the tombstone and broke the audit
+  // trail. Now `saveTradeToSupabase` (single-trade edit) defaults to
+  // resurrect:false → field omitted → existing tombstone preserved;
+  // `saveBulkTradesToSupabase` (CSV/JSON re-import path) passes
+  // resurrect:true to keep R15 un-tombstone behaviour for explicit
+  // user-initiated imports.
+  return opts.resurrect ? { ...base, deleted_at: null as string | null } : base;
 }
 
 // ---------------------------------------------------------------------------
@@ -270,7 +373,10 @@ export async function loadTradesFromSupabase(
       );
     }
     if (!data || data.length === 0) break;
-    for (const row of data) all.push(dbToTrade(row));
+    for (const row of data) {
+      const t = dbToTrade(row);
+      if (t) all.push(t);
+    }
     // First successful query with the soft-delete filter promotes the
     // cache to "confirmed present" — subsequent calls in this process
     // skip the probe entirely.
@@ -307,6 +413,15 @@ export async function saveTradeToSupabase(
   return true;
 }
 
+/**
+ * Soft-delete a trade. Audit-trail enforcement lives entirely on the client
+ * via the `.is("deleted_at", null)` filter on the UPDATE WHERE clause (see
+ * Round 7 / R67-r5). DO NOT re-introduce a DB trigger to enforce this — the
+ * R67-r3 attempt was reverted in `migration_round67_audit_trigger_drop.sql`
+ * because it broke the legitimate UPSERT-resolve-to-UPDATE re-import path.
+ * The only sanctioned un-tombstone path is the explicit
+ * `update({ deleted_at: null })` in saveBulkTradesToSupabase.
+ */
 export async function deleteTradeFromSupabase(
   supabase: SupabaseClient,
   tradeId: string,
@@ -337,11 +452,23 @@ export async function deleteTradeFromSupabase(
     }
     return true;
   }
-  let updateQuery = supabase
+  // R67 audit (Round 5): audit-trail protection lives HERE via the
+  // `.is("deleted_at", null)` filter on the UPDATE WHERE clause. A
+  // double-delete is a no-op (zero rows match, no rewrite of deleted_at).
+  // The R67-r3 DB trigger that enforced this server-side was dropped in
+  // migration_round67_audit_trigger_drop.sql because it broke the
+  // UPSERT-resolve-to-UPDATE re-import path (R67-r2 RLS policy allows
+  // updates on tombstoned rows, but the trigger silently blocked the
+  // deleted_at→NULL flip, leaving the row hidden by the SELECT policy).
+  // The only sanctioned un-tombstone path is the explicit
+  // `update({ deleted_at: null })` in saveBulkTradesToSupabase after a
+  // successful UPSERT — the user's explicit re-import action.
+  const updateQuery = supabase
     .from("trades")
     .update({ deleted_at: nowIso })
     .eq("id", tradeId)
-    .eq("user_id", userId);
+    .eq("user_id", userId)
+    .is("deleted_at", null);
   let { error } = await updateQuery;
   if (error) {
     if (softDeleteAvailable !== true && isUndefinedDeletedAtColumn(error)) {
@@ -433,7 +560,42 @@ async function uploadChunked(
   return { ok: true, failedFromIndex: null };
 }
 
-export async function saveBulkTradesToSupabase(
+// R67-R18 (R17-A3): module-scope serializer for ALL bulk-upserts. The
+// existing `drainOnce` lock in useTradeStorage only covered the mount-time
+// retry-queue drain; concurrent direct calls to saveBulkTradesToSupabase
+// (e.g. /import "Replace mode" → replaceTrades, or two CSV imports fired
+// in quick succession) raced on the SAME retry queue: thread A reads the
+// queue, thread B reads it, A writes survivors, B writes its survivors
+// over A's — A's pending rows are silently lost.
+//
+// Pattern: chain every call onto a single Promise so all bulk uploads run
+// strictly sequentially within this process. The chain swallows errors so
+// one failing call doesn't poison the next; each invocation still resolves
+// with its own boolean. No timeout / cancellation needed: callers already
+// time-out at the network layer (Supabase client default 30s) and a
+// hanging upload would block subsequent calls in a way that's strictly
+// safer than the current race.
+let bulkSerialized: Promise<unknown> = Promise.resolve();
+
+export function _resetBulkSerializerForTests(): void {
+  bulkSerialized = Promise.resolve();
+}
+
+export function saveBulkTradesToSupabase(
+  supabase: SupabaseClient,
+  trades: Trade[],
+  userId: string,
+): Promise<boolean> {
+  const next = bulkSerialized.then(() =>
+    _saveBulkTradesToSupabaseUnlocked(supabase, trades, userId),
+  );
+  // Keep the chain alive even on rejection so a thrown error in one call
+  // doesn't block subsequent calls forever.
+  bulkSerialized = next.catch(() => undefined);
+  return next;
+}
+
+async function _saveBulkTradesToSupabaseUnlocked(
   supabase: SupabaseClient,
   trades: Trade[],
   userId: string,
@@ -460,20 +622,27 @@ export async function saveBulkTradesToSupabase(
       const remaining = entry.rows.slice(result.failedFromIndex ?? 0);
       survived.push({ ...entry, rows: remaining });
     }
-    writeRetryQueue(survived);
     if (survived.length > 0) {
-      // Don't even attempt the new payload — surface failure to caller
-      // so they can keep their localStorage copy and retry later.
-      // Enqueue the new payload too so it isn't lost.
+      // Bug fix (race-audit): atomically persist BOTH survivors and the
+      // new payload in a single write. The previous version called
+      // writeRetryQueue(survived) and then enqueueRetry(newPayload)
+      // separately — a browser crash / power loss between the two
+      // writes lost the new payload while keeping the survivors.
       if (trades.length > 0) {
-        enqueueRetry(trades.map((t) => tradeToDb(t, userId)));
+        survived.push({
+          rows: trades.map((t) => tradeToDb(t, userId, { resurrect: true })),
+          enqueuedAt: new Date().toISOString(),
+        });
       }
+      writeRetryQueue(survived);
+      // Surface failure so the caller keeps their localStorage copy.
       return false;
     }
+    writeRetryQueue(survived); // empty → removes the key
   }
 
   if (trades.length === 0) return true;
-  const rows = trades.map((t) => tradeToDb(t, userId));
+  const rows = trades.map((t) => tradeToDb(t, userId, { resurrect: true }));
   const result = await uploadChunked(supabase, rows, CHUNK);
   if (!result.ok) {
     const remaining = rows.slice(result.failedFromIndex ?? 0);
@@ -486,6 +655,17 @@ export async function saveBulkTradesToSupabase(
 export async function clearAllSupabaseTrades(
   supabase: SupabaseClient,
   userId: string,
+  // R67-R18 (R15-A1): optional `accountId` scopes the wipe to a single
+  // account. The /import page "Replace mode" calls this from `replaceTrades`
+  // and previously deleted ALL accounts' trades, not just the active one —
+  // so a user with FTMO-Step1 + FTMO-Step2 + Personal accounts who
+  // re-imported their FTMO-Step1 backup wiped Step2 + Personal too.
+  // Passing `accountId` adds an `.eq("account_id", accountId)` filter so
+  // only rows owned by that account are tombstoned. Omitting the param
+  // preserves the previous behaviour (full per-user wipe) for the
+  // explicit "Clear all data" button which is documented to nuke
+  // everything.
+  accountId?: string,
 ): Promise<boolean> {
   // Phase 95 (R54-STO-7): soft-delete batch. Falls back to hard-delete
   // for pre-migration DBs.
@@ -495,28 +675,33 @@ export async function clearAllSupabaseTrades(
   // already seen the soft-delete column work.
   const nowIso = new Date().toISOString();
   if (softDeleteAvailable === false) {
-    const hardDel = await supabase
-      .from("trades")
-      .delete()
-      .eq("user_id", userId);
+    let hardDelQuery = supabase.from("trades").delete().eq("user_id", userId);
+    if (accountId !== undefined) {
+      hardDelQuery = hardDelQuery.eq("account_id", accountId);
+    }
+    const hardDel = await hardDelQuery;
     if (hardDel.error) {
       console.error("Failed to clear trades from Supabase:", hardDel.error);
       return false;
     }
     return true;
   }
-  let { error } = await supabase
+  let updateQuery = supabase
     .from("trades")
     .update({ deleted_at: nowIso })
-    .eq("user_id", userId)
-    .is("deleted_at", null);
+    .eq("user_id", userId);
+  if (accountId !== undefined) {
+    updateQuery = updateQuery.eq("account_id", accountId);
+  }
+  let { error } = await updateQuery.is("deleted_at", null);
   if (error) {
     if (softDeleteAvailable !== true && isUndefinedDeletedAtColumn(error)) {
       softDeleteAvailable = false;
-      const hardDel = await supabase
-        .from("trades")
-        .delete()
-        .eq("user_id", userId);
+      let hardDelQuery = supabase.from("trades").delete().eq("user_id", userId);
+      if (accountId !== undefined) {
+        hardDelQuery = hardDelQuery.eq("account_id", accountId);
+      }
+      const hardDel = await hardDelQuery;
       error = hardDel.error;
     }
   } else {
@@ -542,15 +727,19 @@ export function saveTrades(trades: Trade[]): void {
   try {
     if (typeof window === "undefined") return;
 
-    // Separate screenshots from trade data
+    // Separate screenshots from trade data.
+    // R67-Final (R15-A3 perf): also strip the in-memory exitMs/entryMs
+    // cache before persisting — it's recomputed lazily on load
+    // (`loadTrades` re-populates it via `parseDateMs`). Keeps the
+    // localStorage footprint small for users with many trades.
     const screenshots: Record<string, string> = {};
     const tradesWithoutScreenshots = trades.map((t) => {
-      if (t.screenshot) {
-        screenshots[t.id] = t.screenshot;
-        const { screenshot: _, ...rest } = t;
+      const { screenshot, exitMs: _exitMs, entryMs: _entryMs, ...rest } = t;
+      if (screenshot) {
+        screenshots[t.id] = screenshot;
         return rest;
       }
-      return t;
+      return rest;
     });
 
     // Round 56 (R56-STO-1): isolate the trades-payload write so we can
@@ -683,11 +872,34 @@ export function loadTrades(): Trade[] {
         `[storage] loadTrades: dropped ${dropped} invalid row(s) of ${arr.length}`,
       );
     }
+    // R67-Final (R15-A3 perf): lazy-populate the exitMs/entryMs cache
+    // on load. Existing localStorage payloads written before this
+    // migration won't carry the cache; we compute it once here so all
+    // downstream consumers (TradeTable sort, formatters, calculations)
+    // can read the numeric value without re-parsing on every render.
     return valid.map((t) => {
+      const next: Trade =
+        t.exitMs === undefined || t.entryMs === undefined
+          ? {
+              ...t,
+              ...(t.entryMs === undefined
+                ? (() => {
+                    const ms = parseDateMs(t.entryDate);
+                    return ms !== undefined ? { entryMs: ms } : {};
+                  })()
+                : {}),
+              ...(t.exitMs === undefined
+                ? (() => {
+                    const ms = parseDateMs(t.exitDate);
+                    return ms !== undefined ? { exitMs: ms } : {};
+                  })()
+                : {}),
+            }
+          : t;
       if (screenshots[t.id]) {
-        return { ...t, screenshot: screenshots[t.id] };
+        return { ...next, screenshot: screenshots[t.id] };
       }
-      return t;
+      return next;
     });
   } catch (error) {
     console.error("Failed to load trades from localStorage:", error);
@@ -773,41 +985,10 @@ export async function exportToCSV(trades: Trade[]): Promise<void> {
   }
 }
 
-function isValidTrade(obj: unknown): obj is Trade {
-  if (!obj || typeof obj !== "object") return false;
-  const t = obj as Record<string, unknown>;
-  // Phase 95 (R54-STO-5): extended schema validation. tags must be a
-  // string-array (not a Map / object that would crash array-iterators
-  // downstream). accountId, when present, must be a string. All number
-  // fields must be finite (NaN poisons stats).
-  const tagsValid =
-    t.tags === undefined ||
-    (Array.isArray(t.tags) && t.tags.every((x) => typeof x === "string"));
-  const accountIdValid =
-    t.accountId === undefined || typeof t.accountId === "string";
-  return (
-    typeof t.id === "string" &&
-    typeof t.pair === "string" &&
-    (t.direction === "long" || t.direction === "short") &&
-    typeof t.entryPrice === "number" &&
-    Number.isFinite(t.entryPrice) &&
-    t.entryPrice > 0 &&
-    typeof t.exitPrice === "number" &&
-    Number.isFinite(t.exitPrice) &&
-    t.exitPrice > 0 &&
-    typeof t.quantity === "number" &&
-    Number.isFinite(t.quantity) &&
-    t.quantity > 0 &&
-    typeof t.entryDate === "string" &&
-    typeof t.exitDate === "string" &&
-    typeof t.pnl === "number" &&
-    Number.isFinite(t.pnl) &&
-    typeof t.pnlPercent === "number" &&
-    Number.isFinite(t.pnlPercent) &&
-    tagsValid &&
-    accountIdValid
-  );
-}
+// Round 6 audit (MEDIUM): single source of truth lives in `@/types/trade`
+// — re-exported here under the original local name so existing tests and
+// call sites continue to work.
+const isValidTrade = isValidTradeShared;
 
 /**
  * Import trades from a JSON file.
@@ -887,12 +1068,20 @@ export function importFromJSON(file: File): Promise<Trade[]> {
 
 /**
  * Remove all saved trade data from localStorage.
+ *
+ * R67 audit (Round 3): also clear SETTINGS_KEY (webhook URLs, account list,
+ * activeAccountId, dashboard widgets — User-A's webhook would otherwise
+ * leak across logout→login as User-B) and BULK_RETRY_KEY (User-A's pending
+ * bulk-uploads would be flushed under User-B's session on next mount).
  */
 export function clearAllData(): void {
   try {
     if (typeof window !== "undefined") {
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem(SCREENSHOTS_KEY);
+      // R67-r3: prevent cross-user data leakage on logout
+      localStorage.removeItem("tradevision-settings");
+      localStorage.removeItem(BULK_RETRY_KEY);
     }
   } catch (error) {
     console.error("Failed to clear trade data from localStorage:", error);

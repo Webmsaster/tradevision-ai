@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   saveTrades,
   loadTrades,
@@ -6,11 +6,13 @@ import {
   updateTrade,
   deleteTrade,
   clearAllData,
+  clearAllSupabaseTrades,
   importFromJSON,
   hasSavedData,
   loadTradesFromSupabase,
   saveBulkTradesToSupabase,
   deleteTradeFromSupabase,
+  saveTradeToSupabase,
   __resetSoftDeleteCacheForTest,
 } from "@/utils/storage";
 import type { Trade } from "@/types/trade";
@@ -54,6 +56,10 @@ beforeEach(() => {
       delete store[key];
     }),
   });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("saveTrades / loadTrades", () => {
@@ -388,13 +394,13 @@ function makeSupabaseMock(opts: {
     return Promise.resolve({ error: null });
   });
 
+  // R67 audit (Round 2): deleteTradeFromSupabase chain extended with
+  // .is("deleted_at", null) to skip redundant updates on already-tombstoned
+  // rows. Mock now handles the longer chain: .update().eq().eq().is().
   let updateEqCalls = 0;
   const updateChain: Record<string, unknown> = {};
   updateChain.eq = vi.fn(() => {
     updateEqCalls += 1;
-    if (updateEqCalls >= 2) {
-      return Promise.resolve({ error: opts.updateError ?? null });
-    }
     return updateChain;
   });
   updateChain.is = vi.fn(() =>
@@ -482,6 +488,44 @@ describe("saveBulkTradesToSupabase — retry-queue (R54-STO-2)", () => {
     expect(parsed[0].rows.length).toBe(700);
   });
 
+  // Race-audit (2026-05-04): atomic persistence of survivors + new
+  // payload. The previous code wrote survivors first, then called
+  // enqueueRetry for the new payload — two separate localStorage
+  // writes. A browser crash between them lost the new payload while
+  // keeping the survivors. Verify both arrive in a single setItem.
+  it("persists survivors AND new payload in a single atomic write", async () => {
+    store["sb-retry-queue"] = JSON.stringify([
+      {
+        rows: Array.from({ length: 200 }, (_, i) => ({ id: `q-${i}` })),
+        enqueuedAt: "2024-01-01T00:00:00Z",
+      },
+    ]);
+    let writeCount = 0;
+    const setItemSpy = vi.fn((key: string, value: string) => {
+      if (key === "sb-retry-queue") writeCount += 1;
+      store[key] = value;
+    });
+    vi.stubGlobal("localStorage", {
+      getItem: vi.fn((key: string) => store[key] ?? null),
+      setItem: setItemSpy,
+      removeItem: vi.fn((key: string) => {
+        delete store[key];
+      }),
+    });
+    // Drain failure on call 1 (the queued survivor) → survivors > 0
+    // and new payload non-empty → must persist both atomically.
+    const { client } = makeSupabaseMock({ upsertErrorAtCall: 1 });
+    const newPayload: Trade[] = Array.from({ length: 10 }, (_, i) =>
+      makeTrade({ id: `new-${i}` }),
+    );
+    const ok = await saveBulkTradesToSupabase(client, newPayload, "user-1");
+    expect(ok).toBe(false);
+    expect(writeCount).toBe(1);
+    const parsed = JSON.parse(store["sb-retry-queue"]!);
+    expect(parsed).toHaveLength(2); // survivor + new payload
+    expect(parsed[1].rows).toHaveLength(10);
+  });
+
   it("drains the retry-queue on the next successful call", async () => {
     store["sb-retry-queue"] = JSON.stringify([
       {
@@ -499,12 +543,16 @@ describe("saveBulkTradesToSupabase — retry-queue (R54-STO-2)", () => {
 
 describe("dbToTrade — type validation (R54-STO-3)", () => {
   it("normalises garbage NaN / non-array fields", async () => {
+    // Round 6 audit (MEDIUM): invalid `direction` now causes the row to
+    // be SKIPPED with a console.warn instead of silently coerced to
+    // "long" — splitting the original test into two: this case keeps a
+    // VALID direction so the other normalisations are still observed.
     const garbageRow = makeDbRow({
       id: "garbage-1",
       confidence: NaN,
       tags: { not: "array" },
       notes: 12345 as unknown as string,
-      direction: "sideways" as unknown as string,
+      direction: "long",
       account_id: "",
       strategy: 42 as unknown as string,
     });
@@ -516,6 +564,26 @@ describe("dbToTrade — type validation (R54-STO-3)", () => {
     expect(trade!.direction).toBe("long");
     expect(trade!.accountId).toBe("default");
     expect(trade!.strategy).toBeUndefined();
+  });
+
+  it("skips rows with invalid direction and logs a warning (Round 6 MEDIUM)", async () => {
+    const consoleSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    const goodRow = makeDbRow({ id: "good-1", direction: "short" });
+    const badRow = makeDbRow({
+      id: "bad-1",
+      direction: "sideways" as unknown as string,
+    });
+    const { client } = makeSupabaseMock({ pages: [[goodRow, badRow]] });
+    const trades = await loadTradesFromSupabase(client, "user-1");
+    expect(trades).toHaveLength(1);
+    expect(trades[0]!.id).toBe("good-1");
+    expect(trades[0]!.direction).toBe("short");
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining("invalid direction"),
+    );
+    consoleSpy.mockRestore();
   });
 });
 
@@ -565,5 +633,30 @@ describe("isValidTrade extended (R54-STO-5)", () => {
     const loaded = loadTrades();
     expect(loaded).toHaveLength(1);
     expect(loaded[0]!.id).toBe("g");
+  });
+});
+
+describe("clearAllSupabaseTrades — soft-delete + user scoping (R54-STO-7)", () => {
+  it("issues UPDATE deleted_at scoped by user_id, never a bare DELETE", async () => {
+    const { client, updateCalled, deleteCalled } = makeSupabaseMock({});
+    const ok = await clearAllSupabaseTrades(client, "user-1");
+    expect(ok).toBe(true);
+    // Defense-in-depth: even if RLS were misconfigured, the update path
+    // must carry an explicit user_id filter (no service-role bypass).
+    expect(updateCalled).toHaveLength(1);
+    expect(updateCalled[0]!.deleted_at).toBeTypeOf("string");
+    expect(deleteCalled).toHaveLength(0);
+  });
+});
+
+describe("saveTradeToSupabase — RLS scoping", () => {
+  it("always sends user_id in the upserted row (defense-in-depth vs RLS)", async () => {
+    const { client, upsertCalled } = makeSupabaseMock({});
+    const ok = await saveTradeToSupabase(client, makeTrade(), "user-xyz");
+    expect(ok).toBe(true);
+    // Single-row upsert payload — Supabase mock captures it verbatim.
+    const row = upsertCalled[0] as unknown as Record<string, unknown>;
+    expect(row.user_id).toBe("user-xyz");
+    expect(row.account_id).toBe("default");
   });
 });

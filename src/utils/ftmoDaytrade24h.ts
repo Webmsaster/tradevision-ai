@@ -169,6 +169,37 @@ export interface Daytrade24hAssetCfg {
     volMaPeriod: number;
   };
   /**
+   * R29 Round 5 ORDER-FLOW: CVD divergence entry.
+   * CVD (Cumulative Volume Delta) = cumsum(2×takerBuyVolume − volume).
+   * Bullish divergence (long): price[i] = lookback-low BUT CVD[i] > lookback-low
+   * Bearish divergence (short): price[i] = lookback-high BUT CVD[i] < lookback-high
+   * Smart-money signal: aggressor side disagrees with price extreme.
+   * Requires Candle.takerBuyVolume (Binance klines provide it).
+   */
+  cvdEntry?: {
+    lookbackBars: number;
+  };
+  /**
+   * R29 Round 5 ORDER-FLOW: Volume-Imbalance entry.
+   * Long when current bar's takerBuyVolume / volume >= longMin (very buyer-aggressive).
+   * Short when ratio <= 1 - longMin (very seller-aggressive).
+   * Single-bar aggressor signal — trades on extreme imbalance candles.
+   */
+  volImbalanceEntry?: {
+    longMin: number; // e.g. 0.65 = ≥65% taker-buy
+  };
+  /**
+   * R29 Round 5 VOLUME-PROFILE: POC mean-reversion entry.
+   * Computes POC (highest-volume bar's close) over rolling windowBars window.
+   * Long when current close is at least minDistFromPocPct BELOW POC.
+   * Short when current close is at least minDistFromPocPct ABOVE POC.
+   * Bet: price reverts to high-volume value-area anchor.
+   */
+  volPocEntry?: {
+    windowBars: number;
+    minDistFromPocPct: number; // e.g. 0.015 = 1.5% below POC
+  };
+  /**
    * Source symbol for candle lookup, if different from `symbol`.
    * Lets two logical assets share the same underlying candles (e.g.
    * ETHUSDT mean-reversion and ETHUSDT momentum as virtual assets).
@@ -353,6 +384,60 @@ export interface FtmoDaytrade24hConfig {
     softLossThreshold: number; // e.g. 0.03 (positive number, treated as -3%)
     hardLossThreshold: number; // e.g. 0.04 (positive number, treated as -4%)
     softFactor: number; // e.g. 0.5 — multiplier on factor when soft hit
+  };
+  /**
+   * V5R-only (Round 60). Daily Equity Guardian — when MTM intraday equity
+   * drops to -triggerPct from start-of-day, force-CLOSE all open positions
+   * (not just block new entries like intradayDailyLossThrottle does).
+   * Caps realised loss at the trigger level, preserving the buffer to the
+   * 5% DL hard-stop.
+   *
+   * V4 engine IGNORES this field. Only the V5R simulator/poller honors it.
+   * Live executor (ftmo_executor.py) would need separate implementation
+   * if this proves to lift pass-rate enough to ship.
+   */
+  dailyEquityGuardian?: {
+    triggerPct: number; // e.g. 0.03 (positive number, treated as -3%)
+  };
+  /**
+   * V5R-only (Round 60). Bypass liveCaps.maxRiskFrac AND DL-derived risk-cap.
+   * Allows true day-progressive or equity-anchored adaptive sizing past the
+   * 0.4 engine cap. Use carefully — without caps, single trades can risk
+   * more than 5% (DL fail in single bar). Pair with dailyEquityGuardian
+   * for safety.
+   */
+  bypassLiveCaps?: boolean;
+  /**
+   * V5R-only (Round 60). Day-progressive sizing — multiplies asset.riskFrac
+   * by a per-day factor. Tiers checked from highest dayAtLeast down — first
+   * matching tier wins. Combine with bypassLiveCaps to allow exceeding 0.4.
+   */
+  dayProgressiveSizing?: Array<{ dayAtLeast: number; factor: number }>;
+  /**
+   * V5R-only (Round 60). Allow ONE re-entry after a stop-loss exit, bypassing
+   * lossStreakCooldown. The next signal on the same asset|direction within
+   * `withinBars` enters at sizeMult × original riskFrac.
+   */
+  reentryAfterStop?: {
+    sizeMult: number; // e.g. 0.5 — half size on re-entry
+    withinBars: number; // e.g. 4 — re-entry window in bars
+  };
+  /**
+   * V5R-only (Round 60). Mean-Reversion signal source — emits entries when
+   * RSI crosses extremes. Produces signals as PARALLEL source to detectAsset
+   * trend signals; engine handles exits via TP/SL/chandelier as normal.
+   *
+   *   long entry: RSI(period) crosses below `oversold` from above
+   *   short entry: RSI(period) crosses above `overbought` from below
+   *
+   * Cooldown ensures no duplicate signals on consecutive bars. Default off.
+   */
+  meanReversionSource?: {
+    period: number; // e.g. 14
+    oversold: number; // e.g. 25 — RSI threshold for long entry
+    overbought: number; // e.g. 75 — RSI threshold for short entry
+    cooldownBars: number; // e.g. 8 — min bars between MR signals on same asset|direction
+    sizeMult: number; // e.g. 0.5 — sizing multiplier for MR signals (smaller than trend)
   };
   /**
    * Round-22 Reliability feature: simulate bot ping-reliability for the
@@ -591,6 +676,61 @@ export interface FtmoDaytrade24hConfig {
    */
   pauseAtTargetReached?: boolean;
   /**
+   * Pass-Lock-Mode (Round 60 +): when profit-target is first hit AND mtm ≥
+   * target, force-close all open positions immediately at current bar's
+   * close. Locks in the mtm-equity → eliminates subsequent draw-down risk
+   * from positions running underwater after target-hit.
+   *
+   * Mathematically: at firstTargetHit, mtm ≥ target by predicate, so the
+   * realised equity post-close = mtm ≥ target. Combined with the existing
+   * ping-day machinery (pauseAtTargetReached), the window is then guaranteed
+   * to pass once tradingDays ≥ minTradingDays.
+   *
+   * Targets the ~11% total-loss failure mode (R28_V6 baseline) where target
+   * was hit but a still-open position later ran into Day-30 force-close
+   * underwater, dragging equity below target.
+   *
+   * Requires pauseAtTargetReached=true (otherwise re-entry could re-open
+   * exposure after the lock-out). Engine asserts no-op if pause is off.
+   */
+  closeAllOnTargetReached?: boolean;
+  /**
+   * Round 60 Vol-Adaptive tpMult: scale tpPct at trade-entry by current
+   * ATR-fraction regime. Static R28_V6 uses tpMult=0.55 — this lets the
+   * mult breathe with realised volatility:
+   *   - calm market (ATR/price < lowVolThreshold) → tpPct ×= lowVolFactor
+   *   - volatile (ATR/price > highVolThreshold) → tpPct ×= highVolFactor
+   *   - mid-vol → tpPct unchanged
+   *
+   * Hypothesis: tight TPs win in calm markets (price grinds), wider TPs
+   * win in volatile (price has runway). The static 0.55 is a compromise.
+   */
+  volAdaptiveTpMult?: {
+    atrPeriod: number;
+    lowVolThreshold: number;
+    highVolThreshold: number;
+    lowVolFactor: number;
+    highVolFactor: number;
+  };
+  /**
+   * Round 61 Adaptive Day-Risk: scale riskFrac by day-index of the
+   * challenge. Hypothesis: tighter sizing in early days reduces tail-risk
+   * (daily-loss + total-loss), then aggressive sizing on day 4 for the
+   * FTMO mathematical-floor target push.
+   *
+   * conservativeFirstDays: number of days at start to apply factor.
+   * conservativeFactor: multiplier on effRisk (0-1).
+   * Day-after = factor 1.0 (baseline).
+   *
+   * Example: { conservativeFirstDays: 3, conservativeFactor: 0.5 }
+   *   - Day 0-2: effRisk × 0.5
+   *   - Day 3+: effRisk × 1.0 (full push for day 4 target hit)
+   */
+  dayBasedRiskMultiplier?: {
+    conservativeFirstDays: number;
+    conservativeFactor: number;
+  };
+  /**
    * iter1h-035+ Global fallback for vol-targeting (used when asset-level
    * not set). Asset-level overrides global.
    */
@@ -618,6 +758,14 @@ export interface FtmoDaytrade24hConfig {
    * signal-bar openTime falls on an allowed weekday fire. Unset = all.
    */
   allowedDowsUtc?: number[];
+  /**
+   * Optional news-blackout: set of entry-bar openTimes (ms UTC) on which
+   * no new signals fire. Used by Round 53+ to block entries around
+   * FOMC/CPI/NFP releases. Set is keyed by `entryBar.openTime` to match
+   * the entryBar reference frame used by `allowedHoursUtc`. Empty/unset =
+   * no blackout. Mirrors the live `news_blackout.py` blocking logic.
+   */
+  newsBlackoutSet?: Set<number>;
   /**
    * Optional drawdown shield. If `equity - 1 <= belowEquity` at trade
    * time, multiply the asset's risk by `factor`. Use to scale down
@@ -761,6 +909,25 @@ export interface FtmoDaytrade24hConfig {
    * (ISO timestamp) and passes it through.
    */
   challengeStartTs?: number;
+}
+
+function spreadCrossAssetFilter(
+  base: NonNullable<FtmoDaytrade24hConfig["crossAssetFilter"]> | undefined,
+): NonNullable<FtmoDaytrade24hConfig["crossAssetFilter"]> {
+  // R67-r9 audit fix: REVERT R8 weakening. The R8 warn-and-return-empty
+  // approach silently propagates `undefined` into all consumers (symbol,
+  // emaFastPeriod, emaSlowPeriod are required-non-optional in the type),
+  // producing silent NaN cascades through ema()/aligned[symbol] lookups.
+  // Throw is fail-fast and correct \u2014 module-load crash is the RIGHT
+  // failure mode for a dev typo; the empty-object workaround makes
+  // backtests silently produce wrong numbers. If a future config legitimately
+  // wants to spread without a base, that's a code-smell to address upstream.
+  if (!base) {
+    throw new Error(
+      "spreadCrossAssetFilter called with undefined base \u2014 define crossAssetFilter on the parent config first. Refusing to silently propagate undefined fields.",
+    );
+  }
+  return { ...base };
 }
 
 /**
@@ -2189,7 +2356,7 @@ export const FTMO_DAYTRADE_24H_CONFIG_V249: FtmoDaytrade24hConfig = {
 export const FTMO_DAYTRADE_24H_CONFIG_V250: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V249,
   crossAssetFilter: {
-    ...(FTMO_DAYTRADE_24H_CONFIG_V249.crossAssetFilter as any),
+    ...spreadCrossAssetFilter(FTMO_DAYTRADE_24H_CONFIG_V249.crossAssetFilter),
     emaFastPeriod: 8,
     emaSlowPeriod: 10,
   },
@@ -2287,7 +2454,7 @@ export const FTMO_DAYTRADE_24H_CONFIG_V252: FtmoDaytrade24hConfig = {
 export const FTMO_DAYTRADE_24H_CONFIG_V253: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V252,
   crossAssetFilter: {
-    ...(FTMO_DAYTRADE_24H_CONFIG_V252.crossAssetFilter as any),
+    ...spreadCrossAssetFilter(FTMO_DAYTRADE_24H_CONFIG_V252.crossAssetFilter),
     emaFastPeriod: 8,
     emaSlowPeriod: 15,
     momSkipShortAbove: 0.01,
@@ -2311,7 +2478,7 @@ export const FTMO_DAYTRADE_24H_CONFIG_V253: FtmoDaytrade24hConfig = {
 export const FTMO_DAYTRADE_24H_CONFIG_V254: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_V253,
   crossAssetFilter: {
-    ...(FTMO_DAYTRADE_24H_CONFIG_V253.crossAssetFilter as any),
+    ...spreadCrossAssetFilter(FTMO_DAYTRADE_24H_CONFIG_V253.crossAssetFilter),
     emaFastPeriod: 7,
     emaSlowPeriod: 15,
     momSkipShortAbove: 0.005,
@@ -2479,7 +2646,9 @@ export const FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT: FtmoDaytrade24hConfig = {
   allowedHoursUtc: [0, 2, 6, 12, 16, 20, 22],
   atrStop: { period: 28, stopMult: 20 },
   crossAssetFilter: {
-    ...(FTMO_DAYTRADE_24H_CONFIG_V261_2H.crossAssetFilter as any),
+    ...spreadCrossAssetFilter(
+      FTMO_DAYTRADE_24H_CONFIG_V261_2H.crossAssetFilter,
+    ),
     emaFastPeriod: 12,
     emaSlowPeriod: 16,
     momSkipShortAbove: 0.03,
@@ -2524,7 +2693,9 @@ export const FTMO_DAYTRADE_24H_CONFIG_V7_1H_OPT: FtmoDaytrade24hConfig = {
   lossStreakCooldown: { afterLosses: 2, cooldownBars: 96 },
   htfTrendFilter: { lookbackBars: 96, apply: "short", threshold: 0.08 },
   crossAssetFilter: {
-    ...(FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT.crossAssetFilter as any),
+    ...spreadCrossAssetFilter(
+      FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT.crossAssetFilter,
+    ),
     emaFastPeriod: 12,
     emaSlowPeriod: 16,
     momSkipShortAbove: 0.04,
@@ -2576,7 +2747,9 @@ export const FTMO_DAYTRADE_24H_CONFIG_V10_30M_OPT: FtmoDaytrade24hConfig = {
   htfTrendFilter: { lookbackBars: 200, apply: "short", threshold: 0.08 },
   chandelierExit: { period: 28, mult: 3, minMoveR: 0.5 },
   crossAssetFilter: {
-    ...(FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT.crossAssetFilter as any),
+    ...spreadCrossAssetFilter(
+      FTMO_DAYTRADE_24H_CONFIG_V261_2H_OPT.crossAssetFilter,
+    ),
     emaFastPeriod: 8,
     emaSlowPeriod: 16,
     momSkipShortAbove: 0.04,
@@ -3423,6 +3596,10 @@ export function detectAsset(
   crossAssetCandles?: Candle[],
   extraCrossAssetCandles?: Record<string, Candle[]>,
   fundingSeries?: (number | null)[],
+  // R29-R8: external boolean mask. When series[i] === false, no entry is
+  // allowed at bar i. Used for cross-sectional momentum gates, regime
+  // classifiers, ML predictions — anything pre-computed outside detect.
+  entryAllowed?: (boolean | null)[],
 ): Daytrade24hTrade[] {
   const out: Daytrade24hTrade[] = [];
   const tpPct = asset.tpPct ?? cfg.tpPct;
@@ -3556,6 +3733,9 @@ export function detectAsset(
     const nr7 = asset.nr7Entry;
     const mrEntry = asset.meanRevEntry;
     const boEntry = asset.breakoutEntry;
+    const cvdEntry = asset.cvdEntry;
+    const volImbEntry = asset.volImbalanceEntry;
+    const volPocEntry = asset.volPocEntry;
     // Pre-compute series for new signal generators (round 45/46).
     const mrRsiSeries: (number | null)[] | null = mrEntry
       ? rsi(
@@ -3583,7 +3763,11 @@ export function detectAsset(
                       boEntry.donchianPeriod,
                       boEntry.atrPeriod + boEntry.volMaPeriod,
                     ) + 1
-                  : triggerBars;
+                  : cvdEntry
+                    ? cvdEntry.lookbackBars + 1
+                    : volPocEntry
+                      ? volPocEntry.windowBars + 1
+                      : triggerBars;
     for (let i = startBar; i < candles.length - 1; i++) {
       if (i < cooldown) continue;
       // V5 re-entry: skip pattern check if within re-entry window after stop
@@ -3804,6 +3988,82 @@ export function detectAsset(
             }
           }
         }
+      } else if (cvdEntry) {
+        // R29 Round 5 — CVD divergence over lookback window.
+        // Bullish: price[i] is the lookback-low BUT CVD is NOT lookback-low.
+        // Bearish: price[i] is the lookback-high BUT CVD is NOT lookback-high.
+        const lb = cvdEntry.lookbackBars;
+        if (i < lb) {
+          ok = false;
+        } else {
+          let cvd = 0;
+          let cvdMin = Infinity;
+          let cvdMax = -Infinity;
+          let priceMin = Infinity;
+          let priceMax = -Infinity;
+          for (let k = i - lb; k <= i; k++) {
+            const c = candles[k]!;
+            const tbv = c.takerBuyVolume ?? c.volume * 0.5;
+            cvd += 2 * tbv - c.volume;
+            if (cvd < cvdMin) cvdMin = cvd;
+            if (cvd > cvdMax) cvdMax = cvd;
+            if (c.close < priceMin) priceMin = c.close;
+            if (c.close > priceMax) priceMax = c.close;
+          }
+          // Use small tolerance (1e-9) since cvdMin gets reassigned at i if it
+          // is the new low; we want strict-greater logic.
+          if (direction === "long") {
+            const priceAtMin = candles[i]!.close <= priceMin + 1e-9;
+            const cvdAtMin = cvd <= cvdMin + 1e-6;
+            if (!priceAtMin || cvdAtMin) ok = false;
+          } else {
+            const priceAtMax = candles[i]!.close >= priceMax - 1e-9;
+            const cvdAtMax = cvd >= cvdMax - 1e-6;
+            if (!priceAtMax || cvdAtMax) ok = false;
+          }
+        }
+      } else if (volImbEntry) {
+        // R29 Round 5 — Volume-Imbalance: extreme aggressor ratio on bar i.
+        const c = candles[i]!;
+        const tbv = c.takerBuyVolume;
+        if (tbv === undefined || c.volume <= 0) {
+          ok = false;
+        } else {
+          const ratio = tbv / c.volume;
+          if (direction === "long" && ratio < volImbEntry.longMin) ok = false;
+          if (direction === "short" && ratio > 1 - volImbEntry.longMin)
+            ok = false;
+        }
+      } else if (volPocEntry) {
+        // R29 Round 5 — Volume-Profile POC mean-reversion.
+        // Find highest-volume bar in last windowBars; its close = POC.
+        // Long when current close is ≥ minDistFromPocPct below POC.
+        const wb = volPocEntry.windowBars;
+        if (i < wb) {
+          ok = false;
+        } else {
+          let pocVol = -1;
+          let pocClose = candles[i]!.close;
+          for (let k = i - wb; k <= i; k++) {
+            const c = candles[k]!;
+            if (c.volume > pocVol) {
+              pocVol = c.volume;
+              pocClose = c.close;
+            }
+          }
+          if (pocClose <= 0) {
+            ok = false;
+          } else {
+            const distPct = (pocClose - candles[i]!.close) / pocClose;
+            if (direction === "long" && distPct < volPocEntry.minDistFromPocPct)
+              ok = false;
+            if (
+              direction === "short" &&
+              distPct > -volPocEntry.minDistFromPocPct
+            )
+              ok = false;
+          }
+        }
       } else {
         // Default: N consecutive close-comparison
         for (let k = 0; k < triggerBars; k++) {
@@ -3912,6 +4172,22 @@ export function detectAsset(
         const d = new Date(refTime).getUTCDay();
         if (!cfg.allowedDowsUtc.includes(d)) continue;
       }
+
+      // News-blackout (R28_V7 test): skip entry-bars whose openTime is
+      // inside any FOMC/CPI/NFP/PPI/GDP blackout window. Mirrors live
+      // `news_blackout.py` via cfg-injected Set keyed by entryBar.openTime.
+      if (cfg.newsBlackoutSet && cfg.newsBlackoutSet.size > 0) {
+        const refTime =
+          entryBar < candles.length
+            ? candles[entryBar]!.openTime
+            : candles[i]!.openTime +
+              (candles[i]!.closeTime - candles[i]!.openTime);
+        if (cfg.newsBlackoutSet.has(refTime)) continue;
+      }
+
+      // R29-R8: external entry-allowed mask (cross-sectional momentum,
+      // regime classifier, ML gate, etc.). When false, skip this bar.
+      if (entryAllowed && entryAllowed[i] === false) continue;
 
       // ADX regime gate
       if (adxSeries && cfg.adxFilter) {
@@ -5905,7 +6181,9 @@ export const FTMO_DAYTRADE_24H_CONFIG_LIVE_4H_V2: FtmoDaytrade24hConfig = {
 export const FTMO_DAYTRADE_24H_CONFIG_LIVE_15M_V3: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_LIVE_15M_V2,
   crossAssetFilter: {
-    ...(FTMO_DAYTRADE_24H_CONFIG_LIVE_15M_V2.crossAssetFilter as any),
+    ...spreadCrossAssetFilter(
+      FTMO_DAYTRADE_24H_CONFIG_LIVE_15M_V2.crossAssetFilter,
+    ),
     momSkipShortAbove: 0.005,
     momentumBars: 6,
   },
@@ -5967,7 +6245,9 @@ export const FTMO_DAYTRADE_24H_CONFIG_LIVE_5M_V2: FtmoDaytrade24hConfig = {
   partialTakeProfit: { triggerPct: 0.02, closeFraction: 0.3 },
   timeBoost: { afterDay: 4, equityBelow: 0.08, factor: 3 },
   crossAssetFilter: {
-    ...(FTMO_DAYTRADE_24H_CONFIG_LIVE_5M_V1.crossAssetFilter as any),
+    ...spreadCrossAssetFilter(
+      FTMO_DAYTRADE_24H_CONFIG_LIVE_5M_V1.crossAssetFilter,
+    ),
     momSkipShortAbove: 0.005,
     momentumBars: 4,
   },
@@ -6917,6 +7197,10 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM: FtmoDaytrade24hConfi
     };
     return {
       ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PLATINUM_30M,
+      // R29 Round 4 audit fix (R4-Bug #2): V5_PLATINUM_30M inherits from V5_V1
+      // chain (no atrStop). atrStop is mandatory for FTMO-realistic backtests
+      // per CLAUDE.md. Mirror V5_QUARTZ p56/m2 (same 30m timeframe basket).
+      atrStop: { period: 56, stopMult: 2 },
       assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PLATINUM_30M.assets.map(
         (a) => ({
           ...a,
@@ -7975,7 +8259,10 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V5: FtmoDaytra
 /**
  * V5_QUARTZ_LITE_R28_V6 — Round 53 tighter-TP plateau winner (2026-05-03).
  *
- * BEST-EVER V4 LIVE ENGINE PASS-RATE: 60.29% on 5.55y / 136 windows.
+ * BEST-EVER PASS-RATE: 63.24% post-PASSLOCK Round 60 sweep (2026-05-04).
+ * Pre-R56 claim was 60.29%; -3.67pp drift explained by R57 Day-30 force-close
+ * + post-R60 PTP audit-trail confirms 63.24% as honest value.
+ *
  * +1.47pp over R28_V5 (58.82%) — plateau optimum identified by R28_V5
  * fine-grid sweep (tpMult ∈ {0.55, 0.57, 0.59, 0.60, 0.61, 0.63, 0.65}).
  *
@@ -8014,19 +8301,770 @@ export const FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6: FtmoDaytra
         tpPct: (a.tpPct ?? 0.05) * 0.55,
       }),
     ),
-    // BUGFIX 2026-05-03 (R56 audit Fix 3): R28_V4 inherited PTP triggerPct=0.02
-    // but R28_V6 tightens tpPct ×0.55. With BTC tpPct 0.04 → 0.022 the gap to
-    // PTP triggerPct=0.02 collapses to 2bps — non-deterministic in the V4 live
-    // engine (PTP and TP can both fire on the same bar; ordering depends on
-    // bar-traversal). Drop PTP triggerPct to 0.012 so it stays clearly below
-    // the tightened TPs (≥30% gap on every asset).
+    // PTP design (R28_V6): triggerPct=0.012 deliberately ABOVE the 6 small-TP
+    // assets (BTC/BNB/ADA/BCH/ETC at 0.00825 + ETH at 0.011) so PTP is INERT
+    // on those — they go full-TP. PTP only fires on AAVE/XRP/LTC where
+    // tpPct > 0.012, partially closing 70% before TP for cushion.
     //
-    // Round 58 (Hint Fix #5): closeFraction explicitly held at 0.7 to MATCH
-    // R28_V4's value (parent config also uses 0.7 — see line 7925). An
-    // earlier audit report claimed R28_V4 used 0.6; that was incorrect.
-    // R28_V4 has always shipped 0.7, so R28_V6 carrying 0.7 is genuinely
-    // "closeFraction unchanged". No pass-rate change required.
+    // Round 60 audit-trail (2026-05-05):
+    //   R3 audit lowered triggerPct 0.012 → 0.005 thinking "PTP must fire
+    //   on every asset". Re-running 4 spot-check windows showed equity
+    //   delta >>2pp per window + 1/4 PASS→FAIL flip → backtest 63.24%
+    //   would invalidate. REVERTED back to 0.012 (the validated Champion
+    //   config). The "PTP > minTp on 5/9 assets" is INTENTIONAL design,
+    //   NOT a bug — small-TP assets need full-TP, large-TP assets get partial.
+    //
+    // The corresponding test in ftmoLiveSignalV231Selectors.test.ts asserts
+    // PTP > minTp (documents the design); a flip-back to "PTP < minTp" only
+    // makes sense after a full re-sweep proves the new behavior is better.
+    // ROUND 61 SWEEP RESULT (2026-05-05): PTP=0.005 yielded PASSLOCK 55.88%
+    // vs PTP=0.012 yielded 63.24% (full 136-window sweep, both with same
+    // engine). Conclusion: early PTP-fire at 0.5% gain breaks the strategy
+    // — too many trades partial-close before reaching real TP. Reverted.
+    //
+    // The R28_V6 PTP design is INTENTIONAL dual-cohort:
+    //   - Small-TP (BTC/BNB/ADA/BCH/ETC at 0.00825 + ETH at 0.011): PTP inert
+    //   - Mid-TP (AAVE 0.01375): PTP fires (~13% gap)
+    //   - Large-TP (LTC 0.01925, XRP 0.0165): PTP fires with comfortable gap
     partialTakeProfit: { triggerPct: 0.012, closeFraction: 0.7 },
+  };
+
+/**
+ * Round 60 sweep variants — built from R28_V6 + single-feature toggles.
+ * All run via `scripts/_r28V6Round60Shard.ts <variant>`.
+ *
+ * Round 60+61 sweeps complete (2026-05-05): all sister-variants rejected vs
+ * R28_V6 baseline 63.24%. Kept for sweep-replay only, NOT live-deploy.
+ * Champion remains R28_V6_PASSLOCK.
+ */
+
+// V60_PASSLOCK — closeAllOnTargetReached: lock equity at firstTargetHit.
+// Targets the 11.03% total-loss failure mode (Day-30 force-close drag-down).
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+};
+
+// R29-iter-A (2026-05-07): PASSLOCK + Step-1-actual target (8% not 10%).
+// RESULT: 44.85% — broke engine semantics, -11pp vs plain PASSLOCK 55.88%.
+// Hypothesis WRONG: passlock-at-8% kills the +10% over-shoot tail that
+// drove PASSLOCK's edge. Don't promote.
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+  profitTarget: 0.08,
+};
+
+// R29-iter-B: pt08 (no PASSLOCK) + lossStreakCooldown.
+// pt08 alone is the hidden best at 56.62%. lscool48 alone is 53.68%.
+// Stacking: skip new entries 24h after 3 losses on top of step-1 target.
+export const FTMO_DAYTRADE_24H_R28_V6_PT08_LSCOOL: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  profitTarget: 0.08,
+  lossStreakCooldown: { afterLosses: 3, cooldownBars: 48 },
+};
+
+// R29-iter-C: pt08 + relaxed peakDrawdownThrottle.
+// R28_V4 base has tight (fromPeak:0.03, factor:0.15) — kicks in early
+// and sizes WAY down. R63 brainstorm proposed (0.07, 0.5) — relax both
+// trigger and dampening so winning streaks don't get throttled.
+export const FTMO_DAYTRADE_24H_R28_V6_PT08_PDR: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  profitTarget: 0.08,
+  peakDrawdownThrottle: { fromPeak: 0.07, factor: 0.5 },
+};
+
+// R29-iter-D: pt08 + tighter tpMult (×0.50 instead of R28_V6's ×0.55).
+// Memory says plateau is 0.55-0.59. Testing at the edge: ×0.50.
+// V6_R28 multiplies the V4 baseline tpPct by 0.55 — go one notch tighter.
+export const FTMO_DAYTRADE_24H_R28_V6_PT08_TIGHTTP: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4,
+  profitTarget: 0.08,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4.assets.map(
+    (a) => ({
+      ...a,
+      tpPct: (a.tpPct ?? 0.05) * 0.5,
+    }),
+  ),
+};
+
+// R29-iter-E: pt08 + asset-prune (drop AAVE — large-TP asset where PTP
+// is forced to fire partial; potentially the highest variance contributor).
+export const FTMO_DAYTRADE_24H_R28_V6_PT08_NO_AAVE: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  profitTarget: 0.08,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.filter(
+    (a) => a.symbol !== "AAVE-TREND",
+  ),
+};
+
+// R29-iter-F: pt08 + drop the 3 large-TP assets where PTP partial fires
+// (AAVE/XRP/LTC). Hypothesis: those are the high-variance wagers; without
+// them the basket is more uniform → smaller equity-curve drawdowns.
+export const FTMO_DAYTRADE_24H_R28_V6_PT08_CORE: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  profitTarget: 0.08,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.filter(
+    (a) =>
+      a.symbol !== "AAVE-TREND" &&
+      a.symbol !== "XRP-TREND" &&
+      a.symbol !== "LTC-TREND",
+  ),
+};
+
+// R29-iter-G: pt08 + drop XRP only.
+export const FTMO_DAYTRADE_24H_R28_V6_PT08_NO_XRP: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  profitTarget: 0.08,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.filter(
+    (a) => a.symbol !== "XRP-TREND",
+  ),
+};
+
+// R29-iter-H: pt08 + drop LTC only.
+export const FTMO_DAYTRADE_24H_R28_V6_PT08_NO_LTC: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  profitTarget: 0.08,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.filter(
+    (a) => a.symbol !== "LTC-TREND",
+  ),
+};
+
+// R29-iter-I: pt08 + only BTC + ETH (the 2 highest-liquidity).
+// Most concentrated; smallest diversification but highest individual edge.
+export const FTMO_DAYTRADE_24H_R28_V6_PT08_BTC_ETH: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  profitTarget: 0.08,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.filter(
+    (a) => a.symbol === "BTC-TREND" || a.symbol === "ETH-TREND",
+  ),
+};
+
+// R29-iter-J: pt08 + tighter dailyPeakTrailingStop (0.008 vs default 0.012).
+// Tightens give-back on intraday peaks — captures profits earlier.
+export const FTMO_DAYTRADE_24H_R28_V6_PT08_DPT_TIGHT: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  profitTarget: 0.08,
+  dailyPeakTrailingStop: { trailDistance: 0.008 },
+};
+
+// R29-iter-AMBER: V5_AMBER (14-asset basket) + pt08.
+export const FTMO_DAYTRADE_24H_V5_AMBER_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER,
+  profitTarget: 0.08,
+};
+
+// R29-iter-TITANIUM: V5_TITANIUM (14-asset, longer-history validated)
+// + pt08. Memory: 58.24% step=1d on 5.52y/1985 windows.
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+  profitTarget: 0.08,
+};
+
+// R29-iter-TOPAZ: V5_TOPAZ (14-asset minus RUNE) + pt08. Memory: 63.86%
+// step=3d. Sister to QUARTZ — strong defensive (TL=0).
+export const FTMO_DAYTRADE_24H_V5_TOPAZ_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TOPAZ,
+  profitTarget: 0.08,
+};
+
+// R29-iter-RUBIN: V5_RUBIN (14-asset) + pt08. Memory: 64.40% step=3d /
+// wr 86.72% / TL 0 — best step=3d in V5 family. Sister to TOPAZ.
+export const FTMO_DAYTRADE_24H_V5_RUBIN_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_RUBIN,
+  profitTarget: 0.08,
+};
+
+// R29-iter-OBSIDIAN: V5_OBSIDIAN (15-asset, TITANIUM + ARB) + pt08.
+// Memory: 60.56% step=1d / 61.41% step=3d on 1103-window 3.04y sample.
+export const FTMO_DAYTRADE_24H_V5_OBSIDIAN_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN,
+  profitTarget: 0.08,
+};
+
+// R29-iter-ZIRKON: V5_ZIRKON + pt08. Memory: 61.6% — top of V5 family.
+export const FTMO_DAYTRADE_24H_V5_ZIRKON_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_ZIRKON,
+  profitTarget: 0.08,
+};
+
+// R29-iter-PLATINUM30M: V5_PLATINUM_30M + pt08.
+export const FTMO_DAYTRADE_24H_V5_PLATINUM_30M_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_PLATINUM_30M,
+  profitTarget: 0.08,
+};
+
+// R29-iter-TITANIUM-noPT: stock V5_TITANIUM without pt08 modification.
+// Memory's pre-R9 was 58.24% step=1d. Worth testing if the engine
+// somehow handles default PT (0.10) better with TITANIUM's tpPct profile.
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_STOCK: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+};
+
+// R29-iter-OBSIDIAN-noPT: stock V5_OBSIDIAN without pt08.
+export const FTMO_DAYTRADE_24H_V5_OBSIDIAN_STOCK: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN,
+};
+
+// R29-iter-V12: V12_30M_OPT (4-asset: BTC + ETH-TREND + ETH-MR + SOL,
+// hybrid trend+mean-reversion). Memory: 97.99% pre-R9 bugfix. Even with
+// post-R9 drift -7pp, that's ~91% — well above 65% target.
+// Add pt08 (Step-1 actual) on top.
+export const FTMO_DAYTRADE_24H_V12_30M_OPT_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT,
+  profitTarget: 0.08,
+};
+
+// Stock variant without pt08 modification.
+export const FTMO_DAYTRADE_24H_V12_30M_OPT_STOCK: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT,
+};
+
+// R29-bugcheck: V12_30M_OPT_STOCK + liveCaps (Step-1 realism).
+// Audit found V12 chain inherits NO liveCaps; backtest pass-rate without
+// caps is bug-magic. Adding mandatory caps to verify whether 77% survives.
+export const FTMO_DAYTRADE_24H_V12_30M_OPT_STOCK_LIVECAPS: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_V12_30M_OPT,
+    liveCaps: { maxStopPct: 0.05, maxRiskFrac: 0.4 },
+  };
+
+// R29 Round 4 — PASSLOCK variants of V5 sisters (closeAllOnTargetReached).
+// R29 Round 4 audit fix (R4-Bug #2): V5_TITANIUM / V5_AMBER / V5_OBSIDIAN
+// inherit from V5_PLATINUM_30M → V5_PLATINUM → … → V5_V1 chain and never
+// pick up `atrStop` (which V5_QUARTZ adds on a parallel branch). Per
+// CLAUDE.md, atrStop is mandatory for FTMO-realistic configs — add it
+// explicitly to the PASSLOCK siblings so the validator passes and live
+// trades get the volatility-adaptive stop. atrStop {period:56, stopMult:2}
+// mirrors V5_QUARTZ (same 30m timeframe basket).
+export const FTMO_DAYTRADE_24H_V5_AMBER_PASSLOCK: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER,
+  closeAllOnTargetReached: true,
+  atrStop: { period: 56, stopMult: 2 },
+};
+export const FTMO_DAYTRADE_24H_V5_OBSIDIAN_PASSLOCK: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN,
+  closeAllOnTargetReached: true,
+  atrStop: { period: 56, stopMult: 2 },
+};
+export const FTMO_DAYTRADE_24H_V5_QUARTZ_LITE_R28_PASSLOCK: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28,
+    closeAllOnTargetReached: true,
+  };
+// R29 Round 4 — looser caps (still FTMO-compliant since maxStopPct < 5%
+// daily-loss when adjusted for 2× leverage).
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_LOOSE_CAPS: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+    closeAllOnTargetReached: true,
+    liveCaps: { maxStopPct: 0.06, maxRiskFrac: 0.5 },
+  };
+export const FTMO_DAYTRADE_24H_V5_AMBER_LOOSE_CAPS: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER,
+  liveCaps: { maxStopPct: 0.06, maxRiskFrac: 0.5 },
+};
+// R29 Round 4 — combine PT08 + PASSLOCK on top configs.
+export const FTMO_DAYTRADE_24H_V5_AMBER_PT08_PASSLOCK: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER,
+  closeAllOnTargetReached: true,
+  profitTarget: 0.08,
+};
+export const FTMO_DAYTRADE_24H_V5_OBSIDIAN_PT08_PASSLOCK: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN,
+    closeAllOnTargetReached: true,
+    profitTarget: 0.08,
+  };
+// R29 Round 4 — TREND_2H_V1 + PASSLOCK + PT08
+export const FTMO_DAYTRADE_24H_TREND_2H_V1_PASSLOCK_PT08: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V1,
+    closeAllOnTargetReached: true,
+    profitTarget: 0.08,
+  };
+
+// ─────────────────────────────────────────────────────────────────────
+// R29 Round 5 — Order-Flow / Volume-Profile signal classes (NEW).
+// First time these are tested. Built on R28_V6_PASSLOCK asset basket
+// (9 assets), keep liveCaps + closeAllOnTargetReached identical so the
+// only delta vs PASSLOCK (44.85%) is the entry trigger.
+// ─────────────────────────────────────────────────────────────────────
+
+/** R29-R5 CVD divergence (24h lookback on 30m = 48 bars). */
+export const FTMO_DAYTRADE_24H_R28_V6_CVD: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.map(
+    (a) => ({ ...a, cvdEntry: { lookbackBars: 48 } }),
+  ),
+};
+
+/** R29-R5 CVD divergence — short lookback (12h on 30m). */
+export const FTMO_DAYTRADE_24H_R28_V6_CVD_SHORT: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.map(
+    (a) => ({ ...a, cvdEntry: { lookbackBars: 24 } }),
+  ),
+};
+
+/** R29-R5 CVD divergence — long lookback (48h on 30m). */
+export const FTMO_DAYTRADE_24H_R28_V6_CVD_LONG: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.map(
+    (a) => ({ ...a, cvdEntry: { lookbackBars: 96 } }),
+  ),
+};
+
+/** R29-R5 Volume-Imbalance: extreme buyer-aggressive bars (≥ 62% taker-buy). */
+export const FTMO_DAYTRADE_24H_R28_V6_VOLIMB: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.map(
+    (a) => ({ ...a, volImbalanceEntry: { longMin: 0.62 } }),
+  ),
+};
+
+/** R29-R5 Volume-Imbalance — looser threshold (60%). */
+export const FTMO_DAYTRADE_24H_R28_V6_VOLIMB_LOOSE: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.map(
+    (a) => ({ ...a, volImbalanceEntry: { longMin: 0.6 } }),
+  ),
+};
+
+/** R29-R5 Volume-Imbalance — strict threshold (65%). */
+export const FTMO_DAYTRADE_24H_R28_V6_VOLIMB_STRICT: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.map(
+    (a) => ({ ...a, volImbalanceEntry: { longMin: 0.65 } }),
+  ),
+};
+
+/** R29-R5 Volume-Profile POC mean-reversion (48h window, 1.5% offset). */
+export const FTMO_DAYTRADE_24H_R28_V6_POC: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.map(
+    (a) => ({
+      ...a,
+      volPocEntry: { windowBars: 96, minDistFromPocPct: 0.015 },
+    }),
+  ),
+};
+
+/** R29-R5 Volume-Profile POC — wider window (96h) and larger offset (2%). */
+export const FTMO_DAYTRADE_24H_R28_V6_POC_WIDE: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+  assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6.assets.map(
+    (a) => ({
+      ...a,
+      volPocEntry: { windowBars: 192, minDistFromPocPct: 0.02 },
+    }),
+  ),
+};
+
+// =============================================================================
+// R29-R6: ADX Regime-Filter sweep (2026-05-08)
+// Tier-A candidate. Hypothesis: chop regimes (ADX<20) bleed trend strategy.
+// Filter entries when ADX below threshold to skip ranging markets.
+// =============================================================================
+
+/** R29-R6 PASSLOCK + adxFilter min=20 (skip chop). */
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_ADX20: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+  adxFilter: { period: 14, minAdx: 20 },
+};
+/** R29-R6 PASSLOCK + adxFilter min=25 (only trending). */
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_ADX25: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+  adxFilter: { period: 14, minAdx: 25 },
+};
+/** R29-R6 PASSLOCK + adxFilter min=30 (strong-trend only). */
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_ADX30: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+  adxFilter: { period: 14, minAdx: 30 },
+};
+/** R29-R6 PASSLOCK + adxFilter 25..60 (trending but cap parabolic tops). */
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_ADX25_60: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+    adxFilter: { period: 14, minAdx: 25, maxAdx: 60 },
+  };
+
+// =============================================================================
+// R29-R7: funding-rate-filter sweep (2026-05-09)
+// External signal class: Binance Futures funding-rate as crowdedness gate.
+// Hypothesis: extreme funding-rate-positive = crowded long → skip new longs
+// (mean-reversion incoming). Extreme negative = crowded short → skip shorts.
+// Distribution stats (BTC/ETH): p95 ≈ 5bps, p99 ≈ 11bps, p1 ≈ -1.7bps,
+// median 1bp. Negative-tail rare → asymmetric thresholds.
+// =============================================================================
+
+/** R29-R7 PASSLOCK + funding (mild: skip longs >0.1%, shorts <-0.05%). */
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_FRMILD: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+  fundingRateFilter: { maxFundingForLong: 0.001, minFundingForShort: -0.0005 },
+};
+/** R29-R7 PASSLOCK + funding (medium: top/bottom 5%). */
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_FRMED: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+  fundingRateFilter: { maxFundingForLong: 0.0005, minFundingForShort: -0.0003 },
+};
+/** R29-R7 PASSLOCK + funding (strict: top 25%). */
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_FRSTRICT: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+    fundingRateFilter: {
+      maxFundingForLong: 0.0003,
+      minFundingForShort: -0.0002,
+    },
+  };
+/** R29-R7 PASSLOCK + funding (long-only — neg-tail too rare to gate). */
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_FRLONG: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+  fundingRateFilter: { maxFundingForLong: 0.0005 },
+};
+
+// =============================================================================
+// R29-R9: funding-rate filter on V5_TITANIUM 14-asset basket (2026-05-09)
+// Hypothesis: bigger basket + funding crowdedness gate may stack additively.
+// =============================================================================
+
+/** R29-R9 V5_TITANIUM + closeAllOnTargetReached (PASSLOCK semantics).
+ * R29 Round 4 audit fix: add atrStop (V5_TITANIUM inherits from V5_PLATINUM
+ * chain which has no atrStop). Mirrors V5_QUARTZ p56/m2 — required for
+ * FTMO-realistic backtest per CLAUDE.md. */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+  closeAllOnTargetReached: true,
+  atrStop: { period: 56, stopMult: 2 },
+};
+/** R29-R9 V5_TITANIUM + PASSLOCK + funding (medium thresholds). */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_FRMED: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    fundingRateFilter: {
+      maxFundingForLong: 0.0005,
+      minFundingForShort: -0.0003,
+    },
+  };
+/** R29-R9 V5_TITANIUM + PASSLOCK + funding (long-only). */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_FRLONG: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    fundingRateFilter: { maxFundingForLong: 0.0005 },
+  };
+
+/** R29-Hunter ablation: drop only (no hours/trail/tp changes). */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_HUNTER_DROPONLY: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM.assets.filter(
+      (a) =>
+        ![
+          "DOGE-TREND",
+          "ETH-TREND",
+          "INJ-TREND",
+          "ADA-TREND",
+          "RUNE-TREND",
+        ].includes(a.symbol),
+    ),
+  };
+
+/** R29-Hunter ablation: drop + hours only. */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_HUNTER_DROPHOURS: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM.assets.filter(
+      (a) =>
+        ![
+          "DOGE-TREND",
+          "ETH-TREND",
+          "INJ-TREND",
+          "ADA-TREND",
+          "RUNE-TREND",
+        ].includes(a.symbol),
+    ),
+    allowedHoursUtc: [2, 4, 6, 10, 14, 18, 20, 22],
+  };
+
+/** R29-Hunter ablation: drop + trail only. */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_HUNTER_DROPTRAIL: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM.assets.filter(
+      (a) =>
+        ![
+          "DOGE-TREND",
+          "ETH-TREND",
+          "INJ-TREND",
+          "ADA-TREND",
+          "RUNE-TREND",
+        ].includes(a.symbol),
+    ),
+    trailingStop: { activatePct: 0.03, trailPct: 0.001 },
+  };
+
+/**
+ * R29-Hunter — TS shadow of `v5_titanium_passlock_hunter` (Rust 66.14% step=14d).
+ *
+ * Built specifically to cross-validate the Rust mass-sweep winner via the TS
+ * V4-LIVE engine. If Rust's 66.14% is honest, TS should produce the same
+ * pass-rate (within the documented -0.44pp drift on TITANIUM_PASSLOCK family).
+ *
+ * Modifications from V5_TITANIUM_PASSLOCK baseline (14-asset, 55.56% step=28d
+ * TS-honest):
+ *   1. Drop 5 assets: DOGE, ETH, INJ, ADA, RUNE → 9-asset basket
+ *   2. allowedHoursUtc: [2,4,6,8,10,12,14,18,20,22] → [2,4,6,10,14,18,20,22]
+ *      (drop hours 8 & 12)
+ *   3. trailingStop.trailPct: 0.005 → 0.001 (5× tighter)
+ *   4. Per-asset tp_pct override on ETC: 0.035 → 0.020
+ */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_HUNTER: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM.assets
+      .filter(
+        (a) =>
+          ![
+            "DOGE-TREND",
+            "ETH-TREND",
+            "INJ-TREND",
+            "ADA-TREND",
+            "RUNE-TREND",
+          ].includes(a.symbol),
+      )
+      .map((a) => ({
+        ...a,
+        tpPct: a.symbol === "ETC-TREND" ? 0.02 : a.tpPct,
+      })),
+    allowedHoursUtc: [2, 4, 6, 10, 14, 18, 20, 22],
+    trailingStop: { activatePct: 0.03, trailPct: 0.001 },
+  };
+
+// =============================================================================
+// R29-R10 (2026-05-09) — TITANIUM 14-asset = 55.56% step=28d post-R67-honest
+// (R9 confirmed: 35/63 PL = 35/63 FRMED = 35/63 FRLONG, funding-filter inert).
+// Stack basket-level / state-level / time-level filters on the +10.7pp
+// TITANIUM hebel.
+// =============================================================================
+
+/** R29-R10a: TITANIUM minus RUNE (13 assets) — greedy ablation. */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_NORUNE: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    assets: FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM.assets.filter(
+      (a) => a.symbol !== "RUNE-TREND",
+    ),
+  };
+
+/** R29-R10b: TITANIUM + ARB = OBSIDIAN basket (15 assets) + PASSLOCK.
+ *  Re-uses the existing OBSIDIAN_PASSLOCK declaration above (line ~8533).
+ *  No new const here — selectors-by-name resolve to that one. */
+
+/** R29-R10c: TITANIUM + PASSLOCK + LSCOOL tighter (afterLosses=1, cd=400). */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_LSCOOL_TIGHT: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    lossStreakCooldown: { afterLosses: 1, cooldownBars: 400 },
+  };
+
+/** R29-R10d: TITANIUM + PASSLOCK + LSCOOL looser (afterLosses=3, cd=96). */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_LSCOOL_LOOSE: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    lossStreakCooldown: { afterLosses: 3, cooldownBars: 96 },
+  };
+
+/** R29-R10e: TITANIUM + PASSLOCK + tighter maxConcurrent (5 instead of 10). */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_MCT5: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    maxConcurrentTrades: 5,
+  };
+
+/** R29-R10f: TITANIUM + PASSLOCK + correlationFilter maxOpenSameDir=2. */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_CORRCAP2: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    correlationFilter: { maxOpenSameDirection: 2 },
+  };
+
+/** R29-R10g: TITANIUM + PASSLOCK + drop late hours (no entry after 18 UTC). */
+export const FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK_TODCUT18: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_TITANIUM,
+    closeAllOnTargetReached: true,
+    allowedHoursUtc: [4, 6, 8, 10, 14, 18],
+  };
+
+// V12_TURBO with pt08 (faster passing tail).
+export const FTMO_DAYTRADE_24H_V12_TURBO_PT08: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_V12_TURBO_30M_OPT,
+  profitTarget: 0.08,
+};
+
+// V60_CORRCAP — correlationFilter maxOpenSameDirection=2 (3rd same-dir entry rejected).
+export const FTMO_DAYTRADE_24H_R28_V6_CORRCAP2: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  correlationFilter: { maxOpenSameDirection: 2 },
+};
+export const FTMO_DAYTRADE_24H_R28_V6_CORRCAP3: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  correlationFilter: { maxOpenSameDirection: 3 },
+};
+
+// V60_LSCOOL — lossStreakCooldown afterLosses=3, cooldownBars=48 (24h cooldown).
+export const FTMO_DAYTRADE_24H_R28_V6_LSCOOL: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  lossStreakCooldown: { afterLosses: 3, cooldownBars: 48 },
+};
+// Aggressive variant: cooldownBars=96 (48h).
+export const FTMO_DAYTRADE_24H_R28_V6_LSCOOL96: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  lossStreakCooldown: { afterLosses: 3, cooldownBars: 96 },
+};
+
+// V60_TODCUTOFF — no new entries after 18:00 UTC.
+export const FTMO_DAYTRADE_24H_R28_V6_TODCUTOFF18: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  allowedHoursUtc: [0, 2, 4, 6, 8, 10, 12, 14, 16, 18],
+};
+export const FTMO_DAYTRADE_24H_R28_V6_TODCUTOFF20: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  allowedHoursUtc: [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20],
+};
+
+// V60_VOLTP_AGGR — Vol-Adaptive tpMult: low-vol +30%, high-vol −30%.
+// ATR thresholds calibrated for 30m crypto: 0.8% low, 1.8% high.
+export const FTMO_DAYTRADE_24H_R28_V6_VOLTP_AGGR: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  volAdaptiveTpMult: {
+    atrPeriod: 24,
+    lowVolThreshold: 0.008,
+    highVolThreshold: 0.018,
+    lowVolFactor: 1.3,
+    highVolFactor: 0.7,
+  },
+};
+
+// V60_VOLTP_MILD — same thresholds, lighter scaling.
+export const FTMO_DAYTRADE_24H_R28_V6_VOLTP_MILD: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  volAdaptiveTpMult: {
+    atrPeriod: 24,
+    lowVolThreshold: 0.008,
+    highVolThreshold: 0.018,
+    lowVolFactor: 1.15,
+    highVolFactor: 0.85,
+  },
+};
+
+// V60_VOLTP_INV — inverse hypothesis: calm tighter, volatile wider.
+export const FTMO_DAYTRADE_24H_R28_V6_VOLTP_INV: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  volAdaptiveTpMult: {
+    atrPeriod: 24,
+    lowVolThreshold: 0.008,
+    highVolThreshold: 0.018,
+    lowVolFactor: 0.85,
+    highVolFactor: 1.15,
+  },
+};
+
+// V60_VOLTP_LOW — only relax tp in calm markets, leave volatile baseline.
+export const FTMO_DAYTRADE_24H_R28_V6_VOLTP_LOW: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  volAdaptiveTpMult: {
+    atrPeriod: 24,
+    lowVolThreshold: 0.008,
+    highVolThreshold: 0.999,
+    lowVolFactor: 1.2,
+    highVolFactor: 1.0,
+  },
+};
+
+// V60_IDLT — intradayDailyLossThrottle: stops new entries below day-loss
+// threshold. Engine-existing feature; tightens day-tail without engine refactor.
+export const FTMO_DAYTRADE_24H_R28_V6_IDLT_25: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  intradayDailyLossThrottle: {
+    softLossThreshold: 0.015,
+    softFactor: 0.5,
+    hardLossThreshold: 0.025,
+  },
+};
+export const FTMO_DAYTRADE_24H_R28_V6_IDLT_30: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  intradayDailyLossThrottle: {
+    softLossThreshold: 0.02,
+    softFactor: 0.5,
+    hardLossThreshold: 0.03,
+  },
+};
+export const FTMO_DAYTRADE_24H_R28_V6_IDLT_35: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  intradayDailyLossThrottle: {
+    softLossThreshold: 0.025,
+    softFactor: 0.5,
+    hardLossThreshold: 0.035,
+  },
+};
+
+// V60_COMBO — passlock + best-defensive (IDLT_30) — speculative champion combo.
+export const FTMO_DAYTRADE_24H_R28_V6_COMBO_PL_IDLT: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  closeAllOnTargetReached: true,
+  intradayDailyLossThrottle: {
+    softLossThreshold: 0.02,
+    softFactor: 0.5,
+    hardLossThreshold: 0.03,
+  },
+};
+
+// Round 61 — PASSLOCK + Adaptive Day-Risk variants.
+// Hypothesis: tighter sizing day 0-2 reduces tail-risk (daily-loss + total-loss).
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_DAYRISK_50: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+    dayBasedRiskMultiplier: {
+      conservativeFirstDays: 3,
+      conservativeFactor: 0.5,
+    },
+  };
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_DAYRISK_70: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+    dayBasedRiskMultiplier: {
+      conservativeFirstDays: 3,
+      conservativeFactor: 0.7,
+    },
+  };
+// Aggressive: only day 0-1 conservative, day 2 already full
+export const FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_DAYRISK_50_2D: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+    dayBasedRiskMultiplier: {
+      conservativeFirstDays: 2,
+      conservativeFactor: 0.5,
+    },
   };
 
 /**

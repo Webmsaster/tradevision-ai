@@ -17,6 +17,7 @@ dist/
 # so onboarding still has a template.
 .env*
 !.env.local.example
+!.env.ftmo.*.example
 
 # debug
 npm-debug.log*
@@ -70,6 +71,7 @@ scripts/cache_forex_2h/
 
 # Crypto long-history bake-off cache (regenerable from Binance, ~236MB)
 scripts/cache_bakeoff/
+scripts/cache_voltp_r28v7/
 
 # Test coverage reports
 coverage/

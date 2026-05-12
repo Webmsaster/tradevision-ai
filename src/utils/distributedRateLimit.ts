@@ -116,6 +116,15 @@ async function upstashIncr(
   }
 }
 
+// R67-r12 (security audit): hard cap on the in-memory map. The previous
+// GC at size>1000 only removed keys whose hits were ALL older than
+// `windowMs`. Under an active spoofed-IP flood every entry stays fresh,
+// so the GC removes nothing and the map grows unbounded → OOM. Cap at
+// 10k entries and drop the whole map once we cross — rate-limiting is
+// best-effort under attack anyway, and OOM is worse than letting an
+// attacker get one extra burst before the next instance reset.
+const MEMORY_HARD_CAP = 10_000;
+
 function memoryCheck(
   key: string,
   now: number,
@@ -129,6 +138,12 @@ function memoryCheck(
   if (memoryHits.size > 1000) {
     for (const [k, v] of memoryHits) {
       if (v.every((t) => now - t > windowMs)) memoryHits.delete(k);
+    }
+    // Hard cap — if GC could not free enough (active flood), drop all
+    // and start fresh rather than running the instance into OOM.
+    if (memoryHits.size > MEMORY_HARD_CAP) {
+      memoryHits.clear();
+      memoryHits.set(key, hits);
     }
   }
   return hits.length > maxHits;

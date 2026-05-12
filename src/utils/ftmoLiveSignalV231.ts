@@ -13,6 +13,7 @@
  * recent PnLs for Kelly) so we can compute the exact risk multiplier.
  */
 import type { Candle } from "@/utils/indicators";
+import { assertConfigValid } from "@/utils/ftmoConfigValidator";
 
 // Phase 23 (V231 Bug 15): newsBlackout window now configurable via env.
 // 2min was too short for high-impact events (NFP, CPI, FOMC move markets
@@ -514,6 +515,73 @@ const CFG_REGISTRY: Record<string, CfgRegistryEntry> = {
     cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
     label: "V5_QUARTZ_LITE_R28_V6 (engine v4)",
   },
+  // Round 60 candidate variants — only the validated winner gets promoted
+  // to live-deploy. All inherit R28_V6 base; differ by single feature toggle.
+  "2h-trend-v5-r28-v6-passlock": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_PASSLOCK,
+    label: "R28_V6_PASSLOCK (closeAllOnTargetReached)",
+  },
+  // R29 Round 3 audit fix (R3-Bug #1): PASSLOCK sister configs needed for the
+  // 3-Strategy Multi-Account Plan (PASSLOCK + V5_TITANIUM + V5_AMBER ≈ 91%
+  // min-1-pass). Without selectors these are not live-deployable.
+  "2h-trend-v5-titanium-passlock": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK,
+    label: "V5_TITANIUM_PASSLOCK (closeAllOnTargetReached)",
+  },
+  "2h-trend-v5-amber-passlock": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_PASSLOCK,
+    label: "V5_AMBER_PASSLOCK (closeAllOnTargetReached)",
+  },
+  "2h-trend-v5-obsidian-passlock": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_OBSIDIAN_PASSLOCK,
+    label: "V5_OBSIDIAN_PASSLOCK (closeAllOnTargetReached)",
+  },
+  "2h-trend-v5-quartz-lite-r28-passlock": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_QUARTZ_LITE_R28_PASSLOCK,
+    label: "V5_QUARTZ_LITE_R28_PASSLOCK (closeAllOnTargetReached)",
+  },
+  // R3-Bug #2: Step-2 champion selector (was missing).
+  "2h-trend-v5-quartz-lite-r28-step2": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_STEP2,
+    label: "V5_QUARTZ_LITE_R28_STEP2 (Step-2 champion)",
+  },
+  "2h-trend-v5-r28-v6-corrcap2": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_CORRCAP2,
+    label: "R28_V6_CORRCAP2 (max-2-same-dir)",
+  },
+  "2h-trend-v5-r28-v6-lscool48": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_LSCOOL,
+    label: "R28_V6_LSCOOL48 (24h cooldown after 3 losses)",
+  },
+  "2h-trend-v5-r28-v6-todcutoff18": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_TODCUTOFF18,
+    label: "R28_V6_TODCUTOFF18 (no entries past 18 UTC)",
+  },
+  "2h-trend-v5-r28-v6-voltp-aggr": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_VOLTP_AGGR,
+    label: "R28_V6_VOLTP_AGGR (vol-adaptive tpMult ±30%)",
+  },
+  "2h-trend-v5-r28-v6-idlt30": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_IDLT_30,
+    label: "R28_V6_IDLT30 (intraday-loss-throttle hard 3%)",
+  },
+  "2h-trend-v5-r28-v6-combo-pl-idlt": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_COMBO_PL_IDLT,
+    label: "R28_V6_COMBO (passlock + idlt30)",
+  },
+  // Round 61 — PASSLOCK + Adaptive Day-Risk variants.
+  "2h-trend-v5-r28-v6-passlock-dayrisk50": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_DAYRISK_50,
+    label: "R28_V6_PASSLOCK + day-risk 0.5×(d0-2)",
+  },
+  "2h-trend-v5-r28-v6-passlock-dayrisk70": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_DAYRISK_70,
+    label: "R28_V6_PASSLOCK + day-risk 0.7×(d0-2)",
+  },
+  "2h-trend-v5-r28-v6-passlock-dayrisk50-2d": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_R28_V6_PASSLOCK_DAYRISK_50_2D,
+    label: "R28_V6_PASSLOCK + day-risk 0.5×(d0-1)",
+  },
   "2h-trend-breakout-v1": {
     cfg: CFGS.FTMO_DAYTRADE_24H_CONFIG_BREAKOUT_V1,
     label: "BREAKOUT_V1 (engine v4)",
@@ -561,12 +629,38 @@ if (_ftmoTfKey && !_registryHit) {
   );
 }
 
+// R29 Round 3 audit fix (R3-Bug #4): when FTMO_TF is UNSET we historically
+// fell back to V261 silently. V261 is no-cap 94% backtest but DIES at 0%
+// under live caps — silent fallback is the worst-possible default in
+// production. Fail-loud unless explicitly opted into via
+// FTMO_TF_ALLOW_FALLBACK=1 (test harnesses set this).
+if (!_ftmoTfKey && process.env.FTMO_TF_ALLOW_FALLBACK !== "1") {
+  const _availableKeys = Object.keys(CFG_REGISTRY).sort();
+  throw new Error(
+    `[ftmo-live] FTMO_TF env-var is not set. Refusing to silently default to ` +
+      `V261 4h (no-cap config, 0% live pass-rate under FTMO caps). ` +
+      `Set FTMO_TF to one of (${_availableKeys.length} available): ` +
+      `${_availableKeys.join(", ")}. ` +
+      `Test-harness escape hatch: FTMO_TF_ALLOW_FALLBACK=1.`,
+  );
+}
+
 // CFG = active config; CFG_LABEL = human-readable label for logs/Telegram.
 // Default fallback: V261 4h (no-cap 94.31% pass on 5y backtest, but DIES
 // under live caps — only used when FTMO_TF is unset, e.g. test harness).
 const CFG: FtmoDaytrade24hConfig =
   _registryHit?.cfg ?? CFGS.FTMO_DAYTRADE_24H_CONFIG_V261;
 const CFG_LABEL: string = _registryHit?.label ?? "V261";
+
+// R29 Round 3 audit fix (R3-Bug #3): hard-check that the selected config
+// carries all mandatory FTMO live-safety fields. Skipped when running on
+// the V261 fallback (research-only, allowed via FTMO_TF_ALLOW_FALLBACK=1).
+// R29 Round 5 audit fix: replaced dynamic `require("./ftmoConfigValidator")`
+// (which broke under vitest CJS module resolution — `Cannot find module`)
+// with a top-of-file static import. No behavioural change.
+if (_registryHit) {
+  assertConfigValid(CFG, CFG_LABEL);
+}
 
 /**
  * Round 54 Fix #3: lightweight introspection helper for the live-service
@@ -575,6 +669,10 @@ const CFG_LABEL: string = _registryHit?.label ?? "V261";
  */
 export function getActiveCfgInfo(): { label: string; ftmoTfKey: string } {
   return { label: CFG_LABEL, ftmoTfKey: _ftmoTfKey };
+}
+
+export function getActiveCfg(): FtmoDaytrade24hConfig {
+  return CFG;
 }
 
 /**
@@ -1207,7 +1305,11 @@ export function detectLiveSignalsV231(
     // ATR-adaptive stop: take max(stopPct, atr*mult/entry) to widen on vol.
     if (CFG.atrStop) {
       const atrSeries = atr(a.candles, CFG.atrStop.period);
-      const atrVal = atrSeries[atrSeries.length - 1];
+      // R54-V4-6 parity: V4 engine uses prev-bar ATR (no look-ahead).
+      const prev =
+        atrSeries.length >= 2 ? atrSeries[atrSeries.length - 2] : undefined;
+      const cur = atrSeries[atrSeries.length - 1];
+      const atrVal = prev ?? cur;
       if (atrVal !== null && atrVal !== undefined) {
         const atrFrac = (CFG.atrStop.stopMult * atrVal) / entryPrice;
         stopPct = Math.max(stopPct, atrFrac);
@@ -1254,7 +1356,11 @@ export function detectLiveSignalsV231(
     let chandelierAtrAtEntry: number | null = null;
     if (CFG.chandelierExit) {
       const chSeries = atr(a.candles, CFG.chandelierExit.period);
-      const v = chSeries[chSeries.length - 1];
+      // R54-V4-6 parity: prev-bar ATR (no look-ahead).
+      const prev =
+        chSeries.length >= 2 ? chSeries[chSeries.length - 2] : undefined;
+      const cur = chSeries[chSeries.length - 1];
+      const v = prev ?? cur;
       if (v !== null && v !== undefined) chandelierAtrAtEntry = v;
     }
 

@@ -423,3 +423,176 @@ def test_simulate_trade_ptp_blends_pnl():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ============================================================================
+# Coverage-gap tests (Round 3, audit-driven)
+# ============================================================================
+
+# --- compute_atr edge cases -------------------------------------------------
+def test_compute_atr_returns_none_on_insufficient_history():
+    # period=10 needs 11 bars
+    assert compute_atr([1, 2], [0.5, 1.5], [0.8, 1.2], period=10) is None
+
+
+def test_compute_atr_returns_none_on_mismatched_lengths():
+    # length mismatch: highs has 5, lows has 4 → guard returns None
+    assert compute_atr([1, 2, 3, 4, 5], [0.5, 1, 2, 3], [1, 2, 3, 4, 5], period=3) is None
+
+
+# --- adaptive_position_sizing — MAX_FACTOR cap (R13 audit Bug B3) -----------
+def test_adaptive_sizing_max_factor_cap_prevents_stacking():
+    """Time-boost(2) + Kelly(1.5) would multiply to factor=3 — capped at 4 ok,
+    but combined with adaptive tier=2 would become 6 → MUST clamp to 4."""
+    pnls = [0.01] * 8  # 100% wins → top Kelly tier
+    eff = adaptive_position_sizing(
+        base_risk_frac=0.4,
+        equity=1.01, peak_equity=1.01, challenge_day=10,
+        adaptive_tiers=[{"equityAbove": 0.0, "factor": 2.0}],
+        time_boost={"afterDay": 5, "equityBelow": 0.05, "factor": 3.0},
+        kelly_cfg={
+            "windowSize": 10, "minTrades": 5,
+            "tiers": [{"winRateAbove": 0.5, "multiplier": 2.0}],
+        },
+        recent_pnls=pnls,
+    )
+    # Without cap: 0.4 * 3.0 * 2.0 = 2.4. With MAX_FACTOR=4 cap: 0.4 * 4.0 = 1.6
+    assert abs(eff - 1.6) < 1e-9
+
+
+def test_adaptive_sizing_drawdown_shield_tightens():
+    eff = adaptive_position_sizing(
+        0.4, equity=0.97, peak_equity=1.0,
+        drawdown_shield={"belowEquity": -0.02, "factor": 0.25},
+    )
+    # equity-1 = -0.03 ≤ -0.02 → factor = min(1.0, 0.25) = 0.25
+    assert abs(eff - 0.4 * 0.25) < 1e-9
+
+
+def test_adaptive_sizing_time_boost_does_not_decrease_factor():
+    """time_boost has factor 0.5 but base tier already gave 1.5 → must NOT
+    decrease (time_boost only INCREASES per spec)."""
+    eff = adaptive_position_sizing(
+        0.4, equity=1.01, peak_equity=1.01, challenge_day=10,
+        adaptive_tiers=[{"equityAbove": 0.0, "factor": 1.5}],
+        time_boost={"afterDay": 5, "equityBelow": 0.10, "factor": 0.5},
+    )
+    assert abs(eff - 0.4 * 1.5) < 1e-9  # tier wins
+
+
+def test_adaptive_sizing_kelly_below_min_trades_skipped():
+    """fewer than minTrades → Kelly multiplier MUST not apply."""
+    eff = adaptive_position_sizing(
+        0.4, equity=1.0, peak_equity=1.0,
+        kelly_cfg={
+            "windowSize": 10, "minTrades": 10,
+            "tiers": [{"winRateAbove": 0.0, "multiplier": 2.0}],
+        },
+        recent_pnls=[0.01, 0.01, 0.01],  # only 3 — below minTrades
+    )
+    assert abs(eff - 0.4) < 1e-9  # base only
+
+
+def test_adaptive_sizing_negative_eff_clamped_to_zero():
+    """Pathological negative factor must clamp to 0 (no negative-size trades)."""
+    eff = adaptive_position_sizing(
+        base_risk_frac=-0.5, equity=1.0, peak_equity=1.0,
+    )
+    assert eff == 0.0
+
+
+# --- htf_trend_filter — apply="both" + base==0 ------------------------------
+def test_htf_apply_both_gates_both_directions():
+    closes_up = [100.0] * 50
+    closes_up[-1] = 110.0  # +10% uptrend
+    assert htf_trend_filter("short", closes_up, 49, 49, 0.03, "both")
+    assert not htf_trend_filter("long", closes_up, 49, 49, 0.03, "both")
+    closes_down = [100.0] * 50
+    closes_down[-1] = 90.0
+    assert htf_trend_filter("long", closes_down, 49, 49, 0.03, "both")
+
+
+def test_htf_zero_base_returns_no_gate():
+    closes = [0.0] + [100.0] * 49  # base==0
+    assert not htf_trend_filter("short", closes, 49, 49, 0.03, "short")
+
+
+# --- check_partial_take_profit — closeFraction<=0 / trigger<=0 disable ------
+def test_ptp_disabled_when_close_fraction_zero():
+    state = PartialTPState()
+    fired, state = check_partial_take_profit(
+        "long", 100.0, 105.0, 99.0, 102.0,
+        trigger_pct=0.02, close_fraction=0.0, state=state,
+    )
+    assert not fired
+    assert not state.triggered
+
+
+def test_ptp_close_fallback_fires_when_intra_bar_misses():
+    """High doesn't reach trigger but bar.close does (rare but in spec)."""
+    state = PartialTPState()
+    # entry=100, trigger 2% → 102. high=101.5 (intra-bar miss), close=102.5 → fallback fires
+    fired, state = check_partial_take_profit(
+        "long", 100.0, 101.5, 99.0, 102.5,
+        trigger_pct=0.02, close_fraction=0.30, state=state,
+    )
+    assert fired
+
+
+# --- min_equity_gain_skip — None-tolerance ----------------------------------
+def test_min_equity_gain_skip_none_max_only_min_acts():
+    assert not min_equity_gain_skip(equity=2.0, min_equity_gain=0.02, max_equity_gain=None)
+
+
+# --- simulate_trade — atr-stop liveCap rejection ----------------------------
+def test_simulate_trade_rejects_when_atr_stop_exceeds_live_cap():
+    """If ATR-stop fraction > liveMaxStopPct, simulate_trade returns None."""
+    # 10 flat bars then volatile spike to inflate ATR
+    closes = [100.0] * 10 + [120.0]
+    bars = []
+    prev = closes[0]
+    for i, c in enumerate(closes):
+        # Wide ranges → big ATR
+        bars.append(Bar(open=prev, high=c * 1.10, low=c * 0.90, close=c))
+        prev = c
+    cfg = SimConfig(
+        stop_pct=0.01, tp_pct=0.05, hold_bars=5,
+        atr_stop={"period": 5, "stopMult": 5.0},  # huge → forces eff_stop big
+        live_max_stop_pct=0.02,                   # tight cap
+    )
+    trade = simulate_trade("long", bars, entry_idx=10, cfg=cfg)
+    assert trade is None
+
+
+def test_simulate_trade_returns_none_if_entry_beyond_bars():
+    bars = _make_bars([100, 101, 102])
+    cfg = SimConfig(stop_pct=0.02, tp_pct=0.05, hold_bars=5)
+    assert simulate_trade("long", bars, entry_idx=99, cfg=cfg) is None
+
+
+def test_simulate_trade_short_hits_tp():
+    # Falls 5% — short TP at -5%
+    bars = _make_bars([100, 99, 97, 95, 92, 90])
+    cfg = SimConfig(stop_pct=0.05, tp_pct=0.05, hold_bars=10)
+    trade = simulate_trade("short", bars, entry_idx=1, cfg=cfg)
+    assert trade is not None
+    assert trade.exit_reason == "tp"
+    assert trade.raw_pnl > 0
+
+
+def test_simulate_trade_time_exit_path_taken():
+    """Flat market → no TP, no stop → time-exit closes position."""
+    # 10 flat bars at exactly 100 → unrealized always 0 → time exit fires
+    bars = _make_bars([100.0] * 10)
+    cfg = SimConfig(
+        stop_pct=0.05, tp_pct=0.05, hold_bars=8,
+        time_exit={"maxBarsWithoutGain": 3, "minGainR": 0.5},
+    )
+    trade = simulate_trade("long", bars, entry_idx=1, cfg=cfg)
+    assert trade is not None
+    assert trade.exit_reason == "time"
+
+
+# --- update_persisted_peak idempotent ---------------------------------------
+def test_update_persisted_peak_equal_value():
+    assert update_persisted_peak(1.05, 1.05) == 1.05

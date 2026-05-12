@@ -695,8 +695,12 @@ export default function CSVImport({ onImport }: CSVImportProps) {
                     >
                       {formatPnl(trade.pnl)}
                     </td>
-                    <td>{formatShortDate(trade.entryDate)}</td>
-                    <td>{formatShortDate(trade.exitDate)}</td>
+                    <td>
+                      {formatShortDate(trade.entryDate, { displayInUTC: true })}
+                    </td>
+                    <td>
+                      {formatShortDate(trade.exitDate, { displayInUTC: true })}
+                    </td>
                   </tr>
                 ))}
               </tbody>

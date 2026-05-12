@@ -2,9 +2,48 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { memo, useState, useEffect, useCallback } from "react";
 import { useTheme } from "@/components/ThemeProvider";
 import AccountSwitcher from "@/components/AccountSwitcher";
+import { useAuth } from "@/lib/auth-context";
+
+/**
+ * R67-r15 audit fix (HIGH): logout button. Without it, a Supabase session
+ * persisted on a shared device meant the next browser visitor was auto-
+ * logged in as the previous user with full RLS read/write access. Hidden
+ * when no user is authenticated (localStorage-only mode shows nothing).
+ */
+function SignOutButton() {
+  const { user, signOut } = useAuth();
+  if (!user) return null;
+  return (
+    <button
+      type="button"
+      className="sidebar-theme-toggle"
+      onClick={() => {
+        void signOut();
+      }}
+      title={`Sign out (${user.email ?? "current account"})`}
+    >
+      <svg
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+        <polyline points="16 17 21 12 16 7" />
+        <line x1="21" y1="12" x2="9" y2="12" />
+      </svg>
+      <span>Sign out</span>
+    </button>
+  );
+}
 
 const navItems = [
   {
@@ -197,18 +236,68 @@ const navItems = [
   },
 ];
 
+// R-Perf: extract nav-list rendering so theme toggles don't re-render the 9
+// SVG-icon Link list. Only re-renders when pathname changes.
+const NavLinks = memo(function NavLinks({
+  pathname,
+  onNavigate,
+}: {
+  pathname: string;
+  onNavigate: () => void;
+}) {
+  const isActive = (href: string) => {
+    if (href === "/") return pathname === "/";
+    return pathname === href || pathname.startsWith(href + "/");
+  };
+  return (
+    <>
+      {navItems.map((item) => {
+        const active = isActive(item.href);
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            prefetch={false}
+            // Phase 60 (R45-UI-L1): aria-current so screen readers
+            // announce the active nav item. Visual `.active` class
+            // alone wasn't accessible.
+            aria-current={active ? "page" : undefined}
+            className={`sidebar-link${active ? " active" : ""}`}
+            onClick={onNavigate}
+          >
+            <span className="sidebar-link-icon">{item.icon}</span>
+            {item.label}
+          </Link>
+        );
+      })}
+    </>
+  );
+});
+
 export default function Sidebar() {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const { theme, toggleTheme } = useTheme();
 
-  const isActive = (href: string) => {
-    if (href === "/") return pathname === "/";
-    // Phase 60 (R45-UI-L4): exact-or-segment-prefix match. Plain
-    // startsWith would match "/import" as active when route is
-    // "/imports-archive" (or any future route sharing the prefix).
-    return pathname === href || pathname.startsWith(href + "/");
-  };
+  // Stable callback so the memoised <NavLinks/> doesn't re-render on every
+  // theme toggle / parent re-render — an inline arrow would create a new
+  // function reference every render and defeat React.memo.
+  const handleNavigate = useCallback(() => setCollapsed(false), []);
+
+  // Mobile menu UX: Escape closes + lock body scroll while open.
+  useEffect(() => {
+    if (!collapsed) return;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setCollapsed(false);
+    };
+    document.addEventListener("keydown", handleKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", handleKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [collapsed]);
 
   return (
     <>
@@ -284,25 +373,7 @@ export default function Sidebar() {
         <AccountSwitcher />
 
         <nav className="sidebar-nav">
-          {navItems.map((item) => {
-            const active = isActive(item.href);
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                prefetch={false}
-                // Phase 60 (R45-UI-L1): aria-current so screen readers
-                // announce the active nav item. Visual `.active` class
-                // alone wasn't accessible.
-                aria-current={active ? "page" : undefined}
-                className={`sidebar-link${active ? " active" : ""}`}
-                onClick={() => setCollapsed(false)}
-              >
-                <span className="sidebar-link-icon">{item.icon}</span>
-                {item.label}
-              </Link>
-            );
-          })}
+          <NavLinks pathname={pathname} onNavigate={handleNavigate} />
         </nav>
 
         <button
@@ -347,6 +418,8 @@ export default function Sidebar() {
           )}
           <span>{theme === "dark" ? "Light Mode" : "Dark Mode"}</span>
         </button>
+
+        <SignOutButton />
 
         <div className="sidebar-footer">&copy; 2026 TradeVision</div>
       </aside>

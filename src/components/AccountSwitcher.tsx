@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SETTINGS_CHANGED_EVENT, SETTINGS_KEY } from "@/lib/constants";
 
 interface Account {
@@ -45,9 +45,13 @@ export default function AccountSwitcher() {
     loadFromStorage();
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail;
-      if (detail?.accounts) setAccounts(detail.accounts);
+      if (detail?.accounts) {
+        setAccounts(detail.accounts);
+      } else {
+        // Fallback: third-party dispatchers may omit accounts in detail.
+        loadFromStorage();
+      }
       if (detail?.activeAccountId) setActiveId(detail.activeAccountId);
-      if (!detail) loadFromStorage();
     };
     window.addEventListener(SETTINGS_CHANGED_EVENT, handler);
     window.addEventListener("storage", loadFromStorage);
@@ -94,7 +98,13 @@ export default function AccountSwitcher() {
   if (accounts.length < 2) return null;
 
   // Phase 78: length >= 2 guarded above.
-  const activeAccount = accounts.find((a) => a.id === activeId) || accounts[0]!;
+  // R67-r22 audit fix: memoise the .find() lookup so it doesn't run on
+  // every parent re-render. Also indexes accounts by id for O(1) lookup
+  // when the dropdown menu maps over them.
+  const activeAccount = useMemo(
+    () => accounts.find((a) => a.id === activeId) || accounts[0]!,
+    [accounts, activeId],
+  );
 
   return (
     <div className="account-switcher" ref={rootRef}>

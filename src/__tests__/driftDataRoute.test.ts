@@ -53,12 +53,16 @@ beforeAll(() => {
     }),
   );
 
-  // Peak-state
+  // Peak-state — R67-r14 audit fix: API now reads `challenge-peak.json`
+  // (the file Python actually writes via update_challenge_peak) instead
+  // of the never-produced `peak-state.json`. Field names mirror the
+  // Python writer: `peak_equity_usd` + `last_update_ts`.
   fs.writeFileSync(
-    path.join(testStateDir, "peak-state.json"),
+    path.join(testStateDir, "challenge-peak.json"),
     JSON.stringify({
-      peak_equity: 103_000,
-      peak_at: "2026-04-26T12:00:00Z",
+      peak_equity_usd: 103_000,
+      last_update_ts: "2026-04-26T12:00:00Z",
+      started_at: "2026-04-26",
     }),
   );
 
@@ -173,15 +177,16 @@ describe("/api/drift-data route", () => {
     expect(body.equity.totalPnlPct).toBeCloseTo(2.5, 2);
     expect(body.equity.peakUsd).toBe(103_000);
 
-    // Drift: live +2.5% on day 3, R28_V5 median at day 3 = (10/4)*3 = 7.5%
-    // → drift = 2.5 - 7.5 = -5.0 (slightly underperforming)
+    // Drift: live +2.5% on day 3, R28_V6_PASSLOCK median grows to +8% (FTMO
+    // step-1 target) by day 4 → at day 3 = (8/4)*3 = 6.0%
+    // → drift = 2.5 - 6.0 = -3.5 (slightly underperforming)
     expect(body.drift).not.toBeNull();
-    expect(body.drift.driftPct).toBeCloseTo(-5.0, 1);
+    expect(body.drift.driftPct).toBeCloseTo(-3.5, 1);
 
     // Backtest band: 31 entries (day 0..30)
     expect(body.backtestBand).toHaveLength(31);
     expect(body.backtestBand[0].median).toBe(0);
-    expect(body.backtestBand[4].median).toBeCloseTo(10, 5);
+    expect(body.backtestBand[4].median).toBeCloseTo(8, 5);
 
     // Daily PnL bars: 4 anchors → 4 bars
     expect(body.dailyPnlBars.length).toBe(4);
@@ -204,8 +209,8 @@ describe("/api/drift-data route", () => {
     expect(body.recentEvents[0].event).toBe("news_blackout_skip");
 
     // Meta
-    expect(body.meta.backtestRef.name).toBe("R28_V5");
-    expect(body.meta.backtestRef.passRatePct).toBe(58.82);
+    expect(body.meta.backtestRef.name).toBe("R28_V6_PASSLOCK");
+    expect(body.meta.backtestRef.passRatePct).toBe(64.77);
   });
 
   it("flags pass status as 'passed' when total P&L ≥ +10%", async () => {
@@ -329,5 +334,280 @@ describe("/api/drift-data route", () => {
       vi.doUnmock("@/lib/supabase-server");
       delete process.env.FTMO_MONITOR_AUTH_BYPASS;
     }
+  });
+
+  // R67-Final (R14-A7, 2026-05-07): cross-tenant slug enumeration mitigation.
+  // Non-admin authenticated users must not be able to read arbitrary
+  // state-dirs via `?ftmo_tf=<slug>` — they could otherwise enumerate other
+  // tenants' live equity. Admin (FTMO_ADMIN_EMAIL match) keeps full access.
+  describe("R67-Final cross-tenant slug enumeration guard", () => {
+    it("blocks slug-based reads for non-admin authenticated users (403)", async () => {
+      process.env.FTMO_ADMIN_EMAIL = "admin@example.com";
+      vi.doMock("@/lib/supabase-server", () => ({
+        createServerSupabaseClient: async () => ({
+          auth: {
+            getUser: async () => ({
+              data: {
+                user: { id: "user-attacker", email: "attacker@example.com" },
+              },
+              error: null,
+            }),
+          },
+        }),
+      }));
+      try {
+        const { GET } = await import("@/app/api/drift-data/route");
+        const resp = await GET(makeReq("?ftmo_tf=2h-trend-v5-quartz-lite-r28"));
+        expect(resp.status).toBe(403);
+      } finally {
+        vi.doUnmock("@/lib/supabase-server");
+        delete process.env.FTMO_ADMIN_EMAIL;
+      }
+    });
+
+    it("allows slug-based reads for the admin email (200)", async () => {
+      process.env.FTMO_ADMIN_EMAIL = "admin@example.com";
+      vi.doMock("@/lib/supabase-server", () => ({
+        createServerSupabaseClient: async () => ({
+          auth: {
+            getUser: async () => ({
+              data: { user: { id: "user-admin", email: "admin@example.com" } },
+              error: null,
+            }),
+          },
+        }),
+      }));
+      try {
+        const { GET } = await import("@/app/api/drift-data/route");
+        const resp = await GET(makeReq("?ftmo_tf=2h-trend-v5-quartz-lite-r28"));
+        expect(resp.status).toBe(200);
+        const body = await resp.json();
+        expect(body.meta.currentTfSlug).toBe("2h-trend-v5-quartz-lite-r28");
+      } finally {
+        vi.doUnmock("@/lib/supabase-server");
+        delete process.env.FTMO_ADMIN_EMAIL;
+      }
+    });
+
+    it("admin email match is case-insensitive", async () => {
+      process.env.FTMO_ADMIN_EMAIL = "Admin@Example.com";
+      vi.doMock("@/lib/supabase-server", () => ({
+        createServerSupabaseClient: async () => ({
+          auth: {
+            getUser: async () => ({
+              data: { user: { id: "user-admin", email: "ADMIN@example.com" } },
+              error: null,
+            }),
+          },
+        }),
+      }));
+      try {
+        const { GET } = await import("@/app/api/drift-data/route");
+        const resp = await GET(makeReq("?ftmo_tf=2h-trend-v5-quartz-lite-r28"));
+        expect(resp.status).toBe(200);
+      } finally {
+        vi.doUnmock("@/lib/supabase-server");
+        delete process.env.FTMO_ADMIN_EMAIL;
+      }
+    });
+
+    it("non-admin can still read the default state-dir (no slug param)", async () => {
+      process.env.FTMO_ADMIN_EMAIL = "admin@example.com";
+      vi.doMock("@/lib/supabase-server", () => ({
+        createServerSupabaseClient: async () => ({
+          auth: {
+            getUser: async () => ({
+              data: {
+                user: { id: "user-tenant", email: "tenant@example.com" },
+              },
+              error: null,
+            }),
+          },
+        }),
+      }));
+      try {
+        const { GET } = await import("@/app/api/drift-data/route");
+        const resp = await GET(makeReq());
+        expect(resp.status).toBe(200);
+      } finally {
+        vi.doUnmock("@/lib/supabase-server");
+        delete process.env.FTMO_ADMIN_EMAIL;
+      }
+    });
+
+    it("blocks slug reads when FTMO_ADMIN_EMAIL is unset (fail-closed)", async () => {
+      // No FTMO_ADMIN_EMAIL → no user can pass a slug. Default-dir reads
+      // still work (covered above).
+      delete process.env.FTMO_ADMIN_EMAIL;
+      vi.doMock("@/lib/supabase-server", () => ({
+        createServerSupabaseClient: async () => ({
+          auth: {
+            getUser: async () => ({
+              data: { user: { id: "user-1", email: "anyone@example.com" } },
+              error: null,
+            }),
+          },
+        }),
+      }));
+      try {
+        const { GET } = await import("@/app/api/drift-data/route");
+        const resp = await GET(makeReq("?ftmo_tf=2h-trend-v5-quartz-lite-r28"));
+        expect(resp.status).toBe(403);
+      } finally {
+        vi.doUnmock("@/lib/supabase-server");
+      }
+    });
+
+    it("FTMO_MONITOR_AUTH_BYPASS=1 still allows slug reads (single-owner VPS)", async () => {
+      process.env.FTMO_MONITOR_AUTH_BYPASS = "1";
+      try {
+        const { GET } = await import("@/app/api/drift-data/route");
+        const resp = await GET(makeReq("?ftmo_tf=2h-trend-v5-quartz-lite-r28"));
+        expect(resp.status).toBe(200);
+      } finally {
+        delete process.env.FTMO_MONITOR_AUTH_BYPASS;
+      }
+    });
+  });
+
+  // R4 audit (2026-05-12, Bug-Audit Round 4 — Multi-Account State):
+  // end-to-end multi-tenant isolation for `meta.availableTfSlugs`. A
+  // non-admin authenticated user must only see the slugs they're mapped
+  // to in `user_ftmo_accounts` — never the full set of slugs that exist
+  // on disk (which would let them enumerate other tenants' bot names +
+  // liveness via the drift-data /403 timing channel afterwards).
+  describe("R4 cross-tenant slug picker isolation", () => {
+    it("non-admin user only sees their mapped slugs in availableTfSlugs", async () => {
+      // The default state-dir from beforeAll is already on disk; add a
+      // sibling so the picker has two slugs to discriminate between.
+      const cwd = process.cwd();
+      const siblingDir = path.join(cwd, "ftmo-state-tenant-b-only");
+      fs.mkdirSync(siblingDir, { recursive: true });
+      fs.writeFileSync(path.join(siblingDir, "account.json"), "{}");
+
+      // Mock supabase: authenticated tenant-A user; `user_ftmo_accounts`
+      // returns only `tenant-a-only` for them.
+      vi.doMock("@/lib/supabase-server", () => ({
+        createServerSupabaseClient: async () => ({
+          auth: {
+            getUser: async () => ({
+              data: { user: { id: "user-tenant-a", email: "a@example.com" } },
+              error: null,
+            }),
+          },
+          from: (_table: string) => ({
+            select: () => ({
+              eq: (col: string, val: string) => {
+                if (col === "user_id" && val === "user-tenant-a") {
+                  // Match getAllowedSlugsForUser pattern (single .eq → array)
+                  return Promise.resolve({
+                    data: [{ tf_slug: "tenant-a-only" }],
+                    error: null,
+                  });
+                }
+                return Promise.resolve({ data: [], error: null });
+              },
+            }),
+          }),
+        }),
+      }));
+      try {
+        // Also create a tenant-a-only dir so the picker can include it.
+        const tenantADir = path.join(cwd, "ftmo-state-tenant-a-only");
+        fs.mkdirSync(tenantADir, { recursive: true });
+        fs.writeFileSync(path.join(tenantADir, "account.json"), "{}");
+        try {
+          const { GET } = await import("@/app/api/drift-data/route");
+          const resp = await GET(makeReq());
+          expect(resp.status).toBe(200);
+          const body = await resp.json();
+          // Non-admin must see ONLY `tenant-a-only` — not `tenant-b-only`,
+          // not the default "" slug, not any of the other prod state-dirs.
+          expect(body.meta.availableTfSlugs).toContain("tenant-a-only");
+          expect(body.meta.availableTfSlugs).not.toContain("tenant-b-only");
+        } finally {
+          fs.rmSync(tenantADir, { recursive: true, force: true });
+        }
+      } finally {
+        vi.doUnmock("@/lib/supabase-server");
+        fs.rmSync(siblingDir, { recursive: true, force: true });
+      }
+    });
+
+    it("admin sees every slug discoverable on disk", async () => {
+      const cwd = process.cwd();
+      const t1 = path.join(cwd, "ftmo-state-admin-vis-1");
+      const t2 = path.join(cwd, "ftmo-state-admin-vis-2");
+      fs.mkdirSync(t1, { recursive: true });
+      fs.mkdirSync(t2, { recursive: true });
+      process.env.FTMO_ADMIN_EMAIL = "admin@example.com";
+      vi.doMock("@/lib/supabase-server", () => ({
+        createServerSupabaseClient: async () => ({
+          auth: {
+            getUser: async () => ({
+              data: {
+                user: { id: "u-admin", email: "admin@example.com" },
+              },
+              error: null,
+            }),
+          },
+        }),
+      }));
+      try {
+        const { GET } = await import("@/app/api/drift-data/route");
+        const resp = await GET(makeReq());
+        expect(resp.status).toBe(200);
+        const body = await resp.json();
+        expect(body.meta.availableTfSlugs).toContain("admin-vis-1");
+        expect(body.meta.availableTfSlugs).toContain("admin-vis-2");
+      } finally {
+        vi.doUnmock("@/lib/supabase-server");
+        delete process.env.FTMO_ADMIN_EMAIL;
+        fs.rmSync(t1, { recursive: true, force: true });
+        fs.rmSync(t2, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // R4 audit (2026-05-12): readJsonl cache invalidation on file rotation.
+  // Python rotates executor-log.jsonl by `path.rename(archive)` + reopen,
+  // creating a new inode at the same path. Without an inode in the cache
+  // key, a worst-case rotation-then-rewrite to identical (mtime, size)
+  // would serve stale entries. With the R4 fix, the inode disambiguates.
+  describe("R4 readJsonl cache rotation safety", () => {
+    it("cache invalidates when the underlying inode changes", async () => {
+      // Use the FTMO_STATE_DIR from beforeAll which already has an
+      // executor-log.jsonl. Build module fresh, hit it once, rotate, hit
+      // again, and ensure the response reflects the post-rotation file.
+      const logPath = path.join(testStateDir, "executor-log.jsonl");
+      // First request: cache populated with v1 entries.
+      const { GET } = await import("@/app/api/drift-data/route");
+      const r1 = await GET(makeReq());
+      expect(r1.status).toBe(200);
+      const b1 = await r1.json();
+      expect(b1.recentEvents.length).toBeGreaterThan(0);
+      // Rotate: rename current away, write a new file with a single
+      // distinct marker event. New inode, possibly different mtime/size.
+      const archive = `${logPath}.r4-archive`;
+      fs.renameSync(logPath, archive);
+      try {
+        const marker = {
+          ts: new Date().toISOString(),
+          event: "r4_post_rotation_marker",
+        };
+        fs.writeFileSync(logPath, JSON.stringify(marker) + "\n");
+        const r2 = await GET(makeReq());
+        expect(r2.status).toBe(200);
+        const b2 = await r2.json();
+        // Must see the new marker event, NOT just the pre-rotation entries.
+        const sawMarker = (b2.recentEvents as Array<{ event: string }>).some(
+          (e) => e.event === "r4_post_rotation_marker",
+        );
+        expect(sawMarker).toBe(true);
+      } finally {
+        // Restore original log so subsequent tests pass.
+        fs.renameSync(archive, logPath);
+      }
+    });
   });
 });

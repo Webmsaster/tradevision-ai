@@ -12,10 +12,25 @@
  * Gated behind FTMO_MONITOR_ENABLED (same flag as /api/ftmo-state) to keep
  * the endpoint 404 in public deployments.
  */
-import { existsSync, readFileSync, statSync, readdirSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  statSync,
+  readdirSync,
+  openSync,
+  readSync,
+  closeSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
+import { isPlaceholderSupabaseUrl } from "@/lib/supabase";
+import { isRateLimited } from "@/utils/distributedRateLimit";
+import { pragueDay } from "@/utils/ftmoDaytrade24h";
+import {
+  canUserReadSlug,
+  getAllowedSlugsForUser,
+} from "@/lib/userFtmoAccounts";
 
 // ---------------------------------------------------------------------------
 // Config / constants
@@ -26,18 +41,35 @@ const JSONL_MAX_BYTES = STATE_FILE_MAX_BYTES * 10;
 const DEFAULT_START_BALANCE = 100_000;
 
 /**
- * R28_V5 backtest reference (from MEMORY.md champion).
- * 58.82% V4-Engine pass-rate · median 4d · p90 ~7d · max 30d challenge.
- * The expected-band heuristic shape: equity curve grows roughly linearly to
- * +10% (FTMO step-1 target) by day 4 in the median case, with a p10/p90
- * envelope that fans out from day 0 (±0%) to day 7 (±5%).
+ * R28_V6_PASSLOCK backtest reference — Round 60 Champion (2026-05-04).
+ * Pass-Lock-Mode (`closeAllOnTargetReached`) eliminates Day-30-force-close
+ * drag-down → +8.15pp pass-rate vs R28_V6 baseline.
+ *
+ * Real numbers (R60 sharded sweep, 88-136 windows pre-final):
+ *   pass-rate:       64.77% (preliminary)
+ *   median pass-day: 4d (FTMO floor)
+ *   final equity p10: ~-8% (improved vs R28_V6 -10.74%)
+ *   final equity median: +9% (locked at target via close-all)
+ *
+ * Failure breakdown (vs R28_V6 in parens):
+ *   profit_target reached: 64.77%   (56.62%)
+ *   daily_loss:            22.7%    (30.88%)
+ *   total_loss:            12.5%    (11.03%)
+ *   give_back:              0%      (1.47%)
+ *
+ * Live selector: FTMO_TF=2h-trend-v5-r28-v6-passlock
+ *
+ * Live deploy expectation: -3 to -5pp drift from backtest → ~60% live single,
+ * ~94% min-1-pass with 3-strategy multi-account (PASSLOCK + TITANIUM + AMBER).
+ *
+ * NOTE: target is +8% (not +10%) — that's FTMO Step 1's actual rule.
  */
 const BACKTEST_REF = {
-  name: "R28_V5",
-  passRatePct: 58.82,
+  name: "R28_V6_PASSLOCK",
+  passRatePct: 64.77,
   medianPassDay: 4,
-  p90PassDay: 7,
-  profitTargetPct: 10,
+  p90PassDay: 5, // tighter than R28_V6 because pass-lock locks early
+  profitTargetPct: 8, // FTMO Step 1 actual target
   dailyLossCapPct: 5,
   totalLossCapPct: 10,
   maxChallengeDays: 30,
@@ -46,7 +78,7 @@ const BACKTEST_REF = {
 // FTMO rule constants
 const FTMO_DAILY_LOSS_CAP = 0.05; // -5%
 const FTMO_TOTAL_LOSS_CAP = 0.1; // -10%
-const FTMO_PROFIT_TARGET = 0.1; // +10%
+const FTMO_PROFIT_TARGET = 0.08; // +8% (FTMO Step 1 actual rule, was incorrectly 10%)
 
 // ---------------------------------------------------------------------------
 // Auth gate
@@ -71,15 +103,53 @@ function isEnabled(): boolean {
  *     auth doesn't exist in this deployment.
  *   - `FTMO_MONITOR_AUTH_BYPASS=1` is set (escape hatch for local dev /
  *     headless-vps where the user IS the only one with shell access).
+ *
+ * R67-Final (R14-A7 close-out, 2026-05-07): cross-tenant slug enumeration
+ * mitigation. Previously any authenticated user could pass `?ftmo_tf=<slug>`
+ * and read another tenant's live equity by slug-guessing. Now:
+ *   - Returns the caller's email alongside `ok` so the GET handler can
+ *     enforce a per-user → allowed-slug policy.
+ *   - The handler restricts slug-based reads to the admin email
+ *     (`FTMO_ADMIN_EMAIL`); non-admin authenticated users can only read
+ *     the bot's default state-dir (no `?ftmo_tf=` param).
+ *   - This is the single-owner-VPS pattern. Multi-tenant SaaS deployments
+ *     would need a `user_ftmo_accounts` mapping table — deferred until a
+ *     real multi-tenant deployment exists.
  */
+// Round 60 (Security Audit Round 2): emit a once-per-process warning
+// when FTMO_MONITOR_AUTH_BYPASS is enabled while Supabase IS configured.
+// This is the misconfiguration that risks PII leakage on a multi-tenant
+// VPS — bypass is meant for headless single-owner setups only.
+const bypassWarned = { logged: false };
+
 async function isAuthenticated(): Promise<{
   ok: boolean;
   reason?: string;
+  email?: string | null;
+  userId?: string | null;
+  // R29 (2026-05-07): expose the live Supabase client so the GET handler
+  // can run the multi-tenant slug-mapping lookup as a SECOND chance after
+  // the admin-email FAST path. Returning it here avoids re-creating the
+  // SSR-cookied client (which would re-read cookies, slightly wasteful).
+  supabase?: Awaited<ReturnType<typeof createServerSupabaseClient>>;
 }> {
   if (
     process.env.FTMO_MONITOR_AUTH_BYPASS === "1" ||
     process.env.FTMO_MONITOR_AUTH_BYPASS === "true"
   ) {
+    if (
+      !bypassWarned.logged &&
+      process.env.NEXT_PUBLIC_SUPABASE_URL &&
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY &&
+      !isPlaceholderSupabaseUrl(process.env.NEXT_PUBLIC_SUPABASE_URL)
+    ) {
+      bypassWarned.logged = true;
+      console.warn(
+        "[drift-data] FTMO_MONITOR_AUTH_BYPASS=1 active WHILE Supabase is " +
+          "configured — every visitor can read live equity/positions. " +
+          "Disable the bypass unless this is a single-owner headless VPS.",
+      );
+    }
     return { ok: true, reason: "bypass" };
   }
   let supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>;
@@ -98,10 +168,45 @@ async function isAuthenticated(): Promise<{
   try {
     const { data, error } = await supabase.auth.getUser();
     if (error || !data?.user) return { ok: false };
-    return { ok: true };
+    return {
+      ok: true,
+      email: data.user.email ?? null,
+      userId: data.user.id ?? null,
+      supabase,
+    };
   } catch {
     return { ok: false };
   }
+}
+
+/**
+ * R67-Final (R14-A7): admin-only slug-based reads.
+ *
+ * Returns true iff the caller is permitted to pass `?ftmo_tf=<slug>` and
+ * read an arbitrary state-dir. Rules:
+ *   - `bypass` reason (FTMO_MONITOR_AUTH_BYPASS=1) → permitted (single-owner
+ *     headless VPS, the env-var IS the admin gate).
+ *   - `no-auth-backend` reason → permitted (Supabase not configured;
+ *     localStorage-only deployment, nothing tenant-isolated to leak).
+ *   - Authenticated user → permitted ONLY if `FTMO_ADMIN_EMAIL` is set AND
+ *     matches the caller's email (case-insensitive).
+ *   - Otherwise → denied (403). Non-admin users are still allowed to read
+ *     the default state-dir (no slug param) — see GET handler.
+ */
+function canReadArbitrarySlug(auth: {
+  ok: boolean;
+  reason?: string;
+  email?: string | null;
+}): boolean {
+  if (auth.reason === "bypass") return true;
+  if (auth.reason === "no-auth-backend") return true;
+  // R67-RR3-Round2 audit fix: trim env value + caller email so
+  // whitespace (CRLF from Windows .env, trailing space from shell heredoc)
+  // doesn't fail-closed-lock-out the legit admin.
+  const adminEmail = process.env.FTMO_ADMIN_EMAIL?.trim();
+  if (!adminEmail) return false;
+  if (!auth.email) return false;
+  return auth.email.trim().toLowerCase() === adminEmail.toLowerCase();
 }
 
 // ---------------------------------------------------------------------------
@@ -147,8 +252,25 @@ function resolveStateDir(tfSlug: string | null): {
 /**
  * Discover sibling state directories so the UI can show a TF picker.
  * Lists every top-level dir matching `ftmo-state` or `ftmo-state-<slug>`.
+ *
+ * R67-RR3 (Bug-Audit Round 3 — CRITICAL cross-tenant leak): the caller
+ * MUST filter this list per-user before exposing it to the response.
+ * A non-admin tenant on a shared SaaS deploy could previously read the
+ * full slug list and infer (a) other tenants' bot names and (b) which
+ * bots are alive (slug present = state-dir exists). The GET handler now
+ * passes the auth context here and we filter accordingly.
  */
-function discoverStateDirs(): string[] {
+async function discoverStateDirs(
+  auth: {
+    ok: boolean;
+    reason?: string;
+    email?: string | null;
+    userId?: string | null;
+    supabase?: Awaited<ReturnType<typeof createServerSupabaseClient>>;
+  },
+  isAdmin: boolean,
+): Promise<string[]> {
+  let all: string[];
   try {
     const entries = readdirSync(process.cwd(), { withFileTypes: true });
     const slugs: string[] = [];
@@ -160,8 +282,31 @@ function discoverStateDirs(): string[] {
         if (TF_SLUG_RE.test(slug)) slugs.push(slug);
       }
     }
-    return slugs.sort();
+    all = slugs.sort();
   } catch {
+    return [];
+  }
+  // Admin / bypass / no-auth-backend → see everything (single-owner VPS
+  // pattern; same authority as `canReadArbitrarySlug`).
+  if (isAdmin) return all;
+  // Authenticated multi-tenant user → only the slugs they're explicitly
+  // mapped to in `user_ftmo_accounts`. If we don't have a supabase client
+  // (createServerSupabaseClient returned null) we can't verify mappings
+  // safely → return [] (fail-closed).
+  if (!auth.userId || !auth.supabase) return [];
+  try {
+    const allowed = await getAllowedSlugsForUser(auth.userId, auth.supabase);
+    const allowedSet = new Set(allowed);
+    return all.filter((s) => allowedSet.has(s));
+  } catch (e) {
+    // R4 audit: surface mapping-lookup failures so operators can spot a
+    // broken RLS / missing migration in a multi-tenant deploy. Previously
+    // silent → tenants saw an empty picker with no diagnostic.
+    console.warn(
+      `[drift-data] discoverStateDirs slug-filter failed for user ${auth.userId}: ${
+        (e as Error).message ?? e
+      } — returning [] (fail-closed)`,
+    );
     return [];
   }
 }
@@ -182,6 +327,29 @@ function readJson<T>(stateDir: string, name: string, fallback: T): T {
   }
 }
 
+// R67-RR3 (Bug-Audit Round 3): process-wide cache so we don't re-read the
+// entire JSONL on every request when nothing changed. Key = absolute path,
+// value = {mtimeMs, size, ino, entries}. With 60 polls/min the executor log
+// barely grows between adjacent requests; a stat-only check avoids the
+// multi-MB read+parse cycle on >99% of calls.
+//
+// R4 audit (2026-05-12): added `ino` to the cache key. Python rotates the
+// log via `path.rename(archive)` + open(append) → a NEW inode is created
+// at the same path. Without an inode check, a worst-case rotation-then-
+// rewrite (e.g. crash-restart that re-populates the file to the same size
+// at the same mtime second) could serve the OLD parse for the NEW file.
+// `ino` is the authoritative identity of the underlying file.
+const _jsonlCache = new Map<
+  string,
+  {
+    mtimeMs: number;
+    size: number;
+    ino: number;
+    entries: Record<string, unknown>[];
+  }
+>();
+const JSONL_TAIL_BYTES = 256 * 1024; // 256 KiB tail window (~ last few hundred events)
+
 function readJsonl(
   stateDir: string,
   name: string,
@@ -192,7 +360,42 @@ function readJsonl(
   try {
     const stat = statSync(p);
     if (stat.size > JSONL_MAX_BYTES) return [];
-    const lines = readFileSync(p, "utf8").trim().split("\n");
+    // Fast path: file unchanged since last read → reuse cached parse.
+    // R4 audit: include inode so a rotated-then-rewritten file at the same
+    // path can never reuse a stale parse.
+    const cached = _jsonlCache.get(p);
+    if (
+      cached &&
+      cached.mtimeMs === stat.mtimeMs &&
+      cached.size === stat.size &&
+      cached.ino === stat.ino
+    ) {
+      // Slice to maxEntries in case caller asks for fewer than we cached.
+      return cached.entries.slice(-maxEntries);
+    }
+    // Tail read: only the last JSONL_TAIL_BYTES bytes from the file, NOT
+    // the whole 10MB. Drop the first (possibly partial) line so we don't
+    // emit a malformed entry. For most healthy logs this still captures
+    // many hundreds of events, far more than maxEntries needs.
+    let buf: string;
+    if (stat.size <= JSONL_TAIL_BYTES) {
+      buf = readFileSync(p, "utf8");
+    } else {
+      const fd = openSync(p, "r");
+      try {
+        const tail = Buffer.alloc(JSONL_TAIL_BYTES);
+        const offset = stat.size - JSONL_TAIL_BYTES;
+        readSync(fd, tail, 0, JSONL_TAIL_BYTES, offset);
+        buf = tail.toString("utf8");
+        // Drop everything up to and including the first newline — that
+        // chunk is the tail of a line we sliced through.
+        const nl = buf.indexOf("\n");
+        if (nl >= 0) buf = buf.slice(nl + 1);
+      } finally {
+        closeSync(fd);
+      }
+    }
+    const lines = buf.trim().split("\n");
     const out: Record<string, unknown>[] = [];
     // walk from the end so we tail efficiently
     for (let i = lines.length - 1; i >= 0 && out.length < maxEntries; i--) {
@@ -203,6 +406,22 @@ function readJsonl(
       } catch {
         // skip malformed
       }
+    }
+    // Cache the parsed entries keyed by (mtimeMs,size,ino) so the next call
+    // can short-circuit. R4 audit: ino added — see comment on _jsonlCache.
+    _jsonlCache.set(p, {
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+      ino: stat.ino,
+      entries: out,
+    });
+    // Cap cache to last 32 files (multi-tenant slug enumeration could
+    // otherwise grow it unbounded). R4 audit: use >= so the post-insert
+    // size is bounded at 32, not 33 (off-by-one).
+    while (_jsonlCache.size > 32) {
+      const firstKey = _jsonlCache.keys().next().value;
+      if (firstKey) _jsonlCache.delete(firstKey);
+      else break;
     }
     return out;
   } catch {
@@ -325,7 +544,9 @@ function reconstructEquityHistory(
     const t = new Date(e.ts).getTime();
     if (!Number.isFinite(t)) continue;
     if (firstTs === null) firstTs = t;
-    const day = Math.floor((t - firstTs) / (24 * 3600 * 1000));
+    // R8 fix: Prague-day-aware bucketing (matches engine + Python executor;
+    // raw UTC-ms floor was off-by-one on DST boundaries).
+    const day = pragueDay(t) - pragueDay(firstTs);
     points.push({
       ts: e.ts,
       day,
@@ -342,7 +563,8 @@ function reconstructEquityHistory(
   const lastTsMs = new Date(lastTs).getTime();
   if (Number.isFinite(lastTsMs)) {
     if (firstTs === null) firstTs = lastTsMs;
-    const lastDay = Math.floor((lastTsMs - firstTs) / (24 * 3600 * 1000));
+    // R8 fix: Prague-day-aware bucketing (see above).
+    const lastDay = pragueDay(lastTsMs) - pragueDay(firstTs);
     // De-dupe if the last reset already covers today's equity
     const last = points[points.length - 1];
     if (!last || last.equityUsd !== liveEquityUsd || last.day !== lastDay) {
@@ -560,6 +782,28 @@ export async function GET(req: NextRequest) {
     return new NextResponse("Not Found", { status: 404 });
   }
 
+  // Round 60 (Security Audit Round 2): rate-limit even authenticated
+  // requests. The endpoint reads ~7 small JSON files + tails a JSONL log on
+  // every call (~10 ms warm). A logged-in attacker (or buggy client polling
+  // in a tight loop) could turn that into a sustained read-amp DoS. Cap at
+  // 60/min/IP — the dashboard polls at most every 5 s so legit traffic is
+  // safely under the limit.
+  const ip =
+    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    req.headers.get("x-real-ip") ||
+    "unknown";
+  if (
+    await isRateLimited("drift-data", ip, { windowMs: 60_000, maxHits: 60 })
+  ) {
+    return NextResponse.json(
+      { error: "rate_limited" },
+      {
+        status: 429,
+        headers: { "Cache-Control": "no-store", "Retry-After": "60" },
+      },
+    );
+  }
+
   // Round 57 (2026-05-03): require Supabase auth so other tenants can't
   // read live equity/positions through a known slug.
   const auth = await isAuthenticated();
@@ -571,6 +815,31 @@ export async function GET(req: NextRequest) {
   }
 
   const tfSlug = req.nextUrl.searchParams.get("ftmo_tf");
+  // R67-Final (R14-A7, 2026-05-07): cross-tenant slug enumeration close-out.
+  // Multi-tenant SaaS users — admin sees all, regular users see only the
+  // slugs they're explicitly mapped to.
+  //
+  // FAST path: admin-email match (`FTMO_ADMIN_EMAIL`) or env-based bypass
+  //            for single-owner VPS / no-auth-backend deploys.
+  // SECOND chance (R29): if the FAST path fails AND tfSlug is provided,
+  //            consult the `user_ftmo_accounts` mapping table. RLS keeps
+  //            tenants isolated; a missing migration fails CLOSED (helper
+  //            returns false on any DB error).
+  // OTHERWISE: 403. Non-admin users without a mapping can still read the
+  //            default state-dir (no `?ftmo_tf=` param) which is the bot's
+  //            own FTMO_STATE_DIR.
+  if (tfSlug && !canReadArbitrarySlug(auth)) {
+    let mappedAllowed = false;
+    if (auth.userId && auth.supabase) {
+      mappedAllowed = await canUserReadSlug(auth.userId, tfSlug, auth.supabase);
+    }
+    if (!mappedAllowed) {
+      return NextResponse.json(
+        { error: "forbidden" },
+        { status: 403, headers: { "Cache-Control": "no-store" } },
+      );
+    }
+  }
   const resolved = resolveStateDir(tfSlug);
   if (!resolved) {
     return NextResponse.json(
@@ -592,11 +861,17 @@ export async function GET(req: NextRequest) {
     equity_at_day_start_usd?: number;
     snapped_at?: string;
   }>(stateDir, "daily-reset.json", {});
-  const peakState = readJson<{ peak_equity?: number; peak_at?: string }>(
-    stateDir,
-    "peak-state.json",
-    {},
-  );
+  // R67-r14 audit fix (HIGH): Python writes `challenge-peak.json` with
+  // `peak_equity_usd` + `last_update_ts` (see ftmo_executor.py:900,
+  // update_challenge_peak). The API was reading the wrong file
+  // (`peak-state.json`) which never gets produced in production →
+  // `peakUsd` always fell back to live-equity, and `peakAt` was always
+  // null (showed "Challenge peak at —" forever, hiding real drawdowns
+  // vs all-time peak).
+  const peakState = readJson<{
+    peak_equity_usd?: number;
+    last_update_ts?: string;
+  }>(stateDir, "challenge-peak.json", {});
   const openPosRaw = readJson<{ positions: OpenPosition[] }>(
     stateDir,
     "open-positions.json",
@@ -660,9 +935,41 @@ export async function GET(req: NextRequest) {
   else if (dailyPnlPct <= -FTMO_DAILY_LOSS_CAP * 100) passStatus = "failed";
 
   const peakUsd =
-    peakState.peak_equity ?? Math.max(liveEquityUsd, startBalanceUsd);
+    peakState.peak_equity_usd ?? Math.max(liveEquityUsd, startBalanceUsd);
   const newsMarkers = extractNewsMarkers(executorLog);
-  const recentEvents = executorLog.slice(-20).reverse();
+  // R67-RR3 (Bug-Audit Round 3): per-event JSON-size cap. A single rogue
+  // executor log entry (huge stack trace, debug-dumped MT5 tick array,
+  // etc.) could otherwise inflate every drift-data response to megabytes.
+  // Truncate any oversized string field to keep the row under MAX_EVENT_BYTES.
+  const MAX_EVENT_BYTES = 1024;
+  const _capEvent = (evt: ExecutorEvent): ExecutorEvent => {
+    const raw = JSON.stringify(evt);
+    if (raw.length <= MAX_EVENT_BYTES) return evt;
+    // Walk keys, truncate any string > 200 chars; preserve ts/event.
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(evt)) {
+      if (k === "ts" || k === "event") {
+        out[k] = v;
+      } else if (typeof v === "string" && v.length > 200) {
+        out[k] = v.slice(0, 200) + `…[+${v.length - 200} chars truncated]`;
+      } else {
+        out[k] = v;
+      }
+    }
+    // If STILL over budget after string-truncation, drop non-essential
+    // fields keeping only ts/event/reason for forensic minimum.
+    if (JSON.stringify(out).length > MAX_EVENT_BYTES) {
+      const minimal: Record<string, unknown> = {
+        ts: out.ts,
+        event: out.event,
+        _truncated: true,
+      };
+      if ("reason" in out) minimal.reason = out.reason;
+      return minimal as ExecutorEvent;
+    }
+    return out as ExecutorEvent;
+  };
+  const recentEvents = executorLog.slice(-20).reverse().map(_capEvent);
   const positions = annotatePositions(openPosRaw.positions);
   const health = computeHealth(
     executorLog,
@@ -670,9 +977,14 @@ export async function GET(req: NextRequest) {
     positions.length > 0,
   );
 
-  // FTMO rule progress (0..1, 1 = at the cap)
+  // FTMO rule progress (0..1, 1 = at the cap).
+  // Divisor is BACKTEST_REF.profitTargetPct (FTMO Step 1 actual rule = 8%),
+  // not hardcoded 10 — was a stale ref to old 10% target. Round 60 audit fix.
   const ruleProgress = {
-    profitTargetProgress: Math.max(0, Math.min(1, totalPnlPct / 10)),
+    profitTargetProgress: Math.max(
+      0,
+      Math.min(1, totalPnlPct / BACKTEST_REF.profitTargetPct),
+    ),
     dailyLossUsed: Math.max(0, -dailyPnlPct / (FTMO_DAILY_LOSS_CAP * 100)),
     totalLossUsed: Math.max(0, -totalPnlPct / (FTMO_TOTAL_LOSS_CAP * 100)),
     drawdownVsPeakPct:
@@ -684,10 +996,25 @@ export async function GET(req: NextRequest) {
       meta: {
         backtestRef: BACKTEST_REF,
         stateDir: stateDirRel,
-        availableTfSlugs: discoverStateDirs(),
+        availableTfSlugs: await discoverStateDirs(
+          auth,
+          canReadArbitrarySlug(auth),
+        ),
         currentTfSlug: tfSlug ?? "",
         startBalanceUsd,
         generatedAt: new Date().toISOString(),
+        // R67-r14 audit fix (HIGH): expose the actual bot-write timestamp
+        // (latest executor-log event, fallback account update). The page
+        // STALE-badge previously checked `generatedAt` which is set by
+        // this API on every response — a dead Python bot + live Next API
+        // always looked fresh. Now we surface the bot's clock.
+        botLastWriteAt: (() => {
+          const lastEvt = executorLog[executorLog.length - 1];
+          if (lastEvt?.ts) return lastEvt.ts;
+          const acctTs = (account as unknown as { updated_at?: string })
+            .updated_at;
+          return acctTs ?? null;
+        })(),
       },
       header: {
         challengeName: BACKTEST_REF.name,
@@ -705,7 +1032,7 @@ export async function GET(req: NextRequest) {
         dailyPnlPct,
         totalPnlPct,
         peakUsd,
-        peakAt: peakState.peak_at ?? null,
+        peakAt: peakState.last_update_ts ?? null,
         dlCapPct: -FTMO_DAILY_LOSS_CAP * 100,
         tlCapPct: -FTMO_TOTAL_LOSS_CAP * 100,
         targetPct: FTMO_PROFIT_TARGET * 100,

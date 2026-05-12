@@ -98,6 +98,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { atr } from "@/utils/indicators";
 import type { Candle } from "@/utils/indicators";
+import { withFileLockSync } from "@/utils/processLock";
 import {
   detectAsset,
   type Daytrade24hAssetCfg,
@@ -331,6 +332,26 @@ const STATE_FILENAME = "v4-engine.json";
 export function loadState(stateDir: string, cfgLabel: string): FtmoLiveStateV4 {
   const filePath = path.join(stateDir, STATE_FILENAME);
   if (!fs.existsSync(filePath)) return initialState(cfgLabel);
+  // R67-RR3 (Bug-Audit Round 3): wrap the entire read+migrate+rewrite cycle
+  // in a cross-process file lock. PM2-restart overlap (graceful old worker
+  // still draining while new worker boots) could otherwise have two procs
+  // performing the v1→v2 / v2→v3 migrations concurrently, each renaming
+  // the same file under the other → one of them ends up with a
+  // backed-up state path that doesn't exist on disk anymore. The lock
+  // serialises load attempts cross-process; the retry-once below still
+  // handles intra-process renames from saveState.
+  const lockPath = path.join(stateDir, `${STATE_FILENAME}.loadlock`);
+  return withFileLockSync(
+    lockPath,
+    () => _loadStateInner(filePath, cfgLabel),
+    // staleMs=2000 — if a previous holder crashed mid-load we want to
+    // recover quickly rather than block the bot on every poll-tick.
+    { timeoutMs: 3000, staleMs: 2000, backoffMs: 10 },
+  );
+}
+
+function _loadStateInner(filePath: string, cfgLabel: string): FtmoLiveStateV4 {
+  if (!fs.existsSync(filePath)) return initialState(cfgLabel);
   // Retry-once: a concurrent rename-into-place can race with our read.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -404,9 +425,13 @@ export function loadState(stateDir: string, cfgLabel: string): FtmoLiveStateV4 {
             (pos as OpenPositionV4).entryBarIdx = anchor;
           }
         }
-        obj.schemaVersion = SCHEMA_VERSION;
+        // R67 audit fix: hardcode 3, not SCHEMA_VERSION. If/when SCHEMA_VERSION
+        // bumps to 4, a v2 state would skip directly to 4 without ever running
+        // the v3→v4 migration. Each migration step must target its specific
+        // next-version literal so chains compose correctly.
+        obj.schemaVersion = 3;
         console.warn(
-          `[V4] in-place schema migration v2 → v${SCHEMA_VERSION} for ${cfgLabel} ` +
+          `[V4] in-place schema migration v2 → v3 for ${cfgLabel} ` +
             `(entryBarIdx re-anchored to state.barsSeen=${anchor} for ${obj.openPositions.length} open position(s))`,
         );
       }
@@ -421,8 +446,20 @@ export function loadState(stateDir: string, cfgLabel: string): FtmoLiveStateV4 {
         } catch {
           /* ignore — fresh state will overwrite anyway */
         }
+        // R67-RR3 (Bug-Audit Round 3): distinguish a rollback (state from a
+        // NEWER schema version than this binary supports) from a generic
+        // mismatch. A rollback usually means we deployed a binary one git
+        // SHA OLDER than what wrote the state — the operator should see
+        // this clearly so they can decide whether to redeploy forward vs
+        // accept the data-loss reset.
+        const isRollback =
+          typeof obj.schemaVersion === "number" &&
+          obj.schemaVersion > SCHEMA_VERSION;
+        const tag = isRollback
+          ? "STATE FROM NEWER VERSION (rollback?)"
+          : "STATE MISMATCH";
         console.error(
-          `[V4] STATE MISMATCH — backed up to ${backupPath}. ` +
+          `[V4] ${tag} — backed up to ${backupPath}. ` +
             `Old: ${obj.cfgLabel}/${obj.schemaVersion}, ` +
             `New: ${cfgLabel}/${SCHEMA_VERSION}`,
         );
@@ -817,7 +854,28 @@ function processPositionExit(
   }
 
   // 2b. Multi-level PTP.
+  // R67-r17 audit fix (HIGH): bring multi-level PTP to parity with the
+  // single-tier branch above. Recompute stopHit here because the
+  // single-tier `if (cfg.partialTakeProfit)` block above scopes its
+  // local stopHit to that branch.
+  //   1. Same-bar stop-guard. If stop also hit on this bar without a
+  //      gap-past-the-PTP-trigger, STOP wins — pessimistic engine
+  //      convention (matches single-tier line 808 + backtest 4228).
+  //      Without this, a bar that wicks up to PTP then crashes through
+  //      stop greedily booked partial gains AND took the stop loss.
+  //   2. After at least one level realises, auto-move stop to BE
+  //      (direction-aware) and set `pos.beActive=true`. Without this,
+  //      a multi-level config could fire all levels, lock partial
+  //      gains, then book a full -R loss on the remaining size when
+  //      the original stop fires.
+  //   3. Reset chandelier highWatermark to candle.close after partial
+  //      realisation (parity with line 819).
   if (cfg.partialTakeProfitLevels && cfg.partialTakeProfitLevels.length > 0) {
+    const stopHitMulti =
+      pos.direction === "long"
+        ? candle.low <= pos.stopPrice
+        : candle.high >= pos.stopPrice;
+    let realisedAny = false;
     while (pos.ptpLevelIdx < cfg.partialTakeProfitLevels.length) {
       const lvl = cfg.partialTakeProfitLevels[pos.ptpLevelIdx];
       const triggerPrice =
@@ -829,8 +887,26 @@ function processPositionExit(
           ? candle.high >= triggerPrice
           : candle.low <= triggerPrice;
       if (!lvlHit) break;
+      // Stop-guard: if stop also hit and we did not gap past the trigger,
+      // stop wins for THIS level (and all subsequent levels — they would
+      // require a higher wick than the one that already ended the trade).
+      const gapPastLvl =
+        pos.direction === "long"
+          ? candle.open >= triggerPrice
+          : candle.open <= triggerPrice;
+      if (stopHitMulti && !gapPastLvl) break;
       pos.ptpLevelsRealized += lvl!.closeFraction * lvl!.triggerPct;
       pos.ptpLevelIdx++;
+      realisedAny = true;
+    }
+    if (realisedAny) {
+      if (pos.direction === "long") {
+        if (pos.entryPrice > pos.stopPrice) pos.stopPrice = pos.entryPrice;
+      } else {
+        if (pos.entryPrice < pos.stopPrice) pos.stopPrice = pos.entryPrice;
+      }
+      pos.beActive = true;
+      pos.highWatermark = candle.close;
     }
   }
 
@@ -868,19 +944,52 @@ function processPositionExit(
     }
   }
 
-  // 5. SL/TP cross-detection at this bar.
+  // 5. SL/TP cross-detection at this bar — with weekend-gap parity to backtest
+  //    `runFtmoDaytrade24h` (ftmoDaytrade24h.ts ~line 4428-4470).
+  //
+  //    Crypto markets DO trade weekends but exhibit liquidity-thin gaps after
+  //    Friday-NY close vs Sunday-Asia open. FTMO Forex symbols gap over the
+  //    weekend. Both cases need realistic gap-fill semantics:
+  //
+  //    - gap-past-TP (favorable):  exitPrice = bar.open (we capture the gap).
+  //                                 Tie-break: gap-past-TP wins over same-bar stop.
+  //    - gap-past-stop (adverse):  exitPrice = bar.open (slippage through stop).
+  //                                 The position closes at a worse price than
+  //                                 stopPrice — realised loss can exceed stopPct.
+  //    - normal cross (no gap):    exitPrice = stopPrice / tpPrice (cross-fill).
+  //
+  //    The -1.5R floor in `computeEffPnl` (GAP_TAIL_MULT) only takes effect
+  //    when the engine ACTUALLY emits a sub-stop exit price. Without this
+  //    block the engine clamps every loss to exactly -stopPct → gap-tail
+  //    realism is silently disabled and pass-rate is over-stated.
   if (pos.direction === "long") {
-    if (candle.low <= pos.stopPrice) {
-      return { exitPrice: pos.stopPrice, reason: "stop" };
+    const stopHit = candle.low <= pos.stopPrice;
+    const tpHit = candle.high >= pos.tpPrice;
+    const gapPastTp = candle.open >= pos.tpPrice;
+    if (tpHit && gapPastTp) {
+      return { exitPrice: candle.open, reason: "tp" };
     }
-    if (candle.high >= pos.tpPrice) {
+    if (stopHit) {
+      const exitPrice =
+        candle.open < pos.stopPrice ? candle.open : pos.stopPrice;
+      return { exitPrice, reason: "stop" };
+    }
+    if (tpHit) {
       return { exitPrice: pos.tpPrice, reason: "tp" };
     }
   } else {
-    if (candle.high >= pos.stopPrice) {
-      return { exitPrice: pos.stopPrice, reason: "stop" };
+    const stopHit = candle.high >= pos.stopPrice;
+    const tpHit = candle.low <= pos.tpPrice;
+    const gapPastTp = candle.open <= pos.tpPrice;
+    if (tpHit && gapPastTp) {
+      return { exitPrice: candle.open, reason: "tp" };
     }
-    if (candle.low <= pos.tpPrice) {
+    if (stopHit) {
+      const exitPrice =
+        candle.open > pos.stopPrice ? candle.open : pos.stopPrice;
+      return { exitPrice, reason: "stop" };
+    }
+    if (tpHit) {
       return { exitPrice: pos.tpPrice, reason: "tp" };
     }
   }
@@ -899,11 +1008,34 @@ function processPositionExit(
 /**
  * Compute realised effPnl for a closed position. Uses cfg.leverage and
  * pos.effRisk. Includes PTP partial-realised blend.
+ *
+ * R67-r17 (R15-A7 KRITISCH fix, 2026-05-07): apply broker execution costs to
+ * `rawPnl` so live-engine matches backtest realism. Previously the live engine
+ * charged 0bp roundtrip while the backtest deducts costBp×2 + slippageBp×2 +
+ * swap-per-day per crossing → ~76bp/trade drag missing → 9-15pp pass-rate
+ * inflation on R28_V6 / PASSLOCK at 30 trades × 3-5× leverage.
+ *
+ * Cost model mirrors `ftmoDaytrade24h.ts` lines 4273/4626 (round-trip cost via
+ * entryEff/exitEff price-shift, equivalent to subtracting `costBp/10000` from
+ * `rawPnl` for the realised fraction) and lines 4655/4665 (slippage round-trip
+ * subtracted as `slippageBp/10000 × 2 × remainingFraction`) and lines
+ * 4667/4694 (swap charged per Prague-day overnight crossing). Funding-rate
+ * deduction (lines 4711-4740) is NOT replicated here because the live engine
+ * does not yet thread `fundingBySymbol` into pollLive — funding is currently
+ * only an entry-side filter for the live path.
+ *
+ * IMPORTANT: PTP partial-fills already realised entry+exit slippage at the
+ * partial leg (see `ftmoDaytrade24h.ts` line 4424 `ptpFillCost`). To avoid
+ * double-charging, slippage on the remainder applies only to the unclosed
+ * fraction. Cost (commission) is charged round-trip on the WHOLE position
+ * (PTP partial commission was already captured implicitly via the partial
+ * exitEff/entryEff blending). Swap accrues over the full hold regardless.
  */
 function computeEffPnl(
   pos: OpenPositionV4,
   exitPrice: number,
   cfg: FtmoDaytrade24hConfig,
+  exitTime?: number,
 ): { rawPnl: number; effPnl: number } {
   let rawPnl =
     pos.direction === "long"
@@ -918,6 +1050,53 @@ function computeEffPnl(
       .reduce((s, l) => s + l.closeFraction, 0);
     rawPnl = pos.ptpLevelsRealized + (1 - totalClosed) * rawPnl;
   }
+
+  // R67-r17: lookup per-asset broker cost fields (defaults: 0 if undefined).
+  const assetCfg = cfg.assets.find((a) => a.symbol === pos.symbol);
+  const costBp = assetCfg?.costBp ?? 0;
+  const slipBp = assetCfg?.slippageBp ?? 0;
+  const swapBpPerDay = assetCfg?.swapBpPerDay ?? 0;
+
+  // 1) Round-trip commission cost (entry + exit), in price-fraction terms.
+  //    Backtest applies via `entryEff = entry*(1+cost/2)` / `exitEff =
+  //    exitPrice*(1-cost/2)` which is equivalent to subtracting `cost` from
+  //    rawPnl up to O(cost²). For typical 5-50bp this matches within 0.001bp.
+  if (costBp > 0) {
+    rawPnl -= costBp / 10000;
+  }
+
+  // 2) Slippage on remainder. Backtest line 4665: applied only to the fraction
+  //    NOT already closed via PTP (partial leg paid its slippage at fill).
+  if (slipBp > 0) {
+    let remainingFraction = 1;
+    if (pos.ptpTriggered && cfg.partialTakeProfit) {
+      remainingFraction = 1 - cfg.partialTakeProfit.closeFraction;
+    } else if (pos.ptpLevelsRealized > 0 && cfg.partialTakeProfitLevels) {
+      const totalClosed = cfg.partialTakeProfitLevels
+        .slice(0, pos.ptpLevelIdx)
+        .reduce((s, l) => s + l.closeFraction, 0);
+      remainingFraction = Math.max(0, 1 - totalClosed);
+    }
+    rawPnl -= (slipBp / 10000) * 2 * remainingFraction;
+  }
+
+  // 3) Overnight swap, charged per UTC-midnight crossing while the position
+  //    was held. Mirrors backtest line 4667-4695. Triple-swap on Wed→Thu is
+  //    omitted here — crypto swap is symmetric and the simpler model
+  //    matches V4-Sim crypto behavior where Wed-Thu is a single crossing.
+  //    (Forex CFDs deviate but the crypto live engine is the only path
+  //    that exercises this code.)
+  if (swapBpPerDay > 0 && exitTime !== undefined) {
+    const MS_PER_DAY = 86_400_000;
+    // UTC-midnight crossings between entry and exit.
+    const entryDay = Math.floor(pos.entryTime / MS_PER_DAY);
+    const exitDay = Math.floor(exitTime / MS_PER_DAY);
+    const crossings = Math.max(0, exitDay - entryDay);
+    if (crossings > 0) {
+      rawPnl -= (swapBpPerDay / 10000) * crossings;
+    }
+  }
+
   const effPnl = Math.max(
     rawPnl * cfg.leverage * pos.effRisk,
     -pos.effRisk * 1.5,
@@ -974,6 +1153,14 @@ export function pollLive(
   cfg: FtmoDaytrade24hConfig,
   // For test harness: precomputed ATR series. Optional in live (we compute on the fly).
   atrSeriesByAsset?: Record<string, (number | null)[]>,
+  // R29-R7: per-asset funding-rate series, pre-aligned to candle indices.
+  // When provided, detectAsset uses cfg.fundingRateFilter / asset overrides
+  // to skip entries on extreme funding (perp-futures crowdedness signal).
+  fundingByAsset?: Record<string, (number | null)[]>,
+  // R29-R8: per-asset entry-allowed mask. When series[i] === false at the
+  // current bar, detectAsset skips the entry. Used for cross-sectional
+  // momentum, regime classifiers, ML gates — anything pre-computed.
+  entryAllowedByAsset?: Record<string, (boolean | null)[]>,
 ): PollResult {
   const result: PollResult = {
     decision: { closes: [], opens: [] },
@@ -989,8 +1176,14 @@ export function pollLive(
   if (state.stoppedReason) {
     result.notes.push(`engine stopped: ${state.stoppedReason}`);
     result.challengeEnded = true;
-    result.failReason =
-      state.stoppedReason === "time" ? null : state.stoppedReason;
+    // Round 62 (Audit Fix): preserve stoppedReason verbatim. Previously
+    // "time" was mapped to null → re-poll on a failed-by-time challenge
+    // returned `failReason: null`, losing the failure mode. The only
+    // path that sets stoppedReason="time" is the maxDays force-close
+    // branch when `passed=false` (line ~1205) — i.e. failed-by-time.
+    // Passed challenges leave stoppedReason=null (see same line), so
+    // this branch only fires on genuine failures.
+    result.failReason = state.stoppedReason;
     return result;
   }
 
@@ -1046,7 +1239,13 @@ export function pollLive(
       typeof cfg.challengeStartTs === "number" && cfg.challengeStartTs > 0
         ? cfg.challengeStartTs
         : lastBar.openTime;
-    state.lastBarOpenTime = lastBar.openTime;
+    // R67 audit fix: do NOT set lastBarOpenTime here. If pollLive throws
+    // mid-tick after this point, lastBarOpenTime was persisted but
+    // barsSeen=0 so the idempotency guard below doesn't trip — the bar
+    // gets re-processed on next poll with potentially half-corrupt state
+    // (dayPeak/challengePeak already anchored from the crashed tick).
+    // Instead, lastBarOpenTime is set only at successful end-of-poll
+    // (line ~1861 in the bookkeeping section).
     state.dayStart = state.equity;
     // Round 57 V4-3 (Fix 3): defensive — clamp the initial peak anchors
     // to ≥ 1.0. If a state-corruption (or partial-write race) had set
@@ -1089,9 +1288,16 @@ export function pollLive(
   // DL fails or tripping false ones. Log + skip the rollover; on the
   // next forward-progressing bar the normal `>` branch will fire.
   if (newDay < state.day) {
+    // R67 audit fix: a regressed bar was being processed normally below,
+    // so any new entry's `entryDay = dayIndex(matched.entryTime, ...)` would
+    // be the regressed (older/negative) value and pollute state.tradingDays.
+    // Mark the bar as seen and short-circuit — same effect as the idempotency
+    // guard for already-processed bars.
     result.notes.push(
-      `time regression detected: newDay=${newDay} state.day=${state.day} — keeping current dayStart/dayPeak`,
+      `time regression detected: newDay=${newDay} state.day=${state.day} — skipping bar`,
     );
+    state.lastBarOpenTime = lastBar.openTime;
+    return result;
   } else if (newDay > state.day) {
     state.day = newDay;
     state.dayStart = state.equity;
@@ -1162,7 +1368,12 @@ export function pollLive(
           }
         }
       }
-      const { rawPnl, effPnl } = computeEffPnl(pos, exitPrice, cfg);
+      const { rawPnl, effPnl } = computeEffPnl(
+        pos,
+        exitPrice,
+        cfg,
+        lastBar.openTime,
+      );
       state.equity *= 1 + effPnl;
       const closed: ClosedTradeV4 = {
         ticketId: pos.ticketId,
@@ -1211,6 +1422,12 @@ export function pollLive(
     // — the operator should investigate the feed, not the strategy.
     if (!passed && result.failReason !== "feed_lost") {
       result.failReason = "time";
+    }
+    // R67-r14 audit: API contract is "failReason is non-null only on
+    // failure". A passed window with stale feed_lost from an earlier code
+    // path could mis-classify downstream. Clear on pass.
+    if (passed) {
+      result.failReason = null;
     }
     // Phase 59 (R44-V4-13): increment barsSeen + lastBarOpenTime so a
     // re-poll on the same bar is idempotent. Without this, a follow-up
@@ -1261,7 +1478,12 @@ export function pollLive(
       holdBars,
     );
     if (exit) {
-      const { rawPnl, effPnl } = computeEffPnl(pos, exit.exitPrice, cfg);
+      const { rawPnl, effPnl } = computeEffPnl(
+        pos,
+        exit.exitPrice,
+        cfg,
+        lastBar.openTime,
+      );
       void rawPnl;
       state.equity *= 1 + effPnl;
       const closed: ClosedTradeV4 = {
@@ -1378,8 +1600,86 @@ export function pollLive(
     state.mtmEquity >= 1 + cfg.profitTarget
   ) {
     state.firstTargetHitDay = state.day;
-    state.pausedAtTarget = !!cfg.pauseAtTargetReached;
+    // R67 audit fix: when closeAllOnTargetReached=true but
+    // pauseAtTargetReached=false (config misuse), the close-all force-loop
+    // below was gated on BOTH flags, so it never ran → Pass-Lock silently
+    // failed. Force-set pausedAtTarget when close-all-on-target is on so
+    // the lock is always coherent regardless of the pause flag's value.
+    state.pausedAtTarget =
+      !!cfg.pauseAtTargetReached || !!cfg.closeAllOnTargetReached;
+    if (cfg.closeAllOnTargetReached && !cfg.pauseAtTargetReached) {
+      result.notes.push(
+        "config note: closeAllOnTargetReached=true forces pauseAtTargetReached behavior for coherent Pass-Lock",
+      );
+    }
     result.targetHit = true;
+    // Round 60 Pass-Lock-Mode: force-close all open positions immediately on
+    // first target-hit. Mathematically lossless at the moment of trigger
+    // (mtm ≥ target by predicate, so realised post-close ≥ target), but
+    // eliminates downstream Day-30-force-close drag-down failures.
+    //
+    // R67 audit (Round 2): drop the `cfg.pauseAtTargetReached` co-gate. The
+    // R67-r1 fix above already force-sets `state.pausedAtTarget = true` when
+    // closeAllOnTargetReached=true (see line ~1442), so the entries-block is
+    // coherent. The original co-gate halved the PASSLOCK edge for the misuse
+    // case (closeAll=true, pause=false): pausedAtTarget was set but force-
+    // close skipped → drift-back below target until SL/TP/maxDays.
+    // firstTargetHitDay !== null still blocks re-fire of this branch.
+    if (cfg.closeAllOnTargetReached && state.openPositions.length > 0) {
+      for (let i = state.openPositions.length - 1; i >= 0; i--) {
+        const pos = state.openPositions[i]!;
+        const cs = candlesByAsset[pos.sourceSymbol];
+        let exitPrice: number | null = null;
+        if (cs && cs.length > 0) {
+          const matched = findCandleAtTime(cs, lastBar.openTime);
+          if (matched) {
+            exitPrice = matched.close;
+          } else {
+            for (let j = cs.length - 1; j >= 0; j--) {
+              if (cs[j]!.openTime <= lastBar.openTime) {
+                exitPrice = cs[j]!.close;
+                break;
+              }
+            }
+          }
+        }
+        if (exitPrice == null) {
+          exitPrice = pos.lastKnownPrice ?? pos.entryPrice;
+        }
+        const { rawPnl, effPnl } = computeEffPnl(
+          pos,
+          exitPrice,
+          cfg,
+          lastBar.openTime,
+        );
+        state.equity *= 1 + effPnl;
+        const closed: ClosedTradeV4 = {
+          ticketId: pos.ticketId,
+          symbol: pos.symbol,
+          direction: pos.direction,
+          entryTime: pos.entryTime,
+          exitTime: lastBar.openTime,
+          entryPrice: pos.entryPrice,
+          exitPrice,
+          rawPnl,
+          effPnl,
+          exitReason: "manual",
+          day: state.day,
+          entryDay: dayIndex(pos.entryTime, state.challengeStartTs),
+        };
+        state.closedTrades.push(closed);
+        result.decision.closes.push({
+          ticketId: pos.ticketId,
+          exitPrice,
+          exitReason: "manual",
+        });
+        if (cfg.kellySizing) {
+          state.kellyPnls.push({ closeTime: lastBar.openTime, effPnl });
+        }
+      }
+      state.openPositions = [];
+      state.mtmEquity = state.equity;
+    }
   }
   // After target hit, EVERY subsequent calendar day counts as a trading-day
   // (the bot pings the broker daily to satisfy minTradingDays). Mirrors
@@ -1529,7 +1829,23 @@ export function pollLive(
       // detectAsset accepts a slice — we pass the whole array (live convention).
       let trades: Daytrade24hTrade[];
       try {
-        trades = detectAsset(candles, asset, cfg, crossCandles, extra);
+        const fundingFull = fundingByAsset?.[sourceKey];
+        const fundingSlice = fundingFull
+          ? fundingFull.slice(0, candles.length)
+          : undefined;
+        const allowedFull = entryAllowedByAsset?.[sourceKey];
+        const allowedSlice = allowedFull
+          ? allowedFull.slice(0, candles.length)
+          : undefined;
+        trades = detectAsset(
+          candles,
+          asset,
+          cfg,
+          crossCandles,
+          extra,
+          fundingSlice,
+          allowedSlice,
+        );
       } catch (err) {
         result.skipped.push({
           asset: asset.symbol,
@@ -1598,7 +1914,28 @@ export function pollLive(
         // BEFORE effRisk back-derive. Was: back-derive used base stopPct,
         // then atrStop pushed stopPct higher → modelled loss exceeded
         // LIVE_LOSS_CAP for atrStop-heavy configs (V5_QUARTZ family).
-        const tpPct = asset.tpPct ?? cfg.tpPct;
+        let tpPct = asset.tpPct ?? cfg.tpPct;
+        // Round 60 Vol-Adaptive tpMult: scale tpPct by ATR-fraction regime.
+        // Anchor ATR on prev-bar (length-2), not current-bar (length-1) —
+        // mirrors R54-V4-6 atrStop fix to avoid subtle entry-bar look-ahead
+        // in backtest. Live mode hits this same prev-bar lookup naturally
+        // (current bar isn't closed yet at signal time).
+        if (cfg.volAdaptiveTpMult) {
+          const va = cfg.volAdaptiveTpMult;
+          const series = atr(candles, va.atrPeriod);
+          const prev =
+            series.length >= 2 ? series[series.length - 2] : undefined;
+          const cur = series[series.length - 1];
+          const v = prev ?? cur;
+          if (v != null && matched.entryPrice > 0) {
+            const atrFrac = v / matched.entryPrice;
+            if (atrFrac < va.lowVolThreshold) {
+              tpPct *= va.lowVolFactor;
+            } else if (atrFrac > va.highVolThreshold) {
+              tpPct *= va.highVolFactor;
+            }
+          }
+        }
         let stopPct = asset.stopPct ?? cfg.stopPct;
         if (cfg.atrStop) {
           // Round 54 (R54-V4-6): anchor ATR on prev-bar (length-2), not
@@ -1632,7 +1969,17 @@ export function pollLive(
         const volMult = cfg.liveCaps
           ? Math.min(matched.volMult ?? 1.0, 1.0)
           : (matched.volMult ?? 1.0);
-        let effRisk = asset.riskFrac * factor * volMult;
+        // Round 61 Adaptive Day-Risk: scale by challenge day-index. Tighter
+        // sizing in early days for capital preservation, full push on
+        // FTMO-floor target day. state.day is 0-based.
+        let dayRiskMult = 1.0;
+        if (
+          cfg.dayBasedRiskMultiplier &&
+          state.day < cfg.dayBasedRiskMultiplier.conservativeFirstDays
+        ) {
+          dayRiskMult = cfg.dayBasedRiskMultiplier.conservativeFactor;
+        }
+        let effRisk = asset.riskFrac * factor * volMult * dayRiskMult;
         if (cfg.liveCaps && effRisk > cfg.liveCaps.maxRiskFrac) {
           effRisk = cfg.liveCaps.maxRiskFrac;
         }
@@ -1771,6 +2118,12 @@ export function simulate(
   startBar: number,
   endBar: number,
   cfgLabel = "sim",
+  // R29-R7: optional per-asset funding-rate series (pre-aligned to candle indices).
+  // Forward to pollLive → detectAsset for fundingRateFilter evaluation.
+  fundingByAsset?: Record<string, (number | null)[]>,
+  // R29-R8: optional per-asset entry-allowed boolean mask (cross-sectional
+  // momentum, regime classifier, ML). Forward to pollLive → detectAsset.
+  entryAllowedByAsset?: Record<string, (boolean | null)[]>,
 ): SimulateResult {
   const state = initialState(cfgLabel);
 
@@ -1798,7 +2151,30 @@ export function simulate(
         slicedAtr[k] = atrSeriesByAsset[k]!.slice(0, i + 1);
       }
     }
-    const r = pollLive(state, sliceByAsset, cfg, slicedAtr);
+    // R29-R7: slice per-asset funding series to match candle slice (1:1 align).
+    let slicedFunding: Record<string, (number | null)[]> | undefined;
+    if (fundingByAsset) {
+      slicedFunding = {};
+      for (const k of Object.keys(fundingByAsset)) {
+        slicedFunding[k] = fundingByAsset[k]!.slice(0, i + 1);
+      }
+    }
+    // R29-R8: slice per-asset entry-allowed mask to match candle slice.
+    let slicedAllowed: Record<string, (boolean | null)[]> | undefined;
+    if (entryAllowedByAsset) {
+      slicedAllowed = {};
+      for (const k of Object.keys(entryAllowedByAsset)) {
+        slicedAllowed[k] = entryAllowedByAsset[k]!.slice(0, i + 1);
+      }
+    }
+    const r = pollLive(
+      state,
+      sliceByAsset,
+      cfg,
+      slicedAtr,
+      slicedFunding,
+      slicedAllowed,
+    );
     if (r.challengeEnded) {
       if (r.passed) {
         return {

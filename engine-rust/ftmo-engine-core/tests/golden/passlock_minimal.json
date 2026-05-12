@@ -1,0 +1,60 @@
+{
+  "name": "passlock_minimal_2bar_pass",
+  "description": "2-bar PASSLOCK end-to-end: open long bar 0, TP hit bar 1, target=4%, min_days=1 → passed=true.",
+  "cfg": {
+    "label": "GOLDEN_PASSLOCK_MINI",
+    "leverage": 2.0,
+    "tpPct": 0.05,
+    "stopPct": 0.02,
+    "holdBars": 24,
+    "profitTarget": 0.04,
+    "maxDailyLoss": 0.05,
+    "maxTotalLoss": 0.1,
+    "minTradingDays": 1,
+    "maxDays": 5,
+    "assets": [],
+    "pauseAtTargetReached": false,
+    "closeAllOnTargetReached": true
+  },
+  "bars_by_source": {
+    "BTCUSDT": [
+      {
+        "openTime": 1700000000000,
+        "open": 100.0,
+        "high": 100.5,
+        "low": 99.5,
+        "close": 100.0
+      },
+      {
+        "openTime": 1700000030000,
+        "open": 100.5,
+        "high": 106.0,
+        "low": 100.0,
+        "close": 105.5
+      }
+    ]
+  },
+  "signals_by_bar": {
+    "0": [
+      {
+        "symbol": "BTC-TREND",
+        "sourceSymbol": "BTCUSDT",
+        "direction": "long",
+        "entryTime": 1700000000000,
+        "entryPrice": 100.0,
+        "stopPrice": 98.0,
+        "tpPrice": 105.0,
+        "stopPct": 0.02,
+        "tpPct": 0.05,
+        "effRisk": 0.4
+      }
+    ]
+  },
+  "expected": {
+    "passed": true,
+    "challenge_ended": true,
+    "min_equity_pct": 0.039,
+    "max_equity_pct": 0.041,
+    "trades_count": 1
+  }
+}

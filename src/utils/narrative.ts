@@ -82,7 +82,9 @@ export function buildThesis(inputs: ThesisInputs): TradeThesis {
   const eventWord =
     structure.lastEvent === "none"
       ? "no structural break"
-      : structure.lastEvent.replace("-", " ");
+      : // R6 narrative: replaceAll so multi-hyphen events (e.g.
+        // "lower-low-break") render fully as "lower low break".
+        structure.lastEvent.replaceAll("-", " ");
 
   const vwapRel =
     vwap === null
@@ -135,7 +137,12 @@ export function buildThesis(inputs: ThesisInputs): TradeThesis {
     executionPara =
       "No trade. Wait for a clear setup: either a break of structure in a new direction, or a clean retest of a key level with signal alignment.";
   } else if (snapshot.levels) {
-    executionPara = `Suggested plan: enter around ${fmt(snapshot.levels.entry)}, stop at ${fmt(snapshot.levels.stopLoss)} (2×ATR = about ${fmt(snapshot.indicators.atr)} distance), target ${fmt(snapshot.levels.takeProfit)} (3×ATR) for a 1:${snapshot.levels.riskReward.toFixed(2)} R:R. Size the position so a full stop is ≤1% of your account.`;
+    // R6 narrative: riskReward = reward / stopDistance becomes Infinity when
+    // stopDistance is 0 (e.g. ATR=0 in degenerate data). Render "—" instead
+    // of "Infinity" to keep the narrative copy clean.
+    const rr = snapshot.levels.riskReward;
+    const rrText = Number.isFinite(rr) ? rr.toFixed(2) : "—";
+    executionPara = `Suggested plan: enter around ${fmt(snapshot.levels.entry)}, stop at ${fmt(snapshot.levels.stopLoss)} (2×ATR = about ${fmt(snapshot.indicators.atr)} distance), target ${fmt(snapshot.levels.takeProfit)} (3×ATR) for a 1:${rrText} R:R. Size the position so a full stop is ≤1% of your account.`;
   } else {
     executionPara =
       "ATR-based stop/target data is not yet available — wait for the next closed candle.";

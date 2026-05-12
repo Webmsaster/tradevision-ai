@@ -17,12 +17,18 @@ const APP_SHELL_FILES = [
   '/icon-512.png',
 ];
 
-// Install event: pre-cache app shell
+// Install event: pre-cache app shell.
+// Round 60 audit fix: use Promise.allSettled + per-file cache.add() so a
+// missing icon (e.g. /icon-192.png 404 on SVG-only setup) does NOT abort
+// the entire install. Without this, atomic addAll() failure left the SW
+// inactive and offline-mode dead.
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(APP_SHELL_CACHE).then((cache) => {
-      return cache.addAll(APP_SHELL_FILES);
-    })
+    caches.open(APP_SHELL_CACHE).then((cache) =>
+      Promise.allSettled(
+        APP_SHELL_FILES.map((url) => cache.add(url).catch(() => {})),
+      ),
+    )
   );
   // Activate immediately without waiting for old SW to finish
   self.skipWaiting();
@@ -57,8 +63,21 @@ self.addEventListener('fetch', (event) => {
   // Skip Next.js build assets — they use content hashes and are immutable
   if (url.pathname.startsWith('/_next/')) return;
 
+  // Round 60 audit fix: NEVER cache Supabase Auth endpoints. Caching them
+  // returns stale tokens / lets a logged-out client see prior session data,
+  // and `/rest/v1` reads under RLS could leak across user-switches if
+  // cached. Only cache `/storage/v1` (public assets) — bypass everything
+  // else on Supabase.
+  if (url.hostname.includes('supabase')) {
+    if (url.pathname.startsWith('/storage/v1/')) {
+      event.respondWith(networkFirst(request, API_CACHE));
+    }
+    // /auth/v1, /rest/v1, /realtime/v1 → bypass SW entirely
+    return;
+  }
+
   // API requests: network-first with cache fallback
-  if (url.pathname.startsWith('/api/') || url.hostname.includes('supabase')) {
+  if (url.pathname.startsWith('/api/')) {
     event.respondWith(networkFirst(request, API_CACHE));
     return;
   }
@@ -101,8 +120,13 @@ async function cacheFirst(request, cacheName) {
 async function networkFirst(request, cacheName) {
   try {
     const networkResponse = await fetch(request);
-    // Cache successful responses
-    if (networkResponse.ok) {
+    // Respect Cache-Control: no-store / private / no-cache — never cache opt-outs
+    // Proper directive parsing: split on ',', trim, drop "=value" suffix so
+    // headers like `private, max-age=0` and `no-cache="set-cookie"` work.
+    const cc = networkResponse.headers.get('cache-control');
+    const directives = (cc || '').toLowerCase().split(',').map((d) => d.trim().split('=')[0]);
+    const noCache = directives.includes('no-store') || directives.includes('private') || directives.includes('no-cache');
+    if (networkResponse.ok && !noCache) {
       const cache = await caches.open(cacheName);
       cache.put(request, networkResponse.clone());
     }

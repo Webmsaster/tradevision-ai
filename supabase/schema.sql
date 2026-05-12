@@ -68,14 +68,23 @@ drop index if exists idx_trades_pair;
 -- Row Level Security: users can only access their own trades
 alter table trades enable row level security;
 
+-- R67 audit fix: SELECT/UPDATE policies hide soft-deleted rows so direct-
+-- client access (Supabase Studio, custom REST consumer) cannot read PII
+-- from tombstoned trades or re-write deleted_at.
 create policy "Users can view their own trades"
   on trades for select
-  using (auth.uid() = user_id);
+  using (auth.uid() = user_id and deleted_at is null);
 
 create policy "Users can insert their own trades"
   on trades for insert
   with check (auth.uid() = user_id);
 
+-- R67 audit (Round 2): UPDATE allowed on tombstoned rows too. The R67-r1
+-- attempt to block re-tombstoning broke UPSERT-resolve-to-UPDATE on a
+-- soft-deleted row → CSV/JSON re-imports of trades the user previously
+-- deleted on another machine fail silently with PostgREST 42501. Audit-
+-- protection of the deleted_at column moves to application-side logic
+-- (storage.ts deleteTradeFromSupabase already checks `is deleted_at null`).
 create policy "Users can update their own trades"
   on trades for update
   using (auth.uid() = user_id)
@@ -94,6 +103,10 @@ create or replace function update_updated_at()
 returns trigger as $$
 begin
   new.updated_at = now();
+  -- R67 audit: also freeze id and user_id on UPDATE so PostgREST PATCH
+  -- can't rewrite the PK or steal the row's owner.
+  new.id = old.id;
+  new.user_id = old.user_id;
   new.created_at = old.created_at;
   return new;
 end;
@@ -103,3 +116,11 @@ create trigger trades_updated_at
   before update on trades
   for each row
   execute function update_updated_at();
+
+-- R67 audit (Round 5): the R67-r3 DB-level un-tombstone trigger was
+-- dropped because it conflicted with the R67-r2 UPSERT-resolve-to-UPDATE
+-- path used for CSV/JSON re-imports of previously-deleted trades.
+-- Audit-trail protection now lives in the application layer:
+-- `deleteTradeFromSupabase` filters `.is("deleted_at", null)` on its
+-- UPDATE WHERE clause, so tombstones cannot be silently rewritten via
+-- the delete path. See migration_round67_audit_trigger_drop.sql.

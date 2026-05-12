@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { Trade } from "@/types/trade";
 import TradeDetailModal from "@/components/TradeDetailModal";
 import {
@@ -33,6 +33,135 @@ type SortDirection = "asc" | "desc";
 
 const PAGE_SIZE = 25;
 
+// ---------------------------------------------------------------------------
+// R67-Final (R15-A3 perf): memoised row component.
+//
+// Before: every parent re-render (sort toggle, page change, parent state
+// update unrelated to a specific row) re-rendered ALL N rows because the
+// inline arrow handlers (`onClick`, `onKeyDown`) on the <tr> were fresh
+// functions each render — React's reconciler had nothing to bail out on.
+//
+// After: the row body is a separate memo'd component receiving ONLY the
+// data it needs (trade + stable callbacks hoisted via useCallback in the
+// parent). Sorting now re-creates the array but each individual row's
+// props are reference-stable as long as `trade`, `compact`, `onSelect`,
+// `onEdit`, `onDelete` haven't changed → 25 rows on a page-change render
+// reduce to ~1-2 actual DOM diffs instead of 25 full re-renders.
+// ---------------------------------------------------------------------------
+interface TradeRowProps {
+  trade: Trade;
+  compact: boolean;
+  onSelect: (trade: Trade) => void;
+  onEdit?: (trade: Trade) => void;
+  onDelete?: (tradeId: string) => void;
+}
+
+const TradeRow = memo(function TradeRow({
+  trade,
+  compact,
+  onSelect,
+  onEdit,
+  onDelete,
+}: TradeRowProps) {
+  const handleRowClick = useCallback(() => {
+    onSelect(trade);
+  }, [onSelect, trade]);
+
+  const handleRowKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLTableRowElement>) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onSelect(trade);
+      }
+    },
+    [onSelect, trade],
+  );
+
+  const handleEditClick = useCallback(
+    (e: React.MouseEvent<HTMLButtonElement>) => {
+      e.stopPropagation();
+      onEdit?.(trade);
+    },
+    [onEdit, trade],
+  );
+
+  const handleDeleteClick = useCallback(
+    (e: React.MouseEvent<HTMLButtonElement>) => {
+      e.stopPropagation();
+      onDelete?.(trade.id);
+    },
+    [onDelete, trade.id],
+  );
+
+  return (
+    <tr
+      role="row"
+      tabIndex={0}
+      onClick={handleRowClick}
+      onKeyDown={handleRowKeyDown}
+      style={{ cursor: "pointer" }}
+    >
+      <td>
+        {/* R67-Final (R15-A3 perf): prefer the pre-parsed numeric cache
+            so we don't re-parse the ISO string on every render. Falls
+            back to the string for trades that predate the cache. */}
+        {formatTradeDate(trade.exitMs ?? trade.exitDate, {
+          displayInUTC: true,
+        })}
+      </td>
+      <td>{trade.pair}</td>
+      <td>
+        <span
+          className={`direction-badge ${
+            trade.direction === "long" ? "long" : "short"
+          }`}
+        >
+          {trade.direction === "long" ? "LONG" : "SHORT"}
+        </span>
+      </td>
+      {!compact && <td>{formatPrice(trade.entryPrice)}</td>}
+      {!compact && <td>{formatPrice(trade.exitPrice)}</td>}
+      {!compact && <td>{trade.quantity}</td>}
+      {!compact && <td>{trade.leverage ?? 1}x</td>}
+      <td className={trade.pnl >= 0 ? "pnl-positive" : "pnl-negative"}>
+        {formatPnl(trade.pnl)}
+      </td>
+      <td className={trade.pnlPercent >= 0 ? "pnl-positive" : "pnl-negative"}>
+        {formatPercent(trade.pnlPercent)}
+      </td>
+      {!compact && (
+        <td>{trade.fees != null ? formatPrice(trade.fees) : "-"}</td>
+      )}
+      {!compact && (
+        <td>
+          <div className="table-actions">
+            {onEdit && (
+              <button
+                className="table-action-btn"
+                onClick={handleEditClick}
+                title="Edit trade"
+                aria-label={`Edit trade ${trade.pair}`}
+              >
+                &#9998;
+              </button>
+            )}
+            {onDelete && (
+              <button
+                className="table-action-btn delete"
+                onClick={handleDeleteClick}
+                title="Delete trade"
+                aria-label={`Delete trade ${trade.pair}`}
+              >
+                &#128465;
+              </button>
+            )}
+          </div>
+        </td>
+      )}
+    </tr>
+  );
+});
+
 export default function TradeTable({
   trades,
   onEdit,
@@ -44,7 +173,10 @@ export default function TradeTable({
   const [selectedTrade, setSelectedTrade] = useState<Trade | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
 
-  // Reset to page 1 when trades change (e.g. filters applied)
+  // R67-r5 audit: revert to length-based reset. Reference-based reset
+  // jumped to page 1 on every single trade-edit (storage hooks return new
+  // array on every mutation) — bad UX. Length-based misses re-filters
+  // that keep same length, but that edge case is far less annoying.
   useEffect(() => {
     setCurrentPage(1);
   }, [trades.length]);
@@ -65,8 +197,12 @@ export default function TradeTable({
 
       switch (sortKey) {
         case "exitDate":
-          aVal = new Date(a.exitDate).getTime();
-          bVal = new Date(b.exitDate).getTime();
+          // R67-Final (R15-A3 perf): prefer the cached epoch-ms over
+          // re-parsing `new Date(...)` on every comparator call. For
+          // 10k trades this is a 20k+ saved Date constructions per
+          // sort.
+          aVal = a.exitMs ?? new Date(a.exitDate).getTime();
+          bVal = b.exitMs ?? new Date(b.exitDate).getTime();
           break;
         case "pair":
           aVal = a.pair.toLowerCase();
@@ -122,13 +258,18 @@ export default function TradeTable({
     return sorted;
   }, [trades, sortKey, sortDirection]);
 
+  // Clamp currentPage if the data shrinks below the current page boundary
+  // (e.g. after delete or filter reduces total pages).
+  useEffect(() => {
+    const maxPage = Math.max(1, Math.ceil(sortedTrades.length / PAGE_SIZE));
+    if (currentPage > maxPage) {
+      setCurrentPage(maxPage);
+    }
+  }, [sortedTrades.length, currentPage]);
+
   const renderSortHeader = (label: string, key: SortKey) => {
     const isSorted = sortKey === key;
-    const arrow = isSorted
-      ? sortDirection === "asc"
-        ? "\u25B2"
-        : "\u25BC"
-      : "";
+    const arrow = isSorted ? (sortDirection === "asc" ? "▲" : "▼") : "";
 
     // Determine aria-sort value for the column header
     const ariaSortValue: "ascending" | "descending" | "none" = isSorted
@@ -167,6 +308,20 @@ export default function TradeTable({
         (currentPage - 1) * PAGE_SIZE,
         currentPage * PAGE_SIZE,
       );
+
+  // R67-Final (R15-A3 perf): hoist the row callbacks via useCallback so
+  // the memo'd <TradeRow> children skip re-renders when nothing about
+  // their own data changed. Without this, every re-render of
+  // TradeTable would create fresh function references for each child
+  // row → React.memo's prop-equality always mismatches → memoization
+  // ineffective.
+  const handleSelect = useCallback((trade: Trade) => {
+    setSelectedTrade(trade);
+  }, []);
+
+  const handleCloseModal = useCallback(() => {
+    setSelectedTrade(null);
+  }, []);
 
   if (trades.length === 0) {
     return (
@@ -211,82 +366,14 @@ export default function TradeTable({
           </thead>
           <tbody>
             {paginatedTrades.map((trade) => (
-              <tr
+              <TradeRow
                 key={trade.id}
-                role="row"
-                tabIndex={0}
-                onClick={() => setSelectedTrade(trade)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    setSelectedTrade(trade);
-                  }
-                }}
-                style={{ cursor: "pointer" }}
-              >
-                <td>{formatTradeDate(trade.exitDate)}</td>
-                <td>{trade.pair}</td>
-                <td>
-                  <span
-                    className={`direction-badge ${
-                      trade.direction === "long" ? "long" : "short"
-                    }`}
-                  >
-                    {trade.direction === "long" ? "LONG" : "SHORT"}
-                  </span>
-                </td>
-                {!compact && <td>{formatPrice(trade.entryPrice)}</td>}
-                {!compact && <td>{formatPrice(trade.exitPrice)}</td>}
-                {!compact && <td>{trade.quantity}</td>}
-                {!compact && <td>{trade.leverage ?? 1}x</td>}
-                <td
-                  className={trade.pnl >= 0 ? "pnl-positive" : "pnl-negative"}
-                >
-                  {formatPnl(trade.pnl)}
-                </td>
-                <td
-                  className={
-                    trade.pnlPercent >= 0 ? "pnl-positive" : "pnl-negative"
-                  }
-                >
-                  {formatPercent(trade.pnlPercent)}
-                </td>
-                {!compact && (
-                  <td>{trade.fees != null ? formatPrice(trade.fees) : "-"}</td>
-                )}
-                {!compact && (
-                  <td>
-                    <div className="table-actions">
-                      {onEdit && (
-                        <button
-                          className="table-action-btn"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onEdit(trade);
-                          }}
-                          title="Edit trade"
-                          aria-label={`Edit trade ${trade.pair}`}
-                        >
-                          &#9998;
-                        </button>
-                      )}
-                      {onDelete && (
-                        <button
-                          className="table-action-btn delete"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onDelete(trade.id);
-                          }}
-                          title="Delete trade"
-                          aria-label={`Delete trade ${trade.pair}`}
-                        >
-                          &#128465;
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                )}
-              </tr>
+                trade={trade}
+                compact={compact}
+                onSelect={handleSelect}
+                onEdit={onEdit}
+                onDelete={onDelete}
+              />
             ))}
           </tbody>
         </table>
@@ -318,7 +405,7 @@ export default function TradeTable({
       <TradeDetailModal
         trade={selectedTrade}
         isOpen={!!selectedTrade}
-        onClose={() => setSelectedTrade(null)}
+        onClose={handleCloseModal}
       />
     </div>
   );

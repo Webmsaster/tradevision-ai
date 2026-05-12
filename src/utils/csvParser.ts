@@ -66,12 +66,22 @@ export async function parseCSVFile(
       worker: true,
       // Strip UTF-8 BOM (U+FEFF) and whitespace from headers — Excel-exported
       // CSVs frequently include a BOM that breaks column matching.
-      // eslint-disable-next-line no-irregular-whitespace
-      transformHeader: (h) => h.replace(/^﻿/, "").trim(),
+      /* eslint-disable no-irregular-whitespace */
+      // Round 9 audit (HOCH): use the explicit `﻿` escape instead of
+      // the literal BOM character. Editor/build-tool BOM-stripping (or
+      // copy-paste through a normalising clipboard) otherwise silently
+      // turned the regex into a no-op, leaving headers like `﻿Pair`
+      // unmatched by autoDetectMapping. The escape is invariant under any
+      // editor's invisible-character-stripping pass. Strip from both
+      // headers AND values (mid-stream merged files can carry BOM into
+      // data fields).
+      transformHeader: (h) => h.replace(/^\uFEFF/, "").trim(),
       // Round 57 fix #4: trim trailing/leading whitespace from each value
       // (companion to transformHeader). Excel/MT4 exports often pad fields
       // with stray spaces that break numeric parsing.
-      transform: (v) => (typeof v === "string" ? v.trim() : v),
+      transform: (v) =>
+        typeof v === "string" ? v.replace(/^\uFEFF/, "").trim() : v,
+      /* eslint-enable no-irregular-whitespace */
       complete(results) {
         resolve(results);
       },
@@ -225,6 +235,18 @@ export interface CSVImportResult {
 function parseDirection(raw: string): "long" | "short" | null {
   const v = raw.trim().toLowerCase();
   if (!v) return null;
+  // R67-r22 audit fix: reject MT4 statement "balance"/"credit"/"deposit"
+  // rows BEFORE the prefix-match (which would map "balance"→long via the
+  // 'b' branch and produce a ghost trade with Open===Close===deposit
+  // amount). Common in MT4 HTML→CSV statement exports.
+  if (
+    v === "balance" ||
+    v === "credit" ||
+    v === "deposit" ||
+    v === "withdrawal"
+  ) {
+    return null;
+  }
   // MT4 numeric convention: 0 = OP_BUY (long), 1 = OP_SELL (short).
   if (v === "0") return "long";
   if (v === "1") return "short";
@@ -234,6 +256,26 @@ function parseDirection(raw: string): "long" | "short" | null {
   if (c === "l" || c === "b" || c === "k") return "long";
   if (c === "s" || c === "v") return "short";
   return null;
+}
+
+// R67-RR1 audit fix: shared helper from `@/utils/symbol` — was previously
+// duplicated here AND in TradeForm with diverging regexes (TradeForm did
+// not strip `/`, leading to manual-vs-CSV stat-bucket fragmentation).
+import { normaliseSymbol } from "@/utils/symbol";
+
+/**
+ * R67-r22 audit fix: parentheses-as-negative number convention used by
+ * IBKR / TradeStation exports (e.g. `(45.67)` for a $45.67 loss).
+ * `parseLocaleNumber` regex rejects parentheses, so the row was silently
+ * counted under skippedRows. Pre-process here so a wrapped negative
+ * normalises to `-45.67` and parses cleanly.
+ */
+function unwrapParensNegative(raw: string): string {
+  const t = raw.trim();
+  if (t.length >= 2 && t.startsWith("(") && t.endsWith(")")) {
+    return "-" + t.slice(1, -1);
+  }
+  return raw;
 }
 
 /**
@@ -262,7 +304,9 @@ export function mapCSVToTrades(
 
   const trades: Trade[] = [];
   for (const row of data) {
-    const pair = sanitizeCSVField(row[mapping.pair] ?? "");
+    // R67-r22 audit fix: canonicalise pair on import so `BTC/USDT`,
+    // `BTCUSDT`, `BTC-USD`, `BTC_USDT` all collapse to one stat-bucket.
+    const pair = normaliseSymbol(sanitizeCSVField(row[mapping.pair] ?? ""));
     const entryPrice = parseLocaleNumber(row[mapping.entryPrice]);
     const exitPrice = parseLocaleNumber(row[mapping.exitPrice]);
     const quantity = parseLocaleNumber(row[mapping.quantity]);
@@ -278,6 +322,26 @@ export function mapCSVToTrades(
       exitPrice <= 0 ||
       quantity <= 0
     ) {
+      // R67-r14 audit: surface zero/negative numeric drops so the user
+      // doesn't see "N rows skipped" with no idea why. Common causes are
+      // mismapped columns (date in price field) or broker exports with
+      // balance-only rows (deposit/withdraw with price=0).
+      addWarning(
+        "zero-or-negative-numeric",
+        "Skipped rows with zero or negative price/quantity — check column mapping (date field accidentally mapped to a numeric column?) or filter out balance/deposit rows from your broker export.",
+      );
+      continue;
+    }
+    // R67 audit (Round 2): magnitude-cap. Excel exports dates as serial
+    // numbers (e.g. 44927 = 2023-01-01); if the user mismaps a date column
+    // to Quantity, parseLocaleNumber returns 44927 as a valid number and a
+    // single trade can balloon PnL by billions. Clamp absurd magnitudes —
+    // no realistic crypto/forex trade has size > 1e9 units or price > 1e9.
+    if (entryPrice > 1e9 || exitPrice > 1e9 || quantity > 1e9) {
+      addWarning(
+        "magnitude-cap",
+        "Skipped rows with absurd magnitudes (>1e9). Likely an Excel serial-date in the wrong column.",
+      );
       continue;
     }
 
@@ -336,7 +400,11 @@ export function mapCSVToTrades(
     const leverage =
       Number.isFinite(leverageRaw) && leverageRaw > 0 ? leverageRaw : 1;
 
-    const feesRaw = mapping.fees ? parseLocaleNumber(row[mapping.fees]) : NaN;
+    // R67-r22 audit fix: support IBKR/TradeStation parentheses-wrap for
+    // negative fees `(1.23)` → `-1.23`. parseLocaleNumber alone rejects.
+    const feesRaw = mapping.fees
+      ? parseLocaleNumber(unwrapParensNegative(row[mapping.fees] ?? ""))
+      : NaN;
     const fees = Number.isFinite(feesRaw) ? feesRaw : 0;
 
     // Calculate PnL ---------------------------------------------------

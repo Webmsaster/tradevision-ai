@@ -11,6 +11,9 @@ export default defineConfig({
     css: true,
     include: ["scripts/**/*.test.ts"],
     fileParallelism: false,
+    pool: "forks",
+    // @ts-expect-error vitest 4.x InlineConfig PoolOptions union not yet typed; correct at runtime per docs
+    poolOptions: { forks: { singleFork: true } },
   },
   resolve: {
     alias: {

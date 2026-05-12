@@ -1,5 +1,20 @@
 # FTMO Voll-Auto Bot — Setup Guide
 
+> **🏆 CURRENT CHAMPION (Round 60, 2026-05-04): `R28_V6_PASSLOCK`**
+> (`FTMO_TF=2h-trend-v5-r28-v6-passlock`). 63.24% V4-Engine pass-rate on
+> 9-crypto basket / 5.55y / 136 windows. For live deploy use:
+>
+> - `tools/PASSLOCK_DEPLOY_RUNBOOK.md` (focused step-by-step)
+> - `tools/PRE_LIVE_SETUP.md` (full 11-step guide)
+> - `tools/CHEAT_SHEET.md` (1-page reference)
+> - `tools/MULTI_STRATEGY_SETUP.md` (3-Strategy ~94% min-1-pass)
+>
+> The text below is the **historical iter231 setup** (4h ETH/BTC/SOL Mean-Reversion).
+> Architecture & operational sections (PM2, Telegram, Drift Dashboard, Mock-Mode,
+> Auto-Reconnect) still apply. Strategy/asset/timeframe specifics are superseded.
+
+---
+
 Strategie: iter231 (62.6% pass rate / 6d median unter realistischen FTMO-Kosten).
 Assets: ETH + BTC + SOL auf 4h-Timeframe, Mean-Reversion-Shorts mit Pyramid + Kelly.
 

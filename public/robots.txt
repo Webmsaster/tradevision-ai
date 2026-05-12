@@ -1,4 +1,17 @@
 User-agent: *
 Allow: /
+Allow: /calculator
+Allow: /login
+# R67-r15 audit fix (HIGH): private/auth-gated routes blocked from indexing.
+Disallow: /dashboard
+Disallow: /trades
+Disallow: /analytics
+Disallow: /insights
+Disallow: /report
+Disallow: /settings
+Disallow: /ftmo-monitor
+Disallow: /live
+Disallow: /import
+Disallow: /api/
 
 Sitemap: https://tradevision-ai-bay.vercel.app/sitemap.xml

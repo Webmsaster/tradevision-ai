@@ -2,6 +2,12 @@
  * Loads Binance Futures Open Interest history (5-minute granularity available
  * via openInterestHist endpoint). Public, no API key.
  */
+interface BinanceOiRow {
+  timestamp: number;
+  sumOpenInterest: string;
+  sumOpenInterestValue: string;
+}
+
 export interface OIRow {
   timestamp: number;
   oi: number;
@@ -28,18 +34,25 @@ export async function loadBinanceOpenInterest(
     url.searchParams.set("period", period);
     url.searchParams.set("endTime", String(cursor));
     url.searchParams.set("limit", "500");
-    const res = await fetch(url.toString());
+    let res = await fetch(url.toString());
+    if (res.status === 429) {
+      const retryAfter =
+        parseInt(res.headers.get("retry-after") ?? "5", 10) * 1000;
+      await new Promise((r) => setTimeout(r, retryAfter));
+      res = await fetch(url.toString());
+    }
     if (!res.ok) {
       if (res.status === 400) return out;
       throw new Error(`OI fetch failed: ${res.status} for ${symbol}`);
     }
-    const rows: any[] = await res.json();
+    const rows = (await res.json()) as BinanceOiRow[];
     if (!rows || rows.length === 0) break;
     // Phase 43 (R44-MD-1): sort response ascending before reading rows[0].
     // Binance openInterestHist response order isn't documented to be stable
     // across versions — explicit sort guarantees rows[0]=oldest regardless.
     rows.sort((a, b) => a.timestamp - b.timestamp);
     for (const r of rows) {
+      if (r.timestamp < startMs || r.timestamp > endMs) continue;
       out.push({
         timestamp: r.timestamp,
         oi: parseFloat(r.sumOpenInterest),

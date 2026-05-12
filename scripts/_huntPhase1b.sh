@@ -1,0 +1,90 @@
+#!/bin/bash
+# R29 Hunt Phase 1b: parameter overrides on V5_TITANIUM_PASSLOCK base.
+# Searches TP/Stop/MCT/trail-pct grid that user-tunable existing templates miss.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+[ -x ./engine-rust/target/release/ftmo-sweep ] || { echo "ERROR: ftmo-sweep binary missing" >&2; exit 3; }
+
+SYMS="ETHUSDT,BTCUSDT,BNBUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LTCUSDT,BCHUSDT,AAVEUSDT,XRPUSDT,INJUSDT,RUNEUSDT,ETCUSDT,SANDUSDT"
+SWEEP=./engine-rust/target/release/ftmo-sweep
+LOG="/tmp/hunt_phase1b_$$.log"
+LOG_FINAL=/tmp/hunt_phase1b.log
+: > "$LOG"
+trap 'rm -f "$LOG.partial"' EXIT INT TERM
+
+run() {
+  local label="$1"
+  shift
+  echo "=== $label ===" | tee -a "$LOG"
+  if ! $SWEEP \
+    --candles-dir scripts/cache_bakeoff --symbols "$SYMS" \
+    --config 2h-trend-v5-titanium-passlock \
+    --windows 200 --step-days 14 --signals per-asset \
+    "$@" 2>&1 | tail -1 | tee -a "$LOG"; then
+    # NOTE 2026-05-12: --phantom-suppress removed (R29 audit finding — inverted, under-counted).
+    echo "[warn] $label failed — continuing" | tee -a "$LOG"
+  fi
+}
+
+# TP-Mult sweep on the per-asset baseline
+for tp in 0.45 0.50 0.55 0.60 0.65 0.70 0.80; do
+  run "tp-mult=$tp" --override-tp-mult $tp
+done
+
+# Stop sweep
+for sp in 0.015 0.02 0.025 0.03 0.04; do
+  run "stop=$sp" --override-stop-pct $sp
+done
+
+# MCT sweep
+for mct in 3 4 5 7 8 10; do
+  run "mct=$mct" --override-mct $mct
+done
+
+# Trail pct sweep
+for tr in 0.001 0.002 0.003 0.005 0.008 0.012; do
+  run "trail-pct=$tr" --override-trail-pct $tr
+done
+
+# Hours subset sweeps
+for hours in "4,6,8,10,14,18" "0,4,8,12,16,20" "2,6,10,14,18,22" "8,12,16,20" "0,6,12,18"; do
+  run "hours=$hours" --override-hours "$hours"
+done
+
+# DOWs subset sweeps (skip Sun=0, drop weekends, etc.)
+for dows in "1,2,3,4,5" "1,2,3,4,5,6" "0,2,4" "1,3,5" "2,3,4"; do
+  run "dows=$dows" --override-dows "$dows"
+done
+
+# DropSymbols ablation — try dropping each weak asset
+for drop in "RUNEUSDT" "INJUSDT" "DOGEUSDT" "SANDUSDT" "RUNEUSDT,INJUSDT" "RUNEUSDT,INJUSDT,DOGEUSDT" "RUNEUSDT,INJUSDT,DOGEUSDT,SANDUSDT"; do
+  run "drop=$drop" --drop-symbols "$drop"
+done
+
+# also-fire-meanrev / breakout combinations
+run "+meanrev p14 25/75" --also-fire-meanrev --mr-period 14 --mr-oversold 25 --mr-overbought 75
+run "+meanrev p14 30/70" --also-fire-meanrev --mr-period 14 --mr-oversold 30 --mr-overbought 70
+run "+breakout" --also-fire-breakout
+run "+both" --also-fire-meanrev --also-fire-breakout
+
+# BE threshold sweep
+for be in 0.005 0.01 0.015 0.02 0.025; do
+  run "be-thr=$be" --be-threshold $be
+done
+
+echo "" | tee -a "$LOG"
+echo "=== TOP 10 ===" | tee -a "$LOG"
+# awk state-machine: tolerant of intervening [warn] lines (R4 fix carried over
+# from Phase 1 — old `grep -B1 | paste` pattern silently dropped entries when
+# a sweep failed and the warn line came between the label and the next passed=).
+awk '
+  /^=== / { match($0, /=== (.+) ===/, m); if (m[1] != "") label = m[1]; next }
+  /passed=/ {
+    if (label != "" && match($0, /\(([0-9.]+)%\)/, p)) {
+      print p[1] "  " label
+      label = ""
+    }
+  }
+' "$LOG" | sort -rn | head -20 | tee -a "$LOG"
+
+cp -f "$LOG" "$LOG_FINAL"

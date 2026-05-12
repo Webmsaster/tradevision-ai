@@ -1,5 +1,6 @@
-'use client';
-import React from 'react';
+"use client";
+import React from "react";
+import { captureException } from "@/lib/errorReporter";
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -10,7 +11,10 @@ interface ErrorBoundaryState {
   error: Error | null;
 }
 
-export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+export class ErrorBoundary extends React.Component<
+  ErrorBoundaryProps,
+  ErrorBoundaryState
+> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
     this.state = { hasError: false, error: null };
@@ -21,7 +25,16 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error('ErrorBoundary caught an error:', error, errorInfo);
+    // R67-Final: forward to the Sentry-compatible facade. In dev this
+    // still console.errors via errorReporter; in prod it POSTs to
+    // /api/log-error which redacts tokens before Vercel-log emit.
+    console.error("ErrorBoundary caught an error:", error, errorInfo);
+    captureException(error, {
+      source: "ErrorBoundary",
+      extra: {
+        componentStack: errorInfo.componentStack ?? null,
+      },
+    });
   }
 
   handleReset = () => {
@@ -58,7 +71,9 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
                 {this.state.error.message}
               </p>
             )}
-            <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+            <div
+              style={{ display: "flex", gap: "12px", justifyContent: "center" }}
+            >
               <button className="btn btn-primary" onClick={this.handleReset}>
                 Try again
               </button>

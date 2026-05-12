@@ -15,7 +15,10 @@ export function formatCurrency(n: number): string {
 }
 
 /** Format a number that might be Infinity or NaN as a safe string. */
-export function formatFinite(value: number | undefined, decimals = 2): string {
+export function formatFinite(
+  value: number | null | undefined,
+  decimals = 2,
+): string {
   if (value === undefined || value === null) return "N/A";
   if (!Number.isFinite(value)) return "N/A";
   return value.toFixed(decimals);
@@ -57,12 +60,22 @@ export interface DateFormatOptions {
   displayInUTC?: boolean;
 }
 
-/** Format a date for table display: "Jan 01, 14:30" (short, no year). */
+/** Format a date for table display: "Jan 01, 14:30" (short, no year).
+ *
+ * R67-Final (R15-A3 perf): also accepts a pre-parsed epoch-ms `number`
+ * so callers with a cached `trade.exitMs` skip the `new Date(string)`
+ * parse on every render. Falls back to string-parse for legacy callers.
+ */
 export function formatTradeDate(
-  date: Date | string,
+  date: Date | string | number,
   options: DateFormatOptions = {},
 ): string {
-  const d = typeof date === "string" ? new Date(date) : date;
+  const d =
+    typeof date === "string"
+      ? new Date(date)
+      : typeof date === "number"
+        ? new Date(date)
+        : date;
   const months = MONTHS_SHORT;
   const utc = options.displayInUTC === true;
   const month = months[utc ? d.getUTCMonth() : d.getMonth()];

@@ -37,17 +37,17 @@ const NAIVE_DATETIME_REGEX =
 // Round 57 fix #1: explicit format regexes BEFORE the new Date() fallback.
 // MT4 / MetaTrader 4 export format: yyyy.mm.dd[ HH:MM[:SS]]
 const MT4_REGEX =
-  /^(\d{4})\.(\d{1,2})\.(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/;
+  /^(\d{4})\.(\d{1,2})\.(\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/;
 // Slash-separated, ambiguous between dd/mm/yyyy (EU) and mm/dd/yyyy (US).
 const SLASH_REGEX =
-  /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/;
+  /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/;
 // Dot-separated EU: dd.mm.yyyy[ HH:MM[:SS]]
 const EU_DOT_REGEX =
-  /^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/;
+  /^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/;
 // Dash-separated EU: dd-mm-yyyy[ HH:MM[:SS]] (note: yyyy-mm-dd is handled
 // by NAIVE_DATETIME_REGEX above, so the year-trailing form is unambiguous.)
 const EU_DASH_REGEX =
-  /^(\d{1,2})-(\d{1,2})-(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/;
+  /^(\d{1,2})-(\d{1,2})-(\d{4})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/;
 
 function inRange(
   year: number,
@@ -216,10 +216,12 @@ export function normalizeDateToUTC(raw: unknown): DateNormalizeResult {
     return { iso, warning };
   }
 
-  // Last-resort fallback: let Date attempt to parse it (handles e.g.
-  // "Mon, 15 Apr 2026 14:30:00 GMT"). Warn as naive — caller should treat
-  // result as UTC.
+  // Last-resort fallback: only accept strings that have an EXPLICIT TZ
+  // marker. `new Date("Apr 15, 2026 14:30")` parses as host-local, then
+  // `.toISOString()` shifts it — silently host-TZ-dependent. Round 60
+  // audit fix: reject if no TZ marker so output stays deterministic.
+  if (!HAS_TZ_REGEX.test(trimmed)) return { iso: null };
   const d = new Date(trimmed);
   if (Number.isNaN(d.getTime())) return { iso: null };
-  return { iso: d.toISOString(), warning: "naive-iso-assumed-utc" };
+  return { iso: d.toISOString() };
 }

@@ -45,6 +45,79 @@ function sign(params: string, secret: string): string {
   return crypto.createHmac("sha256", secret).update(params).digest("hex");
 }
 
+// ---------------------------------------------------------------------------
+// R67-r3 (2026-05-06): server-time clock-skew sync.
+// Binance rejects signed requests where `abs(serverTime - timestamp) > recvWindow`
+// (default 5s). Clock drift on the bot host (esp. WSL2 after suspend/resume)
+// caused intermittent -1021 "Timestamp for this request is outside of the
+// recvWindow" failures. Cache the offset and re-sync every 30 minutes.
+// ---------------------------------------------------------------------------
+let serverTimeOffset = 0;
+let lastSyncMs = 0;
+const SYNC_INTERVAL_MS = 30 * 60_000;
+const SYNC_TIMEOUT_MS = 3_000;
+
+// R67-r4 (2026-05-06): in-flight Promise cache to deduplicate concurrent
+// cold-start calls. Without this, N parallel signedGet() callers on a fresh
+// process all race to fetch /fapi/v1/time simultaneously, which both wastes
+// requests and risks Binance rate-limiting the time endpoint.
+let inFlight: Promise<number> | null = null;
+
+/** Test hook — reset clock-skew state. */
+export function __resetServerTimeOffset(): void {
+  serverTimeOffset = 0;
+  lastSyncMs = 0;
+  inFlight = null;
+}
+
+/**
+ * Fetch `/fapi/v1/time` and cache `serverTime - Date.now()` so subsequent
+ * signed requests stamp `Date.now() + serverTimeOffset`. No-op if the last
+ * sync was less than SYNC_INTERVAL_MS ago. Network failures leave the
+ * existing offset intact — better stale than wildly wrong.
+ *
+ * R67-r4: concurrent callers during cold-start share a single in-flight
+ * Promise rather than each issuing their own /fapi/v1/time fetch.
+ */
+export async function syncServerTime(
+  cfg: BinanceConfig = configFromEnv(),
+  opts: { force?: boolean } = {},
+): Promise<number> {
+  const now = Date.now();
+  if (!opts.force && now - lastSyncMs < SYNC_INTERVAL_MS) {
+    return serverTimeOffset;
+  }
+  if (inFlight) return inFlight;
+  inFlight = (async () => {
+    try {
+      const url = `${baseUrl(cfg)}/fapi/v1/time`;
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(SYNC_TIMEOUT_MS),
+      });
+      if (!res.ok) return serverTimeOffset;
+      const data = (await res.json()) as { serverTime?: number };
+      if (typeof data.serverTime === "number") {
+        serverTimeOffset = data.serverTime - Date.now();
+      }
+    } catch {
+      // Keep existing offset on network/timeout errors.
+    } finally {
+      // R67-r8: throttle even on failure to prevent retry storms during
+      // Binance outages — without this, every signedGet() during an outage
+      // would re-issue /fapi/v1/time and pile up failed fetches.
+      lastSyncMs = Date.now();
+      inFlight = null;
+    }
+    return serverTimeOffset;
+  })();
+  return inFlight;
+}
+
+/** Current cached offset (for diagnostics / tests). */
+export function getServerTimeOffset(): number {
+  return serverTimeOffset;
+}
+
 /**
  * Builds a signed query string for a USDT-M Futures request.
  * Appends timestamp + signature.
@@ -55,7 +128,8 @@ export function buildSignedQuery(
 ): string {
   const merged: Record<string, string | number> = {
     ...params,
-    timestamp: Date.now(),
+    // R67-r3: include cached server-time offset to survive host clock skew.
+    timestamp: Date.now() + serverTimeOffset,
     recvWindow: cfg.recvWindow ?? 5000,
   };
   const qs = Object.entries(merged)
@@ -80,6 +154,8 @@ async function signedGet<T>(
       "Binance API key/secret not set (BINANCE_API_KEY / BINANCE_API_SECRET)",
     );
   }
+  // R67-r3: opportunistic clock-skew refresh (no-op if last sync < 30min ago).
+  await syncServerTime(cfg);
   const qs = buildSignedQuery(params, cfg);
   const url = `${baseUrl(cfg)}${path}?${qs}`;
   const res = await fetch(url, {

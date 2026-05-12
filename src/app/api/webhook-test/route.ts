@@ -18,12 +18,57 @@
 import { NextResponse } from "next/server";
 import { lookup } from "node:dns/promises";
 import { isPrivateHostname, isValidHttpsUrl } from "@/utils/urlSafety";
+import { isRateLimited } from "@/utils/distributedRateLimit";
 
 const REQUEST_TIMEOUT_MS = 5_000;
 
 interface WebhookTestRequest {
   url: string;
   platform?: "discord" | "telegram" | "custom";
+}
+
+/**
+ * Round 8 audit (MEDIUM): platform-URL match — when the operator picks a
+ * preset platform we additionally enforce that the URL points to that
+ * platform's documented webhook host. This blocks two attacks at once:
+ *   1. SSRF-by-typo: a Discord-platform webhook pointed at an internal
+ *      Slack mirror (private DNS resolves OK, slug looks like Discord).
+ *   2. Phishing: a malicious "discord-CDN" host that mimics Discord's
+ *      payload format to steal trade-summary data.
+ *
+ * "custom" stays unrestricted — that's the explicit user opt-out for
+ * self-hosted webhook receivers (n8n, Zapier-self-host, custom HTTP).
+ */
+function platformUrlMatches(
+  platform: string | undefined,
+  parsed: URL,
+): { ok: true } | { ok: false; error: string } {
+  if (platform === "discord") {
+    if (
+      parsed.hostname !== "discord.com" ||
+      !parsed.pathname.startsWith("/api/webhooks/")
+    ) {
+      return {
+        ok: false,
+        error:
+          "Discord webhooks must be on https://discord.com/api/webhooks/...",
+      };
+    }
+  } else if (platform === "telegram") {
+    if (
+      parsed.hostname !== "api.telegram.org" ||
+      !parsed.pathname.startsWith("/bot")
+    ) {
+      return {
+        ok: false,
+        error:
+          "Telegram webhooks must be on https://api.telegram.org/bot<token>/...",
+      };
+    }
+  }
+  // "custom" or unknown platform: no extra host check (URL-safety already
+  // enforced HTTPS + non-private host above).
+  return { ok: true };
 }
 
 function buildPayload(platform: string | undefined): unknown {
@@ -48,6 +93,57 @@ function buildPayload(platform: string | undefined): unknown {
 }
 
 export async function POST(request: Request) {
+  // R67-r7 audit: same-origin gate. Without this, a third-party site that
+  // a logged-in user visits can fetch this route from their browser
+  // (cookie-less, but the SSRF-probe + outbound-amplifier still works
+  // since the request originates from the server's egress IP). 403 on
+  // any cross-origin POST.
+  const origin = request.headers.get("origin");
+  const host = request.headers.get("host");
+  if (!origin || !host) {
+    return NextResponse.json(
+      { ok: false, error: "forbidden" },
+      { status: 403, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+  try {
+    if (new URL(origin).host !== host) {
+      return NextResponse.json(
+        { ok: false, error: "forbidden" },
+        { status: 403, headers: { "Cache-Control": "no-store" } },
+      );
+    }
+  } catch {
+    return NextResponse.json(
+      { ok: false, error: "forbidden" },
+      { status: 403, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+  // Round 8 audit (MEDIUM): rate-limit before any work. The route is
+  // unauthenticated by design (settings page calls it pre-save) and each
+  // hit issues a DNS lookup + outbound HTTPS request — exactly the
+  // amplification primitive an attacker wants for cheap SSRF probing or
+  // outbound traffic generation. Cap at 60/min/IP, mirroring the
+  // /api/drift-data convention.
+  // R67-r7 audit: prefer Vercel-injected x-vercel-forwarded-for (un-spoofable
+  // edge-network header) over x-forwarded-for (client-supplied, spoofable).
+  const ip =
+    request.headers.get("x-vercel-forwarded-for")?.split(",")[0]?.trim() ||
+    request.headers.get("x-real-ip") ||
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    "unknown";
+  if (
+    await isRateLimited("webhook-test", ip, { windowMs: 60_000, maxHits: 60 })
+  ) {
+    return NextResponse.json(
+      { ok: false, error: "rate_limited" },
+      {
+        status: 429,
+        headers: { "Cache-Control": "no-store", "Retry-After": "60" },
+      },
+    );
+  }
+
   let body: WebhookTestRequest;
   try {
     body = (await request.json()) as WebhookTestRequest;
@@ -85,6 +181,17 @@ export async function POST(request: Request) {
   } catch {
     return NextResponse.json(
       { ok: false, error: "Malformed URL" },
+      { status: 400 },
+    );
+  }
+
+  // Round 8 audit (MEDIUM): platform-URL host/path match. Runs BEFORE the
+  // DNS lookup so a misconfigured discord/telegram URL never hits the
+  // network at all.
+  const platformCheck = platformUrlMatches(body?.platform, parsed);
+  if (!platformCheck.ok) {
+    return NextResponse.json(
+      { ok: false, error: platformCheck.error },
       { status: 400 },
     );
   }
@@ -194,10 +301,21 @@ export async function POST(request: Request) {
       });
     }
 
+    // R67-r9 audit fix: log injection via body.platform. Body is user-supplied
+    // JSON, only TS-typed (runtime unchecked). Allowlist the platform value
+    // before composing the log line — without this, an attacker can inject
+    // newlines + fake log entries via `{"platform": "evil\nFAKE: ..."}`.
+    const platformSafe = ["discord", "telegram", "custom"].includes(
+      body?.platform as string,
+    )
+      ? (body!.platform as string)
+      : "custom";
+    console.info(
+      `[webhook-test] ip=${ip} host=${parsed.host} platform=${platformSafe} status=${resp.status} latencyMs=${latencyMs}`,
+    );
     return NextResponse.json({ ok: true, status: resp.status, latencyMs });
   } catch (err) {
     const latencyMs = Date.now() - startedAt;
-    const msg = err instanceof Error ? err.message : "Request failed";
     // Distinguish abort/timeout for clearer UX.
     if (err instanceof Error && err.name === "TimeoutError") {
       return NextResponse.json({
@@ -206,6 +324,16 @@ export async function POST(request: Request) {
         error: `Webhook timed out after ${REQUEST_TIMEOUT_MS}ms.`,
       });
     }
-    return NextResponse.json({ ok: false, latencyMs, error: msg });
+    // Round 6 audit (CRITICAL): never echo `err.message` back to the
+    // client. Node fetch errors include the failing host / IP / certificate
+    // path which leaks internal infrastructure to a CSRF attacker probing
+    // for the AWS-metadata IP, internal cert authority names, etc. Log
+    // the specific cause server-side, return a generic message.
+    console.error("[webhook-test]", err);
+    return NextResponse.json({
+      ok: false,
+      latencyMs,
+      error: "Request failed",
+    });
   }
 }

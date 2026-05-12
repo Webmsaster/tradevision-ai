@@ -22,6 +22,7 @@ import {
   detectLiveSignalsV231,
   renderDetection,
   getActiveCfgInfo,
+  getActiveCfg,
   type AccountState,
   type DetectionResult,
   type LiveSignal,
@@ -38,6 +39,7 @@ import type { Candle } from "../src/utils/indicators";
 import { tgSend, htmlEscape } from "../src/utils/telegramNotify";
 import { startTelegramBot, readControls } from "../src/utils/telegramBot";
 import { withFileLock } from "../src/utils/processLock";
+import { acquireSingletonLock } from "../src/utils/serviceSingleton";
 import {
   loadForexFactoryNews,
   filterNewsEvents,
@@ -57,15 +59,19 @@ type TfTag = "5m" | "15m" | "30m" | "1h" | "2h" | "4h";
 const TF_DISPATCH: Record<string, TfTag> = {
   // 5m
   "5m-live": "5m",
+  "5m-live-v2": "5m",
+  "5m-live-v3": "5m",
   // 15m
   "15m": "15m",
   "15m-live": "15m",
   "15m-live-v1": "15m",
   "15m-live-v2": "15m",
+  "15m-live-v3": "15m",
   // 30m direct
   "30m": "30m",
   "30m-live": "30m",
   "30m-live-v1": "30m",
+  "30m-live-v2": "30m",
   "30m-turbo": "30m",
   // 30m-tuned configs that wear a "2h-trend-" badge — DO NOT REMOVE without
   // verifying the underlying CFG.timeframe! (Round 12 R72)
@@ -85,6 +91,29 @@ const TF_DISPATCH: Record<string, TfTag> = {
   "2h-trend-v5-quartz-lite-r28-v5-v4engine": "30m",
   "2h-trend-v5-quartz-lite-r28-v6": "30m",
   "2h-trend-v5-quartz-lite-r28-v6-v4engine": "30m",
+  // R67-r14 audit fix (KRITISCH): PASSLOCK family + all R60 sister selectors
+  // were missing → fall-through caught them with the "2h-trend" rule → bot
+  // polled every 2h while the underlying CFG.timeframe is 30m → 75% of bar
+  // boundaries missed live, drastic undertrade vs backtest. Champion is
+  // `r28-v6-passlock` per CLAUDE.md.
+  "2h-trend-v5-r28-v6-passlock": "30m",
+  "2h-trend-v5-r28-v6-corrcap2": "30m",
+  "2h-trend-v5-r28-v6-lscool48": "30m",
+  "2h-trend-v5-r28-v6-todcutoff18": "30m",
+  "2h-trend-v5-r28-v6-voltp-aggr": "30m",
+  "2h-trend-v5-r28-v6-idlt30": "30m",
+  "2h-trend-v5-r28-v6-combo-pl-idlt": "30m",
+  "2h-trend-v5-r28-v6-passlock-dayrisk50": "30m",
+  "2h-trend-v5-r28-v6-passlock-dayrisk70": "30m",
+  "2h-trend-v5-r28-v6-passlock-dayrisk50-2d": "30m",
+  // R29 Round 3 audit fix (R3-Bug #1): PASSLOCK sisters for 3-Strategy
+  // Multi-Account Plan. All inherit from 30m base configs (TITANIUM, AMBER,
+  // OBSIDIAN, QUARTZ_LITE_R28). R3-Bug #2: STEP2 selector.
+  "2h-trend-v5-titanium-passlock": "30m",
+  "2h-trend-v5-amber-passlock": "30m",
+  "2h-trend-v5-obsidian-passlock": "30m",
+  "2h-trend-v5-quartz-lite-r28-passlock": "30m",
+  "2h-trend-v5-quartz-lite-r28-step2": "30m",
   "2h-trend-breakout-v1": "30m",
   "2h-trend-v5-quartz-step2": "30m",
   "2h-trend-v5-topaz": "30m",
@@ -96,24 +125,79 @@ const TF_DISPATCH: Record<string, TfTag> = {
   "2h-trend-v5-agate": "30m",
   "2h-trend-v5-jade": "30m",
   "2h-trend-v5-onyx": "30m",
+  // R1-A6 audit fix: V5-family 2h-bar configs that exist in CFG_REGISTRY but
+  // were missing from TF_DISPATCH. The fail-loud guard at resolveTf:136 now
+  // throws for any `2h-trend-v5-*` not registered here, so these previously
+  // accessible configs (all 2h-bar V5 variants) became un-deployable. They
+  // all inherit from FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5 (no timeframe
+  // override) → cadence is 2h.
+  "2h-trend-v5": "2h",
+  "2h-trend-v5-pro": "2h",
+  "2h-trend-v5-gold": "2h",
+  "2h-trend-v5-diamond": "2h",
+  "2h-trend-v5-platinum": "2h",
+  "2h-trend-v5-hiwin": "2h",
+  "2h-trend-v5-fastmax": "2h",
+  "2h-trend-v5-primex": "2h",
+  "2h-trend-v5-prime": "2h",
+  "2h-trend-v5-nova": "2h",
+  "2h-trend-v5-titan-real": "2h",
+  "2h-trend-v5-legend": "2h", // runtime-blocked in V231 but selector must resolve
+  "2h-trend-v5-titan": "2h", // runtime-blocked in V231 but selector must resolve
+  "2h-trend-v5-apex": "2h",
+  "2h-trend-v5-elite": "2h",
+  "2h-trend-v5-high": "2h",
+  "2h-trend-v5-ultra": "2h",
+  "2h-trend-v5-fund": "2h",
+  "2h-trend-v5-pareto": "2h",
+  "2h-trend-v5-recent": "2h",
+  "2h-trend-v5-robust": "2h",
+  "2h-trend-v5-step2": "2h",
+  "2h-trend-v5-ensemble": "2h",
   // 1h
   "1h": "1h",
   "1h-live": "1h",
   "1h-live-v1": "1h",
+  "1h-live-v2": "1h",
   // 2h
   "2h": "2h",
   "2h-live": "2h",
   "2h-live-v1": "2h",
+  "2h-live-v2": "2h",
   // 4h
   "4h-live": "4h",
   "4h-live-v1": "4h",
+  "4h-live-v2": "4h",
   "4h-trend": "4h",
 };
 
 function resolveTf(envValue: string | undefined): TfTag {
   if (envValue && TF_DISPATCH[envValue]) return TF_DISPATCH[envValue];
-  // Fall-through rule: any other "2h-trend-*" gets 2h (legacy V231 family).
+  // R67-r14 audit fix: fail-LOUD on unrecognised `2h-trend-v5-*` selectors
+  // instead of silently routing to 2h. The previous fall-through hid the
+  // PASSLOCK polling bug for an entire R60 deploy cycle. Mirrors the V231
+  // CFG_REGISTRY fail-loud pattern (ftmoLiveSignalV231.ts:595).
+  if (envValue?.startsWith("2h-trend-v5-")) {
+    throw new Error(
+      `[ftmoLiveService] FTMO_TF="${envValue}" not registered in TF_DISPATCH. ` +
+        `Add an explicit 30m/1h/2h/4h mapping — falling through to "2h" silently ` +
+        `caused a 30m-config to poll every 2h in production (Round 67 audit).`,
+    );
+  }
+  // Legacy non-v5 prefix rule: still routes to 2h.
   if (envValue?.startsWith("2h-trend")) return "2h";
+  // R29 Round 4 audit fix (R4-Bug #3): unrecognised `*-live-*` selectors
+  // (e.g. *-live-v3, *-live-v4, future variants) were silently routing to
+  // 4h default — catastrophic when the cfg.timeframe is 5m/15m/30m. Add
+  // mappings explicitly above. Mirrors the v5 fail-loud pattern.
+  if (envValue && /^(5m|15m|30m|1h|2h|4h)-live(-v\d+)?$/.test(envValue)) {
+    throw new Error(
+      `[ftmoLiveService] FTMO_TF="${envValue}" looks like a live-cap selector ` +
+        `but is not registered in TF_DISPATCH. Add an explicit mapping — ` +
+        `falling through to "4h" silently caused a 5m/15m/30m-config to poll ` +
+        `every 4h in production (Round 4 audit).`,
+    );
+  }
   return "4h"; // ultimate default
 }
 
@@ -530,13 +614,26 @@ async function refreshNewsIfStale() {
     newsLastFetched = Date.now() - NEWS_REFRESH_MS + 5 * 60_000; // retry in 5min
     if (cachedNews.length === 0) {
       try {
-        const persisted = readJSON<{ events: NewsEvent[] }>(NEWS_PATH, {
-          events: [],
-        });
-        if (persisted.events.length > 0) {
+        // R10 audit fix: only trust persisted file if fresh (< NEWS_MAX_AGE_MS).
+        // Stale fallback would silently blackout against last-week's events.
+        const persisted = readJSON<{
+          events: NewsEvent[];
+          fetchedAt?: string;
+        }>(NEWS_PATH, { events: [] });
+        const fetchedAtMs = persisted.fetchedAt
+          ? Date.parse(persisted.fetchedAt)
+          : NaN;
+        const fresh =
+          Number.isFinite(fetchedAtMs) &&
+          Date.now() - fetchedAtMs < NEWS_MAX_AGE_MS;
+        if (persisted.events.length > 0 && fresh) {
           cachedNews = persisted.events;
           console.log(
             `[ftmo-live] news fetch failed — using persisted ${cachedNews.length} events as fallback`,
+          );
+        } else if (persisted.events.length > 0 && !fresh) {
+          console.warn(
+            `[ftmo-live] persisted news stale (fetchedAt=${persisted.fetchedAt ?? "missing"}) — discarding fallback`,
           );
         }
       } catch {}
@@ -665,31 +762,79 @@ async function runOneCheck(): Promise<DetectionResult> {
   // V4-Engine path: persistent-state live engine (Round 40).
   // Selector convention: FTMO_TF ends with "-v4engine" OR is "2h-trend-breakout-v1"
   // (Breakout always runs on V4-Engine because polling V231 doesn't know breakoutEntry).
-  const isBreakoutV1 = process.env.FTMO_TF === "2h-trend-breakout-v1";
-  const isR28V5 =
-    process.env.FTMO_TF === "2h-trend-v5-quartz-lite-r28-v5-v4engine";
-  const isR28V6 =
-    process.env.FTMO_TF === "2h-trend-v5-quartz-lite-r28-v6-v4engine";
+  //
+  // Round 60 audit (2026-05-05): the 13 R28_V6 sister selectors (passlock,
+  // corrcap2, lscool48, todcutoff18, voltp-aggr, idlt30, combo-pl-idlt,
+  // 3× passlock-dayrisk*) DO NOT end in "-v4engine" but their configs carry
+  // V4-engine-only flags (closeAllOnTargetReached, volAdaptiveTpMult,
+  // dayBasedRiskMultiplier). Without this branch, V231 was silently routing
+  // them through the legacy signal-generator → engine flags ignored, defeating
+  // the whole Round 60 hunt. Force V4-Engine for every selector matching the
+  // R28_V6 sister convention `r28-v6-{feature}`.
+  const ftmoTf = process.env.FTMO_TF ?? "";
+  const isBreakoutV1 = ftmoTf === "2h-trend-breakout-v1";
+  const isR28V5 = ftmoTf === "2h-trend-v5-quartz-lite-r28-v5-v4engine";
+  const isR28V6 = ftmoTf === "2h-trend-v5-quartz-lite-r28-v6-v4engine";
+  // R60 sister selectors: 2h-trend-v5-r28-v6-{passlock,corrcap2,lscool48,
+  // todcutoff18,voltp-aggr,idlt30,combo-pl-idlt,passlock-dayrisk*,…}
+  const isR28V6Sister = /^2h-trend-v5-r28-v6-[a-z0-9-]+$/.test(ftmoTf);
+  // R29 Round 4 audit fix (R4-Bug #1, KRITISCH): PASSLOCK sister selectors
+  // (titanium/amber/obsidian/quartz-lite-r28 + step2) carry
+  // `closeAllOnTargetReached: true`, which is a V4-Engine-only flag. The
+  // V231 legacy path silently ignores it → live runs without the Pass-Lock
+  // mechanism, costing ~8pp pass-rate (the whole point of the 3-Strategy
+  // Multi-Account plan). Route any cfg with `closeAllOnTargetReached` AND
+  // any cfg explicitly carrying a PASSLOCK selector through V4-Engine.
+  const isExplicitPasslockSister =
+    ftmoTf === "2h-trend-v5-titanium-passlock" ||
+    ftmoTf === "2h-trend-v5-amber-passlock" ||
+    ftmoTf === "2h-trend-v5-obsidian-passlock" ||
+    ftmoTf === "2h-trend-v5-quartz-lite-r28-passlock" ||
+    ftmoTf === "2h-trend-v5-quartz-lite-r28-step2";
+  // R10 audit fix: any LSC-using config must route through V4 engine — the
+  // legacy V231 path does NOT honor lossStreakCooldown. Catches misnamed selectors.
   const useV4Engine =
-    (process.env.FTMO_TF ?? "").endsWith("-v4engine") || isBreakoutV1;
+    ftmoTf.endsWith("-v4engine") ||
+    isBreakoutV1 ||
+    isR28V6Sister ||
+    isExplicitPasslockSister ||
+    !!getActiveCfg().closeAllOnTargetReached ||
+    !!getActiveCfg().lossStreakCooldown;
   let result: DetectionResult;
   if (useV4Engine) {
-    // For now four cfgs supported via v4engine — extend mapping here
-    // as more configs are validated under V4 persistent-state semantics.
-    const v4Cfg = isBreakoutV1
-      ? FTMO_DAYTRADE_24H_CONFIG_BREAKOUT_V1
-      : isR28V6
-        ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6
-        : isR28V5
-          ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V5
-          : FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4;
-    const v4Label = isBreakoutV1
-      ? "BREAKOUT_V1"
-      : isR28V6
-        ? "V5_QUARTZ_LITE_R28_V6"
-        : isR28V5
-          ? "V5_QUARTZ_LITE_R28_V5"
-          : "V5_QUARTZ_LITE_R28_V4";
+    // R60 sister: pick CFG via V231 CFG_REGISTRY lookup (one source of truth).
+    let v4Cfg: typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
+    let v4Label: string;
+    if (isR28V6Sister) {
+      const sisterCfg = getActiveCfg();
+      v4Cfg =
+        sisterCfg as typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
+      v4Label = `R28_V6_${ftmoTf.replace("2h-trend-v5-r28-v6-", "").toUpperCase()}`;
+    } else if (isBreakoutV1) {
+      v4Cfg =
+        FTMO_DAYTRADE_24H_CONFIG_BREAKOUT_V1 as typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
+      v4Label = "BREAKOUT_V1";
+    } else if (isR28V6) {
+      v4Cfg = FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
+      v4Label = "V5_QUARTZ_LITE_R28_V6";
+    } else if (isR28V5) {
+      v4Cfg =
+        FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V5 as typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
+      v4Label = "V5_QUARTZ_LITE_R28_V5";
+    } else if (ftmoTf === "2h-trend-v5-quartz-lite-r28-v4-v4engine") {
+      v4Cfg =
+        FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4 as typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
+      v4Label = "V5_QUARTZ_LITE_R28_V4";
+    } else {
+      // R1-A6 audit fix: useV4Engine can also be triggered by
+      // `getActiveCfg().lossStreakCooldown` on legacy LIVE_*/V12/V16/V261/V7
+      // configs. Previously fell through to R28_V4 default → wrong CFG sent to
+      // V4 executor (live trades on R28_V4 logic with caller's LIVE_15M label).
+      // Use V231's CFG_REGISTRY as single source of truth instead.
+      v4Cfg =
+        getActiveCfg() as typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
+      v4Label = getActiveCfgInfo().label;
+    }
     const fullCandleMap: Record<
       string,
       import("../src/utils/indicators").Candle[]
@@ -1043,6 +1188,16 @@ async function runSmartAlerts(account: AccountState) {
 async function main() {
   console.log("[ftmo-live] FTMO Live Signal Service starting");
   console.log(`[ftmo-live] State directory: ${STATE_DIR}`);
+  // Round 60 (Audit Round 3, Task B): refuse to start if another signal
+  // service is already running on this state dir. MUST happen before
+  // ensureStateDir/Telegram bring-up so a duplicate launch never opens a
+  // second long-poll on the same bot token. Mirrors Python executor's
+  // `acquire_singleton_or_exit()` (tools/ftmo_executor.py:2965).
+  const lock = acquireSingletonLock(STATE_DIR);
+  if (!lock.acquired) {
+    console.error(`[ftmo-live] ${lock.reason}. Refusing to start.`);
+    process.exit(11);
+  }
   ensureStateDir();
 
   // Round 54 Fix #3: assert CFG selection at boot. V231's getActiveCfgInfo()

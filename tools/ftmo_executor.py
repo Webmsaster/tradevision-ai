@@ -52,6 +52,15 @@ else:
 from telegram_notify import tg_send, html_escape  # type: ignore
 
 
+def _round_to_tick(price: float, tick_size: float, digits: int) -> float:
+    """R67-r10: round price to broker tick grid + declared digits."""
+    if tick_size and tick_size > 0:
+        price = round(price / tick_size) * tick_size
+    if digits and digits > 0:
+        price = round(price, int(digits))
+    return price
+
+
 # =============================================================================
 # Config — via env vars
 # =============================================================================
@@ -98,6 +107,67 @@ PING_LOT_SIZE = float(os.environ.get("FTMO_PING_LOT", "0.01"))  # tiny lot
 # ("5% means at worst single fill costs 5%") and could blow the FTMO -5%
 # DL on a single stop-out. Lowered to 0.05 to match the comment.
 RISK_FRAC_HARD_CAP = float(os.environ.get("FTMO_RISK_HARD_CAP", "0.05"))
+
+
+# R67-r12 audit fix (Hedge-Mode close-deal codes): closing deals on FTMO
+# Hedge-Mode accounts can have entry codes DEAL_ENTRY_INOUT (=2,
+# position-reversal) or DEAL_ENTRY_OUT_BY (=3, close-by-opposite) instead
+# of the default DEAL_ENTRY_OUT (=1). Round 58 already added this to
+# `reconcile_missing_positions`; the audit found the same fix was missing
+# in 5 other sites (yesterday-stats, recent-pnls, circuit-breaker,
+# consistency-rule, close-history-check). Centralised so all paths agree.
+_CLOSE_ENTRY_CODES = (
+    getattr(mt5, "DEAL_ENTRY_OUT", 1),
+    getattr(mt5, "DEAL_ENTRY_INOUT", 2),
+    getattr(mt5, "DEAL_ENTRY_OUT_BY", 3),
+)
+
+
+def _is_close_deal(d) -> bool:  # type: ignore[no-untyped-def]
+    """True if `d` is a position-closing deal (any FTMO mode)."""
+    return getattr(d, "entry", -1) in _CLOSE_ENTRY_CODES
+
+
+# R67-r12 audit fix (ORDER_FILLING_IOC hardcoded): probe the broker-allowed
+# filling modes per symbol so we don't permanently auto-pause when an FTMO
+# crypto symbol rejects IOC. `info.filling_mode` is a bitmask:
+#   bit 0 (1) = SYMBOL_FILLING_FOK
+#   bit 1 (2) = SYMBOL_FILLING_IOC
+# Cache per symbol since we call once per order. Falls through to IOC if
+# the bitmask is unset (treat as legacy hard-coded behaviour) so existing
+# Demo deploys behave identically.
+_FILLING_MODE_CACHE: dict[str, int] = {}
+
+
+def _pick_filling_mode(symbol: str):  # type: ignore[no-untyped-def]
+    """Return the safest order-filling constant for `symbol` based on
+    `mt5.symbol_info(symbol).filling_mode`. Caches per symbol.
+
+    Bug-Audit Round 2: if the very first call happens before MT5 has the
+    symbol selected (`info is None` or `filling_mode == 0`), the previous
+    code poisoned the cache with the RETURN fallback for the rest of the
+    process lifetime — and every subsequent order_send tripped retcode
+    10030 "invalid order filling type" on FOK-only crypto pairs. Now we
+    only cache a positive-bitmask result; an unknown probe falls through
+    to RETURN for THIS call but does NOT pollute the cache.
+    """
+    cached = _FILLING_MODE_CACHE.get(symbol)
+    if cached is not None:
+        return cached
+    info = mt5.symbol_info(symbol)
+    bitmask = getattr(info, "filling_mode", 0) if info is not None else 0
+    if bitmask & 1:  # FOK preferred — most FTMO crypto symbols
+        chosen = mt5.ORDER_FILLING_FOK
+        _FILLING_MODE_CACHE[symbol] = chosen
+        return chosen
+    if bitmask & 2:
+        chosen = mt5.ORDER_FILLING_IOC
+        _FILLING_MODE_CACHE[symbol] = chosen
+        return chosen
+    # Bitmask unset / unknown → fall back to RETURN for THIS call. Do NOT
+    # cache so the next call (after symbol_select() has populated the
+    # bitmask) re-probes and picks the real broker-supported mode.
+    return getattr(mt5, "ORDER_FILLING_RETURN", mt5.ORDER_FILLING_IOC)
 
 # Auto-pause after N consecutive failed orders (e.g. "no money" cascade).
 # Resets to 0 on the first successful order. Setting to 0 disables.
@@ -192,39 +262,110 @@ _validate_config()
 # =============================================================================
 # IO helpers
 # =============================================================================
-def _rotate_jsonl_if_needed(path: Path, max_mb: int = 50) -> None:
-    """BUGFIX 2026-04-28 (Round 12): rotate jsonl files at 50MB to prevent
-    unbounded disk fill on long-running bots."""
+def _rotate_jsonl_if_needed(path: Path, max_mb: int = 50, keep: int = 14) -> None:
+    """Rotate at max_mb; keep last `keep` daily archives.
+    R67-r10: prevent unbounded archive accumulation."""
     try:
         if path.exists() and path.stat().st_size > max_mb * 1024 * 1024:
-            archive = path.with_suffix(f".{datetime.now(timezone.utc).strftime('%Y%m%d')}.jsonl")
+            archive = path.with_suffix(
+                f".{datetime.now(timezone.utc).strftime('%Y%m%d')}.jsonl"
+            )
             path.rename(archive)
+        # Reap old archives (regardless of whether we just rotated).
+        stem = path.stem
+        suffix = path.suffix
+        archives = sorted(
+            path.parent.glob(f"{stem}.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]{suffix}"),
+            key=lambda p: p.name,
+            reverse=True,
+        )
+        for old in archives[keep:]:
+            try:
+                old.unlink(missing_ok=True)
+            except Exception:
+                pass
     except Exception:
-        pass  # don't crash on rotation issues
+        pass
 
 
 def log_event(event: str, level: str = "info", **kwargs: Any) -> None:
     """BUGFIX 2026-04-28 (Round 30): added severity level. Default 'info' for
-    backwards compat; pass level='warn' or 'error' for parseable filtering."""
+    backwards compat; pass level='warn' or 'error' for parseable filtering.
+
+    Round 7 audit fix (2026-05-04, KRITISCH): rotation+append wrapped under
+    `_file_lock(executor-log.lock)` so concurrent appenders never straddle a
+    rename (mirrors TS-side `appendAndRotate` in scripts/ftmoLiveService.ts).
+    Three issues this resolves:
+      1. Rotation-Append-Race: rotator could rename mid-write, sending a line
+         to the rotated archive while the next caller wrote to the new inode.
+      2. No fsync: kernel buffers could lose the most recent log lines on a
+         VPS power-loss, masking the *cause* of the crash.
+      3. Multi-account same FTMO_TF: two executors with the same TF but
+         different account IDs would otherwise interleave bytes — JSONL
+         parsers reject the result.
+    """
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    _rotate_jsonl_if_needed(EXECUTOR_LOG_PATH)
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "level": level,
         "event": event,
         **kwargs,
     }
-    with open(EXECUTOR_LOG_PATH, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
+    line = json.dumps(entry) + "\n"
+    lock_path = STATE_DIR / "executor-log.lock"
+    with _file_lock(lock_path, timeout_sec=2.0, stale_sec=2.0):
+        _rotate_jsonl_if_needed(EXECUTOR_LOG_PATH)
+        with open(EXECUTOR_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass  # best-effort on filesystems that don't support fsync
     print(f"[executor] [{level}] {event}: {kwargs}")
 
 
 def read_json(path: Path, fallback: Any) -> Any:
+    """Read a JSON state file, returning `fallback` if missing or corrupt.
+
+    Round 7 audit fix (2026-05-04, WARNING): on `JSONDecodeError`, rename the
+    corrupt file to `path.corrupt.<unix-ts>` and fire a Telegram alert. Prior
+    behavior silently returned `fallback`, which could mask high-stakes state
+    like `pause-state.json` (target_hit=True) — a corrupt file would let the
+    bot resume trading after a passed challenge.
+    """
     try:
         if not path.exists():
             return fallback
         with open(path) as f:
             return json.load(f)
+    except json.JSONDecodeError as e:
+        ts = int(time.time())
+        corrupt_path = path.with_suffix(path.suffix + f".corrupt.{ts}")
+        try:
+            path.rename(corrupt_path)
+            preserved = str(corrupt_path)
+        except OSError:
+            preserved = "(rename-failed)"
+        # R67-r10: reap quarantine files older than 30 days
+        try:
+            cutoff = time.time() - 30 * 86400
+            for old in path.parent.glob(f"{path.name}.corrupt.*"):
+                try:
+                    ts_str = old.suffix.lstrip(".")
+                    if ts_str.isdigit() and int(ts_str) < cutoff:
+                        old.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        msg = f"corrupt JSON at {path.name}: {e}; preserved as {preserved}"
+        print(f"[executor] {msg}")
+        try:
+            tg_send(f"<b>State corruption</b>\n{html_escape(msg)}")
+        except Exception:
+            pass  # don't let Telegram failure mask the corruption
+        return fallback
     except Exception as e:
         print(f"[executor] failed to read {path}: {e}")
         return fallback
@@ -234,10 +375,32 @@ def write_json(path: Path, obj: Any) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     # BUGFIX 2026-04-28: PID-suffixed tmp prevents cross-process race
     # (Node telegramBot and Python both write bot-controls.json).
+    # Round 60 audit fix (2026-05-05): add f.flush() + os.fsync() to mirror
+    # the TS-side saveState durability guarantee. Prior version was at risk
+    # of post-crash partial-revert: tmp.replace() promoted a not-yet-flushed
+    # tmpfile, leaving account.json with stale content if the VPS lost power
+    # before kernel buffers reached disk.
+    # Round 7 audit fix (2026-05-04, KRITISCH): also fsync the parent
+    # directory so the `tmp.replace(path)` rename itself is durable. Without
+    # this, on power-loss after the file fsync but before the dir-entry hits
+    # disk, the rename can be lost — `path` then points to the OLD inode,
+    # leaving an orphaned-but-fsynced tmpfile next to the stale state file.
     tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
     with open(tmp, "w") as f:
         json.dump(obj, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
     tmp.replace(path)
+    # POSIX: fsync the parent dir so the rename is durable. Best-effort on
+    # Windows / unsupported FS (os.open of a directory raises there).
+    try:
+        dirfd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
+    except (OSError, AttributeError):
+        pass  # Windows or unsupported FS — best-effort
 
 
 # BUGFIX 2026-04-28 (Round 36 Bug 5/7): cross-process exclusive lock for
@@ -282,6 +445,14 @@ def update_controls(updater) -> dict:
 # =============================================================================
 # MT5 connection — with reconnect
 # =============================================================================
+# R67 audit: cache expected_login as int so the steady-state warm path
+# (mt5_ensure_connected, called every poll cycle ~30s) can verify the MT5
+# terminal hasn't silently switched accounts mid-session — broker session
+# restart, manual user re-login, Windows fast-user-switch can route Account-A
+# signals onto Account-B funds while the TCP socket stays alive.
+_EXPECTED_LOGIN_INT: Optional[int] = None
+
+
 def mt5_init_with_retry() -> bool:
     """Try to initialize. On success returns True. Caller handles retry.
 
@@ -332,6 +503,11 @@ def mt5_init_with_retry() -> bool:
                     except Exception:
                         pass
                     sys.exit(2)
+                # R67 audit: cache expected login as int so the warm path
+                # in mt5_ensure_connected() can re-validate every cycle
+                # without re-parsing the env var.
+                global _EXPECTED_LOGIN_INT
+                _EXPECTED_LOGIN_INT = expected
             else:
                 # No expected login configured — log a one-line warning so
                 # multi-account operators see it, but don't fail.
@@ -351,6 +527,25 @@ def mt5_ensure_connected() -> bool:
     """Check if MT5 is still connected. If not, try to reconnect. Blocks until success."""
     info = mt5.account_info()
     if info is not None:
+        # R67 audit fix: re-validate FTMO_EXPECTED_LOGIN on every cycle.
+        # mt5_init_with_retry() validates only on cold-init; the steady-state
+        # path here (called every ~30s) was just `if info is not None: return`
+        # → silent account-drift leaked through.
+        if _EXPECTED_LOGIN_INT is not None and int(info.login) != _EXPECTED_LOGIN_INT:
+            log_event(
+                "mt5_account_changed_mid_session",
+                got=int(info.login),
+                want=_EXPECTED_LOGIN_INT,
+                level="error",
+            )
+            tg_send(
+                f"🔴 <b>MT5 account drift mid-session!</b>\nGot login <code>{int(info.login)}</code>, expected <code>{_EXPECTED_LOGIN_INT}</code>.\nExecutor exiting — will NOT trade on wrong account."
+            )
+            try:
+                mt5.shutdown()
+            except Exception:
+                pass
+            sys.exit(2)
         return True
     log_event("mt5_disconnected", action="attempting_reconnect")
     tg_send(f"⚠️ <b>MT5 Disconnected</b>\nExecutor attempting reconnect every {RECONNECT_BACKOFF_SEC}s…")
@@ -400,7 +595,20 @@ def check_ftmo_rules(current_equity: float, day_start_equity: float) -> Optional
     new orders well before the actual FTMO -5% / -10% caps. Emergency-close
     of OPEN positions is handled separately in sync_account_state with a
     larger buffer (see DL_EMERGENCY_BUFFER / TL_EMERGENCY_BUFFER).
+
+    R67-r9 audit: zero-divisor guard on day_start_equity. Without this, a
+    corrupt daily-reset.json (or fresh-boot before the first daily-reset
+    write) returns 0.0 → ZeroDivisionError → crashes the trade loop. Now
+    we refuse to entry-check rather than crash, blocking new entries until
+    next reset cycle restores valid state.
     """
+    if not day_start_equity or day_start_equity <= 0:
+        log_event(
+            "ftmo_rules_invalid_day_start",
+            day_start_equity=day_start_equity,
+            level="warn",
+        )
+        return "invalid day_start_equity — refusing to entry-check"
     daily_pct = (current_equity - day_start_equity) / day_start_equity
     # 0.005 → 0.010 (block at -4.0% instead of -4.5%): crypto can move 0.5%
     # in a 30-second poll window, that buffer was too tight to prevent breach.
@@ -935,7 +1143,7 @@ def _get_yesterday_trade_stats(date_str: str) -> tuple[float, float, float, floa
         day_start = datetime(y, m, d, 0, 0, 0, tzinfo=timezone.utc)
         day_end = datetime(y, m, d, 23, 59, 59, tzinfo=timezone.utc)
         deals = mt5.history_deals_get(day_start, day_end) or []
-        closes = [d for d in deals if getattr(d, "magic", 0) == 231 and getattr(d, "entry", 0) == mt5.DEAL_ENTRY_OUT]
+        closes = [d for d in deals if getattr(d, "magic", 0) == 231 and _is_close_deal(d)]
         if not closes:
             return (0.0, 0.0, 0.0, 0.0, 0)
         profits = [d.profit for d in closes]
@@ -1050,7 +1258,15 @@ def compute_lot_size(symbol_info: Any, risk_frac: float, stop_pct: float, accoun
     tick_value = symbol_info.trade_tick_value or 1.0
     # BUGFIX 2026-04-28: use direction-aware fill price (ask for long, bid for short)
     # Wide spreads otherwise undersize the stop-distance and oversize the lot.
-    if direction == "short":
+    # Bug-Audit Round 2: parity with R67-r11 — prefer freshest L1 from
+    # symbol_info_tick over the cached symbol_info.bid/ask. symbol_info()
+    # mid-quotes can be tens-of-ticks stale during fast moves and would
+    # mis-size the lot in a way that breaches risk on the actual fill.
+    sym_name = getattr(symbol_info, "name", None)
+    live_tick = mt5.symbol_info_tick(sym_name) if sym_name else None
+    if live_tick is not None and live_tick.bid > 0 and live_tick.ask > 0:
+        current_price = live_tick.bid if direction == "short" else live_tick.ask
+    elif direction == "short":
         current_price = symbol_info.bid if symbol_info.bid else 0
     else:
         current_price = symbol_info.ask if symbol_info.ask else 0
@@ -1097,8 +1313,15 @@ def place_market_order(
     if not mt5.symbol_select(ftmo_symbol, True):
         return OrderResult(False, None, f"symbol_select failed for {ftmo_symbol}", None, None)
     info = mt5.symbol_info(ftmo_symbol)
-    if info is None or info.bid == 0 or info.ask == 0:
+    if info is None:
         return OrderResult(False, None, f"symbol_info not ready for {ftmo_symbol}", None, None)
+    # R67-r11: source the entry quote from the live tick instead of the cached
+    # symbol_info bid/ask. symbol_info() can return stale mid-quotes (cached up
+    # to a few ticks old), while symbol_info_tick() is always the freshest L1
+    # snapshot. We still keep `info` for tick_size/digits/volume_step lookups.
+    tick = mt5.symbol_info_tick(ftmo_symbol)
+    if tick is None or tick.bid <= 0 or tick.ask <= 0:
+        return OrderResult(False, None, f"no live tick for {ftmo_symbol}", None, None)
 
     # Hard-cap risk_frac before sizing — defends against legacy 200% formula.
     if risk_frac > RISK_FRAC_HARD_CAP:
@@ -1109,17 +1332,26 @@ def place_market_order(
         risk_frac = RISK_FRAC_HARD_CAP
 
     if direction == "short":
-        entry_price = info.bid
+        entry_price = tick.bid
         stop_price = entry_price * (1 + stop_pct)
         tp_price = entry_price * (1 - tp_pct)
         order_type = mt5.ORDER_TYPE_SELL
     elif direction == "long":
-        entry_price = info.ask
+        entry_price = tick.ask
         stop_price = entry_price * (1 - stop_pct)
         tp_price = entry_price * (1 + tp_pct)
         order_type = mt5.ORDER_TYPE_BUY
     else:
         return OrderResult(False, None, f"unknown direction {direction}", None, None)
+
+    # R67-r10: round SL/TP to broker tick grid + declared digits to avoid
+    # retcode 10016 "Invalid stops" on symbols with non-trivial tick size
+    # (FX JPY 0.001, indices 0.1). Crypto (digits=2-3, tick=0.01) is a
+    # no-op but cheap.
+    tick_size = float(getattr(info, "trade_tick_size", 0.0) or getattr(info, "point", 0.0) or 0.0)
+    digits = int(getattr(info, "digits", 0) or 0)
+    stop_price = _round_to_tick(stop_price, tick_size, digits)
+    tp_price = _round_to_tick(tp_price, tick_size, digits)
 
     # Round 53: realistic slippage on entry. SL/TP stay relative to the
     # theoretical mid (engine planned them that way) — only the order
@@ -1184,7 +1416,7 @@ def place_market_order(
         "magic": 231,
         "comment": comment[:31],
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        "type_filling": _pick_filling_mode(ftmo_symbol),
     }
     result = mt5.order_send(request)
     if result is None:
@@ -1232,7 +1464,7 @@ def _fit_lot_to_margin(
             "tp": tp_price,
             "deviation": 20,
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": _pick_filling_mode(ftmo_symbol),
         }
         check = check_fn(req)
         if check is None:
@@ -1241,6 +1473,15 @@ def _fit_lot_to_margin(
             return cur_lot
         # 10019 = "No money", 10014 = "Invalid volume", 10016 = "Invalid stops"
         if check.retcode != 10019:
+            if check.retcode == 10016:
+                log_event(
+                    "order_check_invalid_stops",
+                    symbol=ftmo_symbol,
+                    sl=stop_price,
+                    tp=tp_price,
+                    level="warn",
+                    hint="SL/TP not on tick grid — verify _round_to_tick was applied",
+                )
             return cur_lot  # not a margin issue — let order_send surface it
         new_lot = max(vol_min, math.floor((cur_lot / 2) / step) * step)
         if new_lot >= cur_lot:
@@ -1260,7 +1501,7 @@ def place_short_market(
     return place_market_order(binance_symbol, "short", risk_frac, stop_pct, tp_pct, account_equity, comment)
 
 
-def close_position(ticket: int) -> bool:
+def close_position(ticket: int, exit_reason_override: Optional[str] = None) -> bool:
     """Close an open position by ticket. Returns True only on confirmed close.
 
     Phase 84 (R51-PY-C1): when `mt5.positions_get(ticket=...)` returns
@@ -1281,16 +1522,22 @@ def close_position(ticket: int) -> bool:
             deals = mt5.history_deals_get(since, now) or []
             # entry deal has type=DEAL_ENTRY_IN; closing deal has DEAL_ENTRY_OUT.
             for d in deals:
-                if getattr(d, "position_id", None) == ticket and getattr(d, "entry", None) == mt5.DEAL_ENTRY_OUT:
+                if getattr(d, "position_id", None) == ticket and _is_close_deal(d):
                     return True
         except Exception as e:
             log_event("close_position_history_check_failed", ticket=ticket, error=str(e))
         return False
     pos = positions[0]
-    info = mt5.symbol_info(pos.symbol)
-    if info is None:
+    # R67-r12: source close-price from live tick (parity with entry-path
+    # R67-r11 fix). symbol_info().bid/ask can be 0 on weekend/market-closed
+    # gaps → MT5 retcode 10015 "Invalid price" or worst-case match on stale
+    # quote. symbol_info_tick() reflects current L1; refuse the close if no
+    # tick is available (caller will retry on next polling cycle).
+    tick = mt5.symbol_info_tick(pos.symbol)
+    if tick is None or tick.bid <= 0 or tick.ask <= 0:
+        log_event("close_position_no_tick", ticket=ticket, symbol=pos.symbol)
         return False
-    price = info.ask if pos.type == mt5.POSITION_TYPE_SELL else info.bid
+    price = tick.ask if pos.type == mt5.POSITION_TYPE_SELL else tick.bid
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": pos.symbol,
@@ -1302,12 +1549,79 @@ def close_position(ticket: int) -> bool:
         "magic": 231,
         "comment": "iter231 close",
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        "type_filling": _pick_filling_mode(pos.symbol),
+    }
+    # Bug-Audit Round 3: parity with _modify_position_sl — 1-shot retry on
+    # transient retcodes (REQUOTE/PRICE_OFF/TIMEOUT). Without this a failed
+    # emergency close (DL/TL/news) leaves the position bleeding while we
+    # silently mark it "not closed" → next poll repeats the same flaky path.
+    transient_retcodes = {
+        getattr(mt5, "TRADE_RETCODE_REQUOTE", 10004),
+        getattr(mt5, "TRADE_RETCODE_PRICE_OFF", 10021),
+        getattr(mt5, "TRADE_RETCODE_TIMEOUT", 10008),
     }
     result = mt5.order_send(request)
+    if (
+        result is not None
+        and result.retcode != mt5.TRADE_RETCODE_DONE
+        and getattr(result, "retcode", None) in transient_retcodes
+    ):
+        time.sleep(0.25)
+        # Re-fetch the live tick so the retry doesn't replay an off-quote price.
+        tick = mt5.symbol_info_tick(pos.symbol)
+        if tick is not None and tick.bid > 0 and tick.ask > 0:
+            request["price"] = (
+                tick.ask if pos.type == mt5.POSITION_TYPE_SELL else tick.bid
+            )
+        result = mt5.order_send(request)
     ok = result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
     if ok and result is not None:
-        log_event("closed", ticket=ticket, close_price=result.price)
+        # Drift-monitor: log entry_price, planned SL/TP from MT5's position
+        # data (set when order was placed) plus actual close price. Joiner
+        # by ticket id reconstructs slippage on close vs planned exit.
+        entry_price = getattr(pos, "price_open", None)
+        sl = getattr(pos, "sl", None)
+        tp = getattr(pos, "tp", None)
+        actual = result.price
+        # R67 audit fix: caller can pass an explicit exit_reason_override for
+        # NON-broker-driven closes (emergency-close-all, kill-switch, time-exit,
+        # news-blackout, hold-expired). Original code always inferred "tp" or
+        # "stop" from price-proximity → corrupted the live-vs-backtest drift
+        # pipeline by tagging every emergency exit as a TP/SL hit with bogus
+        # slippage_bps. Only fall back to proximity-inference when caller
+        # signals an actual broker-driven close ("auto" or None for legacy
+        # callers — but legacy paths should be migrated to pass explicit reason).
+        if exit_reason_override and exit_reason_override not in ("auto",):
+            exit_reason = exit_reason_override
+        elif sl and tp and entry_price:
+            tp_dist = abs(actual - tp) if tp else float("inf")
+            sl_dist = abs(actual - sl) if sl else float("inf")
+            exit_reason = "tp" if tp_dist < sl_dist else "stop"
+        else:
+            exit_reason = "manual"
+        slippage_bps = None
+        planned_exit = None
+        if exit_reason == "tp" and tp:
+            planned_exit = tp
+            slip = (tp - actual) / tp if pos.type == mt5.POSITION_TYPE_BUY else (actual - tp) / tp
+            slippage_bps = round(slip * 10_000, 2)  # positive = adverse
+        elif exit_reason == "stop" and sl:
+            planned_exit = sl
+            slip = (sl - actual) / sl if pos.type == mt5.POSITION_TYPE_BUY else (actual - sl) / sl
+            slippage_bps = round(slip * 10_000, 2)
+        log_event(
+            "closed",
+            ticket=ticket,
+            close_price=actual,
+            entry_price=entry_price,
+            planned_exit=planned_exit,
+            sl=sl,
+            tp=tp,
+            exit_reason=exit_reason,
+            slippage_bps=slippage_bps,
+            symbol=getattr(pos, "symbol", None),
+            volume=getattr(pos, "volume", None),
+        )
     else:
         log_event("close_failed", ticket=ticket, retcode=getattr(result, "retcode", None))
     return ok
@@ -1368,11 +1682,22 @@ def check_target_and_pause(current_equity: float) -> bool:
         state["target_hit_date"] = today
         write_pause_state(state)
         log_event("target_hit", equity=current_equity, target=target_equity)
+        # R67 audit fix (Bug-Audit-Round): R60 PASSLOCK closeAllOnTargetReached
+        # was implemented in V4 backtest engine (see project_round60_engine_patches.md)
+        # but was NOT propagated to the live Python executor. The full +6.62pp
+        # PASSLOCK pass-rate edge depends on locking equity at first target hit
+        # by force-closing all positions — otherwise positions can drift back
+        # below target, breaking the give_back-elimination guarantee.
+        # Gate via FTMO_PASSLOCK env (default ON for R60+ champion configs).
+        passlock = os.environ.get("FTMO_PASSLOCK", "1").lower() in ("1", "true", "yes")
+        if passlock:
+            _emergency_close_all_positions("target_reached_passlock_R60")
         tg_send(
             f"🎯 <b>+{PROFIT_TARGET_PCT*100:.0f}% TARGET HIT!</b>\n"
             f"Equity: <b>${current_equity:,.2f}</b> (start ${CHALLENGE_START_BALANCE:,.0f})\n"
             f"🛑 <b>BOT PAUSED</b> — no more risk trades.\n"
-            f"⏳ Waiting for {MIN_TRADING_DAYS} trading-day minimum.\n"
+            + ("🔒 <b>PASSLOCK</b> — all positions force-closed.\n" if passlock else "")
+            + f"⏳ Waiting for {MIN_TRADING_DAYS} trading-day minimum.\n"
             f"Daily ping trades will be placed to clock the rule."
         )
     return state["target_hit"]
@@ -1405,14 +1730,23 @@ def maybe_place_ping_trade() -> None:
                 _clear_pending_order_marker(ping_marker)
                 return
             tick = mt5.symbol_info_tick(sym)
-            if tick is None:
+            # R67-r12: bid/ask>0 check (parity with R67-r11 entry-path).
+            if tick is None or tick.bid <= 0 or tick.ask <= 0:
                 log_event("ping_trade_failed", reason="no tick data")
                 _clear_pending_order_marker(ping_marker)
                 return
+            # Bug-Audit Round 3: open-leg was missing type_filling AND
+            # type_time. On FOK-only crypto brokers MT5 returns retcode 10030
+            # "invalid order filling type" and the ping is permanently
+            # skipped for the day → MIN_TRADING_DAYS counter stalls →
+            # challenge cannot pass even after target+pause. Parity with the
+            # close-leg fix (R67-r12) and main-signal path.
             request_buy = {
                 "action": mt5.TRADE_ACTION_DEAL, "symbol": sym, "volume": PING_LOT_SIZE,
                 "type": mt5.ORDER_TYPE_BUY, "price": tick.ask,
                 "deviation": 20, "magic": 232, "comment": "iter236-ping",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": _pick_filling_mode(sym),
             }
             result = mt5.order_send(request_buy)
             if result is None or getattr(result, "retcode", None) != mt5.TRADE_RETCODE_DONE:
@@ -1424,15 +1758,35 @@ def maybe_place_ping_trade() -> None:
             for pos in positions:
                 if getattr(pos, "magic", 0) == 232:
                     tick2 = mt5.symbol_info_tick(sym)
-                    if tick2 is None:
+                    if tick2 is None or tick2.bid <= 0 or tick2.ask <= 0:
                         continue
                     close_request = {
                         "action": mt5.TRADE_ACTION_DEAL, "symbol": sym, "volume": pos.volume,
                         "type": mt5.ORDER_TYPE_SELL, "position": pos.ticket,
                         "price": tick2.bid, "deviation": 20, "magic": 232,
                         "comment": "iter236-ping-close",
+                        "type_filling": _pick_filling_mode(sym),
                     }
-                    mt5.order_send(close_request)
+                    # R67-r12 audit fix: check the close-leg result. Was
+                    # silently ignored, leaving an SL-less magic=232 ping
+                    # position open at MT5 if the close requoted/rejected.
+                    # We log it + leave the marker in place so the next
+                    # boot's reconcile picks it up.
+                    close_res = mt5.order_send(close_request)
+                    if close_res is None or getattr(close_res, "retcode", None) != mt5.TRADE_RETCODE_DONE:
+                        log_event(
+                            "ping_close_failed",
+                            ticket=getattr(pos, "ticket", None),
+                            retcode=getattr(close_res, "retcode", None),
+                        )
+                        tg_send(
+                            "⚠️ <b>Ping-close failed</b>\n"
+                            f"ticket <code>{getattr(pos, 'ticket', '?')}</code> "
+                            f"retcode={getattr(close_res, 'retcode', None)} — orphan ping position."
+                        )
+                        # Don't append to ping_dates and don't clear the
+                        # marker — boot reconcile will pick it up.
+                        return
             log_event("ping_trade_placed", date=today, symbol=sym, lot=PING_LOT_SIZE)
             state["ping_dates"].append(today)
             # Clear marker AFTER state is durably mutated; reconcile-on-boot
@@ -1529,19 +1883,48 @@ def _process_pending_signals_locked() -> None:
             executed["executions"].append({"signal": sig, "result": "invalid_schema", "missing": missing, "ts": datetime.now(timezone.utc).isoformat()})
             continue
         sig_ts = sig.get("signalBarClose") or sig.get("ts_ms")
-        if sig_ts and (now_ms - sig_ts) > MAX_SIGNAL_AGE_MS:
-            age_min = (now_ms - sig_ts) / 60000
+        # Bug-Audit Round 1: previously `if sig_ts and ...` let signals WITHOUT
+        # a timestamp bypass the staleness check entirely — a malformed/legacy
+        # signal could be replayed days later. Also missing clock-skew guard:
+        # a signal from the future (Windows clock drift, signal-source clock
+        # ahead) had `now_ms - sig_ts` negative → never tripped staleness.
+        # Now: drop signals missing/invalid ts, and drop signals more than
+        # 60s in the future as suspected clock drift.
+        CLOCK_DRIFT_TOLERANCE_MS = 60_000  # 60s ahead-of-now allowed
+        if not isinstance(sig_ts, (int, float)) or sig_ts <= 0:
+            log_event("signal_missing_ts", asset=sig["assetSymbol"])
+            tg_send(f"⏰ <b>Signal dropped — no timestamp</b>\n{html_escape(sig['assetSymbol'])}")
+            executed["executions"].append({
+                "signal": sig, "result": "missing_ts",
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+            continue
+        age_ms = now_ms - int(sig_ts)
+        if age_ms > MAX_SIGNAL_AGE_MS:
+            age_min = age_ms / 60000
             log_event("signal_stale_drop", asset=sig["assetSymbol"], age_min=round(age_min, 1))
-            tg_send(f"⏰ <b>Signal stale, dropped</b>\n{sig['assetSymbol']}\nage={age_min:.1f}min")
+            tg_send(f"⏰ <b>Signal stale, dropped</b>\n{html_escape(sig['assetSymbol'])}\nage={age_min:.1f}min")
             executed["executions"].append({
                 "signal": sig, "result": "stale_drop", "age_min": round(age_min, 1),
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+            continue
+        if age_ms < -CLOCK_DRIFT_TOLERANCE_MS:
+            # Signal claims to be from the future > tolerance → clock drift.
+            # Drop rather than execute (signal source could be a corrupt
+            # timestamp injection or wall-clock skew between Win/Linux).
+            drift_sec = -age_ms / 1000
+            log_event("signal_future_drop", asset=sig["assetSymbol"], drift_sec=round(drift_sec, 1), level="warn")
+            tg_send(f"⏰ <b>Signal dropped — clock drift</b>\n{html_escape(sig['assetSymbol'])}\n+{drift_sec:.1f}s in future")
+            executed["executions"].append({
+                "signal": sig, "result": "future_ts_drift", "drift_sec": round(drift_sec, 1),
                 "ts": datetime.now(timezone.utc).isoformat(),
             })
             continue
         blocker = check_ftmo_rules(account_equity, day_start_usd)
         if blocker:
             log_event("rule_block", asset=sig["assetSymbol"], reason=blocker)
-            tg_send(f"🛑 <b>FTMO Rule Block</b>\nAsset: {sig['assetSymbol']}\nReason: {html_escape(blocker)}")
+            tg_send(f"🛑 <b>FTMO Rule Block</b>\nAsset: {html_escape(sig['assetSymbol'])}\nReason: {html_escape(blocker)}")
             executed["executions"].append({
                 "signal": sig, "result": "blocked", "reason": blocker,
                 "ts": datetime.now(timezone.utc).isoformat(),
@@ -1555,7 +1938,7 @@ def _process_pending_signals_locked() -> None:
         dpt_block = check_daily_peak_trail_block(account_equity)
         if dpt_block:
             log_event("dpt_block", asset=sig["assetSymbol"], reason=dpt_block)
-            tg_send(f"🛡️ <b>Day-Peak Trail Block</b>\n{sig['assetSymbol']}\n{html_escape(dpt_block)}")
+            tg_send(f"🛡️ <b>Day-Peak Trail Block</b>\n{html_escape(sig['assetSymbol'])}\n{html_escape(dpt_block)}")
             executed["executions"].append({
                 "signal": sig, "result": "dpt_blocked", "reason": dpt_block,
                 "ts": datetime.now(timezone.utc).isoformat(),
@@ -1569,7 +1952,7 @@ def _process_pending_signals_locked() -> None:
         rg_block = check_regime_gate_block()
         if rg_block:
             log_event("regime_gate_block", asset=sig["assetSymbol"], reason=rg_block)
-            tg_send(f"📉 <b>Regime Gate Block</b>\n{sig['assetSymbol']}\n{html_escape(rg_block)}")
+            tg_send(f"📉 <b>Regime Gate Block</b>\n{html_escape(sig['assetSymbol'])}\n{html_escape(rg_block)}")
             executed["executions"].append({
                 "signal": sig, "result": "regime_blocked", "reason": rg_block,
                 "ts": datetime.now(timezone.utc).isoformat(),
@@ -1582,7 +1965,7 @@ def _process_pending_signals_locked() -> None:
         news_block = check_news_blackout()
         if news_block:
             log_event("news_blackout_block", asset=sig["assetSymbol"], reason=news_block)
-            tg_send(f"📰 <b>News-Blackout</b>\n{sig['assetSymbol']}\n{html_escape(news_block)}")
+            tg_send(f"📰 <b>News-Blackout</b>\n{html_escape(sig['assetSymbol'])}\n{html_escape(news_block)}")
             executed["executions"].append({
                 "signal": sig, "result": "news_blackout", "reason": news_block,
                 "ts": datetime.now(timezone.utc).isoformat(),
@@ -1599,7 +1982,7 @@ def _process_pending_signals_locked() -> None:
         open_count = len(live_positions) + in_batch_placed
         if open_count >= MAX_CONCURRENT_TRADES:
             log_event("mct_block", asset=sig["assetSymbol"], open=open_count, cap=MAX_CONCURRENT_TRADES)
-            tg_send(f"🛑 <b>MCT Cap Reached</b>\n{sig['assetSymbol']} skipped\nOpen: {open_count}/{MAX_CONCURRENT_TRADES}")
+            tg_send(f"🛑 <b>MCT Cap Reached</b>\n{html_escape(sig['assetSymbol'])} skipped\nOpen: {open_count}/{MAX_CONCURRENT_TRADES}")
             executed["executions"].append({
                 "signal": sig, "result": "mct_blocked",
                 "open_count": open_count, "cap": MAX_CONCURRENT_TRADES,
@@ -1607,7 +1990,16 @@ def _process_pending_signals_locked() -> None:
             })
             continue
 
-        direction = sig.get("direction", "short")
+        # Bug-Audit Round 4: default to "long" (not "short") on missing
+        # direction field. Engine convention (see _apply_trailing_stop /
+        # _apply_break_even / _apply_chandelier_stop at lines 2279/2393/2461)
+        # uniformly defaults to "long" — keeping the place-order path on
+        # "short" was a divergent, silent legacy bias that could open the
+        # wrong side on a legacy/malformed signal. R28_V6 trend-cont config
+        # is long-biased, so "long" is the safer default if direction is
+        # absent for any reason. Required-fields validation does NOT
+        # currently cover "direction", so silent fallback was reachable.
+        direction = sig.get("direction", "long")
         regime = sig.get("regime", "BEAR_CHOP")
         tag = "iter213-bull" if regime == "BULL" else "iter231"
 
@@ -1615,7 +2007,7 @@ def _process_pending_signals_locked() -> None:
             log_event("dry_run_order", asset=sig["assetSymbol"], risk=sig["riskFrac"], stop=sig["stopPct"])
             tg_send(
                 f"🧪 <b>DRY RUN — would place order</b>\n"
-                f"{sig['assetSymbol']} {direction.upper()}\n"
+                f"{html_escape(sig['assetSymbol'])} {direction.upper()}\n"
                 f"Risk: {sig['riskFrac']*100:.3f}% · Stop: {sig['stopPct']*100:.2f}%\n"
                 f"Entry≈${sig.get('entryPrice', 0):.4f}"
             )
@@ -1655,10 +2047,45 @@ def _process_pending_signals_locked() -> None:
             _clear_pending_order_marker(order_marker)
             _reset_order_fail_counter()
             in_batch_placed += 1
-            log_event("order_placed", asset=sig["assetSymbol"], ticket=result.ticket, lot=result.lot, entry=result.entry_price)
+            # Drift-monitor fields: capture signal-side prediction + MT5
+            # actual fill so the daily report can attribute live drift to
+            # entry slippage, spread cost, or stop_pct slippage. Read the
+            # spread from the symbol info we resolved earlier.
+            sig_entry = sig.get("entryPrice")
+            slippage_bps = None
+            if sig_entry and sig_entry > 0 and result.entry_price:
+                slip = (result.entry_price - sig_entry) / sig_entry
+                # Long entries fill higher (positive slip = paid more).
+                # Short entries fill lower (negative slip = received less).
+                # Normalise so positive = adverse for the trader.
+                if sig.get("direction") == "short":
+                    slip = -slip
+                slippage_bps = round(slip * 10_000, 2)
+            # Re-resolve broker symbol (cached) to read the live spread at
+            # fill time. _resolve_symbol returns None if mapping is missing,
+            # in which case we just omit the spread field.
+            ftmo_symbol = _resolve_broker_symbol(sig["sourceSymbol"])
+            broker_symbol_info = mt5.symbol_info(ftmo_symbol) if ftmo_symbol else None
+            spread_pts = getattr(broker_symbol_info, "spread", None) if broker_symbol_info else None
+            log_event(
+                "order_placed",
+                asset=sig["assetSymbol"],
+                ticket=result.ticket,
+                lot=result.lot,
+                entry=result.entry_price,
+                signal_entry=sig_entry,
+                signal_stop=sig.get("stopPrice"),
+                signal_tp=sig.get("tpPrice"),
+                direction=sig.get("direction"),
+                risk_frac=sig.get("riskFrac"),
+                stop_pct=sig.get("stopPct"),
+                tp_pct=sig.get("tpPct"),
+                slippage_bps=slippage_bps,
+                spread_pts=spread_pts,
+            )
             tg_send(
                 f"✅ <b>ORDER PLACED</b>\n"
-                f"{sig['assetSymbol']} {direction.upper()}\n"
+                f"{html_escape(sig['assetSymbol'])} {direction.upper()}\n"
                 f"Ticket: <code>{result.ticket}</code>\n"
                 f"Lot: {result.lot} @ ${result.entry_price:.4f}\n"
                 f"Risk: {sig['riskFrac']*100:.3f}% of equity"
@@ -1721,10 +2148,20 @@ def _process_pending_signals_locked() -> None:
         else:
             _bump_order_fail_counter(result.error or "unknown")
             log_event("order_failed", asset=sig["assetSymbol"], error=result.error)
-            tg_send(f"❌ <b>ORDER FAILED</b>\n{sig['assetSymbol']}\nError: {html_escape(result.error or 'unknown')}")
+            tg_send(f"❌ <b>ORDER FAILED</b>\n{html_escape(sig['assetSymbol'])}\nError: {html_escape(result.error or 'unknown')}")
             # BUGFIX 2026-04-28: retry transient errors instead of silently dropping.
             err_str = (result.error or "").lower()
-            retryable_keywords = ["timeout", "no money", "requote", "off quotes", "trade disabled", "10027"]
+            # R67-r12 audit fix: add filling-mode mismatch keys (retcode 10030
+            # / "invalid order filling type"). Without this every order on a
+            # FOK-only crypto symbol failed once and was permanently dropped,
+            # quickly tripping `_bump_order_fail_counter` → auto-pause. The
+            # `_pick_filling_mode()` probe avoids the failure on the happy
+            # path, but if the broker briefly disagrees we still get a retry.
+            retryable_keywords = [
+                "timeout", "no money", "requote", "off quotes",
+                "trade disabled", "10027",
+                "invalid order filling", "unsupported filling", "10030",
+            ]
             is_retryable = any(k in err_str for k in retryable_keywords)
             retry_count = sig.get("_retryCount", 0)
             if is_retryable and retry_count < 5:
@@ -1769,24 +2206,62 @@ def _process_pending_signals_locked() -> None:
 
 
 def _modify_position_sl(ticket: int, new_sl: float) -> bool:
-    """Modify SL of an open position via MT5 SLTP request."""
+    """Modify SL of an open position via MT5 SLTP request.
+
+    Bug-Audit Round 2: previously the request always echoed `float(pos.tp)` —
+    if `pos.tp == 0` (e.g. broker dropped the TP, or a previous SLTP-modify
+    cleared it) MT5 rejects with retcode 10016 "Invalid stops" or, worse,
+    silently kills the TP entirely. Now we omit the TP field unless we have
+    a non-zero one, so the broker keeps the existing TP. Also: single-shot
+    retry on transient REQUOTE/timeout retcodes (10004/10008/10021).
+    """
     live = mt5.positions_get(ticket=ticket)
     if not live:
         return False
     pos = live[0]
-    request = {
+    # R67-r10: round new SL to tick grid (caller passes computed price like
+    # entry × (1 - trailPct) which is generally NOT on the broker grid).
+    sl_rounded = float(new_sl)
+    info = mt5.symbol_info(pos.symbol)
+    if info is not None:
+        tick_size = float(getattr(info, "trade_tick_size", 0.0) or getattr(info, "point", 0.0) or 0.0)
+        digits = int(getattr(info, "digits", 0) or 0)
+        sl_rounded = _round_to_tick(sl_rounded, tick_size, digits)
+    request: dict = {
         "action": mt5.TRADE_ACTION_SLTP,
         "symbol": pos.symbol,
         "position": ticket,
-        "sl": float(new_sl),
-        "tp": float(pos.tp),
+        "sl": sl_rounded,
         "magic": 231,
     }
-    result = mt5.order_send(request)
-    if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-        log_event("sl_modify_failed", ticket=ticket, retcode=getattr(result, "retcode", None), error=getattr(result, "comment", ""))
+    # Only include tp when broker has a non-zero TP set; sending tp=0 is
+    # interpreted as "cancel the TP" by most MT5 builds.
+    existing_tp = float(getattr(pos, "tp", 0.0) or 0.0)
+    if existing_tp > 0:
+        request["tp"] = existing_tp
+    # First attempt + one retry on transient retcodes.
+    transient_retcodes = {
+        getattr(mt5, "TRADE_RETCODE_REQUOTE", 10004),
+        getattr(mt5, "TRADE_RETCODE_PRICE_OFF", 10021),
+        getattr(mt5, "TRADE_RETCODE_TIMEOUT", 10008),
+    }
+    for attempt in range(2):
+        result = mt5.order_send(request)
+        if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
+            return True
+        retcode = getattr(result, "retcode", None)
+        if attempt == 0 and retcode in transient_retcodes:
+            time.sleep(0.25)
+            continue
+        log_event(
+            "sl_modify_failed",
+            ticket=ticket,
+            retcode=retcode,
+            error=getattr(result, "comment", ""),
+            attempt=attempt + 1,
+        )
         return False
-    return True
+    return False
 
 
 def _apply_trailing_stop(pos: dict) -> dict:
@@ -1870,7 +2345,12 @@ def _close_partial_lot(ticket: int, close_lot: float, reason: str) -> bool:
     close_lot = math.floor(close_lot / step) * step
     if close_lot < vol_min or close_lot >= pos.volume:
         return False  # too small or would close everything
-    price = info.ask if pos.type == mt5.POSITION_TYPE_SELL else info.bid
+    # R67-r12: live-tick price (same fix as close_position_at_market).
+    tick = mt5.symbol_info_tick(pos.symbol)
+    if tick is None or tick.bid <= 0 or tick.ask <= 0:
+        log_event("partial_close_no_tick", ticket=ticket, symbol=pos.symbol)
+        return False
+    price = tick.ask if pos.type == mt5.POSITION_TYPE_SELL else tick.bid
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": pos.symbol,
@@ -1882,7 +2362,7 @@ def _close_partial_lot(ticket: int, close_lot: float, reason: str) -> bool:
         "magic": 231,
         "comment": f"r11 {reason}"[:31],
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        "type_filling": _pick_filling_mode(pos.symbol),
     }
     result = mt5.order_send(request)
     ok = result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
@@ -2186,7 +2666,7 @@ def _apply_time_exit(pos: dict, now_ms: int) -> bool:
         log_event("time_exit_close", ticket=pos["ticket"],
                   bars_held=int(bars_held), unrealized=unrealized,
                   min_gain_abs=min_gain_abs)
-        if close_position(pos["ticket"]):
+        if close_position(pos["ticket"], exit_reason_override="time_exit"):
             tg_send(
                 f"⏳ <b>Time-exit close</b>\n"
                 f"{pos['signalAsset']} ticket <code>{pos['ticket']}</code>\n"
@@ -2329,15 +2809,71 @@ def _emergency_close_all_positions(reason: str) -> None:
     OPEN_POS_PATH so the next loop retries — wiping unconditionally meant
     a single requote/timeout left an orphan position at MT5 with no
     further trail/time-exit/close attempt → equity could still breach.
+
+    R67-r12 audit fix (HIGH severity — affects PASSLOCK Pass-Lock guarantee):
+    primary source-of-truth is now MT5, not OPEN_POS_PATH. The JSON file can
+    be stale in two scenarios:
+      1. crash between order_send and manage_open_positions writeback,
+      2. PASSLOCK fires inside process_pending_signals before the next
+         manage-cycle wrote the new ticket to OPEN_POS_PATH.
+    With the old JSON-only iteration, fresh MT5 positions were missed,
+    state["target_hit"]=True still set, and the Pass-Lock-Mode bouted out
+    while live positions could still drag equity below target. We now
+    iterate `mt5.positions_get(magic=231)` and merge JSON metadata for the
+    Telegram pretty-print.
     """
-    open_positions = read_json(OPEN_POS_PATH, {"positions": []})
+    # R67-RR6 audit fix (MED): on MT5 disconnect, `mt5.positions_get()`
+    # returns None (vs empty list = "no positions"). The previous `or []`
+    # collapsed both into "nothing to close" → emergency-close no-op'd
+    # silently and OPEN_POS_PATH got wiped, losing the JSON-tracked
+    # tickets we'd need on next reconnect. Now we differentiate: None =
+    # connection lost → bail out, KEEP the OPEN_POS_PATH so the next
+    # cycle can retry once MT5 returns.
+    mt5_live = mt5.positions_get()
+    if mt5_live is None:
+        log_event(
+            "emergency_close_skipped_mt5_disconnect",
+            reason=reason,
+        )
+        tg_send(
+            "⚠️ <b>Emergency Close DEFERRED</b>\n"
+            f"MT5 disconnected — cannot enumerate live positions. Reason: "
+            f"{html_escape(reason)}. Will retry on next sync cycle."
+        )
+        return
+    bot_positions = [p for p in mt5_live if getattr(p, "magic", 0) == 231]
+    open_json = read_json(OPEN_POS_PATH, {"positions": []}).get("positions", [])
+    json_by_ticket = {
+        p["ticket"]: p for p in open_json if isinstance(p, dict) and "ticket" in p
+    }
     closed = 0
     failed_positions: list[dict] = []
-    for pos in open_positions.get("positions", []):
-        if close_position(pos["ticket"]):
+    # Pass explicit exit_reason so the drift-monitor pipeline doesn't tag
+    # emergency closes as TP/SL hits with bogus slippage.
+    emergency_reason_tag = f"emergency:{reason[:32]}"
+    for mt5_pos in bot_positions:
+        ticket = mt5_pos.ticket
+        meta = json_by_ticket.get(
+            ticket,
+            {
+                "ticket": ticket,
+                "signalAsset": getattr(mt5_pos, "symbol", "unknown"),
+            },
+        )
+        if close_position(ticket, exit_reason_override=emergency_reason_tag):
             closed += 1
         else:
-            failed_positions.append(pos)
+            failed_positions.append(meta)
+    # Also keep any JSON-tracked tickets whose MT5 record disappeared but
+    # we couldn't verify closure for (defensive — manage_open_positions
+    # treats `position_gone` as success, but if MT5 was unreachable we
+    # don't want to silently drop the row).
+    mt5_ticket_set = {p.ticket for p in bot_positions}
+    for ticket, meta in json_by_ticket.items():
+        if ticket not in mt5_ticket_set:
+            # Position no longer at MT5 — was already closed (SL/TP/manual).
+            # Drop from retry list.
+            continue
     if closed > 0:
         log_event("emergency_close", reason=reason, closed=closed, failed=len(failed_positions))
         tg_send(f"🚨 <b>Emergency Close {closed} positions</b>\nReason: {html_escape(reason)}")
@@ -2366,7 +2902,7 @@ def manage_open_positions() -> None:
             continue
         if now_ms >= pos.get("max_hold_until", 0):
             log_event("hold_expired", ticket=pos["ticket"])
-            if close_position(pos["ticket"]):
+            if close_position(pos["ticket"], exit_reason_override="hold_expired"):
                 tg_send(f"⏱ <b>Hold Expired — Closed</b>\n{pos['signalAsset']} ticket <code>{pos['ticket']}</code>")
             continue
         # Round 11: time-exit short-circuits before any other management.
@@ -2414,7 +2950,7 @@ def sync_account_state() -> None:
     )
     recent_pnls: list[float] = []
     if deals:
-        closes = [d for d in deals if d.magic == 231 and d.entry == mt5.DEAL_ENTRY_OUT]
+        closes = [d for d in deals if d.magic == 231 and _is_close_deal(d)]
         closes.sort(key=lambda d: d.time)
         for d in closes[-20:]:
             recent_pnls.append(d.profit / CHALLENGE_START_BALANCE)
@@ -2450,11 +2986,29 @@ def handle_kill_request() -> bool:
         return False
     log_event("kill_requested", from_controls=True)
     tg_send("🛑 <b>Kill-request received</b> — closing all bot positions...")
+    # Bug-Audit Round 1: parity with _emergency_close_all_positions — distinguish
+    # MT5 disconnect (None) from "no positions" (empty list). Previously `or []`
+    # collapsed both → kill silently no-op'd on disconnect AND the killRequested
+    # flag was cleared, losing the operator's emergency intent. Now we DEFER
+    # (keep flag set, stay paused) so the next reconnect retries the kill.
     positions = mt5.positions_get()
+    if positions is None:
+        log_event("kill_request_deferred_mt5_disconnect", level="warn")
+        tg_send(
+            "⚠️ <b>Kill-request DEFERRED</b>\n"
+            "MT5 disconnected — cannot enumerate positions. Bot remains PAUSED "
+            "with killRequested set; will retry on next reconnect."
+        )
+        # Pause immediately even if we can't close yet — caller will retry.
+        def _pause_only(c: dict) -> dict:
+            c["paused"] = True
+            return c
+        update_controls(_pause_only)
+        return False
     closed = 0
-    for pos in positions or []:
+    for pos in positions:
         if pos.magic == 231:
-            if close_position(pos.ticket):
+            if close_position(pos.ticket, exit_reason_override="kill_request"):
                 closed += 1
     def _apply(c: dict) -> dict:
         c["killRequested"] = False
@@ -2517,11 +3071,23 @@ def _reset_order_fail_counter() -> None:
 
 _last_equity_snapshot = [0.0]  # wrapped in list for closure mutation
 _last_cb_check_streak = [0]
+# Bug-Audit Round 3: seed-on-first-call sentinel. After process restart the
+# module-global resets to 0, but the broker's deal history still shows the
+# pre-restart losing streak. Without this sentinel, the very first
+# check_circuit_breaker() poll after restart computes `streak > 0` and re-
+# trips even immediately after the user issued /resume → /pause loop.
+_cb_streak_seeded = [False]
 _last_dd_warn_sent = [""]  # date of last dd warn sent, to avoid spam
 
 
 def sample_equity_history(current_equity_usd: float) -> None:
-    """Append equity snapshot to equity-history.jsonl every EQUITY_HISTORY_INTERVAL_SEC."""
+    """Append equity snapshot to equity-history.jsonl every EQUITY_HISTORY_INTERVAL_SEC.
+
+    R67-r9 audit: was missing rotation, lock, and fsync — at 288 lines/day
+    × ~150 bytes ≈ 16MB/year per account, the file grew unbounded. Now
+    rotated via _rotate_jsonl_if_needed (20MB cap), fsync'd for
+    crash-durability, and lock-protected against future concurrent writers.
+    """
     now = time.time()
     if now - _last_equity_snapshot[0] < EQUITY_HISTORY_INTERVAL_SEC:
         return
@@ -2532,8 +3098,21 @@ def sample_equity_history(current_equity_usd: float) -> None:
         "equity_usd": current_equity_usd,
         "equity_pct": (current_equity_usd - CHALLENGE_START_BALANCE) / CHALLENGE_START_BALANCE,
     }
-    with open(EQUITY_HISTORY_PATH, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+    line = json.dumps(entry) + "\n"
+    lock_path = STATE_DIR / "equity-history.lock"
+    try:
+        with _file_lock(lock_path, timeout_sec=2.0, stale_sec=2.0):
+            _rotate_jsonl_if_needed(EQUITY_HISTORY_PATH, max_mb=20)
+            with open(EQUITY_HISTORY_PATH, "a", encoding="utf-8") as f:
+                f.write(line)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+    except Exception as e:
+        # Don't crash the main loop on equity-history persistence failure.
+        log_event("equity_history_write_failed", error=str(e), level="warn")
 
 
 def check_circuit_breaker() -> Optional[str]:
@@ -2550,7 +3129,7 @@ def check_circuit_breaker() -> Optional[str]:
     if not deals:
         return None
 
-    closes = [d for d in deals if d.magic == 231 and d.entry == mt5.DEAL_ENTRY_OUT]
+    closes = [d for d in deals if d.magic == 231 and _is_close_deal(d)]
     closes.sort(key=lambda d: d.time)
 
     # Count consecutive losses from most recent
@@ -2560,6 +3139,16 @@ def check_circuit_breaker() -> Optional[str]:
             streak += 1
         else:
             break
+
+    # Bug-Audit Round 3: on the very first check after a process restart, the
+    # in-memory `_last_cb_check_streak[0]` is 0 and any historical losing
+    # streak satisfies `streak > 0` → the just-resumed bot gets immediately
+    # re-paused. Seed the high-water mark to the observed historical streak
+    # on first call so we only trip on a NEW loss that grows the streak.
+    if not _cb_streak_seeded[0]:
+        _last_cb_check_streak[0] = streak
+        _cb_streak_seeded[0] = True
+        return None
 
     if streak > _last_cb_check_streak[0]:
         # Streak grew
@@ -2596,7 +3185,32 @@ def check_circuit_breaker() -> Optional[str]:
 _last_consistency_warn = [""]  # date of last warning per ticket-category
 
 
-_news_closes_announced: set[int] = set()  # timestamps already warned about
+# Bug-Audit Round 3: previously an in-memory-only set. After a process
+# restart the executor would re-announce + re-close on the SAME upcoming
+# news event (because the event-timestamp dedupe was lost). With PM2
+# auto-restarts that can easily happen during the 30-min approach window
+# of a high-impact print → repeat Telegram alert + a second flatten pass
+# that wipes any positions the trader manually re-opened in between.
+# Persist to disk so restarts honor the dedupe.
+NEWS_ANNOUNCED_PATH = STATE_DIR / "news-announced.json"
+
+
+def _load_news_announced() -> set[int]:
+    data = read_json(NEWS_ANNOUNCED_PATH, {"ts": []})
+    out: set[int] = set()
+    for t in data.get("ts", []):
+        try:
+            out.add(int(t))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _save_news_announced(s: set[int]) -> None:
+    write_json(NEWS_ANNOUNCED_PATH, {"ts": sorted(s)})
+
+
+_news_closes_announced: set[int] = _load_news_announced()
 
 
 def check_news_auto_close() -> None:
@@ -2606,23 +3220,52 @@ def check_news_auto_close() -> None:
     positions and pause new entries briefly.
     """
     data = read_json(NEWS_PATH, {"events": []})
-    events = data.get("events", [])
-    if not events:
+    raw_events = data.get("events", [])
+    if not raw_events:
         return
+
+    # R67 audit fix: coerce timestamps to int once up-front. Original code
+    # only coerced in the inclusion filter; downstream `e["timestamp"] in
+    # _news_closes_announced` set-membership and `_news_closes_announced.add`
+    # used the raw value. If the Node news-service ever emits timestamps as
+    # strings (Zod-coerce, JSON.stringify quirks), the de-dupe set would
+    # silently fail (every poll = new alert) and the eviction `<` mixes
+    # str/int → TypeError. Drop malformed events with a warn.
+    events: list[dict] = []
+    for e in raw_events:
+        ts_raw = e.get("timestamp", 0)
+        try:
+            ts = int(ts_raw)
+        except (TypeError, ValueError):
+            log_event("news_event_invalid_ts", raw=str(ts_raw)[:80], level="warn")
+            continue
+        events.append({**e, "timestamp": ts})
 
     now_ms = int(time.time() * 1000)
     threshold_ms = NEWS_CLOSE_MINUTES_BEFORE * 60 * 1000
     incoming = [
         e for e in events
-        if 0 <= (int(e.get("timestamp", 0)) - now_ms) <= threshold_ms
+        if 0 <= (e["timestamp"] - now_ms) <= threshold_ms
         and e.get("impact") == "High"
     ]
     if not incoming:
         return
 
-    # Close all bot positions
-    positions = mt5.positions_get() or []
-    bot_positions = [p for p in positions if p.magic == 231]
+    # Close all bot positions.
+    # Bug-Audit Round 1: distinguish MT5 disconnect (None) from "no positions"
+    # (empty list). Previously `or []` collapsed both — a news event arriving
+    # during an MT5 outage would be marked as "announced" via the dedupe set
+    # without ANY position being closed, and the alert would never re-fire
+    # when the connection returned (high-impact news → unmanaged exposure).
+    raw_positions = mt5.positions_get()
+    if raw_positions is None:
+        log_event("news_auto_close_skipped_mt5_disconnect", level="warn")
+        tg_send(
+            "⚠️ <b>News Auto-Close DEFERRED</b>\n"
+            "MT5 disconnected — cannot enumerate positions. Will retry next poll."
+        )
+        return
+    bot_positions = [p for p in raw_positions if p.magic == 231]
     if bot_positions:
         # BUGFIX 2026-04-28: evict timestamps older than 7 days to prevent
         # unbounded set growth in long-running bot.
@@ -2630,9 +3273,17 @@ def check_news_auto_close() -> None:
         _news_closes_announced.difference_update(
             t for t in list(_news_closes_announced) if t < cutoff_ms
         )
+        # Bug-Audit Round 3: previously the close-loop fired UNCONDITIONALLY
+        # after the dedupe loop, even when every incoming event was already
+        # announced (no fresh trigger). On a re-poll where positions briefly
+        # re-appear (or were manually re-opened by the trader), this re-fired
+        # closes without a corresponding Telegram alert. Now we only close
+        # when at least one event in this poll is genuinely new.
+        any_new = False
         for e in incoming:
             if e["timestamp"] in _news_closes_announced:
                 continue
+            any_new = True
             _news_closes_announced.add(e["timestamp"])
             mins_to = max(0, (e["timestamp"] - now_ms) // 60000)
             log_event(
@@ -2647,8 +3298,12 @@ def check_news_auto_close() -> None:
                 f"Event: <b>{html_escape(e.get('title', '?'))}</b> ({e.get('currency', '?')})\n"
                 f"In {mins_to} min — flattening {len(bot_positions)} position(s) now.",
             )
-        for pos in bot_positions:
-            close_position(pos.ticket)
+        if any_new:
+            # Bug-Audit Round 3: persist the announced-set so restarts don't
+            # re-announce+re-close on the same event timestamp.
+            _save_news_announced(_news_closes_announced)
+            for pos in bot_positions:
+                close_position(pos.ticket, exit_reason_override="news_blackout")
 
 
 def check_consistency_rule() -> None:
@@ -2667,7 +3322,7 @@ def check_consistency_rule() -> None:
     )
     if not deals:
         return
-    closes = [d for d in deals if d.magic == 231 and d.entry == mt5.DEAL_ENTRY_OUT]
+    closes = [d for d in deals if d.magic == 231 and _is_close_deal(d)]
     wins = [d for d in closes if d.profit > 0]
     if not wins:
         return
@@ -2679,7 +3334,12 @@ def check_consistency_rule() -> None:
     largest = max(wins, key=lambda d: d.profit)
     ratio = largest.profit / total_profit
 
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Bug-Audit Round 3: dedupe-key was UTC date — drifted ~1-2h from the FTMO
+    # daily-reset boundary (Prague midnight). Result: at the Prague-day
+    # rollover the warning would fire twice (once before, once after the UTC
+    # boundary 1-2h later) or miss the rollover entirely depending on poll
+    # phase. Anchor to the same TZ as handle_daily_reset.
+    today = _prague_today_str()
     warn_key = f"{today}-{'HARD' if ratio >= CONSISTENCY_HARD_RATIO else 'WARN' if ratio >= CONSISTENCY_WARN_RATIO else 'OK'}"
 
     if ratio >= CONSISTENCY_HARD_RATIO and _last_consistency_warn[0] != warn_key:
@@ -2708,7 +3368,10 @@ def check_daily_dd_warning(current_equity_usd: float, day_start_usd: float) -> N
     if day_start_usd <= 0:
         return
     daily_pct = (current_equity_usd - day_start_usd) / day_start_usd
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Bug-Audit Round 3: dedupe-key was UTC date — drifted 1-2h from the
+    # FTMO/Prague daily-reset boundary that handle_daily_reset uses. Parity
+    # with check_consistency_rule fix.
+    today = _prague_today_str()
     if daily_pct <= -CB_DAILY_DD_WARN_PCT and _last_dd_warn_sent[0] != today:
         _last_dd_warn_sent[0] = today
         dd_usd = current_equity_usd - day_start_usd
@@ -2972,7 +3635,7 @@ def acquire_singleton_or_exit() -> None:
         if other_pid > 0 and other_pid != os.getpid():
             alive = False
             try:
-                if os.name == "nt":
+                if os.name == "nt":  # type: ignore[reportUnnecessaryComparison]
                     import ctypes
                     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
                     handle = ctypes.windll.kernel32.OpenProcess(
@@ -3114,6 +3777,24 @@ def main_loop() -> None:
                     # the gate triggers at the correct moment.
                     if DPT_ENABLED:
                         update_day_peak(acct["equity"])
+                    # Bug-Audit Round 4 (HIGH severity — PASSLOCK race):
+                    # check_target_and_pause was ONLY called from inside
+                    # _process_pending_signals_locked, so if equity crossed
+                    # the profit-target mid-cycle via a PTP partial fire,
+                    # trailing-stop tick, or natural SL/TP exit, the pause
+                    # flag was not set until the NEXT signal-processing
+                    # call — leaving a poll-interval-wide window where new
+                    # positions could be opened OR existing positions could
+                    # drift back below target without the closeAllOn-
+                    # TargetReached PASSLOCK firing. We now run the check
+                    # once per loop iteration BEFORE manage_open_positions
+                    # / process_pending_signals so the equity-crossing is
+                    # caught in the same cycle. check_target_and_pause is
+                    # idempotent: subsequent calls after target_hit=True
+                    # short-circuit on `state["passed"]` or the early
+                    # `target_hit` write+log block, so this only fires
+                    # the emergency-close-all on the FIRST detection.
+                    check_target_and_pause(acct["equity"])
 
                 # Circuit breaker (may trip → set paused)
                 check_circuit_breaker()
@@ -3164,7 +3845,7 @@ if __name__ == "__main__":
     # so we trigger the same KeyboardInterrupt cleanup path. Without this,
     # MT5 connection terminates mid-order_send → orphan trades without SL/TP.
     import signal as _signal
-    def _on_sigterm(*_args):  # type: ignore[reportUnusedVariable]
+    def _on_sigterm(*_):
         # signal-handler signature requires *args; we ignore them.
         raise KeyboardInterrupt()
     try:

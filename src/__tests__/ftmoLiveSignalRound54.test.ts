@@ -10,7 +10,7 @@
  * Strategy: re-import detector for each FTMO_TF via vi.resetModules() (mirrors
  * the pattern used in ftmoLiveSafety.test.ts).
  */
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import type { Candle } from "@/utils/indicators";
 
 function makeCandles(n: number, basePrice = 1000, vol = 5): Candle[] {
@@ -51,7 +51,15 @@ describe("Round 54 — V231 fixes", () => {
   beforeEach(async () => {
     delete process.env.FTMO_TF;
     delete process.env.FTMO_TF_ALLOW_FALLBACK;
+    // R29 R5 audit fix: legacy V261_2H selector ("2h") does not carry liveCaps
+    // and would fail assertConfigValid in production. Bypass for these signal-
+    // layer behaviour tests (validator coverage is in ftmoConfigValidator.test).
+    process.env.FTMO_ALLOW_UNSAFE_CONFIG = "1";
     vi.resetModules();
+  });
+
+  afterAll(() => {
+    delete process.env.FTMO_ALLOW_UNSAFE_CONFIG;
   });
 
   describe("Fix #5: peakDrawdownThrottle without challengePeak rejects signals", () => {
@@ -137,9 +145,21 @@ describe("Round 54 — V231 fixes", () => {
       expect(v231.getActiveCfgInfo().label).toBe("V261");
     });
 
-    it("does NOT throw when FTMO_TF unset (test harness default)", async () => {
+    it("DOES throw when FTMO_TF unset (R29 R3 inverted contract — fail-loud)", async () => {
+      // R29 Round 3 (commit cdfc887) made silent V261-fallback fatal because
+      // V261 is 0% pass-rate under live-caps. Test-harness escape hatch is
+      // FTMO_TF_ALLOW_FALLBACK=1 (covered by the test above).
       delete process.env.FTMO_TF;
-      /* using vi.resetModules() from outer scope */
+      delete process.env.FTMO_TF_ALLOW_FALLBACK;
+      vi.resetModules();
+      await expect(import("@/utils/ftmoLiveSignalV231")).rejects.toThrow(
+        /FTMO_TF env-var is not set/,
+      );
+    });
+
+    it("does NOT throw when FTMO_TF unset AND FTMO_TF_ALLOW_FALLBACK=1 (test escape hatch)", async () => {
+      delete process.env.FTMO_TF;
+      process.env.FTMO_TF_ALLOW_FALLBACK = "1";
       vi.resetModules();
       const v231 = await import("@/utils/ftmoLiveSignalV231");
       expect(v231.getActiveCfgInfo().label).toBe("V261");

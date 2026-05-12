@@ -1,6 +1,13 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import type { User, SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "./supabase";
 
@@ -28,32 +35,42 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let unsubscribe: (() => void) | null = null;
 
     async function initAuth() {
-      const client = await createClient();
+      // R6 lib-utils: any thrown error in createClient/getUser left
+      // isLoading=true forever, blocking the UI on a permanent loading state.
+      // try/catch + finally guarantees we always release the loading flag.
+      try {
+        const client = await createClient();
 
-      if (!mounted) return;
-      setSupabase(client);
+        if (!mounted) return;
+        setSupabase(client);
 
-      if (!client) {
-        setIsLoading(false);
-        return;
+        if (!client) {
+          return;
+        }
+
+        // Get initial session
+        const {
+          data: { user: initialUser },
+        } = await client.auth.getUser();
+
+        if (!mounted) return;
+        setUser(initialUser ?? null);
+
+        // Listen for auth changes — R67 audit: respect mounted flag so an
+        // in-flight auth event between mounted=false and unsubscribe() can
+        // not setState on an unmounted provider (StrictMode / hot-reload).
+        const {
+          data: { subscription },
+        } = client.auth.onAuthStateChange((_event, session) => {
+          if (!mounted) return;
+          setUser(session?.user ?? null);
+        });
+        unsubscribe = () => subscription.unsubscribe();
+      } catch (err) {
+        console.error("[auth] initAuth failed:", err);
+      } finally {
+        if (mounted) setIsLoading(false);
       }
-
-      // Get initial session
-      const {
-        data: { user: initialUser },
-      } = await client.auth.getUser();
-
-      if (!mounted) return;
-      setUser(initialUser ?? null);
-      setIsLoading(false);
-
-      // Listen for auth changes
-      const {
-        data: { subscription },
-      } = client.auth.onAuthStateChange((_event, session) => {
-        setUser(session?.user ?? null);
-      });
-      unsubscribe = () => subscription.unsubscribe();
     }
 
     initAuth();
@@ -64,7 +81,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const signOut = async () => {
+  const signOut = useCallback(async () => {
     // Phase 32 (Re-Audit Storage Bug 7): only clearAllData() AFTER
     // successful Supabase signOut. Previous behavior wiped local cache
     // even on auth failure (Network glitch / 500) → user lost their
@@ -83,18 +100,45 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const { clearAllData } = await import("@/utils/storage");
         clearAllData();
+        // Round-N audit: theme is currently persisted under a global
+        // localStorage key (`tradevision-theme`) and therefore leaks
+        // across sign-outs — User-A's light-mode preference would
+        // otherwise greet User-B at the next session start. Drop it
+        // here so the next user falls back to the default (dark or
+        // prefers-color-scheme). User-scoped keys would be cleaner but
+        // are too invasive for the current scope.
+        try {
+          localStorage.removeItem("tradevision-theme");
+        } catch {
+          // ignore — Privacy-Mode/Safari-ITP/quota
+        }
       } catch (e) {
         console.error("[auth] failed to clear storage on signOut:", e);
       }
     }
+    try {
+      if (typeof window !== "undefined" && "caches" in window) {
+        const names = await caches.keys();
+        await Promise.all(
+          names
+            .filter((n) => n.startsWith("tradevision-"))
+            .map((n) => caches.delete(n)),
+        );
+      }
+    } catch (e) {
+      console.error("[auth] failed to clear SW caches on signOut:", e);
+    }
     setUser(null);
-  };
+  }, [supabase]);
 
-  return (
-    <AuthContext.Provider value={{ user, supabase, isLoading, signOut }}>
-      {children}
-    </AuthContext.Provider>
+  // R-Perf: memoize the context value so consumers don't re-render
+  // on every AuthProvider render (each call to {} creates a new identity).
+  const value = useMemo(
+    () => ({ user, supabase, isLoading, signOut }),
+    [user, supabase, isLoading, signOut],
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

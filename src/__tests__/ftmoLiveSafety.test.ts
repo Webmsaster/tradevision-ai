@@ -19,7 +19,7 @@
  * feed synthetic candles tuned to trigger N-green-close patterns on all
  * 3 assets, and check every signal against the safety caps.
  */
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import type { Candle } from "@/utils/indicators";
 import type { AccountState, DetectionResult } from "@/utils/ftmoLiveSignalV231";
 import { LIVE_MAX_RISK_FRAC, LIVE_MAX_STOP_PCT } from "@/utils/ftmoLiveCaps";
@@ -110,16 +110,31 @@ const TIMEFRAMES: Array<{ tf: string; tfHours: number; bars: number }> = [
 
 describe("Live-safety: every active config respects hard caps", () => {
   beforeEach(() => {
+    // R29 R5 audit fix: legacy non-PASSLOCK configs (V6/V7/V12/V12-TURBO) do
+    // NOT carry liveCaps/atrStop and intentionally fail assertConfigValid in
+    // production. These tests measure the SIGNAL-LAYER risk caps (riskFrac,
+    // stopPct) which exist independently of the config-level guard. Bypass
+    // the validator with FTMO_ALLOW_UNSAFE_CONFIG=1 (research-only escape
+    // hatch per ftmoConfigValidator.ts line ~39).
+    process.env.FTMO_ALLOW_UNSAFE_CONFIG = "1";
     vi.resetModules();
+  });
+
+  afterAll(() => {
+    delete process.env.FTMO_ALLOW_UNSAFE_CONFIG;
   });
 
   for (const { tf, tfHours, bars } of TIMEFRAMES) {
     it(`FTMO_TF=${tf} → no signal exceeds risk/stop caps`, async () => {
-      // default-4h means leave FTMO_TF unset.
+      // default-4h means leave FTMO_TF unset. R29 R3 made the unset-path
+      // fail-loud in production, so we must opt-in via the test-harness
+      // escape hatch FTMO_TF_ALLOW_FALLBACK=1 (per ftmoLiveSignalV231 line ~636).
       if (tf === "default-4h") {
         delete process.env.FTMO_TF;
+        process.env.FTMO_TF_ALLOW_FALLBACK = "1";
       } else {
         process.env.FTMO_TF = tf;
+        delete process.env.FTMO_TF_ALLOW_FALLBACK;
       }
 
       const mod = await import("@/utils/ftmoLiveSignalV231");

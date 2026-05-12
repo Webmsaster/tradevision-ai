@@ -1,0 +1,191 @@
+/**
+ * driftTelegram.ts — Daily wrapper around `driftMonitor.ts` that posts the
+ * report to Telegram. Designed to be invoked from cron on the VPS:
+ *
+ *   # /etc/cron.d/ftmo-drift  (UTC)
+ *   17 23 * * * flooe cd /opt/ftmo && node /opt/ftmo/node_modules/tsx/dist/cli.mjs scripts/driftTelegram.ts
+ *
+ * Env vars (per-account routing matches the executor's R57 convention):
+ *   FTMO_STATE_DIR             — same dir the executor writes to
+ *   TELEGRAM_BOT_TOKEN         — bot token (or TELEGRAM_BOT_TOKEN_<ACCOUNT_ID>)
+ *   TELEGRAM_CHAT_ID           — chat id  (or TELEGRAM_CHAT_ID_<ACCOUNT_ID>)
+ *   FTMO_ACCOUNT_ID            — optional, for per-account env routing
+ *   DRIFT_DAYS                 — window length (default 7)
+ *
+ * Exit code 0 always — the cron job should never fail in a way that pages
+ * the operator. Errors print to stderr.
+ */
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { redactToken as sharedRedactToken } from "../src/utils/telegramRedact";
+
+function envFor(
+  varBase: string,
+  accountId: string | undefined,
+): string | undefined {
+  if (accountId) {
+    const v = process.env[`${varBase}_${accountId.toUpperCase()}`];
+    if (v) return v;
+  }
+  return process.env[varBase];
+}
+
+async function main() {
+  const stateDir = process.env.FTMO_STATE_DIR ?? "ftmo-state-default";
+  // R1-A1 audit fix: validate DRIFT_DAYS. parseInt("abc",10) → NaN propagated
+  // straight to `--days NaN` argv → driftMonitor.ts would crash or silently
+  // use 0 days. Now: coerce to a sane positive int or fall back to 7.
+  const daysRaw = parseInt(process.env.DRIFT_DAYS ?? "7", 10);
+  const days = Number.isFinite(daysRaw) && daysRaw > 0 ? daysRaw : 7;
+  const accountId = process.env.FTMO_ACCOUNT_ID;
+  const token = envFor("TELEGRAM_BOT_TOKEN", accountId);
+  const chatId = envFor("TELEGRAM_CHAT_ID", accountId);
+
+  if (!existsSync(stateDir)) {
+    console.error(`[drift-telegram] state dir not found: ${stateDir}`);
+    process.exit(0);
+  }
+
+  // Run the monitor and capture markdown.
+  const result = spawnSync(
+    process.argv0,
+    [
+      "./node_modules/tsx/dist/cli.mjs",
+      "scripts/driftMonitor.ts",
+      "--state-dir",
+      stateDir,
+      "--days",
+      String(days),
+    ],
+    { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+  );
+  if (result.status !== 0) {
+    console.error(`[drift-telegram] monitor failed: ${result.stderr}`);
+    process.exit(0);
+  }
+  const md = result.stdout.trim();
+  if (!md) {
+    console.error("[drift-telegram] empty report");
+    process.exit(0);
+  }
+
+  // Convert Markdown to Telegram-friendly HTML (simple replacements; the
+  // report uses tables which Telegram doesn't render — collapse to <pre>).
+  const text = md
+    // Tables → <pre> blocks
+    .replace(
+      /(\|[^\n]*\|\n)+/g,
+      (block) =>
+        `<pre>${block.replace(/[<>]/g, (c) => (c === "<" ? "&lt;" : "&gt;"))}</pre>\n`,
+    )
+    // Bold
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    // H1/H2
+    .replace(/^# (.+)$/gm, "<b>$1</b>")
+    .replace(/^## (.+)$/gm, "<b>$1</b>");
+
+  if (!token || !chatId) {
+    console.log("[drift-telegram] no Telegram creds — printing report:");
+    console.log(md);
+    process.exit(0);
+  }
+
+  // Telegram sendMessage has a 4096-char limit; split if needed.
+  // Splitter tracks <pre>...</pre> boundaries so chunked output stays valid HTML.
+  function splitChunks(text: string, max = 3800): string[] {
+    const out: string[] = [];
+    let buf = "";
+    let inPre = false;
+    for (const line of text.split("\n")) {
+      if (line.includes("<pre>")) inPre = true;
+      if (line.includes("</pre>")) inPre = false;
+      const trimmed =
+        line.length > max ? line.slice(0, max - 100) + "\u2026" : line;
+      if (buf.length + trimmed.length + 1 > max) {
+        out.push(inPre ? buf + "\n</pre>" : buf);
+        buf = inPre ? "<pre>\n" + trimmed : trimmed;
+      } else {
+        buf = buf ? `${buf}\n${trimmed}` : trimmed;
+      }
+    }
+    if (buf) out.push(buf);
+    return out;
+  }
+
+  const chunks = splitChunks(text);
+
+  // R1-A1 audit fix: redact bot token from any logged error message.
+  // R3-A1 audit fix #1: redact URL-encoded / re-formatted token shapes too.
+  // R4-A1 audit fix: logic moved to `src/utils/telegramRedact.ts` so the
+  // same redact behaviour can be unit-tested independently of the cron job.
+  const redact = (s: string) => sharedRedactToken(s, token);
+  for (const chunk of chunks) {
+    // R1-A1 audit fix: 429 backoff + 401/404 fail-loud + 15s timeout. The
+    // previous code dropped 429 silently (no Retry-After respect) and would
+    // echo bot-token in stack traces on network errors.
+    let sent = false;
+    for (let attempt = 0; attempt < 3 && !sent; attempt++) {
+      try {
+        const res = await fetch(
+          `https://api.telegram.org/bot${token}/sendMessage`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              chat_id: chatId,
+              text: chunk,
+              parse_mode: "HTML",
+              disable_web_page_preview: true,
+            }),
+            signal: AbortSignal.timeout(15_000),
+          },
+        );
+        if (res.ok) {
+          sent = true;
+          break;
+        }
+        // Read body once; redact in case Telegram echoes URL/token back.
+        const bodyText = redact(await res.text().catch(() => ""));
+        if (res.status === 401 || res.status === 404) {
+          console.error(
+            `[drift-telegram] terminal ${res.status} — check TELEGRAM_BOT_TOKEN_* / TELEGRAM_CHAT_ID_* for account ${accountId ?? "<default>"}: ${bodyText.slice(0, 200)}`,
+          );
+          break; // no retry on terminal errors
+        }
+        if (res.status === 429) {
+          // R3-A1 audit fix #6: NaN-guard + clamp [100ms, 60s] for malformed
+          // Retry-After headers (empty / non-numeric / HTTP-date).
+          const retryAfterHdr = res.headers.get("retry-after");
+          const parsed = retryAfterHdr ? Number(retryAfterHdr) : NaN;
+          const headerMs =
+            Number.isFinite(parsed) && parsed >= 0 ? parsed * 1000 : NaN;
+          const fallbackMs = 2000 * (attempt + 1);
+          const wait = Math.min(
+            Math.max(Number.isFinite(headerMs) ? headerMs : fallbackMs, 100),
+            60_000,
+          );
+          await new Promise((r) => setTimeout(r, wait));
+          continue;
+        }
+        if (res.status >= 500 && res.status < 600) {
+          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+          continue;
+        }
+        console.error(
+          `[drift-telegram] send failed: ${res.status} ${bodyText.slice(0, 200)}`,
+        );
+        break;
+      } catch (e) {
+        const msgText = e instanceof Error ? e.message : String(e);
+        console.error(`[drift-telegram] send error: ${redact(msgText)}`);
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      }
+    }
+  }
+  console.log(`[drift-telegram] sent ${chunks.length} chunk(s) to Telegram`);
+}
+
+main().catch((e) => {
+  console.error(`[drift-telegram] fatal: ${e}`);
+  process.exit(0);
+});

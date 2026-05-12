@@ -128,6 +128,10 @@ describe("ftmoLiveEngineV4 Round 54 fixes", () => {
       ptpLevelsRealized: 0,
     };
 
+    // R67 audit fix to time-regression handling now skips bars where
+    // dayIndex(bar) < state.day; align lastBarTs to a day ≥ state.day so
+    // the test's intent (target-hit gate) is exercised.
+    const dayAlignedTs = startTs + 4 * 24 * 3600_000 + 6 * 2 * 3600_000;
     const state: FtmoLiveStateV4 = {
       ...initialState("test-r54-v4-2-mtm-gate"),
       challengeStartTs: startTs,
@@ -145,7 +149,7 @@ describe("ftmoLiveEngineV4 Round 54 fixes", () => {
 
     // Bar with close=85, high/low keep stop intact. mtm should drop below
     // target (1+0.08=1.08) once recomputed.
-    const candles = [mkCandle(lastBarTs, 85, 86, 84.5, 85)];
+    const candles = [mkCandle(dayAlignedTs, 85, 86, 84.5, 85)];
     const r = pollLive(state, { BTCUSDT: candles }, baseCfg);
 
     expect(state.firstTargetHitDay).toBeNull();
@@ -159,7 +163,9 @@ describe("ftmoLiveEngineV4 Round 54 fixes", () => {
     // Inverse test: with no open positions, mtmEquity == equity. realised
     // climbs above target on the next bar → firstTargetHitDay is set.
     const startTs = Date.UTC(2026, 0, 1, 0, 0, 0);
-    const lastBarTs = startTs + 6 * 2 * 3600_000;
+    // R67 audit fix: align lastBarTs to a day ≥ state.day to avoid the
+    // newly-strict time-regression skip.
+    const lastBarTs = startTs + 4 * 24 * 3600_000 + 6 * 2 * 3600_000;
     const state: FtmoLiveStateV4 = {
       ...initialState("test-r54-v4-2-pass"),
       challengeStartTs: startTs,

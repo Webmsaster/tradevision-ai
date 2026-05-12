@@ -25,6 +25,71 @@
 
 const MAX_MSG_LEN = 4000; // Telegram limit is 4096, leave buffer
 
+// R67-r3 (2026-05-06): port `tools/telegram_notify.py` hardening to TS.
+// - Redact bot tokens before any console.error
+// - 401/404 → permanent suppression (invalid token / blocked bot — needs restart)
+// - 429/5xx → 60-second cooldown (avoid ban-spam during rate-limit / outage)
+// - Skip the actual fetch when we're inside a suppression window
+const TOKEN_REDACT_RE = /\/bot\d+:[A-Za-z0-9_-]+/g;
+const SUPPRESSION_COOLDOWN_MS = 60_000;
+const PERMANENT = Number.POSITIVE_INFINITY;
+// R67-r4 (2026-05-06): expanding cooldown for 401/404 instead of permanent
+// suppression. A transient bot-token glitch (e.g. BotFather propagation,
+// proxy 404) used to silence the bot until process restart. Now we back
+// off 5min → 10min → 20min → … capped at 24h, and clear on first success.
+const AUTH_FAIL_BASE_MS = 5 * 60_000;
+const AUTH_FAIL_CAP_MS = 24 * 60 * 60_000;
+
+let suppressUntilTs = 0;
+let suppressLogged = false;
+let consecutiveAuthFailures = 0;
+
+export function redactToken(s: string): string {
+  return s.replace(TOKEN_REDACT_RE, "/bot<REDACTED>");
+}
+
+function enterSuppression(ms: number, reason: string): void {
+  suppressUntilTs = ms === PERMANENT ? PERMANENT : Date.now() + ms;
+  if (!suppressLogged) {
+    if (suppressUntilTs === PERMANENT) {
+      console.error(`[telegram] permanently suppressed: ${reason}`);
+    } else {
+      console.error(
+        `[telegram] suppressed until ${suppressUntilTs.toFixed(0)} (${reason})`,
+      );
+    }
+    suppressLogged = true;
+  }
+}
+
+function clearSuppression(): void {
+  suppressUntilTs = 0;
+  suppressLogged = false;
+}
+
+/** Test hook — reset suppression state between vitest runs. */
+export function __resetTelegramSuppression(): void {
+  clearSuppression();
+  consecutiveAuthFailures = 0;
+}
+
+/**
+ * Force-clear the suppression state from outside (supervisor after the
+ * operator has confirmed the token is valid again). Unlike
+ * `__resetTelegramSuppression` this is a public API — exported with a `__`
+ * prefix to keep callers honest about the recovery intent.
+ *
+ * R67-r4: pairs with the new expanding-cooldown logic so an operator does
+ * not have to wait the full 24h cap after rotating a bot token.
+ *
+ * R67-r8: dedicated admin-endpoint deferred to R9 (will land alongside the
+ * actual route file).
+ */
+export function __forceClearTelegramSuppression(): void {
+  clearSuppression();
+  consecutiveAuthFailures = 0;
+}
+
 export interface TelegramConfig {
   token?: string;
   chatId?: string;
@@ -90,6 +155,9 @@ export async function tgSend(
     prefixed.length > MAX_MSG_LEN
       ? safeTruncateHtml(prefixed, MAX_MSG_LEN - 20)
       : prefixed;
+  // R67-r3: skip fetch entirely while inside a suppression window so a
+  // misconfigured bot can't spam Telegram and trigger a global ban.
+  if (Date.now() < suppressUntilTs) return false;
   try {
     const resp = await fetch(
       `https://api.telegram.org/bot${conf.token}/sendMessage`,
@@ -105,13 +173,41 @@ export async function tgSend(
       },
     );
     if (!resp.ok) {
-      const t = await resp.text();
-      console.error(`[telegram] HTTP ${resp.status}: ${t}`);
+      const t = await resp.text().catch(() => "");
+      const safeBody = redactToken(t).slice(0, 200);
+      const status = resp.status;
+      if (status === 401 || status === 404) {
+        // R67-r4: expanding cooldown 5min → 10min → 20min … capped at 24h
+        // (was: permanent until restart). Recovers automatically once
+        // BotFather/proxy hiccups settle, while still throttling spam.
+        consecutiveAuthFailures++;
+        const ms = Math.min(
+          AUTH_FAIL_BASE_MS * 2 ** (consecutiveAuthFailures - 1),
+          AUTH_FAIL_CAP_MS,
+        );
+        console.error(
+          `[telegram] auth/bot error ${status} (#${consecutiveAuthFailures}, cooldown ${ms}ms): ${safeBody}`,
+        );
+        enterSuppression(ms, `HTTP ${status}`);
+      } else if (status === 429 || (status >= 500 && status < 600)) {
+        // Rate-limited or server error → 60s cooldown.
+        console.error(`[telegram] backoff ${status}: ${safeBody}`);
+        enterSuppression(SUPPRESSION_COOLDOWN_MS, `HTTP ${status}`);
+      } else {
+        console.error(`[telegram] HTTP ${status}: ${safeBody}`);
+      }
       return false;
     }
+    // Successful send → drop any pending suppression state.
+    consecutiveAuthFailures = 0;
+    clearSuppression();
     return true;
   } catch (e) {
-    console.error(`[telegram] send error:`, e);
+    // Network / DNS / timeout. Redact in case the exception text contains
+    // the URL (some libs format the URL into the error message).
+    const msg =
+      e instanceof Error ? e.message : typeof e === "string" ? e : String(e);
+    console.error(`[telegram] send error: ${redactToken(msg)}`);
     return false;
   }
 }
@@ -126,7 +222,7 @@ export function htmlEscape(s: string): string {
  * Closes any tags still open at the truncation point so Telegram accepts
  * the message.
  */
-function safeTruncateHtml(text: string, maxLen: number): string {
+export function safeTruncateHtml(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text;
   let cut = maxLen;
   // Pull cut point back to before any "<" that opens an unclosed tag.

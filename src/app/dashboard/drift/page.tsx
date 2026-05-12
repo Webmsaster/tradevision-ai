@@ -6,7 +6,7 @@
  * Pulls JSON from /api/drift-data every 30s and visualises:
  *   1. Header chip (challenge name, days elapsed/remaining, pass status)
  *   2. Equity card (current vs day-start vs peak vs DL/TL caps)
- *   3. Equity chart (live curve overlaid on R28_V5 backtest p10/p50/p90 band)
+ *   3. Equity chart (live curve overlaid on backtest p10/p50/p90 band)
  *   4. Drift indicator (live equity ± vs backtest median, large + colored)
  *   5. Recent events log (last 20 from executor-log.jsonl, collapsible)
  *   6. Active positions table
@@ -122,6 +122,10 @@ interface DriftData {
     currentTfSlug: string;
     startBalanceUsd: number;
     generatedAt: string;
+    /** R67-r14: actual bot-write timestamp (from latest executor-log event
+     * or account.updated_at). Null if the bot never wrote any state. Used
+     * by the STALE-badge instead of generatedAt. */
+    botLastWriteAt: string | null;
   };
   header: {
     challengeName: string;
@@ -248,8 +252,26 @@ function DriftDashboardInner() {
 
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 30_000);
-    return () => clearInterval(t);
+    const t = setInterval(() => {
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState === "visible"
+      ) {
+        refresh();
+      }
+    }, 30_000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVis);
+    }
+    return () => {
+      clearInterval(t);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVis);
+      }
+    };
   }, [refresh]);
 
   const onTfChange = (newSlug: string) => {
@@ -269,8 +291,14 @@ function DriftDashboardInner() {
           <div className="text-xs mt-2 opacity-70">
             Tip: enable the dashboard with{" "}
             <code className="font-mono">FTMO_MONITOR_ENABLED=1</code> when
-            starting Next.
+            starting Next. Auto-retry every 30s while tab is visible.
           </div>
+          <button
+            onClick={refresh}
+            className="mt-3 px-3 py-1 bg-surface hover:bg-surface/70 rounded text-xs"
+          >
+            Retry now
+          </button>
         </div>
       </div>
     );
@@ -366,6 +394,28 @@ function Header({
     <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-3 border-b border-surface/40">
       <div className="flex items-center gap-3 flex-wrap">
         <h1 className="text-2xl sm:text-3xl font-bold">Drift Dashboard</h1>
+        {(() => {
+          // R67-r14 audit fix (HIGH): use bot-write timestamp, not API
+          // response timestamp. A dead Python bot + live Next API always
+          // looked fresh because `generatedAt` was set per response.
+          const botTs = data.meta.botLastWriteAt;
+          if (!botTs) {
+            return (
+              <span className="px-2 py-0.5 rounded text-xs bg-loss/30 text-loss border border-loss/50">
+                ⚠ NO BOT DATA
+              </span>
+            );
+          }
+          const ageMs = Date.now() - new Date(botTs).getTime();
+          if (Number.isFinite(ageMs) && ageMs > 5 * 60_000) {
+            return (
+              <span className="px-2 py-0.5 rounded text-xs bg-loss/30 text-loss border border-loss/50">
+                ⚠ STALE ({fmtTimeAgo(botTs)})
+              </span>
+            );
+          }
+          return null;
+        })()}
         <span
           className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-bold tracking-wide ${statusColor}`}
         >
@@ -525,7 +575,11 @@ function EquityCard({ data }: { data: DriftData }) {
         <Stat
           label="Challenge peak"
           value={fmtUsd(e.peakUsd)}
-          sub={e.peakAt ? `at ${new Date(e.peakAt).toLocaleString()}` : "—"}
+          sub={
+            e.peakAt
+              ? `at ${new Date(e.peakAt).toLocaleString("en-US", { timeZone: "UTC" })} UTC`
+              : "—"
+          }
         />
         <Stat
           label="Daily-loss cap (-5%)"

@@ -20,12 +20,12 @@
  */
 const path = require("path");
 
-// Phase 62 (R45-CFG-5): default updated to the current production
-// champion (V4-engine route — V5_QUARTZ_LITE_R28_V4). Was "1h" which
-// pointed to a stale config; an operator running `pm2 start` without
-// FTMO_TF would unknowingly run a different strategy than the one
-// claimed in CLAUDE.md / docs.
-const TF = process.env.FTMO_TF || "2h-trend-v5-quartz-lite-r28-v4engine";
+// R67-r12 audit fix: default bumped to Round 60 PASSLOCK champion
+// (63.24% V4-Engine pass-rate). Previously defaulted to R28_V4-era config
+// `2h-trend-v5-quartz-lite-r28-v4engine` — operator running `pm2 start`
+// without FTMO_TF lost +6.62pp pass-rate vs the Pass-Lock champion that
+// CLAUDE.md / PASSLOCK_DEPLOY_RUNBOOK.md / Memory all claim is current.
+const TF = process.env.FTMO_TF || "2h-trend-v5-r28-v6-passlock";
 const STATE_DIR = path.resolve(__dirname, "..", `ftmo-state-${TF}`);
 const REPO_ROOT = path.resolve(__dirname, "..");
 
@@ -41,6 +41,11 @@ if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
   );
 }
 
+// R67-r12 audit fix: master-listener flag pulled out of sharedEnv. Only the
+// Node ftmo-signal service consumes FTMO_TELEGRAM_BOT_MASTER (long-poll
+// listener for /commands). Setting it on the Python executor too was a
+// dead env-var that misled debugging; in multi-account setups copying
+// this config you'd accidentally claim the master role on every executor.
 const sharedEnv = {
   FTMO_TF: TF,
   FTMO_STATE_DIR: STATE_DIR,
@@ -56,7 +61,7 @@ module.exports = {
       cwd: REPO_ROOT,
       script: "node_modules/tsx/dist/cli.mjs",
       args: "scripts/ftmoLiveService.ts",
-      env: sharedEnv,
+      env: { ...sharedEnv, FTMO_TELEGRAM_BOT_MASTER: "1" },
       autorestart: true,
       max_restarts: 50,
       restart_delay: 5000, // 5s between restarts
@@ -84,8 +89,13 @@ module.exports = {
         FTMO_BNB_SYMBOL: "BNBUSD",
         FTMO_ADA_SYMBOL: "ADAUSD",
         FTMO_DOGE_SYMBOL: "DOGEUSD",
-        // Phase 62 (R45-CFG-Low): typo fix `AVAUSD` → `AVAXUSD`.
-        FTMO_AVAX_SYMBOL: "AVAXUSD",
+        // R67-r8 audit: REVERT inverse-regression. User-verified 2026-04-27
+        // (FTMO MT5 Symbols dialog screenshot, see reference_ftmo_mt5_tickers.md):
+        // FTMO ticker is AVAUSD (no X). The "Phase 62 typo fix" went the
+        // wrong direction. ftmo_executor.py:140 default is correct AVAUSD.
+        // With AVAXUSD: mt5.symbol_info("AVAXUSD") → None → AVAX silently
+        // dropped. Don't "fix" this back without verifying MT5 dialog.
+        FTMO_AVAX_SYMBOL: "AVAUSD",
       },
       autorestart: true,
       max_restarts: 50,

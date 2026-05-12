@@ -29,7 +29,9 @@ ORDER_TYPE_SELL = 1
 POSITION_TYPE_BUY = 0
 POSITION_TYPE_SELL = 1
 ORDER_TIME_GTC = 0
+ORDER_FILLING_FOK = 1
 ORDER_FILLING_IOC = 2
+ORDER_FILLING_RETURN = 3
 TRADE_RETCODE_DONE = 10009
 DEAL_ENTRY_IN = 0
 DEAL_ENTRY_OUT = 1
@@ -65,7 +67,28 @@ _STATE = {
     "next_ticket": 1000000,
     "positions": {},  # ticket -> dict
     "deals": [],  # list of dict
+    # R67 audit: mutable login so tests can simulate mid-session account drift
+    # (broker session restart, manual user re-login, multi-terminal mix-up).
+    "login": 999999,
+    # R67-r11: configurable deal-entry tag emitted on close. Real MT5 returns
+    # DEAL_ENTRY_OUT in Netting-Mode but DEAL_ENTRY_INOUT / DEAL_ENTRY_OUT_BY in
+    # Hedge-Mode (FTMO accounts can be either). Tests can flip this via
+    # _set_close_deal_entry() to exercise both code paths in the executor's
+    # deal-history reconciliation.
+    "close_deal_entry": DEAL_ENTRY_OUT,
 }
+
+
+def _set_login(login: int) -> None:
+    """Test helper: inject a new login id to simulate account drift mid-session."""
+    _STATE["login"] = int(login)
+
+
+def _set_close_deal_entry(entry: int) -> None:
+    """Test helper: choose which DEAL_ENTRY_* tag the mock emits on position
+    close. Use DEAL_ENTRY_OUT for Netting-Mode, DEAL_ENTRY_INOUT / OUT_BY for
+    Hedge-Mode scenarios."""
+    _STATE["close_deal_entry"] = int(entry)
 
 # Lightweight Binance price cache (symbol -> (price, fetched_at_ms))
 _PRICE_CACHE: dict[str, tuple[float, int]] = {}
@@ -163,9 +186,9 @@ class OrderResult:
 
 
 # ---------------- Public mt5-like API ----------------
-def initialize() -> bool:
+def initialize(path: str = "") -> bool:
     _STATE["initialized"] = True
-    print("[mock_mt5] initialized (simulating $100k FTMO demo)")
+    print(f"[mock_mt5] initialized (simulating $100k FTMO demo){' path='+path if path else ''}")
     return True
 
 
@@ -184,6 +207,7 @@ def account_info() -> AccountInfo | None:
     # Recompute floating PnL from open positions
     _update_floating_equity()
     return AccountInfo(
+        login=int(_STATE["login"]),
         balance=_STATE["balance"],
         equity=_STATE["equity"],
         margin=_STATE["margin"],
@@ -298,6 +322,7 @@ def order_send(request: dict) -> OrderResult | None:
     volume = float(request.get("volume", 0))
     order_type = request.get("type")
     position_id = request.get("position", 0)
+    action = request.get("action")
 
     if not symbol:
         return OrderResult(retcode=10013, comment="no symbol in request")
@@ -305,13 +330,35 @@ def order_send(request: dict) -> OrderResult | None:
     if info is None:
         return OrderResult(retcode=10013, comment=f"symbol {symbol} not found")
 
-    # Close existing position
-    if position_id and position_id in _STATE["positions"]:
+    # BUGFIX 2026-05-06 (R67): real MT5 distinguishes TRADE_ACTION_SLTP
+    # (modify SL/TP without closing) from TRADE_ACTION_DEAL with `position`
+    # set (close-by-deal). The mock previously closed on *any* `position`
+    # field present, so SLTP modifications were silently treated as closes.
+    # Now we dispatch on `action` first; legacy callers that omit `action`
+    # but pass `position` still hit the close path (backward compatible).
+    if action == TRADE_ACTION_SLTP and position_id and position_id in _STATE["positions"]:
+        pos = _STATE["positions"][position_id]
+        if "sl" in request:
+            pos.sl = float(request.get("sl", 0))
+        if "tp" in request:
+            pos.tp = float(request.get("tp", 0))
+        return OrderResult(
+            retcode=TRADE_RETCODE_DONE,
+            order=position_id,
+            price=pos.price_open,
+            comment="mock sltp",
+        )
+
+    # Close existing position (TRADE_ACTION_DEAL with `position` set, or
+    # legacy callers that just supply `position`).
+    if position_id and position_id in _STATE["positions"] and action != TRADE_ACTION_SLTP:
         pos = _STATE["positions"][position_id]
         fill_price = info.ask if pos.type == POSITION_TYPE_SELL else info.bid
         pnl = _compute_pnl(pos, fill_price)
         _STATE["balance"] += pnl
-        _record_deal(pos, fill_price, pnl, DEAL_ENTRY_OUT)
+        # R67-r11: Hedge-Mode support — emit configurable deal entry tag.
+        close_entry = _STATE.get("close_deal_entry", DEAL_ENTRY_OUT)
+        _record_deal(pos, fill_price, pnl, close_entry)
         del _STATE["positions"][position_id]
         return OrderResult(retcode=TRADE_RETCODE_DONE, order=position_id, price=fill_price, comment="mock close")
 

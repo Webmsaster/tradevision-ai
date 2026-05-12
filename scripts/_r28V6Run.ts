@@ -54,13 +54,24 @@ function loadAligned(): { aligned: Record<string, Candle[]>; minBars: number } {
   };
 }
 
+// Bug-Audit Round 4: linear-interpolated quantile (mirrors _r28V6Aggregate.ts
+// R3 fix 5 + passlockMonteCarlo.test.ts). Old `Math.floor(q*N)` had an
+// off-by-one — q=0.9, N=10 → idx=9 (= max) instead of the 90th percentile
+// at interp(idx 8.1). Even worse, for q=1.0, idx=N which crashed silently
+// via undefined (the !-bang masked the bug). p90PassDay numbers in the
+// _r28V6Run.ts log diverged by ~1d from _r28V6Aggregate.ts on the same
+// data; this brings them back in line.
 function quantile(sorted: number[], q: number): number {
-  if (sorted.length === 0) return 0;
-  const idx = Math.min(
-    sorted.length - 1,
-    Math.max(0, Math.floor(q * sorted.length)),
-  );
-  return sorted[idx]!;
+  const n = sorted.length;
+  if (n === 0) return 0;
+  if (n === 1) return sorted[0]!;
+  const qc = Math.min(1, Math.max(0, q));
+  const pos = (n - 1) * qc;
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  if (lo === hi) return sorted[lo]!;
+  const frac = pos - lo;
+  return sorted[lo]! * (1 - frac) + sorted[hi]! * frac;
 }
 
 function run(

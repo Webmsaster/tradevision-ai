@@ -8,6 +8,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import * as path from "node:path";
 import { NextResponse } from "next/server";
+import { requireFtmoMonitorAuth } from "@/lib/ftmoMonitorAuth";
 
 function isEnabled() {
   return (
@@ -142,6 +143,11 @@ export async function GET() {
   if (!isEnabled()) {
     return new NextResponse("Not Found", { status: 404 });
   }
+  // R67 audit fix: require Supabase session (mirrors drift-data R57 hardening)
+  const auth = await requireFtmoMonitorAuth();
+  if (!auth.ok) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
 
   const account = readJson<{
     equity?: number;
@@ -186,7 +192,7 @@ export async function GET() {
   const ruleProgress = {
     dailyLossUsed: Math.max(0, -dailyLossPct / 0.05), // 0 = no loss, 1 = at -5%
     totalLossUsed: Math.max(0, -totalLossPct / 0.1), // 0 = no loss, 1 = at -10%
-    profitTargetProgress: Math.max(0, Math.min(1, totalGainPct / 0.1)), // 0 = start, 1 = hit +10%
+    profitTargetProgress: Math.max(0, Math.min(1, totalGainPct / 0.08)), // 0 = start, 1 = hit +8% (FTMO Normal target)
     dailyLossPct,
     totalLossPct,
     totalGainPct,

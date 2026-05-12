@@ -7,7 +7,8 @@ import CSVImport from "@/components/CSVImport";
 import ConfirmDialog from "@/components/ConfirmDialog";
 
 export default function ImportPage() {
-  const { trades, importTrades, clearAll, setAllTrades } = useTradeStorage();
+  const { trades, importTrades, clearAll, setAllTrades, activeAccountId } =
+    useTradeStorage();
   const [notification, setNotification] = useState<{
     message: string;
     type: "success" | "error";
@@ -155,11 +156,32 @@ export default function ImportPage() {
   // ---------------------------------------------------------------------------
   async function handleLoadSampleData() {
     const { sampleTrades } = await import("@/data/sampleTrades");
-    const count = await importTrades(sampleTrades);
-    setNotification({
-      message: `Loaded ${count} sample trade${count !== 1 ? "s" : ""}.`,
-      type: "success",
-    });
+    // R67-r8: stamp fresh UUIDs + activeAccountId so samples are visible
+    // under the current account and won't collide on UUID PK if pushed to
+    // cloud (same fix as dashboard's R7 sample loader).
+    const fresh = sampleTrades.map((t) => ({
+      ...t,
+      id:
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      accountId: activeAccountId,
+    }));
+    const count = await importTrades(fresh);
+    if (count === 0) {
+      // R8 fix: previously showed "Loaded 0 sample trades." as success — now
+      // surface as error so the user actually notices the silent failure.
+      setNotification({
+        message:
+          "No sample trades were imported. They may already exist for this account, or storage is unavailable.",
+        type: "error",
+      });
+    } else {
+      setNotification({
+        message: `Loaded ${count} sample trade${count !== 1 ? "s" : ""}.`,
+        type: "success",
+      });
+    }
   }
 
   // ---------------------------------------------------------------------------

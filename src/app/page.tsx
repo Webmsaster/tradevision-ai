@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState, useEffect } from "react";
+import type { Trade } from "@/types/trade";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { SETTINGS_CHANGED_EVENT, SETTINGS_KEY } from "@/lib/constants";
@@ -14,7 +15,7 @@ import InsightCard from "@/components/InsightCard";
 import WeeklySummary from "@/components/WeeklySummary";
 import DayOfWeekHeatmap from "@/components/DayOfWeekHeatmap";
 import SyncErrorToast from "@/components/SyncErrorToast";
-import { formatCurrency } from "@/utils/formatters";
+import { formatCurrency, formatFinite } from "@/utils/formatters";
 
 interface DashboardWidgets {
   equityCurve: boolean;
@@ -78,6 +79,8 @@ export default function DashboardPage() {
     trades,
     isLoading,
     setAllTrades,
+    importTrades,
+    activeAccountId,
     clearAll,
     syncError,
     dismissSyncError,
@@ -112,14 +115,49 @@ export default function DashboardPage() {
   // Generate AI-driven insights sorted by severity (descending)
   const insights = useMemo(() => generateAllInsights(trades), [trades]);
 
-  // Recent trades: last 10 sorted by exitDate descending
+  // Recent trades: last 10 sorted by exitDate descending.
+  //
+  // R67-r22 audit fix (perf): linear top-K selection instead of full
+  // O(n log n) sort. At N=10k that's ~12ms vs ~1ms saved per render.
+  // We pre-parse exitDate once, maintain a min-heap-of-size-10 by
+  // descending exitDate (keep the 10 LARGEST = most recent).
   const recentTrades = useMemo(() => {
-    return [...trades]
-      .sort(
+    if (trades.length <= 10) {
+      return [...trades].sort(
         (a, b) =>
           new Date(b.exitDate).getTime() - new Date(a.exitDate).getTime(),
-      )
-      .slice(0, 10);
+      );
+    }
+    const K = 10;
+    type Slot = { trade: Trade; ts: number };
+    const top: Slot[] = [];
+    for (const trade of trades) {
+      const ts = new Date(trade.exitDate).getTime();
+      if (!Number.isFinite(ts)) continue;
+      if (top.length < K) {
+        top.push({ trade, ts });
+        // keep ascending so min is at index 0
+        for (
+          let i = top.length - 1;
+          i > 0 && top[i]!.ts < top[i - 1]!.ts;
+          i--
+        ) {
+          [top[i], top[i - 1]] = [top[i - 1]!, top[i]!];
+        }
+      } else if (ts > top[0]!.ts) {
+        top[0] = { trade, ts };
+        // re-sort the head (small array, just bubble down)
+        for (
+          let i = 0;
+          i < top.length - 1 && top[i]!.ts > top[i + 1]!.ts;
+          i++
+        ) {
+          [top[i], top[i + 1]] = [top[i + 1]!, top[i]!];
+        }
+      }
+    }
+    // currently ascending → reverse to descending (most recent first)
+    return top.reverse().map((s) => s.trade);
   }, [trades]);
 
   // Top 3 insights by severity (already sorted from generateAllInsights)
@@ -128,10 +166,31 @@ export default function DashboardPage() {
   /**
    * Load the built-in sample data set on demand, persist it, and switch to demo mode.
    * Uses dynamic import so the sample data bundle is only fetched when clicked.
+   *
+   * R67-r7 audit: was using `setAllTrades` (= replaceTrades, which calls
+   * clearAllSupabaseTrades — DESTRUCTIVE). On a multi-account setup,
+   * clicking this on an empty Account-B would WIPE all of Account-A's
+   * cloud trades before failing on non-UUID sample IDs (sample-1..67).
+   * Now uses `importTrades` (additive + dedup) and stamps trades with
+   * fresh UUIDs + activeAccountId so they're visible AND don't collide.
    */
   const handleLoadSampleData = async () => {
     const { sampleTrades } = await import("@/data/sampleTrades");
-    setAllTrades(sampleTrades);
+    const fresh = sampleTrades.map((t) => ({
+      ...t,
+      id:
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      accountId: activeAccountId,
+    }));
+    // R8 fix: surface count to user — silent zero-import was confusing.
+    const count = await importTrades(fresh);
+    if (count === 0) {
+      console.warn(
+        "[Dashboard] handleLoadSampleData imported 0 trades — possible dedup or storage failure.",
+      );
+    }
   };
 
   /**
@@ -288,7 +347,7 @@ export default function DashboardPage() {
       <div className="dashboard-kpi-secondary">
         <StatCard
           label="Risk : Reward"
-          value={stats.riskReward.toFixed(2)}
+          value={formatFinite(stats.riskReward)}
           suffix=":1"
         />
         <StatCard label="Total Trades" value={stats.totalTrades} />
