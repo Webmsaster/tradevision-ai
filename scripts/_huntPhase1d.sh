@@ -66,10 +66,17 @@ done
 
 echo "" | tee -a "$LOG"
 echo "=== TOP 20 ===" | tee -a "$LOG"
-grep -B1 "passed=" "$LOG" | paste -d'|' - - | awk -F'|' '{
-  match($1, /=== (.+) ===/, lab);
-  match($2, /\(([0-9.]+)%\)/, pct);
-  if (lab[1] != "" && pct[1] != "") print pct[1] "  " lab[1];
-}' | sort -rn | head -20 | tee -a "$LOG"
+# awk state-machine: tolerant of intervening [warn] lines (R4 fix carried over
+# from Phase 1 — old `grep -B1 | paste` pattern silently dropped entries when
+# a sweep failed and the warn line came between the label and the next passed=).
+awk '
+  /^=== / { match($0, /=== (.+) ===/, m); if (m[1] != "") label = m[1]; next }
+  /passed=/ {
+    if (label != "" && match($0, /\(([0-9.]+)%\)/, p)) {
+      print p[1] "  " label
+      label = ""
+    }
+  }
+' "$LOG" | sort -rn | head -20 | tee -a "$LOG"
 
 cp -f "$LOG" "$LOG_FINAL"

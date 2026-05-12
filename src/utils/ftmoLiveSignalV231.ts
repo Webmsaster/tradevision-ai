@@ -13,6 +13,7 @@
  * recent PnLs for Kelly) so we can compute the exact risk multiplier.
  */
 import type { Candle } from "@/utils/indicators";
+import { assertConfigValid } from "@/utils/ftmoConfigValidator";
 
 // Phase 23 (V231 Bug 15): newsBlackout window now configurable via env.
 // 2min was too short for high-impact events (NFP, CPI, FOMC move markets
@@ -654,13 +655,10 @@ const CFG_LABEL: string = _registryHit?.label ?? "V261";
 // R29 Round 3 audit fix (R3-Bug #3): hard-check that the selected config
 // carries all mandatory FTMO live-safety fields. Skipped when running on
 // the V261 fallback (research-only, allowed via FTMO_TF_ALLOW_FALLBACK=1).
+// R29 Round 5 audit fix: replaced dynamic `require("./ftmoConfigValidator")`
+// (which broke under vitest CJS module resolution — `Cannot find module`)
+// with a top-of-file static import. No behavioural change.
 if (_registryHit) {
-  // Import is at the top-of-file scope; require here to keep the boot path
-  // synchronous without changing the existing module structure.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { assertConfigValid } = require("./ftmoConfigValidator") as {
-    assertConfigValid: (cfg: FtmoDaytrade24hConfig, label: string) => void;
-  };
   assertConfigValid(CFG, CFG_LABEL);
 }
 

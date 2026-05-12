@@ -18,9 +18,19 @@
  * earlier symptom was a runtime "Cannot read property 'assets' of undefined"
  * thrown only after FTMO_TF was set in production.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import * as Cfgs from "@/utils/ftmoDaytrade24h";
-import { getActiveCfgInfo } from "@/utils/ftmoLiveSignalV231";
+
+// R29 R5 audit fix: V231 module-load fail-louds when FTMO_TF unset (R3 contract).
+// Use a dynamic import inside `beforeAll` so the env var is set BEFORE the
+// module evaluates. Top-level `import` would be hoisted ABOVE the env set.
+let getActiveCfgInfo: () => { label: string; ftmoTfKey: string };
+
+beforeAll(async () => {
+  process.env.FTMO_TF_ALLOW_FALLBACK = "1";
+  const mod = await import("@/utils/ftmoLiveSignalV231");
+  getActiveCfgInfo = mod.getActiveCfgInfo;
+});
 
 // Champion configs live-deployable (per CLAUDE.md project memory). If any
 // of these go missing, the V231 registry is broken.

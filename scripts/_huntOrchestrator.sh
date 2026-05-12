@@ -115,16 +115,25 @@ bash scripts/_huntPhase2.sh $TOP_CONFIGS 2>&1 | tail -50 | tee -a "$MASTER_LOG"
 
 # Phase 3 walk-forward on whichever survived Phase 2 with ≥58% step=7.
 # Phase 2 emits label "=== cfg @ step=N ===" then "<bars/trades>" then "passed=".
-# Previously `grep -B1 "@ step=7"` returned only the label — no pct field — and
-# SURVIVORS was empty. Use -A2 to grab the passed= line, then pair them.
+# Use awk state-machine on the full log (regression-audit-r5 finding 2026-05-12):
+# the previous `grep -A2 | grep -E | paste -d'|' - -` pipeline mis-paired entries
+# whenever a sweep emitted `[warn] ... failed — continuing` between blocks, since
+# the warn line was filtered out by `grep -E "=== |passed="` and `paste` then
+# zipped the next block's label with this block's "missing" passed= line.
 phase "PHASE 3 — walk-forward audit"
-SURVIVORS=$(grep -A2 "@ step=7 ===" /tmp/hunt_phase2.log 2>/dev/null \
-  | grep -E "=== |passed=" \
-  | paste -d'|' - - | awk -F'|' '{
-      match($1, /=== ([^ ]+) @/, lab);
-      match($2, /\(([0-9.]+)%\)/, pct);
-      if (lab[1] != "" && pct[1] + 0 >= 58) print lab[1];
-    }' | sort -u)
+SURVIVORS=$(awk '
+  /^=== .+ @ step=7 ===/ {
+    if (match($0, /=== ([^ ]+) @/, m)) label = m[1]
+    next
+  }
+  /^=== / { label = ""; next }
+  /passed=/ {
+    if (label != "" && match($0, /\(([0-9.]+)%\)/, p)) {
+      if (p[1] + 0 >= 58) print label
+      label = ""
+    }
+  }
+' /tmp/hunt_phase2.log 2>/dev/null | sort -u)
 echo "Survivors: $SURVIVORS" | tee -a "$MASTER_LOG"
 for cfg in $SURVIVORS; do
   # Validate survivor name before feeding to subshell scripts
