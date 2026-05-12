@@ -24,12 +24,22 @@ import sys
 import time
 from pathlib import Path
 
-import MetaTrader5 as mt5
+_TOOLS_DIR = Path(__file__).resolve().parent
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+
+if os.environ.get("FTMO_MOCK", "").lower() in ("1", "true", "yes"):
+    import mock_mt5 as mt5  # type: ignore
+else:
+    try:
+        import MetaTrader5 as mt5  # type: ignore
+    except ImportError:
+        import mock_mt5 as mt5  # type: ignore
 
 try:
     from telegram_notify import tg_send  # type: ignore
 except Exception:
-    def tg_send(_text: str) -> bool:  # noqa: D401 - shim
+    def tg_send(_: str) -> bool:  # noqa: D401 - shim
         return False
 
 
@@ -49,7 +59,15 @@ def _resolve_state_dir() -> Path:
 def _write_pause_marker(state_dir: Path, n_closed: int, n_total: int) -> None:
     """Write `bot-controls.json` so the executor pauses after restart.
     Uses a temp+rename for atomicity; ignores all errors (kill must always
-    proceed even if the FS is misconfigured)."""
+    proceed even if the FS is misconfigured).
+
+    Bug-Audit Round 1: parity with executor `write_json` — fsync the file
+    AND the parent dir so a power-loss right after the kill doesn't lose
+    the pause marker (which would let the executor resume trading after
+    a reboot, defeating the entire purpose of the kill switch). Also
+    PID-suffix the tmpfile to avoid clashes with a concurrent executor
+    write to the same path.
+    """
     try:
         state_dir.mkdir(parents=True, exist_ok=True)
         target = state_dir / "bot-controls.json"
@@ -61,17 +79,72 @@ def _write_pause_marker(state_dir: Path, n_closed: int, n_total: int) -> None:
             "killTotal": n_total,
             "reason": "ftmo_kill.py emergency kill — manual /resume required",
         }
-        tmp = target.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        # PID-suffixed tmp avoids race with executor's parallel write_json.
+        tmp = target.with_suffix(target.suffix + f".tmp.{os.getpid()}")
+        # Use open()+fsync rather than write_text so we durably flush before
+        # rename (otherwise rename can promote a not-yet-flushed tmpfile).
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(json.dumps(payload, indent=2))
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
         tmp.replace(target)
+        # POSIX dir fsync makes the rename itself durable. Best-effort on
+        # Windows / unsupported FS — kill must proceed regardless.
+        try:
+            dirfd = os.open(str(state_dir), os.O_RDONLY)
+            try:
+                os.fsync(dirfd)
+            finally:
+                os.close(dirfd)
+        except (OSError, AttributeError):
+            pass
     except Exception as e:
         print(f"[kill] WARN: failed to write pause marker: {e}")
 
 
 def main():
-    if not mt5.initialize():
+    mt5_path = os.environ.get("MT5_PATH", "").strip()
+    init_ok = mt5.initialize(mt5_path) if mt5_path else mt5.initialize()
+    if not init_ok:
         print(f"MT5 init failed: {mt5.last_error()}")
         sys.exit(1)
+
+    # Bug-Audit Round 1: multi-account VPS safety. Parity with executor's
+    # mt5_init_with_retry: if FTMO_EXPECTED_LOGIN is set, refuse to kill
+    # when the attached MT5 terminal does NOT belong to the expected
+    # account. Without this guard, running `ftmo_kill.py` on a host with
+    # multiple MT5 terminals could attach to the wrong terminal and close
+    # OTHER accounts' positions (catastrophic on a shared challenge VPS).
+    expected_raw = os.environ.get("FTMO_EXPECTED_LOGIN", "").strip()
+    if expected_raw:
+        info = mt5.account_info()
+        try:
+            expected = int(expected_raw)
+        except ValueError:
+            print(f"[kill] ERROR: FTMO_EXPECTED_LOGIN invalid value '{expected_raw}' — refusing to kill")
+            try:
+                mt5.shutdown()
+            except Exception:
+                pass
+            sys.exit(2)
+        if info is None or int(getattr(info, "login", 0)) != expected:
+            got = int(getattr(info, "login", 0)) if info is not None else None
+            print(f"[kill] ERROR: wrong MT5 account (got={got}, want={expected}) — refusing to kill")
+            try:
+                tg_send(
+                    f"🔴 <b>KILL refused — wrong MT5 account</b>\n"
+                    f"Got login <code>{got}</code>, want <code>{expected}</code>."
+                )
+            except Exception:
+                pass
+            try:
+                mt5.shutdown()
+            except Exception:
+                pass
+            sys.exit(2)
 
     n_ok = 0
     bot_positions = []

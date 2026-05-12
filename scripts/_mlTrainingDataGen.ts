@@ -153,6 +153,10 @@ const indicatorsBySymbol: Record<
   }
 > = {};
 const symToAssetIdx: Record<string, number> = {};
+// Map config-symbol (e.g. "ETH-TREND") → cache-key (e.g. "ETHUSDT") so the
+// harness's `Daytrade24hTrade.symbol` resolves to the candle/funding/feature
+// stores. Without this every trade is dropped as orphan.
+const configSymToCacheKey: Record<string, string> = {};
 
 for (const [assetIdx, asset] of (
   FTMO_DAYTRADE_24H_V5_TITANIUM_PASSLOCK.assets as Array<{
@@ -172,6 +176,8 @@ for (const [assetIdx, asset] of (
   candlesBySymbol[sym] = candles;
   fundingRawBySymbol[sym] = fundingRaw;
   symToAssetIdx[sym] = assetIdx;
+  configSymToCacheKey[asset.symbol] = sym;
+  configSymToCacheKey[sym] = sym;
   // Forward-fill funding to candle alignment for runFtmoDaytrade24h.
   fundingBySymbol[sym] = candles.map((c) =>
     findFundingAt(fundingRaw, c.openTime),
@@ -202,6 +208,17 @@ trainCfg.minTradingDays = 0;
 // Disable PASSLOCK so close-all-on-target doesn't truncate the trade stream.
 trainCfg.closeAllOnTargetReached = false;
 trainCfg.pauseAtTargetReached = false;
+// Disable challenge fail-stops too — TL/DL/peak-trail would terminate the
+// run after the first bad week and starve the train set. We're not running
+// a real challenge here; we just want every gate-passed entry.
+trainCfg.maxTotalLoss = 9999;
+trainCfg.maxDailyLoss = 9999;
+trainCfg.dailyPeakTrailingStop = undefined;
+trainCfg.challengePeakTrailingStop = undefined;
+trainCfg.peakDrawdownThrottle = undefined;
+trainCfg.intradayDailyLossThrottle = undefined;
+trainCfg.lossStreakCooldown = undefined;
+trainCfg.drawdownShield = undefined;
 
 console.log(
   `[ml-data] running runFtmoDaytrade24h across ${seenSyms.length} symbols (target/maxDays disabled for training)...`,
@@ -212,10 +229,9 @@ console.log(
 );
 
 for (const t of result.trades) {
-  const sym =
-    (t as Daytrade24hTrade & { sourceSymbol?: string }).sourceSymbol ??
-    t.symbol;
-  const lookupKey = candlesBySymbol[sym] ? sym : t.symbol;
+  const explicitSrc = (t as Daytrade24hTrade & { sourceSymbol?: string })
+    .sourceSymbol;
+  const lookupKey = explicitSrc ?? configSymToCacheKey[t.symbol] ?? t.symbol;
   const candles = candlesBySymbol[lookupKey];
   const ind = indicatorsBySymbol[lookupKey];
   const fundingRaw = fundingRawBySymbol[lookupKey];

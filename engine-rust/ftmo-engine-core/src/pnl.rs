@@ -47,6 +47,16 @@ pub fn compute_eff_pnl_with_time(
     if !(pos.entry_price.is_finite()) || pos.entry_price <= 0.0 {
         return EffPnl { raw_pnl: 0.0, eff_pnl: 0.0 };
     }
+    // R29-Audit-Round1-A1.1: same guard for exit_price. A NaN/negative exit
+    // price (e.g. stale last_known_price persisted from a corrupt feed)
+    // would produce raw_pnl=NaN. f64::max(NaN, finite) in Rust returns the
+    // finite value (≠ JS Math.max(NaN, x)=NaN), so the GAP_TAIL floor
+    // silently flips a NaN PnL into a -1.5R loss — a real TS↔Rust parity
+    // drift. Early-out with zero PnL matches TS-engine `if (!isFinite(...))
+    // continue` short-circuits elsewhere.
+    if !(exit_price.is_finite()) || exit_price <= 0.0 {
+        return EffPnl { raw_pnl: 0.0, eff_pnl: 0.0 };
+    }
     let mut raw_pnl = match pos.direction {
         PositionSide::Long => (exit_price - pos.entry_price) / pos.entry_price,
         PositionSide::Short => (pos.entry_price - exit_price) / pos.entry_price,

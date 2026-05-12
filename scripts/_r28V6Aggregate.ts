@@ -19,17 +19,20 @@ interface Row {
   finalEquityPct: number;
 }
 
-const rows: Row[] = [];
+// Bug-Audit Round 1: dedup by winIdx (last write wins) so a resumed shard
+// or a same-window appearing in two shard files cannot double-count.
+const byWin = new Map<number, Row>();
 for (let i = 0; i < 32; i++) {
   const f = `${CACHE_DIR}/r28v6_shard_${i}.jsonl`;
   if (!existsSync(f)) continue;
   const text = readFileSync(f, "utf-8");
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
-    rows.push(JSON.parse(line) as Row);
+    const r = JSON.parse(line) as Row;
+    byWin.set(r.winIdx, r);
   }
 }
-rows.sort((a, b) => a.winIdx - b.winIdx);
+const rows: Row[] = [...byWin.values()].sort((a, b) => a.winIdx - b.winIdx);
 
 const windows = rows.length;
 const passes = rows.filter((r) => r.passed).length;

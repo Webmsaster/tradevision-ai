@@ -30,7 +30,6 @@ import {
   renameSync,
   statSync,
   unlinkSync,
-  writeFileSync,
   writeSync,
 } from "node:fs";
 import { loadBinanceHistory } from "../src/utils/historicalData";
@@ -51,16 +50,16 @@ function defaultState(): SignalState {
   return { lastAlertedBarCloseTime: 0 };
 }
 
-function loadState(): SignalState {
-  if (!existsSync(STATE_PATH)) return defaultState();
+function loadState(path: string = STATE_PATH): SignalState {
+  if (!existsSync(path)) return defaultState();
   // Round 54 Fix #6: corruption-recovery. SIGTERM during the previous
   // (non-atomic) write could leave a 0-byte / half-written JSON file —
   // log it and start fresh rather than crashing the cron job.
   try {
-    return JSON.parse(readFileSync(STATE_PATH, "utf8")) as SignalState;
+    return JSON.parse(readFileSync(path, "utf8")) as SignalState;
   } catch (e) {
     console.error(
-      `[signal-alert] state file corrupt (${STATE_PATH}); starting fresh:`,
+      `[signal-alert] state file corrupt (${path}); starting fresh:`,
       e,
     );
     return defaultState();
@@ -70,8 +69,8 @@ function loadState(): SignalState {
 // plain writeFileSync could otherwise produce a 0-byte / half-flushed state
 // file, breaking the next cron run's dedup. Mirrors writeJSON() in
 // ftmoLiveService.ts.
-function saveState(s: SignalState) {
-  const tmp = `${STATE_PATH}.tmp.${process.pid}`;
+function saveState(s: SignalState, path: string = STATE_PATH) {
+  const tmp = `${path}.tmp.${process.pid}`;
   // R5 deferred-fix: clean up tmp file on any failure (write, fsync,
   // rename). Without this a crashed/interrupted run could leave orphaned
   // .tmp.<pid> files next to STATE_PATH, gradually polluting cwd.
@@ -83,7 +82,7 @@ function saveState(s: SignalState) {
     } finally {
       closeSync(fd);
     }
-    renameSync(tmp, STATE_PATH);
+    renameSync(tmp, path);
   } catch (e) {
     try {
       unlinkSync(tmp);
@@ -94,27 +93,83 @@ function saveState(s: SignalState) {
   }
 }
 
-async function sendTelegram(msg: string): Promise<boolean> {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) return false;
-  try {
-    const res = await fetch(
-      `https://api.telegram.org/bot${token}/sendMessage`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: msg,
-          parse_mode: "HTML",
-        }),
-      },
-    );
-    return res.ok;
-  } catch {
-    return false;
+// R1-A1 audit fix: redact token from any error/message returned by fetch.
+// Without this, DNS / TLS / Cloudflare errors can echo back the request URL
+// containing the bot token straight into stderr or log files.
+function redactToken(s: string, token: string): string {
+  if (!token) return s;
+  return s.split(token).join("***");
+}
+
+// R1-A1 audit fix: per-account env lookup, mirrors driftTelegram.ts.
+// Multi-account setups (R57) expect TELEGRAM_BOT_TOKEN_<ACCOUNT_ID>.
+function envFor(base: string): string | undefined {
+  const acc = process.env.FTMO_ACCOUNT_ID;
+  if (acc) {
+    const v = process.env[`${base}_${acc.toUpperCase()}`];
+    if (v) return v;
   }
+  return process.env[base];
+}
+
+async function sendTelegram(msg: string): Promise<boolean> {
+  const token = envFor("TELEGRAM_BOT_TOKEN");
+  const chatId = envFor("TELEGRAM_CHAT_ID");
+  if (!token || !chatId) return false;
+  // R1-A1 audit fix: 429 backoff + 401/404 fail-loud, mirrors the Python
+  // telegram_notify.py path called out in MEMORY.md ("Telegram secure
+  // (token-leak hardened, 401/404 exit, 429 backoff)"). TS path had no
+  // retry / backoff at all; a single 429 silently dropped the alert.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(
+        `https://api.telegram.org/bot${token}/sendMessage`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: msg,
+            parse_mode: "HTML",
+          }),
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+      if (res.ok) return true;
+      // 401 = bad token, 404 = bad chat — both terminal; do not retry.
+      if (res.status === 401 || res.status === 404) {
+        console.error(
+          `[signal-alert] Telegram terminal error ${res.status} — check TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID`,
+        );
+        return false;
+      }
+      if (res.status === 429) {
+        const retryAfterHdr = res.headers.get("retry-after");
+        const wait = Math.min(
+          retryAfterHdr
+            ? parseInt(retryAfterHdr, 10) * 1000
+            : 2000 * (attempt + 1),
+          60_000,
+        );
+        await new Promise((r) => setTimeout(r, wait));
+        continue;
+      }
+      // 5xx → exponential backoff and retry
+      if (res.status >= 500 && res.status < 600) {
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        continue;
+      }
+      return false;
+    } catch (e) {
+      const msgText = e instanceof Error ? e.message : String(e);
+      console.error(
+        `[signal-alert] Telegram send error: ${redactToken(msgText, token)}`,
+      );
+      // Network / abort error — retry once with backoff.
+      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+    }
+  }
+  return false;
 }
 
 describe("ftmo signal alert", { timeout: 60_000 }, () => {
@@ -146,6 +201,16 @@ describe("ftmo signal alert", { timeout: 60_000 }, () => {
     const rendered = renderAlert(alert);
     console.log(rendered);
 
+    // R1-A1 audit fix: account-scoped log path. Multiple FTMO_ACCOUNT_ID
+    // processes used to share `signal-alerts.log` → interleaved >PIPE_BUF
+    // writes plus duplicate-state-file collisions. Each account now writes
+    // to its own log (and state/lock — see below).
+    const accSuffix = process.env.FTMO_ACCOUNT_ID
+      ? `.${process.env.FTMO_ACCOUNT_ID}`
+      : "";
+    const logPath = `${LOG_PATH}${accSuffix ? accSuffix.replace(/\./, "-") : ""}`;
+    const statePath = `${STATE_PATH}${accSuffix}`;
+
     // R67-r12 audit fix: rotate signal-alerts.log when it crosses 5 MB.
     // Cron runs every 4h ≈ 6×/day; renderAlert() output ~500 B per run plus
     // occasional multi-line signals → on a multi-year deploy the file grew
@@ -153,12 +218,12 @@ describe("ftmo signal alert", { timeout: 60_000 }, () => {
     // tools/ftmo_executor.py:_rotate_jsonl_if_needed().
     try {
       const SIZE_LIMIT_BYTES = 5 * 1024 * 1024;
-      if (existsSync(LOG_PATH) && statSync(LOG_PATH).size > SIZE_LIMIT_BYTES) {
+      if (existsSync(logPath) && statSync(logPath).size > SIZE_LIMIT_BYTES) {
         const stamp = new Date()
           .toISOString()
           .replace(/[:.]/g, "-")
           .replace(/Z$/, "");
-        renameSync(LOG_PATH, `${LOG_PATH}.${stamp}.rot`);
+        renameSync(logPath, `${logPath}.${stamp}.rot`);
       }
     } catch (e) {
       // Rotation is best-effort — never block the alert log on FS issues.
@@ -166,7 +231,7 @@ describe("ftmo signal alert", { timeout: 60_000 }, () => {
     }
 
     // Log every run
-    appendFileSync(LOG_PATH, `\n${"=".repeat(60)}\n${rendered}\n`, "utf8");
+    appendFileSync(logPath, `\n${"=".repeat(60)}\n${rendered}\n`, "utf8");
 
     // Telegram push only on NEW signal (not duplicate)
     if (alert.hasSignal) {
@@ -174,22 +239,45 @@ describe("ftmo signal alert", { timeout: 60_000 }, () => {
       // two overlapping cron-runs (slow Binance fetch leaves prev still
       // sending Telegram) don't both push the same alert. The previous code
       // had a 200-2000ms TOCTOU window between loadState and saveState.
-      const LOCK_PATH = "signal-alerts.lock";
+      // R1-A1 audit: lock-path is now account-scoped + uses O_EXCL (`wx`)
+      // to close the existsSync→writeFileSync TOCTOU race. Two cron-jobs
+      // starting in the same millisecond used to both see "no lock" and
+      // both push.
+      const LOCK_PATH = `signal-alerts.lock${accSuffix}`;
       const haveLock = (() => {
         try {
+          // Best-effort stale-lock cleanup before the exclusive create.
           if (existsSync(LOCK_PATH)) {
-            const pid = parseInt(readFileSync(LOCK_PATH, "utf8"), 10);
+            const raw = readFileSync(LOCK_PATH, "utf8").trim();
+            const pid = parseInt(raw, 10);
+            if (Number.isFinite(pid) && pid > 0) {
+              try {
+                process.kill(pid, 0);
+                return false; // alive → previous instance still running
+              } catch {
+                /* stale → unlink and fall through */
+              }
+            }
             try {
-              process.kill(pid, 0);
-              return false; // alive → previous instance still running
+              unlinkSync(LOCK_PATH);
             } catch {
-              /* stale → fall through and overwrite */
+              /* race with another cleaner — fine */
             }
           }
-          writeFileSync(LOCK_PATH, String(process.pid));
+          // O_EXCL: only one process can create the file. EEXIST → another
+          // process won the race.
+          const fd = openSync(LOCK_PATH, "wx");
+          try {
+            writeSync(fd, String(process.pid));
+            fsyncSync(fd);
+          } finally {
+            closeSync(fd);
+          }
           return true;
         } catch {
-          return true; // best-effort: don't block alerts on lock error
+          // EEXIST from O_EXCL → another instance won. Skip rather than
+          // double-push.
+          return false;
         }
       })();
       if (!haveLock) {
@@ -198,8 +286,25 @@ describe("ftmo signal alert", { timeout: 60_000 }, () => {
         );
       } else {
         try {
-          const state = loadState();
-          if (alert.signalBarClose > state.lastAlertedBarCloseTime) {
+          const state = loadState(statePath);
+          // R1-A1 audit fix: staleness guard. Without this a cron that was
+          // paused for >1 bar (machine reboot, network outage) would push
+          // a multi-hour-old signal as soon as it caught up. We refuse to
+          // alert on bars whose close is older than 2 × bar-interval.
+          // 4h bar (per crontab in file header) → 8h staleness window.
+          const BAR_MS = 4 * 60 * 60 * 1000;
+          const ageMs = Date.now() - alert.signalBarClose;
+          const isStale = ageMs > 2 * BAR_MS;
+          if (isStale) {
+            console.log(
+              `\n⏭ Signal bar is stale (${(ageMs / 3_600_000).toFixed(1)}h old); skipping push`,
+            );
+            // Still advance state so we don't re-push when fresh data arrives.
+            saveState(
+              { lastAlertedBarCloseTime: alert.signalBarClose },
+              statePath,
+            );
+          } else if (alert.signalBarClose > state.lastAlertedBarCloseTime) {
             const pushed = await sendTelegram(rendered);
             if (pushed) {
               console.log("\n📲 Pushed to Telegram");
@@ -208,7 +313,10 @@ describe("ftmo signal alert", { timeout: 60_000 }, () => {
                 "\n📲 (Telegram not configured; set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID env)",
               );
             }
-            saveState({ lastAlertedBarCloseTime: alert.signalBarClose });
+            saveState(
+              { lastAlertedBarCloseTime: alert.signalBarClose },
+              statePath,
+            );
           } else {
             console.log(
               `\n⏭ Signal for this bar already alerted (${new Date(alert.signalBarClose).toISOString()})`,

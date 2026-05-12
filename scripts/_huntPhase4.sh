@@ -8,28 +8,33 @@
 #   4. Disable phantom-suppress to confirm bugfix wasn't masking
 #   5. Drop random 2-3 assets — robustness check
 #   6. With --random-gate-keep 0.5: trade-count reduction baseline
-set -e
+set -euo pipefail
 cd "$(dirname "$0")/.."
+[ -x ./engine-rust/target/release/ftmo-sweep ] || { echo "ERROR: ftmo-sweep binary missing" >&2; exit 3; }
 
 SYMS_BASE="ETHUSDT,BTCUSDT,BNBUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LTCUSDT,BCHUSDT,AAVEUSDT,XRPUSDT,INJUSDT,RUNEUSDT,ETCUSDT,SANDUSDT"
 SWEEP=./engine-rust/target/release/ftmo-sweep
 LOG=/tmp/hunt_phase4.log
-> "$LOG"
+: > "$LOG"
 
-cfg="$1"
+cfg="${1:-}"
+[ -z "$cfg" ] && { echo "usage: $0 <config> [extra-flags...]"; exit 1; }
 shift
 extras=("$@")
-[ -z "$cfg" ] && { echo "usage: $0 <config> [extra-flags...]"; exit 1; }
 
 run() {
   local label="$1"
   shift
   echo "=== $label ===" | tee -a "$LOG"
+  # Merge caller extras with per-call flags, guarded for set -u empty-array.
+  local -a all=()
+  if [ "${#extras[@]}" -gt 0 ]; then all+=("${extras[@]}"); fi
+  if [ "$#" -gt 0 ]; then all+=("$@"); fi
   $SWEEP \
     --candles-dir scripts/cache_bakeoff --symbols "$SYMS_BASE" \
     --config "$cfg" \
     --signals per-asset \
-    "${extras[@]}" "$@" 2>&1 | tail -2 | tee -a "$LOG"
+    ${all[@]+"${all[@]}"} 2>&1 | tail -2 | tee -a "$LOG"
 }
 
 echo "###### PHASE 4 DEEP-AUDIT for $cfg + ${extras[*]} ######" | tee -a "$LOG"

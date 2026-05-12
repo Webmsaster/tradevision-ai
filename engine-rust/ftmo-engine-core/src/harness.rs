@@ -147,15 +147,24 @@ pub fn step_bar(
     if new_day >= cfg.max_days as i64 {
         force_close_all(state, input, cfg, last_bar_time, &mut result);
         result.challenge_ended = true;
-        let target_hit = state.first_target_hit_day.is_some()
+        // After force-close: no unrealised PnL → mtm equals realised.
+        // TS V4 (ftmoLiveEngineV4.ts:1370-1382): pass requires BOTH realised
+        // AND mtm equity to clear the target, plus min_trading_days. R29
+        // audit fix: earlier Rust used `first_target_hit_day.is_some()`
+        // alone, which let positions that briefly hit target then gave
+        // back to 50%-floor still pass. That diverged from TS — which
+        // demands the *current* equity be at or above the target on the
+        // exit bar — and inflated Rust pass-rate by counting give-back
+        // tail events as passes (matches the +10.94pp Hunter drift).
+        state.mtm_equity = state.equity;
+        let passed = state.equity.is_finite()
+            && state.equity >= 1.0 + cfg.profit_target
+            && state.mtm_equity >= 1.0 + cfg.profit_target
             && state.trading_days.len() >= cfg.min_trading_days as usize;
-        let final_equity_floor = 1.0 + cfg.profit_target * 0.5;
-        let give_back_too_far =
-            target_hit && state.equity.is_finite() && state.equity < final_equity_floor;
-        result.passed = target_hit && !give_back_too_far;
+        result.passed = passed;
         if !result.passed && result.fail_reason.is_none() {
-            // give_back surfaces as plain Time at the end-of-window check
-            // (mirror SimulateResult mapping in the TS engine).
+            // give_back / time-exhaustion both surface as plain Time at the
+            // end-of-window check (mirror SimulateResult mapping in TS).
             result.fail_reason = Some(FailReason::Time);
             state.stopped_reason = Some(StoppedReason::Time);
         }
@@ -200,10 +209,35 @@ pub fn step_bar(
                 if !(pos.entry_price.is_finite()) || pos.entry_price <= 0.0 {
                     continue;
                 }
-                let raw_pnl = match pos.direction {
+                let mut raw_pnl = match pos.direction {
                     crate::position::PositionSide::Long => (price - pos.entry_price) / pos.entry_price,
                     crate::position::PositionSide::Short => (pos.entry_price - price) / pos.entry_price,
                 };
+                // R29-Audit-Round1-A1.2: blend PTP partials into raw_pnl to
+                // match `compute_mtm_equity` semantics. Without this, a
+                // position with a partial fill at +2% PTP would have its
+                // ENTIRE current raw_pnl re-counted in the guardian — but
+                // half of that profit is ALREADY locked in via PTP, so the
+                // unrealised tail is only the un-closed remainder. The TS
+                // engine routes the guardian through `state.mtmEquity`
+                // (which `computeMtmEquity` blends correctly), so Rust's
+                // inline shortcut was the source of a positive-PnL bias on
+                // PTP-active positions = false-negative guardian fires.
+                if pos.ptp_triggered {
+                    if let Some(ptp) = cfg.partial_take_profit {
+                        let cf = ptp.close_fraction;
+                        raw_pnl = pos.ptp_realized_pct + (1.0 - cf) * raw_pnl;
+                    }
+                } else if pos.ptp_levels_realized > 0.0 {
+                    if let Some(levels) = cfg.partial_take_profit_levels.as_ref() {
+                        let total_closed: f64 = levels
+                            .iter()
+                            .take(pos.ptp_level_idx)
+                            .map(|l| l.close_fraction)
+                            .sum();
+                        raw_pnl = pos.ptp_levels_realized + (1.0 - total_closed) * raw_pnl;
+                    }
+                }
                 let unrealised = (raw_pnl * cfg.leverage * pos.eff_risk)
                     .max(crate::pnl::GAP_TAIL_MULT * pos.eff_risk);
                 pre_mtm *= 1.0 + unrealised;

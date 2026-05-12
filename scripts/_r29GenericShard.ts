@@ -34,7 +34,11 @@ if (!cfg) {
 const OUT_FILE = `${CACHE_DIR}/r29_${SLUG}_shard_${SHARD_IDX}.jsonl`;
 writeFileSync(OUT_FILE, "");
 
-const SYMBOLS = [
+// Bug-Audit Round 1: derive SYMBOLS from cfg.assets, NOT hardcoded list.
+// Hardcoded 9-symbol list silently dropped SOL etc. in V12_30M_OPT_STOCK
+// and the resulting "77.14% pass-rate" was a debunked 3-asset measurement.
+// Fall back to baseline 9-asset universe only if cfg has no assets.
+const HARDCODED_FALLBACK = [
   "AAVEUSDT",
   "ADAUSDT",
   "BCHUSDT",
@@ -45,6 +49,22 @@ const SYMBOLS = [
   "LTCUSDT",
   "XRPUSDT",
 ];
+const cfgAssets = (
+  cfg as { assets?: Array<{ sourceSymbol?: string; symbol: string }> }
+).assets;
+const SYMBOLS: string[] =
+  cfgAssets && cfgAssets.length > 0
+    ? [
+        ...new Set(
+          cfgAssets.map(
+            (a) => a.sourceSymbol ?? a.symbol.replace(/-TREND$/, "USDT"),
+          ),
+        ),
+      ]
+    : HARDCODED_FALLBACK;
+console.error(
+  `[shard ${SHARD_IDX}/${SHARD_COUNT}] ${SLUG} using ${SYMBOLS.length} symbols: ${SYMBOLS.join(",")}`,
+);
 
 function loadAligned() {
   const data: Record<string, Candle[]> = {};

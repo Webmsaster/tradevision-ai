@@ -1717,8 +1717,20 @@ fn run_one_window(
                             // i-1 (last fully closed bar). Aligned with
                             // training-time `findFundingAt(candles[i].openTime)`
                             // in `_mlTrainingDataGen.ts`.
+                            //
+                            // R29-Audit-Round1 2026-05-12 BUG FIX: previously
+                            // read from `funding_feed` (the GROWING per-bar
+                            // feed slice that only contains entries pushed so
+                            // far). `funding_feed.get(i-1)` indexes by GLOBAL
+                            // bar number but the feed only has `i - warmup_lo
+                            // + 1` entries → for any `warmup_lo > 0` the
+                            // lookup either reads the WRONG bar (when i-1 <
+                            // feed.len()) or returns None (out-of-bounds).
+                            // The full pre-aligned `funding_by_sym` is
+                            // globally indexed (same as `series.closes`) and
+                            // therefore the correct source.
                             let funding_idx = i.saturating_sub(1);
-                            let funding_at = funding_feed
+                            let funding_at = funding_by_sym
                                 .get(&source)
                                 .and_then(|s| s.get(funding_idx).copied())
                                 .flatten();

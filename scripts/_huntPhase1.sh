@@ -1,8 +1,9 @@
 #!/bin/bash
 # R29 Hunt Phase 1: sweep every existing config at step=14d, ≥120 windows.
 # Output: pass-rate per config, sorted descending. Any config ≥60% goes to Phase 2.
-set -e
+set -euo pipefail
 cd "$(dirname "$0")/.."
+[ -x ./engine-rust/target/release/ftmo-sweep ] || { echo "ERROR: ftmo-sweep binary missing — build via cargo build --release" >&2; exit 3; }
 
 SYMS_BASE="ETHUSDT,BTCUSDT,BNBUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LTCUSDT,BCHUSDT,AAVEUSDT,XRPUSDT,INJUSDT,RUNEUSDT,ETCUSDT,SANDUSDT"
 SYMS_R28V6="BTCUSDT,ETHUSDT,BNBUSDT,ADAUSDT,LTCUSDT,BCHUSDT,ETCUSDT,XRPUSDT,AAVEUSDT"

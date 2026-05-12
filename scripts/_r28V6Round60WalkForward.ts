@@ -55,7 +55,8 @@ const summary: {
 }[] = [];
 
 for (const variant of VARIANTS) {
-  const all: Result[] = [];
+  // Bug-Audit Round 1: dedup by winIdx across shards.
+  const byWin = new Map<number, Result>();
   for (let s = 0; s < SHARDS; s++) {
     const f = `${CACHE_DIR}/r28v6_v60_${variant}_shard_${s}.jsonl`;
     if (!existsSync(f)) continue;
@@ -63,7 +64,7 @@ for (const variant of VARIANTS) {
     for (const line of lines) {
       try {
         const o = JSON.parse(line);
-        all.push({
+        byWin.set(o.winIdx, {
           winIdx: o.winIdx,
           passed: !!o.passed,
           reason: o.reason ?? "",
@@ -71,6 +72,7 @@ for (const variant of VARIANTS) {
       } catch {}
     }
   }
+  const all: Result[] = [...byWin.values()];
   if (all.length < 10) {
     console.log(`${variant.padEnd(15)} skipped (n=${all.length} too small)`);
     continue;

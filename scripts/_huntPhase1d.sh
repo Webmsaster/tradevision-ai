@@ -2,8 +2,9 @@
 # R29 Hunt Phase 1d: daily-loss reduction via IDL/PDD/DPTS/CPTS throttles +
 # combined param interactions. The audit showed daily_loss = 30.88% of fails;
 # cutting that 10pp = pass-rate +10pp.
-set -e
+set -euo pipefail
 cd "$(dirname "$0")/.."
+[ -x ./engine-rust/target/release/ftmo-sweep ] || { echo "ERROR: ftmo-sweep binary missing" >&2; exit 3; }
 
 SYMS="ETHUSDT,BTCUSDT,BNBUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LTCUSDT,BCHUSDT,AAVEUSDT,XRPUSDT,INJUSDT,RUNEUSDT,ETCUSDT,SANDUSDT"
 SWEEP=./engine-rust/target/release/ftmo-sweep

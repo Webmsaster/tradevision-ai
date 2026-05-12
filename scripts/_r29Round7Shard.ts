@@ -11,7 +11,12 @@
 import * as cfgModule from "../src/utils/ftmoDaytrade24h";
 import { simulate } from "../src/utils/ftmoLiveEngineV4";
 import type { Candle } from "../src/utils/indicators";
-import { readFileSync, writeFileSync, appendFileSync } from "node:fs";
+import {
+  readFileSync,
+  writeFileSync,
+  appendFileSync,
+  existsSync,
+} from "node:fs";
 
 const CACHE_DIR = "scripts/cache_bakeoff";
 const CONFIG_NAME = process.argv[2] ?? "";
@@ -35,7 +40,8 @@ if (!cfg) {
 const OUT_FILE = `${CACHE_DIR}/r29_${SLUG}_shard_${SHARD_IDX}.jsonl`;
 writeFileSync(OUT_FILE, "");
 
-const SYMBOLS = [
+// Bug-Audit Round 1: derive SYMBOLS from cfg.assets, not hardcoded.
+const HARDCODED_FALLBACK = [
   "AAVEUSDT",
   "ADAUSDT",
   "BCHUSDT",
@@ -46,6 +52,22 @@ const SYMBOLS = [
   "LTCUSDT",
   "XRPUSDT",
 ];
+const cfgAssets = (
+  cfg as { assets?: Array<{ sourceSymbol?: string; symbol: string }> }
+).assets;
+const SYMBOLS: string[] =
+  cfgAssets && cfgAssets.length > 0
+    ? [
+        ...new Set(
+          cfgAssets.map(
+            (a) => a.sourceSymbol ?? a.symbol.replace(/-TREND$/, "USDT"),
+          ),
+        ),
+      ]
+    : HARDCODED_FALLBACK;
+console.error(
+  `[shard ${SHARD_IDX}/${SHARD_COUNT}] ${SLUG} using ${SYMBOLS.length} symbols: ${SYMBOLS.join(",")}`,
+);
 
 interface FundingPt {
   t: number;
@@ -92,10 +114,18 @@ function loadAligned() {
   for (const s of SYMBOLS)
     aligned[s] = data[s]!.filter((c) => cs.has(c.openTime));
   // Load + align funding (after candle alignment so indices match the engine view).
+  // Bug-Audit Round 1: tolerate missing funding cache (gate inactive instead of crashing).
   for (const s of SYMBOLS) {
     const fpath = `${CACHE_DIR}/${s}_funding.json`;
-    const funding: FundingPt[] = JSON.parse(readFileSync(fpath, "utf-8"));
-    fundingByAsset[s] = alignFunding(aligned[s]!, funding);
+    if (existsSync(fpath)) {
+      const funding: FundingPt[] = JSON.parse(readFileSync(fpath, "utf-8"));
+      fundingByAsset[s] = alignFunding(aligned[s]!, funding);
+    } else {
+      console.error(
+        `[shard ${SHARD_IDX}] WARN: no funding cache for ${s} — gate disabled`,
+      );
+      fundingByAsset[s] = new Array(aligned[s]!.length).fill(null);
+    }
   }
   return {
     aligned,

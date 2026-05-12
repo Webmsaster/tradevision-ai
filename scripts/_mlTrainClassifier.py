@@ -14,9 +14,8 @@ from pathlib import Path
 import numpy as np
 
 try:
-    from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
-    from sklearn.model_selection import cross_val_score, train_test_split
-    from sklearn.metrics import roc_auc_score, classification_report
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.metrics import roc_auc_score
 except ImportError:
     print("Missing sklearn — install: pip install scikit-learn numpy")
     sys.exit(2)
@@ -82,14 +81,32 @@ def main():
         print(
             f"applied cutoff < {CUTOFF_TS} → kept {len(rows)} of {before} trades for training"
         )
+    # R29-Audit-Round1 2026-05-12 BUG FIX: time-based split, NOT random.
+    # Trades are auto-correlated in time (TP-clusters during trends, SL-
+    # clusters during chop). A random train/test split lets the model see a
+    # trade from week W in train AND week W+1 in val from the SAME asset,
+    # which is direct future-leakage even if individual rows differ.
+    # Validation AUC was inflated by this leakage. We now sort by entry_time
+    # and put the LATEST 30% into validation (= true out-of-sample).
+    rows.sort(key=lambda r: r.get("entry_time", 0))
     X, y = build_xy(rows, target="is_win")
     print(f"X shape={X.shape}, win rate={y.mean():.3f}")
 
-    # 70/30 split for held-out validation.
-    X_tr, X_va, y_tr, y_va = train_test_split(
-        X, y, test_size=0.3, random_state=42, stratify=y
+    # Time-based 70/30 split.
+    split_idx = int(len(rows) * 0.7)
+    X_tr, X_va = X[:split_idx], X[split_idx:]
+    y_tr, y_va = y[:split_idx], y[split_idx:]
+    if len(y_tr) == 0 or len(y_va) == 0:
+        raise RuntimeError("time-based split produced an empty side")
+    if y_tr.sum() == 0 or y_tr.sum() == len(y_tr):
+        raise RuntimeError(
+            f"train set has only one class (sum={y_tr.sum()}, n={len(y_tr)}) — "
+            "RandomForest needs both 0 and 1 in train"
+        )
+    print(
+        f"train={len(y_tr)} (wr={y_tr.mean():.3f}) "
+        f"val={len(y_va)} (wr={y_va.mean():.3f})"
     )
-    print(f"train={len(y_tr)} val={len(y_va)}")
 
     # Random Forest — fast, robust, exports easily as decision rules.
     clf = RandomForestClassifier(

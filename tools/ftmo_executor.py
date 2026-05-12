@@ -1834,12 +1834,41 @@ def _process_pending_signals_locked() -> None:
             executed["executions"].append({"signal": sig, "result": "invalid_schema", "missing": missing, "ts": datetime.now(timezone.utc).isoformat()})
             continue
         sig_ts = sig.get("signalBarClose") or sig.get("ts_ms")
-        if sig_ts and (now_ms - sig_ts) > MAX_SIGNAL_AGE_MS:
-            age_min = (now_ms - sig_ts) / 60000
+        # Bug-Audit Round 1: previously `if sig_ts and ...` let signals WITHOUT
+        # a timestamp bypass the staleness check entirely — a malformed/legacy
+        # signal could be replayed days later. Also missing clock-skew guard:
+        # a signal from the future (Windows clock drift, signal-source clock
+        # ahead) had `now_ms - sig_ts` negative → never tripped staleness.
+        # Now: drop signals missing/invalid ts, and drop signals more than
+        # 60s in the future as suspected clock drift.
+        CLOCK_DRIFT_TOLERANCE_MS = 60_000  # 60s ahead-of-now allowed
+        if not isinstance(sig_ts, (int, float)) or sig_ts <= 0:
+            log_event("signal_missing_ts", asset=sig["assetSymbol"])
+            tg_send(f"⏰ <b>Signal dropped — no timestamp</b>\n{html_escape(sig['assetSymbol'])}")
+            executed["executions"].append({
+                "signal": sig, "result": "missing_ts",
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+            continue
+        age_ms = now_ms - int(sig_ts)
+        if age_ms > MAX_SIGNAL_AGE_MS:
+            age_min = age_ms / 60000
             log_event("signal_stale_drop", asset=sig["assetSymbol"], age_min=round(age_min, 1))
             tg_send(f"⏰ <b>Signal stale, dropped</b>\n{html_escape(sig['assetSymbol'])}\nage={age_min:.1f}min")
             executed["executions"].append({
                 "signal": sig, "result": "stale_drop", "age_min": round(age_min, 1),
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+            continue
+        if age_ms < -CLOCK_DRIFT_TOLERANCE_MS:
+            # Signal claims to be from the future > tolerance → clock drift.
+            # Drop rather than execute (signal source could be a corrupt
+            # timestamp injection or wall-clock skew between Win/Linux).
+            drift_sec = -age_ms / 1000
+            log_event("signal_future_drop", asset=sig["assetSymbol"], drift_sec=round(drift_sec, 1), level="warn")
+            tg_send(f"⏰ <b>Signal dropped — clock drift</b>\n{html_escape(sig['assetSymbol'])}\n+{drift_sec:.1f}s in future")
+            executed["executions"].append({
+                "signal": sig, "result": "future_ts_drift", "drift_sec": round(drift_sec, 1),
                 "ts": datetime.now(timezone.utc).isoformat(),
             })
             continue
@@ -2869,9 +2898,27 @@ def handle_kill_request() -> bool:
         return False
     log_event("kill_requested", from_controls=True)
     tg_send("🛑 <b>Kill-request received</b> — closing all bot positions...")
+    # Bug-Audit Round 1: parity with _emergency_close_all_positions — distinguish
+    # MT5 disconnect (None) from "no positions" (empty list). Previously `or []`
+    # collapsed both → kill silently no-op'd on disconnect AND the killRequested
+    # flag was cleared, losing the operator's emergency intent. Now we DEFER
+    # (keep flag set, stay paused) so the next reconnect retries the kill.
     positions = mt5.positions_get()
+    if positions is None:
+        log_event("kill_request_deferred_mt5_disconnect", level="warn")
+        tg_send(
+            "⚠️ <b>Kill-request DEFERRED</b>\n"
+            "MT5 disconnected — cannot enumerate positions. Bot remains PAUSED "
+            "with killRequested set; will retry on next reconnect."
+        )
+        # Pause immediately even if we can't close yet — caller will retry.
+        def _pause_only(c: dict) -> dict:
+            c["paused"] = True
+            return c
+        update_controls(_pause_only)
+        return False
     closed = 0
-    for pos in positions or []:
+    for pos in positions:
         if pos.magic == 231:
             if close_position(pos.ticket, exit_reason_override="kill_request"):
                 closed += 1
@@ -3075,9 +3122,21 @@ def check_news_auto_close() -> None:
     if not incoming:
         return
 
-    # Close all bot positions
-    positions = mt5.positions_get() or []
-    bot_positions = [p for p in positions if p.magic == 231]
+    # Close all bot positions.
+    # Bug-Audit Round 1: distinguish MT5 disconnect (None) from "no positions"
+    # (empty list). Previously `or []` collapsed both — a news event arriving
+    # during an MT5 outage would be marked as "announced" via the dedupe set
+    # without ANY position being closed, and the alert would never re-fire
+    # when the connection returned (high-impact news → unmanaged exposure).
+    raw_positions = mt5.positions_get()
+    if raw_positions is None:
+        log_event("news_auto_close_skipped_mt5_disconnect", level="warn")
+        tg_send(
+            "⚠️ <b>News Auto-Close DEFERRED</b>\n"
+            "MT5 disconnected — cannot enumerate positions. Will retry next poll."
+        )
+        return
+    bot_positions = [p for p in raw_positions if p.magic == 231]
     if bot_positions:
         # BUGFIX 2026-04-28: evict timestamps older than 7 days to prevent
         # unbounded set growth in long-running bot.
@@ -3427,7 +3486,7 @@ def acquire_singleton_or_exit() -> None:
         if other_pid > 0 and other_pid != os.getpid():
             alive = False
             try:
-                if os.name == "nt":
+                if os.name == "nt":  # type: ignore[reportUnnecessaryComparison]
                     import ctypes
                     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
                     handle = ctypes.windll.kernel32.OpenProcess(
@@ -3619,7 +3678,7 @@ if __name__ == "__main__":
     # so we trigger the same KeyboardInterrupt cleanup path. Without this,
     # MT5 connection terminates mid-order_send → orphan trades without SL/TP.
     import signal as _signal
-    def _on_sigterm(*_args):  # type: ignore[reportUnusedVariable]
+    def _on_sigterm(*_):
         # signal-handler signature requires *args; we ignore them.
         raise KeyboardInterrupt()
     try:

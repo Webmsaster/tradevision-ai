@@ -21,19 +21,21 @@ interface Result {
   finalEquityPct: number;
 }
 
+// Bug-Audit Round 1: dedup by winIdx so re-runs don't double-count.
 function loadVariant(name: string): Result[] {
-  const all: Result[] = [];
+  const byWin = new Map<number, Result>();
   for (let s = 0; s < SHARDS; s++) {
     const f = `${CACHE_DIR}/r28v6_v61_${name}_shard_${s}.jsonl`;
     if (!existsSync(f)) continue;
     const lines = readFileSync(f, "utf-8").trim().split("\n").filter(Boolean);
     for (const line of lines) {
       try {
-        all.push(JSON.parse(line));
+        const o = JSON.parse(line) as Result;
+        byWin.set(o.winIdx, o);
       } catch {}
     }
   }
-  return all;
+  return [...byWin.values()];
 }
 
 function passRate(rs: Result[]): number {

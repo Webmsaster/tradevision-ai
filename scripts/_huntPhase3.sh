@@ -3,17 +3,23 @@
 # Usage: _huntPhase3.sh <config>
 # Splits candle range into 4 quartiles; reports pass-rate per quartile.
 # A robust config has narrow quartile spread (≤10pp). Wide drift = overfit.
-set -e
+set -euo pipefail
 cd "$(dirname "$0")/.."
+[ -x ./engine-rust/target/release/ftmo-sweep ] || { echo "ERROR: ftmo-sweep binary missing" >&2; exit 3; }
 
 SYMS_BASE="ETHUSDT,BTCUSDT,BNBUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LTCUSDT,BCHUSDT,AAVEUSDT,XRPUSDT,INJUSDT,RUNEUSDT,ETCUSDT,SANDUSDT"
 SYMS_R28V6="BTCUSDT,ETHUSDT,BNBUSDT,ADAUSDT,LTCUSDT,BCHUSDT,ETCUSDT,XRPUSDT,AAVEUSDT"
 SWEEP=./engine-rust/target/release/ftmo-sweep
 LOG=/tmp/hunt_phase3.log
-> "$LOG"
+: > "$LOG"
 
-cfg="$1"
+cfg="${1:-}"
 [ -z "$cfg" ] && { echo "usage: $0 <config>"; exit 1; }
+
+# Resolve python3 portably (Mac /opt/homebrew, Linux /usr/bin/python3)
+PY3="$(command -v python3 || true)"
+[ -z "$PY3" ] && { echo "ERROR: python3 not found in PATH" >&2; exit 4; }
+[ -f scripts/cache_bakeoff/BTCUSDT_30m.json ] || { echo "ERROR: scripts/cache_bakeoff/BTCUSDT_30m.json missing — Phase 3 needs reference candles" >&2; exit 5; }
 
 syms="$SYMS_BASE"
 case "$cfg" in
@@ -21,14 +27,14 @@ case "$cfg" in
 esac
 
 # Compute total candle count from BTC reference (30m default)
-total=$(/usr/bin/python3 -c "import json; print(len(json.load(open('scripts/cache_bakeoff/BTCUSDT_30m.json'))))")
+total=$("$PY3" -c "import json; print(len(json.load(open('scripts/cache_bakeoff/BTCUSDT_30m.json'))))")
 echo "Total bars: $total" | tee -a "$LOG"
 
 # 30m bar = 30min × 1000 × 60 / 1000 = 1.8M ms — 1 bar = 0.5h
 # 4 quartiles. Use --start-after-ts and --windows to slice.
 ms_per_bar=1800000
-btc_first=$(/usr/bin/python3 -c "import json; print(json.load(open('scripts/cache_bakeoff/BTCUSDT_30m.json'))[0]['openTime'])")
-btc_last=$(/usr/bin/python3 -c "import json; print(json.load(open('scripts/cache_bakeoff/BTCUSDT_30m.json'))[-1]['openTime'])")
+btc_first=$("$PY3" -c "import json; print(json.load(open('scripts/cache_bakeoff/BTCUSDT_30m.json'))[0]['openTime'])")
+btc_last=$("$PY3" -c "import json; print(json.load(open('scripts/cache_bakeoff/BTCUSDT_30m.json'))[-1]['openTime'])")
 span=$(( btc_last - btc_first ))
 qs=$(( span / 4 ))
 echo "Range: $btc_first to $btc_last (span=$span ms, qs=$qs)" | tee -a "$LOG"

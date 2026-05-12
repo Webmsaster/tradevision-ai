@@ -94,6 +94,13 @@ function loadAligned(): { aligned: Record<string, Candle[]>; minBars: number } {
 }
 
 const { aligned, minBars } = loadAligned();
+// Bug-Audit Round 1: assert uniform maxDays across variants.
+const maxDaysSet = new Set(VARIANTS.map((v) => v.cfg.maxDays));
+if (maxDaysSet.size > 1) {
+  throw new Error(
+    `Round60VolTpShard variants disagree on maxDays: ${[...maxDaysSet].join(",")}.`,
+  );
+}
 const winBars = VARIANTS[0]!.cfg.maxDays * 48;
 const stepBars = 14 * 48;
 const WARMUP = 5000;

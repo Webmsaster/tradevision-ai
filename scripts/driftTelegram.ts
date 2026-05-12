@@ -31,7 +31,11 @@ function envFor(
 
 async function main() {
   const stateDir = process.env.FTMO_STATE_DIR ?? "ftmo-state-default";
-  const days = parseInt(process.env.DRIFT_DAYS ?? "7", 10);
+  // R1-A1 audit fix: validate DRIFT_DAYS. parseInt("abc",10) → NaN propagated
+  // straight to `--days NaN` argv → driftMonitor.ts would crash or silently
+  // use 0 days. Now: coerce to a sane positive int or fall back to 7.
+  const daysRaw = parseInt(process.env.DRIFT_DAYS ?? "7", 10);
+  const days = Number.isFinite(daysRaw) && daysRaw > 0 ? daysRaw : 7;
   const accountId = process.env.FTMO_ACCOUNT_ID;
   const token = envFor("TELEGRAM_BOT_TOKEN", accountId);
   const chatId = envFor("TELEGRAM_CHAT_ID", accountId);
@@ -109,28 +113,67 @@ async function main() {
 
   const chunks = splitChunks(text);
 
+  // R1-A1 audit fix: redact bot token from any logged error message.
+  // Without this, DNS / TLS / fetch errors that include the request URL
+  // dump the bot token straight into stderr / cron mail.
+  const redact = (s: string) => (token ? s.split(token).join("***") : s);
   for (const chunk of chunks) {
-    try {
-      const res = await fetch(
-        `https://api.telegram.org/bot${token}/sendMessage`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            chat_id: chatId,
-            text: chunk,
-            parse_mode: "HTML",
-            disable_web_page_preview: true,
-          }),
-        },
-      );
-      if (!res.ok) {
-        console.error(
-          `[drift-telegram] send failed: ${res.status} ${await res.text()}`,
+    // R1-A1 audit fix: 429 backoff + 401/404 fail-loud + 15s timeout. The
+    // previous code dropped 429 silently (no Retry-After respect) and would
+    // echo bot-token in stack traces on network errors.
+    let sent = false;
+    for (let attempt = 0; attempt < 3 && !sent; attempt++) {
+      try {
+        const res = await fetch(
+          `https://api.telegram.org/bot${token}/sendMessage`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              chat_id: chatId,
+              text: chunk,
+              parse_mode: "HTML",
+              disable_web_page_preview: true,
+            }),
+            signal: AbortSignal.timeout(15_000),
+          },
         );
+        if (res.ok) {
+          sent = true;
+          break;
+        }
+        // Read body once; redact in case Telegram echoes URL/token back.
+        const bodyText = redact(await res.text().catch(() => ""));
+        if (res.status === 401 || res.status === 404) {
+          console.error(
+            `[drift-telegram] terminal ${res.status} — check TELEGRAM_BOT_TOKEN_* / TELEGRAM_CHAT_ID_* for account ${accountId ?? "<default>"}: ${bodyText.slice(0, 200)}`,
+          );
+          break; // no retry on terminal errors
+        }
+        if (res.status === 429) {
+          const retryAfterHdr = res.headers.get("retry-after");
+          const wait = Math.min(
+            retryAfterHdr
+              ? parseInt(retryAfterHdr, 10) * 1000
+              : 2000 * (attempt + 1),
+            60_000,
+          );
+          await new Promise((r) => setTimeout(r, wait));
+          continue;
+        }
+        if (res.status >= 500 && res.status < 600) {
+          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+          continue;
+        }
+        console.error(
+          `[drift-telegram] send failed: ${res.status} ${bodyText.slice(0, 200)}`,
+        );
+        break;
+      } catch (e) {
+        const msgText = e instanceof Error ? e.message : String(e);
+        console.error(`[drift-telegram] send error: ${redact(msgText)}`);
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
       }
-    } catch (e) {
-      console.error(`[drift-telegram] send error: ${e}`);
     }
   }
   console.log(`[drift-telegram] sent ${chunks.length} chunk(s) to Telegram`);

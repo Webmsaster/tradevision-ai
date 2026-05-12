@@ -2,8 +2,9 @@
 # R29 Hunt Phase 1c: leverage / profit-target / hold-bars / step-2 sweeps
 # on V5_TITANIUM_PASSLOCK base. Goal: find 65%+ via a parameter we haven't
 # yet explored.
-set -e
+set -euo pipefail
 cd "$(dirname "$0")/.."
+[ -x ./engine-rust/target/release/ftmo-sweep ] || { echo "ERROR: ftmo-sweep binary missing" >&2; exit 3; }
 
 SYMS="ETHUSDT,BTCUSDT,BNBUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LTCUSDT,BCHUSDT,AAVEUSDT,XRPUSDT,INJUSDT,RUNEUSDT,ETCUSDT,SANDUSDT"
 SWEEP=./engine-rust/target/release/ftmo-sweep

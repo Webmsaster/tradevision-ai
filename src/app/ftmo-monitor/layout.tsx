@@ -20,6 +20,12 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
+// R1-A8 audit fix (Multi-Account State Mgmt round 1): mirror /dashboard/drift
+// — without `force-dynamic`, Next.js 15 bakes the FTMO_MONITOR_ENABLED check
+// at build time. Build with the flag unset → page is hard-baked 404 forever
+// at runtime. See memory `feedback_drift_dashboard_build_flag.md`.
+export const dynamic = "force-dynamic";
+
 export default function FtmoMonitorLayout({
   children,
 }: {

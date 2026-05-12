@@ -54,13 +54,18 @@ const summary: {
 }[] = [];
 
 for (const variant of VARIANTS) {
-  const all: Result[] = [];
+  // Bug-Audit Round 1: dedup by winIdx across shards.
+  const byWin = new Map<number, Result>();
   for (let s = 0; s < SHARDS; s++) {
     const f = `${CACHE_DIR}/r28v6_v60_${variant}_shard_${s}.jsonl`;
     if (!existsSync(f)) continue;
     const lines = readFileSync(f, "utf-8").trim().split("\n").filter(Boolean);
-    for (const line of lines) all.push(JSON.parse(line));
+    for (const line of lines) {
+      const r = JSON.parse(line) as Result;
+      byWin.set(r.winIdx, r);
+    }
   }
+  const all: Result[] = [...byWin.values()];
   if (all.length === 0) {
     console.log(`${variant}: NO DATA`);
     summary.push({

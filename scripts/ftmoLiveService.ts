@@ -113,6 +113,35 @@ const TF_DISPATCH: Record<string, TfTag> = {
   "2h-trend-v5-agate": "30m",
   "2h-trend-v5-jade": "30m",
   "2h-trend-v5-onyx": "30m",
+  // R1-A6 audit fix: V5-family 2h-bar configs that exist in CFG_REGISTRY but
+  // were missing from TF_DISPATCH. The fail-loud guard at resolveTf:136 now
+  // throws for any `2h-trend-v5-*` not registered here, so these previously
+  // accessible configs (all 2h-bar V5 variants) became un-deployable. They
+  // all inherit from FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5 (no timeframe
+  // override) → cadence is 2h.
+  "2h-trend-v5": "2h",
+  "2h-trend-v5-pro": "2h",
+  "2h-trend-v5-gold": "2h",
+  "2h-trend-v5-diamond": "2h",
+  "2h-trend-v5-platinum": "2h",
+  "2h-trend-v5-hiwin": "2h",
+  "2h-trend-v5-fastmax": "2h",
+  "2h-trend-v5-primex": "2h",
+  "2h-trend-v5-prime": "2h",
+  "2h-trend-v5-nova": "2h",
+  "2h-trend-v5-titan-real": "2h",
+  "2h-trend-v5-legend": "2h", // runtime-blocked in V231 but selector must resolve
+  "2h-trend-v5-titan": "2h", // runtime-blocked in V231 but selector must resolve
+  "2h-trend-v5-apex": "2h",
+  "2h-trend-v5-elite": "2h",
+  "2h-trend-v5-high": "2h",
+  "2h-trend-v5-ultra": "2h",
+  "2h-trend-v5-fund": "2h",
+  "2h-trend-v5-pareto": "2h",
+  "2h-trend-v5-recent": "2h",
+  "2h-trend-v5-robust": "2h",
+  "2h-trend-v5-step2": "2h",
+  "2h-trend-v5-ensemble": "2h",
   // 1h
   "1h": "1h",
   "1h-live": "1h",
@@ -739,21 +768,30 @@ async function runOneCheck(): Promise<DetectionResult> {
       v4Cfg =
         sisterCfg as typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
       v4Label = `R28_V6_${ftmoTf.replace("2h-trend-v5-r28-v6-", "").toUpperCase()}`;
+    } else if (isBreakoutV1) {
+      v4Cfg =
+        FTMO_DAYTRADE_24H_CONFIG_BREAKOUT_V1 as typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
+      v4Label = "BREAKOUT_V1";
+    } else if (isR28V6) {
+      v4Cfg = FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
+      v4Label = "V5_QUARTZ_LITE_R28_V6";
+    } else if (isR28V5) {
+      v4Cfg =
+        FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V5 as typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
+      v4Label = "V5_QUARTZ_LITE_R28_V5";
+    } else if (ftmoTf === "2h-trend-v5-quartz-lite-r28-v4-v4engine") {
+      v4Cfg =
+        FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4 as typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
+      v4Label = "V5_QUARTZ_LITE_R28_V4";
     } else {
-      v4Cfg = isBreakoutV1
-        ? (FTMO_DAYTRADE_24H_CONFIG_BREAKOUT_V1 as typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6)
-        : isR28V6
-          ? FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6
-          : isR28V5
-            ? (FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V5 as typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6)
-            : (FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4 as typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6);
-      v4Label = isBreakoutV1
-        ? "BREAKOUT_V1"
-        : isR28V6
-          ? "V5_QUARTZ_LITE_R28_V6"
-          : isR28V5
-            ? "V5_QUARTZ_LITE_R28_V5"
-            : "V5_QUARTZ_LITE_R28_V4";
+      // R1-A6 audit fix: useV4Engine can also be triggered by
+      // `getActiveCfg().lossStreakCooldown` on legacy LIVE_*/V12/V16/V261/V7
+      // configs. Previously fell through to R28_V4 default → wrong CFG sent to
+      // V4 executor (live trades on R28_V4 logic with caller's LIVE_15M label).
+      // Use V231's CFG_REGISTRY as single source of truth instead.
+      v4Cfg =
+        getActiveCfg() as typeof FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
+      v4Label = getActiveCfgInfo().label;
     }
     const fullCandleMap: Record<
       string,

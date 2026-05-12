@@ -24,6 +24,8 @@ import {
   writeFileSync,
   statSync,
   mkdirSync,
+  renameSync,
+  unlinkSync,
 } from "node:fs";
 import { dirname } from "node:path";
 
@@ -92,11 +94,34 @@ function readCachedNews(): NewsEvent[] | null {
 }
 
 function writeCachedNews(events: NewsEvent[]): void {
+  // R1-A8 audit fix (Multi-Account State Mgmt round 1): atomic write so a
+  // concurrent multi-account reader (`readCachedNews` from another bot
+  // process running in the same FTMO_STATE_DIR) can never observe a
+  // half-written file — without the temp+rename pattern, a reader hitting
+  // the file mid-write would JSON.parse-throw and treat the cache as
+  // missing, triggering an unnecessary fresh fetch on every concurrent
+  // poll. Same pattern as ftmoLiveService.writeJSON.
   try {
     const cachePath = getCachePath();
     const dir = dirname(cachePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(cachePath, JSON.stringify(events), "utf-8");
+    const tmp = `${cachePath}.tmp.${process.pid}.${Math.floor(
+      Math.random() * 0xffffffff,
+    ).toString(16)}`;
+    let renamed = false;
+    try {
+      writeFileSync(tmp, JSON.stringify(events), "utf-8");
+      renameSync(tmp, cachePath);
+      renamed = true;
+    } finally {
+      if (!renamed) {
+        try {
+          unlinkSync(tmp);
+        } catch {
+          /* tmpfile already gone — safe */
+        }
+      }
+    }
   } catch {
     // Cache is best-effort — never fail the live load on cache-write
     // errors (e.g. read-only FS).

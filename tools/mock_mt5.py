@@ -29,7 +29,9 @@ ORDER_TYPE_SELL = 1
 POSITION_TYPE_BUY = 0
 POSITION_TYPE_SELL = 1
 ORDER_TIME_GTC = 0
+ORDER_FILLING_FOK = 1
 ORDER_FILLING_IOC = 2
+ORDER_FILLING_RETURN = 3
 TRADE_RETCODE_DONE = 10009
 DEAL_ENTRY_IN = 0
 DEAL_ENTRY_OUT = 1
@@ -184,9 +186,9 @@ class OrderResult:
 
 
 # ---------------- Public mt5-like API ----------------
-def initialize() -> bool:
+def initialize(path: str = "") -> bool:
     _STATE["initialized"] = True
-    print("[mock_mt5] initialized (simulating $100k FTMO demo)")
+    print(f"[mock_mt5] initialized (simulating $100k FTMO demo){' path='+path if path else ''}")
     return True
 
 

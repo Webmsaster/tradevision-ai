@@ -3,8 +3,9 @@
 #   tp-mult=0.65, mct=7, trail-pct=0.001-0.003, no-trail, drop=RUNE+INJ
 #   profit-target Step 1 (0.08), Step 1.5 (0.06-0.07), Step 2 (0.05)
 # Goal: reach 65% via additive parameter improvements.
-set -e
+set -euo pipefail
 cd "$(dirname "$0")/.."
+[ -x ./engine-rust/target/release/ftmo-sweep ] || { echo "ERROR: ftmo-sweep binary missing" >&2; exit 3; }
 
 SYMS="ETHUSDT,BTCUSDT,BNBUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LTCUSDT,BCHUSDT,AAVEUSDT,XRPUSDT,INJUSDT,RUNEUSDT,ETCUSDT,SANDUSDT"
 SWEEP=./engine-rust/target/release/ftmo-sweep

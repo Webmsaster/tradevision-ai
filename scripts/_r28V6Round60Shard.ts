@@ -107,6 +107,16 @@ function loadAligned(): { aligned: Record<string, Candle[]>; minBars: number } {
 }
 
 const { aligned, minBars } = loadAligned();
+// Bug-Audit Round 1: VARIANTS[0].maxDays only works if all variants share
+// maxDays. Assert uniformity so future maxDays-divergent sweeps fail loudly
+// instead of silently windowing the wrong size for half the variants.
+const maxDaysSet = new Set(VARIANTS.map((v) => v.cfg.maxDays));
+if (maxDaysSet.size > 1) {
+  throw new Error(
+    `Round60Shard variants disagree on maxDays: ${[...maxDaysSet].join(",")}. ` +
+      "Multi-variant sweep cannot share a window range. Split into per-maxDays shard files.",
+  );
+}
 const winBars = VARIANTS[0]!.cfg.maxDays * 48;
 const stepBars = 14 * 48;
 const WARMUP = 5000;

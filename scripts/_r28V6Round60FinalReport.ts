@@ -38,35 +38,37 @@ interface Result {
   finalEquityPct: number;
 }
 
+// Bug-Audit Round 1: dedup by winIdx so re-runs don't double-count.
 function loadVariant(name: string): Result[] {
-  const all: Result[] = [];
+  const byWin = new Map<number, Result>();
   for (let s = 0; s < SHARDS; s++) {
     const f = `${CACHE_DIR}/r28v6_v60_${name}_shard_${s}.jsonl`;
     if (!existsSync(f)) continue;
     const lines = readFileSync(f, "utf-8").trim().split("\n").filter(Boolean);
     for (const line of lines) {
       try {
-        const o = JSON.parse(line);
-        all.push(o);
+        const o = JSON.parse(line) as Result;
+        byWin.set(o.winIdx, o);
       } catch {}
     }
   }
-  return all;
+  return [...byWin.values()];
 }
 
 function loadBaseline(): Result[] {
-  const all: Result[] = [];
+  const byWin = new Map<number, Result>();
   for (let s = 0; s < SHARDS; s++) {
     const f = `${CACHE_DIR}/r28v6_shard_${s}.jsonl`;
     if (!existsSync(f)) continue;
     const lines = readFileSync(f, "utf-8").trim().split("\n").filter(Boolean);
     for (const line of lines) {
       try {
-        all.push(JSON.parse(line));
+        const o = JSON.parse(line) as Result;
+        byWin.set(o.winIdx, o);
       } catch {}
     }
   }
-  return all;
+  return [...byWin.values()];
 }
 
 function passRate(rs: Result[]): number {
@@ -118,7 +120,7 @@ const champDelta = champ.pct - baselineRate;
 lines.push(`**🏆 Champion: \`R28_V6_${champ.name.toUpperCase()}\`**`);
 lines.push("");
 lines.push(
-  `- Backtest pass-rate: **${champ.pct.toFixed(2)}%** (${champ.n}/${baseline.length} windows)`,
+  `- Backtest pass-rate: **${champ.pct.toFixed(2)}%** (over ${champ.n} windows; baseline n=${baseline.length})`,
 );
 lines.push(
   `- vs R28_V6 baseline (${baselineRate.toFixed(2)}%): **+${champDelta.toFixed(2)}pp**`,
