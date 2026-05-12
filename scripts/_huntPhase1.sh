@@ -32,7 +32,10 @@ run() {
     --candles-dir scripts/cache_bakeoff --symbols "$syms" \
     --config "$cfg" \
     --windows 200 --step-days 14 --signals per-asset \
-    --phantom-suppress $extra 2>&1 | tail -3 | tee -a "$LOG"; then
+    $extra 2>&1 | tail -3 | tee -a "$LOG"; then
+    # NOTE 2026-05-12: --phantom-suppress removed (R29 audit finding).
+    # The flag was inverted vs intent and systematically UNDER-counted pass-rate
+    # by suppressing legitimate wins as "phantoms". See MEMORY 2026-05-10 cleanup.
     echo "[warn] $cfg failed — continuing" | tee -a "$LOG"
   fi
 }

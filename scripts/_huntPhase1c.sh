@@ -21,7 +21,8 @@ run() {
     --candles-dir scripts/cache_bakeoff --symbols "$SYMS" \
     --config 2h-trend-v5-titanium-passlock \
     --windows 200 --step-days 14 --signals per-asset \
-    --phantom-suppress "$@" 2>&1 | tail -1 | tee -a "$LOG"; then
+    "$@" 2>&1 | tail -1 | tee -a "$LOG"; then
+    # NOTE 2026-05-12: --phantom-suppress removed (R29 audit finding — inverted, under-counted).
     echo "[warn] $label failed — continuing" | tee -a "$LOG"
   fi
 }

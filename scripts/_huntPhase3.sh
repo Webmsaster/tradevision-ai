@@ -65,7 +65,8 @@ for q in 0 1 2 3; do
     --config "$cfg" \
     --windows 100 --step-days 14 --signals per-asset \
     --start-after-ts "$start" \
-    --phantom-suppress 2>&1 | tail -1 | tee -a "$LOG"; then
+    2>&1 | tail -1 | tee -a "$LOG"; then
+    # NOTE 2026-05-12: --phantom-suppress removed (R29 audit finding — inverted, under-counted).
     echo "[warn] quartile Q$((q+1)) failed — continuing" | tee -a "$LOG"
   fi
 done

@@ -19,7 +19,8 @@ run() {
   if ! $SWEEP \
     --candles-dir scripts/cache_bakeoff --symbols "$SYMS_BASE" \
     --windows 600 --step-days 7 --signals per-asset \
-    --phantom-suppress "$@" 2>&1 | tail -1 | tee -a "$LOG"; then
+    "$@" 2>&1 | tail -1 | tee -a "$LOG"; then
+    # NOTE 2026-05-12: --phantom-suppress removed (R29 audit finding — inverted, under-counted).
     echo "[warn] $label failed — continuing" | tee -a "$LOG"
   fi
 }

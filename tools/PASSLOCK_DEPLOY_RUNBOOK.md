@@ -1,13 +1,15 @@
 # R28_V6_PASSLOCK — Live Deploy Runbook
 
+> ⚠️ **2026-05-12 audit notice:** Pass-rate numbers in this runbook (63.24% / 64.77% / 56.62% / 94% min-1-pass) are **cache-era inflated** — fresh Rust re-baseline shows R28_V6_PASSLOCK = 41.18% step=14d, multi-account 3-stack ≈ **87% min-1-pass**. Current honest champion is **V5_AMBER_PASSLOCK at 55.79% step=1d** (`FTMO_TF=2h-trend-v5-amber-passlock`). Use this runbook for _deploy mechanics only_; the math/expectation table at the bottom is OUT-OF-DATE. See `CLAUDE.md` re-baseline section + memory `project_session_2026_05_12_65pct_hunt.md`.
+
 Pre-condition: Round 60 Sweep abgeschlossen, PASSLOCK als Champion bestätigt (63.24% full-sweep / 64.77% preliminary 86-window backtest, +6.62 to +8.15pp vs R28_V6 56.62% baseline). **10 R60 Audit-Rounds COMPLETE** (~80 agents, ~220 findings, ~70 fixes shipped — R6-R10 hardening patches all merged including R9 gap-fix: open-position MTM realised at window end no longer leaks past Pass-Lock fire).
 
 ## 🎯 Ziel
 
-Single-account oder 3-strategy Multi-Account Live-Bot mit R28_V6_PASSLOCK Engine-Flag. Erwartete Live-Pass:
+Single-account oder 3-strategy Multi-Account Live-Bot mit R28_V6_PASSLOCK Engine-Flag. ⚠️ Numbers below are cache-era — honest fresh-Rust replacements in audit notice at top.
 
-- **1× PASSLOCK** → ~60% (drift -3 to -5pp)
-- **3-Strategy** (PASSLOCK + TITANIUM + AMBER) → **~94% min-1-pass** ⭐
+- **1× PASSLOCK** → ~60% (drift -3 to -5pp) — ⚠️ honest: ~38-40% (41.18% backtest − 3pp drift)
+- **3-Strategy** (PASSLOCK + TITANIUM + AMBER) → **~94% min-1-pass** ⭐ — ⚠️ honest: ~87% min-1-pass
 
 ## ✅ Pre-Deploy Checks (VPS-side)
 
@@ -211,11 +213,14 @@ pm2 stop all
 
 ## 📈 ROI Reality-Check
 
-| Setup                                | Cost | Live Pass% (-3 to -5pp drift) | EV pro Demo |
-| ------------------------------------ | ---: | ----------------------------: | ----------: |
-| 1× PASSLOCK Demo                     | 155€ |                          ~60% |        +25€ |
-| 2× PASSLOCK                          | 310€ |                          ~84% |       +225€ |
-| 3-Strategy (PASSLOCK+TITANIUM+AMBER) | 465€ |                          ~94% |    +410€ ⭐ |
+⚠️ **Cache-era table — 2026-05-12 honest revision below.** Single-account row was 60%, now ~38-40%. 3-Strategy row was 94%, now ~87%. EV/cost columns need re-derivation.
+
+| Setup                                | Cost | Live Pass% (cache, -3 to -5pp drift) | Honest Pass% (2026-05-12) | EV pro Demo (cache) |
+| ------------------------------------ | ---: | -----------------------------------: | ------------------------: | ------------------: |
+| 1× PASSLOCK Demo                     | 155€ |                                 ~60% |                   ~38-40% |                +25€ |
+| 2× PASSLOCK                          | 310€ |                                 ~84% |                   ~62-65% |               +225€ |
+| 3-Strategy (PASSLOCK+TITANIUM+AMBER) | 465€ |                                 ~94% |                      ~87% |            +410€ ⭐ |
+| 3-Strategy (AMBER + TITANIUM + R28)  | 465€ |                                    — |                      ~87% |  (new champion mix) |
 
 Pass-Reward (FTMO Funded): **$1500-2500 pro Bestand**.
 

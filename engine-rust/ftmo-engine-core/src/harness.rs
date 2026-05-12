@@ -558,9 +558,20 @@ pub fn step_bar(
     }
 
     // 7b. Bar-level time gates (allowed hours / dows).
+    //
+    // 2026-05-12 R29 audit fix: signals fire on the close of bar i but entries
+    // execute on bar i+1's open. TS V4-Sim (`src/utils/ftmoDaytrade24h.ts:4156`)
+    // checks `entryBar.openTime` hour/dow, not signal-bar. Previously Rust
+    // checked `last_bar_time` (signal-bar). On 2h cfg with
+    // allowed_hours_utc=[4,6,8,10,14,18], the two checks accept ~50%
+    // non-overlapping bar populations → systematic signal-detector drift
+    // vs TS (TS-today 44.85% vs Rust 41.18% on full 136 windows).
+    //
+    // Fix: shift gate-check by bar_minutes so we evaluate the entry-bar's hour.
+    let entry_bar_time = last_bar_time + (cfg.bar_minutes as i64).saturating_mul(60_000);
     if entries_allowed {
         if let Some(hours) = cfg.allowed_hours_utc.as_ref() {
-            if let Some(dt) = DateTime::<Utc>::from_timestamp_millis(last_bar_time) {
+            if let Some(dt) = DateTime::<Utc>::from_timestamp_millis(entry_bar_time) {
                 if !hours.contains(&dt.hour()) {
                     entries_allowed = false;
                     let msg = format!("hour-gate: {} not in allowed_hours_utc", dt.hour());
@@ -572,7 +583,7 @@ pub fn step_bar(
     }
     if entries_allowed {
         if let Some(dows) = cfg.allowed_dows_utc.as_ref() {
-            if let Some(dt) = DateTime::<Utc>::from_timestamp_millis(last_bar_time) {
+            if let Some(dt) = DateTime::<Utc>::from_timestamp_millis(entry_bar_time) {
                 let dow = dt.weekday().num_days_from_sunday();
                 if !dows.contains(&dow) {
                     entries_allowed = false;
