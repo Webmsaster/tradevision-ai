@@ -60,7 +60,9 @@ fn v5r_guardian_closes_on_intraday_drawdown() {
     let atr: HashMap<String, Vec<Option<f64>>> = HashMap::new();
 
     // Bar 0: small drift — guardian shouldn't fire.
-    feed.get_mut("BTCUSDT").unwrap().push(Candle::new(start, 99.5, 100.0, 99.0, 99.0, 0.0));
+    feed.get_mut("BTCUSDT")
+        .unwrap()
+        .push(Candle::new(start, 99.5, 100.0, 99.0, 99.0, 0.0));
     let r0 = step_bar(
         &mut state,
         &BarInput {
@@ -74,14 +76,9 @@ fn v5r_guardian_closes_on_intraday_drawdown() {
     assert_eq!(state.open_positions.len(), 1);
 
     // Bar 1: deep drop to 96 (mtm = 1.0 * (1 - 0.04*2*0.4) = 0.968 → -3.2% intraday).
-    feed.get_mut("BTCUSDT").unwrap().push(Candle::new(
-        start + HOUR,
-        97.0,
-        97.5,
-        95.5,
-        96.0,
-        0.0,
-    ));
+    feed.get_mut("BTCUSDT")
+        .unwrap()
+        .push(Candle::new(start + HOUR, 97.0, 97.5, 95.5, 96.0, 0.0));
     let r1 = step_bar(
         &mut state,
         &BarInput {
@@ -93,7 +90,8 @@ fn v5r_guardian_closes_on_intraday_drawdown() {
     );
     assert!(
         r1.notes.iter().any(|n| n.contains("dailyEquityGuardian")),
-        "guardian must fire — notes: {:?}", r1.notes
+        "guardian must fire — notes: {:?}",
+        r1.notes
     );
     assert!(state.open_positions.is_empty());
     assert!(state.equity < 1.0);
@@ -151,7 +149,9 @@ fn v5r_reentry_after_stop_with_mean_rev_size_mult() {
     feed.insert("BTCUSDT".into(), vec![]);
     let atr: HashMap<String, Vec<Option<f64>>> = HashMap::new();
 
-    feed.get_mut("BTCUSDT").unwrap().push(Candle::new(start, 99.5, 99.9, 98.0, 98.5, 0.0));
+    feed.get_mut("BTCUSDT")
+        .unwrap()
+        .push(Candle::new(start, 99.5, 99.9, 98.0, 98.5, 0.0));
     let _ = step_bar(
         &mut state,
         &BarInput {
@@ -165,7 +165,9 @@ fn v5r_reentry_after_stop_with_mean_rev_size_mult() {
     assert!(!state.pending_reentries.is_empty());
 
     // Bar 1: re-entry signal arrives despite cooldown — reentry slot bypasses.
-    feed.get_mut("BTCUSDT").unwrap().push(Candle::new(start + HOUR, 99.0, 100.0, 98.0, 99.5, 0.0));
+    feed.get_mut("BTCUSDT")
+        .unwrap()
+        .push(Candle::new(start + HOUR, 99.0, 100.0, 98.0, 99.5, 0.0));
     let sig = PollSignal {
         symbol: "BTC-TREND".into(),
         source_symbol: "BTCUSDT".into(),

@@ -21,6 +21,7 @@ pub fn load_candles_json(path: &Path) -> Result<Vec<Candle>> {
 ///   `open_time,open,high,low,close,volume[,close_time,...]`
 /// or no header at all (column order positional). We use `csv::ReaderBuilder`
 /// with `has_headers = false` so positional reads work regardless.
+#[allow(dead_code)]
 pub fn load_candles_csv(path: &Path) -> Result<Vec<Candle>> {
     let f = File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mut rdr = csv::ReaderBuilder::new()
@@ -57,6 +58,7 @@ pub fn load_candles_csv(path: &Path) -> Result<Vec<Candle>> {
 }
 
 /// Auto-detect: read by extension. `.json` → JSON; `.csv` or anything else → CSV.
+#[allow(dead_code)]
 pub fn load_candles(path: &Path) -> Result<Vec<Candle>> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("json") => load_candles_json(path),
@@ -147,7 +149,10 @@ mod tests {
         // t=35 (event 3), t=40 (still event 3).
         let candles: Vec<Candle> = [5, 15, 25, 35, 40].iter().map(|t| candle(*t)).collect();
         let aligned = align_funding(&candles, &funding);
-        assert_eq!(aligned, vec![None, Some(0.1), Some(0.2), Some(0.3), Some(0.3)]);
+        assert_eq!(
+            aligned,
+            vec![None, Some(0.1), Some(0.2), Some(0.3), Some(0.3)]
+        );
     }
 
     #[test]
@@ -162,7 +167,7 @@ mod tests {
 
     #[test]
     fn align_funding_empty_funding_returns_none() {
-        let candles: Vec<Candle> = (0..5).map(|t| candle(t)).collect();
+        let candles: Vec<Candle> = (0..5).map(candle).collect();
         let aligned = align_funding(&candles, &[]);
         assert_eq!(aligned, vec![None; 5]);
     }

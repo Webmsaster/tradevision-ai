@@ -14,7 +14,6 @@ use ftmo_engine_core::candle::Candle;
 use ftmo_engine_core::config::AssetConfig;
 use ftmo_engine_core::harness::{step_bar, BarInput};
 use ftmo_engine_core::indicators::atr;
-use ftmo_engine_core::position::PositionSide;
 use ftmo_engine_core::signal::PollSignal;
 use ftmo_engine_core::signals_breakout::{detect_breakout, BreakoutParams};
 use ftmo_engine_core::state::EngineState;
@@ -90,10 +89,11 @@ fn sixty_day_soak_preserves_invariants() {
         feed.get_mut("SOAKUSDT").unwrap().push(*c);
         atr_feed.get_mut("SOAKUSDT").unwrap().push(atr_series[i]);
         let arr = feed.get("SOAKUSDT").unwrap();
-        let signals: Vec<PollSignal> = match detect_breakout(&mut state, &cfg, &asset, "SOAKUSDT", arr, &bp) {
-            Some(s) => vec![s],
-            None => vec![],
-        };
+        let signals: Vec<PollSignal> =
+            match detect_breakout(&mut state, &cfg, &asset, "SOAKUSDT", arr, &bp) {
+                Some(s) => vec![s],
+                None => vec![],
+            };
         let r = step_bar(
             &mut state,
             &BarInput {
@@ -105,11 +105,21 @@ fn sixty_day_soak_preserves_invariants() {
         );
 
         // Invariants.
-        assert!(state.bars_seen >= prev_bars_seen, "bars_seen regressed at i={}", i);
+        assert!(
+            state.bars_seen >= prev_bars_seen,
+            "bars_seen regressed at i={}",
+            i
+        );
         prev_bars_seen = state.bars_seen;
 
-        assert!(state.equity.is_finite(), "equity became non-finite at i={i}");
-        assert!(state.mtm_equity.is_finite(), "mtm_equity non-finite at i={i}");
+        assert!(
+            state.equity.is_finite(),
+            "equity became non-finite at i={i}"
+        );
+        assert!(
+            state.mtm_equity.is_finite(),
+            "mtm_equity non-finite at i={i}"
+        );
 
         // day_peak / challenge_peak finite (the strong invariant). Note that
         // peak ≥ equity is NOT guaranteed mid-bar: exits update equity AFTER
@@ -141,7 +151,8 @@ fn sixty_day_soak_preserves_invariants() {
             assert!(
                 pos.entry_bar_idx <= state.bars_seen,
                 "position entry_bar_idx {} > bars_seen {} at i={i}",
-                pos.entry_bar_idx, state.bars_seen
+                pos.entry_bar_idx,
+                state.bars_seen
             );
         }
 

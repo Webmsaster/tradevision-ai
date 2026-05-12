@@ -242,20 +242,38 @@ fn quartz_lite_base() -> EngineConfig {
     // V1 root + per-asset holdBars=240 (40h on 2h, 120h on 30m). V4-Sim
     // disables time-exit anyway; this only matters as a fallback ceiling.
     cfg.hold_bars = 240;
-    cfg.live_caps = Some(LiveCaps { max_stop_pct: 0.05, max_risk_frac: 0.4 });
-    cfg.atr_stop = Some(crate::config::AtrStop { period: 56, stop_mult: 2.0 });
-    cfg.chandelier_exit = Some(ChandelierExit { period: 56, mult: 2.0, min_move_r: Some(0.5) });
+    cfg.live_caps = Some(LiveCaps {
+        max_stop_pct: 0.05,
+        max_risk_frac: 0.4,
+    });
+    cfg.atr_stop = Some(crate::config::AtrStop {
+        period: 56,
+        stop_mult: 2.0,
+    });
+    cfg.chandelier_exit = Some(ChandelierExit {
+        period: 56,
+        mult: 2.0,
+        min_move_r: Some(0.5),
+    });
     cfg.break_even = Some(BreakEven { threshold: 0.03 });
     // R28_V4 override: triggerPct 0.02, closeFraction 0.7. R28_V6 keeps the
     // same shape but lifts trigger to 0.012; that override happens in
     // `r28_v6_passlock()` / `r28_v6()` below.
-    cfg.partial_take_profit = Some(PartialTakeProfit { trigger_pct: 0.02, close_fraction: 0.7 });
+    cfg.partial_take_profit = Some(PartialTakeProfit {
+        trigger_pct: 0.02,
+        close_fraction: 0.7,
+    });
     // R28_V4 override: 0.012 (not the V5_QUARTZ_LITE 0.02). −40% trail
     // distance — much earlier give-back lock.
-    cfg.daily_peak_trailing_stop = Some(PeakTrailingStop { trail_distance: 0.012 });
+    cfg.daily_peak_trailing_stop = Some(PeakTrailingStop {
+        trail_distance: 0.012,
+    });
     // R28_V4 → R28_V6 inherits this throttle: scale risk DOWN to 15% when
     // equity drops 3% below all-time peak.
-    cfg.peak_drawdown_throttle = Some(PeakDrawdownThrottle { from_peak: 0.03, factor: 0.15 });
+    cfg.peak_drawdown_throttle = Some(PeakDrawdownThrottle {
+        from_peak: 0.03,
+        factor: 0.15,
+    });
     // V5_ZIRKON (TS line 7293) overrides maxConcurrentTrades=10 — propagates
     // through V5_AMBER → V5_QUARTZ → V5_QUARTZ_LITE → R28_V4 → R28_V6 →
     // PASSLOCK. Earlier value (6) was V1 root, but the chain bumps it.
@@ -265,7 +283,10 @@ fn quartz_lite_base() -> EngineConfig {
     // V3-inherited trailingStop {activatePct: 3%, trailPct: 0.5%}. None of V4,
     // V5, V5_QUARTZ, V5_QUARTZ_LITE, R28_V4 or R28_V6 override it. Closes the
     // -8.78pp Rust↔TS drift on R28_V6_PASSLOCK observed post-Phase-3.
-    cfg.trailing_stop = Some(TrailingStop { activate_pct: 0.03, trail_pct: 0.005 });
+    cfg.trailing_stop = Some(TrailingStop {
+        activate_pct: 0.03,
+        trail_pct: 0.005,
+    });
     cfg
 }
 
@@ -319,7 +340,10 @@ fn v5_titanium_base() -> EngineConfig {
     cfg.stop_pct = 0.05;
     cfg.leverage = 2.0;
     cfg.hold_bars = 240;
-    cfg.live_caps = Some(LiveCaps { max_stop_pct: 0.05, max_risk_frac: 0.4 });
+    cfg.live_caps = Some(LiveCaps {
+        max_stop_pct: 0.05,
+        max_risk_frac: 0.4,
+    });
     // No atrStop / chandelier / breakEven / PTP / peakDD / dailyPeakTrail.
     cfg.atr_stop = None;
     cfg.chandelier_exit = None;
@@ -336,7 +360,10 @@ fn v5_titanium_base() -> EngineConfig {
     // V4 → V5 → V5_PRO → V5_GOLD → V5_DIAMOND → V5_PLATINUM → V5_PLATINUM_30M
     // → V5_TITANIUM (none override). Closes the -15.21pp drift on V5_AMBER and
     // -24pp on V5_TOPAZ.
-    cfg.trailing_stop = Some(TrailingStop { activate_pct: 0.03, trail_pct: 0.005 });
+    cfg.trailing_stop = Some(TrailingStop {
+        activate_pct: 0.03,
+        trail_pct: 0.005,
+    });
     cfg
 }
 
@@ -513,9 +540,9 @@ pub fn v5_titanium_passlock_5m() -> EngineConfig {
     let mut cfg = v5_titanium_passlock();
     cfg.label = "V5_TITANIUM_PASSLOCK_5M".into();
     cfg.hold_bars = 1440; // 5 days × 288 5m-bars
-    // R29-R3.2: tells detectors to scale bar-counted periods (SMA fast/slow,
-    // CVD lookback, prior-N return) by 30/5 = 6× so a 5m run sees the same
-    // wall-clock window the 30m baseline was tuned for.
+                          // R29-R3.2: tells detectors to scale bar-counted periods (SMA fast/slow,
+                          // CVD lookback, prior-N return) by 30/5 = 6× so a 5m run sees the same
+                          // wall-clock window the 30m baseline was tuned for.
     cfg.bar_minutes = 5;
     for asset in cfg.assets.iter_mut() {
         if asset.hold_bars.is_some() {
@@ -597,8 +624,7 @@ pub fn r28_v6_volimb_template() -> EngineConfig {
     let mut cfg = r28_v6_passlock();
     cfg.label = "R28_V6_VOLIMB".into();
     for asset in cfg.assets.iter_mut() {
-        asset.vol_imbalance_entry =
-            Some(crate::config::VolImbalanceEntry { long_min: 0.62 });
+        asset.vol_imbalance_entry = Some(crate::config::VolImbalanceEntry { long_min: 0.62 });
     }
     cfg
 }
@@ -798,7 +824,11 @@ mod tests {
     #[test]
     fn v5_amber_has_15_assets_includes_arb() {
         let cfg = v5_amber();
-        assert_eq!(cfg.assets.len(), 15, "V5_AMBER = OBSIDIAN basket (TITANIUM + ARB)");
+        assert_eq!(
+            cfg.assets.len(),
+            15,
+            "V5_AMBER = OBSIDIAN basket (TITANIUM + ARB)"
+        );
         assert!(cfg.assets.iter().any(|a| a.symbol == "ARB-TREND"));
         assert!(cfg.assets.iter().any(|a| a.symbol == "RUNE-TREND"));
         assert_eq!(cfg.max_concurrent_trades, Some(10));
@@ -840,7 +870,10 @@ mod tests {
         assert_eq!(cfg.assets.len(), 14, "TOPAZ = QUARTZ basket (15) - RUNE");
         assert!(!cfg.assets.iter().any(|a| a.symbol == "RUNE-TREND"));
         assert!(cfg.assets.iter().any(|a| a.symbol == "ARB-TREND"));
-        assert!(cfg.atr_stop.is_some(), "V5_TOPAZ inherits QUARTZ engine stack");
+        assert!(
+            cfg.atr_stop.is_some(),
+            "V5_TOPAZ inherits QUARTZ engine stack"
+        );
         assert!(cfg.chandelier_exit.is_some());
         assert!(cfg.break_even.is_some());
         // tp -0.005 vs AMBER, floor 0.015
@@ -886,7 +919,9 @@ mod tests {
     #[test]
     fn v5_titanium_passlock_lscool_tight_sets_cooldown() {
         let cfg = v5_titanium_passlock_lscool_tight();
-        let lsc = cfg.loss_streak_cooldown.expect("must set lossStreakCooldown");
+        let lsc = cfg
+            .loss_streak_cooldown
+            .expect("must set lossStreakCooldown");
         assert_eq!(lsc.after_losses, 1);
         assert_eq!(lsc.cooldown_bars, 400);
         assert!(cfg.close_all_on_target_reached);
@@ -895,7 +930,9 @@ mod tests {
     #[test]
     fn v5_titanium_passlock_lscool_loose_sets_cooldown() {
         let cfg = v5_titanium_passlock_lscool_loose();
-        let lsc = cfg.loss_streak_cooldown.expect("must set lossStreakCooldown");
+        let lsc = cfg
+            .loss_streak_cooldown
+            .expect("must set lossStreakCooldown");
         assert_eq!(lsc.after_losses, 3);
         assert_eq!(lsc.cooldown_bars, 96);
     }
@@ -938,8 +975,16 @@ mod tests {
             v5_obsidian_passlock(),
         ] {
             let ts = cfg.trailing_stop.expect("trailing_stop must propagate");
-            assert!((ts.activate_pct - 0.03).abs() < 1e-12, "{}: activate_pct", cfg.label);
-            assert!((ts.trail_pct - 0.005).abs() < 1e-12, "{}: trail_pct", cfg.label);
+            assert!(
+                (ts.activate_pct - 0.03).abs() < 1e-12,
+                "{}: activate_pct",
+                cfg.label
+            );
+            assert!(
+                (ts.trail_pct - 0.005).abs() < 1e-12,
+                "{}: trail_pct",
+                cfg.label
+            );
         }
     }
 
@@ -947,9 +992,18 @@ mod tests {
     fn hunter_template_winner_shape() {
         let cfg = v5_titanium_passlock_hunter();
         assert_eq!(cfg.label, "V5_TITANIUM_PASSLOCK_HUNTER");
-        assert!(cfg.close_all_on_target_reached, "PASSLOCK semantic preserved");
+        assert!(
+            cfg.close_all_on_target_reached,
+            "PASSLOCK semantic preserved"
+        );
         assert_eq!(cfg.assets.len(), 9, "9-asset basket");
-        for forbidden in &["DOGE-TREND", "ETH-TREND", "INJ-TREND", "ADA-TREND", "RUNE-TREND"] {
+        for forbidden in &[
+            "DOGE-TREND",
+            "ETH-TREND",
+            "INJ-TREND",
+            "ADA-TREND",
+            "RUNE-TREND",
+        ] {
             assert!(
                 !cfg.assets.iter().any(|a| a.symbol == *forbidden),
                 "{forbidden} must be dropped"
@@ -993,7 +1047,9 @@ mod tests {
     #[test]
     fn selector_resolution() {
         assert_eq!(
-            template_by_selector("2h-trend-v5-r28-v6-passlock").unwrap().label,
+            template_by_selector("2h-trend-v5-r28-v6-passlock")
+                .unwrap()
+                .label,
             "R28_V6_PASSLOCK"
         );
         assert_eq!(
@@ -1067,8 +1123,26 @@ mod tests {
     fn frmild_and_frstrict_templates_resolve() {
         let mild = r28_v6_passlock_frmild_template();
         let strict = r28_v6_passlock_frstrict_template();
-        assert!((mild.funding_rate_filter.unwrap().max_funding_for_long.unwrap() - 0.001).abs() < 1e-12);
-        assert!((strict.funding_rate_filter.unwrap().max_funding_for_long.unwrap() - 0.0003).abs() < 1e-12);
+        assert!(
+            (mild
+                .funding_rate_filter
+                .unwrap()
+                .max_funding_for_long
+                .unwrap()
+                - 0.001)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (strict
+                .funding_rate_filter
+                .unwrap()
+                .max_funding_for_long
+                .unwrap()
+                - 0.0003)
+                .abs()
+                < 1e-12
+        );
     }
 
     #[test]

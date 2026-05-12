@@ -191,7 +191,10 @@ fn round67_asset_importance_sweep() {
         elapsed.as_secs_f64()
     );
     eprintln!();
-    eprintln!("Baseline (all assets): {}/{} = {:.2}%", baseline_pass, n_windows, baseline_rate);
+    eprintln!(
+        "Baseline (all assets): {}/{} = {:.2}%",
+        baseline_pass, n_windows, baseline_rate
+    );
     eprintln!();
     eprintln!(
         "{:<5} {:<14} {:>15} {:>10}",
@@ -199,7 +202,7 @@ fn round67_asset_importance_sweep() {
     );
     eprintln!("{}", "-".repeat(50));
     for (i, (src, pass, delta)) in rows.iter().enumerate() {
-        let rate = (*pass as f64) / (n_windows as f64) * 100.0;
+        let _rate = (*pass as f64) / (n_windows as f64) * 100.0;
         eprintln!(
             "{:<5} {:<14} {:>10}/{} {:>+9.2}pp",
             i + 1,

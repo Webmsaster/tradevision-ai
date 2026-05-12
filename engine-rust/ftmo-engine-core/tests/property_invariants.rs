@@ -100,7 +100,7 @@ proptest! {
         let candles: Vec<Candle> = closes
             .iter()
             .enumerate()
-            .map(|(i, &c)| candle_from(1_700_000_000_000 + i as i64 * 1800_000, c, 0.5))
+            .map(|(i, &c)| candle_from(1_700_000_000_000 + i as i64 * 1_800_000, c, 0.5))
             .collect();
         let cfg = cfg_basic();
         let state = drive(&candles, &cfg, &HashMap::new());
@@ -129,7 +129,7 @@ proptest! {
         let candles: Vec<Candle> = closes
             .iter()
             .enumerate()
-            .map(|(i, &c)| candle_from(1_700_000_000_000 + i as i64 * 1800_000, c, 1.0))
+            .map(|(i, &c)| candle_from(1_700_000_000_000 + i as i64 * 1_800_000, c, 1.0))
             .collect();
         let cfg = cfg_basic();
         let dir = if long_first { PositionSide::Long } else { PositionSide::Short };

@@ -7,16 +7,16 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use std::collections::HashMap;
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use std::hint::black_box;
 use ftmo_engine_core::config::{AssetConfig, EngineConfig, MeanReversionSource};
 use ftmo_engine_core::harness::{step_bar, BarInput};
 use ftmo_engine_core::indicators::atr;
+use ftmo_engine_core::indicators::rsi;
 use ftmo_engine_core::signal::PollSignal;
 use ftmo_engine_core::signals_breakout::{detect_breakout, BreakoutParams};
-use ftmo_engine_core::indicators::rsi;
 use ftmo_engine_core::signals_meanrev::{detect_mean_reversion, detect_mean_reversion_with_rsi};
 use ftmo_engine_core::state::EngineState;
 use ftmo_engine_core::Candle;
+use std::hint::black_box;
 
 const N_BARS: usize = 2000;
 

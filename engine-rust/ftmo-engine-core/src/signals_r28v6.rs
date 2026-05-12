@@ -128,9 +128,7 @@ impl R28V6Params {
         // 5m run gets the same wall-clock SMA window the 30m R28_V6 family
         // was tuned for (20-bar @ 30m = 600min ⇒ 120-bar @ 5m).
         let scale = 30.0 / (cfg.bar_minutes.max(1) as f64);
-        let scale_period = |p: usize| -> usize {
-            ((p as f64) * scale).round().max(1.0) as usize
-        };
+        let scale_period = |p: usize| -> usize { ((p as f64) * scale).round().max(1.0) as usize };
         Self {
             fast_period: scale_period(20),
             slow_period: scale_period(50),
@@ -492,7 +490,14 @@ mod tests {
         let mut candles: Vec<Candle> = Vec::new();
         for i in 0..70 {
             let alt = if i % 2 == 0 { 100.5 } else { 99.5 };
-            candles.push(Candle::new(i * 1800_000, alt, alt + 0.1, alt - 0.1, alt, 0.0));
+            candles.push(Candle::new(
+                i * 1800_000,
+                alt,
+                alt + 0.1,
+                alt - 0.1,
+                alt,
+                0.0,
+            ));
         }
         let inputs = R28V6Inputs {
             htf_closes: None,
@@ -607,8 +612,16 @@ mod tests {
             funding_series: Some(&funding),
         };
         assert!(
-            detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs_long_blocked)
-                .is_none(),
+            detect_r28_v6(
+                &mut s,
+                &cfg,
+                &a,
+                "BTCUSDT",
+                &candles,
+                &p,
+                &inputs_long_blocked
+            )
+            .is_none(),
             "long must be blocked when funding > maxFL"
         );
 
@@ -622,7 +635,10 @@ mod tests {
         };
         let mut s2 = EngineState::initial("x");
         let sig = detect_r28_v6(&mut s2, &cfg, &a, "BTCUSDT", &candles, &p, &inputs_long_ok);
-        assert!(sig.is_some(), "long should fire when funding within threshold");
+        assert!(
+            sig.is_some(),
+            "long should fire when funding within threshold"
+        );
         assert_eq!(sig.unwrap().direction, PositionSide::Long);
 
         // ── Short-side test: downtrend + funding < minFS → blocked ──
@@ -632,8 +648,7 @@ mod tests {
         last.high = 170.0;
         last.low = 155.0;
         last.close = 156.0;
-        let funding_neg: Vec<Option<f64>> =
-            (0..candles_dn.len()).map(|_| Some(-0.001)).collect();
+        let funding_neg: Vec<Option<f64>> = (0..candles_dn.len()).map(|_| Some(-0.001)).collect();
         let inputs_short_blocked = R28V6Inputs {
             htf_closes: None,
             cross_asset_closes: None,
@@ -641,8 +656,16 @@ mod tests {
             funding_series: Some(&funding_neg),
         };
         assert!(
-            detect_r28_v6(&mut s3, &cfg, &a, "BTCUSDT", &candles_dn, &p, &inputs_short_blocked)
-                .is_none(),
+            detect_r28_v6(
+                &mut s3,
+                &cfg,
+                &a,
+                "BTCUSDT",
+                &candles_dn,
+                &p,
+                &inputs_short_blocked
+            )
+            .is_none(),
             "short must be blocked when funding < minFS"
         );
 
@@ -800,7 +823,10 @@ mod tests {
             funding_series: None,
         };
         let sig = detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs);
-        assert!(sig.is_some(), "3 consecutive red bars before entry should fire long");
+        assert!(
+            sig.is_some(),
+            "3 consecutive red bars before entry should fire long"
+        );
         let sig = sig.unwrap();
         assert_eq!(sig.direction, PositionSide::Long);
         assert!(
@@ -874,7 +900,10 @@ mod tests {
             funding_series: None,
         };
         let sig = detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs);
-        assert!(sig.is_some(), "per-asset trigger_bars=1 should permit entry");
+        assert!(
+            sig.is_some(),
+            "per-asset trigger_bars=1 should permit entry"
+        );
         assert_eq!(sig.unwrap().direction, PositionSide::Long);
     }
 }

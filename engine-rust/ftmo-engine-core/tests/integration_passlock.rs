@@ -60,7 +60,9 @@ fn passlock_closes_on_target_after_min_days() {
     feed.insert("BTCUSDT".into(), vec![]);
 
     // ── Day 0 bar 0 ─────────────────────────────────────────────────────
-    feed.get_mut("BTCUSDT").unwrap().push(candle(start, 100.0, 100.5, 99.5, 100.0));
+    feed.get_mut("BTCUSDT")
+        .unwrap()
+        .push(candle(start, 100.0, 100.5, 99.5, 100.0));
     let entry_sig = PollSignal {
         symbol: "BTC-TREND".into(),
         source_symbol: "BTCUSDT".into(),
@@ -80,29 +82,25 @@ fn passlock_closes_on_target_after_min_days() {
     assert_eq!(state.trading_days, vec![0]);
 
     // ── Day 0 bar 1 — small drift, no exit ───────────────────────────────
-    feed.get_mut("BTCUSDT").unwrap().push(candle(
-        start + HALF_HOUR_MS,
-        100.0,
-        100.6,
-        99.7,
-        100.2,
-    ));
+    feed.get_mut("BTCUSDT")
+        .unwrap()
+        .push(candle(start + HALF_HOUR_MS, 100.0, 100.6, 99.7, 100.2));
     let r1 = step_bar(&mut state, &input(&feed, &atr_feed, vec![]), &cfg);
     assert!(!r1.challenge_ended);
     assert_eq!(state.open_positions.len(), 1);
 
     // ── Day 1 bar — TP hit, realised equity should rise.
     // 5% raw × 2 lev × 0.4 risk = 0.04 = target hit exactly.
-    feed.get_mut("BTCUSDT").unwrap().push(candle(
-        start + DAY_MS,
-        100.5,
-        106.0,
-        100.0,
-        105.5,
-    ));
+    feed.get_mut("BTCUSDT")
+        .unwrap()
+        .push(candle(start + DAY_MS, 100.5, 106.0, 100.0, 105.5));
     let r2 = step_bar(&mut state, &input(&feed, &atr_feed, vec![]), &cfg);
     // TP cross: exitPrice = tpPrice 105 → raw=0.05, eff=0.04. equity = 1.04.
-    assert!((state.equity - 1.04).abs() < 1e-9, "equity={}", state.equity);
+    assert!(
+        (state.equity - 1.04).abs() < 1e-9,
+        "equity={}",
+        state.equity
+    );
     // tradingDays = [0, 1]: 0 from entry on day 0, 1 from R29-R3.8 ping-day
     // push on first target-hit bar (matches TS V4 line 1663-1668; under
     // pause_at_target_reached=true the post-target ping accumulator credits
@@ -133,7 +131,9 @@ fn total_loss_breach_terminates_challenge() {
     feed.insert("BTCUSDT".into(), vec![]);
 
     // Bar 0 — open with very wide stop so a single losing move blows past TL.
-    feed.get_mut("BTCUSDT").unwrap().push(candle(start, 100.0, 100.5, 99.5, 100.0));
+    feed.get_mut("BTCUSDT")
+        .unwrap()
+        .push(candle(start, 100.0, 100.5, 99.5, 100.0));
     let sig = PollSignal {
         symbol: "BTC-TREND".into(),
         source_symbol: "BTCUSDT".into(),
@@ -153,13 +153,9 @@ fn total_loss_breach_terminates_challenge() {
     // Bar 1 — gap-down through stop. Open=92, stop=95. exit at open=92 → raw=-0.08,
     // capped by GAP_TAIL_MULT (-1.5R). risk=0.6 → eff floor = -0.9. raw eff = -0.08*2*0.6 = -0.096.
     // Equity = 1.0 * (1-0.096) = 0.904 → past TL floor 0.95.
-    feed.get_mut("BTCUSDT").unwrap().push(candle(
-        start + HALF_HOUR_MS,
-        92.0,
-        93.0,
-        91.0,
-        92.5,
-    ));
+    feed.get_mut("BTCUSDT")
+        .unwrap()
+        .push(candle(start + HALF_HOUR_MS, 92.0, 93.0, 91.0, 92.5));
     let r = step_bar(&mut state, &input(&feed, &atr_feed, vec![]), &cfg);
     assert!(r.challenge_ended);
     assert_eq!(

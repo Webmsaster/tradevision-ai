@@ -23,7 +23,6 @@ use std::collections::HashMap;
 use crate::candle::Candle;
 use crate::config::EngineConfig;
 use chrono::{DateTime, Datelike, Timelike, Utc};
-use smallvec::SmallVec;
 
 use crate::pnl::{compute_eff_pnl_with_time, compute_mtm_equity, trim_inline};
 use crate::position::OpenPosition;
@@ -67,11 +66,7 @@ pub enum FailReason {
 
 /// Drive one bar of engine state. Mutates `state` in-place. Returns the
 /// decisions taken (closes from exits, opens from signals).
-pub fn step_bar(
-    state: &mut EngineState,
-    input: &BarInput<'_>,
-    cfg: &EngineConfig,
-) -> StepResult {
+pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfig) -> StepResult {
     let mut result = StepResult {
         decision: PollDecision::default(),
         notes: vec![],
@@ -101,8 +96,10 @@ pub fn step_bar(
     let mut max_last_bar: Option<i64> = None;
     for arr in input.candles_by_source.values() {
         if let Some(last) = arr.last() {
-            min_last_bar = Some(min_last_bar.map_or(last.open_time, |v: i64| v.min(last.open_time)));
-            max_last_bar = Some(max_last_bar.map_or(last.open_time, |v: i64| v.max(last.open_time)));
+            min_last_bar =
+                Some(min_last_bar.map_or(last.open_time, |v: i64| v.min(last.open_time)));
+            max_last_bar =
+                Some(max_last_bar.map_or(last.open_time, |v: i64| v.max(last.open_time)));
         }
     }
     let Some(last_bar_time) = min_last_bar else {
@@ -111,7 +108,9 @@ pub fn step_bar(
     };
     if let (Some(min), Some(max)) = (min_last_bar, max_last_bar) {
         if min != max {
-            result.notes.push(format!("assets misaligned ({min}…{max}) — using min"));
+            result
+                .notes
+                .push(format!("assets misaligned ({min}…{max}) — using min"));
         }
     }
 
@@ -131,12 +130,12 @@ pub fn step_bar(
     }
 
     // 2. Day-rollover.
-    let new_day = day_index(last_bar_time, state.challenge_start_ts) as i64;
+    let new_day = day_index(last_bar_time, state.challenge_start_ts);
     let cur_day = state.day as i64;
     if new_day < cur_day {
-        result
-            .notes
-            .push(format!("time regression: newDay={new_day} state.day={cur_day} — keeping anchors"));
+        result.notes.push(format!(
+            "time regression: newDay={new_day} state.day={cur_day} — keeping anchors"
+        ));
     } else if new_day > cur_day {
         state.day = new_day as u32;
         state.day_start = state.equity;
@@ -222,8 +221,12 @@ pub fn step_bar(
                     continue;
                 }
                 let mut raw_pnl = match pos.direction {
-                    crate::position::PositionSide::Long => (price - pos.entry_price) / pos.entry_price,
-                    crate::position::PositionSide::Short => (pos.entry_price - price) / pos.entry_price,
+                    crate::position::PositionSide::Long => {
+                        (price - pos.entry_price) / pos.entry_price
+                    }
+                    crate::position::PositionSide::Short => {
+                        (pos.entry_price - price) / pos.entry_price
+                    }
                 };
                 // R29-Audit-Round1-A1.2: blend PTP partials into raw_pnl to
                 // match `compute_mtm_equity` semantics. Without this, a
@@ -267,7 +270,10 @@ pub fn step_bar(
                         .unwrap_or(pos.entry_price);
                     closes.push((
                         idx,
-                        crate::exit::ExitOutcome { exit_price, reason: ExitReason::Manual },
+                        crate::exit::ExitOutcome {
+                            exit_price,
+                            reason: ExitReason::Manual,
+                        },
                     ));
                 }
                 apply_exits(state, &mut closes, cfg, last_bar_time, &mut result);
@@ -315,9 +321,9 @@ pub fn step_bar(
             });
         let candle = *candle;
         let bars_held = state.bars_seen.saturating_sub(pos.entry_bar_idx);
-        if let Some(out) = crate::exit::process_position_exit_with_held(
-            pos, &candle, cfg, atr_at_bar, bars_held,
-        ) {
+        if let Some(out) =
+            crate::exit::process_position_exit_with_held(pos, &candle, cfg, atr_at_bar, bars_held)
+        {
             exits.push((idx, out));
         }
     }
@@ -450,7 +456,10 @@ pub fn step_bar(
                     .unwrap_or(pos.entry_price);
                 to_close.push((
                     idx,
-                    crate::exit::ExitOutcome { exit_price, reason: ExitReason::Manual },
+                    crate::exit::ExitOutcome {
+                        exit_price,
+                        reason: ExitReason::Manual,
+                    },
                 ));
             }
             apply_exits(state, &mut to_close, cfg, last_bar_time, &mut result);
@@ -530,8 +539,7 @@ pub fn step_bar(
     }
     if entries_allowed {
         if let Some(cpts) = cfg.challenge_peak_trailing_stop {
-            let drop = (state.challenge_peak - state.mtm_equity)
-                / state.challenge_peak.max(1e-9);
+            let drop = (state.challenge_peak - state.mtm_equity) / state.challenge_peak.max(1e-9);
             if drop >= cpts.trail_distance {
                 entries_allowed = false;
                 let msg = format!("challengePeakTrailingStop: drop {:.2}%", drop * 100.0);
@@ -546,10 +554,7 @@ pub fn step_bar(
                 let day_pnl = (state.equity - state.day_start) / state.day_start;
                 if day_pnl <= -idl.hard_loss_threshold {
                     entries_allowed = false;
-                    let msg = format!(
-                        "intradayDailyLossThrottle hard: {:.2}%",
-                        day_pnl * 100.0
-                    );
+                    let msg = format!("intradayDailyLossThrottle hard: {:.2}%", day_pnl * 100.0);
                     result.notes.push(msg.clone());
                     block_reason = Some(msg);
                 }
@@ -658,7 +663,10 @@ pub fn step_bar(
                 ) {
                     result.skipped.push(crate::signal::PollSkip {
                         asset: sig.symbol.clone(),
-                        reason: format!("crossAssetFilter[{}] blocks {:?}", filter.symbol, sig.direction),
+                        reason: format!(
+                            "crossAssetFilter[{}] blocks {:?}",
+                            filter.symbol, sig.direction
+                        ),
                     });
                     continue;
                 }
@@ -847,7 +855,7 @@ fn apply_exits(
 ) {
     // Process highest-index first so removals don't shift indices for later
     // entries.
-    exits.sort_by(|a, b| b.0.cmp(&a.0));
+    exits.sort_by_key(|e| std::cmp::Reverse(e.0));
     for (idx, out) in exits.drain(..) {
         let pos = state.open_positions.remove(idx);
         let pnl = compute_eff_pnl_with_time(&pos, out.exit_price, cfg, Some(last_bar_time));
@@ -872,7 +880,10 @@ fn apply_exits(
         let entry = state
             .loss_streak_by_asset_dir
             .entry(key.clone())
-            .or_insert(LossStreakEntry { streak: 0, cd_until_bars_seen: 0 });
+            .or_insert(LossStreakEntry {
+                streak: 0,
+                cd_until_bars_seen: 0,
+            });
         if pnl.eff_pnl > 0.0 {
             entry.streak = 0;
             // Winning trade clears any pending re-entry slot for this key.
@@ -898,7 +909,10 @@ fn apply_exits(
         // Kelly buffer is only populated when kellySizing is configured —
         // matches TS gating at line ~1349.
         if cfg.kelly_sizing.is_some() {
-            state.kelly_pnls.push(KellyPnl { close_time: last_bar_time, eff_pnl: pnl.eff_pnl });
+            state.kelly_pnls.push(KellyPnl {
+                close_time: last_bar_time,
+                eff_pnl: pnl.eff_pnl,
+            });
         }
         state.closed_trades.push(trade.clone());
         result.decision.closes.push(CloseIntent {
@@ -933,7 +947,10 @@ fn force_close_all(
             });
         closes.push((
             idx,
-            crate::exit::ExitOutcome { exit_price, reason: ExitReason::Manual },
+            crate::exit::ExitOutcome {
+                exit_price,
+                reason: ExitReason::Manual,
+            },
         ));
     }
     apply_exits(state, &mut closes, cfg, last_bar_time, result);
@@ -992,7 +1009,10 @@ mod tests {
         let cfg = cfg_basic();
         let mut state = EngineState::initial("x");
         let mut candles = HashMap::new();
-        candles.insert("BTCUSDT".to_string(), vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)]);
+        candles.insert(
+            "BTCUSDT".to_string(),
+            vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)],
+        );
         let atr = HashMap::new();
 
         // First poll — accepted.
@@ -1011,7 +1031,10 @@ mod tests {
         let cfg = cfg_basic();
         let mut state = EngineState::initial("x");
         let mut candles = HashMap::new();
-        candles.insert("BTCUSDT".into(), vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)]);
+        candles.insert(
+            "BTCUSDT".into(),
+            vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)],
+        );
         let atr = HashMap::new();
         let sig = PollSignal {
             symbol: "BTC-TREND".into(),
@@ -1081,7 +1104,10 @@ mod tests {
         let mut state = EngineState::initial("x");
         state.equity = 0.97; // already past floor
         let mut candles = HashMap::new();
-        candles.insert("BTCUSDT".into(), vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)]);
+        candles.insert(
+            "BTCUSDT".into(),
+            vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)],
+        );
         let atr = HashMap::new();
         let r = step_bar(&mut state, &make_input(&candles, &atr, vec![]), &cfg);
         assert!(r.challenge_ended);
@@ -1105,7 +1131,10 @@ mod tests {
         state.last_bar_open_time = 0; // < signal time
         state.loss_streak_by_asset_dir.insert(
             ls_key("BTC-TREND", PositionSide::Long),
-            crate::state::LossStreakEntry { streak: 1, cd_until_bars_seen: 100 },
+            crate::state::LossStreakEntry {
+                streak: 1,
+                cd_until_bars_seen: 100,
+            },
         );
         state.bars_seen = 50; // still within cooldown window
 
@@ -1131,7 +1160,10 @@ mod tests {
         let r = step_bar(&mut state, &make_input(&candles, &atr, vec![sig]), &cfg);
         // Signal blocked by cooldown — no position opened.
         assert_eq!(state.open_positions.len(), 0);
-        assert!(r.skipped.iter().any(|s| s.reason.contains("lossStreakCooldown")));
+        assert!(r
+            .skipped
+            .iter()
+            .any(|s| s.reason.contains("lossStreakCooldown")));
     }
 
     #[test]
@@ -1142,7 +1174,10 @@ mod tests {
         state.challenge_start_ts = 1;
         state.last_bar_open_time = 0;
         let mut candles = HashMap::new();
-        candles.insert("BTCUSDT".into(), vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)]);
+        candles.insert(
+            "BTCUSDT".into(),
+            vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)],
+        );
         let atr = HashMap::new();
         let sig = PollSignal {
             symbol: "BTC-TREND".into(),
@@ -1183,7 +1218,10 @@ mod tests {
         state.last_bar_open_time = 0;
         state.day = 1; // < 3
         let mut candles = HashMap::new();
-        candles.insert("BTCUSDT".into(), vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)]);
+        candles.insert(
+            "BTCUSDT".into(),
+            vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)],
+        );
         let atr = HashMap::new();
         let sig = PollSignal {
             symbol: "BTC-TREND".into(),
@@ -1200,13 +1238,18 @@ mod tests {
         };
         let r = step_bar(&mut state, &make_input(&candles, &atr, vec![sig]), &cfg);
         assert_eq!(state.open_positions.len(), 0);
-        assert!(r.skipped.iter().any(|s| s.reason.contains("activate_after_day")));
+        assert!(r
+            .skipped
+            .iter()
+            .any(|s| s.reason.contains("activate_after_day")));
     }
 
     #[test]
     fn daily_peak_trailing_stop_blocks_entries() {
         let mut cfg = cfg_basic();
-        cfg.daily_peak_trailing_stop = Some(crate::config::PeakTrailingStop { trail_distance: 0.02 });
+        cfg.daily_peak_trailing_stop = Some(crate::config::PeakTrailingStop {
+            trail_distance: 0.02,
+        });
         let mut state = EngineState::initial("x");
         state.challenge_start_ts = 1;
         state.last_bar_open_time = 0;
@@ -1290,7 +1333,10 @@ mod tests {
         };
         let r = step_bar(&mut state, &make_input(&candles, &atr, vec![sig]), &cfg);
         assert_eq!(state.open_positions.len(), 2, "third long blocked");
-        assert!(r.skipped.iter().any(|s| s.reason.contains("correlationFilter")));
+        assert!(r
+            .skipped
+            .iter()
+            .any(|s| s.reason.contains("correlationFilter")));
     }
 
     #[test]
@@ -1332,7 +1378,10 @@ mod tests {
         );
         let atr = HashMap::new();
         let r = step_bar(&mut state, &make_input(&candles, &atr, vec![]), &cfg);
-        assert!(state.open_positions.is_empty(), "guardian should force-close");
+        assert!(
+            state.open_positions.is_empty(),
+            "guardian should force-close"
+        );
         assert!(r.notes.iter().any(|n| n.contains("dailyEquityGuardian")));
         // Equity must be below 1.0 (loss locked in).
         assert!(state.equity < 1.0);
@@ -1387,7 +1436,14 @@ mod tests {
         assert_eq!(state.closed_trades[0].exit_reason, ExitReason::Stop);
         let key = ls_key("BTC-TREND", PositionSide::Long);
         assert!(state.pending_reentries.contains_key(&key));
-        assert!(state.loss_streak_by_asset_dir.get(&key).unwrap().cd_until_bars_seen > state.bars_seen);
+        assert!(
+            state
+                .loss_streak_by_asset_dir
+                .get(&key)
+                .unwrap()
+                .cd_until_bars_seen
+                > state.bars_seen
+        );
 
         // Bar 2 — fresh signal arrives. Cooldown active but reentry slot present.
         candles
@@ -1408,7 +1464,11 @@ mod tests {
             chandelier_atr_at_entry: None,
         };
         let _ = step_bar(&mut state, &make_input(&candles, &atr, vec![sig]), &cfg);
-        assert_eq!(state.open_positions.len(), 1, "reentry should bypass cooldown");
+        assert_eq!(
+            state.open_positions.len(),
+            1,
+            "reentry should bypass cooldown"
+        );
         // eff_risk scaled: 0.4 × 0.5 = 0.2.
         assert!((state.open_positions[0].eff_risk - 0.2).abs() < 1e-9);
         // Slot consumed.

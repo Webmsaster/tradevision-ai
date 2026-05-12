@@ -135,7 +135,11 @@ fn main() -> Result<()> {
         .into_par_iter()
         .map(|w| {
             let lo = w * win_size;
-            let hi = if w == windows - 1 { candles.len() } else { (w + 1) * win_size };
+            let hi = if w == windows - 1 {
+                candles.len()
+            } else {
+                (w + 1) * win_size
+            };
             let win_started = Instant::now();
             let mut state = EngineState::initial(&cfg.label);
             let mut bars = 0usize;
@@ -147,7 +151,10 @@ fn main() -> Result<()> {
             atr_feed.insert(symbol.to_string(), Vec::with_capacity(hi - lo));
             for i in lo..hi {
                 feed.get_mut(symbol.as_str()).unwrap().push(candles[i]);
-                atr_feed.get_mut(symbol.as_str()).unwrap().push(atr_series[i]);
+                atr_feed
+                    .get_mut(symbol.as_str())
+                    .unwrap()
+                    .push(atr_series[i]);
                 let signals_for_bar: Vec<PollSignal> = match signals {
                     SignalSrc::None => vec![],
                     SignalSrc::Breakout => {

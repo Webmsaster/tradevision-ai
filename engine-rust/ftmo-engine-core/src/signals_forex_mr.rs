@@ -108,7 +108,12 @@ pub fn detect_forex_mr(
     // RSI confluence.
     if let Some(period) = params.rsi_period {
         let series = rsi(&closes, period);
-        if !rsi_filter_allows(series[i], direction, params.rsi_long_max, params.rsi_short_min) {
+        if !rsi_filter_allows(
+            series[i],
+            direction,
+            params.rsi_long_max,
+            params.rsi_short_min,
+        ) {
             return None;
         }
     }
@@ -154,8 +159,14 @@ pub fn detect_forex_mr(
         return None;
     }
     let (stop_price, tp_price) = match direction {
-        PositionSide::Long => (last.close * (1.0 - stop_pct), last.close * (1.0 + params.tp_pct)),
-        PositionSide::Short => (last.close * (1.0 + stop_pct), last.close * (1.0 - params.tp_pct)),
+        PositionSide::Long => (
+            last.close * (1.0 - stop_pct),
+            last.close * (1.0 + params.tp_pct),
+        ),
+        PositionSide::Short => (
+            last.close * (1.0 + stop_pct),
+            last.close * (1.0 - params.tp_pct),
+        ),
     };
     state.loss_streak_by_asset_dir.insert(
         key,
@@ -234,8 +245,8 @@ mod tests {
         let mut p = ForexMrParams::default_for(&a, &cfg);
         p.rsi_period = None;
         let candles = build_lower_cross();
-        let sig = detect_forex_mr(&mut s, &cfg, &a, "EURUSD", &candles, &p)
-            .expect("signal expected");
+        let sig =
+            detect_forex_mr(&mut s, &cfg, &a, "EURUSD", &candles, &p).expect("signal expected");
         assert_eq!(sig.direction, PositionSide::Short);
     }
 
@@ -247,8 +258,7 @@ mod tests {
         let mut p = ForexMrParams::default_for(&a, &cfg);
         p.rsi_period = None;
         let candles = build_lower_cross();
-        let _ = detect_forex_mr(&mut s, &cfg, &a, "EURUSD", &candles, &p)
-            .expect("first signal");
+        let _ = detect_forex_mr(&mut s, &cfg, &a, "EURUSD", &candles, &p).expect("first signal");
         let again = detect_forex_mr(&mut s, &cfg, &a, "EURUSD", &candles, &p);
         assert!(again.is_none());
     }

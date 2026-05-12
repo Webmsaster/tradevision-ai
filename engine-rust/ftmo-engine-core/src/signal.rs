@@ -30,7 +30,11 @@ pub struct PollSignal {
     pub tp_pct: f64,
     #[serde(rename = "effRisk")]
     pub eff_risk: f64,
-    #[serde(default, rename = "chandelierAtrAtEntry", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "chandelierAtrAtEntry",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub chandelier_atr_at_entry: Option<f64>,
 }
 

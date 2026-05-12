@@ -28,7 +28,10 @@ pub enum LoadOutcome {
     Migrated { from: u32, state: EngineState },
     /// State was missing or unrecoverable; old file was backed up and a
     /// fresh state was synthesised.
-    Reset { backed_up_to: Option<PathBuf>, state: EngineState },
+    Reset {
+        backed_up_to: Option<PathBuf>,
+        state: EngineState,
+    },
 }
 
 /// Compute the canonical state file path for a state directory.
@@ -142,7 +145,10 @@ pub fn load_state_or_reset(state_dir: &Path, cfg_label: &str) -> LoadOutcome {
 
     // Step 3: migrate. Currently we know v1 → v2 (rename) → v3 (rebase).
     match migrate_to_current(value, from_version) {
-        Some(state) => LoadOutcome::Migrated { from: from_version, state },
+        Some(state) => LoadOutcome::Migrated {
+            from: from_version,
+            state,
+        },
         None => {
             let bak = backup_corrupt(&path).ok().flatten();
             LoadOutcome::Reset {
@@ -251,7 +257,10 @@ mod tests {
     fn tempdir() -> PathBuf {
         let mut p = std::env::temp_dir();
         p.push(format!("ftmo_engine_persist_{}", std::process::id()));
-        p.push(format!("{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)));
+        p.push(format!(
+            "{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
         std::fs::create_dir_all(&p).unwrap();
         p
     }
@@ -290,7 +299,10 @@ mod tests {
     fn missing_file_yields_reset() {
         let dir = tempdir();
         match load_state_or_reset(&dir, "x") {
-            LoadOutcome::Reset { backed_up_to, state } => {
+            LoadOutcome::Reset {
+                backed_up_to,
+                state,
+            } => {
                 assert!(backed_up_to.is_none());
                 assert_eq!(state.schema_version, SCHEMA_VERSION);
             }
@@ -350,7 +362,10 @@ mod tests {
         let path = state_path(&dir);
         std::fs::write(&path, b"this is not valid json {{{").unwrap();
         match load_state_or_reset(&dir, "x") {
-            LoadOutcome::Reset { backed_up_to, state } => {
+            LoadOutcome::Reset {
+                backed_up_to,
+                state,
+            } => {
                 assert!(backed_up_to.is_some());
                 assert_eq!(state.schema_version, SCHEMA_VERSION);
             }

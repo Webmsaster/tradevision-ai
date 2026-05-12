@@ -184,7 +184,10 @@ fn run_fixture(fix: &Fixture) {
     }
     if let Some(e) = fix.expected.challenge_ended {
         if r.challenge_ended != e {
-            record(format!("challenge_ended mismatch: rust={} expected={}", r.challenge_ended, e));
+            record(format!(
+                "challenge_ended mismatch: rust={} expected={}",
+                r.challenge_ended, e
+            ));
         }
     }
     if let Some(min) = fix.expected.min_equity_pct {
@@ -199,7 +202,11 @@ fn run_fixture(fix: &Fixture) {
     }
     if let Some(n) = fix.expected.trades_count {
         if state.closed_trades.len() != n {
-            record(format!("trade count: rust={} expected={}", state.closed_trades.len(), n));
+            record(format!(
+                "trade count: rust={} expected={}",
+                state.closed_trades.len(),
+                n
+            ));
         }
     }
     if let Some(reason) = fix.expected.fail_reason.as_deref() {
@@ -213,7 +220,10 @@ fn run_fixture(fix: &Fixture) {
                 .collect::<String>()
         };
         if !norm(&actual).contains(&norm(reason)) {
-            record(format!("fail_reason: rust={:?} expected={:?}", actual, reason));
+            record(format!(
+                "fail_reason: rust={:?} expected={:?}",
+                actual, reason
+            ));
         }
     }
 
@@ -249,8 +259,8 @@ fn run_all_golden_fixtures() {
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let raw = std::fs::read(&path)
-            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        let raw =
+            std::fs::read(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
         let fix: Fixture = serde_json::from_slice(&raw)
             .unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()));
         run_fixture(&fix);

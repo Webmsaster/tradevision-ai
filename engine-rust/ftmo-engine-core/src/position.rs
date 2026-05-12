@@ -67,7 +67,11 @@ pub struct OpenPosition {
     /// Round 58 (Critical Fix #2): most-recent close observed for this asset.
     /// Used as a safe fallback in end-of-window force-close when no candle
     /// is available on the final bar.
-    #[serde(default, rename = "lastKnownPrice", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "lastKnownPrice",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub last_known_price: Option<f64>,
     /// Per-position trailing-stop arming flag. Mirrors `trailActive` in
     /// `ftmoDaytrade24h.ts:4498`. Flips once unrealised >= `cfg.trailing_stop.activate_pct`.

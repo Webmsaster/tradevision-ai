@@ -133,7 +133,11 @@ pub fn atr(candles: &[Candle], period: usize) -> Vec<Option<f64>> {
         .map(|(i, c)| {
             if i == 0 {
                 let r = c.high - c.low;
-                if r.is_finite() { r } else { f64::NAN }
+                if r.is_finite() {
+                    r
+                } else {
+                    f64::NAN
+                }
             } else {
                 let prev_close = candles[i - 1].close;
                 if !c.high.is_finite() || !c.low.is_finite() || !prev_close.is_finite() {
@@ -223,7 +227,9 @@ mod tests {
 
     #[test]
     fn atr_too_short_returns_all_none() {
-        let candles: Vec<Candle> = (0..5).map(|i| c(i as f64, i as f64 + 1.0, i as f64, i as f64 + 0.5)).collect();
+        let candles: Vec<Candle> = (0..5)
+            .map(|i| c(i as f64, i as f64 + 1.0, i as f64, i as f64 + 0.5))
+            .collect();
         let a = atr(&candles, 14);
         assert!(a.iter().all(Option::is_none));
     }
@@ -237,8 +243,8 @@ mod tests {
         let v = a[14].expect("seed defined at index period");
         assert!((v - 1.0).abs() < 1e-9);
         // Wilder smoothing converges to TR — every later sample must equal 1.0.
-        for i in 15..30 {
-            assert!((a[i].unwrap() - 1.0).abs() < 1e-9);
+        for sample in a.iter().take(30).skip(15) {
+            assert!((sample.unwrap() - 1.0).abs() < 1e-9);
         }
     }
 

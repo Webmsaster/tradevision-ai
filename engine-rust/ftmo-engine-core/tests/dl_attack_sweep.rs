@@ -47,10 +47,9 @@ fn run_with_override(fix: &Fixture, ov: &ConfigOverride) -> bool {
     cfg.daily_peak_trailing_stop = Some(PeakTrailingStop {
         trail_distance: ov.trail,
     });
-    cfg.peak_drawdown_throttle = ov.pdt.map(|(from_peak, factor)| PeakDrawdownThrottle {
-        from_peak,
-        factor,
-    });
+    cfg.peak_drawdown_throttle = ov
+        .pdt
+        .map(|(from_peak, factor)| PeakDrawdownThrottle { from_peak, factor });
     let mut state = EngineState::initial(&cfg.label);
     let n_bars = fix
         .bars_by_source
@@ -138,7 +137,8 @@ fn round66_dl_attack_sweep() {
     let mut configs: Vec<ConfigOverride> = Vec::new();
     for &trail in &trails {
         for (pdt_name, pdt) in &pdts {
-            let label: &'static str = Box::leak(format!("trail={trail:.3}_pdt={pdt_name}").into_boxed_str());
+            let label: &'static str =
+                Box::leak(format!("trail={trail:.3}_pdt={pdt_name}").into_boxed_str());
             configs.push(ConfigOverride {
                 label,
                 trail,
@@ -183,18 +183,25 @@ fn round66_dl_attack_sweep() {
                 pass += 1;
             }
         }
-        results.push((ov.label.to_string(), ov.trail, ov.pdt.map(|_| match (ov.pdt.unwrap().0, ov.pdt.unwrap().1) {
-            (0.03, 0.3) => "0.03/0.3",
-            (0.04, 0.2) => "0.04/0.2",
-            (0.04, 0.15) => "0.04/0.15",
-            _ => "?",
-        }).unwrap_or("none"), pass));
+        results.push((
+            ov.label.to_string(),
+            ov.trail,
+            ov.pdt
+                .map(|_| match (ov.pdt.unwrap().0, ov.pdt.unwrap().1) {
+                    (0.03, 0.3) => "0.03/0.3",
+                    (0.04, 0.2) => "0.04/0.2",
+                    (0.04, 0.15) => "0.04/0.15",
+                    _ => "?",
+                })
+                .unwrap_or("none"),
+            pass,
+        ));
     }
     let elapsed = t0.elapsed();
 
     // Sort by pass count
     let mut sorted = results.clone();
-    sorted.sort_by(|a, b| b.3.cmp(&a.3));
+    sorted.sort_by_key(|r| std::cmp::Reverse(r.3));
 
     eprintln!();
     eprintln!(

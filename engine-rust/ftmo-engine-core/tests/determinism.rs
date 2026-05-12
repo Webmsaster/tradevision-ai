@@ -90,7 +90,12 @@ fn run_once(seed: u64) -> (f64, usize, u32, u64) {
             break;
         }
     }
-    (state.equity, state.closed_trades.len(), state.day, state.bars_seen)
+    (
+        state.equity,
+        state.closed_trades.len(),
+        state.day,
+        state.bars_seen,
+    )
 }
 
 #[test]
@@ -99,8 +104,16 @@ fn same_seed_identical_output_across_runs() {
     let (e1, t1, d1, b1) = run_once(seed);
     let (e2, t2, d2, b2) = run_once(seed);
     let (e3, t3, d3, b3) = run_once(seed);
-    assert_eq!(e1.to_bits(), e2.to_bits(), "equity not bit-identical run 1↔2");
-    assert_eq!(e2.to_bits(), e3.to_bits(), "equity not bit-identical run 2↔3");
+    assert_eq!(
+        e1.to_bits(),
+        e2.to_bits(),
+        "equity not bit-identical run 1↔2"
+    );
+    assert_eq!(
+        e2.to_bits(),
+        e3.to_bits(),
+        "equity not bit-identical run 2↔3"
+    );
     assert_eq!((t1, d1, b1), (t2, d2, b2));
     assert_eq!((t2, d2, b2), (t3, d3, b3));
 }

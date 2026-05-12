@@ -270,6 +270,8 @@ mod tests {
         let candles: Vec<Candle> = (0..30)
             .map(|i| Candle::new(i as i64 * 1800_000, 100.0, 100.5, 99.5, 100.0, 0.0))
             .collect();
-        assert!(detect_mean_reversion(&mut s, &cfg(), &asset(), "BTCUSDT", &candles, &src()).is_none());
+        assert!(
+            detect_mean_reversion(&mut s, &cfg(), &asset(), "BTCUSDT", &candles, &src()).is_none()
+        );
     }
 }

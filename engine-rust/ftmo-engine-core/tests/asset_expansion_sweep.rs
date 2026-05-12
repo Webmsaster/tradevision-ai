@@ -31,8 +31,8 @@ struct CandleRaw {
 }
 
 const BASE_BASKET: &[&str] = &[
-    "BTCUSDT", "ETHUSDT", "BNBUSDT", "ADAUSDT", "LTCUSDT",
-    "BCHUSDT", "ETCUSDT", "XRPUSDT", "AAVEUSDT",
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "ADAUSDT", "LTCUSDT", "BCHUSDT", "ETCUSDT", "XRPUSDT",
+    "AAVEUSDT",
 ];
 const CANDIDATES: &[&str] = &["SOLUSDT", "DOGEUSDT", "LINKUSDT", "AVAXUSDT", "RUNEUSDT"];
 
@@ -78,7 +78,11 @@ fn align_basket(symbols: &[&str]) -> HashMap<String, Vec<Candle>> {
     let common = common.unwrap();
     let mut aligned: HashMap<String, Vec<Candle>> = HashMap::new();
     for (k, v) in data.iter() {
-        let filtered: Vec<Candle> = v.iter().filter(|c| common.contains(&c.open_time)).copied().collect();
+        let filtered: Vec<Candle> = v
+            .iter()
+            .filter(|c| common.contains(&c.open_time))
+            .copied()
+            .collect();
         aligned.insert(k.clone(), filtered);
     }
     aligned
@@ -126,9 +130,7 @@ fn run_window(
 ) -> bool {
     let mut state = EngineState::initial(&cfg.label);
     let lo = start_bar.saturating_sub(warmup);
-    let hi = (start_bar + win_bars).min(
-        aligned.values().map(|v| v.len()).min().unwrap_or(0),
-    );
+    let hi = (start_bar + win_bars).min(aligned.values().map(|v| v.len()).min().unwrap_or(0));
     let mut feeds: HashMap<String, Vec<Candle>> = HashMap::new();
     let mut atr_feeds: HashMap<String, Vec<Option<f64>>> = HashMap::new();
     for k in aligned.keys() {
@@ -173,27 +175,21 @@ fn run_window(
                 None => continue,
             };
             // 4h HTF closes = every 8th 30m bar
-            let htf_closes: Vec<f64> = candles
-                .iter()
-                .step_by(8)
-                .map(|c| c.close)
-                .collect();
+            let htf_closes: Vec<f64> = candles.iter().step_by(8).map(|c| c.close).collect();
             let inputs = R28V6Inputs {
                 htf_closes: Some(&htf_closes),
-                cross_asset_closes: if src == "BTCUSDT" { None } else { Some(&btc_closes) },
+                cross_asset_closes: if src == "BTCUSDT" {
+                    None
+                } else {
+                    Some(&btc_closes)
+                },
                 news_events: None,
                 funding_series: None,
             };
             let mut state_clone = state.clone();
-            if let Some(s) = detect_r28_v6(
-                &mut state_clone,
-                cfg,
-                asset,
-                src,
-                candles,
-                params,
-                &inputs,
-            ) {
+            if let Some(s) =
+                detect_r28_v6(&mut state_clone, cfg, asset, src, candles, params, &inputs)
+            {
                 signals.push(s);
             }
         }
@@ -256,7 +252,11 @@ fn round67_asset_expansion_greedy() {
     // Baseline: 9 base assets
     let mut basket: Vec<&str> = BASE_BASKET.to_vec();
     let (bp, bt) = evaluate_basket(&basket);
-    let baseline_rate = if bt > 0 { (bp as f64) / (bt as f64) * 100.0 } else { 0.0 };
+    let baseline_rate = if bt > 0 {
+        (bp as f64) / (bt as f64) * 100.0
+    } else {
+        0.0
+    };
     eprintln!();
     eprintln!("=== Round 67 Asset-Expansion (Rust pure) ===");
     eprintln!();
@@ -279,7 +279,11 @@ fn round67_asset_expansion_greedy() {
             let mut trial = basket.clone();
             trial.push(cand);
             let (p, t) = evaluate_basket(&trial);
-            let rate = if t > 0 { (p as f64) / (t as f64) * 100.0 } else { 0.0 };
+            let rate = if t > 0 {
+                (p as f64) / (t as f64) * 100.0
+            } else {
+                0.0
+            };
             eprintln!(
                 "  + {cand:<10} → {} assets: {p}/{t} = {rate:.2}%  Δ {:+.2}pp",
                 trial.len(),
@@ -319,6 +323,9 @@ fn round67_asset_expansion_greedy() {
         current_rate,
         basket.join(", ")
     );
-    eprintln!("Δ vs 9-asset baseline: {:+.2}pp", current_rate - baseline_rate);
+    eprintln!(
+        "Δ vs 9-asset baseline: {:+.2}pp",
+        current_rate - baseline_rate
+    );
     eprintln!("elapsed: {:.2}s", elapsed.as_secs_f64());
 }

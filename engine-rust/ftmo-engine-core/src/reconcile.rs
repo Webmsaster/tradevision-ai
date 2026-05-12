@@ -44,10 +44,9 @@ pub fn load_offline_closures(state_dir: &Path) -> Result<Vec<OfflineClosure>> {
     if !path.exists() {
         return Ok(vec![]);
     }
-    let raw = std::fs::read(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let v: Vec<OfflineClosure> = serde_json::from_slice(&raw)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let raw = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    let v: Vec<OfflineClosure> =
+        serde_json::from_slice(&raw).with_context(|| format!("parsing {}", path.display()))?;
     Ok(v)
 }
 
@@ -103,9 +102,10 @@ pub fn ingest_offline_closures(
             entry_day: entry_day_idx,
         };
         if cfg.kelly_sizing.is_some() {
-            state
-                .kelly_pnls
-                .push(KellyPnl { close_time: c.exit_time, eff_pnl: pnl.eff_pnl });
+            state.kelly_pnls.push(KellyPnl {
+                close_time: c.exit_time,
+                eff_pnl: pnl.eff_pnl,
+            });
         }
         state.closed_trades.push(trade);
         applied += 1;

@@ -135,14 +135,8 @@ pub fn detect_trend_pullback(
         return None;
     }
     let (stop_price, tp_price) = match direction {
-        PositionSide::Long => (
-            last.close * (1.0 - stop_pct),
-            last.close * (1.0 + tp_pct),
-        ),
-        PositionSide::Short => (
-            last.close * (1.0 + stop_pct),
-            last.close * (1.0 - tp_pct),
-        ),
+        PositionSide::Long => (last.close * (1.0 - stop_pct), last.close * (1.0 + tp_pct)),
+        PositionSide::Short => (last.close * (1.0 + stop_pct), last.close * (1.0 - tp_pct)),
     };
 
     // ChandelierATR-at-entry passes through if cfg.chandelier_exit is on.

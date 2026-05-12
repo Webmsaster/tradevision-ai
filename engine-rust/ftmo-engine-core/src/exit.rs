@@ -207,7 +207,10 @@ pub fn process_position_exit_with_held(
             let tp_hit = candle.high >= pos.tp_price;
             let gap_past_tp = candle.open >= pos.tp_price;
             if tp_hit && gap_past_tp {
-                return Some(ExitOutcome { exit_price: candle.open, reason: ExitReason::Tp });
+                return Some(ExitOutcome {
+                    exit_price: candle.open,
+                    reason: ExitReason::Tp,
+                });
             }
             if stop_hit {
                 let exit_price = if candle.open < pos.stop_price {
@@ -215,10 +218,16 @@ pub fn process_position_exit_with_held(
                 } else {
                     pos.stop_price
                 };
-                return Some(ExitOutcome { exit_price, reason: ExitReason::Stop });
+                return Some(ExitOutcome {
+                    exit_price,
+                    reason: ExitReason::Stop,
+                });
             }
             if tp_hit {
-                return Some(ExitOutcome { exit_price: pos.tp_price, reason: ExitReason::Tp });
+                return Some(ExitOutcome {
+                    exit_price: pos.tp_price,
+                    reason: ExitReason::Tp,
+                });
             }
         }
         PositionSide::Short => {
@@ -226,7 +235,10 @@ pub fn process_position_exit_with_held(
             let tp_hit = candle.low <= pos.tp_price;
             let gap_past_tp = candle.open <= pos.tp_price;
             if tp_hit && gap_past_tp {
-                return Some(ExitOutcome { exit_price: candle.open, reason: ExitReason::Tp });
+                return Some(ExitOutcome {
+                    exit_price: candle.open,
+                    reason: ExitReason::Tp,
+                });
             }
             if stop_hit {
                 let exit_price = if candle.open > pos.stop_price {
@@ -234,10 +246,16 @@ pub fn process_position_exit_with_held(
                 } else {
                     pos.stop_price
                 };
-                return Some(ExitOutcome { exit_price, reason: ExitReason::Stop });
+                return Some(ExitOutcome {
+                    exit_price,
+                    reason: ExitReason::Stop,
+                });
             }
             if tp_hit {
-                return Some(ExitOutcome { exit_price: pos.tp_price, reason: ExitReason::Tp });
+                return Some(ExitOutcome {
+                    exit_price: pos.tp_price,
+                    reason: ExitReason::Tp,
+                });
             }
         }
     }
@@ -292,7 +310,10 @@ pub fn process_position_exit_with_held(
             .and_then(|a| a.hold_bars)
             .unwrap_or(cfg.hold_bars) as u64;
         if hold_limit > 0 && bars_held >= hold_limit {
-            return Some(ExitOutcome { exit_price: candle.close, reason: ExitReason::Time });
+            return Some(ExitOutcome {
+                exit_price: candle.close,
+                reason: ExitReason::Time,
+            });
         }
     }
     None
@@ -392,7 +413,10 @@ mod tests {
     #[test]
     fn long_same_bar_ptp_and_stop_stop_wins_without_gap() {
         let mut cfg = base_cfg();
-        cfg.partial_take_profit = Some(PartialTakeProfit { trigger_pct: 0.02, close_fraction: 0.5 });
+        cfg.partial_take_profit = Some(PartialTakeProfit {
+            trigger_pct: 0.02,
+            close_fraction: 0.5,
+        });
         let mut p = long_pos(100.0);
         // Wick up to PTP at 102, then down to stop at 98. Bar open between PTP and stop.
         let c = bar(101.0, 102.5, 97.5, 98.5);
@@ -406,7 +430,10 @@ mod tests {
     #[test]
     fn long_ptp_with_gap_past_ptp_fires_then_continues() {
         let mut cfg = base_cfg();
-        cfg.partial_take_profit = Some(PartialTakeProfit { trigger_pct: 0.02, close_fraction: 0.5 });
+        cfg.partial_take_profit = Some(PartialTakeProfit {
+            trigger_pct: 0.02,
+            close_fraction: 0.5,
+        });
         let mut p = long_pos(100.0);
         // Open at 102.5 (gap past PTP=102), low to 98 (stop). PTP fires first → BE → stop at 100 (BE).
         let c = bar(102.5, 103.0, 98.0, 99.5);
@@ -447,7 +474,11 @@ mod tests {
     #[test]
     fn chandelier_trails_stop_after_min_move_r() {
         let mut cfg = base_cfg();
-        cfg.chandelier_exit = Some(ChandelierExit { period: 14, mult: 2.0, min_move_r: Some(0.5) });
+        cfg.chandelier_exit = Some(ChandelierExit {
+            period: 14,
+            mult: 2.0,
+            min_move_r: Some(0.5),
+        });
         let mut p = long_pos(100.0);
         // High-watermark moves to 103 (= 1.5R move), ATR=0.5 → trail dist 1.0
         // → new stop = 103 - 1.0 = 102. Bar low must stay above the new stop
@@ -463,9 +494,18 @@ mod tests {
     fn multi_level_ptp_fires_levels_in_order() {
         let mut cfg = base_cfg();
         cfg.partial_take_profit_levels = Some(vec![
-            PartialTakeProfitLevel { trigger_pct: 0.01, close_fraction: 0.25 },
-            PartialTakeProfitLevel { trigger_pct: 0.02, close_fraction: 0.25 },
-            PartialTakeProfitLevel { trigger_pct: 0.03, close_fraction: 0.25 },
+            PartialTakeProfitLevel {
+                trigger_pct: 0.01,
+                close_fraction: 0.25,
+            },
+            PartialTakeProfitLevel {
+                trigger_pct: 0.02,
+                close_fraction: 0.25,
+            },
+            PartialTakeProfitLevel {
+                trigger_pct: 0.03,
+                close_fraction: 0.25,
+            },
         ]);
         let mut p = long_pos(100.0);
         // Bar runs through levels 1 + 2 (high=102.5) but not 3 (would need 103).
@@ -481,7 +521,10 @@ mod tests {
         // R67-r17 invariants: BE auto-shift + chandelier reset.
         assert!(p.be_active, "BE should be activated after partial realise");
         assert_eq!(p.stop_price, 100.0, "stop pushed to BE = entry");
-        assert_eq!(p.high_watermark, 102.0, "highWatermark reset to candle.close");
+        assert_eq!(
+            p.high_watermark, 102.0,
+            "highWatermark reset to candle.close"
+        );
     }
 
     #[test]
@@ -491,8 +534,14 @@ mod tests {
         // single-tier branch + backtest 4228 conservatism).
         let mut cfg = base_cfg();
         cfg.partial_take_profit_levels = Some(vec![
-            PartialTakeProfitLevel { trigger_pct: 0.01, close_fraction: 0.25 },
-            PartialTakeProfitLevel { trigger_pct: 0.02, close_fraction: 0.25 },
+            PartialTakeProfitLevel {
+                trigger_pct: 0.01,
+                close_fraction: 0.25,
+            },
+            PartialTakeProfitLevel {
+                trigger_pct: 0.02,
+                close_fraction: 0.25,
+            },
         ]);
         let mut p = long_pos(100.0);
         // Open between PTP and stop, wick to 102 (lvl 2 trigger), low to 98 (stop).
@@ -509,8 +558,14 @@ mod tests {
         // also being hit. Lvl 2 wick happens but no gap → lvl 2 NOT realised.
         let mut cfg = base_cfg();
         cfg.partial_take_profit_levels = Some(vec![
-            PartialTakeProfitLevel { trigger_pct: 0.01, close_fraction: 0.25 },
-            PartialTakeProfitLevel { trigger_pct: 0.02, close_fraction: 0.25 },
+            PartialTakeProfitLevel {
+                trigger_pct: 0.01,
+                close_fraction: 0.25,
+            },
+            PartialTakeProfitLevel {
+                trigger_pct: 0.02,
+                close_fraction: 0.25,
+            },
         ]);
         let mut p = long_pos(100.0);
         // Gap-up open at 101.5 (>101 lvl1 trigger, <102 lvl2 trigger),
@@ -519,12 +574,18 @@ mod tests {
         let r = process_position_exit(&mut p, &c, &cfg, None).unwrap();
         // Lvl 1 realises (gap past), lvl 2 blocked by stop-guard.
         assert_eq!(p.ptp_level_idx, 1);
-        assert!((p.ptp_levels_realized - 0.0025).abs() < 1e-12, "0.25 × 0.01 = 0.0025");
+        assert!(
+            (p.ptp_levels_realized - 0.0025).abs() < 1e-12,
+            "0.25 × 0.01 = 0.0025"
+        );
         // BE shift activated → stop now 100. Candle.low=98 → cross fires at BE.
         assert!(p.be_active);
         assert_eq!(p.stop_price, 100.0);
         assert_eq!(r.reason, ExitReason::Stop);
-        assert!((r.exit_price - 100.0).abs() < 1e-9, "exit at BE, not orig stop");
+        assert!(
+            (r.exit_price - 100.0).abs() < 1e-9,
+            "exit at BE, not orig stop"
+        );
     }
 
     #[test]
@@ -542,7 +603,10 @@ mod tests {
         // Long: entry=100, activatePct=3%. Bar closes at 103 → trail arms,
         // trail_peak=103, trail_stop = 103 × (1 − 0.005) = 102.485.
         let mut cfg = base_cfg();
-        cfg.trailing_stop = Some(TrailingStop { activate_pct: 0.03, trail_pct: 0.005 });
+        cfg.trailing_stop = Some(TrailingStop {
+            activate_pct: 0.03,
+            trail_pct: 0.005,
+        });
         let mut p = long_pos(100.0);
         // Bar low must stay strictly above the new stop so we observe arming
         // without triggering the cross.
@@ -557,7 +621,10 @@ mod tests {
     #[test]
     fn trailing_stop_does_not_arm_below_threshold() {
         let mut cfg = base_cfg();
-        cfg.trailing_stop = Some(TrailingStop { activate_pct: 0.03, trail_pct: 0.005 });
+        cfg.trailing_stop = Some(TrailingStop {
+            activate_pct: 0.03,
+            trail_pct: 0.005,
+        });
         let mut p = long_pos(100.0);
         // Close at 102 = +2% favourable, below 3% threshold.
         let c = bar(101.5, 102.2, 101.0, 102.0);
@@ -571,7 +638,10 @@ mod tests {
     fn trailing_stop_only_tightens_long() {
         // After arming at 103, a lower close (102) must NOT lower the stop.
         let mut cfg = base_cfg();
-        cfg.trailing_stop = Some(TrailingStop { activate_pct: 0.03, trail_pct: 0.005 });
+        cfg.trailing_stop = Some(TrailingStop {
+            activate_pct: 0.03,
+            trail_pct: 0.005,
+        });
         let mut p = long_pos(100.0);
         let c1 = bar(102.0, 103.5, 102.6, 103.0);
         process_position_exit(&mut p, &c1, &cfg, None);
@@ -581,8 +651,14 @@ mod tests {
         let c2 = bar(102.9, 103.2, 102.6, 102.8);
         let r = process_position_exit(&mut p, &c2, &cfg, None);
         assert!(r.is_none());
-        assert!((p.trail_peak - 103.0).abs() < 1e-9, "peak unchanged on lower close");
-        assert!((p.stop_price - stop_after_arm).abs() < 1e-9, "stop monotone");
+        assert!(
+            (p.trail_peak - 103.0).abs() < 1e-9,
+            "peak unchanged on lower close"
+        );
+        assert!(
+            (p.stop_price - stop_after_arm).abs() < 1e-9,
+            "stop monotone"
+        );
     }
 
     #[test]
@@ -590,7 +666,10 @@ mod tests {
         // Short: entry=100, close=97 → unrealised +3%, arms. trail_peak=97,
         // trail_stop = 97 × 1.005 = 97.485.
         let mut cfg = base_cfg();
-        cfg.trailing_stop = Some(TrailingStop { activate_pct: 0.03, trail_pct: 0.005 });
+        cfg.trailing_stop = Some(TrailingStop {
+            activate_pct: 0.03,
+            trail_pct: 0.005,
+        });
         let mut p = short_pos(100.0);
         // Bar high must stay strictly BELOW the new stop so cross doesn't fire.
         let c = bar(98.0, 97.4, 96.5, 97.0);

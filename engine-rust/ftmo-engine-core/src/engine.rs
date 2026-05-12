@@ -63,12 +63,18 @@ mod tests {
     fn single_bar_input_does_not_pass() {
         let cfg = EngineConfig::r28_v6_passlock_template();
         let mut bars = BTreeMap::new();
-        let ts = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap().timestamp_millis();
+        let ts = Utc
+            .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+            .unwrap()
+            .timestamp_millis();
         bars.insert(
             "BTCUSDT".to_string(),
             vec![Candle::new(ts, 100.0, 101.0, 99.0, 100.5, 1000.0)],
         );
-        let r = run_window(WindowInput { config: &cfg, bars_by_symbol: bars });
+        let r = run_window(WindowInput {
+            config: &cfg,
+            bars_by_symbol: bars,
+        });
         assert!(!r.passed);
     }
 }

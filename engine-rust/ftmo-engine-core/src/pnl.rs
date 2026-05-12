@@ -45,7 +45,10 @@ pub fn compute_eff_pnl_with_time(
     // which propagates into state.equity and silently disables all failure
     // checks (NaN comparisons return false → challenge never ends).
     if !(pos.entry_price.is_finite()) || pos.entry_price <= 0.0 {
-        return EffPnl { raw_pnl: 0.0, eff_pnl: 0.0 };
+        return EffPnl {
+            raw_pnl: 0.0,
+            eff_pnl: 0.0,
+        };
     }
     // R29-Audit-Round1-A1.1: same guard for exit_price. A NaN/negative exit
     // price (e.g. stale last_known_price persisted from a corrupt feed)
@@ -55,7 +58,10 @@ pub fn compute_eff_pnl_with_time(
     // drift. Early-out with zero PnL matches TS-engine `if (!isFinite(...))
     // continue` short-circuits elsewhere.
     if !(exit_price.is_finite()) || exit_price <= 0.0 {
-        return EffPnl { raw_pnl: 0.0, eff_pnl: 0.0 };
+        return EffPnl {
+            raw_pnl: 0.0,
+            eff_pnl: 0.0,
+        };
     }
     let mut raw_pnl = match pos.direction {
         PositionSide::Long => (exit_price - pos.entry_price) / pos.entry_price,
@@ -129,8 +135,7 @@ pub fn compute_eff_pnl_with_time(
     // into a +150% R "gain" silently. The PnL itself uses raw eff_risk for
     // parity with TS, the floor is the defensive clamp.
     let risk_for_floor = pos.eff_risk.max(0.0);
-    let eff_pnl =
-        (raw_pnl * cfg.leverage * pos.eff_risk).max(GAP_TAIL_MULT * risk_for_floor);
+    let eff_pnl = (raw_pnl * cfg.leverage * pos.eff_risk).max(GAP_TAIL_MULT * risk_for_floor);
     EffPnl { raw_pnl, eff_pnl }
 }
 
@@ -196,7 +201,11 @@ pub fn compute_mtm_equity(
 /// Inline trim — bound `kelly_pnls` and `closed_trades` between saves.
 /// Mirrors `trimInline()` in the TS engine.
 pub fn trim_inline(state: &mut EngineState, cfg: &EngineConfig) {
-    let kelly_window = cfg.kelly_sizing.as_ref().map(|k| k.window_size).unwrap_or(100);
+    let kelly_window = cfg
+        .kelly_sizing
+        .as_ref()
+        .map(|k| k.window_size)
+        .unwrap_or(100);
     let kelly_cap = (kelly_window as usize * 4).max(500);
     if state.kelly_pnls.len() > kelly_cap {
         let drop = state.kelly_pnls.len() - kelly_cap;
@@ -227,8 +236,16 @@ mod tests {
             entry_time: 0,
             entry_price: entry,
             initial_stop_pct: 0.02,
-            stop_price: if direction == PositionSide::Long { entry * 0.98 } else { entry * 1.02 },
-            tp_price: if direction == PositionSide::Long { entry * 1.04 } else { entry * 0.96 },
+            stop_price: if direction == PositionSide::Long {
+                entry * 0.98
+            } else {
+                entry * 1.02
+            },
+            tp_price: if direction == PositionSide::Long {
+                entry * 1.04
+            } else {
+                entry * 0.96
+            },
             eff_risk: 0.4,
             entry_bar_idx: 0,
             high_watermark: entry,
@@ -324,8 +341,8 @@ mod tests {
         let mut pos = make_pos(PositionSide::Long, 100.0);
         pos.ptp_triggered = true;
         pos.ptp_realized_pct = 0.5 * 0.02; // 50% closed at +2%
-        // raw blend: 0.01 + 0.5 × 0.04 = 0.03; minus 10bp/10000 × 2 × 0.5 = 0.001
-        // → raw 0.029, eff = 0.029 × 2 × 0.4 = 0.0232
+                                           // raw blend: 0.01 + 0.5 × 0.04 = 0.03; minus 10bp/10000 × 2 × 0.5 = 0.001
+                                           // → raw 0.029, eff = 0.029 × 2 × 0.4 = 0.0232
         let r = compute_eff_pnl(&pos, 104.0, &cfg);
         assert!((r.raw_pnl - 0.029).abs() < 1e-12, "raw_pnl={}", r.raw_pnl);
         assert!((r.eff_pnl - 0.0232).abs() < 1e-12);
@@ -397,7 +414,7 @@ mod tests {
         let mut pos = make_pos(PositionSide::Long, 100.0);
         pos.ptp_triggered = true;
         pos.ptp_realized_pct = 0.5 * 0.02; // 50% closed at +2%
-        // Remainder runs to 104 → raw remainder 4% × 50% = 0.02; total = 0.01 + 0.02 = 0.03
+                                           // Remainder runs to 104 → raw remainder 4% × 50% = 0.02; total = 0.01 + 0.02 = 0.03
         let r = compute_eff_pnl(&pos, 104.0, &cfg);
         assert!((r.raw_pnl - 0.03).abs() < 1e-9);
         // effPnl = 0.03 × 2 × 0.4 = 0.024
@@ -438,7 +455,7 @@ mod tests {
         pos.last_known_price = Some(50.0); // would imply -50% unrealised loss
         state.open_positions.push(pos);
         let prices = HashMap::new(); // no current price
-        // Without fallback, MTM unchanged (skips position).
+                                     // Without fallback, MTM unchanged (skips position).
         assert_eq!(compute_mtm_equity(&mut state, &prices, &cfg), state.equity);
     }
 
@@ -446,7 +463,9 @@ mod tests {
     fn mtm_equity_skips_when_no_price_for_symbol() {
         let cfg = base_cfg();
         let mut state = EngineState::initial("x");
-        state.open_positions.push(make_pos(PositionSide::Long, 100.0));
+        state
+            .open_positions
+            .push(make_pos(PositionSide::Long, 100.0));
         let prices = HashMap::new(); // no price for BTCUSDT
         assert_eq!(compute_mtm_equity(&mut state, &prices, &cfg), state.equity);
     }

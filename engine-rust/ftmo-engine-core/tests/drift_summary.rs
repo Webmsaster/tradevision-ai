@@ -34,6 +34,7 @@ struct Expected {
     #[serde(default)]
     ts_final_equity_pct: Option<f64>,
     #[serde(default)]
+    #[allow(dead_code)]
     ts_reason: Option<String>,
     #[serde(default)]
     passed: Option<bool>,

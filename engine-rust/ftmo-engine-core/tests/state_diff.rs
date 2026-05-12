@@ -65,7 +65,10 @@ fn find_first_divergence() {
         }
     };
     if !path.exists() {
-        eprintln!("[state_diff] fixture {} not found — skipping", path.display());
+        eprintln!(
+            "[state_diff] fixture {} not found — skipping",
+            path.display()
+        );
         return;
     }
     let raw = std::fs::read(&path).unwrap();
@@ -150,31 +153,45 @@ fn find_first_divergence() {
             if i < fix.warmup + trace_through {
                 eprintln!(
                     "  bar {} → TS: eq={:.6} mtm={:.6} dayPeak={:.6} open={} ts_signal={}",
-                    i, ts.equity, ts.mtm_equity, ts.day_peak, ts.open_count,
+                    i,
+                    ts.equity,
+                    ts.mtm_equity,
+                    ts.day_peak,
+                    ts.open_count,
                     fix.signals_by_bar.contains_key(&i.to_string())
                 );
                 eprintln!(
                     "          Rust: eq={:.6} mtm={:.6} dayPeak={:.6} open={} closed={}",
-                    state.equity, state.mtm_equity, state.day_peak, state.open_positions.len(), state.closed_trades.len()
+                    state.equity,
+                    state.mtm_equity,
+                    state.day_peak,
+                    state.open_positions.len(),
+                    state.closed_trades.len()
                 );
             }
             let mut diffs: Vec<String> = Vec::new();
             if !approx_eq(ts.equity, state.equity) {
                 diffs.push(format!(
                     "equity:    ts={:.10} rust={:.10} Δ={:+.10}",
-                    ts.equity, state.equity, state.equity - ts.equity
+                    ts.equity,
+                    state.equity,
+                    state.equity - ts.equity
                 ));
             }
             if !approx_eq(ts.mtm_equity, state.mtm_equity) {
                 diffs.push(format!(
                     "mtm:       ts={:.10} rust={:.10} Δ={:+.10}",
-                    ts.mtm_equity, state.mtm_equity, state.mtm_equity - ts.mtm_equity
+                    ts.mtm_equity,
+                    state.mtm_equity,
+                    state.mtm_equity - ts.mtm_equity
                 ));
             }
             if !approx_eq(ts.day_peak, state.day_peak) {
                 diffs.push(format!(
                     "dayPeak:   ts={:.10} rust={:.10} Δ={:+.10}",
-                    ts.day_peak, state.day_peak, state.day_peak - ts.day_peak
+                    ts.day_peak,
+                    state.day_peak,
+                    state.day_peak - ts.day_peak
                 ));
             }
             if !approx_eq(ts.challenge_peak, state.challenge_peak) {
@@ -236,7 +253,13 @@ fn find_first_divergence() {
                     let p = &state.open_positions[0];
                     eprintln!(
                         "  symbol={} dir={:?} entry_price={} stop={} tp={} eff_risk={} bar_idx={}",
-                        p.symbol, p.direction, p.entry_price, p.stop_price, p.tp_price, p.eff_risk, p.entry_bar_idx
+                        p.symbol,
+                        p.direction,
+                        p.entry_price,
+                        p.stop_price,
+                        p.tp_price,
+                        p.eff_risk,
+                        p.entry_bar_idx
                     );
                     eprintln!(
                         "  high_watermark={} ptp_triggered={} ptp_realized_pct={}",

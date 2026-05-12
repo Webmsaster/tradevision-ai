@@ -51,8 +51,14 @@ pub fn detect_breakout(
     let i = candles.len() - 1;
     let last = candles[i];
     let lo = i - params.lookback;
-    let max_high = candles[lo..i].iter().map(|c| c.high).fold(f64::MIN, f64::max);
-    let min_low = candles[lo..i].iter().map(|c| c.low).fold(f64::MAX, f64::min);
+    let max_high = candles[lo..i]
+        .iter()
+        .map(|c| c.high)
+        .fold(f64::MIN, f64::max);
+    let min_low = candles[lo..i]
+        .iter()
+        .map(|c| c.low)
+        .fold(f64::MAX, f64::min);
 
     let direction = if last.close > max_high {
         PositionSide::Long
@@ -158,7 +164,7 @@ mod tests {
         let a = asset();
         let p = BreakoutParams::from_cfg(&cfg, &a);
         let mut candles = ramp(10, 100.0, 0.5); // rising
-        // Force last close strictly above max(high[..-1])
+                                                // Force last close strictly above max(high[..-1])
         let last = candles.last_mut().unwrap();
         last.close = last.high + 5.0;
         let sig = detect_breakout(&mut s, &cfg, &a, "BTCUSDT", &candles, &p).unwrap();
@@ -187,7 +193,10 @@ mod tests {
     fn skips_when_stop_pct_exceeds_live_cap() {
         let mut s = EngineState::initial("x");
         let mut cfg = cfg();
-        cfg.live_caps = Some(crate::config::LiveCaps { max_stop_pct: 0.01, max_risk_frac: 0.4 });
+        cfg.live_caps = Some(crate::config::LiveCaps {
+            max_stop_pct: 0.01,
+            max_risk_frac: 0.4,
+        });
         let a = asset();
         let mut p = BreakoutParams::from_cfg(&cfg, &a);
         p.stop_pct = 0.05; // above cap

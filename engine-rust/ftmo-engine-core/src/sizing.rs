@@ -33,7 +33,7 @@ pub fn resolve_sizing_factor(
     if let Some(tiers) = cfg.day_progressive_sizing.as_ref() {
         if !tiers.is_empty() {
             let mut sorted: Vec<_> = tiers.clone();
-            sorted.sort_by(|a, b| b.day_at_least.cmp(&a.day_at_least));
+            sorted.sort_by_key(|t| std::cmp::Reverse(t.day_at_least));
             for t in &sorted {
                 if state.day >= t.day_at_least {
                     factor *= t.factor;
@@ -65,7 +65,10 @@ pub fn resolve_sizing_factor(
 
     // 2. timeBoost — only overrides if INCREASES factor.
     if let Some(tb) = cfg.time_boost {
-        if state.day >= tb.after_day && equity_above_baseline < tb.equity_below && tb.factor > factor {
+        if state.day >= tb.after_day
+            && equity_above_baseline < tb.equity_below
+            && tb.factor > factor
+        {
             factor = tb.factor;
         }
     }
@@ -177,9 +180,18 @@ mod tests {
     fn adaptive_tiers_walk_with_equity() {
         let mut c = cfg();
         c.adaptive_sizing = Some(vec![
-            AdaptiveSizingTier { equity_above: 0.0, factor: 0.75 },
-            AdaptiveSizingTier { equity_above: 0.03, factor: 1.125 },
-            AdaptiveSizingTier { equity_above: 0.08, factor: 0.375 },
+            AdaptiveSizingTier {
+                equity_above: 0.0,
+                factor: 0.75,
+            },
+            AdaptiveSizingTier {
+                equity_above: 0.03,
+                factor: 1.125,
+            },
+            AdaptiveSizingTier {
+                equity_above: 0.08,
+                factor: 0.375,
+            },
         ]);
         let mut s = EngineState::initial("x");
 
@@ -194,8 +206,15 @@ mod tests {
     #[test]
     fn time_boost_only_increases() {
         let mut c = cfg();
-        c.adaptive_sizing = Some(vec![AdaptiveSizingTier { equity_above: 0.0, factor: 0.75 }]);
-        c.time_boost = Some(TimeBoost { after_day: 10, equity_below: 0.05, factor: 2.0 });
+        c.adaptive_sizing = Some(vec![AdaptiveSizingTier {
+            equity_above: 0.0,
+            factor: 0.75,
+        }]);
+        c.time_boost = Some(TimeBoost {
+            after_day: 10,
+            equity_below: 0.05,
+            factor: 2.0,
+        });
         let mut s = EngineState::initial("x");
 
         // day 5 — too early.
@@ -212,7 +231,10 @@ mod tests {
     #[test]
     fn drawdown_shield_caps_down() {
         let mut c = cfg();
-        c.drawdown_shield = Some(DrawdownShield { below_equity: -0.02, factor: 0.5 });
+        c.drawdown_shield = Some(DrawdownShield {
+            below_equity: -0.02,
+            factor: 0.5,
+        });
         let mut s = EngineState::initial("x");
         s.equity = 0.97; // -3%
         let f = resolve_sizing_factor(&mut s, &c, 0);
@@ -222,7 +244,10 @@ mod tests {
     #[test]
     fn peak_drawdown_throttle_caps_down() {
         let mut c = cfg();
-        c.peak_drawdown_throttle = Some(PeakDrawdownThrottle { from_peak: 0.05, factor: 0.5 });
+        c.peak_drawdown_throttle = Some(PeakDrawdownThrottle {
+            from_peak: 0.05,
+            factor: 0.5,
+        });
         let mut s = EngineState::initial("x");
         s.challenge_peak = 1.10;
         s.mtm_equity = 1.04; // -5.45% from peak
@@ -248,16 +273,29 @@ mod tests {
     #[test]
     fn hard_cap_at_four() {
         let mut c = cfg();
-        c.adaptive_sizing = Some(vec![AdaptiveSizingTier { equity_above: 0.0, factor: 3.0 }]);
-        c.time_boost = Some(TimeBoost { after_day: 0, equity_below: 1.0, factor: 5.0 });
+        c.adaptive_sizing = Some(vec![AdaptiveSizingTier {
+            equity_above: 0.0,
+            factor: 3.0,
+        }]);
+        c.time_boost = Some(TimeBoost {
+            after_day: 0,
+            equity_below: 1.0,
+            factor: 5.0,
+        });
         c.kelly_sizing = Some(KellySizing {
             window_size: 5,
             min_trades: 3,
-            tiers: vec![KellyTier { win_rate_above: 0.0, multiplier: 2.0 }],
+            tiers: vec![KellyTier {
+                win_rate_above: 0.0,
+                multiplier: 2.0,
+            }],
         });
         let mut s = EngineState::initial("x");
         for i in 0..5 {
-            s.kelly_pnls.push(KellyPnl { close_time: i, eff_pnl: 0.01 });
+            s.kelly_pnls.push(KellyPnl {
+                close_time: i,
+                eff_pnl: 0.01,
+            });
         }
         let f = resolve_sizing_factor(&mut s, &c, 1000);
         assert!((f - HARD_CAP).abs() < 1e-9);
@@ -270,18 +308,33 @@ mod tests {
             window_size: 10,
             min_trades: 5,
             tiers: vec![
-                KellyTier { win_rate_above: 0.7, multiplier: 1.5 },
-                KellyTier { win_rate_above: 0.5, multiplier: 1.0 },
-                KellyTier { win_rate_above: 0.0, multiplier: 0.6 },
+                KellyTier {
+                    win_rate_above: 0.7,
+                    multiplier: 1.5,
+                },
+                KellyTier {
+                    win_rate_above: 0.5,
+                    multiplier: 1.0,
+                },
+                KellyTier {
+                    win_rate_above: 0.0,
+                    multiplier: 0.6,
+                },
             ],
         });
         let mut s = EngineState::initial("x");
         // Seed 7 wins / 3 losses = 70% — borderline tier 0.
         for i in 0..7 {
-            s.kelly_pnls.push(KellyPnl { close_time: i, eff_pnl: 0.01 });
+            s.kelly_pnls.push(KellyPnl {
+                close_time: i,
+                eff_pnl: 0.01,
+            });
         }
         for i in 7..10 {
-            s.kelly_pnls.push(KellyPnl { close_time: i, eff_pnl: -0.01 });
+            s.kelly_pnls.push(KellyPnl {
+                close_time: i,
+                eff_pnl: -0.01,
+            });
         }
         // Cold start picks tier 0 greedily.
         let f1 = resolve_sizing_factor(&mut s, &c, 100);

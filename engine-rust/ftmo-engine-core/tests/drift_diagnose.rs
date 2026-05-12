@@ -152,7 +152,11 @@ fn diagnose(fix: &Fixture) {
     eprintln!("  TS:   eq={ts_eq:+.4}  trades={ts_trd}");
     eprintln!(
         "  Rust: eq={:+.4}  trades={}  bars_seen={}  day={}  stopped={:?}",
-        rust_eq, state.closed_trades.len(), state.bars_seen, state.day, state.stopped_reason
+        rust_eq,
+        state.closed_trades.len(),
+        state.bars_seen,
+        state.day,
+        state.stopped_reason
     );
     eprintln!("  Signals offered: {signals_offered}");
     eprintln!("  Signals opened:  {signals_opened}");

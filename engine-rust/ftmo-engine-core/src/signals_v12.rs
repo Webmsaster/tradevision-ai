@@ -209,7 +209,10 @@ mod tests {
         let sig = detect_v12(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, None);
         // The detector requires EMA(fast)>EMA(mid)>EMA(slow) AND pullback.
         // On a strong uptrend the stack is bullish — pullback to mid then recover.
-        assert!(sig.is_some(), "expected long V12 signal on uptrend pullback");
+        assert!(
+            sig.is_some(),
+            "expected long V12 signal on uptrend pullback"
+        );
         assert_eq!(sig.unwrap().direction, PositionSide::Long);
     }
 }

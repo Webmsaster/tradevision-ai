@@ -103,10 +103,26 @@ fn ml_features_for_signal(
     let lb_short = 5 * scale;
     let lb_long = 20 * scale;
     let close = series.closes.get(i).copied().unwrap_or(0.0);
-    let close5 = series.closes.get(i.saturating_sub(lb_short)).copied().unwrap_or(close);
-    let close20 = series.closes.get(i.saturating_sub(lb_long)).copied().unwrap_or(close);
-    let prior5 = if close5 > 0.0 { (close - close5) / close5 } else { 0.0 };
-    let prior20 = if close20 > 0.0 { (close - close20) / close20 } else { 0.0 };
+    let close5 = series
+        .closes
+        .get(i.saturating_sub(lb_short))
+        .copied()
+        .unwrap_or(close);
+    let close20 = series
+        .closes
+        .get(i.saturating_sub(lb_long))
+        .copied()
+        .unwrap_or(close);
+    let prior5 = if close5 > 0.0 {
+        (close - close5) / close5
+    } else {
+        0.0
+    };
+    let prior20 = if close20 > 0.0 {
+        (close - close20) / close20
+    } else {
+        0.0
+    };
     let atr_pct = match (series.atr14.get(i).copied().flatten(), close) {
         (Some(a), c) if c > 0.0 => a / c,
         _ => 0.0,
@@ -365,11 +381,13 @@ fn apply_overrides(
         cfg.challenge_peak_trailing_stop = Some(PeakTrailingStop { trail_distance: d });
     }
     if ov.idl_threshold.is_some() || ov.idl_factor.is_some() {
-        let cur = cfg.intraday_daily_loss_throttle.unwrap_or(IntradayDailyLossThrottle {
-            soft_loss_threshold: 0.025,
-            hard_loss_threshold: 0.04,
-            soft_factor: 0.5,
-        });
+        let cur = cfg
+            .intraday_daily_loss_throttle
+            .unwrap_or(IntradayDailyLossThrottle {
+                soft_loss_threshold: 0.025,
+                hard_loss_threshold: 0.04,
+                soft_factor: 0.5,
+            });
         cfg.intraday_daily_loss_throttle = Some(IntradayDailyLossThrottle {
             soft_loss_threshold: cur.soft_loss_threshold,
             hard_loss_threshold: ov.idl_threshold.unwrap_or(cur.hard_loss_threshold),
@@ -390,7 +408,10 @@ fn apply_overrides(
         // Format: "BTC:0.025,ETH:0.030,..."
         for pair in csv.split(',') {
             let mut sp = pair.splitn(2, ':');
-            let key = sp.next().map(|s| s.trim().to_uppercase()).unwrap_or_default();
+            let key = sp
+                .next()
+                .map(|s| s.trim().to_uppercase())
+                .unwrap_or_default();
             let val: Option<f64> = sp.next().and_then(|s| s.trim().parse().ok());
             if key.is_empty() || val.is_none() {
                 continue;
@@ -452,22 +473,22 @@ fn main() -> Result<()> {
     let mut override_leverage: Option<f64> = None;
     let mut override_hold_bars: Option<u32> = None;
     let mut override_hours: Option<String> = None; // CSV "2,4,6,..."
-    let mut override_dows: Option<String> = None;  // CSV "1,2,3,4,5"
-    let mut drop_symbols: Option<String> = None;   // CSV "RUNE,SAND"
-    let mut keep_symbols: Option<String> = None;   // CSV "BTC,ETH,..." (whitelist)
+    let mut override_dows: Option<String> = None; // CSV "1,2,3,4,5"
+    let mut drop_symbols: Option<String> = None; // CSV "RUNE,SAND"
+    let mut keep_symbols: Option<String> = None; // CSV "BTC,ETH,..." (whitelist)
     let mut disable_trail: bool = false;
     let mut disable_passlock: bool = false;
     let mut enable_passlock: bool = false;
-    let mut be_threshold: Option<f64> = None;      // add break-even
+    let mut be_threshold: Option<f64> = None; // add break-even
     let mut funding_max_long: Option<f64> = None;
     let mut funding_min_short: Option<f64> = None;
     let mut adaptive_tp_per_asset: Option<String> = None; // "BTC:0.025,ETH:0.030"
-    let mut pdd_from_peak: Option<f64> = None;   // peak_drawdown_throttle.from_peak
-    let mut pdd_factor: Option<f64> = None;      // peak_drawdown_throttle.factor
-    let mut dpts_trail: Option<f64> = None;      // daily_peak_trailing_stop.trail_distance
-    let mut cpts_trail: Option<f64> = None;      // challenge_peak_trailing_stop.trail_distance
-    let mut idl_threshold: Option<f64> = None;   // intraday_daily_loss_throttle.hard_loss_threshold
-    let mut idl_factor: Option<f64> = None;      // intraday_daily_loss_throttle.size_factor
+    let mut pdd_from_peak: Option<f64> = None; // peak_drawdown_throttle.from_peak
+    let mut pdd_factor: Option<f64> = None; // peak_drawdown_throttle.factor
+    let mut dpts_trail: Option<f64> = None; // daily_peak_trailing_stop.trail_distance
+    let mut cpts_trail: Option<f64> = None; // challenge_peak_trailing_stop.trail_distance
+    let mut idl_threshold: Option<f64> = None; // intraday_daily_loss_throttle.hard_loss_threshold
+    let mut idl_factor: Option<f64> = None; // intraday_daily_loss_throttle.size_factor
     let mut min_trading_days: Option<u32> = None;
     let mut profit_target: Option<f64> = None;
     let mut lscool_after: Option<u32> = None;
@@ -534,7 +555,9 @@ fn main() -> Result<()> {
             }
             // R29-PassrateHunt overrides
             "--override-tp-mult" => override_tp_mult = Some(need!("--override-tp-mult").parse()?),
-            "--override-stop-pct" => override_stop_pct = Some(need!("--override-stop-pct").parse()?),
+            "--override-stop-pct" => {
+                override_stop_pct = Some(need!("--override-stop-pct").parse()?)
+            }
             "--override-mct" => override_mct = Some(need!("--override-mct").parse()?),
             "--override-trail-activate" => {
                 override_trail_activate = Some(need!("--override-trail-activate").parse()?)
@@ -556,9 +579,7 @@ fn main() -> Result<()> {
             "--disable-passlock" => disable_passlock = true,
             "--enable-passlock" => enable_passlock = true,
             "--be-threshold" => be_threshold = Some(need!("--be-threshold").parse()?),
-            "--funding-max-long" => {
-                funding_max_long = Some(need!("--funding-max-long").parse()?)
-            }
+            "--funding-max-long" => funding_max_long = Some(need!("--funding-max-long").parse()?),
             "--funding-min-short" => {
                 funding_min_short = Some(need!("--funding-min-short").parse()?)
             }
@@ -749,8 +770,9 @@ fn run_single_asset(
         .unwrap_or_else(|| "UNKNOWN".into());
 
     let cfg = match config_selector.as_deref() {
-        Some(s) => templates::template_by_selector(s)
-            .ok_or_else(|| anyhow!("unknown selector: {s}"))?,
+        Some(s) => {
+            templates::template_by_selector(s).ok_or_else(|| anyhow!("unknown selector: {s}"))?
+        }
         None => {
             let mut c = templates::r28_v6_passlock();
             c.assets = vec![AssetConfig {
@@ -922,14 +944,12 @@ fn run_single_asset(
                 }
             }
             // End-of-window pass-check — mirrors TS simulate() tail.
-            let mut last_passed = last_passed;
             if !last_passed && state.stopped_reason.is_none() {
                 let target_hit = state.first_target_hit_day.is_some()
                     && state.trading_days.len() >= cfg.min_trading_days as usize;
                 let final_equity_floor = 1.0 + cfg.profit_target * 0.5;
-                let give_back_too_far = target_hit
-                    && state.equity.is_finite()
-                    && state.equity < final_equity_floor;
+                let give_back_too_far =
+                    target_hit && state.equity.is_finite() && state.equity < final_equity_floor;
                 if target_hit && !give_back_too_far {
                     last_passed = true;
                 }
@@ -942,8 +962,7 @@ fn run_single_asset(
                 final_equity_pct: state.equity - 1.0,
                 final_day: state.day,
                 passed: last_passed,
-                fail_reason: last_fail
-                    .or_else(|| state.stopped_reason.map(|r| format!("{r:?}"))),
+                fail_reason: last_fail.or_else(|| state.stopped_reason.map(|r| format!("{r:?}"))),
                 elapsed_ms: win_started.elapsed().as_secs_f64() * 1000.0,
             };
             if let Ok(mut g) = writer.lock() {
@@ -1002,7 +1021,6 @@ fn finalise_report(reports: &[WindowResult], windows: usize, started: Instant) {
 // ───────────────── Multi-asset (R29-R5) path ────────────────────────
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn run_multi_asset(
     candles_dir: Option<PathBuf>,
     funding_dir: Option<PathBuf>,
@@ -1034,8 +1052,9 @@ fn run_multi_asset(
 
     // Resolve config — must come from a known selector since per-asset
     // entry-fields only exist in templates that pre-baked them.
-    let selector = config_selector
-        .ok_or_else(|| anyhow!("--config is required (e.g. r28_v6_cvd, r28_v6_volimb, r28_v6_poc)"))?;
+    let selector = config_selector.ok_or_else(|| {
+        anyhow!("--config is required (e.g. r28_v6_cvd, r28_v6_volimb, r28_v6_poc)")
+    })?;
     let mut cfg = templates::template_by_selector(&selector)
         .ok_or_else(|| anyhow!("unknown selector: {selector}"))?;
     // R29-PassrateHunt: apply CLI overrides post-template.
@@ -1138,10 +1157,7 @@ fn run_multi_asset(
             cfg.bar_minutes
         );
     }
-    let ml_features_by_sym: HashMap<String, MlFeatureSeries> = if multi_signal
-        .ml_model
-        .is_some()
-    {
+    let ml_features_by_sym: HashMap<String, MlFeatureSeries> = if multi_signal.ml_model.is_some() {
         use ftmo_engine_core::detector_filters::adx as adx_fn;
         use ftmo_engine_core::indicators::{atr as atr_fn, rsi as rsi_fn, sma as sma_fn};
         let mut map = HashMap::new();
@@ -1253,7 +1269,11 @@ fn run_multi_asset(
         (0..windows)
             .map(|w| {
                 let lo = w * win_size;
-                let hi = if w == windows - 1 { total_bars } else { (w + 1) * win_size };
+                let hi = if w == windows - 1 {
+                    total_bars
+                } else {
+                    (w + 1) * win_size
+                };
                 (lo, hi)
             })
             .collect()
@@ -1281,10 +1301,11 @@ fn run_multi_asset(
         Some(p) => Some(BufWriter::new(File::create(p)?)),
         None => None,
     }));
-    let trades_writer: Arc<Mutex<Option<BufWriter<File>>>> = Arc::new(Mutex::new(match &trades_out {
-        Some(p) => Some(BufWriter::new(File::create(p)?)),
-        None => None,
-    }));
+    let trades_writer: Arc<Mutex<Option<BufWriter<File>>>> =
+        Arc::new(Mutex::new(match &trades_out {
+            Some(p) => Some(BufWriter::new(File::create(p)?)),
+            None => None,
+        }));
 
     let cfg = Arc::new(cfg);
     let aligned = Arc::new(aligned);
@@ -1333,15 +1354,12 @@ fn run_multi_asset(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn locate_candle_file(dir: &Path, symbol: &str) -> Result<PathBuf> {
     locate_candle_file_tf(dir, symbol, None)
 }
 
-fn locate_candle_file_tf(
-    dir: &Path,
-    symbol: &str,
-    timeframe: Option<&str>,
-) -> Result<PathBuf> {
+fn locate_candle_file_tf(dir: &Path, symbol: &str, timeframe: Option<&str>) -> Result<PathBuf> {
     // R29-Audit-2026-05-10: timeframe-aware candle lookup. With --timeframe,
     // use the matching `_<tf>.json` and ERROR if missing — earlier code
     // would silently fall back to 30m which produced silent timeframe
@@ -1377,8 +1395,7 @@ fn align_open_times(by_sym: &HashMap<String, Vec<Candle>>) -> Vec<i64> {
         return vec![];
     }
     let first = sets.remove(0);
-    let intersection: std::collections::BTreeSet<i64> =
-        sets.iter().fold(first, |acc, s| &acc & s);
+    let intersection: std::collections::BTreeSet<i64> = sets.iter().fold(first, |acc, s| &acc & s);
     intersection.into_iter().collect()
 }
 
@@ -1575,99 +1592,98 @@ fn run_one_window(
             // extra-detector branches below bypassed both random- and ML-
             // gates. Extracted into a single helper so every signal path
             // applies the same gates.
-            let push_with_gates =
-                |s: ftmo_engine_core::signal::PollSignal,
-                 signals_for_bar: &mut Vec<ftmo_engine_core::signal::PollSignal>| {
-                    let key = (s.symbol.clone(), s.direction);
-                    if let Some(&exit_bar) = phantom_open_until.get(&key) {
-                        if i < exit_bar {
-                            return;
-                        }
+            let push_with_gates = |s: ftmo_engine_core::signal::PollSignal,
+                                   signals_for_bar: &mut Vec<
+                ftmo_engine_core::signal::PollSignal,
+            >| {
+                let key = (s.symbol.clone(), s.direction);
+                if let Some(&exit_bar) = phantom_open_until.get(&key) {
+                    if i < exit_bar {
+                        return;
                     }
-                    if let Some(keep) = multi_signal.random_gate_keep {
-                        let mut h = std::hash::DefaultHasher::new();
-                        use std::hash::{Hash, Hasher};
-                        multi_signal.random_gate_seed.hash(&mut h);
-                        s.entry_time.hash(&mut h);
-                        s.symbol.hash(&mut h);
-                        let v = (h.finish() & 0xffff_ffff) as f64 / (1u64 << 32) as f64;
-                        if v >= keep {
-                            return;
-                        }
+                }
+                if let Some(keep) = multi_signal.random_gate_keep {
+                    let mut h = std::hash::DefaultHasher::new();
+                    use std::hash::{Hash, Hasher};
+                    multi_signal.random_gate_seed.hash(&mut h);
+                    s.entry_time.hash(&mut h);
+                    s.symbol.hash(&mut h);
+                    let v = (h.finish() & 0xffff_ffff) as f64 / (1u64 << 32) as f64;
+                    if v >= keep {
+                        return;
                     }
-                    if let Some(model) = multi_signal.ml_model.as_ref() {
-                        if let Some(series) = ml_features_by_sym.get(&source) {
-                            // R29-Audit-Round3 2026-05-12 (Bug-2 fix): prefer
-                            // the trainer's asset_id_map over position-in-
-                            // `cfg.assets`. With --drop-symbols / --keep-
-                            // symbols the runtime cfg has fewer assets than
-                            // training saw, so position-based ids shift and
-                            // the model evaluates against the WRONG asset id
-                            // feature — silently degrading P(win). Falls
-                            // back to position when the model lacks the map
-                            // (legacy models pre-schema-v1 are rejected at
-                            // load time, so this branch only fires for new
-                            // models with an empty map, i.e. trainer didn't
-                            // see any assets).
-                            let asset_idx = model
-                                .asset_id_for(&s.symbol)
-                                .or_else(|| model.asset_id_for(&source))
-                                .unwrap_or_else(|| {
-                                    cfg.assets
-                                        .iter()
-                                        .position(|a| a.symbol == s.symbol)
-                                        .unwrap_or(0)
-                                });
-                            let direction_long = matches!(
-                                s.direction,
-                                ftmo_engine_core::position::PositionSide::Long
-                            );
-                            // R29-R2.5: read forward-filled funding at bar
-                            // i-1 (last fully closed bar). Aligned with
-                            // training-time `findFundingAt(candles[i].openTime)`
-                            // in `_mlTrainingDataGen.ts`.
-                            //
-                            // R29-Audit-Round1 2026-05-12 BUG FIX: previously
-                            // read from `funding_feed` (the GROWING per-bar
-                            // feed slice that only contains entries pushed so
-                            // far). `funding_feed.get(i-1)` indexes by GLOBAL
-                            // bar number but the feed only has `i - warmup_lo
-                            // + 1` entries → for any `warmup_lo > 0` the
-                            // lookup either reads the WRONG bar (when i-1 <
-                            // feed.len()) or returns None (out-of-bounds).
-                            // The full pre-aligned `funding_by_sym` is
-                            // globally indexed (same as `series.closes`) and
-                            // therefore the correct source.
-                            let funding_idx = i.saturating_sub(1);
-                            let funding_at = funding_by_sym
-                                .get(&source)
-                                .and_then(|s| s.get(funding_idx).copied())
-                                .flatten();
-                            let feats = ml_features_for_signal(
-                                series,
-                                i,
-                                asset_idx,
-                                direction_long,
-                                s.entry_time,
-                                cfg.bar_minutes,
-                                funding_at,
-                            );
-                            // R29-Audit-Round3 2026-05-12 (Bug-4 fix):
-                            // `None` = warmup window (sma200 not ready), the
-                            // trainer skipped these bars too. Mirror that
-                            // by neither dropping nor double-counting: keep
-                            // the signal (gate pass-through) since training
-                            // never produced a label here.
-                            if let Some(feats) = feats {
-                                let p_win = model.predict_proba(&feats);
-                                if p_win < multi_signal.ml_threshold {
-                                    return;
-                                }
+                }
+                if let Some(model) = multi_signal.ml_model.as_ref() {
+                    if let Some(series) = ml_features_by_sym.get(&source) {
+                        // R29-Audit-Round3 2026-05-12 (Bug-2 fix): prefer
+                        // the trainer's asset_id_map over position-in-
+                        // `cfg.assets`. With --drop-symbols / --keep-
+                        // symbols the runtime cfg has fewer assets than
+                        // training saw, so position-based ids shift and
+                        // the model evaluates against the WRONG asset id
+                        // feature — silently degrading P(win). Falls
+                        // back to position when the model lacks the map
+                        // (legacy models pre-schema-v1 are rejected at
+                        // load time, so this branch only fires for new
+                        // models with an empty map, i.e. trainer didn't
+                        // see any assets).
+                        let asset_idx = model
+                            .asset_id_for(&s.symbol)
+                            .or_else(|| model.asset_id_for(&source))
+                            .unwrap_or_else(|| {
+                                cfg.assets
+                                    .iter()
+                                    .position(|a| a.symbol == s.symbol)
+                                    .unwrap_or(0)
+                            });
+                        let direction_long =
+                            matches!(s.direction, ftmo_engine_core::position::PositionSide::Long);
+                        // R29-R2.5: read forward-filled funding at bar
+                        // i-1 (last fully closed bar). Aligned with
+                        // training-time `findFundingAt(candles[i].openTime)`
+                        // in `_mlTrainingDataGen.ts`.
+                        //
+                        // R29-Audit-Round1 2026-05-12 BUG FIX: previously
+                        // read from `funding_feed` (the GROWING per-bar
+                        // feed slice that only contains entries pushed so
+                        // far). `funding_feed.get(i-1)` indexes by GLOBAL
+                        // bar number but the feed only has `i - warmup_lo
+                        // + 1` entries → for any `warmup_lo > 0` the
+                        // lookup either reads the WRONG bar (when i-1 <
+                        // feed.len()) or returns None (out-of-bounds).
+                        // The full pre-aligned `funding_by_sym` is
+                        // globally indexed (same as `series.closes`) and
+                        // therefore the correct source.
+                        let funding_idx = i.saturating_sub(1);
+                        let funding_at = funding_by_sym
+                            .get(&source)
+                            .and_then(|s| s.get(funding_idx).copied())
+                            .flatten();
+                        let feats = ml_features_for_signal(
+                            series,
+                            i,
+                            asset_idx,
+                            direction_long,
+                            s.entry_time,
+                            cfg.bar_minutes,
+                            funding_at,
+                        );
+                        // R29-Audit-Round3 2026-05-12 (Bug-4 fix):
+                        // `None` = warmup window (sma200 not ready), the
+                        // trainer skipped these bars too. Mirror that
+                        // by neither dropping nor double-counting: keep
+                        // the signal (gate pass-through) since training
+                        // never produced a label here.
+                        if let Some(feats) = feats {
+                            let p_win = model.predict_proba(&feats);
+                            if p_win < multi_signal.ml_threshold {
+                                return;
                             }
                         }
                     }
-                    signals_for_bar.push(s);
-                };
+                }
+                signals_for_bar.push(s);
+            };
 
             if let Some(s) = sig {
                 push_with_gates(s, &mut signals_for_bar);
@@ -1737,14 +1753,12 @@ fn run_one_window(
     // bar count is short of `cfg.max_days` (e.g. 28×48 bars on a 30-day
     // max_days config) never trigger the harness force-close path; any
     // mid-run target-hit was silently discarded as `passed=false`.
-    let mut last_passed = last_passed;
     if !last_passed && state.stopped_reason.is_none() {
         let target_hit = state.first_target_hit_day.is_some()
             && state.trading_days.len() >= cfg.min_trading_days as usize;
         let final_equity_floor = 1.0 + cfg.profit_target * 0.5;
-        let give_back_too_far = target_hit
-            && state.equity.is_finite()
-            && state.equity < final_equity_floor;
+        let give_back_too_far =
+            target_hit && state.equity.is_finite() && state.equity < final_equity_floor;
         if target_hit && !give_back_too_far {
             last_passed = true;
         }

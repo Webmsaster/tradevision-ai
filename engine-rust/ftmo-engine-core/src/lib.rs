@@ -1,17 +1,24 @@
+// Cosmetic-only clippy lints — the codebase uses domain-specific digit
+// grouping (e.g. `100_000` for big-number readability vs `1_000_000`)
+// and multi-line doc comments where strict indentation hurts readability.
+#![allow(clippy::inconsistent_digit_grouping)]
+#![allow(clippy::doc_lazy_continuation)]
+#![allow(clippy::doc_overindented_list_items)]
+
 pub mod candle;
 pub mod config;
 pub mod detector_filters;
+pub mod drift;
 pub mod engine;
 pub mod exit;
-pub mod drift;
 pub mod harness;
 pub mod indicators;
 pub mod ml_gate;
 pub mod news;
 pub mod persist;
-pub mod reconcile;
 pub mod pnl;
 pub mod position;
+pub mod reconcile;
 pub mod result;
 pub mod signal;
 pub mod signals_breakout;
@@ -25,8 +32,8 @@ pub mod sizing;
 pub mod state;
 pub mod templates;
 pub mod time_util;
-pub mod v5r;
 pub mod trade;
+pub mod v5r;
 
 pub use candle::Candle;
 pub use config::{
@@ -40,5 +47,7 @@ pub use config::{
 pub use engine::run_window;
 pub use position::{OpenPosition, PositionSide};
 pub use result::{FailReason, WindowResult};
-pub use state::{EngineState, KellyPnl, LossStreakEntry, ReentryState, StoppedReason, SCHEMA_VERSION};
+pub use state::{
+    EngineState, KellyPnl, LossStreakEntry, ReentryState, StoppedReason, SCHEMA_VERSION,
+};
 pub use trade::{ClosedTrade, ExitReason};

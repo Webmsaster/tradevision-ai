@@ -97,7 +97,11 @@ pub struct EngineState {
     pub loss_streak_by_asset_dir: HashMap<String, LossStreakEntry>,
     #[serde(rename = "kellyPnls", default)]
     pub kelly_pnls: Vec<KellyPnl>,
-    #[serde(rename = "kellyTierIdx", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "kellyTierIdx",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub kelly_tier_idx: Option<usize>,
     #[serde(rename = "closedTrades", default)]
     pub closed_trades: Vec<ClosedTrade>,

@@ -74,12 +74,10 @@ pub fn find_candle_at_time(arr: &[Candle], target_ms: i64) -> Option<&Candle> {
 /// Find the most-recent candle at-or-before `target_ms`. Used in V4
 /// end-of-window force-close fallback chain.
 pub fn find_candle_at_or_before(arr: &[Candle], target_ms: i64) -> Option<&Candle> {
-    for c in arr.iter().rev() {
-        if c.open_time <= target_ms {
-            return Some(c);
-        }
-    }
-    None
+    arr.iter()
+        .rev()
+        .find(|&c| c.open_time <= target_ms)
+        .map(|v| v as _)
 }
 
 #[cfg(test)]
@@ -136,9 +134,9 @@ mod tests {
         // because the offset diff (CEST +2 vs CET +1 = -1h) is folded into
         // the locally-shifted subtraction.
         let start = utc_ms("2026-10-24T22:00:00+00:00"); // CEST 00:00 Prague
-        // 24h-utc later, but Prague has lost an hour so it's only 23h-Prague.
-        // Engine convention: Prague-aware day-counter still ticks at
-        // Prague-midnight, so this is day 1 (Prague-wall-clock has rolled).
+                                                         // 24h-utc later, but Prague has lost an hour so it's only 23h-Prague.
+                                                         // Engine convention: Prague-aware day-counter still ticks at
+                                                         // Prague-midnight, so this is day 1 (Prague-wall-clock has rolled).
         let bar = utc_ms("2026-10-25T23:00:00+00:00"); // 00:00 Prague (post DST = CET)
         assert_eq!(day_index(bar, start), 1);
     }

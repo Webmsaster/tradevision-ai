@@ -39,11 +39,10 @@ fn e2e_load_then_predict_valid() {
     let m = MlModel::load_from_path(path.to_str().unwrap()).expect("load OK");
     // 14 features, all in valid ranges, NOT all-zero.
     let feats = [
-        60.0, 55.0, 25.0, 0.01, 0.001, 0.0005, 0.0001,
-        10.0, 3.0, 0.005, 0.01, 0.0, 1.0, 0.0001,
+        60.0, 55.0, 25.0, 0.01, 0.001, 0.0005, 0.0001, 10.0, 3.0, 0.005, 0.01, 0.0, 1.0, 0.0001,
     ];
     let p = m.predict_proba(&feats);
-    assert!(p >= 0.0 && p <= 1.0, "p must be a probability, got {p}");
+    assert!((0.0..=1.0).contains(&p), "p must be a probability, got {p}");
     // tree[0]: feat0=60 > 50 → 0.7. tree[1]: feat11=0 <= 1.5 → 0.4. Avg=0.55.
     assert!((p - 0.55).abs() < 1e-9, "expected 0.55, got {p}");
     assert_eq!(m.asset_id_for("BTCUSDT"), Some(0));
@@ -67,12 +66,17 @@ fn e2e_load_legacy_no_schema_version_rejected() {
         // no schema_version, no asset_id_map
     });
     std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
-    let err = MlModel::load_from_path(path.to_str().unwrap())
-        .err()
-        .expect("must reject legacy model");
+    let err =
+        MlModel::load_from_path(path.to_str().unwrap()).expect_err("must reject legacy model");
     let msg = err.to_string();
-    assert!(msg.contains("schema_version"), "err must mention schema_version, got: {msg}");
-    assert!(msg.contains("retrain"), "err must instruct retrain, got: {msg}");
+    assert!(
+        msg.contains("schema_version"),
+        "err must mention schema_version, got: {msg}"
+    );
+    assert!(
+        msg.contains("retrain"),
+        "err must instruct retrain, got: {msg}"
+    );
     let _ = std::fs::remove_file(&path);
 }
 
@@ -94,10 +98,12 @@ fn e2e_load_legacy_13_features_rejected() {
         "validation_auc": 0.5
     });
     std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
-    let err = MlModel::load_from_path(path.to_str().unwrap())
-        .err()
-        .expect("must reject 13-feature model");
+    let err =
+        MlModel::load_from_path(path.to_str().unwrap()).expect_err("must reject 13-feature model");
     let msg = err.to_string();
-    assert!(msg.contains("feature order"), "err must mention feature order, got: {msg}");
+    assert!(
+        msg.contains("feature order"),
+        "err must mention feature order, got: {msg}"
+    );
     let _ = std::fs::remove_file(&path);
 }

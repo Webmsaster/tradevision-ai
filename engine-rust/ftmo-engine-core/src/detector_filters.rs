@@ -241,19 +241,49 @@ mod tests {
     #[test]
     fn rsi_filter_long_requires_oversold() {
         // RSI=20 (oversold) — long allowed if long_max=30
-        assert!(rsi_filter_allows(Some(20.0), PositionSide::Long, Some(30.0), None));
+        assert!(rsi_filter_allows(
+            Some(20.0),
+            PositionSide::Long,
+            Some(30.0),
+            None
+        ));
         // RSI=40 — long blocked
-        assert!(!rsi_filter_allows(Some(40.0), PositionSide::Long, Some(30.0), None));
+        assert!(!rsi_filter_allows(
+            Some(40.0),
+            PositionSide::Long,
+            Some(30.0),
+            None
+        ));
         // long_max=None disables long-side filter
-        assert!(rsi_filter_allows(Some(80.0), PositionSide::Long, None, None));
+        assert!(rsi_filter_allows(
+            Some(80.0),
+            PositionSide::Long,
+            None,
+            None
+        ));
         // None RSI → blocked (conservative)
-        assert!(!rsi_filter_allows(None, PositionSide::Long, Some(30.0), None));
+        assert!(!rsi_filter_allows(
+            None,
+            PositionSide::Long,
+            Some(30.0),
+            None
+        ));
     }
 
     #[test]
     fn rsi_filter_short_requires_overbought() {
-        assert!(rsi_filter_allows(Some(80.0), PositionSide::Short, None, Some(70.0)));
-        assert!(!rsi_filter_allows(Some(60.0), PositionSide::Short, None, Some(70.0)));
+        assert!(rsi_filter_allows(
+            Some(80.0),
+            PositionSide::Short,
+            None,
+            Some(70.0)
+        ));
+        assert!(!rsi_filter_allows(
+            Some(60.0),
+            PositionSide::Short,
+            None,
+            Some(70.0)
+        ));
     }
 
     #[test]

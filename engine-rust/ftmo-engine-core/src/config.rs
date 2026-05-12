@@ -17,7 +17,10 @@ pub struct LiveCaps {
 
 impl Default for LiveCaps {
     fn default() -> Self {
-        Self { max_stop_pct: 0.05, max_risk_frac: 0.4 }
+        Self {
+            max_stop_pct: 0.05,
+            max_risk_frac: 0.4,
+        }
     }
 }
 
@@ -589,12 +592,18 @@ mod tests {
         // when no per-asset override is set.
         let mut cfg = EngineConfig::r28_v6_passlock_template();
         cfg.invert_direction = true;
-        let asset = AssetConfig { invert_direction: false, ..Default::default() };
+        let asset = AssetConfig {
+            invert_direction: false,
+            ..Default::default()
+        };
         assert!(asset.effective_invert_direction(&cfg));
 
         // Per-asset `true` works when cfg fallback is off (existing path).
         let cfg2 = EngineConfig::r28_v6_passlock_template();
-        let asset2 = AssetConfig { invert_direction: true, ..Default::default() };
+        let asset2 = AssetConfig {
+            invert_direction: true,
+            ..Default::default()
+        };
         assert!(asset2.effective_invert_direction(&cfg2));
 
         // Both off → no invert.

@@ -49,14 +49,8 @@ fn finalise_signal(
         return None;
     }
     let (stop_price, tp_price) = match direction {
-        PositionSide::Long => (
-            last.close * (1.0 - stop_pct),
-            last.close * (1.0 + tp_pct),
-        ),
-        PositionSide::Short => (
-            last.close * (1.0 + stop_pct),
-            last.close * (1.0 - tp_pct),
-        ),
+        PositionSide::Long => (last.close * (1.0 - stop_pct), last.close * (1.0 + tp_pct)),
+        PositionSide::Short => (last.close * (1.0 + stop_pct), last.close * (1.0 - tp_pct)),
     };
     Some(PollSignal {
         symbol: asset.symbol.clone(),
@@ -103,8 +97,7 @@ pub fn detect_cvd_divergence(
     let mut cvd_max = f64::NEG_INFINITY;
     let mut price_min = f64::INFINITY;
     let mut price_max = f64::NEG_INFINITY;
-    for k in (i - lb)..=i {
-        let c = candles[k];
+    for c in candles[(i - lb)..=i].iter().copied() {
         let tbv = c.taker_buy_volume.unwrap_or(c.volume * 0.5);
         cvd += 2.0 * tbv - c.volume;
         if cvd < cvd_min {
@@ -193,8 +186,7 @@ pub fn detect_vol_poc(
     let i = candles.len() - 1;
     let mut poc_vol = -1.0_f64;
     let mut poc_close = candles[i].close;
-    for k in (i - wb)..=i {
-        let c = candles[k];
+    for c in candles[(i - wb)..=i].iter().copied() {
         if c.volume > poc_vol {
             poc_vol = c.volume;
             poc_close = c.close;
@@ -260,10 +252,15 @@ mod tests {
             // price drops, taker-buy is < 50% so cvd drops
             candles.push(candle_with(k * 1_800_000, 100.0 - k as f64, 100.0, 30.0));
         }
-        assert!(
-            detect_cvd_divergence(&mut s, &cfg, &a, "BTCUSDT", &candles, &CvdEntry { lookback_bars: 24 })
-                .is_none()
-        );
+        assert!(detect_cvd_divergence(
+            &mut s,
+            &cfg,
+            &a,
+            "BTCUSDT",
+            &candles,
+            &CvdEntry { lookback_bars: 24 }
+        )
+        .is_none());
     }
 
     #[test]
@@ -370,7 +367,10 @@ mod tests {
             &a,
             "BTCUSDT",
             &candles,
-            &VolPocEntry { window_bars: 96, min_dist_from_poc_pct: 0.015 },
+            &VolPocEntry {
+                window_bars: 96,
+                min_dist_from_poc_pct: 0.015,
+            },
         )
         .unwrap();
         assert_eq!(sig.direction, PositionSide::Long);
@@ -395,7 +395,10 @@ mod tests {
             &a,
             "BTCUSDT",
             &candles,
-            &VolPocEntry { window_bars: 96, min_dist_from_poc_pct: 0.015 },
+            &VolPocEntry {
+                window_bars: 96,
+                min_dist_from_poc_pct: 0.015,
+            },
         )
         .unwrap();
         assert_eq!(sig.direction, PositionSide::Short);

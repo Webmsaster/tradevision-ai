@@ -9,8 +9,14 @@ mod loader;
 
 fn main() -> Result<()> {
     let cfg = EngineConfig::r28_v6_passlock_template();
-    println!("ftmo-engine v{} — Phase 1 scaffolding", env!("CARGO_PKG_VERSION"));
-    println!("config: {} (start_balance={})", cfg.label, cfg.start_balance);
+    println!(
+        "ftmo-engine v{} — Phase 1 scaffolding",
+        env!("CARGO_PKG_VERSION")
+    );
+    println!(
+        "config: {} (start_balance={})",
+        cfg.label, cfg.start_balance
+    );
 
     let mut bars = BTreeMap::new();
 
@@ -19,7 +25,9 @@ fn main() -> Result<()> {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--candles" => {
-                let path = args.next().ok_or_else(|| anyhow!("--candles needs a path"))?;
+                let path = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--candles needs a path"))?;
                 let p = PathBuf::from(&path);
                 let symbol = p
                     .file_stem()
@@ -34,7 +42,10 @@ fn main() -> Result<()> {
         }
     }
 
-    let result = run_window(WindowInput { config: &cfg, bars_by_symbol: bars });
+    let result = run_window(WindowInput {
+        config: &cfg,
+        bars_by_symbol: bars,
+    });
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
