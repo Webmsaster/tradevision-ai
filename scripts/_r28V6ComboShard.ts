@@ -8,6 +8,19 @@ import { readFileSync, writeFileSync, appendFileSync } from "node:fs";
 const CACHE_DIR = "scripts/cache_bakeoff";
 const SHARD_IDX = parseInt(process.argv[2] ?? "0", 10);
 const SHARD_COUNT = parseInt(process.argv[3] ?? "1", 10);
+// Bug-Audit Round 3 (R3 fix 3): NaN/range-guard on shard CLI args.
+if (
+  !Number.isFinite(SHARD_IDX) ||
+  !Number.isFinite(SHARD_COUNT) ||
+  SHARD_COUNT < 1 ||
+  SHARD_IDX < 0 ||
+  SHARD_IDX >= SHARD_COUNT
+) {
+  console.error(
+    `bad shard args: SHARD_IDX=${process.argv[2]} SHARD_COUNT=${process.argv[3]} (need 0 ≤ idx < count, count ≥ 1)`,
+  );
+  process.exit(2);
+}
 const OUT_FILE = `${CACHE_DIR}/r28v6_combo_pt08_md60_shard_${SHARD_IDX}.jsonl`;
 writeFileSync(OUT_FILE, "");
 const SYMBOLS = [
@@ -44,6 +57,13 @@ const cfg: FtmoDaytrade24hConfig = {
   maxDays: 60,
 };
 const { aligned, minBars } = loadAligned();
+// Bug-Audit Round 3 (R3 fix 2): assert 30m (cache file + *48 hardcoded).
+const comboBarMinutes = (cfg as { barMinutes?: number }).barMinutes;
+if (comboBarMinutes !== undefined && comboBarMinutes !== 30) {
+  throw new Error(
+    `_r28V6ComboShard winBars hardcoded *48 (30m); cfg.barMinutes=${comboBarMinutes}`,
+  );
+}
 const winBars = cfg.maxDays * 48;
 const stepBars = 14 * 48;
 const WARMUP = 5000;

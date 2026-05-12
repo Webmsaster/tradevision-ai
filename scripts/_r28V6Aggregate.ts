@@ -3,7 +3,7 @@
  * Reads scripts/cache_bakeoff/r28v6_shard_*.jsonl and produces the same
  * pass-rate / med / p90 / failure-reason breakdown as the original test.
  */
-import { readFileSync, existsSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 
 const CACHE_DIR = "scripts/cache_bakeoff";
 const LOG_FILE = `${CACHE_DIR}/r28v6_revalidation.log`;
@@ -19,12 +19,19 @@ interface Row {
   finalEquityPct: number;
 }
 
-// Bug-Audit Round 1: dedup by winIdx (last write wins) so a resumed shard
-// or a same-window appearing in two shard files cannot double-count.
+// Bug-Audit Round 3 (R3 fix 1): dynamic-glob over shard files instead of
+// magic SHARDS=32 (sister scripts use 8). Reading `r28v6_shard_<n>.jsonl`
+// from the directory keeps aggregate consistent regardless of how many
+// shards a sweep actually produced.
+// Bug-Audit Round 1 (kept): dedup by winIdx (last write wins) so a resumed
+// shard or a same-window appearing in two shard files cannot double-count.
+const SHARD_FILE_RE = /^r28v6_shard_\d+\.jsonl$/;
 const byWin = new Map<number, Row>();
-for (let i = 0; i < 32; i++) {
-  const f = `${CACHE_DIR}/r28v6_shard_${i}.jsonl`;
-  if (!existsSync(f)) continue;
+const shardFiles = readdirSync(CACHE_DIR)
+  .filter((n) => SHARD_FILE_RE.test(n))
+  .sort();
+for (const name of shardFiles) {
+  const f = `${CACHE_DIR}/${name}`;
   const text = readFileSync(f, "utf-8");
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
@@ -44,13 +51,20 @@ const passDays = rows
 const finalEquities = rows.map((r) => r.finalEquityPct).sort((a, b) => a - b);
 const medPassDay =
   passDays.length > 0 ? passDays[Math.floor(passDays.length / 2)]! : 0;
+// Bug-Audit Round 3 (R3 fix 5): linear-interpolated quantile (mirrors
+// `passlockMonteCarlo.test.ts`). Old `Math.floor(q*N)` had an off-by-one
+// (e.g. q=0.9, N=10 → idx=9 = max, not the 90th-percentile).
 function quantile(sorted: number[], q: number): number {
-  if (sorted.length === 0) return 0;
-  const idx = Math.min(
-    sorted.length - 1,
-    Math.max(0, Math.floor(q * sorted.length)),
-  );
-  return sorted[idx]!;
+  const n = sorted.length;
+  if (n === 0) return 0;
+  if (n === 1) return sorted[0]!;
+  const qc = Math.min(1, Math.max(0, q));
+  const pos = (n - 1) * qc;
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  if (lo === hi) return sorted[lo]!;
+  const frac = pos - lo;
+  return sorted[lo]! * (1 - frac) + sorted[hi]! * frac;
 }
 const p90PassDay = quantile(passDays, 0.9);
 

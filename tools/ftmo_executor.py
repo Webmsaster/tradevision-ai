@@ -1551,7 +1551,29 @@ def close_position(ticket: int, exit_reason_override: Optional[str] = None) -> b
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": _pick_filling_mode(pos.symbol),
     }
+    # Bug-Audit Round 3: parity with _modify_position_sl — 1-shot retry on
+    # transient retcodes (REQUOTE/PRICE_OFF/TIMEOUT). Without this a failed
+    # emergency close (DL/TL/news) leaves the position bleeding while we
+    # silently mark it "not closed" → next poll repeats the same flaky path.
+    transient_retcodes = {
+        getattr(mt5, "TRADE_RETCODE_REQUOTE", 10004),
+        getattr(mt5, "TRADE_RETCODE_PRICE_OFF", 10021),
+        getattr(mt5, "TRADE_RETCODE_TIMEOUT", 10008),
+    }
     result = mt5.order_send(request)
+    if (
+        result is not None
+        and result.retcode != mt5.TRADE_RETCODE_DONE
+        and getattr(result, "retcode", None) in transient_retcodes
+    ):
+        time.sleep(0.25)
+        # Re-fetch the live tick so the retry doesn't replay an off-quote price.
+        tick = mt5.symbol_info_tick(pos.symbol)
+        if tick is not None and tick.bid > 0 and tick.ask > 0:
+            request["price"] = (
+                tick.ask if pos.type == mt5.POSITION_TYPE_SELL else tick.bid
+            )
+        result = mt5.order_send(request)
     ok = result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
     if ok and result is not None:
         # Drift-monitor: log entry_price, planned SL/TP from MT5's position
@@ -1713,10 +1735,18 @@ def maybe_place_ping_trade() -> None:
                 log_event("ping_trade_failed", reason="no tick data")
                 _clear_pending_order_marker(ping_marker)
                 return
+            # Bug-Audit Round 3: open-leg was missing type_filling AND
+            # type_time. On FOK-only crypto brokers MT5 returns retcode 10030
+            # "invalid order filling type" and the ping is permanently
+            # skipped for the day → MIN_TRADING_DAYS counter stalls →
+            # challenge cannot pass even after target+pause. Parity with the
+            # close-leg fix (R67-r12) and main-signal path.
             request_buy = {
                 "action": mt5.TRADE_ACTION_DEAL, "symbol": sym, "volume": PING_LOT_SIZE,
                 "type": mt5.ORDER_TYPE_BUY, "price": tick.ask,
                 "deviation": 20, "magic": 232, "comment": "iter236-ping",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": _pick_filling_mode(sym),
             }
             result = mt5.order_send(request_buy)
             if result is None or getattr(result, "retcode", None) != mt5.TRADE_RETCODE_DONE:
@@ -3032,6 +3062,12 @@ def _reset_order_fail_counter() -> None:
 
 _last_equity_snapshot = [0.0]  # wrapped in list for closure mutation
 _last_cb_check_streak = [0]
+# Bug-Audit Round 3: seed-on-first-call sentinel. After process restart the
+# module-global resets to 0, but the broker's deal history still shows the
+# pre-restart losing streak. Without this sentinel, the very first
+# check_circuit_breaker() poll after restart computes `streak > 0` and re-
+# trips even immediately after the user issued /resume → /pause loop.
+_cb_streak_seeded = [False]
 _last_dd_warn_sent = [""]  # date of last dd warn sent, to avoid spam
 
 
@@ -3095,6 +3131,16 @@ def check_circuit_breaker() -> Optional[str]:
         else:
             break
 
+    # Bug-Audit Round 3: on the very first check after a process restart, the
+    # in-memory `_last_cb_check_streak[0]` is 0 and any historical losing
+    # streak satisfies `streak > 0` → the just-resumed bot gets immediately
+    # re-paused. Seed the high-water mark to the observed historical streak
+    # on first call so we only trip on a NEW loss that grows the streak.
+    if not _cb_streak_seeded[0]:
+        _last_cb_check_streak[0] = streak
+        _cb_streak_seeded[0] = True
+        return None
+
     if streak > _last_cb_check_streak[0]:
         # Streak grew
         if streak >= CB_LOSS_STREAK:
@@ -3130,7 +3176,32 @@ def check_circuit_breaker() -> Optional[str]:
 _last_consistency_warn = [""]  # date of last warning per ticket-category
 
 
-_news_closes_announced: set[int] = set()  # timestamps already warned about
+# Bug-Audit Round 3: previously an in-memory-only set. After a process
+# restart the executor would re-announce + re-close on the SAME upcoming
+# news event (because the event-timestamp dedupe was lost). With PM2
+# auto-restarts that can easily happen during the 30-min approach window
+# of a high-impact print → repeat Telegram alert + a second flatten pass
+# that wipes any positions the trader manually re-opened in between.
+# Persist to disk so restarts honor the dedupe.
+NEWS_ANNOUNCED_PATH = STATE_DIR / "news-announced.json"
+
+
+def _load_news_announced() -> set[int]:
+    data = read_json(NEWS_ANNOUNCED_PATH, {"ts": []})
+    out: set[int] = set()
+    for t in data.get("ts", []):
+        try:
+            out.add(int(t))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _save_news_announced(s: set[int]) -> None:
+    write_json(NEWS_ANNOUNCED_PATH, {"ts": sorted(s)})
+
+
+_news_closes_announced: set[int] = _load_news_announced()
 
 
 def check_news_auto_close() -> None:
@@ -3193,9 +3264,17 @@ def check_news_auto_close() -> None:
         _news_closes_announced.difference_update(
             t for t in list(_news_closes_announced) if t < cutoff_ms
         )
+        # Bug-Audit Round 3: previously the close-loop fired UNCONDITIONALLY
+        # after the dedupe loop, even when every incoming event was already
+        # announced (no fresh trigger). On a re-poll where positions briefly
+        # re-appear (or were manually re-opened by the trader), this re-fired
+        # closes without a corresponding Telegram alert. Now we only close
+        # when at least one event in this poll is genuinely new.
+        any_new = False
         for e in incoming:
             if e["timestamp"] in _news_closes_announced:
                 continue
+            any_new = True
             _news_closes_announced.add(e["timestamp"])
             mins_to = max(0, (e["timestamp"] - now_ms) // 60000)
             log_event(
@@ -3210,8 +3289,12 @@ def check_news_auto_close() -> None:
                 f"Event: <b>{html_escape(e.get('title', '?'))}</b> ({e.get('currency', '?')})\n"
                 f"In {mins_to} min — flattening {len(bot_positions)} position(s) now.",
             )
-        for pos in bot_positions:
-            close_position(pos.ticket, exit_reason_override="news_blackout")
+        if any_new:
+            # Bug-Audit Round 3: persist the announced-set so restarts don't
+            # re-announce+re-close on the same event timestamp.
+            _save_news_announced(_news_closes_announced)
+            for pos in bot_positions:
+                close_position(pos.ticket, exit_reason_override="news_blackout")
 
 
 def check_consistency_rule() -> None:
@@ -3242,7 +3325,12 @@ def check_consistency_rule() -> None:
     largest = max(wins, key=lambda d: d.profit)
     ratio = largest.profit / total_profit
 
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Bug-Audit Round 3: dedupe-key was UTC date — drifted ~1-2h from the FTMO
+    # daily-reset boundary (Prague midnight). Result: at the Prague-day
+    # rollover the warning would fire twice (once before, once after the UTC
+    # boundary 1-2h later) or miss the rollover entirely depending on poll
+    # phase. Anchor to the same TZ as handle_daily_reset.
+    today = _prague_today_str()
     warn_key = f"{today}-{'HARD' if ratio >= CONSISTENCY_HARD_RATIO else 'WARN' if ratio >= CONSISTENCY_WARN_RATIO else 'OK'}"
 
     if ratio >= CONSISTENCY_HARD_RATIO and _last_consistency_warn[0] != warn_key:
@@ -3271,7 +3359,10 @@ def check_daily_dd_warning(current_equity_usd: float, day_start_usd: float) -> N
     if day_start_usd <= 0:
         return
     daily_pct = (current_equity_usd - day_start_usd) / day_start_usd
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Bug-Audit Round 3: dedupe-key was UTC date — drifted 1-2h from the
+    # FTMO/Prague daily-reset boundary that handle_daily_reset uses. Parity
+    # with check_consistency_rule fix.
+    today = _prague_today_str()
     if daily_pct <= -CB_DAILY_DD_WARN_PCT and _last_dd_warn_sent[0] != today:
         _last_dd_warn_sent[0] = today
         dd_usd = current_equity_usd - day_start_usd

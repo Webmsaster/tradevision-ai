@@ -44,10 +44,17 @@ pub fn resolve_sizing_factor(
     }
 
     // 1. Adaptive tiers (sorted ascending by equity_above).
+    //
+    // R29-R3.D: use f64::total_cmp so a NaN-poisoned tier (corrupt config)
+    // produces a deterministic order. `partial_cmp().unwrap_or(Equal)` lets
+    // two NaN-tiers compare as Equal regardless of position, which can
+    // shuffle equal-equity_above tiers across runs depending on Vec
+    // insertion order — small but real determinism gap, especially when
+    // sweep configs are generated programmatically.
     if let Some(tiers) = cfg.adaptive_sizing.as_ref() {
         if !tiers.is_empty() {
             let mut sorted: Vec<_> = tiers.clone();
-            sorted.sort_by(|a, b| a.equity_above.partial_cmp(&b.equity_above).unwrap_or(std::cmp::Ordering::Equal));
+            sorted.sort_by(|a, b| a.equity_above.total_cmp(&b.equity_above));
             for tier in &sorted {
                 if equity_above_baseline >= tier.equity_above {
                     factor = tier.factor;
@@ -77,7 +84,7 @@ pub fn resolve_sizing_factor(
             let wr = recent.iter().filter(|&&p| p > 0.0).count() as f64 / recent.len() as f64;
             // Sort tiers descending by win_rate_above.
             let mut sorted_tiers: Vec<_> = ks.tiers.clone();
-            sorted_tiers.sort_by(|a, b| b.win_rate_above.partial_cmp(&a.win_rate_above).unwrap_or(std::cmp::Ordering::Equal));
+            sorted_tiers.sort_by(|a, b| b.win_rate_above.total_cmp(&a.win_rate_above));
             let n = sorted_tiers.len();
             let tier_idx: usize = match state.kelly_tier_idx {
                 None => {

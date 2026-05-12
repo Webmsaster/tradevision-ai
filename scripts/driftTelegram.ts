@@ -116,7 +116,18 @@ async function main() {
   // R1-A1 audit fix: redact bot token from any logged error message.
   // Without this, DNS / TLS / fetch errors that include the request URL
   // dump the bot token straight into stderr / cron mail.
-  const redact = (s: string) => (token ? s.split(token).join("***") : s);
+  // R3-A1 audit fix #1: also redact any token shape returned in URL-encoded
+  // or re-formatted form (proxies sometimes percent-encode `:` or wrap the
+  // token in `bot…`). Pattern matches every Telegram token regardless of
+  // surrounding chars.
+  const TOKEN_RE = /\d{8,12}:[A-Za-z0-9_-]{20,}/g;
+  const redact = (s: string) => {
+    if (!s) return s;
+    let out = s;
+    if (token) out = out.split(token).join("***");
+    out = out.replace(TOKEN_RE, "***");
+    return out;
+  };
   for (const chunk of chunks) {
     // R1-A1 audit fix: 429 backoff + 401/404 fail-loud + 15s timeout. The
     // previous code dropped 429 silently (no Retry-After respect) and would
@@ -151,11 +162,15 @@ async function main() {
           break; // no retry on terminal errors
         }
         if (res.status === 429) {
+          // R3-A1 audit fix #6: NaN-guard + clamp [100ms, 60s] for malformed
+          // Retry-After headers (empty / non-numeric / HTTP-date).
           const retryAfterHdr = res.headers.get("retry-after");
+          const parsed = retryAfterHdr ? Number(retryAfterHdr) : NaN;
+          const headerMs =
+            Number.isFinite(parsed) && parsed >= 0 ? parsed * 1000 : NaN;
+          const fallbackMs = 2000 * (attempt + 1);
           const wait = Math.min(
-            retryAfterHdr
-              ? parseInt(retryAfterHdr, 10) * 1000
-              : 2000 * (attempt + 1),
+            Math.max(Number.isFinite(headerMs) ? headerMs : fallbackMs, 100),
             60_000,
           );
           await new Promise((r) => setTimeout(r, wait));

@@ -122,7 +122,15 @@ pub fn compute_eff_pnl_with_time(
         }
     }
 
-    let eff_pnl = (raw_pnl * cfg.leverage * pos.eff_risk).max(GAP_TAIL_MULT * pos.eff_risk);
+    // R29-R3.C: clamp eff_risk to ≥0 when computing the GAP_TAIL floor so a
+    // corrupted state with negative eff_risk (e.g. a sizing-factor regression
+    // multiplying a positive risk by a negative reentry_scale) can never flip
+    // the loss-floor into a profit-floor — that would turn a -150% R loss
+    // into a +150% R "gain" silently. The PnL itself uses raw eff_risk for
+    // parity with TS, the floor is the defensive clamp.
+    let risk_for_floor = pos.eff_risk.max(0.0);
+    let eff_pnl =
+        (raw_pnl * cfg.leverage * pos.eff_risk).max(GAP_TAIL_MULT * risk_for_floor);
     EffPnl { raw_pnl, eff_pnl }
 }
 
@@ -175,8 +183,11 @@ pub fn compute_mtm_equity(
                 raw_pnl = pos.ptp_levels_realized + (1.0 - total_closed) * raw_pnl;
             }
         }
+        // R29-R3.C: same defensive clamp as compute_eff_pnl_with_time —
+        // negative eff_risk must not invert the unrealised-loss floor.
+        let risk_for_floor = pos.eff_risk.max(0.0);
         let unrealised =
-            (raw_pnl * cfg.leverage * pos.eff_risk).max(GAP_TAIL_MULT * pos.eff_risk);
+            (raw_pnl * cfg.leverage * pos.eff_risk).max(GAP_TAIL_MULT * risk_for_floor);
         mtm *= 1.0 + unrealised;
     }
     mtm

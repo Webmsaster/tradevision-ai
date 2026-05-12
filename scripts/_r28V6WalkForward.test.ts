@@ -103,6 +103,15 @@ function runSplit(
     if (firstStart === -1) firstStart = start;
     lastStart = start;
     windows++;
+    // Bug-Audit Round 3 (R3 fix 7): WARMUP-bleed clarification.
+    // For TEST half (startBar = halfBar), `start - WARMUP` reaches back into
+    // TRAIN bars to seed indicator state (EMAs/ATR/RSI cold-start would
+    // otherwise produce 200+ bars of bogus signals). This is INDICATOR-ONLY
+    // bleed — `simulate(trimmed, cfg, WARMUP, WARMUP + winBars, …)` enters
+    // entries only from index WARMUP onward, so no trade can be taken on
+    // TRAIN bars. Walk-forward semantics preserved (no trade leak across
+    // the boundary); only the warmup indicators get a head-start, which is
+    // exactly how live deployment works too.
     const trimmed: Record<string, Candle[]> = {};
     for (const k of Object.keys(aligned)) {
       trimmed[k] = aligned[k]!.slice(start - WARMUP, start + winBars);

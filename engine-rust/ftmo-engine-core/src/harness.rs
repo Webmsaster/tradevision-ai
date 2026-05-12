@@ -145,6 +145,18 @@ pub fn step_bar(
 
     // 3. Force-close at max_days.
     if new_day >= cfg.max_days as i64 {
+        // R29-R3.E: when paused_at_target is latched (PASSLOCK Pass-Lock
+        // mode), the final-bar day must still count toward trading_days so
+        // the min_trading_days check below can clear. The mid-bar ping-day
+        // push at L350-355 only runs in the NORMAL path; the force-close
+        // shortcut returned before stamping today. TS V4 force-close stamps
+        // the active day via the same ping-day branch — Rust parity gap.
+        if state.paused_at_target {
+            let ping_day = new_day as u32;
+            if !state.trading_days.contains(&ping_day) {
+                state.trading_days.push(ping_day);
+            }
+        }
         force_close_all(state, input, cfg, last_bar_time, &mut result);
         result.challenge_ended = true;
         // After force-close: no unrealised PnL → mtm equals realised.
@@ -238,8 +250,10 @@ pub fn step_bar(
                         raw_pnl = pos.ptp_levels_realized + (1.0 - total_closed) * raw_pnl;
                     }
                 }
+                // R29-R3.C: defensive eff_risk clamp on the floor (see pnl.rs).
+                let risk_for_floor = pos.eff_risk.max(0.0);
                 let unrealised = (raw_pnl * cfg.leverage * pos.eff_risk)
-                    .max(crate::pnl::GAP_TAIL_MULT * pos.eff_risk);
+                    .max(crate::pnl::GAP_TAIL_MULT * risk_for_floor);
                 pre_mtm *= 1.0 + unrealised;
             }
             let day_pnl = (pre_mtm - state.day_start) / state.day_start;
@@ -284,11 +298,19 @@ pub fn step_bar(
         else {
             continue;
         };
+        // R29-R3.A: ATR bar-index must match the CHOSEN candle's open_time
+        // (which may lag `last_bar_time` when a feed is delayed), not
+        // `last_bar_time` directly. The previous lookup keyed on
+        // `last_bar_time` and silently returned None whenever the exact
+        // match missed — meaning chandelier/ATR-aware exits NEVER fired on
+        // lagging-feed bars, producing a TS↔Rust parity drift on multi-
+        // asset windows where one feed gaps a candle.
+        let chosen_open_time = candle.open_time;
         let atr_at_bar = input
             .atr_series_by_source
             .get(&pos.source_symbol)
             .and_then(|series| {
-                let bar_idx = arr.iter().position(|c| c.open_time == last_bar_time)?;
+                let bar_idx = arr.iter().position(|c| c.open_time == chosen_open_time)?;
                 series.get(bar_idx).copied().flatten()
             });
         let candle = *candle;
@@ -456,17 +478,31 @@ pub fn step_bar(
     }
 
     // 7. Entry-side gates that block ALL new entries this bar.
+    //
+    // R29-R3.B: track the precise gate that fired so skip-reasons aren't
+    // contaminated by unrelated `notes` pushed earlier in the bar
+    // (e.g. "assets misaligned", "time regression"). Previously
+    // `result.notes.last()` was used as the reason; if no gate fired but a
+    // mismatch note was pushed, the skip-reason would falsely point at the
+    // mismatch as the blocker → misleading diagnostics + audit confusion.
     let mut entries_allowed = !state.paused_at_target;
+    let mut block_reason: Option<String> = if state.paused_at_target {
+        Some("pausedAtTarget".into())
+    } else {
+        None
+    };
     if entries_allowed {
         if let Some(dpts) = cfg.daily_peak_trailing_stop {
             let drop = (state.day_peak - state.mtm_equity) / state.day_peak.max(1e-9);
             if drop >= dpts.trail_distance {
                 entries_allowed = false;
-                result.notes.push(format!(
+                let msg = format!(
                     "dailyPeakTrailingStop: drop {:.2}% >= {:.2}%",
                     drop * 100.0,
                     dpts.trail_distance * 100.0
-                ));
+                );
+                result.notes.push(msg.clone());
+                block_reason = Some(msg);
             }
         }
     }
@@ -476,9 +512,9 @@ pub fn step_bar(
                 / state.challenge_peak.max(1e-9);
             if drop >= cpts.trail_distance {
                 entries_allowed = false;
-                result
-                    .notes
-                    .push(format!("challengePeakTrailingStop: drop {:.2}%", drop * 100.0));
+                let msg = format!("challengePeakTrailingStop: drop {:.2}%", drop * 100.0);
+                result.notes.push(msg.clone());
+                block_reason = Some(msg);
             }
         }
     }
@@ -488,10 +524,12 @@ pub fn step_bar(
                 let day_pnl = (state.equity - state.day_start) / state.day_start;
                 if day_pnl <= -idl.hard_loss_threshold {
                     entries_allowed = false;
-                    result.notes.push(format!(
+                    let msg = format!(
                         "intradayDailyLossThrottle hard: {:.2}%",
                         day_pnl * 100.0
-                    ));
+                    );
+                    result.notes.push(msg.clone());
+                    block_reason = Some(msg);
                 }
             }
         }
@@ -503,7 +541,9 @@ pub fn step_bar(
             if let Some(dt) = DateTime::<Utc>::from_timestamp_millis(last_bar_time) {
                 if !hours.contains(&dt.hour()) {
                     entries_allowed = false;
-                    result.notes.push(format!("hour-gate: {} not in allowed_hours_utc", dt.hour()));
+                    let msg = format!("hour-gate: {} not in allowed_hours_utc", dt.hour());
+                    result.notes.push(msg.clone());
+                    block_reason = Some(msg);
                 }
             }
         }
@@ -514,7 +554,9 @@ pub fn step_bar(
                 let dow = dt.weekday().num_days_from_sunday();
                 if !dows.contains(&dow) {
                     entries_allowed = false;
-                    result.notes.push(format!("dow-gate: {dow} not in allowed_dows_utc"));
+                    let msg = format!("dow-gate: {dow} not in allowed_dows_utc");
+                    result.notes.push(msg.clone());
+                    block_reason = Some(msg);
                 }
             }
         }
@@ -526,11 +568,8 @@ pub fn step_bar(
     //    these were silently dropped, masking the gate that fired.
     if !entries_allowed {
         for sig in &input.signals {
-            // Determine which gate caused the block. The most recent note tells us.
-            let reason = result
-                .notes
-                .last()
-                .cloned()
+            let reason = block_reason
+                .clone()
                 .unwrap_or_else(|| "entries_allowed=false".into());
             result.skipped.push(crate::signal::PollSkip {
                 asset: sig.symbol.clone(),

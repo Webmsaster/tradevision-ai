@@ -26,6 +26,19 @@ import {
 const CACHE_DIR = "scripts/cache_bakeoff";
 const SHARD_IDX = parseInt(process.argv[2] ?? "0", 10);
 const SHARD_COUNT = parseInt(process.argv[3] ?? "1", 10);
+// Bug-Audit Round 3 (R3 fix 3): NaN/range-guard on shard CLI args.
+if (
+  !Number.isFinite(SHARD_IDX) ||
+  !Number.isFinite(SHARD_COUNT) ||
+  SHARD_COUNT < 1 ||
+  SHARD_IDX < 0 ||
+  SHARD_IDX >= SHARD_COUNT
+) {
+  console.error(
+    `bad shard args: SHARD_IDX=${process.argv[2]} SHARD_COUNT=${process.argv[3]} (need 0 ≤ idx < count, count ≥ 1)`,
+  );
+  process.exit(2);
+}
 const RESUME = process.argv.includes("--resume");
 
 const VARIANTS: { name: string; cfg: FtmoDaytrade24hConfig }[] = [
@@ -99,6 +112,14 @@ const maxDaysSet = new Set(VARIANTS.map((v) => v.cfg.maxDays));
 if (maxDaysSet.size > 1) {
   throw new Error(
     `Round60VolTpShard variants disagree on maxDays: ${[...maxDaysSet].join(",")}.`,
+  );
+}
+// Bug-Audit Round 3 (R3 fix 2): assert 30m (cache file + *48 hardcoded).
+const volTpBarMinutes = (VARIANTS[0]!.cfg as { barMinutes?: number })
+  .barMinutes;
+if (volTpBarMinutes !== undefined && volTpBarMinutes !== 30) {
+  throw new Error(
+    `_r28V6Round60VolTpShard winBars hardcoded *48 (30m); cfg.barMinutes=${volTpBarMinutes}`,
   );
 }
 const winBars = VARIANTS[0]!.cfg.maxDays * 48;

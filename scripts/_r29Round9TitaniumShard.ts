@@ -25,6 +25,21 @@ if (!CONFIG_NAME || !SLUG) {
   console.error("usage: <CONFIG> <slug> <shard_idx> <count> [stepDays]");
   process.exit(2);
 }
+// Bug-Audit Round 3 (R3 fix 3): NaN/range-guard on shard CLI args.
+if (
+  !Number.isFinite(SHARD_IDX) ||
+  !Number.isFinite(SHARD_COUNT) ||
+  !Number.isFinite(STEP_DAYS) ||
+  SHARD_COUNT < 1 ||
+  SHARD_IDX < 0 ||
+  SHARD_IDX >= SHARD_COUNT ||
+  STEP_DAYS < 1
+) {
+  console.error(
+    `bad shard args: SHARD_IDX=${process.argv[4]} SHARD_COUNT=${process.argv[5]} STEP_DAYS=${process.argv[6]} (need 0 ≤ idx < count, count ≥ 1, step ≥ 1)`,
+  );
+  process.exit(2);
+}
 
 const cfg = (cfgModule as Record<string, unknown>)[CONFIG_NAME] as
   | (typeof cfgModule)["FTMO_DAYTRADE_24H_R28_V6_PASSLOCK"]
@@ -126,6 +141,13 @@ function loadAligned() {
 }
 
 const { aligned, fundingByAsset, minBars } = loadAligned();
+// Bug-Audit Round 3 (R3 fix 2): assert 30m (cache file + *48 hardcoded).
+const r9BarMinutes = (cfg as { barMinutes?: number }).barMinutes;
+if (r9BarMinutes !== undefined && r9BarMinutes !== 30) {
+  throw new Error(
+    `_r29Round9TitaniumShard winBars hardcoded *48 (30m); cfg.barMinutes=${r9BarMinutes}`,
+  );
+}
 const winBars = cfg.maxDays * 48;
 const stepBars = STEP_DAYS * 48;
 const WARMUP = 5000;

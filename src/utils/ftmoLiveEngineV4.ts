@@ -98,6 +98,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { atr } from "@/utils/indicators";
 import type { Candle } from "@/utils/indicators";
+import { withFileLockSync } from "@/utils/processLock";
 import {
   detectAsset,
   type Daytrade24hAssetCfg,
@@ -331,6 +332,26 @@ const STATE_FILENAME = "v4-engine.json";
 export function loadState(stateDir: string, cfgLabel: string): FtmoLiveStateV4 {
   const filePath = path.join(stateDir, STATE_FILENAME);
   if (!fs.existsSync(filePath)) return initialState(cfgLabel);
+  // R67-RR3 (Bug-Audit Round 3): wrap the entire read+migrate+rewrite cycle
+  // in a cross-process file lock. PM2-restart overlap (graceful old worker
+  // still draining while new worker boots) could otherwise have two procs
+  // performing the v1→v2 / v2→v3 migrations concurrently, each renaming
+  // the same file under the other → one of them ends up with a
+  // backed-up state path that doesn't exist on disk anymore. The lock
+  // serialises load attempts cross-process; the retry-once below still
+  // handles intra-process renames from saveState.
+  const lockPath = path.join(stateDir, `${STATE_FILENAME}.loadlock`);
+  return withFileLockSync(
+    lockPath,
+    () => _loadStateInner(filePath, cfgLabel),
+    // staleMs=2000 — if a previous holder crashed mid-load we want to
+    // recover quickly rather than block the bot on every poll-tick.
+    { timeoutMs: 3000, staleMs: 2000, backoffMs: 10 },
+  );
+}
+
+function _loadStateInner(filePath: string, cfgLabel: string): FtmoLiveStateV4 {
+  if (!fs.existsSync(filePath)) return initialState(cfgLabel);
   // Retry-once: a concurrent rename-into-place can race with our read.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -425,8 +446,20 @@ export function loadState(stateDir: string, cfgLabel: string): FtmoLiveStateV4 {
         } catch {
           /* ignore — fresh state will overwrite anyway */
         }
+        // R67-RR3 (Bug-Audit Round 3): distinguish a rollback (state from a
+        // NEWER schema version than this binary supports) from a generic
+        // mismatch. A rollback usually means we deployed a binary one git
+        // SHA OLDER than what wrote the state — the operator should see
+        // this clearly so they can decide whether to redeploy forward vs
+        // accept the data-loss reset.
+        const isRollback =
+          typeof obj.schemaVersion === "number" &&
+          obj.schemaVersion > SCHEMA_VERSION;
+        const tag = isRollback
+          ? "STATE FROM NEWER VERSION (rollback?)"
+          : "STATE MISMATCH";
         console.error(
-          `[V4] STATE MISMATCH — backed up to ${backupPath}. ` +
+          `[V4] ${tag} — backed up to ${backupPath}. ` +
             `Old: ${obj.cfgLabel}/${obj.schemaVersion}, ` +
             `New: ${cfgLabel}/${SCHEMA_VERSION}`,
         );

@@ -22,6 +22,19 @@ import type { Candle } from "../src/utils/indicators";
 const CACHE_DIR = "scripts/cache_bakeoff";
 const SHARD_IDX = parseInt(process.argv[2] ?? "0", 10);
 const SHARD_COUNT = parseInt(process.argv[3] ?? "1", 10);
+// Bug-Audit Round 3 (R3 fix 3): NaN/range-guard on shard CLI args.
+if (
+  !Number.isFinite(SHARD_IDX) ||
+  !Number.isFinite(SHARD_COUNT) ||
+  SHARD_COUNT < 1 ||
+  SHARD_IDX < 0 ||
+  SHARD_IDX >= SHARD_COUNT
+) {
+  console.error(
+    `bad shard args: SHARD_IDX=${process.argv[2]} SHARD_COUNT=${process.argv[3]} (need 0 ≤ idx < count, count ≥ 1)`,
+  );
+  process.exit(2);
+}
 const OUT = `${CACHE_DIR}/r28v6_plus2_shard_${SHARD_IDX}.jsonl`;
 writeFileSync(OUT, "");
 
@@ -106,6 +119,13 @@ const plus2Cfg: FtmoDaytrade24hConfig = {
 const plusAlign = loadAligned(PLUS_SYMBOLS);
 const aligned = plusAlign.aligned; // common-timestamps across all 11 assets
 
+// Bug-Audit Round 3 (R3 fix 2): assert 30m (cache file + *48 hardcoded).
+const plus2BarMinutes = (baselineCfg as { barMinutes?: number }).barMinutes;
+if (plus2BarMinutes !== undefined && plus2BarMinutes !== 30) {
+  throw new Error(
+    `_r28V6Plus2Shard winBars hardcoded *48 (30m); cfg.barMinutes=${plus2BarMinutes}`,
+  );
+}
 const winBars = baselineCfg.maxDays * 48;
 const stepBars = 14 * 48;
 const WARMUP = 5000;

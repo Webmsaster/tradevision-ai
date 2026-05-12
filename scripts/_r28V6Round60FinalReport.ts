@@ -29,6 +29,13 @@ const VARIANTS = [
 const CACHE_DIR = "scripts/cache_bakeoff";
 const SHARDS = 8;
 const BASELINE = 56.62;
+// Bug-Audit Round 3 (R3 fix 8): Live-drift assumption extracted to a named
+// constant. Source: project MEMORY.md `project_round42_v4_live_engine.md`
+// — V4-Engine to live drift typically -3 to -5pp (slippage + Telegram +
+// MT5 quirks). We pick the midpoint (-4pp) for the "live" column. If
+// post-deploy realised drift differs, update this constant; do not edit
+// the table cells.
+const ASSUMED_LIVE_DRIFT_PP = -4;
 
 interface Result {
   winIdx: number;
@@ -135,7 +142,8 @@ lines.push("| Setup | Pass% min-1 | Live (-3-5pp drift) |");
 lines.push("|---|---:|---:|");
 for (const n of [1, 2, 3]) {
   const p = multiAccountMinPass(champ.pct, n);
-  const live = multiAccountMinPass(champ.pct - 4, n); // assume -4pp avg drift
+  // ASSUMED_LIVE_DRIFT_PP documents the -4pp assumption (R3 fix 8).
+  const live = multiAccountMinPass(champ.pct + ASSUMED_LIVE_DRIFT_PP, n);
   lines.push(
     `| ${n}× ${champ.name.toUpperCase()} | ${p.toFixed(2)}% | ${live.toFixed(2)}% |`,
   );

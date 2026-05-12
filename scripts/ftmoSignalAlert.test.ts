@@ -27,11 +27,13 @@ import {
   fsyncSync,
   openSync,
   readFileSync,
+  readdirSync,
   renameSync,
   statSync,
   unlinkSync,
   writeSync,
 } from "node:fs";
+import { basename, dirname, resolve } from "node:path";
 import { loadBinanceHistory } from "../src/utils/historicalData";
 import {
   loadForexFactoryNews,
@@ -96,9 +98,16 @@ function saveState(s: SignalState, path: string = STATE_PATH) {
 // R1-A1 audit fix: redact token from any error/message returned by fetch.
 // Without this, DNS / TLS / Cloudflare errors can echo back the request URL
 // containing the bot token straight into stderr or log files.
+// R3-A1 audit fix: also redact URL-encoded / re-formatted token shapes via
+// regex — proxies sometimes percent-encode `:` or wrap the token in `bot…`.
+// Pattern `<8-12 digit bot-id>:<>=20 url-safe chars>` matches every Telegram
+// token regardless of surrounding chars.
 function redactToken(s: string, token: string): string {
-  if (!token) return s;
-  return s.split(token).join("***");
+  if (!s) return s;
+  let out = s;
+  if (token) out = out.split(token).join("***");
+  out = out.replace(/\d{8,12}:[A-Za-z0-9_-]{20,}/g, "***");
+  return out;
 }
 
 // R1-A1 audit fix: per-account env lookup, mirrors driftTelegram.ts.
@@ -136,19 +145,27 @@ async function sendTelegram(msg: string): Promise<boolean> {
         },
       );
       if (res.ok) return true;
+      // R3-A1 audit fix: read body once and redact for terminal/5xx paths.
+      const bodyText = redactToken(await res.text().catch(() => ""), token);
       // 401 = bad token, 404 = bad chat — both terminal; do not retry.
       if (res.status === 401 || res.status === 404) {
         console.error(
-          `[signal-alert] Telegram terminal error ${res.status} — check TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID`,
+          `[signal-alert] Telegram terminal error ${res.status} — check TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID: ${bodyText.slice(0, 200)}`,
         );
         return false;
       }
       if (res.status === 429) {
+        // R3-A1 audit fix #6: Retry-After can be NaN (empty / non-numeric /
+        // HTTP-date format we don't parse). Guard with Number.isFinite and
+        // clamp to [100ms, 60s] so a malformed header can't yield a 0ms
+        // hot-loop or a multi-day NaN-derived sleep.
         const retryAfterHdr = res.headers.get("retry-after");
+        const parsed = retryAfterHdr ? Number(retryAfterHdr) : NaN;
+        const headerMs =
+          Number.isFinite(parsed) && parsed >= 0 ? parsed * 1000 : NaN;
+        const fallbackMs = 2000 * (attempt + 1);
         const wait = Math.min(
-          retryAfterHdr
-            ? parseInt(retryAfterHdr, 10) * 1000
-            : 2000 * (attempt + 1),
+          Math.max(Number.isFinite(headerMs) ? headerMs : fallbackMs, 100),
           60_000,
         );
         await new Promise((r) => setTimeout(r, wait));
@@ -172,8 +189,35 @@ async function sendTelegram(msg: string): Promise<boolean> {
   return false;
 }
 
+// R3-A1 audit fix #8: orphan .tmp.<pid> sweep. saveState() writes to
+// `${path}.tmp.${pid}` then renames; a SIGKILL between openSync and rename
+// (or before the catch-block unlink runs) leaves the temp file behind.
+// On each startup we delete any `*.tmp.*` next to STATE_PATH older than 1h
+// — long enough that the current run's in-flight tmp file is never touched.
+function sweepOrphanTmpFiles(dir: string = ".") {
+  try {
+    const cutoffMs = Date.now() - 60 * 60 * 1000; // 1h ago
+    const tmpRe = /\.tmp\.[0-9A-Za-z]+$/;
+    for (const f of readdirSync(dir)) {
+      if (!tmpRe.test(f)) continue;
+      const full = resolve(dir, f);
+      try {
+        const st = statSync(full);
+        if (st.isFile() && st.mtimeMs < cutoffMs) {
+          unlinkSync(full);
+        }
+      } catch {
+        /* race or perm-denied — best-effort */
+      }
+    }
+  } catch {
+    /* best-effort */
+  }
+}
+
 describe("ftmo signal alert", { timeout: 60_000 }, () => {
   it("checks for live signal + optional telegram push", async () => {
+    sweepOrphanTmpFiles(".");
     const btc = await loadBinanceHistory({
       symbol: "BTCUSDT",
       timeframe: "4h",
@@ -205,10 +249,17 @@ describe("ftmo signal alert", { timeout: 60_000 }, () => {
     // processes used to share `signal-alerts.log` → interleaved >PIPE_BUF
     // writes plus duplicate-state-file collisions. Each account now writes
     // to its own log (and state/lock — see below).
-    const accSuffix = process.env.FTMO_ACCOUNT_ID
-      ? `.${process.env.FTMO_ACCOUNT_ID}`
-      : "";
-    const logPath = `${LOG_PATH}${accSuffix ? accSuffix.replace(/\./, "-") : ""}`;
+    // R3-A1 audit fix #2: sanitize FTMO_ACCOUNT_ID before using as a path
+    // segment — `"acc/1"` (slash) caused ENOENT, `"acc 1"` (space) made the
+    // path quoting brittle in cron shells, `.` (dot) collided with the log
+    // extension. Allowlist [A-Za-z0-9_-] only.
+    // R3-A1 audit fix #3: replace ALL dots in the account suffix (not just
+    // the first) so `acc.demo.1` doesn't leak partial dots into the log
+    // basename.
+    const rawAcc = process.env.FTMO_ACCOUNT_ID;
+    const safeAcc = rawAcc ? rawAcc.replace(/[^A-Za-z0-9_-]/g, "_") : "";
+    const accSuffix = safeAcc ? `.${safeAcc}` : "";
+    const logPath = `${LOG_PATH}${accSuffix ? accSuffix.replace(/\./g, "-") : ""}`;
     const statePath = `${STATE_PATH}${accSuffix}`;
 
     // R67-r12 audit fix: rotate signal-alerts.log when it crosses 5 MB.
@@ -224,6 +275,35 @@ describe("ftmo signal alert", { timeout: 60_000 }, () => {
           .replace(/[:.]/g, "-")
           .replace(/Z$/, "");
         renameSync(logPath, `${logPath}.${stamp}.rot`);
+      }
+      // R3-A1 audit fix #5: TTL — keep only the newest 10 `.rot` archives
+      // and delete the rest. Without this, the rotation block from above
+      // accumulates archive files indefinitely (one per overflow → ~once
+      // per multi-month period, but still unbounded).
+      const ROT_KEEP = 10;
+      const absLog = resolve(logPath);
+      const logDir = dirname(absLog) || ".";
+      const logBase = basename(absLog);
+      const rotPrefix = `${logBase}.`;
+      const rotEntries = readdirSync(logDir)
+        .filter((f) => f.startsWith(rotPrefix) && f.endsWith(".rot"))
+        .map((f) => {
+          const full = resolve(logDir, f);
+          let mtime = 0;
+          try {
+            mtime = statSync(full).mtimeMs;
+          } catch {
+            /* race with another cleaner — skip */
+          }
+          return { full, mtime };
+        })
+        .sort((a, b) => b.mtime - a.mtime); // newest first
+      for (const entry of rotEntries.slice(ROT_KEEP)) {
+        try {
+          unlinkSync(entry.full);
+        } catch {
+          /* best-effort */
+        }
       }
     } catch (e) {
       // Rotation is best-effort — never block the alert log on FS issues.

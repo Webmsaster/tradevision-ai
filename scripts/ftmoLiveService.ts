@@ -102,6 +102,14 @@ const TF_DISPATCH: Record<string, TfTag> = {
   "2h-trend-v5-r28-v6-passlock-dayrisk50": "30m",
   "2h-trend-v5-r28-v6-passlock-dayrisk70": "30m",
   "2h-trend-v5-r28-v6-passlock-dayrisk50-2d": "30m",
+  // R29 Round 3 audit fix (R3-Bug #1): PASSLOCK sisters for 3-Strategy
+  // Multi-Account Plan. All inherit from 30m base configs (TITANIUM, AMBER,
+  // OBSIDIAN, QUARTZ_LITE_R28). R3-Bug #2: STEP2 selector.
+  "2h-trend-v5-titanium-passlock": "30m",
+  "2h-trend-v5-amber-passlock": "30m",
+  "2h-trend-v5-obsidian-passlock": "30m",
+  "2h-trend-v5-quartz-lite-r28-passlock": "30m",
+  "2h-trend-v5-quartz-lite-r28-step2": "30m",
   "2h-trend-breakout-v1": "30m",
   "2h-trend-v5-quartz-step2": "30m",
   "2h-trend-v5-topaz": "30m",

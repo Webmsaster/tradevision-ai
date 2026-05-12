@@ -7,18 +7,22 @@ cd "$(dirname "$0")/.."
 
 SYMS="ETHUSDT,BTCUSDT,BNBUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LTCUSDT,BCHUSDT,AAVEUSDT,XRPUSDT,INJUSDT,RUNEUSDT,ETCUSDT,SANDUSDT"
 SWEEP=./engine-rust/target/release/ftmo-sweep
-LOG=/tmp/hunt_phase1e.log
-> "$LOG"
+LOG="/tmp/hunt_phase1e_$$.log"
+LOG_FINAL=/tmp/hunt_phase1e.log
+: > "$LOG"
+trap 'rm -f "$LOG.partial"' EXIT INT TERM
 
 run() {
   local label="$1"
   shift
   echo "=== $label ===" | tee -a "$LOG"
-  $SWEEP \
+  if ! $SWEEP \
     --candles-dir scripts/cache_bakeoff --symbols "$SYMS" \
     --config 2h-trend-v5-titanium-passlock \
     --windows 200 --step-days 14 \
-    --phantom-suppress "$@" 2>&1 | tail -1 | tee -a "$LOG"
+    --phantom-suppress "$@" 2>&1 | tail -1 | tee -a "$LOG"; then
+    echo "[warn] $label failed — continuing" | tee -a "$LOG"
+  fi
 }
 
 # Pure alternative signals
@@ -56,3 +60,5 @@ grep -B1 "passed=" "$LOG" | paste -d'|' - - | awk -F'|' '{
   match($2, /\(([0-9.]+)%\)/, pct);
   if (lab[1] != "" && pct[1] != "") print pct[1] "  " lab[1];
 }' | sort -rn | head -20 | tee -a "$LOG"
+
+cp -f "$LOG" "$LOG_FINAL"

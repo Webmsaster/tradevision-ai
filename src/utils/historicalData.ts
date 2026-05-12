@@ -193,6 +193,15 @@ export async function loadBinanceHistory({
   }
 
   candles.sort((a, b) => a.openTime - b.openTime);
+  // R3-A1 audit fix #7: surface short-load as warning. If we returned fewer
+  // than 80% of the requested candle count, downstream indicators (RSI, ATR,
+  // EMA) will silently degrade — callers used to receive the array without
+  // any hint that pagination ran out of budget / hit the listed-data start.
+  if (candles.length < 0.8 * targetCount) {
+    console.warn(
+      `[loadBinanceHistory] short-load: returned ${candles.length} of ${targetCount} target candles (symbol=${symbol}, tf=${timeframe})`,
+    );
+  }
   return candles.length > targetCount ? candles.slice(-targetCount) : candles;
 }
 

@@ -10,22 +10,28 @@ cd "$(dirname "$0")/.."
 SYMS_BASE="ETHUSDT,BTCUSDT,BNBUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LTCUSDT,BCHUSDT,AAVEUSDT,XRPUSDT,INJUSDT,RUNEUSDT,ETCUSDT,SANDUSDT"
 SYMS_R28V6="BTCUSDT,ETHUSDT,BNBUSDT,ADAUSDT,LTCUSDT,BCHUSDT,ETCUSDT,XRPUSDT,AAVEUSDT"
 SWEEP=./engine-rust/target/release/ftmo-sweep
-LOG=/tmp/hunt_phase2.log
-> "$LOG"
+LOG="/tmp/hunt_phase2_$$.log"
+LOG_FINAL=/tmp/hunt_phase2.log
+: > "$LOG"
+trap 'rm -f "$LOG.partial"' EXIT INT TERM
 
 run() {
   local cfg="$1"
   local step="$2"
   local syms="$3"
   echo "=== $cfg @ step=$step ===" | tee -a "$LOG"
-  $SWEEP \
+  if ! $SWEEP \
     --candles-dir scripts/cache_bakeoff --symbols "$syms" \
     --config "$cfg" \
-    --windows 600 --step-days $step --signals per-asset \
-    --phantom-suppress 2>&1 | tail -1 | tee -a "$LOG"
+    --windows 600 --step-days "$step" --signals per-asset \
+    --phantom-suppress 2>&1 | tail -1 | tee -a "$LOG"; then
+    echo "[warn] $cfg @ step=$step failed — continuing" | tee -a "$LOG"
+  fi
 }
 
 for cfg in "$@"; do
+  # Validate config name — only allow alphanumerics, dash, underscore (and case)
+  [[ "$cfg" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "ERROR: bad config name: $cfg" >&2; exit 1; }
   syms="$SYMS_BASE"
   case "$cfg" in
     *r28-v6*) syms="$SYMS_R28V6" ;;
@@ -37,3 +43,5 @@ done
 echo "" | tee -a "$LOG"
 echo "=== SUMMARY ===" | tee -a "$LOG"
 grep -E "===|passed=" "$LOG" | tee -a "$LOG"
+
+cp -f "$LOG" "$LOG_FINAL"

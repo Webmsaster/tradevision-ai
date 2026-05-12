@@ -24,8 +24,10 @@ if [ ! -x ./engine-rust/target/release/ftmo-sweep ]; then
   exit 3
 fi
 
-MASTER_LOG=/tmp/hunt_master.log
+MASTER_LOG="/tmp/hunt_master_$$.log"
+MASTER_LOG_FINAL=/tmp/hunt_master.log
 : > "$MASTER_LOG"
+trap 'cp -f "$MASTER_LOG" "$MASTER_LOG_FINAL" 2>/dev/null || true; rm -f "$MASTER_LOG.partial"' EXIT INT TERM
 
 phase() {
   echo "" | tee -a "$MASTER_LOG"
@@ -69,6 +71,13 @@ if [ -z "$TOP_CONFIGS" ]; then
   exit 0
 fi
 
+# Validate each TOP_CONFIGS entry — reject any name with whitespace/special chars
+# (newline-separated; word-splitting intentional below).
+while IFS= read -r cfg; do
+  [ -z "$cfg" ] && continue
+  [[ "$cfg" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "ERROR: bad cfg name from Phase 1 rank: '$cfg'" >&2; exit 1; }
+done <<< "$TOP_CONFIGS"
+
 phase "PHASE 2 — cross-step on top configs: $TOP_CONFIGS"
 # shellcheck disable=SC2086  # intentional word-split of newline-separated configs
 bash scripts/_huntPhase2.sh $TOP_CONFIGS 2>&1 | tail -50 | tee -a "$MASTER_LOG"
@@ -87,6 +96,8 @@ SURVIVORS=$(grep -A2 "@ step=7 ===" /tmp/hunt_phase2.log 2>/dev/null \
     }' | sort -u)
 echo "Survivors: $SURVIVORS" | tee -a "$MASTER_LOG"
 for cfg in $SURVIVORS; do
+  # Validate survivor name before feeding to subshell scripts
+  [[ "$cfg" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "ERROR: bad survivor cfg name: '$cfg'" >&2; exit 1; }
   bash scripts/_huntPhase3.sh "$cfg" 2>&1 | tail -15 | tee -a "$MASTER_LOG"
 done
 

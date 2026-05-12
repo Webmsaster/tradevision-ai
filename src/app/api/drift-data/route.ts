@@ -12,14 +12,25 @@
  * Gated behind FTMO_MONITOR_ENABLED (same flag as /api/ftmo-state) to keep
  * the endpoint 404 in public deployments.
  */
-import { existsSync, readFileSync, statSync, readdirSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  statSync,
+  readdirSync,
+  openSync,
+  readSync,
+  closeSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase-server";
 import { isPlaceholderSupabaseUrl } from "@/lib/supabase";
 import { isRateLimited } from "@/utils/distributedRateLimit";
 import { pragueDay } from "@/utils/ftmoDaytrade24h";
-import { canUserReadSlug } from "@/lib/userFtmoAccounts";
+import {
+  canUserReadSlug,
+  getAllowedSlugsForUser,
+} from "@/lib/userFtmoAccounts";
 
 // ---------------------------------------------------------------------------
 // Config / constants
@@ -241,8 +252,25 @@ function resolveStateDir(tfSlug: string | null): {
 /**
  * Discover sibling state directories so the UI can show a TF picker.
  * Lists every top-level dir matching `ftmo-state` or `ftmo-state-<slug>`.
+ *
+ * R67-RR3 (Bug-Audit Round 3 — CRITICAL cross-tenant leak): the caller
+ * MUST filter this list per-user before exposing it to the response.
+ * A non-admin tenant on a shared SaaS deploy could previously read the
+ * full slug list and infer (a) other tenants' bot names and (b) which
+ * bots are alive (slug present = state-dir exists). The GET handler now
+ * passes the auth context here and we filter accordingly.
  */
-function discoverStateDirs(): string[] {
+async function discoverStateDirs(
+  auth: {
+    ok: boolean;
+    reason?: string;
+    email?: string | null;
+    userId?: string | null;
+    supabase?: Awaited<ReturnType<typeof createServerSupabaseClient>>;
+  },
+  isAdmin: boolean,
+): Promise<string[]> {
+  let all: string[];
   try {
     const entries = readdirSync(process.cwd(), { withFileTypes: true });
     const slugs: string[] = [];
@@ -254,7 +282,22 @@ function discoverStateDirs(): string[] {
         if (TF_SLUG_RE.test(slug)) slugs.push(slug);
       }
     }
-    return slugs.sort();
+    all = slugs.sort();
+  } catch {
+    return [];
+  }
+  // Admin / bypass / no-auth-backend → see everything (single-owner VPS
+  // pattern; same authority as `canReadArbitrarySlug`).
+  if (isAdmin) return all;
+  // Authenticated multi-tenant user → only the slugs they're explicitly
+  // mapped to in `user_ftmo_accounts`. If we don't have a supabase client
+  // (createServerSupabaseClient returned null) we can't verify mappings
+  // safely → return [] (fail-closed).
+  if (!auth.userId || !auth.supabase) return [];
+  try {
+    const allowed = await getAllowedSlugsForUser(auth.userId, auth.supabase);
+    const allowedSet = new Set(allowed);
+    return all.filter((s) => allowedSet.has(s));
   } catch {
     return [];
   }
@@ -276,6 +319,17 @@ function readJson<T>(stateDir: string, name: string, fallback: T): T {
   }
 }
 
+// R67-RR3 (Bug-Audit Round 3): process-wide cache so we don't re-read the
+// entire JSONL on every request when nothing changed. Key = absolute path,
+// value = {mtimeMs, size, entries}. With 60 polls/min the executor log
+// barely grows between adjacent requests; a stat-only check avoids the
+// multi-MB read+parse cycle on >99% of calls.
+const _jsonlCache = new Map<
+  string,
+  { mtimeMs: number; size: number; entries: Record<string, unknown>[] }
+>();
+const JSONL_TAIL_BYTES = 256 * 1024; // 256 KiB tail window (~ last few hundred events)
+
 function readJsonl(
   stateDir: string,
   name: string,
@@ -286,7 +340,39 @@ function readJsonl(
   try {
     const stat = statSync(p);
     if (stat.size > JSONL_MAX_BYTES) return [];
-    const lines = readFileSync(p, "utf8").trim().split("\n");
+    // Fast path: file unchanged since last read → reuse cached parse.
+    const cached = _jsonlCache.get(p);
+    if (
+      cached &&
+      cached.mtimeMs === stat.mtimeMs &&
+      cached.size === stat.size
+    ) {
+      // Slice to maxEntries in case caller asks for fewer than we cached.
+      return cached.entries.slice(-maxEntries);
+    }
+    // Tail read: only the last JSONL_TAIL_BYTES bytes from the file, NOT
+    // the whole 10MB. Drop the first (possibly partial) line so we don't
+    // emit a malformed entry. For most healthy logs this still captures
+    // many hundreds of events, far more than maxEntries needs.
+    let buf: string;
+    if (stat.size <= JSONL_TAIL_BYTES) {
+      buf = readFileSync(p, "utf8");
+    } else {
+      const fd = openSync(p, "r");
+      try {
+        const tail = Buffer.alloc(JSONL_TAIL_BYTES);
+        const offset = stat.size - JSONL_TAIL_BYTES;
+        readSync(fd, tail, 0, JSONL_TAIL_BYTES, offset);
+        buf = tail.toString("utf8");
+        // Drop everything up to and including the first newline — that
+        // chunk is the tail of a line we sliced through.
+        const nl = buf.indexOf("\n");
+        if (nl >= 0) buf = buf.slice(nl + 1);
+      } finally {
+        closeSync(fd);
+      }
+    }
+    const lines = buf.trim().split("\n");
     const out: Record<string, unknown>[] = [];
     // walk from the end so we tail efficiently
     for (let i = lines.length - 1; i >= 0 && out.length < maxEntries; i--) {
@@ -297,6 +383,19 @@ function readJsonl(
       } catch {
         // skip malformed
       }
+    }
+    // Cache the parsed entries keyed by (mtimeMs,size) so the next call
+    // can short-circuit.
+    _jsonlCache.set(p, {
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+      entries: out,
+    });
+    // Cap cache to last 32 files (multi-tenant slug enumeration could
+    // otherwise grow it unbounded).
+    if (_jsonlCache.size > 32) {
+      const firstKey = _jsonlCache.keys().next().value;
+      if (firstKey) _jsonlCache.delete(firstKey);
     }
     return out;
   } catch {
@@ -812,7 +911,39 @@ export async function GET(req: NextRequest) {
   const peakUsd =
     peakState.peak_equity_usd ?? Math.max(liveEquityUsd, startBalanceUsd);
   const newsMarkers = extractNewsMarkers(executorLog);
-  const recentEvents = executorLog.slice(-20).reverse();
+  // R67-RR3 (Bug-Audit Round 3): per-event JSON-size cap. A single rogue
+  // executor log entry (huge stack trace, debug-dumped MT5 tick array,
+  // etc.) could otherwise inflate every drift-data response to megabytes.
+  // Truncate any oversized string field to keep the row under MAX_EVENT_BYTES.
+  const MAX_EVENT_BYTES = 1024;
+  const _capEvent = (evt: ExecutorEvent): ExecutorEvent => {
+    const raw = JSON.stringify(evt);
+    if (raw.length <= MAX_EVENT_BYTES) return evt;
+    // Walk keys, truncate any string > 200 chars; preserve ts/event.
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(evt)) {
+      if (k === "ts" || k === "event") {
+        out[k] = v;
+      } else if (typeof v === "string" && v.length > 200) {
+        out[k] = v.slice(0, 200) + `…[+${v.length - 200} chars truncated]`;
+      } else {
+        out[k] = v;
+      }
+    }
+    // If STILL over budget after string-truncation, drop non-essential
+    // fields keeping only ts/event/reason for forensic minimum.
+    if (JSON.stringify(out).length > MAX_EVENT_BYTES) {
+      const minimal: Record<string, unknown> = {
+        ts: out.ts,
+        event: out.event,
+        _truncated: true,
+      };
+      if ("reason" in out) minimal.reason = out.reason;
+      return minimal as ExecutorEvent;
+    }
+    return out as ExecutorEvent;
+  };
+  const recentEvents = executorLog.slice(-20).reverse().map(_capEvent);
   const positions = annotatePositions(openPosRaw.positions);
   const health = computeHealth(
     executorLog,
@@ -839,7 +970,10 @@ export async function GET(req: NextRequest) {
       meta: {
         backtestRef: BACKTEST_REF,
         stateDir: stateDirRel,
-        availableTfSlugs: discoverStateDirs(),
+        availableTfSlugs: await discoverStateDirs(
+          auth,
+          canReadArbitrarySlug(auth),
+        ),
         currentTfSlug: tfSlug ?? "",
         startBalanceUsd,
         generatedAt: new Date().toISOString(),

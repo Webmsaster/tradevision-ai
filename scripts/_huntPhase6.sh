@@ -7,18 +7,22 @@ cd "$(dirname "$0")/.."
 
 SYMS="ETHUSDT,BTCUSDT,BNBUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LTCUSDT,BCHUSDT,AAVEUSDT,XRPUSDT,INJUSDT,RUNEUSDT,ETCUSDT,SANDUSDT"
 SWEEP=./engine-rust/target/release/ftmo-sweep
-LOG=/tmp/hunt_phase6.log
-> "$LOG"
+LOG="/tmp/hunt_phase6_$$.log"
+LOG_FINAL=/tmp/hunt_phase6.log
+: > "$LOG"
+trap 'rm -f "$LOG.partial"' EXIT INT TERM
 
 run() {
   local label="$1"
   shift
   echo "=== $label ===" | tee -a "$LOG"
-  $SWEEP \
+  if ! $SWEEP \
     --candles-dir scripts/cache_bakeoff --symbols "$SYMS" \
     --config 2h-trend-v5-titanium-passlock \
     --windows 400 --step-days 7 --signals per-asset \
-    --phantom-suppress "$@" 2>&1 | tail -1 | tee -a "$LOG"
+    --phantom-suppress "$@" 2>&1 | tail -1 | tee -a "$LOG"; then
+    echo "[warn] $label failed — continuing" | tee -a "$LOG"
+  fi
 }
 
 # Inverted risk-reward: tighter stops, looser TPs
@@ -60,4 +64,6 @@ run "Top4 + STACK-G" --keep-symbols "BTCUSDT,ETHUSDT,BNBUSDT,ADAUSDT" --override
 
 echo "" | tee -a "$LOG"
 echo "=== TOP 20 STEP=7 ===" | tee -a "$LOG"
-cat "$LOG" | awk '/^=== / {label=$0; next} /passed=/ {print $0, "@@", label}' | sort -t'(' -k2 -rn | head -20 | tee -a "$LOG"
+awk '/^=== / {label=$0; next} /passed=/ {print $0, "@@", label}' "$LOG" | sort -t'(' -k2 -rn | head -20 | tee -a "$LOG"
+
+cp -f "$LOG" "$LOG_FINAL"

@@ -163,16 +163,46 @@ def main():
         }
 
     trees = [dump_tree(est.tree_) for est in clf.estimators_]
+
+    # R29-Audit-Round3 2026-05-12 (Bug-2 fix): persist symbol→asset_id map so
+    # Rust inference resolves ids by symbol, NOT by position-in-cfg.assets.
+    # `--drop-symbols`/`--keep-symbols` mutate the runtime basket; without
+    # this map the same trade gets a different id at inference vs training.
+    asset_id_map = {}
+    for r in rows:
+        sym = r.get("symbol")
+        aid = r.get("asset_id")
+        if sym is not None and aid is not None and sym not in asset_id_map:
+            asset_id_map[str(sym)] = int(aid)
+
+    # R29-Audit-Round3 2026-05-12 (Bug-3 fix): explicit schema_version
+    # — Rust loader rejects any model without this field (`default=0`) or
+    # with a mismatching version. Bump in lockstep with
+    # `engine-rust/.../ml_gate.rs::EXPECTED_SCHEMA_VERSION` whenever the
+    # JSON layout, feature ordering, or asset-id semantics change.
+    #
+    # R29-Audit-Round3 2026-05-12 (Bug-5 doc): the feature pipeline currently
+    # assumes 30m candles. `_mlTrainingDataGen.ts` loads `*_30m.json` directly
+    # and Rust inference asserts `cfg.bar_minutes == 30`. To support a
+    # different TF you must regenerate training data on that TF, retrain,
+    # and lift/replace the Rust-side bar_minutes assertion.
+    SCHEMA_VERSION = 1
     model = {
+        "schema_version": SCHEMA_VERSION,
         "type": "random_forest",
         "n_trees": len(trees),
         "features": FEATURES,
         "trees": trees,
         "win_rate_baseline": float(y.mean()),
         "validation_auc": float(auc),
+        "asset_id_map": asset_id_map,
+        "training_timeframe": "30m",
     }
     OUT_MODEL.write_text(json.dumps(model))
-    print(f"\nSaved model: {OUT_MODEL} ({OUT_MODEL.stat().st_size // 1024} KB)")
+    print(
+        f"\nSaved model: {OUT_MODEL} ({OUT_MODEL.stat().st_size // 1024} KB) "
+        f"schema_version={SCHEMA_VERSION} assets={len(asset_id_map)}"
+    )
 
 
 if __name__ == "__main__":

@@ -72,11 +72,30 @@ fn ml_features_for_signal(
     entry_time_ms: i64,
     bar_minutes: u32,
     funding_at_bar: Option<f64>,
-) -> [f64; 14] {
+) -> Option<[f64; 14]> {
     // R29-Audit-2026-05-10: CRITICAL FIX — use bar BEFORE entry. At entry
     // time (= candles[bar_idx].open_time) bar `bar_idx` has just started;
     // its close/high/low are FUTURE. Read features at i = bar_idx - 1.
     let i = bar_idx.saturating_sub(1);
+    // R29-Audit-Round3 2026-05-12 (Bug-4 fix): cold-start guard. The five
+    // critical indicators (sma200 the most fragile) must all be present at
+    // bar `i` or the feature vector collapses to zeros — and a zero-vector
+    // sent through a forest of 200 trees with split thresholds around
+    // RSI≈50, SMA-slope≈0, ATR≈0.01 routes deterministically to a single
+    // leaf, slamming P(win) far from the asset's baseline. The training
+    // pipeline already skips trades when `entryIdx < 201` (sma200 warmup),
+    // so inference should likewise refuse to score them. Caller treats
+    // None as "pass-through" (no gate). We *don't* drop the trade — that
+    // would diverge from training, where these trades are simply absent
+    // from the label distribution.
+    let sma200_ready = series.sma200.get(i).copied().flatten().is_some();
+    let sma50_ready = series.sma50.get(i).copied().flatten().is_some();
+    let sma20_ready = series.sma20.get(i).copied().flatten().is_some();
+    let rsi14_ready = series.rsi14.get(i).copied().flatten().is_some();
+    let atr14_ready = series.atr14.get(i).copied().flatten().is_some();
+    if !(sma200_ready && sma50_ready && sma20_ready && rsi14_ready && atr14_ready) {
+        return None;
+    }
     // R29-R3.3: prior-N return is anchored in *wall-clock minutes*, not bars,
     // so the same trained model sees the same look-back window across TFs.
     // Trained on 30m: 5-bar = 150min, 20-bar = 600min. Map to current TF.
@@ -109,7 +128,7 @@ fn ml_features_for_signal(
         Some(t) => (t.hour() as f64, t.weekday().num_days_from_sunday() as f64),
         None => (0.0, 0.0),
     };
-    [
+    Some([
         series.rsi14.get(i).copied().flatten().unwrap_or(0.0),
         series.rsi28.get(i).copied().flatten().unwrap_or(0.0),
         series.adx14.get(i).copied().flatten().unwrap_or(0.0),
@@ -126,7 +145,7 @@ fn ml_features_for_signal(
         // R29-R2.5: forward-filled funding rate at bar_idx-1; null→0
         // matches `nan_to_num(0.0)` in `_mlTrainClassifier.py`.
         funding_at_bar.unwrap_or(0.0),
-    ]
+    ])
 }
 
 /// R29-Track-B3 pre-computed feature series per symbol.
@@ -451,7 +470,12 @@ fn main() -> Result<()> {
     let mut lscool_bars: Option<u64> = None;
     let mut phantom_suppress: bool = false;
     let mut ml_model_path: Option<PathBuf> = None;
-    let mut ml_threshold: f64 = 0.0;
+    // R29-Audit-Round3 2026-05-12 (Bug-1 fix): default sentinel `NaN` lets us
+    // detect "user passed `--ml-model` but forgot `--ml-threshold`" and
+    // fail-loud below instead of silently keeping every signal (threshold=0
+    // accepts P(win)≥0 = always true → ML gate is a no-op but logs claim
+    // it's loaded).
+    let mut ml_threshold: f64 = f64::NAN;
     let mut start_after_ts: Option<i64> = None;
     let mut random_gate_keep: Option<f64> = None;
     let mut random_gate_seed: u64 = 42;
@@ -571,6 +595,45 @@ fn main() -> Result<()> {
     }
     if windows == 0 {
         return Err(anyhow!("--windows must be ≥ 1"));
+    }
+    // R29-Audit-Round3 2026-05-12 (Bug-1 fix): when --ml-model is set the
+    // user MUST supply an explicit threshold. Anything ≤ 0 silently disables
+    // the gate (P(win) ≥ 0 is always true) which has been the source of
+    // multiple "ML gate appears loaded but never drops a trade" debug
+    // sessions. Default to 0.5 with a loud warning when omitted entirely
+    // (NaN sentinel); reject ≤ 0 outright as an explicit user error.
+    if ml_model_path.is_some() {
+        if ml_threshold.is_nan() {
+            eprintln!(
+                "[ml-gate] WARNING: --ml-model supplied without --ml-threshold; \
+                 defaulting to 0.5. Pass `--ml-threshold N` explicitly to silence."
+            );
+            ml_threshold = 0.5;
+        } else if ml_threshold <= 0.0 {
+            return Err(anyhow!(
+                "--ml-threshold {} ≤ 0 would silently disable the ML gate; \
+                 use a positive value (e.g. 0.5) or omit --ml-model entirely",
+                ml_threshold
+            ));
+        }
+    } else if !ml_threshold.is_nan() {
+        // Threshold without model is harmless but most likely a typo.
+        eprintln!("[ml-gate] note: --ml-threshold set but no --ml-model — ignoring");
+    }
+    // R29-Audit-Round3 2026-05-12 (Bug-5 fix): ML model was trained on 30m
+    // candles. We *do* TF-scale lookback periods in `ml_features_for_signal`,
+    // but the slopes / RSI / ATR series themselves are recomputed at runtime
+    // with the same TF-scaled periods — that's not equivalent to running the
+    // 30m model on a 30m feed. Until we add explicit per-TF training, fail
+    // loudly when someone tries `--ml-model X --timeframe 5m`.
+    if ml_model_path.is_some() {
+        let tf = timeframe.as_deref().unwrap_or("30m");
+        if tf != "30m" {
+            return Err(anyhow!(
+                "ML inference only supported on 30m (--timeframe={tf}); \
+                 retrain a TF-native model before inferring on other TFs"
+            ));
+        }
     }
 
     if let Some(t) = threads {
@@ -1017,6 +1080,19 @@ fn run_multi_asset(
     // 30m-native.) The ML model file itself is timeframe-agnostic; the
     // feature pipeline does the scaling at runtime.
     let ml_scale = (30.0 / (cfg.bar_minutes.max(1) as f64)).round().max(1.0) as usize;
+    // R29-Audit-Round3 2026-05-12 (Bug-5 hardening): mirror the CLI-arg
+    // guard with a runtime assertion against cfg.bar_minutes. The CLI block
+    // catches `--timeframe=5m`, this catches a config whose `bar_minutes`
+    // disagrees with the user-supplied `--timeframe` (e.g. r28v6_5m loaded
+    // with no --timeframe flag → cfg.bar_minutes=5).
+    if multi_signal.ml_model.is_some() {
+        assert_eq!(
+            cfg.bar_minutes, 30,
+            "ML inference only supported on 30m; cfg.bar_minutes={} — \
+             train a new model for that TF or run sweep without --ml-model",
+            cfg.bar_minutes
+        );
+    }
     let ml_features_by_sym: HashMap<String, MlFeatureSeries> = if multi_signal
         .ml_model
         .is_some()
@@ -1704,11 +1780,27 @@ fn run_one_window(
                     }
                     if let Some(model) = multi_signal.ml_model.as_ref() {
                         if let Some(series) = ml_features_by_sym.get(&source) {
-                            let asset_idx = cfg
-                                .assets
-                                .iter()
-                                .position(|a| a.symbol == s.symbol)
-                                .unwrap_or(0);
+                            // R29-Audit-Round3 2026-05-12 (Bug-2 fix): prefer
+                            // the trainer's asset_id_map over position-in-
+                            // `cfg.assets`. With --drop-symbols / --keep-
+                            // symbols the runtime cfg has fewer assets than
+                            // training saw, so position-based ids shift and
+                            // the model evaluates against the WRONG asset id
+                            // feature — silently degrading P(win). Falls
+                            // back to position when the model lacks the map
+                            // (legacy models pre-schema-v1 are rejected at
+                            // load time, so this branch only fires for new
+                            // models with an empty map, i.e. trainer didn't
+                            // see any assets).
+                            let asset_idx = model
+                                .asset_id_for(&s.symbol)
+                                .or_else(|| model.asset_id_for(&source))
+                                .unwrap_or_else(|| {
+                                    cfg.assets
+                                        .iter()
+                                        .position(|a| a.symbol == s.symbol)
+                                        .unwrap_or(0)
+                                });
                             let direction_long = matches!(
                                 s.direction,
                                 ftmo_engine_core::position::PositionSide::Long
@@ -1743,9 +1835,17 @@ fn run_one_window(
                                 cfg.bar_minutes,
                                 funding_at,
                             );
-                            let p_win = model.predict_proba(&feats);
-                            if p_win < multi_signal.ml_threshold {
-                                return;
+                            // R29-Audit-Round3 2026-05-12 (Bug-4 fix):
+                            // `None` = warmup window (sma200 not ready), the
+                            // trainer skipped these bars too. Mirror that
+                            // by neither dropping nor double-counting: keep
+                            // the signal (gate pass-through) since training
+                            // never produced a label here.
+                            if let Some(feats) = feats {
+                                let p_win = model.predict_proba(&feats);
+                                if p_win < multi_signal.ml_threshold {
+                                    return;
+                                }
                             }
                         }
                     }

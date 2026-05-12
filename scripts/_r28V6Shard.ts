@@ -21,8 +21,23 @@ import type { Candle } from "../src/utils/indicators";
 import { readFileSync, writeFileSync, appendFileSync } from "node:fs";
 
 const CACHE_DIR = "scripts/cache_bakeoff";
+// Bug-Audit Round 3 (R3 fix 3): finite + range guard. parseInt("abc") → NaN
+// passed silently meant every window did `winIdx % NaN === NaN`, never true,
+// so the shard would simply produce an empty output file.
 const SHARD_IDX = parseInt(process.argv[2] ?? "0", 10);
 const SHARD_COUNT = parseInt(process.argv[3] ?? "1", 10);
+if (
+  !Number.isFinite(SHARD_IDX) ||
+  !Number.isFinite(SHARD_COUNT) ||
+  SHARD_COUNT < 1 ||
+  SHARD_IDX < 0 ||
+  SHARD_IDX >= SHARD_COUNT
+) {
+  console.error(
+    `bad shard args: SHARD_IDX=${process.argv[2]} SHARD_COUNT=${process.argv[3]} (need 0 ≤ idx < count, count ≥ 1)`,
+  );
+  process.exit(2);
+}
 const OUT_FILE = `${CACHE_DIR}/r28v6_shard_${SHARD_IDX}.jsonl`;
 writeFileSync(OUT_FILE, ""); // truncate
 
@@ -60,6 +75,16 @@ function loadAligned(): { aligned: Record<string, Candle[]>; minBars: number } {
 const cfg: FtmoDaytrade24hConfig =
   FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
 const { aligned, minBars } = loadAligned();
+// Bug-Audit Round 3 (R3 fix 2): hardcoded `*48` bars/day + `_30m.json`
+// cache name only work for 30m timeframes. Assert so a future 1h or 5m
+// config crashes loudly instead of silently producing nonsense window
+// sizes.
+const barMinutes = (cfg as { barMinutes?: number }).barMinutes;
+if (barMinutes !== undefined && barMinutes !== 30) {
+  throw new Error(
+    `_r28V6Shard winBars=${cfg.maxDays}*48 and cache file _30m.json hardcoded for 30m; cfg.barMinutes=${barMinutes}`,
+  );
+}
 const winBars = cfg.maxDays * 48;
 const stepBars = 14 * 48;
 const WARMUP = 5000;

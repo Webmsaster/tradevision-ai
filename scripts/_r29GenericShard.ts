@@ -22,6 +22,19 @@ if (!CONFIG_NAME || !SLUG) {
   console.error("usage: <CONFIG_NAME> <slug> <shard_idx> <shard_count>");
   process.exit(2);
 }
+// Bug-Audit Round 3 (R3 fix 3): NaN/range-guard on shard CLI args.
+if (
+  !Number.isFinite(SHARD_IDX) ||
+  !Number.isFinite(SHARD_COUNT) ||
+  SHARD_COUNT < 1 ||
+  SHARD_IDX < 0 ||
+  SHARD_IDX >= SHARD_COUNT
+) {
+  console.error(
+    `bad shard args: SHARD_IDX=${process.argv[4]} SHARD_COUNT=${process.argv[5]} (need 0 ≤ idx < count, count ≥ 1)`,
+  );
+  process.exit(2);
+}
 
 const cfg = (cfgModule as Record<string, unknown>)[CONFIG_NAME] as
   | (typeof cfgModule)["FTMO_DAYTRADE_24H_R28_V6_PASSLOCK"]
@@ -85,6 +98,14 @@ function loadAligned() {
 }
 
 const { aligned, minBars } = loadAligned();
+// Bug-Audit Round 3 (R3 fix 2): assert 30m (cache file `_30m.json` + *48
+// bars/day hardcoded). Future MTF sweeps must use _r29MultiTfShard.
+const genBarMinutes = (cfg as { barMinutes?: number }).barMinutes;
+if (genBarMinutes !== undefined && genBarMinutes !== 30) {
+  throw new Error(
+    `_r29GenericShard winBars hardcoded *48 (30m); cfg.barMinutes=${genBarMinutes}`,
+  );
+}
 const winBars = cfg.maxDays * 48;
 const stepBars = 14 * 48;
 const WARMUP = 5000;

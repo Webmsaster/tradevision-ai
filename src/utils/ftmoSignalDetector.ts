@@ -311,18 +311,31 @@ function mkNoSignal(
   };
 }
 
+/**
+ * R3-A1 audit fix #4: HTML-escape free-text fields rendered into Telegram
+ * messages. `renderAlert()` output is sent with `parse_mode: "HTML"`; if
+ * `regime`, `botUsed`, `skipReason`, or a `reasons` line ever contained a
+ * stray `<`, `>`, or `&` (e.g. future detectors logging `delta<0.5`),
+ * Telegram would respond 400 Bad Request and the alert would be dropped.
+ */
+function htmlEscape(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 /** Render a SignalAlert to a human-readable string for terminal/telegram/email. */
 export function renderAlert(a: SignalAlert): string {
   const lines: string[] = [];
   const ts = new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC";
   lines.push(`━━━━━ FTMO Signal Check @ ${ts} ━━━━━`);
-  lines.push(`Regime: ${a.regime}  |  Bot: ${a.botUsed}`);
+  lines.push(
+    `Regime: ${htmlEscape(a.regime)}  |  Bot: ${htmlEscape(a.botUsed)}`,
+  );
   lines.push(
     `BTC: $${a.btc.close.toFixed(0)}  EMA10: $${a.btc.ema10.toFixed(0)}  EMA15: $${a.btc.ema15.toFixed(0)}  24h: ${(a.btc.mom24h * 100).toFixed(2)}%`,
   );
   lines.push(`ETH: $${a.eth.close.toFixed(2)}`);
   lines.push("");
-  for (const r of a.reasons) lines.push(`  ${r}`);
+  for (const r of a.reasons) lines.push(`  ${htmlEscape(r)}`);
   lines.push("");
   if (a.hasSignal) {
     lines.push("╔══════════════════════════════════════════════════╗");
@@ -350,7 +363,7 @@ export function renderAlert(a: SignalAlert): string {
       `    If account equity > +1.5%, ADD 4× pyramid on this signal too.`,
     );
   } else {
-    lines.push(`⏸  NO SIGNAL — ${a.skipReason}`);
+    lines.push(`⏸  NO SIGNAL — ${htmlEscape(a.skipReason ?? "")}`);
   }
   return lines.join("\n");
 }

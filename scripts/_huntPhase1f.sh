@@ -9,18 +9,22 @@ cd "$(dirname "$0")/.."
 
 SYMS="ETHUSDT,BTCUSDT,BNBUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LTCUSDT,BCHUSDT,AAVEUSDT,XRPUSDT,INJUSDT,RUNEUSDT,ETCUSDT,SANDUSDT"
 SWEEP=./engine-rust/target/release/ftmo-sweep
-LOG=/tmp/hunt_phase1f.log
-> "$LOG"
+LOG="/tmp/hunt_phase1f_$$.log"
+LOG_FINAL=/tmp/hunt_phase1f.log
+: > "$LOG"
+trap 'rm -f "$LOG.partial"' EXIT INT TERM
 
 run() {
   local label="$1"
   shift
   echo "=== $label ===" | tee -a "$LOG"
-  $SWEEP \
+  if ! $SWEEP \
     --candles-dir scripts/cache_bakeoff --symbols "$SYMS" \
     --config 2h-trend-v5-titanium-passlock \
     --windows 200 --step-days 14 --signals per-asset \
-    --phantom-suppress "$@" 2>&1 | tail -1 | tee -a "$LOG"
+    --phantom-suppress "$@" 2>&1 | tail -1 | tee -a "$LOG"; then
+    echo "[warn] $label failed — continuing" | tee -a "$LOG"
+  fi
 }
 
 # Best individual: tp-mult=0.65 + mct=7 + trail-pct=0.002
@@ -60,4 +64,6 @@ run "MAX-1 + mtd=2" --override-tp-mult 0.65 --override-mct 7 --override-trail-pc
 
 echo "" | tee -a "$LOG"
 echo "=== TOP ===" | tee -a "$LOG"
-cat "$LOG" | awk '/^=== / {label=$0; next} /passed=/ {print $0, "@@", label}' | sort -t'(' -k2 -rn | head -20 | tee -a "$LOG"
+awk '/^=== / {label=$0; next} /passed=/ {print $0, "@@", label}' "$LOG" | sort -t'(' -k2 -rn | head -20 | tee -a "$LOG"
+
+cp -f "$LOG" "$LOG_FINAL"

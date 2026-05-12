@@ -36,6 +36,21 @@ const SHARD_IDX = parseInt(process.argv[4] ?? "0", 10);
 const SHARD_COUNT = parseInt(process.argv[5] ?? "1", 10);
 const MASK_MODE = process.argv[6] ?? "stacked";
 const STEP_DAYS = parseInt(process.argv[7] ?? "14", 10);
+// Bug-Audit Round 3 (R3 fix 3): NaN/range-guard on shard CLI args.
+if (
+  !Number.isFinite(SHARD_IDX) ||
+  !Number.isFinite(SHARD_COUNT) ||
+  !Number.isFinite(STEP_DAYS) ||
+  SHARD_COUNT < 1 ||
+  SHARD_IDX < 0 ||
+  SHARD_IDX >= SHARD_COUNT ||
+  STEP_DAYS < 1
+) {
+  console.error(
+    `bad shard args: SHARD_IDX=${process.argv[4]} SHARD_COUNT=${process.argv[5]} STEP_DAYS=${process.argv[7]} (need 0 ≤ idx < count, count ≥ 1, step ≥ 1)`,
+  );
+  process.exit(2);
+}
 
 if (!CONFIG_NAME || !SLUG) {
   console.error(
@@ -162,6 +177,13 @@ if (MASK_MODE === "crossmom") {
   entryAllowed = andMasks(cm, rg);
 }
 
+// Bug-Audit Round 3 (R3 fix 2): assert 30m (cache file + *48 hardcoded).
+const r8BarMinutes = (cfg as { barMinutes?: number }).barMinutes;
+if (r8BarMinutes !== undefined && r8BarMinutes !== 30) {
+  throw new Error(
+    `_r29Round8Shard winBars hardcoded *48 (30m); cfg.barMinutes=${r8BarMinutes}`,
+  );
+}
 const winBars = cfg.maxDays * 48;
 const stepBars = STEP_DAYS * 48;
 const WARMUP = 5000;

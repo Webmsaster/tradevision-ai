@@ -39,6 +39,19 @@ import {
 const CACHE_DIR = "scripts/cache_bakeoff";
 const SHARD_IDX = parseInt(process.argv[2] ?? "0", 10);
 const SHARD_COUNT = parseInt(process.argv[3] ?? "1", 10);
+// Bug-Audit Round 3 (R3 fix 3): NaN-/range-guard on shard CLI args.
+if (
+  !Number.isFinite(SHARD_IDX) ||
+  !Number.isFinite(SHARD_COUNT) ||
+  SHARD_COUNT < 1 ||
+  SHARD_IDX < 0 ||
+  SHARD_IDX >= SHARD_COUNT
+) {
+  console.error(
+    `bad shard args: SHARD_IDX=${process.argv[2]} SHARD_COUNT=${process.argv[3]} (need 0 ≤ idx < count, count ≥ 1)`,
+  );
+  process.exit(2);
+}
 const RESUME = process.argv.includes("--resume");
 
 const VARIANTS: { name: string; cfg: FtmoDaytrade24hConfig }[] = [
@@ -75,7 +88,11 @@ for (const v of VARIANTS) {
   }
 }
 
-const SYMBOLS = [
+// Bug-Audit Round 3 (R3 fix 6): SYMBOLS derived from cfg.assets, consistent
+// with R1-A3 fixes to other shards. All variants share the same basket
+// (R28_V6 family), so VARIANTS[0] is canonical — assert symbol-identity
+// below.
+const FALLBACK_R28_SYMBOLS = [
   "AAVEUSDT",
   "ADAUSDT",
   "BCHUSDT",
@@ -86,6 +103,33 @@ const SYMBOLS = [
   "LTCUSDT",
   "XRPUSDT",
 ];
+function symbolsFromCfg(cfg: FtmoDaytrade24hConfig): string[] {
+  const assets = (
+    cfg as unknown as {
+      assets?: Array<{ symbol: string; sourceSymbol?: string }>;
+    }
+  ).assets;
+  if (!assets || assets.length === 0) return FALLBACK_R28_SYMBOLS;
+  return assets.map(
+    (a) => a.sourceSymbol ?? a.symbol.replace("-TREND", "USDT"),
+  );
+}
+const SYMBOLS = symbolsFromCfg(VARIANTS[0]!.cfg);
+// Cross-variant symbol-identity check — if a future variant changes the
+// basket, the per-window simulate() would use different alignment, which
+// is silently wrong. Fail loudly.
+for (let i = 1; i < VARIANTS.length; i++) {
+  const s = symbolsFromCfg(VARIANTS[i]!.cfg);
+  if (
+    s.length !== SYMBOLS.length ||
+    s.some((sym, idx) => sym !== SYMBOLS[idx])
+  ) {
+    throw new Error(
+      `Round60 variants disagree on assets (variant ${VARIANTS[i]!.name}). ` +
+        "Cannot share a window alignment across different baskets.",
+    );
+  }
+}
 
 function loadAligned(): { aligned: Record<string, Candle[]>; minBars: number } {
   const data: Record<string, Candle[]> = {};
@@ -115,6 +159,13 @@ if (maxDaysSet.size > 1) {
   throw new Error(
     `Round60Shard variants disagree on maxDays: ${[...maxDaysSet].join(",")}. ` +
       "Multi-variant sweep cannot share a window range. Split into per-maxDays shard files.",
+  );
+}
+// Bug-Audit Round 3 (R3 fix 2): assert 30m before applying *48.
+const r60BarMinutes = (VARIANTS[0]!.cfg as { barMinutes?: number }).barMinutes;
+if (r60BarMinutes !== undefined && r60BarMinutes !== 30) {
+  throw new Error(
+    `_r28V6Round60Shard winBars hardcoded *48 (30m); cfg.barMinutes=${r60BarMinutes}`,
   );
 }
 const winBars = VARIANTS[0]!.cfg.maxDays * 48;

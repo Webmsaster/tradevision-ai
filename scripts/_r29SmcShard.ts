@@ -19,6 +19,19 @@ const CONFIG_NAME = process.argv[2] ?? "FTMO_SMC_CONFIG_BASE";
 const SLUG = process.argv[3] ?? "smcBase";
 const SHARD_IDX = parseInt(process.argv[4] ?? "0", 10);
 const SHARD_COUNT = parseInt(process.argv[5] ?? "1", 10);
+// Bug-Audit Round 3 (R3 fix 3): NaN/range-guard on shard CLI args.
+if (
+  !Number.isFinite(SHARD_IDX) ||
+  !Number.isFinite(SHARD_COUNT) ||
+  SHARD_COUNT < 1 ||
+  SHARD_IDX < 0 ||
+  SHARD_IDX >= SHARD_COUNT
+) {
+  console.error(
+    `bad shard args: SHARD_IDX=${process.argv[4]} SHARD_COUNT=${process.argv[5]} (need 0 ≤ idx < count, count ≥ 1)`,
+  );
+  process.exit(2);
+}
 
 const cfgs: Record<string, typeof FTMO_SMC_CONFIG_BASE> = {
   FTMO_SMC_CONFIG_BASE,

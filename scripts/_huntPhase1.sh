@@ -8,19 +8,33 @@ cd "$(dirname "$0")/.."
 SYMS_BASE="ETHUSDT,BTCUSDT,BNBUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LTCUSDT,BCHUSDT,AAVEUSDT,XRPUSDT,INJUSDT,RUNEUSDT,ETCUSDT,SANDUSDT"
 SYMS_R28V6="BTCUSDT,ETHUSDT,BNBUSDT,ADAUSDT,LTCUSDT,BCHUSDT,ETCUSDT,XRPUSDT,AAVEUSDT"
 SWEEP=./engine-rust/target/release/ftmo-sweep
-LOG=/tmp/hunt_phase1.log
-> "$LOG"
+LOG="/tmp/hunt_phase1_$$.log"
+LOG_FINAL=/tmp/hunt_phase1.log
+: > "$LOG"
+trap 'rm -f "$LOG.partial"' EXIT INT TERM
+
+# flock helper — uses flock(1) when available, else no-op (per-PID logfile makes this safe)
+_log_append() {
+  if command -v flock >/dev/null 2>&1; then
+    flock "$LOG" -c "cat >> '$LOG'"
+  else
+    cat >> "$LOG"
+  fi
+}
 
 run() {
   local cfg="$1"
   local syms="$2"
-  local extra="$3"
+  local extra="${3:-}"
   echo "=== $cfg ($extra) ===" | tee -a "$LOG"
-  $SWEEP \
+  # shellcheck disable=SC2086  # intentional word-split of $extra (override flags)
+  if ! $SWEEP \
     --candles-dir scripts/cache_bakeoff --symbols "$syms" \
     --config "$cfg" \
     --windows 200 --step-days 14 --signals per-asset \
-    --phantom-suppress $extra 2>&1 | tail -2 | tee -a "$LOG"
+    --phantom-suppress $extra 2>&1 | tail -3 | tee -a "$LOG"; then
+    echo "[warn] $cfg failed — continuing" | tee -a "$LOG"
+  fi
 }
 
 # 14-asset basket configs
@@ -50,3 +64,6 @@ done
 echo "" | tee -a "$LOG"
 echo "=== SORTED ===" | tee -a "$LOG"
 grep -B1 "passed=" "$LOG" | paste - - - | awk -F'\t' '{ split($1, a, " "); split($3, b, " "); split(b[1], c, "%"); split(c[1], d, "("); print d[2] " " a[2] " " a[3] }' | sort -rg | tee -a "$LOG"
+
+# Finalize: atomic move to shared log location (last writer wins, no torn writes)
+cp -f "$LOG" "$LOG_FINAL"

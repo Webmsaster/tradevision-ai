@@ -14,13 +14,28 @@ cd "$(dirname "$0")/.."
 
 SYMS_BASE="ETHUSDT,BTCUSDT,BNBUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LTCUSDT,BCHUSDT,AAVEUSDT,XRPUSDT,INJUSDT,RUNEUSDT,ETCUSDT,SANDUSDT"
 SWEEP=./engine-rust/target/release/ftmo-sweep
-LOG=/tmp/hunt_phase4.log
+LOG="/tmp/hunt_phase4_$$.log"
+LOG_FINAL=/tmp/hunt_phase4.log
 : > "$LOG"
+trap 'rm -f "$LOG.partial"' EXIT INT TERM
 
 cfg="${1:-}"
 [ -z "$cfg" ] && { echo "usage: $0 <config> [extra-flags...]"; exit 1; }
+# Validate config name to avoid shell-injection
+[[ "$cfg" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "ERROR: bad config name: $cfg" >&2; exit 1; }
 shift
 extras=("$@")
+
+# Portable epoch → ISO helper for walk-forward quartile labels
+iso_date_from_epoch() {
+  local epoch_s="$1"
+  local fmt="${2:-%Y-%m}"
+  if date -u -d "@$epoch_s" "+$fmt" >/dev/null 2>&1; then
+    date -u -d "@$epoch_s" "+$fmt"
+  else
+    python3 -c "import datetime,sys; print(datetime.datetime.utcfromtimestamp(int(sys.argv[1])).strftime(sys.argv[2]))" "$epoch_s" "$fmt"
+  fi
+}
 
 run() {
   local label="$1"
@@ -30,11 +45,13 @@ run() {
   local -a all=()
   if [ "${#extras[@]}" -gt 0 ]; then all+=("${extras[@]}"); fi
   if [ "$#" -gt 0 ]; then all+=("$@"); fi
-  $SWEEP \
+  if ! $SWEEP \
     --candles-dir scripts/cache_bakeoff --symbols "$SYMS_BASE" \
     --config "$cfg" \
     --signals per-asset \
-    ${all[@]+"${all[@]}"} 2>&1 | tail -2 | tee -a "$LOG"
+    ${all[@]+"${all[@]}"} 2>&1 | tail -3 | tee -a "$LOG"; then
+    echo "[warn] $label failed — continuing" | tee -a "$LOG"
+  fi
 }
 
 echo "###### PHASE 4 DEEP-AUDIT for $cfg + ${extras[*]} ######" | tee -a "$LOG"
@@ -44,10 +61,10 @@ for step in 3 7 14 21 28; do
   run "step=$step phantom" --windows 600 --step-days $step --phantom-suppress
 done
 
-# 2. Walk-forward 4-quartile (post-2022 cutoffs)
+# 2. Walk-forward 4-quartile (post-2022 cutoffs) — portable date conversion
 for cutoff_ts in 1641000000000 1672531200000 1704067200000 1735689600000; do
-  iso=$(date -u -d "@$(( cutoff_ts / 1000 ))" +%Y-%m 2>/dev/null || echo "$cutoff_ts")
-  run "post-$iso" --windows 200 --step-days 14 --start-after-ts $cutoff_ts --phantom-suppress
+  iso=$(iso_date_from_epoch "$(( cutoff_ts / 1000 ))" %Y-%m 2>/dev/null || echo "$cutoff_ts")
+  run "post-$iso" --windows 200 --step-days 14 --start-after-ts "$cutoff_ts" --phantom-suppress
 done
 
 # 3. Big-N
@@ -69,3 +86,5 @@ run "random-gate keep=0.7" --windows 200 --step-days 14 --phantom-suppress --ran
 echo "" | tee -a "$LOG"
 echo "=== PHASE 4 SUMMARY ($cfg) ===" | tee -a "$LOG"
 grep -E "===|passed=" "$LOG" | tee -a "$LOG"
+
+cp -f "$LOG" "$LOG_FINAL"

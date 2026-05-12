@@ -24,6 +24,13 @@
 //! NaN/None at training time was nan_to_num→0; do the same here.
 
 use serde::Deserialize;
+use std::collections::HashMap;
+
+/// R29-Audit-Round3 2026-05-12: bumped from implicit-v0 to v1 when we added
+/// `schema_version` and `asset_id_map` fields. Inference rejects models that
+/// were exported before the writer was updated; retrain via
+/// `scripts/_mlTrainClassifier.py` to refresh.
+pub const EXPECTED_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
@@ -51,6 +58,19 @@ pub struct MlModel {
     pub win_rate_baseline: f64,
     #[serde(default)]
     pub validation_auc: f64,
+    /// R29-Audit-Round3 2026-05-12 (Bug-3 fix): explicit schema version.
+    /// Missing → treated as 0 (legacy) and rejected at load to force
+    /// a Python-side retrain. Bump `EXPECTED_SCHEMA_VERSION` whenever the
+    /// JSON layout, feature ordering, or asset-id semantics change.
+    #[serde(default)]
+    pub schema_version: u32,
+    /// R29-Audit-Round3 2026-05-12 (Bug-2 fix): the symbol→asset_id mapping
+    /// the trainer used. Stored so inference can re-look-up the canonical id
+    /// regardless of `cfg.assets` position after `--drop-symbols` /
+    /// `--keep-symbols` mutate the runtime basket. Optional for back-compat;
+    /// when present, `asset_id_for(sym)` is the authoritative source.
+    #[serde(default)]
+    pub asset_id_map: HashMap<String, usize>,
 }
 
 /// R29-Audit-Round2.5: expected feature ordering. Inference computes
@@ -79,6 +99,20 @@ impl MlModel {
         let bytes = std::fs::read(path)?;
         let model: Self = serde_json::from_slice(&bytes)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        // R29-Audit-Round3 2026-05-12 (Bug-3 fix): schema-version check.
+        // Models exported before the schema field existed get `schema_version
+        // = 0` via serde's default; reject them so inference never silently
+        // runs against a stale layout.
+        if model.schema_version != EXPECTED_SCHEMA_VERSION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "ML model schema_version mismatch: model={} expected={} \
+                     — retrain via `scripts/_mlTrainClassifier.py`",
+                    model.schema_version, EXPECTED_SCHEMA_VERSION
+                ),
+            ));
+        }
         // Hard-fail on feature-order mismatch — silent reorder is the
         // most insidious model-vs-engine drift.
         if model.features.len() != EXPECTED_FEATURES.len()
@@ -97,6 +131,31 @@ impl MlModel {
             ));
         }
         Ok(model)
+    }
+
+    /// R29-Audit-Round3 2026-05-12 (Bug-2 fix): canonical asset_id for a
+    /// symbol. When the model carries an `asset_id_map`, that mapping is
+    /// authoritative (it's what training saw). Otherwise the caller falls
+    /// back to position-in-`cfg.assets`, which is fragile under
+    /// `--drop-symbols` / `--keep-symbols` overrides. Returns None when the
+    /// trainer never observed the symbol — caller decides whether to skip
+    /// the trade or use a neutral id.
+    pub fn asset_id_for(&self, symbol: &str) -> Option<usize> {
+        if self.asset_id_map.is_empty() {
+            return None;
+        }
+        if let Some(&id) = self.asset_id_map.get(symbol) {
+            return Some(id);
+        }
+        // Try common cache-key variants used across the TS / Rust split: the
+        // training writer emits e.g. "ETHUSDT" while runtime config asset
+        // symbols may be "ETH-TREND". Normalise both ends to share lookups.
+        let bare = symbol.replace("-TREND", "");
+        if let Some(&id) = self.asset_id_map.get(&bare) {
+            return Some(id);
+        }
+        let with_usdt = format!("{bare}USDT");
+        self.asset_id_map.get(&with_usdt).copied()
     }
 
     /// Average P(win=1) across all trees in the forest.
@@ -196,7 +255,44 @@ mod tests {
             ],
             win_rate_baseline: 0.16,
             validation_auc: 0.0,
+            schema_version: EXPECTED_SCHEMA_VERSION,
+            asset_id_map: HashMap::new(),
         };
         assert!((m.predict_proba(&[1.0]) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn asset_id_for_resolves_variants() {
+        let mut map = HashMap::new();
+        map.insert("ETHUSDT".to_string(), 3);
+        let m = MlModel {
+            model_type: "rf".into(),
+            n_trees: 0,
+            features: vec![],
+            trees: vec![],
+            win_rate_baseline: 0.0,
+            validation_auc: 0.0,
+            schema_version: EXPECTED_SCHEMA_VERSION,
+            asset_id_map: map,
+        };
+        assert_eq!(m.asset_id_for("ETHUSDT"), Some(3));
+        // config symbol "ETH-TREND" normalises to "ETH" then "ETHUSDT".
+        assert_eq!(m.asset_id_for("ETH-TREND"), Some(3));
+        assert_eq!(m.asset_id_for("UNKNOWN"), None);
+    }
+
+    #[test]
+    fn asset_id_for_returns_none_when_map_empty() {
+        let m = MlModel {
+            model_type: "rf".into(),
+            n_trees: 0,
+            features: vec![],
+            trees: vec![],
+            win_rate_baseline: 0.0,
+            validation_auc: 0.0,
+            schema_version: EXPECTED_SCHEMA_VERSION,
+            asset_id_map: HashMap::new(),
+        };
+        assert_eq!(m.asset_id_for("ANY"), None);
     }
 }

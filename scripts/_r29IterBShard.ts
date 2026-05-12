@@ -20,6 +20,19 @@ import { readFileSync, writeFileSync, appendFileSync } from "node:fs";
 const CACHE_DIR = "scripts/cache_bakeoff";
 const SHARD_IDX = parseInt(process.argv[2] ?? "0", 10);
 const SHARD_COUNT = parseInt(process.argv[3] ?? "1", 10);
+// Bug-Audit Round 3 (R3 fix 3): NaN/range-guard on shard CLI args.
+if (
+  !Number.isFinite(SHARD_IDX) ||
+  !Number.isFinite(SHARD_COUNT) ||
+  SHARD_COUNT < 1 ||
+  SHARD_IDX < 0 ||
+  SHARD_IDX >= SHARD_COUNT
+) {
+  console.error(
+    `bad shard args: SHARD_IDX=${process.argv[2]} SHARD_COUNT=${process.argv[3]} (need 0 ≤ idx < count, count ≥ 1)`,
+  );
+  process.exit(2);
+}
 const OUT_FILE = `${CACHE_DIR}/r29_iterB_pt08_lscool_shard_${SHARD_IDX}.jsonl`;
 writeFileSync(OUT_FILE, "");
 
@@ -55,6 +68,13 @@ function loadAligned() {
 
 const cfg: FtmoDaytrade24hConfig = FTMO_DAYTRADE_24H_R28_V6_PT08_LSCOOL;
 const { aligned, minBars } = loadAligned();
+// Bug-Audit Round 3 (R3 fix 2): assert 30m (cache file + *48 hardcoded).
+const iterBBarMinutes = (cfg as { barMinutes?: number }).barMinutes;
+if (iterBBarMinutes !== undefined && iterBBarMinutes !== 30) {
+  throw new Error(
+    `_r29IterBShard winBars hardcoded *48 (30m); cfg.barMinutes=${iterBBarMinutes}`,
+  );
+}
 const winBars = cfg.maxDays * 48;
 const stepBars = 14 * 48;
 const WARMUP = 5000;
