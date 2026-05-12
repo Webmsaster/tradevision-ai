@@ -413,6 +413,25 @@ pub fn v5_titanium_passlock() -> EngineConfig {
     cfg
 }
 
+/// 2026-05-12 V5_AMBER + PASSLOCK. Memory says V5_AMBER alone hit 62.83%
+/// step=1d. Adding closeAllOnTargetReached typically yields +6-8pp on
+/// PASSLOCK family, so worth a directed test for the 65% mandate.
+pub fn v5_amber_passlock() -> EngineConfig {
+    let mut cfg = v5_amber();
+    cfg.label = "V5_AMBER_PASSLOCK".into();
+    cfg.close_all_on_target_reached = true;
+    cfg
+}
+
+/// 2026-05-12 V5_TOPAZ + PASSLOCK. V5_TOPAZ = V5_QUARTZ - RUNE (14 assets,
+/// QUARTZ engine stack with atrStop p56m2 + chandelier p56m2 + breakEven).
+pub fn v5_topaz_passlock() -> EngineConfig {
+    let mut cfg = v5_topaz();
+    cfg.label = "V5_TOPAZ_PASSLOCK".into();
+    cfg.close_all_on_target_reached = true;
+    cfg
+}
+
 /// R29-R10a V5_TITANIUM_PASSLOCK − RUNE (13 assets) — greedy ablation.
 pub fn v5_titanium_passlock_norune() -> EngineConfig {
     let mut cfg = v5_titanium_passlock();
@@ -670,6 +689,8 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-titanium-passlock" => v5_titanium_passlock(),
         "2h-trend-v5-titanium-passlock-norune" => v5_titanium_passlock_norune(),
         "2h-trend-v5-obsidian-passlock" => v5_obsidian_passlock(),
+        "2h-trend-v5-amber-passlock" => v5_amber_passlock(),
+        "2h-trend-v5-topaz-passlock" => v5_topaz_passlock(),
         "2h-trend-v5-titanium-passlock-lscool-tight" => v5_titanium_passlock_lscool_tight(),
         "2h-trend-v5-titanium-passlock-lscool-loose" => v5_titanium_passlock_lscool_loose(),
         "2h-trend-v5-titanium-passlock-mct5" => v5_titanium_passlock_mct5(),

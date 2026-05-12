@@ -301,9 +301,12 @@ fn apply_overrides(
         cfg.allowed_dows_utc = Some(v);
     }
     if let Some(csv) = &ov.drop_symbols {
+        // Bug-fix 2026-05-12: normalize drop-list by stripping USDT suffix.
+        // cfg.assets bare/src are stored without USDT (e.g. "ARB"), so input
+        // "ARBUSDT" would never match. Strip USDT from BOTH sides to match.
         let drop: std::collections::HashSet<String> = csv
             .split(',')
-            .map(|s| s.trim().to_uppercase())
+            .map(|s| s.trim().to_uppercase().replace("USDT", ""))
             .filter(|s| !s.is_empty())
             .collect();
         cfg.assets.retain(|a| {
@@ -317,9 +320,10 @@ fn apply_overrides(
         });
     }
     if let Some(csv) = &ov.keep_symbols {
+        // Bug-fix 2026-05-12: same USDT-normalize as drop-symbols.
         let keep: std::collections::HashSet<String> = csv
             .split(',')
-            .map(|s| s.trim().to_uppercase())
+            .map(|s| s.trim().to_uppercase().replace("USDT", ""))
             .filter(|s| !s.is_empty())
             .collect();
         cfg.assets.retain(|a| {
