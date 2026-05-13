@@ -210,6 +210,10 @@ struct MultiSignalCfg {
     /// HTF downsample stride (bars). Default 8 (30m → 4h). Configurable for
     /// experiment: 4 (2h), 16 (8h), 24 (12h), 48 (1d).
     htf_stride: usize,
+    /// Phase B Regime-Confluence: min consensus votes (1-3). Default 2.
+    regime_min_votes: usize,
+    /// When true, the winning side MUST include the R28V6 detector's vote.
+    regime_require_r28v6: bool,
     // Below: deliberately at end so the field-init order in `let cfg =
     // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
@@ -495,6 +499,11 @@ enum SignalSrc {
     /// entry-type is set BUT the cfg has `funding_rate_filter` configured,
     /// falls back to `detect_r28_v6` so the funding gate gets honoured.
     PerAssetCfg,
+    /// 2026-05-13 Phase B — Regime-Confluence consensus detector. Polls
+    /// R28V6 + breakout + meanrev simultaneously and only emits a signal
+    /// when `min_votes` detectors agree on direction. See
+    /// `signals_regime_confluence.rs`.
+    RegimeConfluence,
 }
 
 fn main() -> Result<()> {
@@ -565,6 +574,8 @@ fn main() -> Result<()> {
     let mut also_fire_breakout: bool = false;
     let mut use_htf_confirm: bool = false;
     let mut htf_stride: usize = 8;
+    let mut regime_min_votes: usize = 2;
+    let mut regime_require_r28v6: bool = false;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
@@ -603,6 +614,7 @@ fn main() -> Result<()> {
                     "trend" => SignalSrc::Trend,
                     "r28v6" => SignalSrc::R28V6,
                     "per-asset" => SignalSrc::PerAssetCfg,
+                    "regime" | "regime-confluence" => SignalSrc::RegimeConfluence,
                     other => return Err(anyhow!("unknown --signals: {other}")),
                 };
             }
@@ -689,6 +701,8 @@ fn main() -> Result<()> {
             "--also-fire-breakout" => also_fire_breakout = true,
             "--use-htf-confirm" => use_htf_confirm = true,
             "--htf-stride" => htf_stride = need!("--htf-stride").parse()?,
+            "--regime-min-votes" => regime_min_votes = need!("--regime-min-votes").parse()?,
+            "--regime-require-r28v6" => regime_require_r28v6 = true,
             "--mr-period" => mr_period = Some(need!("--mr-period").parse()?),
             "--mr-oversold" => mr_oversold = Some(need!("--mr-oversold").parse()?),
             "--mr-overbought" => mr_overbought = Some(need!("--mr-overbought").parse()?),
@@ -812,6 +826,8 @@ fn main() -> Result<()> {
                 r28v6_rsi_period: rsi_period,
                 use_htf_confirm,
                 htf_stride,
+                regime_min_votes,
+                regime_require_r28v6,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -934,7 +950,9 @@ fn run_single_asset(
                     .unwrap()
                     .push(atr_series[i]);
                 let signals_for_bar: Vec<PollSignal> = match signals {
-                    SignalSrc::None | SignalSrc::PerAssetCfg => vec![],
+                    SignalSrc::None | SignalSrc::PerAssetCfg | SignalSrc::RegimeConfluence => {
+                        vec![]
+                    }
                     SignalSrc::Breakout => {
                         let arr = feed.get(symbol.as_str()).unwrap();
                         match detect_breakout(
@@ -1079,6 +1097,7 @@ fn signal_label(s: SignalSrc) -> &'static str {
         SignalSrc::Trend => "trend",
         SignalSrc::R28V6 => "r28v6",
         SignalSrc::PerAssetCfg => "per-asset",
+        SignalSrc::RegimeConfluence => "regime",
     }
 }
 
@@ -1704,6 +1723,28 @@ fn run_one_window(
                         },
                     );
                     detect_mean_reversion(&mut state, cfg, asset, &source, arr, &src)
+                }
+                SignalSrc::RegimeConfluence => {
+                    let funding = funding_feed.get(&source).map(|v| v.as_slice());
+                    let htf_buf = htf_closes_buf.get(&source).map(|v| v.as_slice());
+                    let r28in = R28V6Inputs {
+                        htf_closes: if multi_signal.use_htf_confirm {
+                            htf_buf
+                        } else {
+                            None
+                        },
+                        cross_asset_closes: None,
+                        news_events: None,
+                        funding_series: funding,
+                    };
+                    let rc_params =
+                        ftmo_engine_core::signals_regime_confluence::RegimeConfluenceParams {
+                            min_votes: multi_signal.regime_min_votes,
+                            require_r28v6: multi_signal.regime_require_r28v6,
+                        };
+                    ftmo_engine_core::signals_regime_confluence::detect_regime_confluence(
+                        &mut state, cfg, asset, &source, arr, &rc_params, &r28in,
+                    )
                 }
                 SignalSrc::None => None,
             };
