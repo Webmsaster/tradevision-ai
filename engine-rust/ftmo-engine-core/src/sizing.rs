@@ -9,6 +9,11 @@
 //!   5. drawdownShield — caps DOWN
 //!   6. peakDrawdownThrottle — caps DOWN (MTM-based)
 //!   7. intradayDailyLossThrottle.soft — caps DOWN
+//!
+//! Post-factor caps (centralized helper `apply_post_factor_caps`):
+//!   8. dayBasedRiskMultiplier early-day conservative factor
+//!   9. liveCaps.maxRiskFrac clamp
+//!  10. derived LIVE_LOSS_CAP = maxDailyLoss × 0.8 / (stopPct × leverage)
 
 use crate::config::EngineConfig;
 use crate::state::EngineState;
@@ -155,6 +160,47 @@ pub fn resolve_sizing_factor(
     }
 
     factor
+}
+
+/// 2026-05-13 Codex Audit Round 3 — Fix 2: centralized post-factor sizing
+/// caps. Previously only `signals_r28v6.rs` applied `dayBasedRiskMultiplier`
+/// + the derived `LIVE_LOSS_CAP`, leaving MeanRev / Breakout / Trend / V12
+/// / ForexMR / R29R5 detectors with only the legacy `liveCaps.maxRiskFrac`
+/// clamp. Sweeps using `also_meanrev` / `also_breakout` / regime probes /
+/// alt-detector configs were therefore over-sized in early days and
+/// uncapped against the maxDailyLoss-derived live-loss limit.
+///
+/// Call AFTER `eff_risk = base * factor [* size_mult]`, BEFORE the
+/// `eff_risk <= 0.0` short-circuit. Returns the (possibly reduced) eff_risk.
+///
+/// TS reference: `ftmoLiveEngineV4.ts:1975-1997`.
+pub fn apply_post_factor_caps(
+    cfg: &EngineConfig,
+    state: &EngineState,
+    mut eff_risk: f64,
+    stop_pct: f64,
+) -> f64 {
+    // 8. dayBasedRiskMultiplier (TS L1975-1981).
+    let day_risk_mult = match cfg.day_based_risk_multiplier {
+        Some(dbrm) if state.day < dbrm.conservative_first_days => dbrm.conservative_factor,
+        _ => 1.0,
+    };
+    eff_risk *= day_risk_mult;
+    // 9. liveCaps.maxRiskFrac (TS L1983-1985).
+    if !cfg.bypass_live_caps {
+        if let Some(caps) = cfg.live_caps.as_ref() {
+            eff_risk = eff_risk.min(caps.max_risk_frac);
+        }
+    }
+    // 10. Derived live-loss cap from maxDailyLoss × 0.8 (TS L1991-1997).
+    let live_loss_cap = cfg.max_daily_loss.max(0.0) * 0.8;
+    if stop_pct > 0.0 && cfg.leverage > 0.0 && live_loss_cap > 0.0 {
+        let modelled_loss = eff_risk * stop_pct * cfg.leverage;
+        if modelled_loss > live_loss_cap {
+            eff_risk = live_loss_cap / (stop_pct * cfg.leverage);
+        }
+    }
+    eff_risk
 }
 
 #[cfg(test)]

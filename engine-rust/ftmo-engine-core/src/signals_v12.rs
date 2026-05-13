@@ -17,7 +17,7 @@ use crate::detector_filters::htf_trend_allows;
 use crate::indicators::{atr, ema};
 use crate::position::PositionSide;
 use crate::signal::PollSignal;
-use crate::sizing::resolve_sizing_factor;
+use crate::sizing::{apply_post_factor_caps, resolve_sizing_factor};
 use crate::state::EngineState;
 
 pub struct V12Params {
@@ -136,13 +136,10 @@ pub fn detect_v12(
         }
     }
 
+    // 2026-05-13 Codex Audit Round 3 — Fix 2: centralized post-factor caps.
     let factor = resolve_sizing_factor(state, cfg, entry_bar.open_time);
-    let mut eff_risk = params.base_risk_frac * factor;
-    if !cfg.bypass_live_caps {
-        if let Some(caps) = cfg.live_caps.as_ref() {
-            eff_risk = eff_risk.min(caps.max_risk_frac);
-        }
-    }
+    let eff_risk =
+        apply_post_factor_caps(cfg, state, params.base_risk_frac * factor, stop_pct);
     if eff_risk <= 0.0 {
         return None;
     }

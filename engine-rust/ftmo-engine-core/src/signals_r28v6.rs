@@ -24,7 +24,7 @@ use crate::indicators::{atr, rsi, sma};
 use crate::news::NewsEvent;
 use crate::position::PositionSide;
 use crate::signal::PollSignal;
-use crate::sizing::resolve_sizing_factor;
+use crate::sizing::{apply_post_factor_caps, resolve_sizing_factor};
 use crate::state::EngineState;
 
 /// R29-R7: gate entry on perp funding-rate crowdedness.
@@ -395,32 +395,13 @@ fn try_detect_direction(
         }
     }
 
-    // 11. Sizing pipeline.
+    // 11. Sizing pipeline. 2026-05-13 Codex Audit Round 3 — Fix 2:
+    // post-factor caps (dayBased + maxRiskFrac + LIVE_LOSS_CAP) are now
+    // centralized in sizing::apply_post_factor_caps so MR/Breakout/Trend/
+    // V12/ForexMR/R29R5 detectors get the same safety pipeline.
     let factor = resolve_sizing_factor(state, cfg, last.open_time);
-    // 2026-05-13 Codex HIGH FIX (Fix 8): apply dayBasedRiskMultiplier BEFORE
-    // live-cap (TS ftmoLiveEngineV4.ts:1975-1981). When state.day is in the
-    // conservative early-window, scale risk down to preserve capital.
-    let day_risk_mult = match cfg.day_based_risk_multiplier {
-        Some(dbrm) if state.day < dbrm.conservative_first_days => dbrm.conservative_factor,
-        _ => 1.0,
-    };
-    let mut eff_risk = params.base_risk_frac * factor * day_risk_mult;
-    if !cfg.bypass_live_caps {
-        if let Some(caps) = cfg.live_caps.as_ref() {
-            eff_risk = eff_risk.min(caps.max_risk_frac);
-        }
-    }
-    // 2026-05-13 Codex HIGH FIX (Fix 8): derived live-loss cap from
-    // ftmoLiveEngineV4.ts:1991-1997. Cap eff_risk so that the modelled
-    // worst-case loss (effRisk × stopPct × leverage) never exceeds
-    // maxDailyLoss × 0.8. Back-derive from final stop_pct.
-    let live_loss_cap = cfg.max_daily_loss.max(0.0) * 0.8;
-    if stop_pct > 0.0 && cfg.leverage > 0.0 {
-        let modelled_loss = eff_risk * stop_pct * cfg.leverage;
-        if modelled_loss > live_loss_cap && live_loss_cap > 0.0 {
-            eff_risk = live_loss_cap / (stop_pct * cfg.leverage);
-        }
-    }
+    let eff_risk =
+        apply_post_factor_caps(cfg, state, params.base_risk_frac * factor, stop_pct);
     if eff_risk <= 0.0 {
         return None;
     }

@@ -12,7 +12,7 @@ use crate::config::{AssetConfig, EngineConfig, MeanReversionSource};
 use crate::indicators::rsi;
 use crate::position::PositionSide;
 use crate::signal::PollSignal;
-use crate::sizing::resolve_sizing_factor;
+use crate::sizing::{apply_post_factor_caps, resolve_sizing_factor};
 use crate::state::EngineState;
 use crate::time_util::ls_key;
 
@@ -176,18 +176,18 @@ pub fn detect_mean_reversion(
     // (lookahead). Stop/TP anchored on entry_price.
     let entry_bar = candles[i];
     let entry_price = entry_bar.open;
+    let stop_pct = asset.stop_pct.unwrap_or(cfg.stop_pct);
+    let tp_pct = asset.tp_pct.unwrap_or(cfg.tp_pct);
+    // 2026-05-13 Codex Audit Round 3 — Fix 2: centralized post-factor caps
+    // (dayBased + maxRiskFrac + LIVE_LOSS_CAP). Previously this detector
+    // only clamped to maxRiskFrac → uncapped against the maxDailyLoss-
+    // derived live-loss limit.
     let factor = resolve_sizing_factor(state, cfg, entry_bar.open_time);
-    let mut eff_risk = asset.risk_frac * factor * src.size_mult;
-    if !cfg.bypass_live_caps {
-        if let Some(caps) = cfg.live_caps.as_ref() {
-            eff_risk = eff_risk.min(caps.max_risk_frac);
-        }
-    }
+    let eff_risk =
+        apply_post_factor_caps(cfg, state, asset.risk_frac * factor * src.size_mult, stop_pct);
     if eff_risk <= 0.0 {
         return None;
     }
-    let stop_pct = asset.stop_pct.unwrap_or(cfg.stop_pct);
-    let tp_pct = asset.tp_pct.unwrap_or(cfg.tp_pct);
     let (stop_price, tp_price) = match direction {
         PositionSide::Long => (entry_price * (1.0 - stop_pct), entry_price * (1.0 + tp_pct)),
         PositionSide::Short => (entry_price * (1.0 + stop_pct), entry_price * (1.0 - tp_pct)),

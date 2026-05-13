@@ -18,7 +18,7 @@ use crate::detector_filters::rsi_filter_allows;
 use crate::indicators::{atr, rsi, sma};
 use crate::position::PositionSide;
 use crate::signal::PollSignal;
-use crate::sizing::resolve_sizing_factor;
+use crate::sizing::{apply_post_factor_caps, resolve_sizing_factor};
 use crate::state::{EngineState, LossStreakEntry};
 use crate::time_util::ls_key;
 
@@ -158,14 +158,15 @@ pub fn detect_forex_mr(
         }
     }
 
-    // Sizing.
+    // Sizing — 2026-05-13 Codex Audit Round 3 — Fix 2: centralized post-factor
+    // caps via sizing helper.
     let factor = resolve_sizing_factor(state, cfg, entry_bar.open_time);
-    let mut eff_risk = params.base_risk_frac * factor * params.size_mult;
-    if !cfg.bypass_live_caps {
-        if let Some(caps) = cfg.live_caps.as_ref() {
-            eff_risk = eff_risk.min(caps.max_risk_frac);
-        }
-    }
+    let eff_risk = apply_post_factor_caps(
+        cfg,
+        state,
+        params.base_risk_frac * factor * params.size_mult,
+        stop_pct,
+    );
     if eff_risk <= 0.0 {
         return None;
     }

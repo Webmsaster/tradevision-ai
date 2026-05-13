@@ -129,6 +129,35 @@ pub fn load_state_or_reset(state_dir: &Path, cfg_label: &str) -> LoadOutcome {
         .and_then(Value::as_u64)
         .unwrap_or(0) as u32;
 
+    // 2026-05-13 Codex Audit Round 3 — Fix 5: reject future schema versions.
+    // Previously migrate_to_current force-bumped schemaVersion to the
+    // current value, silently downgrading TS-written state with unknown
+    // future fields. TS parity (ftmoLiveEngineV4.ts:455) → reset+backup.
+    if from_version > SCHEMA_VERSION {
+        let bak = backup_corrupt(&path).ok().flatten();
+        return LoadOutcome::Reset {
+            backed_up_to: bak,
+            state: EngineState::initial(cfg_label),
+        };
+    }
+
+    // 2026-05-13 Codex Audit Round 3 — Fix 4: reject state from a different
+    // config label. TS parity (ftmoLiveEngineV4.ts:442). Without this gate,
+    // restarting a bot under a new config kept old open positions, Kelly
+    // tier, loss streaks, pause state, and target state — silent cross-
+    // config contamination.
+    let persisted_cfg_label = value
+        .get("cfgLabel")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if persisted_cfg_label != cfg_label {
+        let bak = backup_corrupt(&path).ok().flatten();
+        return LoadOutcome::Reset {
+            backed_up_to: bak,
+            state: EngineState::initial(cfg_label),
+        };
+    }
+
     // Step 2: try direct parse first for the happy path.
     if from_version == SCHEMA_VERSION {
         match serde_json::from_value::<EngineState>(value.clone()) {

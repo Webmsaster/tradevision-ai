@@ -16,7 +16,7 @@ use crate::candle::Candle;
 use crate::config::{AssetConfig, EngineConfig};
 use crate::position::PositionSide;
 use crate::signal::PollSignal;
-use crate::sizing::resolve_sizing_factor;
+use crate::sizing::{apply_post_factor_caps, resolve_sizing_factor};
 use crate::state::EngineState;
 
 pub struct BreakoutParams {
@@ -99,17 +99,19 @@ pub fn detect_breakout(
         }
     }
 
-    let factor = resolve_sizing_factor(state, cfg, entry_bar.open_time);
-    let mut eff_risk = params.base_risk_frac * factor;
+    // R51 — skip outright if effective stop is wider than max_stop_pct.
     if !cfg.bypass_live_caps {
         if let Some(caps) = cfg.live_caps.as_ref() {
-            eff_risk = eff_risk.min(caps.max_risk_frac);
-            // R51 — also skip outright if effective stop is wider than max_stop_pct.
             if params.stop_pct > caps.max_stop_pct {
                 return None;
             }
         }
     }
+    // 2026-05-13 Codex Audit Round 3 — Fix 2: centralized post-factor caps
+    // (dayBased + maxRiskFrac + LIVE_LOSS_CAP).
+    let factor = resolve_sizing_factor(state, cfg, entry_bar.open_time);
+    let eff_risk =
+        apply_post_factor_caps(cfg, state, params.base_risk_frac * factor, params.stop_pct);
     if eff_risk <= 0.0 {
         return None;
     }

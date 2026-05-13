@@ -15,7 +15,7 @@ use crate::candle::Candle;
 use crate::config::{AssetConfig, CvdEntry, EngineConfig, VolImbalanceEntry, VolPocEntry};
 use crate::position::PositionSide;
 use crate::signal::PollSignal;
-use crate::sizing::resolve_sizing_factor;
+use crate::sizing::{apply_post_factor_caps, resolve_sizing_factor};
 use crate::state::EngineState;
 
 /// Build the standard PollSignal payload — sizing + stop/tp prices + caps.
@@ -36,19 +36,18 @@ fn finalise_signal(
     let stop_pct = asset.stop_pct.unwrap_or(cfg.stop_pct);
     let tp_pct = asset.tp_pct.unwrap_or(cfg.tp_pct);
 
-    let factor = resolve_sizing_factor(state, cfg, entry_bar.open_time);
-    let mut eff_risk = asset.risk_frac * factor;
+    // Skip outright if asset stop is wider than the FTMO cap.
     if !cfg.bypass_live_caps {
         if let Some(caps) = cfg.live_caps.as_ref() {
-            eff_risk = eff_risk.min(caps.max_risk_frac);
-            // Skip outright if asset stop is wider than the FTMO cap. Mirrors
-            // signals_breakout.rs:71 — backtests with `liveCaps {maxStopPct:
-            // 0.05}` reject anything wider so `effRisk` would be 0 anyway.
             if stop_pct > caps.max_stop_pct {
                 return None;
             }
         }
     }
+    // 2026-05-13 Codex Audit Round 3 — Fix 2: centralized post-factor caps
+    // (dayBased + maxRiskFrac + LIVE_LOSS_CAP) via sizing helper.
+    let factor = resolve_sizing_factor(state, cfg, entry_bar.open_time);
+    let eff_risk = apply_post_factor_caps(cfg, state, asset.risk_frac * factor, stop_pct);
     if eff_risk <= 0.0 {
         return None;
     }
