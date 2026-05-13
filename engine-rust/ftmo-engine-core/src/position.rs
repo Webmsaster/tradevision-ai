@@ -84,10 +84,20 @@ pub struct OpenPosition {
 }
 
 impl OpenPosition {
-    /// Compose ticket id from entry time + symbol — must match the TS
-    /// implementation so persisted state files are interoperable.
-    pub fn make_ticket_id(entry_time: i64, symbol: &str) -> String {
-        format!("{entry_time}-{symbol}")
+    /// Compose ticket id from symbol + entry time + direction — mirrors
+    /// TS `ftmoLiveEngineV4.ts:2018` (`${symbol}@${entryTime}@${direction}`)
+    /// so persisted state files are interoperable AND so same-bar
+    /// Long+Short pairs on one symbol get DISTINCT ids.
+    ///
+    /// 2026-05-13 Codex HIGH FIX: previously omitted direction → Long+Short
+    /// same-bar same-symbol collided on a single ticket, causing the second
+    /// entry to overwrite the first in `state.open_positions`.
+    pub fn make_ticket_id(entry_time: i64, symbol: &str, direction: PositionSide) -> String {
+        let d = match direction {
+            PositionSide::Long => "long",
+            PositionSide::Short => "short",
+        };
+        format!("{symbol}@{entry_time}@{d}")
     }
 }
 
@@ -97,7 +107,11 @@ mod tests {
 
     fn sample_long() -> OpenPosition {
         OpenPosition {
-            ticket_id: OpenPosition::make_ticket_id(1_700_000_000_000, "BTC-TREND"),
+            ticket_id: OpenPosition::make_ticket_id(
+                1_700_000_000_000,
+                "BTC-TREND",
+                PositionSide::Long,
+            ),
             symbol: "BTC-TREND".into(),
             source_symbol: "BTCUSDT".into(),
             direction: PositionSide::Long,
@@ -123,7 +137,18 @@ mod tests {
     #[test]
     fn ticket_id_is_stable() {
         let p = sample_long();
-        assert_eq!(p.ticket_id, "1700000000000-BTC-TREND");
+        assert_eq!(p.ticket_id, "BTC-TREND@1700000000000@long");
+    }
+
+    #[test]
+    fn ticket_id_distinguishes_direction() {
+        // 2026-05-13 Codex HIGH FIX regression: same-bar same-symbol Long+Short
+        // must get DISTINCT ticket ids.
+        let long = OpenPosition::make_ticket_id(1_700_000_000_000, "BTC", PositionSide::Long);
+        let short = OpenPosition::make_ticket_id(1_700_000_000_000, "BTC", PositionSide::Short);
+        assert_ne!(long, short);
+        assert!(long.ends_with("long"));
+        assert!(short.ends_with("short"));
     }
 
     #[test]

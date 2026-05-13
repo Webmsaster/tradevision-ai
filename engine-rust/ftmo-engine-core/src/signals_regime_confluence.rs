@@ -29,26 +29,34 @@ use crate::signals_r28v6::{detect_r28_v6, R28V6Inputs, R28V6Params};
 use crate::state::EngineState;
 
 /// 2026-05-13 Phase 3b — VWAP-trend vote helper. Returns the trend
-/// direction sampled from VWAP — Long if current close > VWAP AND VWAP
+/// direction sampled from VWAP — Long if signal-bar close > VWAP AND VWAP
 /// is rising (last-period delta > 0), Short if close < VWAP AND VWAP
 /// falling. Provides a 5th independent voter (price+volume joint signal,
 /// orthogonal to vol_confirm which only consults raw volume).
 ///
-/// vwap = Σ(close_i × volume_i) / Σ(volume_i)  over last `vwap_period` bars.
+/// 2026-05-13 Codex KRITISCH FIX: signal-bar = `candles[i-1]` (the just-
+/// closed bar), NOT `candles[i]` (the current execution bar whose close
+/// is future data). VWAP window is `[i-1-n .. i-1)` and the "previous"
+/// window slides one bar back for the slope.
+///
+/// vwap = Σ(close_k × volume_k) / Σ(volume_k)  over last `vwap_period` bars.
 fn compute_vwap_trend_vote(
     candles: &[Candle],
     params: &RegimeConfluenceParams,
 ) -> Option<PositionSide> {
     let n = params.vwap_period;
-    if n == 0 || candles.len() <= n + 1 {
+    // Need bar `i` + the i-1 slice for VWAP-now + the i-2 slice for prev VWAP.
+    if n == 0 || candles.len() < n + 3 {
         return None;
     }
-    let last = candles.last()?;
-    if !last.close.is_finite() {
+    let signal_idx = candles.len() - 2; // bar i-1 (just closed, no lookahead)
+    let signal_bar = candles[signal_idx];
+    if !signal_bar.close.is_finite() {
         return None;
     }
-    // Compute VWAP for last n bars (excl. current).
-    let slice = &candles[candles.len() - 1 - n..candles.len() - 1];
+    // VWAP-now: bars (i-1-n .. i-1), excluding signal_bar itself so the
+    // sum is on bars STRICTLY BEFORE the signal bar.
+    let slice = &candles[signal_idx - n..signal_idx];
     let (sum_pv, sum_v) = slice.iter().fold((0.0_f64, 0.0_f64), |(p, v), c| {
         (p + c.close * c.volume, v + c.volume)
     });
@@ -56,11 +64,11 @@ fn compute_vwap_trend_vote(
         return None;
     }
     let vwap_now = sum_pv / sum_v;
-    // Previous-window VWAP for slope (excl. last 2 bars).
-    if candles.len() <= n + 2 {
+    // Prev-window VWAP for slope: bars (i-2-n .. i-2).
+    if signal_idx < n + 1 {
         return None;
     }
-    let prev_slice = &candles[candles.len() - 2 - n..candles.len() - 2];
+    let prev_slice = &candles[signal_idx - 1 - n..signal_idx - 1];
     let (sum_pv_p, sum_v_p) = prev_slice.iter().fold((0.0_f64, 0.0_f64), |(p, v), c| {
         (p + c.close * c.volume, v + c.volume)
     });
@@ -68,7 +76,7 @@ fn compute_vwap_trend_vote(
         return None;
     }
     let vwap_prev = sum_pv_p / sum_v_p;
-    let dev_pct = (last.close - vwap_now) / vwap_now;
+    let dev_pct = (signal_bar.close - vwap_now) / vwap_now;
     if !dev_pct.is_finite() {
         return None;
     }
@@ -85,17 +93,23 @@ fn compute_vwap_trend_vote(
 }
 
 /// 2026-05-13 — volume-confirmation vote helper. Returns the breakout's
-/// direction if the current bar's volume cleared
+/// direction if the SIGNAL-bar's volume cleared
 /// `params.vol_confirm_mult × SMA(volume, params.vol_confirm_period)`.
 /// Independent voter so mv=3/mv=4 consensus is reachable without an
 /// MR-source on AMBER family.
+///
+/// 2026-05-13 Codex KRITISCH FIX: signal-bar = `candles[i-1]` (just-closed,
+/// volume known). SMA window slides to bars STRICTLY BEFORE the signal bar
+/// so the comparison is "signal-bar volume vs prior N bars", with no
+/// dependency on `candles[i].volume` (which is future data at signal time).
 fn compute_vol_confirm_vote(
     candles: &[Candle],
     params: &RegimeConfluenceParams,
     bo_signal: Option<&PollSignal>,
 ) -> Option<PositionSide> {
     let n = params.vol_confirm_period;
-    if n == 0 || candles.len() <= n {
+    // Need bar `i` + signal-bar (i-1) + n SMA-window bars before signal-bar.
+    if n == 0 || candles.len() < n + 2 {
         return None;
     }
     // 2026-05-13 Bug-Audit Round 3 — BUG #5 FIX: guard against vol_confirm_mult
@@ -107,16 +121,17 @@ fn compute_vol_confirm_vote(
         return None;
     }
     let bo = bo_signal?;
-    let last = candles.last()?;
-    let sma: f64 = candles[candles.len() - 1 - n..candles.len() - 1]
+    let signal_idx = candles.len() - 2;
+    let signal_bar = candles[signal_idx];
+    let sma: f64 = candles[signal_idx - n..signal_idx]
         .iter()
         .map(|c| c.volume)
         .sum::<f64>()
         / n as f64;
-    if !sma.is_finite() || sma <= 0.0 || !last.volume.is_finite() {
+    if !sma.is_finite() || sma <= 0.0 || !signal_bar.volume.is_finite() {
         return None;
     }
-    if last.volume >= params.vol_confirm_mult * sma {
+    if signal_bar.volume >= params.vol_confirm_mult * sma {
         Some(bo.direction)
     } else {
         None
@@ -252,7 +267,16 @@ pub fn detect_regime_confluence(
     // REGIME-only trades vs standalone R28V6).
     let mr_effective_some =
         cfg.mean_reversion_source.is_some() || params.mr_source_override.is_some();
-    if r28.is_none() && params.min_votes >= 2 && !mr_effective_some && !params.use_vol_confirm {
+    // 2026-05-13 Codex MED FIX: VWAP-trend is a 5th independent voter — if
+    // enabled it can carry quorum with breakout even when R28V6 abstains
+    // and MR/vol-confirm are disabled. Previously the early-exit didn't
+    // know about VWAP and dropped legitimate VWAP+BO consensus.
+    if r28.is_none()
+        && params.min_votes >= 2
+        && !mr_effective_some
+        && !params.use_vol_confirm
+        && !params.use_vwap_trend
+    {
         return None;
     }
 
@@ -261,12 +285,16 @@ pub fn detect_regime_confluence(
     let bo = detect_breakout(&mut state_for_bo, cfg, asset, source_symbol, candles, &bp);
 
     // MR probe — uses override if provided, else cfg.mean_reversion_source.
+    // 2026-05-13 Codex MED FIX: hoist state_for_mr out of the closure so we
+    // can propagate its mutations (cooldown_by_asset_dir + loss-streak) back
+    // when MR is the winning anchor. Without this, MR cooldown silently
+    // evaporates and back-to-back MR signals fire same-bar (anti-spam dead).
     let mr_src = params
         .mr_source_override
         .as_ref()
         .or(cfg.mean_reversion_source.as_ref());
+    let mut state_for_mr = state.clone();
     let mr = mr_src.and_then(|src| {
-        let mut state_for_mr = state.clone();
         detect_mean_reversion(&mut state_for_mr, cfg, asset, source_symbol, candles, src)
     });
 
@@ -333,7 +361,9 @@ pub fn detect_regime_confluence(
         }
     }
 
-    let min = params.min_votes as u8;
+    // 2026-05-13 Codex LOW FIX: clamp before u8 cast — min_votes ≥ 256
+    // would silently wrap to 0 (vacuous-truth fires every bar).
+    let min = params.min_votes.min(u8::MAX as usize) as u8;
     // 2026-05-13 Bug-Audit Round 3 — BUG #2 FIX: strict majority `>` not `>=`.
     // Tie (long_votes == short_votes) means no consensus → return None.
     // Previously `>=` favored Long unconditionally on tied votes which fired
@@ -398,12 +428,38 @@ pub fn detect_regime_confluence(
     // winning side. Vol-confirm only carries a PositionSide vote, not a full
     // PollSignal, so it cannot be the anchor — but the breakout signal (which
     // vol-confirm parasitizes) is available as a fallback anchor in that case.
-    let anchor: Option<&PollSignal> = [r28.as_ref(), bo.as_ref(), mr.as_ref()]
+    // 2026-05-13 Codex MED FIX: track the index of the winning probe so we
+    // can propagate its private state-clone back to the real state. Order
+    // mirrors the [r28, bo, mr] iteration above.
+    let probes: [(Option<&PollSignal>, AnchorKind); 3] = [
+        (r28.as_ref(), AnchorKind::R28V6),
+        (bo.as_ref(), AnchorKind::Breakout),
+        (mr.as_ref(), AnchorKind::MeanReversion),
+    ];
+    let (anchor, anchor_kind) = probes
         .into_iter()
-        .flatten()
-        .find(|s| s.direction == winning_side);
-    let anchor = anchor?;
+        .filter_map(|(s, k)| s.map(|sig| (sig, k)))
+        .find(|(s, _)| s.direction == winning_side)?;
+    // Propagate the chosen probe's state-mutations back to the real state.
+    // Other probes' clones are discarded (their side-effects had no
+    // entry-route to the harness anyway). Without this propagation:
+    //   - MR cooldown_by_asset_dir resets every bar → MR fires every poll
+    //     instead of being throttled
+    //   - Kelly-tier index decrement on a fresh tier-roll is lost → next
+    //     bar's sizing reads stale tier, causing repeated over-sizing
+    match anchor_kind {
+        AnchorKind::R28V6 => *state = state_for_r28,
+        AnchorKind::Breakout => *state = state_for_bo,
+        AnchorKind::MeanReversion => *state = state_for_mr,
+    }
     Some(anchor.clone())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnchorKind {
+    R28V6,
+    Breakout,
+    MeanReversion,
 }
 
 #[cfg(test)]
@@ -566,10 +622,15 @@ mod tests {
 
     #[test]
     fn vol_confirm_handles_nan_volume() {
-        // Numerical edge: if any volume is NaN/inf, helper must NOT panic.
-        // Returns None (no vote) when sma is non-finite or last vol non-finite.
+        // Numerical edge: if signal-bar volume is NaN/inf, helper must NOT panic.
+        // 2026-05-13 Codex fix: signal-bar = i-1 → put NaN on candles[48].
         let mut candles = flat_candles(50);
-        candles[49].volume = f64::NAN;
+        // Give the SMA window some non-zero baseline so it isn't filtered out
+        // by sum_v <= 0 before reaching the NaN guard.
+        for c in candles.iter_mut() {
+            c.volume = 100.0;
+        }
+        candles[48].volume = f64::NAN;
         let params = RegimeConfluenceParams {
             min_votes: 1,
             use_vol_confirm: true,
@@ -627,14 +688,16 @@ mod tests {
 
     #[test]
     fn vol_confirm_fires_when_volume_spikes() {
-        // Numerical contract: when last-bar volume ≥ mult × SMA(N), vote = bo.direction.
+        // Numerical contract: when SIGNAL-bar (i-1) volume ≥ mult × SMA(N),
+        // vote = bo.direction.
+        // 2026-05-13 Codex KRITISCH FIX adjustment: signal-bar now i-1,
+        // spike placed at candles[48], not candles[49].
         let mut candles = flat_candles(50);
-        // Set last 25 bars to volume 100 (SMA20 of last 20 pre-current ≈ 100).
         for c in candles.iter_mut() {
             c.volume = 100.0;
         }
-        // Final bar = 250 = 2.5× SMA.
-        candles[49].volume = 250.0;
+        // Signal-bar (i-1 = idx 48) = 250 = 2.5× SMA.
+        candles[48].volume = 250.0;
         let params = RegimeConfluenceParams {
             min_votes: 1,
             use_vol_confirm: true,
@@ -669,7 +732,8 @@ mod tests {
         for c in candles.iter_mut() {
             c.volume = 100.0;
         }
-        candles[49].volume = 150.0; // 1.5× SMA but mult is 2.0
+        // Signal-bar i-1 = idx 48 (after Codex lookahead fix).
+        candles[48].volume = 150.0; // 1.5× SMA but mult is 2.0
         let params = RegimeConfluenceParams {
             min_votes: 1,
             use_vol_confirm: true,
@@ -716,7 +780,8 @@ mod tests {
         for c in candles.iter_mut() {
             c.volume = 0.0;
         }
-        candles[49].volume = 1.0; // tiny spike, but SMA=0 → guard out
+        // 2026-05-13 Codex fix: signal-bar = i-1 → put any spike on candles[48].
+        candles[48].volume = 1.0; // tiny spike, but SMA=0 → guard out
         let params = RegimeConfluenceParams {
             min_votes: 1,
             use_vol_confirm: true,

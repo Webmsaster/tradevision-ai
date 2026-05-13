@@ -404,13 +404,22 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
     // the threshold while other positions were still underwater. With
     // PASSLOCK, that premature target-hit closed all positions and
     // paused — sometimes locking in a sub-target equity (the w108 bug).
-    if state.equity >= 1.0 + cfg.profit_target
+    //
+    // 2026-05-13 Codex HIGH FIX: the first_target_hit_day latch was set
+    // BEFORE the close_all-on-target apply_exits ran, but apply_exits now
+    // deducts funding-cost over crossed 8h settlement boundaries. When
+    // funding > 0 and short positions are closed, realized PnL drops below
+    // the target → soft-pass tail at sweep.rs:2044 saw the latch and
+    // false-passed despite final equity < target. Fix: provisionally engage
+    // pause + ping-day, RUN close_all so funding is realized, then RE-CHECK
+    // post-funding equity AND mtm BEFORE committing the latch.
+    let target_hit_provisional = state.equity >= 1.0 + cfg.profit_target
         && state.mtm_equity >= 1.0 + cfg.profit_target
-        && state.first_target_hit_day.is_none()
-    {
-        result.target_hit = true;
-        state.first_target_hit_day = Some(state.day);
-        // 7. Pause-after-target latch.
+        && state.first_target_hit_day.is_none();
+    if target_hit_provisional {
+        // 7. Pause-after-target latch — provisional. Required BEFORE close_all
+        // so apply_exits sees paused state and doesn't accidentally re-open
+        // anything.
         //
         // R29-Audit-Round2.2: TS V4 L1575-1576 sets
         //   `state.pausedAtTarget = !!pauseAtTarget || !!closeAllOnTarget`
@@ -418,25 +427,20 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
         // ping-day push at L343-348 (TS L1663-1668) keeps satisfying
         // min_trading_days post-target. The earlier Rust gate
         // (`if pause_at_target_reached`) silently dropped the latch when
-        // a config used closeAllOnTarget=true + pauseAtTarget=false (a
-        // misconfiguration, but supported in TS for coherent Pass-Lock).
-        // Without the latch, ping-day push at L374-379 also no-ops and
-        // the standalone-pass-check below can starve on min_trading_days
-        // → false-negative pass on otherwise-target-hit windows.
+        // a config used closeAllOnTarget=true + pauseAtTarget=false.
+        let prev_paused_at_target = state.paused_at_target;
         if cfg.pause_at_target_reached || cfg.close_all_on_target_reached {
             state.paused_at_target = true;
         }
         // R29-R3.8 fix: TS sets `pausedAtTarget` (line 1575-1576) BEFORE
         // ping-day bookkeeping (line 1663-1668) so the first-target-hit bar
-        // counts toward `tradingDays`. Rust runs ping-day above the target-
-        // hit branch, so today never gets pushed on the first-hit bar.
-        // Mirror TS's same-bar push here so the standalone pass-check below
-        // can clear `min_trading_days` on the first-hit bar when no entry
-        // had previously stamped today.
+        // counts toward `tradingDays`.
+        let mut pushed_ping_day = false;
         if state.paused_at_target {
             let ping_day = new_day as u32;
             if !state.trading_days.contains(&ping_day) {
                 state.trading_days.push(ping_day);
+                pushed_ping_day = true;
             }
         }
         // 8. R60 close-all-on-target.
@@ -448,9 +452,7 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
             // only attempted exact-match (`find_candle_at_time`) and then
             // bailed straight to `last_known_price`, but TS first tries an
             // exact match, and if that misses, scans backwards for the most
-            // recent candle ≤ `last_bar_time`. This matters when the active
-            // asset is mid-warmup or has an asymmetric time series so the
-            // perfect-match candle isn't yet present. `find_candle_at_or_before`
+            // recent candle ≤ `last_bar_time`. `find_candle_at_or_before`
             // already covers BOTH cases (exact + scan-back) in a single call.
             let mut to_close: Vec<(usize, crate::exit::ExitOutcome)> = vec![];
             for (idx, pos) in state.open_positions.iter().enumerate() {
@@ -473,9 +475,25 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
             // R67 audit fix: refresh mtm_equity to match realised after
             // close-all. Without this, state.mtm_equity retained the stale
             // pre-close value (from step 4) which could diverge from
-            // state.equity if close_price ≠ tp_price. Subsequent same-bar
-            // standalone-pass-checks reading mtm_equity would be wrong.
+            // state.equity if close_price ≠ tp_price.
             state.mtm_equity = state.equity;
+        }
+        // Codex HIGH FIX (continued): post-funding RE-CHECK. Only commit
+        // the first_target_hit_day latch if equity AND mtm STILL clear the
+        // target after close_all's funding-cost deduction. Otherwise revert
+        // the provisional pause/ping-day so the window neither soft-passes
+        // nor blocks recovery entries.
+        if state.equity >= 1.0 + cfg.profit_target
+            && state.mtm_equity >= 1.0 + cfg.profit_target
+        {
+            result.target_hit = true;
+            state.first_target_hit_day = Some(state.day);
+        } else {
+            state.paused_at_target = prev_paused_at_target;
+            if pushed_ping_day {
+                let ping_day = new_day as u32;
+                state.trading_days.retain(|&d| d != ping_day);
+            }
         }
         // FTMO pass: target hit AND minTradingDays satisfied.
         //
@@ -821,7 +839,11 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                 state.pending_reentries.remove(&key);
             }
             let pos = OpenPosition {
-                ticket_id: OpenPosition::make_ticket_id(sig.entry_time, &sig.symbol),
+                ticket_id: OpenPosition::make_ticket_id(
+                    sig.entry_time,
+                    &sig.symbol,
+                    sig.direction,
+                ),
                 symbol: sig.symbol.clone(),
                 source_symbol: sig.source_symbol.clone(),
                 direction: sig.direction,
