@@ -105,6 +105,7 @@ import { atr, rsi } from "@/utils/indicators";
 import type { Candle } from "@/utils/indicators";
 import {
   detectAsset,
+  pragueDay,
   type Daytrade24hAssetCfg,
   type Daytrade24hTrade,
   type FtmoDaytrade24hConfig,
@@ -435,11 +436,30 @@ export function loadState(stateDir: string, cfgLabel: string): FtmoLiveStateV4 {
         } catch {
           /* ignore — fresh state will overwrite anyway */
         }
+        const isRollback =
+          typeof obj.schemaVersion === "number" &&
+          obj.schemaVersion > SCHEMA_VERSION;
+        const tag = isRollback
+          ? "STATE FROM NEWER VERSION (rollback?)"
+          : "STATE MISMATCH";
         console.error(
-          `[V4] STATE MISMATCH — backed up to ${backupPath}. ` +
+          `[V5R] ${tag} — backed up to ${backupPath}. ` +
             `Old: ${obj.cfgLabel}/${obj.schemaVersion}, ` +
             `New: ${cfgLabel}/${SCHEMA_VERSION}`,
         );
+        // 2026-05-13 Codex Round 7 V5R backport (#B-V5R-rollback): fail-closed
+        // on rollback (newer state, older binary) unless explicit override.
+        // Mirrors V4 commit a6a411c. Set FTMO_V5R_ROLLBACK_ALLOW=1 to permit
+        // legacy reset+backup behavior (backtests / dev only).
+        if (isRollback && process.env.FTMO_V5R_ROLLBACK_ALLOW !== "1") {
+          throw new Error(
+            `[V5R] REFUSING TO START on rolled-back state. ` +
+              `State was written by schemaVersion=${obj.schemaVersion} but ` +
+              `this binary is at SCHEMA_VERSION=${SCHEMA_VERSION}. ` +
+              `Backup at ${backupPath}. ` +
+              `Re-deploy the newer binary OR set FTMO_V5R_ROLLBACK_ALLOW=1.`,
+          );
+        }
         return initialState(cfgLabel);
       }
       return obj as FtmoLiveStateV4;
@@ -551,16 +571,11 @@ function findCandleAtTime(arr: Candle[], targetTime: number): Candle | null {
 
 function dayIndex(barTs: number, challengeStart: number): number {
   if (challengeStart <= 0) return 0;
-  // Phase 14 (V4 Bug 5): align day-rollover with FTMO Prague-midnight, not
-  // UTC midnight. Python executor uses ZoneInfo("Europe/Prague") for
-  // dayPeak; engine was using UTC → 1-2h disagreement per day → DL/TL
-  // checks attribute trades to the wrong day around CET 23:00-00:00.
-  // Phase 30 (V4 Audit Bug 1): apply offset to BOTH sides — offset on
-  // barTs only drifted at DST-changeover (winter→summer or vice versa)
-  // because challengeStart was un-offset.
-  const barLocal = barTs + pragueOffsetMs(barTs);
-  const startLocal = challengeStart + pragueOffsetMs(challengeStart);
-  return Math.floor((barLocal - startLocal) / (24 * 3600 * 1000));
+  // 2026-05-13 Codex Round 7 V5R backport: replace elapsed-local-time/24h
+  // with pragueDay-diff (mirrors V4 commit a6a411c). Old approach failed
+  // for non-midnight challenge_start (rollover at 24h-from-start instead
+  // of next Prague midnight) AND across DST transitions.
+  return pragueDay(barTs) - pragueDay(challengeStart);
 }
 
 /**
@@ -764,6 +779,24 @@ export function resolveSizingFactor(
 }
 
 /**
+ * 2026-05-13 Codex Round 7 V5R backport: cost-adjusted BE stop helper.
+ * Source backtest moves BE stop to entry × (1 ± cost). V5R previously
+ * moved to raw entry, leaving a -cost bp drag on every BE-stop.
+ */
+function computeBeStopV5R(
+  pos: OpenPositionV4,
+  cfg: FtmoDaytrade24hConfig,
+): number {
+  const assetCfg = cfg.assets.find((a) => a.symbol === pos.symbol);
+  const costBp = assetCfg?.costBp ?? 0;
+  if (costBp <= 0) return pos.entryPrice;
+  const cost = costBp / 10000;
+  return pos.direction === "long"
+    ? pos.entryPrice * (1 + cost)
+    : pos.entryPrice * (1 - cost);
+}
+
+/**
  * Process exits for one open position at the current bar. Mutates pos
  * in-place (chandelier high-watermark, beActive, ptp). Returns exit info
  * if a stop/tp/time was hit, else null.
@@ -817,21 +850,32 @@ function processPositionExit(
     // the priority logic is identical.
     if (ptpHit && (!stopHit || gapPastPtp)) {
       pos.ptpTriggered = true;
-      pos.ptpRealizedPct = ptp.closeFraction * ptp.triggerPct;
-      // Auto-move stop to break-even (mirrors backtest fix).
+      // 2026-05-13 Codex Round 7 V5R backport: cost-net PTP realized.
+      const assetCfgPtp = cfg.assets.find((a) => a.symbol === pos.symbol);
+      const costPtp = (assetCfgPtp?.costBp ?? 0) / 10000;
+      pos.ptpRealizedPct = ptp.closeFraction * (ptp.triggerPct - costPtp);
+      // Cost-adjusted BE (V5R backport).
+      const beStop = computeBeStopV5R(pos, cfg);
       if (pos.direction === "long") {
-        if (pos.entryPrice > pos.stopPrice) pos.stopPrice = pos.entryPrice;
+        if (beStop > pos.stopPrice) pos.stopPrice = beStop;
       } else {
-        if (pos.entryPrice < pos.stopPrice) pos.stopPrice = pos.entryPrice;
+        if (beStop < pos.stopPrice) pos.stopPrice = beStop;
       }
       pos.beActive = true;
-      // Reset chandelier reference to current close.
       pos.highWatermark = candle.close;
     }
   }
 
-  // 2b. Multi-level PTP.
+  // 2b. Multi-level PTP — 2026-05-13 Codex Round 7 V5R backport: added
+  // same-bar stop-guard, gap-past-level exception, cost-net per level,
+  // auto-BE + chandelier reset on first realisation. Mirrors V4 commit
+  // a6a411c + Codex Round 6 #S4.
   if (cfg.partialTakeProfitLevels && cfg.partialTakeProfitLevels.length > 0) {
+    const stopHitMulti =
+      pos.direction === "long"
+        ? candle.low <= pos.stopPrice
+        : candle.high >= pos.stopPrice;
+    let multiRealised = false;
     while (pos.ptpLevelIdx < cfg.partialTakeProfitLevels.length) {
       const lvl = cfg.partialTakeProfitLevels[pos.ptpLevelIdx];
       const triggerPrice =
@@ -843,52 +887,48 @@ function processPositionExit(
           ? candle.high >= triggerPrice
           : candle.low <= triggerPrice;
       if (!lvlHit) break;
-      pos.ptpLevelsRealized += lvl!.closeFraction * lvl!.triggerPct;
+      const gapPastLvl =
+        pos.direction === "long"
+          ? candle.open >= triggerPrice
+          : candle.open <= triggerPrice;
+      if (stopHitMulti && !gapPastLvl) break;
+      const assetCfgLvl = cfg.assets.find((a) => a.symbol === pos.symbol);
+      const costLvl = (assetCfgLvl?.costBp ?? 0) / 10000;
+      pos.ptpLevelsRealized += lvl!.closeFraction * (lvl!.triggerPct - costLvl);
       pos.ptpLevelIdx++;
+      multiRealised = true;
+    }
+    if (multiRealised) {
+      const beStop = computeBeStopV5R(pos, cfg);
+      if (pos.direction === "long") {
+        if (beStop > pos.stopPrice) pos.stopPrice = beStop;
+      } else {
+        if (beStop < pos.stopPrice) pos.stopPrice = beStop;
+      }
+      pos.beActive = true;
+      pos.highWatermark = candle.close;
     }
   }
 
-  // 3. BreakEven shift.
+  // 3. BreakEven shift — cost-adjusted (Codex Round 7 V5R backport).
   if (cfg.breakEven && !pos.beActive) {
     const fav =
       pos.direction === "long"
         ? (candle.close - pos.entryPrice) / pos.entryPrice
         : (pos.entryPrice - candle.close) / pos.entryPrice;
     if (fav >= cfg.breakEven.threshold) {
-      pos.stopPrice = pos.entryPrice;
+      pos.stopPrice = computeBeStopV5R(pos, cfg);
       pos.beActive = true;
     }
   }
 
-  // 4. ChandelierExit — ATR-smoothed trailing stop, gated by minMoveR.
-  if (cfg.chandelierExit && atrAtBar != null) {
-    const minMoveR = cfg.chandelierExit.minMoveR ?? 0.5;
-    const originalR = pos.initialStopPct * pos.entryPrice;
-    if (originalR > 0) {
-      const moveR =
-        pos.direction === "long"
-          ? (pos.highWatermark - pos.entryPrice) / originalR
-          : (pos.entryPrice - pos.highWatermark) / originalR;
-      if (moveR >= minMoveR) {
-        const trailDist = cfg.chandelierExit.mult * atrAtBar;
-        if (pos.direction === "long") {
-          const newStop = pos.highWatermark - trailDist;
-          if (newStop > pos.stopPrice) pos.stopPrice = newStop;
-        } else {
-          const newStop = pos.highWatermark + trailDist;
-          if (newStop < pos.stopPrice) pos.stopPrice = newStop;
-        }
-      }
-    }
-  }
-
-  // 5. SL/TP cross-detection at this bar.
-  // R9 gap-fix mirror (2026-05-04): match V4 engine `runFtmoDaytrade24h`
-  // (~line 4423) tie-break logic — when bar.open gaps past TP, TP wins and
-  // fills at bar.open (favorable gap-up for long / gap-down for short).
-  // When bar.open gaps past stop, stop fills at bar.open (worse than stop).
-  // Without this, V5R simulations diverge from V4 on gap-bars and break
-  // sweep comparability.
+  // 2026-05-13 Codex Round 7 V5R backport: SL/TP cross-check AFTER PTP
+  // pre-cross (which may have moved stop to BE) but BEFORE BE/trail/
+  // chandelier post-cross. Mirrors V4 commits a6a411c + 22f7841.
+  // Previously V5R ran chandelier BEFORE the cross-check → same-bar
+  // tighten-then-stop bug.
+  //
+  // SL/TP cross-detection at this bar.
   if (pos.direction === "long") {
     const stopHit = candle.low <= pos.stopPrice;
     const tpHit = candle.high >= pos.tpPrice;
@@ -921,12 +961,61 @@ function processPositionExit(
     }
   }
 
-  // 6. Time-based exit — DISABLED for V4-Sim parity (the reference simulator
-  // does not have time exits). Engine's `runFtmoDaytrade24h` uses time exits
-  // because trades are pre-detected with their full exit info. Live-engine
-  // shouldn't use them since trades close naturally via SL/TP, and time
-  // exits introduce a parity gap with the V4-Sim. Residual hold-time after
-  // holdBars is bounded by FTMO's maxDays anyway.
+  // 4. POST-CROSS trailingStop — 2026-05-13 Codex Round 7 V5R backport.
+  // Previously V5R had no cfg.trailingStop support. Mirrors V4 commit
+  // a6a411c (Codex Round 5 TS#3 + Round 6 #P2 ordering).
+  if (cfg.trailingStop) {
+    const trail = cfg.trailingStop;
+    const unrealized =
+      pos.direction === "long"
+        ? (candle.close - pos.entryPrice) / pos.entryPrice
+        : (pos.entryPrice - candle.close) / pos.entryPrice;
+    type ExtPos = OpenPositionV4 & {
+      trailActive?: boolean;
+      trailPeak?: number;
+    };
+    const ep = pos as ExtPos;
+    if (!ep.trailActive && unrealized >= trail.activatePct) {
+      ep.trailActive = true;
+      ep.trailPeak = candle.close;
+    }
+    if (ep.trailActive && ep.trailPeak != null) {
+      if (pos.direction === "long") {
+        if (candle.close > ep.trailPeak) ep.trailPeak = candle.close;
+        const trailStop = ep.trailPeak * (1 - trail.trailPct);
+        if (trailStop > pos.stopPrice) pos.stopPrice = trailStop;
+      } else {
+        if (candle.close < ep.trailPeak) ep.trailPeak = candle.close;
+        const trailStop = ep.trailPeak * (1 + trail.trailPct);
+        if (trailStop < pos.stopPrice) pos.stopPrice = trailStop;
+      }
+    }
+  }
+
+  // 5. POST-CROSS ChandelierExit — moved here from pre-cross (Codex
+  // Round 7 V5R backport reorder).
+  if (cfg.chandelierExit && atrAtBar != null) {
+    const minMoveR = cfg.chandelierExit.minMoveR ?? 0.5;
+    const originalR = pos.initialStopPct * pos.entryPrice;
+    if (originalR > 0) {
+      const moveR =
+        pos.direction === "long"
+          ? (pos.highWatermark - pos.entryPrice) / originalR
+          : (pos.entryPrice - pos.highWatermark) / originalR;
+      if (moveR >= minMoveR) {
+        const trailDist = cfg.chandelierExit.mult * atrAtBar;
+        if (pos.direction === "long") {
+          const newStop = pos.highWatermark - trailDist;
+          if (newStop > pos.stopPrice) pos.stopPrice = newStop;
+        } else {
+          const newStop = pos.highWatermark + trailDist;
+          if (newStop < pos.stopPrice) pos.stopPrice = newStop;
+        }
+      }
+    }
+  }
+
+  // 6. Time-based exit — DISABLED for V4-Sim parity.
   void holdBars;
   void curBarIdx;
   return null;
@@ -1289,9 +1378,17 @@ export function pollLive(
     // pushes don't unbounded-grow the buffer.
     trimInline(state, cfg);
 
-    // Time exhausted — evaluate pass on post-close equity (both predicates
-    // identical now since no open positions remain, but kept symmetric for
-    // parity with the mid-stream pass-check at Phase 84).
+    // 2026-05-13 Codex Round 7 V5R backport: paused-at-target ping-day push
+    // BEFORE pass-check. Without this, a paused-target window that hits
+    // maxDays on the final tick can false-fail on minTradingDays. Mirrors
+    // V4 commit a6a411c.
+    if (state.pausedAtTarget && state.firstTargetHitDay !== null) {
+      const pingDay = dayIndex(lastBar.openTime, state.challengeStartTs);
+      if (!state.tradingDays.includes(pingDay)) {
+        state.tradingDays.push(pingDay);
+      }
+    }
+
     const passed =
       state.equity >= 1 + cfg.profitTarget &&
       state.mtmEquity >= 1 + cfg.profitTarget &&
@@ -1494,8 +1591,15 @@ export function pollLive(
       }
       state.openPositions = [];
       state.mtmEquity = state.equity;
+      // 2026-05-13 Codex Round 7 V5R-only #B-V5R-guardian: pause entries for
+      // the rest of the calendar day after guardian fires. Without this, the
+      // very next bar's signal would re-arm a position (often into the same
+      // adverse move that just triggered the guardian) → guardian-then-re-
+      // enter-and-stop-out loop.
+      type StateExt = FtmoLiveStateV4 & { guardianPausedUntilDay?: number };
+      (state as StateExt).guardianPausedUntilDay = state.day + 1;
       result.notes.push(
-        `dailyEquityGuardian fired: dayPnl=${(mtmDayPnl * 100).toFixed(2)}% — closed all positions`,
+        `dailyEquityGuardian fired: dayPnl=${(mtmDayPnl * 100).toFixed(2)}% — closed all positions + paused entries until day ${state.day + 1}`,
       );
     }
   }
@@ -1535,9 +1639,84 @@ export function pollLive(
     state.equity >= 1 + cfg.profitTarget &&
     state.mtmEquity >= 1 + cfg.profitTarget
   ) {
+    // 2026-05-13 Codex Round 7 V5R backport: provisional latch + PASSLOCK
+    // + post-close re-check. Mirrors V4 commit a6a411c. Previously V5R
+    // had NO closeAllOnTargetReached support AND NO revert path → false-
+    // pass when funding/cost pulls post-close equity below target.
+    const prevFirstTargetHitDay = state.firstTargetHitDay;
+    const prevPausedAtTarget = state.pausedAtTarget;
     state.firstTargetHitDay = state.day;
-    state.pausedAtTarget = !!cfg.pauseAtTargetReached;
+    state.pausedAtTarget =
+      !!cfg.pauseAtTargetReached || !!cfg.closeAllOnTargetReached;
+    if (cfg.closeAllOnTargetReached && !cfg.pauseAtTargetReached) {
+      result.notes.push(
+        "config note: closeAllOnTargetReached=true forces pauseAtTargetReached behavior for coherent Pass-Lock",
+      );
+    }
     result.targetHit = true;
+    // R60 Pass-Lock-Mode: force-close all open positions on first target-hit.
+    if (cfg.closeAllOnTargetReached && state.openPositions.length > 0) {
+      for (let i = state.openPositions.length - 1; i >= 0; i--) {
+        const pos = state.openPositions[i]!;
+        const cs = candlesByAsset[pos.sourceSymbol];
+        let exitPrice: number | null = null;
+        if (cs && cs.length > 0) {
+          for (let j = cs.length - 1; j >= 0; j--) {
+            if (cs[j]!.openTime <= lastBar.openTime) {
+              exitPrice = cs[j]!.close;
+              break;
+            }
+          }
+        }
+        if (exitPrice == null) {
+          exitPrice = pos.lastKnownPrice ?? pos.entryPrice;
+        }
+        const { rawPnl, effPnl } = computeEffPnl(
+          pos,
+          exitPrice,
+          cfg,
+          lastBar.openTime,
+        );
+        state.equity *= 1 + effPnl;
+        const closed: ClosedTradeV4 = {
+          ticketId: pos.ticketId,
+          symbol: pos.symbol,
+          direction: pos.direction,
+          entryTime: pos.entryTime,
+          exitTime: lastBar.openTime,
+          entryPrice: pos.entryPrice,
+          exitPrice,
+          rawPnl,
+          effPnl,
+          exitReason: "manual",
+          day: state.day,
+          entryDay: dayIndex(pos.entryTime, state.challengeStartTs),
+        };
+        state.closedTrades.push(closed);
+        result.decision.closes.push({
+          ticketId: pos.ticketId,
+          exitPrice,
+          exitReason: "manual",
+        });
+      }
+      state.openPositions = [];
+      state.mtmEquity = state.equity;
+    }
+    // Post-close re-check: only keep the latch if equity AND mtmEquity still
+    // clear the target after funding/cost deduction.
+    if (
+      !(
+        state.equity >= 1 + cfg.profitTarget &&
+        state.mtmEquity >= 1 + cfg.profitTarget
+      )
+    ) {
+      state.firstTargetHitDay = prevFirstTargetHitDay;
+      state.pausedAtTarget = prevPausedAtTarget;
+      result.targetHit = false;
+      result.notes.push(
+        "V5R: target-hit REVERTED — post-close equity dropped below target",
+      );
+    }
   }
   // After target hit, EVERY subsequent calendar day counts as a trading-day
   // (the bot pings the broker daily to satisfy minTradingDays). Mirrors
@@ -1578,6 +1757,18 @@ export function pollLive(
 
   // 7. Entry-side filters.
   let entriesAllowed = !state.pausedAtTarget;
+  // 2026-05-13 Codex Round 7 V5R-only #B-V5R-guardian: block entries while
+  // guardian is paused (state.day < guardianPausedUntilDay).
+  {
+    type StateExt = FtmoLiveStateV4 & { guardianPausedUntilDay?: number };
+    const pausedUntil = (state as StateExt).guardianPausedUntilDay;
+    if (entriesAllowed && pausedUntil != null && state.day < pausedUntil) {
+      entriesAllowed = false;
+      result.notes.push(
+        `dailyEquityGuardian paused entries until day ${pausedUntil}`,
+      );
+    }
+  }
   if (entriesAllowed && cfg.dailyPeakTrailingStop) {
     const drop =
       (state.dayPeak - state.mtmEquity) / Math.max(state.dayPeak, 1e-9);
@@ -1835,11 +2026,12 @@ export function pollLive(
           // signal-bar's ATR (computed on bars up-to and INCLUDING the
           // signal bar) — same convention. Falls back to length-1 only if
           // the prev-bar ATR is null (warm-up window).
+          // 2026-05-13 Codex Round 7 V5R backport: drop `?? cur` fallback —
+          // cur = series[i] is entry-bar ATR which leaks bar i high/low/close
+          // (lookahead). During warmup, SKIP the modifier instead of falling
+          // forward.
           const series = atr(candles, cfg.atrStop.period);
-          const prev =
-            series.length >= 2 ? series[series.length - 2] : undefined;
-          const cur = series[series.length - 1];
-          const v = prev ?? cur;
+          const v = series.length >= 2 ? series[series.length - 2] : undefined;
           if (v != null) {
             const atrFrac = (cfg.atrStop.stopMult * v) / matched.entryPrice;
             stopPct = Math.max(stopPct, atrFrac);
@@ -1916,14 +2108,29 @@ export function pollLive(
 
         let chandelierAtrAtEntry: number | null = null;
         if (cfg.chandelierExit) {
+          // 2026-05-13 Codex Round 7 V5R backport: ATR seeded from signal-bar
+          // (length-2), not entry-bar (length-1, lookahead). Mirrors V4
+          // commit a6a411c (Codex Round 5 MED TS#6).
           const series = atr(candles, cfg.chandelierExit.period);
-          const v = series[series.length - 1];
+          const v = series.length >= 2 ? series[series.length - 2] : undefined;
           if (v != null) chandelierAtrAtEntry = v;
         }
 
         // Ticket id includes direction so two signals (long+short) on the
         // same bar produce distinct ids.
-        const ticketId = `${asset.symbol}@${matched.entryTime}@${matched.direction}`;
+        // 2026-05-13 Codex Round 7 V5R backport: ordinal suffix to resolve
+        // same-bar same-symbol same-direction parallel-signal collisions.
+        // Mirrors V4 commit a6a411c.
+        const sameKeyOpen = state.openPositions.filter(
+          (p) =>
+            p.symbol === asset.symbol &&
+            p.entryTime === matched.entryTime &&
+            p.direction === matched.direction,
+        ).length;
+        const ticketId =
+          sameKeyOpen === 0
+            ? `${asset.symbol}@${matched.entryTime}@${matched.direction}`
+            : `${asset.symbol}@${matched.entryTime}@${matched.direction}@${sameKeyOpen}`;
         const newPos: OpenPositionV4 = {
           ticketId,
           symbol: asset.symbol,
