@@ -220,6 +220,12 @@ struct MultiSignalCfg {
     regime_vol_mult: f64,
     /// Force MR-source override even if template doesn't carry one.
     regime_force_mr: bool,
+    /// 2026-05-13 Audit Round 3: when true, disable the engine's "soft pass"
+    /// tail check that allows a window to pass if target was ever hit AND
+    /// `final_equity >= 0.5 × target`. Strict mode requires `final_equity ≥
+    /// target` at end. Champion C2 (pt=0.04) drops from 80.04% → 73.25%
+    /// under strict rule; Champion B (pt=0.08) drops 72.37% → 64.04%.
+    strict_pass: bool,
     // Below: deliberately at end so the field-init order in `let cfg =
     // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
@@ -608,6 +614,7 @@ fn main() -> Result<()> {
     let mut regime_vol_period: usize = 20;
     let mut regime_vol_mult: f64 = 1.2;
     let mut regime_force_mr: bool = false;
+    let mut strict_pass: bool = false;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
@@ -737,6 +744,7 @@ fn main() -> Result<()> {
             "--also-fire-breakout" => also_fire_breakout = true,
             "--use-htf-confirm" => use_htf_confirm = true,
             "--htf-stride" => htf_stride = need!("--htf-stride").parse()?,
+            "--strict-pass" => strict_pass = true,
             "--regime-min-votes" => regime_min_votes = need!("--regime-min-votes").parse()?,
             "--regime-require-r28v6" => regime_require_r28v6 = true,
             "--regime-vol-confirm" => regime_use_vol_confirm = true,
@@ -876,6 +884,7 @@ fn main() -> Result<()> {
                 regime_vol_period,
                 regime_vol_mult,
                 regime_force_mr,
+                strict_pass,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -2000,7 +2009,13 @@ fn run_one_window(
     // bar count is short of `cfg.max_days` (e.g. 28×48 bars on a 30-day
     // max_days config) never trigger the harness force-close path; any
     // mid-run target-hit was silently discarded as `passed=false`.
-    if !last_passed && state.stopped_reason.is_none() {
+    //
+    // 2026-05-13 Audit Round 3 (bug-frei 80% audit): strict_pass disables
+    // the "give-back half" soft rule below — only equity >= 1+target at
+    // window-end counts as pass. On Champion C2 (pt=0.04) this drops
+    // 80.04% → 73.25% (31 soft passes / 456 windows). For honest FTMO
+    // backtests use --strict-pass.
+    if !last_passed && state.stopped_reason.is_none() && !multi_signal.strict_pass {
         let target_hit = state.first_target_hit_day.is_some()
             && state.trading_days.len() >= cfg.min_trading_days as usize;
         let final_equity_floor = 1.0 + cfg.profit_target * 0.5;
@@ -2009,6 +2024,15 @@ fn run_one_window(
         if target_hit && !give_back_too_far {
             last_passed = true;
         }
+    } else if multi_signal.strict_pass
+        && !last_passed
+        && state.stopped_reason.is_none()
+        && state.equity >= 1.0 + cfg.profit_target
+        && state.trading_days.len() >= cfg.min_trading_days as usize
+    {
+        // Strict path: final equity must be ≥ 1+target AND min_trading_days
+        // satisfied. No give-back tolerance.
+        last_passed = true;
     }
 
     let report = WindowResult {
