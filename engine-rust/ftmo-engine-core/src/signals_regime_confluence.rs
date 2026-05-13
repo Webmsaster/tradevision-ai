@@ -28,6 +28,37 @@ use crate::signals_meanrev::detect_mean_reversion;
 use crate::signals_r28v6::{detect_r28_v6, R28V6Inputs, R28V6Params};
 use crate::state::EngineState;
 
+/// 2026-05-13 — volume-confirmation vote helper. Returns the breakout's
+/// direction if the current bar's volume cleared
+/// `params.vol_confirm_mult × SMA(volume, params.vol_confirm_period)`.
+/// Independent voter so mv=3/mv=4 consensus is reachable without an
+/// MR-source on AMBER family.
+fn compute_vol_confirm_vote(
+    candles: &[Candle],
+    params: &RegimeConfluenceParams,
+    bo_signal: Option<&PollSignal>,
+) -> Option<PositionSide> {
+    let n = params.vol_confirm_period;
+    if n == 0 || candles.len() <= n {
+        return None;
+    }
+    let bo = bo_signal?;
+    let last = candles.last()?;
+    let sma: f64 = candles[candles.len() - 1 - n..candles.len() - 1]
+        .iter()
+        .map(|c| c.volume)
+        .sum::<f64>()
+        / n as f64;
+    if sma <= 0.0 || !last.volume.is_finite() {
+        return None;
+    }
+    if last.volume >= params.vol_confirm_mult * sma {
+        Some(bo.direction)
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct RegimeConfluenceParams {
     /// Number of detectors that must agree on direction. With 3 detectors
@@ -36,6 +67,17 @@ pub struct RegimeConfluenceParams {
     /// When true, also require the R28V6 detector to be among the agreeing
     /// votes (i.e. trend-confirmed). Otherwise any 2-of-3 consensus passes.
     pub require_r28v6: bool,
+    /// 2026-05-13 Audit-6: optional MR source that overrides cfg.mean_reversion_source.
+    /// Lets `mv=3` work on configs whose template doesn't carry MR (AMBER family).
+    pub mr_source_override: Option<crate::config::MeanReversionSource>,
+    /// 2026-05-13 Audit-6: optional volume-confirmation probe. When true, a 4th
+    /// vote fires when current bar volume ≥ `vol_mult` × SMA-N(volume) AND
+    /// direction agrees with breakout's price direction. Lets mv=3 work with
+    /// 4 voters available (R28V6 + Breakout + MR + Vol-confirm) so quorum is
+    /// reachable even when MR-source is absent.
+    pub use_vol_confirm: bool,
+    pub vol_confirm_period: usize,
+    pub vol_confirm_mult: f64,
 }
 
 impl RegimeConfluenceParams {
@@ -43,6 +85,10 @@ impl RegimeConfluenceParams {
         Self {
             min_votes: 2,
             require_r28v6: false,
+            mr_source_override: None,
+            use_vol_confirm: false,
+            vol_confirm_period: 20,
+            vol_confirm_mult: 1.2,
         }
     }
 }
@@ -90,7 +136,9 @@ pub fn detect_regime_confluence(
     // anyway. Adding the explicit gate prevents downstream state-mutation
     // and signal-set divergence we observed in the post-fix audit (175
     // REGIME-only trades vs standalone R28V6).
-    if r28.is_none() && params.min_votes >= 2 && cfg.mean_reversion_source.is_none() {
+    let mr_effective_some =
+        cfg.mean_reversion_source.is_some() || params.mr_source_override.is_some();
+    if r28.is_none() && params.min_votes >= 2 && !mr_effective_some && !params.use_vol_confirm {
         return None;
     }
 
@@ -98,10 +146,25 @@ pub fn detect_regime_confluence(
     let bp = BreakoutParams::from_cfg(cfg, asset);
     let bo = detect_breakout(&mut state_for_bo, cfg, asset, source_symbol, candles, &bp);
 
-    let mr = cfg.mean_reversion_source.as_ref().and_then(|src| {
+    // MR probe — uses override if provided, else cfg.mean_reversion_source.
+    let mr_src = params
+        .mr_source_override
+        .as_ref()
+        .or(cfg.mean_reversion_source.as_ref());
+    let mr = mr_src.and_then(|src| {
         let mut state_for_mr = state.clone();
         detect_mean_reversion(&mut state_for_mr, cfg, asset, source_symbol, candles, src)
     });
+
+    // Volume-confirmation probe — fires on the breakout direction when current
+    // bar's volume ≥ params.vol_confirm_mult × SMA(vol, period). Provides a
+    // 4th vote so mv=3 is achievable without an MR-source. Uses breakout's
+    // direction as the proxy (the simplest "price+volume agreement" rule).
+    let vol_vote = if params.use_vol_confirm {
+        compute_vol_confirm_vote(candles, params, bo.as_ref())
+    } else {
+        None
+    };
 
     // Count directional votes. We allow a None probe to count as "abstain"
     // — only positive votes count toward the threshold.
@@ -140,6 +203,12 @@ pub fn detect_regime_confluence(
         }
         if anchor.is_none() {
             anchor = Some(s);
+        }
+    }
+    if let Some(side) = vol_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
         }
     }
 
@@ -232,6 +301,10 @@ mod tests {
         let params = RegimeConfluenceParams {
             min_votes: 1,
             require_r28v6: true,
+            mr_source_override: None,
+            use_vol_confirm: false,
+            vol_confirm_period: 20,
+            vol_confirm_mult: 1.2,
         };
         let inputs = R28V6Inputs {
             htf_closes: None,

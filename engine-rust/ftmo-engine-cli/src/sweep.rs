@@ -210,10 +210,16 @@ struct MultiSignalCfg {
     /// HTF downsample stride (bars). Default 8 (30m → 4h). Configurable for
     /// experiment: 4 (2h), 16 (8h), 24 (12h), 48 (1d).
     htf_stride: usize,
-    /// Phase B Regime-Confluence: min consensus votes (1-3). Default 2.
+    /// Phase B Regime-Confluence: min consensus votes (1-4). Default 2.
     regime_min_votes: usize,
     /// When true, the winning side MUST include the R28V6 detector's vote.
     regime_require_r28v6: bool,
+    /// 2026-05-13 Phase B-2: enable a 4th vote from a volume-spike confirm.
+    regime_use_vol_confirm: bool,
+    regime_vol_period: usize,
+    regime_vol_mult: f64,
+    /// Force MR-source override even if template doesn't carry one.
+    regime_force_mr: bool,
     // Below: deliberately at end so the field-init order in `let cfg =
     // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
@@ -576,6 +582,10 @@ fn main() -> Result<()> {
     let mut htf_stride: usize = 8;
     let mut regime_min_votes: usize = 2;
     let mut regime_require_r28v6: bool = false;
+    let mut regime_use_vol_confirm: bool = false;
+    let mut regime_vol_period: usize = 20;
+    let mut regime_vol_mult: f64 = 1.2;
+    let mut regime_force_mr: bool = false;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
@@ -703,6 +713,10 @@ fn main() -> Result<()> {
             "--htf-stride" => htf_stride = need!("--htf-stride").parse()?,
             "--regime-min-votes" => regime_min_votes = need!("--regime-min-votes").parse()?,
             "--regime-require-r28v6" => regime_require_r28v6 = true,
+            "--regime-vol-confirm" => regime_use_vol_confirm = true,
+            "--regime-vol-period" => regime_vol_period = need!("--regime-vol-period").parse()?,
+            "--regime-vol-mult" => regime_vol_mult = need!("--regime-vol-mult").parse()?,
+            "--regime-force-mr" => regime_force_mr = true,
             "--mr-period" => mr_period = Some(need!("--mr-period").parse()?),
             "--mr-oversold" => mr_oversold = Some(need!("--mr-oversold").parse()?),
             "--mr-overbought" => mr_overbought = Some(need!("--mr-overbought").parse()?),
@@ -828,6 +842,10 @@ fn main() -> Result<()> {
                 htf_stride,
                 regime_min_votes,
                 regime_require_r28v6,
+                regime_use_vol_confirm,
+                regime_vol_period,
+                regime_vol_mult,
+                regime_force_mr,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -1737,10 +1755,25 @@ fn run_one_window(
                         news_events: None,
                         funding_series: funding,
                     };
+                    let mr_override = if multi_signal.regime_force_mr {
+                        Some(ftmo_engine_core::config::MeanReversionSource {
+                            period: multi_signal.mr_period.unwrap_or(14),
+                            oversold: multi_signal.mr_oversold.unwrap_or(25.0),
+                            overbought: multi_signal.mr_overbought.unwrap_or(75.0),
+                            cooldown_bars: multi_signal.mr_cooldown.unwrap_or(8),
+                            size_mult: multi_signal.mr_size_mult.unwrap_or(0.5),
+                        })
+                    } else {
+                        None
+                    };
                     let rc_params =
                         ftmo_engine_core::signals_regime_confluence::RegimeConfluenceParams {
                             min_votes: multi_signal.regime_min_votes,
                             require_r28v6: multi_signal.regime_require_r28v6,
+                            mr_source_override: mr_override,
+                            use_vol_confirm: multi_signal.regime_use_vol_confirm,
+                            vol_confirm_period: multi_signal.regime_vol_period,
+                            vol_confirm_mult: multi_signal.regime_vol_mult,
                         };
                     ftmo_engine_core::signals_regime_confluence::detect_regime_confluence(
                         &mut state, cfg, asset, &source, arr, &rc_params, &r28in,
