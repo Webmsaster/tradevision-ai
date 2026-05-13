@@ -202,6 +202,14 @@ struct MultiSignalCfg {
     r28v6_rsi_long_max: Option<f64>,
     r28v6_rsi_short_min: Option<f64>,
     r28v6_rsi_period: Option<usize>,
+    /// 2026-05-13 65%-hunt: activate dormant HTF-EMA stack via downsampled
+    /// 30m → 4h closes. When true, every 8th bar of `feed` is forwarded as
+    /// `R28V6Inputs.htf_closes`, gating long-entries on EMA-fast > EMA-slow
+    /// and shorts on the inverse.
+    use_htf_confirm: bool,
+    /// HTF downsample stride (bars). Default 8 (30m → 4h). Configurable for
+    /// experiment: 4 (2h), 16 (8h), 24 (12h), 48 (1d).
+    htf_stride: usize,
     // Below: deliberately at end so the field-init order in `let cfg =
     // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
@@ -555,6 +563,8 @@ fn main() -> Result<()> {
     let mut timeframe: Option<String> = None;
     let mut also_fire_meanrev: bool = false;
     let mut also_fire_breakout: bool = false;
+    let mut use_htf_confirm: bool = false;
+    let mut htf_stride: usize = 8;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
@@ -677,6 +687,8 @@ fn main() -> Result<()> {
             "--timeframe" => timeframe = Some(need!("--timeframe")),
             "--also-fire-meanrev" => also_fire_meanrev = true,
             "--also-fire-breakout" => also_fire_breakout = true,
+            "--use-htf-confirm" => use_htf_confirm = true,
+            "--htf-stride" => htf_stride = need!("--htf-stride").parse()?,
             "--mr-period" => mr_period = Some(need!("--mr-period").parse()?),
             "--mr-oversold" => mr_oversold = Some(need!("--mr-oversold").parse()?),
             "--mr-overbought" => mr_overbought = Some(need!("--mr-overbought").parse()?),
@@ -798,6 +810,8 @@ fn main() -> Result<()> {
                 r28v6_rsi_long_max: rsi_long_max,
                 r28v6_rsi_short_min: rsi_short_min,
                 r28v6_rsi_period: rsi_period,
+                use_htf_confirm,
+                htf_stride,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -1495,10 +1509,19 @@ fn run_one_window(
     let mut feed: HashMap<String, Vec<Candle>> = HashMap::new();
     let mut atr_feed: HashMap<String, Vec<Option<f64>>> = HashMap::new();
     let mut funding_feed: HashMap<String, Vec<Option<f64>>> = HashMap::new();
+    // 2026-05-13 65%-hunt: per-symbol HTF closes (every `htf_stride`-th
+    // primary close). Only populated when `multi_signal.use_htf_confirm`.
+    let mut htf_closes_buf: HashMap<String, Vec<f64>> = HashMap::new();
     for sym in symbols.iter() {
         feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
         atr_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
         funding_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
+        if multi_signal.use_htf_confirm {
+            htf_closes_buf.insert(
+                sym.clone(),
+                Vec::with_capacity((hi - lo) / multi_signal.htf_stride + 8),
+            );
+        }
     }
 
     // PerAssetCfg dispatch: prefer per-asset entry-type (cvd/volimb/poc)
@@ -1538,6 +1561,11 @@ fn run_one_window(
                 .and_then(|s| s.get(i).copied())
                 .flatten();
             funding_feed.get_mut(sym).unwrap().push(f);
+            if multi_signal.use_htf_confirm && i % multi_signal.htf_stride == 0 {
+                if let Some(buf) = htf_closes_buf.get_mut(sym) {
+                    buf.push(c.close);
+                }
+            }
         }
     }
 
@@ -1584,6 +1612,11 @@ fn run_one_window(
                 .and_then(|s| s.get(i).copied())
                 .flatten();
             funding_feed.get_mut(sym).unwrap().push(f);
+            if multi_signal.use_htf_confirm && i % multi_signal.htf_stride == 0 {
+                if let Some(buf) = htf_closes_buf.get_mut(sym) {
+                    buf.push(c.close);
+                }
+            }
         }
 
         // Build signals: one detector pass per asset entry, dispatched off
@@ -1615,8 +1648,19 @@ fn run_one_window(
                         let mut r28p = R28V6Params::default_for(asset, cfg);
                         apply_r28v6_param_overrides(&mut r28p, multi_signal);
                         let funding = funding_feed.get(&source).map(|v| v.as_slice());
+                        // 2026-05-13 65%-hunt: enable dormant HTF-EMA stack
+                        // confirmation. `htf_closes` was always None in the
+                        // sweep path → `htf_trend_allows()` never ran. Build
+                        // a same-source HTF series by downsampling primary
+                        // 30m bars every 8 → 4h closes (htf_fast=9 / htf_slow=21
+                        // = 9× & 21× 4h-bar EMAs).
+                        let htf_buf = htf_closes_buf.get(&source).map(|v| v.as_slice());
                         let r28in = R28V6Inputs {
-                            htf_closes: None,
+                            htf_closes: if multi_signal.use_htf_confirm {
+                                htf_buf
+                            } else {
+                                None
+                            },
                             cross_asset_closes: None,
                             news_events: None,
                             funding_series: funding,
@@ -1636,8 +1680,13 @@ fn run_one_window(
                     let mut r28p = R28V6Params::default_for(asset, cfg);
                     apply_r28v6_param_overrides(&mut r28p, multi_signal);
                     let funding = funding_feed.get(&source).map(|v| v.as_slice());
+                    let htf_buf = htf_closes_buf.get(&source).map(|v| v.as_slice());
                     let r28in = R28V6Inputs {
-                        htf_closes: None,
+                        htf_closes: if multi_signal.use_htf_confirm {
+                            htf_buf
+                        } else {
+                            None
+                        },
                         cross_asset_closes: None,
                         news_events: None,
                         funding_series: funding,
