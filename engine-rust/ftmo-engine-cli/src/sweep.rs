@@ -295,6 +295,13 @@ struct CfgOverrides {
     max_days: Option<u32>,
     lscool_after: Option<u32>,
     lscool_bars: Option<u64>,
+    /// 2026-05-13 Hebel 2: cross-asset stress filter (e.g. BTC trend gate
+    /// for AMBER basket). Activates `cfg.cross_asset_filter` and injects
+    /// per-asset cross-symbol closes at sweep-loop time.
+    cross_asset_sym: Option<String>,
+    cross_asset_dir: Option<String>,
+    cross_asset_fast: Option<u32>,
+    cross_asset_slow: Option<u32>,
 }
 
 fn apply_overrides(
@@ -422,6 +429,17 @@ fn apply_overrides(
     }
     if let Some(d) = ov.max_days {
         cfg.max_days = d;
+    }
+    if let Some(sym) = ov.cross_asset_sym.as_ref() {
+        cfg.cross_asset_filter = Some(ftmo_engine_core::config::CrossAssetFilter {
+            symbol: sym.clone(),
+            direction: ov
+                .cross_asset_dir
+                .clone()
+                .unwrap_or_else(|| "any".to_string()),
+            fast_period: ov.cross_asset_fast.unwrap_or(9),
+            slow_period: ov.cross_asset_slow.unwrap_or(21),
+        });
     }
     if ov.pdd_from_peak.is_some() || ov.pdd_factor.is_some() {
         let cur = cfg.peak_drawdown_throttle.unwrap_or(PeakDrawdownThrottle {
@@ -556,6 +574,10 @@ fn main() -> Result<()> {
     let mut min_trading_days: Option<u32> = None;
     let mut profit_target: Option<f64> = None;
     let mut max_days: Option<u32> = None;
+    let mut cross_asset_sym: Option<String> = None;
+    let mut cross_asset_dir: Option<String> = None;
+    let mut cross_asset_fast: Option<u32> = None;
+    let mut cross_asset_slow: Option<u32> = None;
     let mut adx_min: Option<f64> = None;
     let mut adx_period: Option<usize> = None;
     let mut chop_max: Option<f64> = None;
@@ -674,6 +696,10 @@ fn main() -> Result<()> {
             "--min-trading-days" => min_trading_days = Some(need!("--min-trading-days").parse()?),
             "--profit-target" => profit_target = Some(need!("--profit-target").parse()?),
             "--max-days" => max_days = Some(need!("--max-days").parse()?),
+            "--cross-asset-sym" => cross_asset_sym = Some(need!("--cross-asset-sym")),
+            "--cross-asset-dir" => cross_asset_dir = Some(need!("--cross-asset-dir")),
+            "--cross-asset-fast" => cross_asset_fast = Some(need!("--cross-asset-fast").parse()?),
+            "--cross-asset-slow" => cross_asset_slow = Some(need!("--cross-asset-slow").parse()?),
             "--override-adx-min" => adx_min = Some(need!("--override-adx-min").parse()?),
             "--override-adx-period" => adx_period = Some(need!("--override-adx-period").parse()?),
             "--override-chop-max" => chop_max = Some(need!("--override-chop-max").parse()?),
@@ -803,6 +829,10 @@ fn main() -> Result<()> {
         min_trading_days,
         profit_target,
         max_days,
+        cross_asset_sym,
+        cross_asset_dir,
+        cross_asset_fast,
+        cross_asset_slow,
         lscool_after,
         lscool_bars,
     };
@@ -1659,6 +1689,17 @@ fn run_one_window(
         // Build signals: one detector pass per asset entry, dispatched off
         // its config field set when in PerAssetCfg mode.
         let mut signals_for_bar: Vec<PollSignal> = Vec::new();
+
+        // 2026-05-13 Hebel 2: build cross-asset closes (e.g. BTCUSDT) once
+        // per bar, then re-use for every asset's detector call below. Only
+        // built when cfg.cross_asset_filter is set (CLI flag activated).
+        let cross_closes_owned: Option<Vec<f64>> = cfg
+            .cross_asset_filter
+            .as_ref()
+            .and_then(|f| feed.get(f.symbol.as_str()))
+            .map(|v| v.iter().map(|c| c.close).collect());
+        let cross_closes_slice: Option<&[f64]> = cross_closes_owned.as_deref();
+
         for asset in cfg.assets.iter() {
             let source = asset
                 .source_symbol
@@ -1698,7 +1739,7 @@ fn run_one_window(
                             } else {
                                 None
                             },
-                            cross_asset_closes: None,
+                            cross_asset_closes: cross_closes_slice,
                             news_events: None,
                             funding_series: funding,
                         };
@@ -1751,7 +1792,7 @@ fn run_one_window(
                         } else {
                             None
                         },
-                        cross_asset_closes: None,
+                        cross_asset_closes: cross_closes_slice,
                         news_events: None,
                         funding_series: funding,
                     };
