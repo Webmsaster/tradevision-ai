@@ -99,18 +99,46 @@ for (let start = WARMUP; start + winBars <= minBars; start += stepBars) {
   const trimmed: Record<string, Candle[]> = {};
   for (const k of Object.keys(aligned))
     trimmed[k] = aligned[k]!.slice(start - WARMUP, start + winBars);
-  const r = simulate(trimmed, cfg, WARMUP, WARMUP + winBars, "R28_V6_REVAL");
-  const out = {
-    winIdx,
-    passed: r.passed,
-    reason: r.reason,
-    passDay: r.passDay ?? null,
-    finalEquityPct: r.finalEquityPct,
+  // 2026-05-13 Codex Round 6 HIGH FIX (#SH3): wrap simulate() per window.
+  // Previously one bad window (OOM, candle anomaly, infinite loop guard
+  // panic) killed the shard and left a gap that the aggregator silently
+  // tolerated. Now: emit an error-row so the aggregator's gap-check
+  // catches it AND the surviving windows still complete.
+  let out: {
+    winIdx: number;
+    passed: boolean;
+    reason: string;
+    passDay: number | null;
+    finalEquityPct: number;
+    error?: string;
   };
+  try {
+    const r = simulate(trimmed, cfg, WARMUP, WARMUP + winBars, "R28_V6_REVAL");
+    out = {
+      winIdx,
+      passed: r.passed,
+      reason: r.reason,
+      passDay: r.passDay ?? null,
+      finalEquityPct: r.finalEquityPct,
+    };
+    console.log(
+      `[shard ${SHARD_IDX}/${SHARD_COUNT}] win=${winIdx} passed=${r.passed} reason=${r.reason} eq=${r.finalEquityPct.toFixed(4)} t+${Math.round((Date.now() - t0) / 1000)}s`,
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    out = {
+      winIdx,
+      passed: false,
+      reason: "error",
+      passDay: null,
+      finalEquityPct: 0,
+      error: msg.slice(0, 500),
+    };
+    console.log(
+      `[shard ${SHARD_IDX}/${SHARD_COUNT}] win=${winIdx} ERROR: ${msg.slice(0, 200)}`,
+    );
+  }
   appendFileSync(OUT_FILE, JSON.stringify(out) + "\n");
-  console.log(
-    `[shard ${SHARD_IDX}/${SHARD_COUNT}] win=${winIdx} passed=${r.passed} reason=${r.reason} eq=${r.finalEquityPct.toFixed(4)} t+${Math.round((Date.now() - t0) / 1000)}s`,
-  );
   winIdx++;
 }
 console.log(

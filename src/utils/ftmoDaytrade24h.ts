@@ -3770,10 +3770,15 @@ export function detectAsset(
                       : triggerBars;
     for (let i = startBar; i < candles.length - 1; i++) {
       if (i < cooldown) continue;
-      // V5 re-entry: skip pattern check if within re-entry window after stop
+      // V5 re-entry: skip pattern check if within re-entry window after stop.
+      // 2026-05-13 Codex Round 6 MED FIX (#S5): the window check compared
+      // against signal index `i`, but actual entry happens at `i + 1` (TS
+      // convention). So the FINAL permitted signal at i=windowEnd would
+      // enter at i+1=windowEnd+1, ONE bar outside the configured window.
+      // Fix: compare entry-bar (i + 1) against reEntryWindowEnd.
       const inReEntryWindow =
         cfg.reEntryAfterStop !== undefined &&
-        reEntryWindowEnd >= i &&
+        reEntryWindowEnd >= i + 1 &&
         reEntryRetriesUsed > 0 &&
         reEntryRetriesUsed <= cfg.reEntryAfterStop.maxRetries;
       let ok = true;
@@ -4493,6 +4498,11 @@ export function detectAsset(
         ? ptpLevels.map(() => false)
         : [];
       let ptpLevelsRealizedPct = 0;
+      // 2026-05-13 Codex Round 6 #S4: monotonic index into ptpLevels for the
+      // new pre-cross multi-level block. Levels are processed in-order; the
+      // while-loop advances ptpLvlIdx as each level realises (mirrors V4
+      // engine + Rust harness convention).
+      let ptpLvlIdx = 0;
       // V4 trailing stop
       const trail = cfg.trailingStop;
       let trailActive = false;
@@ -4539,12 +4549,23 @@ export function detectAsset(
           // already passed the trigger before any wick down to stop.
           if (ptpHit && (!stopHit || gapPastPtp)) {
             ptpTriggered = true;
-            // BUGFIX 2026-04-29 (Agent 7 R10 Bug 3): apply slippage + half-cost on
-            // partial fill. Real MT5 charges commission + slippage on each
-            // partial close. Engine previously credited full triggerPct as gain.
-            // Per-side cost = cost/2 (half round-trip) + slippageBp/10000 (one fill).
-            const ptpFillCost = cost / 2 + (asset.slippageBp ?? 0) / 10000;
-            ptpRealizedPct = ptp.closeFraction * (ptp.triggerPct - ptpFillCost);
+            // 2026-05-13 Codex Round 6 HIGH FIX (#S3): explicit entry-eff /
+            // exit-eff computation. Previously `ptpRealizedPct =
+            // closeFraction × (triggerPct − cost/2 − oneSlippage)` undercharged
+            // because `triggerPct` is raw price-movement, not entry-eff
+            // adjusted. Use entryEff (entry × (1 ± cost/2)) AND apply exit-
+            // side cost to triggerPrice, then subtract BOTH slippage legs
+            // (entry-side + exit-side) on the partial fraction.
+            const ptpExit =
+              direction === "long"
+                ? triggerPrice * (1 - cost / 2)
+                : triggerPrice * (1 + cost / 2);
+            const partialRaw =
+              direction === "long"
+                ? (ptpExit - entryEff) / entryEff
+                : (entryEff - ptpExit) / entryEff;
+            const partialSlip = 2 * ((asset.slippageBp ?? 0) / 10000);
+            ptpRealizedPct = ptp.closeFraction * (partialRaw - partialSlip);
             // BUGFIX 2026-04-29 (Audit Bug A): after PTP, auto-move dynStop
             // to entry on remainder leg. Industry-standard: once partial
             // profit is locked, the trade should be guaranteed-profitable
@@ -4563,6 +4584,63 @@ export function detectAsset(
             beActive = true;
             // Also reset chandelier reference to current bar so the trail
             // anchors at PTP-fire price, not pre-PTP high (Bug B).
+            chanBestClose = bar!.close;
+            chanArmed = false;
+          }
+        }
+        // 2026-05-13 Codex Round 6 HIGH FIX (#S4): pre-cross multi-level PTP
+        // mirroring single-level semantics. Previously multi-level was post-
+        // cross with close-only threshold, no stop-guard, no BE-move, no
+        // cost-net — silently mis-handling vs single-level. Now: wick-based
+        // high/low trigger, stop-guard (stop wins on same-bar tie unless
+        // gap-past-level), gap-past-level exception, cost-net per level, BE
+        // move + chandelier reset on FIRST level realised this bar.
+        if (ptpLevels && ptpLevels.length > 0) {
+          let multiRealisedAny = false;
+          const stopHitMulti =
+            direction === "long" ? bar!.low <= dynStop : bar!.high >= dynStop;
+          while (ptpLvlIdx < ptpLevels.length) {
+            const lvl = ptpLevels[ptpLvlIdx]!;
+            const triggerPriceLvl =
+              direction === "long"
+                ? entry * (1 + lvl.triggerPct)
+                : entry * (1 - lvl.triggerPct);
+            const lvlHit =
+              direction === "long"
+                ? bar!.high >= triggerPriceLvl
+                : bar!.low <= triggerPriceLvl;
+            if (!lvlHit) break;
+            const gapPastLvl =
+              direction === "long"
+                ? bar!.open >= triggerPriceLvl
+                : bar!.open <= triggerPriceLvl;
+            if (stopHitMulti && !gapPastLvl) break;
+            // Cost-net per level (mirrors single-level Codex Round 6 #S3 logic).
+            const lvlExit =
+              direction === "long"
+                ? triggerPriceLvl * (1 - cost / 2)
+                : triggerPriceLvl * (1 + cost / 2);
+            const partialRawLvl =
+              direction === "long"
+                ? (lvlExit - entryEff) / entryEff
+                : (entryEff - lvlExit) / entryEff;
+            const partialSlipLvl = 2 * ((asset.slippageBp ?? 0) / 10000);
+            ptpLevelsRealizedPct +=
+              lvl.closeFraction * (partialRawLvl - partialSlipLvl);
+            ptpLevelsHit[ptpLvlIdx] = true;
+            ptpLvlIdx++;
+            multiRealisedAny = true;
+          }
+          if (multiRealisedAny) {
+            // Cost-adjusted BE — same as single-level Codex Round 6 #S3.
+            const beStop =
+              direction === "long" ? entry * (1 + cost) : entry * (1 - cost);
+            if (direction === "long") {
+              if (beStop > dynStop) dynStop = beStop;
+            } else {
+              if (beStop < dynStop) dynStop = beStop;
+            }
+            beActive = true;
             chanBestClose = bar!.close;
             chanArmed = false;
           }
@@ -4653,20 +4731,11 @@ export function detectAsset(
             ptpRealizedPct = ptp.closeFraction * ptp.triggerPct;
           }
         }
-        // V4 multi-level PTP
-        if (ptpLevels && ptpLevels.length > 0) {
-          const unrealized =
-            direction === "long"
-              ? (bar!.close - entry) / entry
-              : (entry - bar!.close) / entry;
-          for (let lv = 0; lv < ptpLevels.length; lv++) {
-            if (!ptpLevelsHit[lv] && unrealized >= ptpLevels[lv]!.triggerPct) {
-              ptpLevelsHit[lv] = true;
-              ptpLevelsRealizedPct +=
-                ptpLevels[lv]!.closeFraction * ptpLevels[lv]!.triggerPct;
-            }
-          }
-        }
+        // 2026-05-13 Codex Round 6 #S4 FIX: post-cross multi-level PTP block
+        // REMOVED — the pre-cross block above (line ~4582+) handles all
+        // multi-level realisation with proper wick-trigger / stop-guard /
+        // cost-net / BE-move parity to single-level. Keeping a post-cross
+        // close-only fallback here would double-process levels.
         // V4 trailing stop: tighten dynStop after activation
         if (trail) {
           const unrealized =
@@ -4834,9 +4903,15 @@ export function detectAsset(
         const sign = direction === "long" ? +1 : -1;
         const EIGHT_H = 8 * 3_600_000;
         const exitTimeMs = candles[exitBar]!.closeTime;
-        // First settlement strictly after entry openTime.
+        // 2026-05-13 Codex Round 6 MED FIX (#S7): use STRICT less-than so an
+        // entry AT a settlement boundary (00:00 / 08:00 / 16:00 UTC) pays
+        // that bucket's funding. The legacy `<=` skipped the boundary
+        // settlement because the floor bucket equalled entryTime, and the
+        // +=EIGHT_H pushed past the moment the position was actually held
+        // at settlement. Economic-correct rule: position held AT
+        // settlement pays funding.
         let bucket = Math.floor(eb!.openTime / EIGHT_H + 1e-9) * EIGHT_H;
-        if (bucket <= eb!.openTime) bucket += EIGHT_H;
+        if (bucket < eb!.openTime) bucket += EIGHT_H;
         let sumFunding = 0;
         // Cap iteration to avoid pathological infinite loops on bad data.
         let safetyIter = 0;
@@ -5435,16 +5510,17 @@ export function runFtmoDaytrade24h(
     // after, making the first loop pure dead code (and incorrect since
     // executed is now sorted by exit-time, not entry-time).
     if (cfg.maxConcurrentTrades !== undefined) {
-      // Phase 32 (Re-Audit FTMO Bug 5): scan `all` with EXPLICIT entry-time
-      // filter — provably lookahead-free regardless of sort order. Was
-      // `liveMode ? executed : all` which (a) under-counted in liveMode
-      // because executed was being built (filters drop trades from it),
-      // and (b) over-counted in research-mode because all includes future
-      // trades by exit-time. The entry-time guard is the correct invariant.
+      // 2026-05-13 Codex Round 6 KRITISCH FIX (#S1): count ACCEPTED trades
+      // only, not all pre-detected candidates. The legacy scan over `all`
+      // counted same-entryTime peers (e.entryTime > t.entryTime is strict
+      // greater, so equal-time peers AREN'T skipped) → with MCT=1, two
+      // parallel candidates both saw 1 "open" peer and BOTH got rejected.
+      // Plus deterministic symbol-priority bias from the outer sort key.
+      // Fix: scan the in-progress `executed` array (trades admitted so far
+      // in this iteration). Trades are processed in t.entryTime order so
+      // same-time candidates are admitted up to the cap, not all rejected.
       let openCount = 0;
-      for (const e of all) {
-        if (e === t) continue;
-        if (e.entryTime > t.entryTime) continue; // future entry, not yet open
+      for (const e of executed) {
         if (e.exitTime > t.entryTime) openCount++;
       }
       if (openCount >= cfg.maxConcurrentTrades) continue;
@@ -5454,11 +5530,12 @@ export function runFtmoDaytrade24h(
     // `all` array, not `executed`. Same selection-bias (later-exit winners
     // not yet in executed) was leaking same-direction concurrent trades.
     if (cfg.correlationFilter) {
-      // Phase 32: same entry-time-filter as MCT (Bug 5 fix).
+      // 2026-05-13 Codex Round 6 KRITISCH FIX (#S1, mirror): same as MCT —
+      // count only ACCEPTED same-direction trades; the legacy scan over
+      // `all` rejected pairs of same-time same-dir parallel signals because
+      // each saw the other as "already open" before either was admitted.
       let sameDirOpen = 0;
-      for (const e of all) {
-        if (e === t) continue;
-        if (e.entryTime > t.entryTime) continue;
+      for (const e of executed) {
         if (e.exitTime > t.entryTime && e.direction === t.direction) {
           sameDirOpen++;
         }

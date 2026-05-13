@@ -850,46 +850,23 @@ function processPositionExit(
   atrAtBar: number | null,
   holdBars: number,
 ): { exitPrice: number; reason: "tp" | "stop" | "time" } | null {
-  // 2026-05-13 Codex Round 5 HIGH FIX (TS #2): SL/TP check FIRST. Source
-  // backtest (ftmoDaytrade24h.ts:4575) checks SL/TP at the top of each
-  // intra-trade bar and only runs BE/PTP/trail/chandelier as POST-bar
-  // state-updates if no exit fired. The legacy V4 order ran the modifiers
-  // FIRST on the same bar — letting BE/chandelier tighten the stop using
-  // bar.high/low and then immediately stop out within the same bar. That
-  // diverged from source pass-rate by 1-3pp on chandelier-heavy configs.
-  if (pos.direction === "long") {
-    const stopHit = candle.low <= pos.stopPrice;
-    const tpHit = candle.high >= pos.tpPrice;
-    const gapPastTp = candle.open >= pos.tpPrice;
-    if (tpHit && gapPastTp) {
-      return { exitPrice: candle.open, reason: "tp" };
-    }
-    if (stopHit) {
-      const exitPrice =
-        candle.open < pos.stopPrice ? candle.open : pos.stopPrice;
-      return { exitPrice, reason: "stop" };
-    }
-    if (tpHit) {
-      return { exitPrice: pos.tpPrice, reason: "tp" };
-    }
-  } else {
-    const stopHit = candle.high >= pos.stopPrice;
-    const tpHit = candle.low <= pos.tpPrice;
-    const gapPastTp = candle.open <= pos.tpPrice;
-    if (tpHit && gapPastTp) {
-      return { exitPrice: candle.open, reason: "tp" };
-    }
-    if (stopHit) {
-      const exitPrice =
-        candle.open > pos.stopPrice ? candle.open : pos.stopPrice;
-      return { exitPrice, reason: "stop" };
-    }
-    if (tpHit) {
-      return { exitPrice: pos.tpPrice, reason: "tp" };
-    }
-  }
+  // 2026-05-13 Codex Round 6 #P2+P4 FIX (REVISED): exit-modifier ordering
+  // mirrors source backtest `ftmoDaytrade24h.ts` exactly:
+  //   1. high-watermark update (pre-cross)
+  //   2. PTP single-tier PRE-cross — has stop-guard + gap-past-ptp exception
+  //      that lets PTP fire even when stop also hit on same bar
+  //      (ftmoDaytrade24h.ts:4520-4569)
+  //   3. PTP multi-level PRE-cross — same gap-past + stop-guard semantics
+  //      (Codex Round 6 #S4 brought source itself to parity)
+  //   4. SL/TP cross-check with the possibly BE-adjusted stop
+  //   5. POST-cross: standalone-BE, trailingStop, chandelier (these MUST
+  //      stay post-cross to avoid same-bar tighten-then-stop pattern that
+  //      Codex Round 5 flagged on BE+chandelier specifically)
+  //   6. Optional time-exit (post-cross)
+  // The earlier Codex Round 5 #2 fix moved PTP to post-cross too, which
+  // broke gap-past-ptp + same-bar-stop → BE-stop semantics inherited from
+  // source.
 
-  // Post-bar state-updates — only reached when no SL/TP exit fired.
   // 1. Update high-watermark (long: highest high; short: lowest low).
   if (pos.direction === "long") {
     pos.highWatermark = Math.max(pos.highWatermark, candle.high);
@@ -1011,7 +988,45 @@ function processPositionExit(
     }
   }
 
-  // 3. BreakEven shift.
+  // 2c. SL/TP cross-check — runs AFTER PTP pre-cross (which may have moved
+  // stop to BE) but BEFORE standalone-BE/trail/chandelier. Mirrors source
+  // backtest ftmoDaytrade24h.ts:4575+. PTP pre-cross with gap-past-ptp
+  // exception lets PTP fire on gap-up bars even when bar.low also wicks
+  // through the original stop — without this ordering, the gap-past-ptp
+  // exception is dead.
+  if (pos.direction === "long") {
+    const stopHit = candle.low <= pos.stopPrice;
+    const tpHit = candle.high >= pos.tpPrice;
+    const gapPastTp = candle.open >= pos.tpPrice;
+    if (tpHit && gapPastTp) {
+      return { exitPrice: candle.open, reason: "tp" };
+    }
+    if (stopHit) {
+      const exitPrice =
+        candle.open < pos.stopPrice ? candle.open : pos.stopPrice;
+      return { exitPrice, reason: "stop" };
+    }
+    if (tpHit) {
+      return { exitPrice: pos.tpPrice, reason: "tp" };
+    }
+  } else {
+    const stopHit = candle.high >= pos.stopPrice;
+    const tpHit = candle.low <= pos.tpPrice;
+    const gapPastTp = candle.open <= pos.tpPrice;
+    if (tpHit && gapPastTp) {
+      return { exitPrice: candle.open, reason: "tp" };
+    }
+    if (stopHit) {
+      const exitPrice =
+        candle.open > pos.stopPrice ? candle.open : pos.stopPrice;
+      return { exitPrice, reason: "stop" };
+    }
+    if (tpHit) {
+      return { exitPrice: pos.tpPrice, reason: "tp" };
+    }
+  }
+
+  // 3. BreakEven shift — POST-CROSS (Codex Round 5 #2 + Round 6 revision).
   if (cfg.breakEven && !pos.beActive) {
     const fav =
       pos.direction === "long"

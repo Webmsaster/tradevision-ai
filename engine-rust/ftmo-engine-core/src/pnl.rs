@@ -174,9 +174,14 @@ pub fn compute_eff_pnl_with_funding(
         PositionSide::Long => 1.0,
         PositionSide::Short => -1.0,
     };
-    // First settlement strictly after entry open_time.
+    // 2026-05-13 Codex Round 6 MED FIX (#S7): use STRICT less-than so an
+    // entry AT a settlement boundary (00:00 / 08:00 / 16:00 UTC) pays that
+    // bucket's funding. The legacy `<=` skipped the boundary settlement.
+    // Now matches TS source-of-truth (ftmoDaytrade24h.ts:4908 after Codex
+    // Round 6 fix). Economic-correct rule: position held AT settlement
+    // pays funding.
     let mut bucket = (pos.entry_time.div_euclid(EIGHT_H_MS)) * EIGHT_H_MS;
-    if bucket <= pos.entry_time {
+    if bucket < pos.entry_time {
         bucket += EIGHT_H_MS;
     }
     let mut sum_funding = 0.0_f64;
