@@ -78,6 +78,18 @@ pub struct RegimeConfluenceParams {
     pub use_vol_confirm: bool,
     pub vol_confirm_period: usize,
     pub vol_confirm_mult: f64,
+    /// 2026-05-13 Audit Round 2 — propagate R28V6 secondary-gate overrides
+    /// (ADX/CHOP/RSI) into the regime probe. Before this fix, the standalone
+    /// R28V6 path applied these via `apply_r28v6_param_overrides`, but
+    /// detect_regime_confluence called `R28V6Params::default_for` directly
+    /// → CLI flags silently no-op'd inside REGIME mode.
+    pub r28v6_adx_min: Option<f64>,
+    pub r28v6_adx_period: Option<usize>,
+    pub r28v6_chop_max: Option<f64>,
+    pub r28v6_chop_period: Option<usize>,
+    pub r28v6_rsi_long_max: Option<f64>,
+    pub r28v6_rsi_short_min: Option<f64>,
+    pub r28v6_rsi_period: Option<usize>,
 }
 
 impl RegimeConfluenceParams {
@@ -89,6 +101,32 @@ impl RegimeConfluenceParams {
             use_vol_confirm: false,
             vol_confirm_period: 20,
             vol_confirm_mult: 1.2,
+            r28v6_adx_min: None,
+            r28v6_adx_period: None,
+            r28v6_chop_max: None,
+            r28v6_chop_period: None,
+            r28v6_rsi_long_max: None,
+            r28v6_rsi_short_min: None,
+            r28v6_rsi_period: None,
+        }
+    }
+
+    /// Apply ADX/CHOP/RSI overrides onto a fresh `R28V6Params`. Mirrors the
+    /// helper at `sweep::apply_r28v6_param_overrides` so REGIME mode honors
+    /// the same CLI flags as standalone R28V6.
+    fn apply_r28v6_overrides(&self, p: &mut R28V6Params) {
+        if let Some(min) = self.r28v6_adx_min {
+            p.adx_min = Some(min);
+            p.adx_period = Some(self.r28v6_adx_period.unwrap_or(14));
+        }
+        if let Some(max) = self.r28v6_chop_max {
+            p.choppiness_max = Some(max);
+            p.choppiness_period = Some(self.r28v6_chop_period.unwrap_or(14));
+        }
+        if self.r28v6_rsi_long_max.is_some() || self.r28v6_rsi_short_min.is_some() {
+            p.rsi_period = Some(self.r28v6_rsi_period.unwrap_or(14));
+            p.rsi_long_max = self.r28v6_rsi_long_max;
+            p.rsi_short_min = self.r28v6_rsi_short_min;
         }
     }
 }
@@ -116,7 +154,8 @@ pub fn detect_regime_confluence(
     // the fix the surviving signal still mutates the real state once,
     // when it goes to the harness via push_with_gates.
     let mut state_for_r28 = state.clone();
-    let r28p = R28V6Params::default_for(asset, cfg);
+    let mut r28p = R28V6Params::default_for(asset, cfg);
+    params.apply_r28v6_overrides(&mut r28p);
     let r28 = detect_r28_v6(
         &mut state_for_r28,
         cfg,
@@ -301,10 +340,7 @@ mod tests {
         let params = RegimeConfluenceParams {
             min_votes: 1,
             require_r28v6: true,
-            mr_source_override: None,
-            use_vol_confirm: false,
-            vol_confirm_period: 20,
-            vol_confirm_mult: 1.2,
+            ..RegimeConfluenceParams::default_2of3()
         };
         let inputs = R28V6Inputs {
             htf_closes: None,
@@ -319,5 +355,282 @@ mod tests {
         // candles none of the detectors fire so result is None either way,
         // but the gate is reachable.
         assert!(s.is_none());
+    }
+
+    // 2026-05-13 Audit Round 2: edge-case unit tests on the consensus voting
+    // logic. These guard against subtle vote-counting / state-mutation /
+    // numerical drift bugs that a sweep might mask. Each test isolates ONE
+    // boundary condition and asserts the documented contract.
+
+    fn nop_inputs<'a>() -> R28V6Inputs<'a> {
+        R28V6Inputs {
+            htf_closes: None,
+            cross_asset_closes: None,
+            news_events: None,
+            funding_series: None,
+        }
+    }
+
+    fn flat_candles(n: usize) -> Vec<Candle> {
+        (0..n)
+            .map(|i| make_candle(i as i64 * 1_800_000, 100.0))
+            .collect()
+    }
+
+    #[test]
+    fn mv0_with_no_signals_still_returns_none() {
+        // mv=0 means "0 votes required" — even with no detector firing,
+        // returns None (anchor is None). Guards a divide-by-zero / vacuous-
+        // truth interpretation that would let mv=0 fire on every bar.
+        let cfg = EngineConfig::r28_v6_passlock_template();
+        let asset = AssetConfig::default();
+        let mut state = EngineState::initial(&cfg.label);
+        let params = RegimeConfluenceParams {
+            min_votes: 0,
+            ..RegimeConfluenceParams::default_2of3()
+        };
+        let s = detect_regime_confluence(
+            &mut state,
+            &cfg,
+            &asset,
+            "BTCUSDT",
+            &flat_candles(100),
+            &params,
+            &nop_inputs(),
+        );
+        assert!(
+            s.is_none(),
+            "mv=0 must not fabricate a signal from None anchor"
+        );
+    }
+
+    #[test]
+    fn mv4_unreachable_returns_none() {
+        // 3 detectors available (R28V6, breakout, MR), MR is None by default.
+        // Even if all 3 fire same direction, max vote count is 3 < 4 → None.
+        // With vol-confirm 4 voters max — but mv=4 still requires all to agree.
+        let cfg = EngineConfig::r28_v6_passlock_template();
+        let asset = AssetConfig::default();
+        let mut state = EngineState::initial(&cfg.label);
+        let params = RegimeConfluenceParams {
+            min_votes: 4,
+            ..RegimeConfluenceParams::default_2of3()
+        };
+        let s = detect_regime_confluence(
+            &mut state,
+            &cfg,
+            &asset,
+            "BTCUSDT",
+            &flat_candles(100),
+            &params,
+            &nop_inputs(),
+        );
+        assert!(s.is_none(), "mv=4 with 3 max detectors must be unreachable");
+    }
+
+    #[test]
+    fn state_unchanged_when_no_signal_fires() {
+        // Critical state-clone correctness check: when all probes return None
+        // (flat market), the real state must not be mutated. Probes run on
+        // state.clone() so mutations are contained.
+        let cfg = EngineConfig::r28_v6_passlock_template();
+        let asset = AssetConfig::default();
+        let mut state = EngineState::initial(&cfg.label);
+        let pre_equity = state.equity;
+        let pre_kelly = state.kelly_tier_idx;
+        let pre_bars_seen = state.bars_seen;
+        let params = RegimeConfluenceParams::default_2of3();
+        let _ = detect_regime_confluence(
+            &mut state,
+            &cfg,
+            &asset,
+            "BTCUSDT",
+            &flat_candles(100),
+            &params,
+            &nop_inputs(),
+        );
+        assert_eq!(state.equity, pre_equity, "equity must not change");
+        assert_eq!(
+            state.kelly_tier_idx, pre_kelly,
+            "kelly_tier_idx must not change"
+        );
+        assert_eq!(state.bars_seen, pre_bars_seen, "bars_seen must not change");
+    }
+
+    #[test]
+    fn vol_confirm_handles_nan_volume() {
+        // Numerical edge: if any volume is NaN/inf, helper must NOT panic.
+        // Returns None (no vote) when sma is non-finite or last vol non-finite.
+        let mut candles = flat_candles(50);
+        candles[49].volume = f64::NAN;
+        let params = RegimeConfluenceParams {
+            min_votes: 1,
+            use_vol_confirm: true,
+            vol_confirm_period: 20,
+            vol_confirm_mult: 1.2,
+            ..RegimeConfluenceParams::default_2of3()
+        };
+        // Build a fake breakout signal (caller-side; we just test compute helper)
+        let fake_signal = PollSignal {
+            symbol: "X".into(),
+            source_symbol: "X".into(),
+            direction: PositionSide::Long,
+            entry_time: 0,
+            entry_price: 100.0,
+            stop_price: 99.0,
+            tp_price: 101.0,
+            stop_pct: 0.01,
+            tp_pct: 0.01,
+            eff_risk: 0.1,
+            chandelier_atr_at_entry: None,
+        };
+        let v = compute_vol_confirm_vote(&candles, &params, Some(&fake_signal));
+        assert!(v.is_none(), "NaN volume must produce no vote");
+    }
+
+    #[test]
+    fn vol_confirm_handles_zero_period() {
+        let candles = flat_candles(50);
+        let params = RegimeConfluenceParams {
+            min_votes: 1,
+            use_vol_confirm: true,
+            vol_confirm_period: 0,
+            vol_confirm_mult: 1.2,
+            ..RegimeConfluenceParams::default_2of3()
+        };
+        let v = compute_vol_confirm_vote(&candles, &params, None);
+        assert!(v.is_none(), "period=0 must safely produce no vote");
+    }
+
+    #[test]
+    fn vol_confirm_returns_none_without_bo_signal() {
+        // Vol-confirm is parasitic on breakout's direction. Without bo signal
+        // input, the helper has no direction to project → None.
+        let candles = flat_candles(50);
+        let params = RegimeConfluenceParams {
+            min_votes: 1,
+            use_vol_confirm: true,
+            vol_confirm_period: 20,
+            vol_confirm_mult: 1.2,
+            ..RegimeConfluenceParams::default_2of3()
+        };
+        let v = compute_vol_confirm_vote(&candles, &params, None);
+        assert!(v.is_none());
+    }
+
+    #[test]
+    fn vol_confirm_fires_when_volume_spikes() {
+        // Numerical contract: when last-bar volume ≥ mult × SMA(N), vote = bo.direction.
+        let mut candles = flat_candles(50);
+        // Set last 25 bars to volume 100 (SMA20 of last 20 pre-current ≈ 100).
+        for c in candles.iter_mut() {
+            c.volume = 100.0;
+        }
+        // Final bar = 250 = 2.5× SMA.
+        candles[49].volume = 250.0;
+        let params = RegimeConfluenceParams {
+            min_votes: 1,
+            use_vol_confirm: true,
+            vol_confirm_period: 20,
+            vol_confirm_mult: 2.0,
+            ..RegimeConfluenceParams::default_2of3()
+        };
+        let fake_signal = PollSignal {
+            symbol: "X".into(),
+            source_symbol: "X".into(),
+            direction: PositionSide::Short,
+            entry_time: 0,
+            entry_price: 100.0,
+            stop_price: 101.0,
+            tp_price: 99.0,
+            stop_pct: 0.01,
+            tp_pct: 0.01,
+            eff_risk: 0.1,
+            chandelier_atr_at_entry: None,
+        };
+        let v = compute_vol_confirm_vote(&candles, &params, Some(&fake_signal));
+        assert_eq!(
+            v,
+            Some(PositionSide::Short),
+            "2.5× spike at mult=2.0 must vote bo.direction"
+        );
+    }
+
+    #[test]
+    fn vol_confirm_skips_when_volume_below_threshold() {
+        let mut candles = flat_candles(50);
+        for c in candles.iter_mut() {
+            c.volume = 100.0;
+        }
+        candles[49].volume = 150.0; // 1.5× SMA but mult is 2.0
+        let params = RegimeConfluenceParams {
+            min_votes: 1,
+            use_vol_confirm: true,
+            vol_confirm_period: 20,
+            vol_confirm_mult: 2.0,
+            ..RegimeConfluenceParams::default_2of3()
+        };
+        let fake_signal = PollSignal {
+            symbol: "X".into(),
+            source_symbol: "X".into(),
+            direction: PositionSide::Long,
+            entry_time: 0,
+            entry_price: 100.0,
+            stop_price: 99.0,
+            tp_price: 101.0,
+            stop_pct: 0.01,
+            tp_pct: 0.01,
+            eff_risk: 0.1,
+            chandelier_atr_at_entry: None,
+        };
+        let v = compute_vol_confirm_vote(&candles, &params, Some(&fake_signal));
+        assert!(v.is_none(), "below threshold = no vote");
+    }
+
+    #[test]
+    fn vol_confirm_handles_too_few_candles() {
+        // Need ≥ period+1 candles to compute SMA window.
+        let candles = flat_candles(5);
+        let params = RegimeConfluenceParams {
+            min_votes: 1,
+            use_vol_confirm: true,
+            vol_confirm_period: 20,
+            vol_confirm_mult: 1.2,
+            ..RegimeConfluenceParams::default_2of3()
+        };
+        let v = compute_vol_confirm_vote(&candles, &params, None);
+        assert!(v.is_none(), "too-short candle slice → safe None");
+    }
+
+    #[test]
+    fn vol_confirm_handles_zero_sma() {
+        // All-zero volume → SMA=0 → divide-by-zero guard triggers → None.
+        let mut candles = flat_candles(50);
+        for c in candles.iter_mut() {
+            c.volume = 0.0;
+        }
+        candles[49].volume = 1.0; // tiny spike, but SMA=0 → guard out
+        let params = RegimeConfluenceParams {
+            min_votes: 1,
+            use_vol_confirm: true,
+            vol_confirm_period: 20,
+            vol_confirm_mult: 1.2,
+            ..RegimeConfluenceParams::default_2of3()
+        };
+        let fake_signal = PollSignal {
+            symbol: "X".into(),
+            source_symbol: "X".into(),
+            direction: PositionSide::Long,
+            entry_time: 0,
+            entry_price: 100.0,
+            stop_price: 99.0,
+            tp_price: 101.0,
+            stop_pct: 0.01,
+            tp_pct: 0.01,
+            eff_risk: 0.1,
+            chandelier_atr_at_entry: None,
+        };
+        let v = compute_vol_confirm_vote(&candles, &params, Some(&fake_signal));
+        assert!(v.is_none(), "sma=0 must not divide-by-zero");
     }
 }

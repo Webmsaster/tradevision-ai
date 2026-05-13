@@ -1774,6 +1774,16 @@ fn run_one_window(
                             use_vol_confirm: multi_signal.regime_use_vol_confirm,
                             vol_confirm_period: multi_signal.regime_vol_period,
                             vol_confirm_mult: multi_signal.regime_vol_mult,
+                            // 2026-05-13 Audit Round 2 — propagate R28V6 secondary
+                            // gate flags into REGIME mode so they don't silently
+                            // no-op.
+                            r28v6_adx_min: multi_signal.r28v6_adx_min,
+                            r28v6_adx_period: multi_signal.r28v6_adx_period,
+                            r28v6_chop_max: multi_signal.r28v6_chop_max,
+                            r28v6_chop_period: multi_signal.r28v6_chop_period,
+                            r28v6_rsi_long_max: multi_signal.r28v6_rsi_long_max,
+                            r28v6_rsi_short_min: multi_signal.r28v6_rsi_short_min,
+                            r28v6_rsi_period: multi_signal.r28v6_rsi_period,
                         };
                     ftmo_engine_core::signals_regime_confluence::detect_regime_confluence(
                         &mut state, cfg, asset, &source, arr, &rc_params, &r28in,
