@@ -226,6 +226,10 @@ struct MultiSignalCfg {
     /// target` at end. Champion C2 (pt=0.04) drops from 80.04% → 73.25%
     /// under strict rule; Champion B (pt=0.08) drops 72.37% → 64.04%.
     strict_pass: bool,
+    /// 2026-05-13 Phase 3b: VWAP-trend 5th-voter activation + params.
+    regime_use_vwap_trend: bool,
+    regime_vwap_period: usize,
+    regime_vwap_min_dev: f64,
     // Below: deliberately at end so the field-init order in `let cfg =
     // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
@@ -615,6 +619,9 @@ fn main() -> Result<()> {
     let mut regime_vol_mult: f64 = 1.2;
     let mut regime_force_mr: bool = false;
     let mut strict_pass: bool = false;
+    let mut regime_use_vwap_trend: bool = false;
+    let mut regime_vwap_period: usize = 20;
+    let mut regime_vwap_min_dev: f64 = 0.0;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
@@ -751,6 +758,11 @@ fn main() -> Result<()> {
             "--regime-vol-period" => regime_vol_period = need!("--regime-vol-period").parse()?,
             "--regime-vol-mult" => regime_vol_mult = need!("--regime-vol-mult").parse()?,
             "--regime-force-mr" => regime_force_mr = true,
+            "--regime-vwap-trend" => regime_use_vwap_trend = true,
+            "--regime-vwap-period" => regime_vwap_period = need!("--regime-vwap-period").parse()?,
+            "--regime-vwap-min-dev" => {
+                regime_vwap_min_dev = need!("--regime-vwap-min-dev").parse()?
+            }
             "--mr-period" => mr_period = Some(need!("--mr-period").parse()?),
             "--mr-oversold" => mr_oversold = Some(need!("--mr-oversold").parse()?),
             "--mr-overbought" => mr_overbought = Some(need!("--mr-overbought").parse()?),
@@ -885,6 +897,9 @@ fn main() -> Result<()> {
                 regime_vol_mult,
                 regime_force_mr,
                 strict_pass,
+                regime_use_vwap_trend,
+                regime_vwap_period,
+                regime_vwap_min_dev,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -1835,6 +1850,9 @@ fn run_one_window(
                             r28v6_rsi_long_max: multi_signal.r28v6_rsi_long_max,
                             r28v6_rsi_short_min: multi_signal.r28v6_rsi_short_min,
                             r28v6_rsi_period: multi_signal.r28v6_rsi_period,
+                            use_vwap_trend: multi_signal.regime_use_vwap_trend,
+                            vwap_period: multi_signal.regime_vwap_period,
+                            vwap_min_dev_pct: multi_signal.regime_vwap_min_dev,
                         };
                     ftmo_engine_core::signals_regime_confluence::detect_regime_confluence(
                         &mut state, cfg, asset, &source, arr, &rc_params, &r28in,

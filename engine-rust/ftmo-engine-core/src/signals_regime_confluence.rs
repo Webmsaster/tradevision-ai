@@ -28,6 +28,62 @@ use crate::signals_meanrev::detect_mean_reversion;
 use crate::signals_r28v6::{detect_r28_v6, R28V6Inputs, R28V6Params};
 use crate::state::EngineState;
 
+/// 2026-05-13 Phase 3b — VWAP-trend vote helper. Returns the trend
+/// direction sampled from VWAP — Long if current close > VWAP AND VWAP
+/// is rising (last-period delta > 0), Short if close < VWAP AND VWAP
+/// falling. Provides a 5th independent voter (price+volume joint signal,
+/// orthogonal to vol_confirm which only consults raw volume).
+///
+/// vwap = Σ(close_i × volume_i) / Σ(volume_i)  over last `vwap_period` bars.
+fn compute_vwap_trend_vote(
+    candles: &[Candle],
+    params: &RegimeConfluenceParams,
+) -> Option<PositionSide> {
+    let n = params.vwap_period;
+    if n == 0 || candles.len() <= n + 1 {
+        return None;
+    }
+    let last = candles.last()?;
+    if !last.close.is_finite() {
+        return None;
+    }
+    // Compute VWAP for last n bars (excl. current).
+    let slice = &candles[candles.len() - 1 - n..candles.len() - 1];
+    let (sum_pv, sum_v) = slice.iter().fold((0.0_f64, 0.0_f64), |(p, v), c| {
+        (p + c.close * c.volume, v + c.volume)
+    });
+    if !sum_v.is_finite() || sum_v <= 0.0 || !sum_pv.is_finite() {
+        return None;
+    }
+    let vwap_now = sum_pv / sum_v;
+    // Previous-window VWAP for slope (excl. last 2 bars).
+    if candles.len() <= n + 2 {
+        return None;
+    }
+    let prev_slice = &candles[candles.len() - 2 - n..candles.len() - 2];
+    let (sum_pv_p, sum_v_p) = prev_slice.iter().fold((0.0_f64, 0.0_f64), |(p, v), c| {
+        (p + c.close * c.volume, v + c.volume)
+    });
+    if sum_v_p <= 0.0 {
+        return None;
+    }
+    let vwap_prev = sum_pv_p / sum_v_p;
+    let dev_pct = (last.close - vwap_now) / vwap_now;
+    if !dev_pct.is_finite() {
+        return None;
+    }
+    let min_dev = params.vwap_min_dev_pct.max(0.0);
+    let rising = vwap_now > vwap_prev;
+    let falling = vwap_now < vwap_prev;
+    if rising && dev_pct >= min_dev {
+        Some(PositionSide::Long)
+    } else if falling && dev_pct <= -min_dev {
+        Some(PositionSide::Short)
+    } else {
+        None
+    }
+}
+
 /// 2026-05-13 — volume-confirmation vote helper. Returns the breakout's
 /// direction if the current bar's volume cleared
 /// `params.vol_confirm_mult × SMA(volume, params.vol_confirm_period)`.
@@ -98,6 +154,14 @@ pub struct RegimeConfluenceParams {
     pub r28v6_rsi_long_max: Option<f64>,
     pub r28v6_rsi_short_min: Option<f64>,
     pub r28v6_rsi_period: Option<usize>,
+    /// 2026-05-13 Phase 3b: 5th voter — VWAP-trend gate. When
+    /// `use_vwap_trend`, fires the side of price-vs-VWAP whose VWAP slope
+    /// agrees (Long if close > VWAP AND VWAP rising). Orthogonal to
+    /// vol_confirm (which uses raw volume) and breakout (which uses
+    /// price-vs-prev-high). 5 voters → mv=4 / mv=5 quorum reachable.
+    pub use_vwap_trend: bool,
+    pub vwap_period: usize,
+    pub vwap_min_dev_pct: f64,
 }
 
 impl RegimeConfluenceParams {
@@ -116,6 +180,9 @@ impl RegimeConfluenceParams {
             r28v6_rsi_long_max: None,
             r28v6_rsi_short_min: None,
             r28v6_rsi_period: None,
+            use_vwap_trend: false,
+            vwap_period: 20,
+            vwap_min_dev_pct: 0.0,
         }
     }
 
@@ -212,6 +279,15 @@ pub fn detect_regime_confluence(
     } else {
         None
     };
+    // VWAP-trend probe (Phase 3b) — independent 5th voter. Long if close >
+    // VWAP and VWAP rising, Short if close < VWAP and VWAP falling. Uses
+    // its own direction (NOT parasitic on breakout). Orthogonal joint
+    // price+volume signal.
+    let vwap_vote = if params.use_vwap_trend {
+        compute_vwap_trend_vote(candles, params)
+    } else {
+        None
+    };
 
     // Count directional votes. We allow a None probe to count as "abstain"
     // — only positive votes count toward the threshold.
@@ -245,6 +321,12 @@ pub fn detect_regime_confluence(
         }
     }
     if let Some(side) = vol_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = vwap_vote {
         match side {
             PositionSide::Long => long_votes += 1,
             PositionSide::Short => short_votes += 1,
