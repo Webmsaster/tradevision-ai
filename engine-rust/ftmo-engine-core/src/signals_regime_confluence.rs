@@ -61,23 +61,47 @@ pub fn detect_regime_confluence(
     params: &RegimeConfluenceParams,
     inputs: &R28V6Inputs<'_>,
 ) -> Option<PollSignal> {
-    // ---- Probe 1: R28V6 (trend follow / pullback) ----
+    // 2026-05-13 Audit-2 fix: each probe gets its OWN clone of state so
+    // a probe's internal state-mutations (resolve_sizing_factor mutates
+    // state.kelly_tier_idx; MR mutates state.loss_streak_by_asset_dir)
+    // do not bias later probes. Before this fix, REGIME mode produced
+    // 55 trades that standalone R28V6 didn't fire — symptom of state
+    // divergence between probe calls and the standalone path. After
+    // the fix the surviving signal still mutates the real state once,
+    // when it goes to the harness via push_with_gates.
+    let mut state_for_r28 = state.clone();
     let r28p = R28V6Params::default_for(asset, cfg);
-    // Mutate a private state copy so the secondary detectors don't see
-    // R28V6's loss-streak-cooldown bookkeeping from this probe.
-    let r28 = detect_r28_v6(state, cfg, asset, source_symbol, candles, &r28p, inputs);
+    let r28 = detect_r28_v6(
+        &mut state_for_r28,
+        cfg,
+        asset,
+        source_symbol,
+        candles,
+        &r28p,
+        inputs,
+    );
 
-    // ---- Probe 2: Breakout (lookback-N high/low break) ----
+    // 2026-05-13 Audit-3: early-exit when R28V6 is the must-have anchor
+    // and didn't vote. Saves the breakout/MR probe calls AND mathematically
+    // forces "R28V6 must be in any winning consensus" on configs where
+    // MR-source is None (every AMBER family + R28_V6_PASSLOCK template).
+    // Without this, the only way 2-of-3 consensus could fire without
+    // R28V6 was breakout+MR agreement — but MR=None blocks that path
+    // anyway. Adding the explicit gate prevents downstream state-mutation
+    // and signal-set divergence we observed in the post-fix audit (175
+    // REGIME-only trades vs standalone R28V6).
+    if r28.is_none() && params.min_votes >= 2 && cfg.mean_reversion_source.is_none() {
+        return None;
+    }
+
+    let mut state_for_bo = state.clone();
     let bp = BreakoutParams::from_cfg(cfg, asset);
-    let bo = detect_breakout(state, cfg, asset, source_symbol, candles, &bp);
+    let bo = detect_breakout(&mut state_for_bo, cfg, asset, source_symbol, candles, &bp);
 
-    // ---- Probe 3: MeanRev (RSI cross + cooldown) ----
-    // Only run if an asset-level or cfg-level MR source is configured;
-    // otherwise the MR vote is null (never agreeing/disagreeing).
-    let mr = cfg
-        .mean_reversion_source
-        .as_ref()
-        .and_then(|src| detect_mean_reversion(state, cfg, asset, source_symbol, candles, src));
+    let mr = cfg.mean_reversion_source.as_ref().and_then(|src| {
+        let mut state_for_mr = state.clone();
+        detect_mean_reversion(&mut state_for_mr, cfg, asset, source_symbol, candles, src)
+    });
 
     // Count directional votes. We allow a None probe to count as "abstain"
     // — only positive votes count toward the threshold.
@@ -129,14 +153,29 @@ pub fn detect_regime_confluence(
     if winning_count < min {
         return None;
     }
-    if params.require_r28v6 {
-        let r28_in_winning = match winning_side {
-            PositionSide::Long => r28v6_voted_long,
-            PositionSide::Short => r28v6_voted_short,
-        };
-        if !r28_in_winning {
-            return None;
-        }
+    // 2026-05-13 Audit-3: debug counter for "winning vote without R28V6
+    // contribution". If env REGIME_DEBUG=1, eprintln when this happens —
+    // exposes any signal that was claimed valid despite R28V6 not voting
+    // on the winning side. With MR-source = None (AMBER family), 2-of-3
+    // mathematically requires R28V6 + breakout consensus. Any fire here
+    // without R28V6 would be a logic bug.
+    let r28_in_winning = match winning_side {
+        PositionSide::Long => r28v6_voted_long,
+        PositionSide::Short => r28v6_voted_short,
+    };
+    if !r28_in_winning && std::env::var("REGIME_DEBUG").ok().as_deref() == Some("1") {
+        eprintln!(
+            "[regime-debug] FIRED without R28V6 vote — asset={} sym={} side={:?} long_votes={} short_votes={} mr_src_is_some={}",
+            asset.symbol,
+            source_symbol,
+            winning_side,
+            long_votes,
+            short_votes,
+            cfg.mean_reversion_source.is_some(),
+        );
+    }
+    if params.require_r28v6 && !r28_in_winning {
+        return None;
     }
 
     // Prefer the anchor signal's pricing (entry/stop/tp/eff_risk). We do
