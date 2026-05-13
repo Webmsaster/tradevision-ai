@@ -380,11 +380,18 @@ pub fn detect_regime_confluence(
     if winning_count < min {
         return None;
     }
-    // 2026-05-13 Bug-Audit Round 3 — BUG #3 FIX: disable_short policy enforcement.
-    // Previously breakout/MR/vol-confirm could outvote a disable-short asset
-    // to a Short signal because only R28V6 honored the asset flag internally.
-    // Now enforced at the consensus output (AssetConfig has no disable_long).
+    // Disable_short/disable_long policy enforcement at consensus output.
+    // Breakout/MR/vol-confirm/vwap can outvote per-direction asset flags
+    // because only R28V6 honors them internally. Bug-Audit Round 3 added
+    // disable_short. 2026-05-13 Codex Round 8 #D FIX: add the symmetric
+    // disable_long check — recently-added AssetConfig.disable_long was
+    // omitted at this site, so a disable_long=true asset could still emit
+    // a winning Long via Breakout+Vol-confirm consensus despite the primary
+    // R28V6 path correctly skipping Long.
     if asset.disable_short && winning_side == PositionSide::Short {
+        return None;
+    }
+    if asset.disable_long && winning_side == PositionSide::Long {
         return None;
     }
     // 2026-05-13 Audit-3: debug counter for "winning vote without R28V6

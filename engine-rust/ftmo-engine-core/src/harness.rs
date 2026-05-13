@@ -589,16 +589,19 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
 
     // 7b. Bar-level time gates (allowed hours / dows).
     //
-    // 2026-05-12 R29 audit fix: signals fire on the close of bar i but entries
-    // execute on bar i+1's open. TS V4-Sim (`src/utils/ftmoDaytrade24h.ts:4156`)
-    // checks `entryBar.openTime` hour/dow, not signal-bar. Previously Rust
-    // checked `last_bar_time` (signal-bar). On 2h cfg with
-    // allowed_hours_utc=[4,6,8,10,14,18], the two checks accept ~50%
-    // non-overlapping bar populations → systematic signal-detector drift
-    // vs TS (TS-today 44.85% vs Rust 41.18% on full 136 windows).
-    //
-    // Fix: shift gate-check by bar_minutes so we evaluate the entry-bar's hour.
-    let entry_bar_time = last_bar_time + (cfg.bar_minutes as i64).saturating_mul(60_000);
+    // 2026-05-13 Codex Round 8 RE-FIX: previous R29 audit fix added
+    // `+ bar_minutes` to last_bar_time, claiming "signals fire on close of
+    // bar i, entries execute on i+1's open". But in Rust detector convention
+    // (signals_r28v6.rs:230-236 + sweep.rs:1817 push-loop), `last_bar_time`
+    // ALREADY equals `candles[i].open_time` = entry-bar's open_time (the
+    // detector sets `entry_time: last.open_time` and signal-bar is
+    // `trigger_idx = i-1`). The R29 fix mis-attributed the convention and
+    // shifted the gate by one EXTRA bar forward. TS V4-Sim
+    // `ftmoDaytrade24h.ts:4156` checks `candles[i+1].openTime.hour` where
+    // TS's `i` is the signal-bar = Rust's `i-1`. So TS's `i+1` = Rust's `i`
+    // = `last_bar_time` directly. Two independent audit agents flagged this
+    // simultaneously in Round 8.
+    let entry_bar_time = last_bar_time;
     if entries_allowed {
         if let Some(hours) = cfg.allowed_hours_utc.as_ref() {
             if let Some(dt) = DateTime::<Utc>::from_timestamp_millis(entry_bar_time) {
