@@ -101,15 +101,20 @@ describe("ftmoLiveEngineV4 Round 57 session-boundary fixes", () => {
     expect(state.challengeStartTs).toBe(firstBarTime);
   });
 
-  it("R57-V4-4: explicit anchor — day-rollover triggers at +24h boundary", () => {
-    // Existing dayIndex semantics: rollover triggers at anchor + 24h * N.
-    // The R57 fix clarifies WHICH timestamp seeds the anchor (cfg vs lastBar).
-    // The +24h elapsed semantics are unchanged from prior rounds.
-    const explicitAnchor = Date.UTC(2026, 0, 15, 22, 0, 0); // 22:00 UTC
+  it("R57-V4-4: explicit anchor — day-rollover triggers at Prague-midnight", () => {
+    // 2026-05-13 Codex Round 5 Fix #4 update: dayIndex now uses
+    // `pragueDay(bar) - pragueDay(start)` (calendar-day diff) instead of the
+    // legacy "(elapsed local ms) / 24h" buggy elapsed-time semantics.
+    // Test scenario:
+    //   - anchor = 23:00 UTC Jan 15 = 00:00 Prague Jan 16 (CET, +1).
+    //   - bar at +23h-UTC = 22:00 UTC Jan 16 = 23:00 Prague Jan 16 → day 0.
+    //   - bar at +25h-UTC = 00:00 UTC Jan 17 = 01:00 Prague Jan 17 → day 1.
+    // This isolates "rollover happens at Prague midnight" from "elapsed 24h".
+    const explicitAnchor = Date.UTC(2026, 0, 15, 23, 0, 0); // 23:00 UTC → 00:00 Prague Jan 16
     const cfg = baseCfg({ challengeStartTs: explicitAnchor });
     const state = initialState("R57-rollover");
 
-    // Bar 23h after anchor — still under the +24h boundary → day 0.
+    // Bar at 23h-UTC after anchor — same Prague calendar day → day 0.
     const sameDayBar = explicitAnchor + 23 * 3600_000;
     pollLive(
       state,
@@ -118,7 +123,7 @@ describe("ftmoLiveEngineV4 Round 57 session-boundary fixes", () => {
     );
     expect(state.day).toBe(0);
 
-    // Bar 25h after anchor — past the +24h elapsed boundary → day 1.
+    // Bar at 25h-UTC after anchor — Prague calendar day has rolled → day 1.
     const nextDayBar = explicitAnchor + 25 * 3600_000;
     pollLive(
       state,

@@ -101,6 +101,7 @@ import type { Candle } from "@/utils/indicators";
 import { withFileLockSync } from "@/utils/processLock";
 import {
   detectAsset,
+  pragueDay,
   type Daytrade24hAssetCfg,
   type Daytrade24hTrade,
   type FtmoDaytrade24hConfig,
@@ -168,6 +169,16 @@ export interface OpenPositionV4 {
    * pre-date this field; absent → fallback chain reverts to entryPrice.
    */
   lastKnownPrice?: number;
+  /**
+   * 2026-05-13 Codex Round 5 HIGH FIX (TS #3): cfg.trailingStop runtime
+   * state. Source backtest (ftmoDaytrade24h.ts:4670-4691) supports
+   * activatePct (arm when unrealized ≥ this) + trailPct (trail stop by
+   * this distance from peak). V4 previously skipped this feature entirely.
+   * `trailActive=true` once unrealized ≥ activatePct; `trailPeak` tracks
+   * the favorable extreme of close since activation.
+   */
+  trailActive?: boolean;
+  trailPeak?: number;
 }
 
 export interface ClosedTradeV4 {
@@ -448,13 +459,17 @@ function _loadStateInner(filePath: string, cfgLabel: string): FtmoLiveStateV4 {
         }
         // R67-RR3 (Bug-Audit Round 3): distinguish a rollback (state from a
         // NEWER schema version than this binary supports) from a generic
-        // mismatch. A rollback usually means we deployed a binary one git
-        // SHA OLDER than what wrote the state — the operator should see
-        // this clearly so they can decide whether to redeploy forward vs
-        // accept the data-loss reset.
+        // mismatch.
         const isRollback =
           typeof obj.schemaVersion === "number" &&
           obj.schemaVersion > SCHEMA_VERSION;
+        // 2026-05-13 Codex Round 5 HIGH FIX (TS #8): for live trading,
+        // rollback (state from a newer binary) silently dropping pause/
+        // open-positions/kelly/cooldowns/peaks is too dangerous. The
+        // operator MUST intervene (redeploy forward or accept data-loss
+        // explicitly). Set FTMO_V4_ROLLBACK_ALLOW=1 to permit the legacy
+        // reset+backup behavior — backtests should leave this unset since
+        // they have no live continuity at stake.
         const tag = isRollback
           ? "STATE FROM NEWER VERSION (rollback?)"
           : "STATE MISMATCH";
@@ -463,6 +478,16 @@ function _loadStateInner(filePath: string, cfgLabel: string): FtmoLiveStateV4 {
             `Old: ${obj.cfgLabel}/${obj.schemaVersion}, ` +
             `New: ${cfgLabel}/${SCHEMA_VERSION}`,
         );
+        if (isRollback && process.env.FTMO_V4_ROLLBACK_ALLOW !== "1") {
+          throw new Error(
+            `[V4] REFUSING TO START on rolled-back state. ` +
+              `State was written by schemaVersion=${obj.schemaVersion} but ` +
+              `this binary is at SCHEMA_VERSION=${SCHEMA_VERSION}. ` +
+              `Backup at ${backupPath}. ` +
+              `Re-deploy the newer binary OR set FTMO_V4_ROLLBACK_ALLOW=1 to ` +
+              `accept the data-loss reset.`,
+          );
+        }
         return initialState(cfgLabel);
       }
       return obj as FtmoLiveStateV4;
@@ -574,16 +599,16 @@ function findCandleAtTime(arr: Candle[], targetTime: number): Candle | null {
 
 function dayIndex(barTs: number, challengeStart: number): number {
   if (challengeStart <= 0) return 0;
-  // Phase 14 (V4 Bug 5): align day-rollover with FTMO Prague-midnight, not
-  // UTC midnight. Python executor uses ZoneInfo("Europe/Prague") for
-  // dayPeak; engine was using UTC → 1-2h disagreement per day → DL/TL
-  // checks attribute trades to the wrong day around CET 23:00-00:00.
-  // Phase 30 (V4 Audit Bug 1): apply offset to BOTH sides — offset on
-  // barTs only drifted at DST-changeover (winter→summer or vice versa)
-  // because challengeStart was un-offset.
-  const barLocal = barTs + pragueOffsetMs(barTs);
-  const startLocal = challengeStart + pragueOffsetMs(challengeStart);
-  return Math.floor((barLocal - startLocal) / (24 * 3600 * 1000));
+  // 2026-05-13 Codex Round 5 HIGH FIX (TS #4): replace elapsed-local-time/
+  // 24h division with calendar-day diff. The old approach
+  //   (barTs + pragueOffsetMs(barTs)) - (startTs + pragueOffsetMs(startTs))
+  // is "elapsed local time"; it failed for non-midnight challenge_start
+  // (rollover at 24h-from-start instead of next Prague midnight) AND across
+  // DST transitions (when offsets differ by ±1h between anchor and bar).
+  // Now mirrors `pragueDay(ms)` at ftmoDaytrade24h.ts:3581 — convert each
+  // timestamp to its Prague calendar date + diff days. Same fix as Rust
+  // commit e40217b.
+  return pragueDay(barTs) - pragueDay(challengeStart);
 }
 
 /**
@@ -794,6 +819,29 @@ export function resolveSizingFactor(
  * Uses same priority order as backtest: PTP/BE first, chandelier, then
  * SL/TP price-cross detection.
  */
+/**
+ * 2026-05-13 Codex Round 5 MED FIX (TS #7): cost-adjusted BE stop level.
+ * Source backtest (ftmoDaytrade24h.ts:4634) moves the BE stop to
+ *   entry × (1 + cost) for longs, entry × (1 - cost) for shorts
+ * so a BE-stop-out realises ~0 PnL net of round-trip cost. V4 was moving
+ * to raw entryPrice, leaving a -cost bp drag on every BE-stop trade.
+ *
+ * Returns the cost-adjusted BE level for `pos`, falling back to raw entry
+ * when the asset has no cost config (legacy zero-cost backtests).
+ */
+function computeBeStop(
+  pos: OpenPositionV4,
+  cfg: FtmoDaytrade24hConfig,
+): number {
+  const assetCfg = cfg.assets.find((a) => a.symbol === pos.symbol);
+  const costBp = assetCfg?.costBp ?? 0;
+  if (costBp <= 0) return pos.entryPrice;
+  const cost = costBp / 10000;
+  return pos.direction === "long"
+    ? pos.entryPrice * (1 + cost)
+    : pos.entryPrice * (1 - cost);
+}
+
 function processPositionExit(
   pos: OpenPositionV4,
   candle: Candle,
@@ -802,6 +850,46 @@ function processPositionExit(
   atrAtBar: number | null,
   holdBars: number,
 ): { exitPrice: number; reason: "tp" | "stop" | "time" } | null {
+  // 2026-05-13 Codex Round 5 HIGH FIX (TS #2): SL/TP check FIRST. Source
+  // backtest (ftmoDaytrade24h.ts:4575) checks SL/TP at the top of each
+  // intra-trade bar and only runs BE/PTP/trail/chandelier as POST-bar
+  // state-updates if no exit fired. The legacy V4 order ran the modifiers
+  // FIRST on the same bar — letting BE/chandelier tighten the stop using
+  // bar.high/low and then immediately stop out within the same bar. That
+  // diverged from source pass-rate by 1-3pp on chandelier-heavy configs.
+  if (pos.direction === "long") {
+    const stopHit = candle.low <= pos.stopPrice;
+    const tpHit = candle.high >= pos.tpPrice;
+    const gapPastTp = candle.open >= pos.tpPrice;
+    if (tpHit && gapPastTp) {
+      return { exitPrice: candle.open, reason: "tp" };
+    }
+    if (stopHit) {
+      const exitPrice =
+        candle.open < pos.stopPrice ? candle.open : pos.stopPrice;
+      return { exitPrice, reason: "stop" };
+    }
+    if (tpHit) {
+      return { exitPrice: pos.tpPrice, reason: "tp" };
+    }
+  } else {
+    const stopHit = candle.high >= pos.stopPrice;
+    const tpHit = candle.low <= pos.tpPrice;
+    const gapPastTp = candle.open <= pos.tpPrice;
+    if (tpHit && gapPastTp) {
+      return { exitPrice: candle.open, reason: "tp" };
+    }
+    if (stopHit) {
+      const exitPrice =
+        candle.open > pos.stopPrice ? candle.open : pos.stopPrice;
+      return { exitPrice, reason: "stop" };
+    }
+    if (tpHit) {
+      return { exitPrice: pos.tpPrice, reason: "tp" };
+    }
+  }
+
+  // Post-bar state-updates — only reached when no SL/TP exit fired.
   // 1. Update high-watermark (long: highest high; short: lowest low).
   if (pos.direction === "long") {
     pos.highWatermark = Math.max(pos.highWatermark, candle.high);
@@ -840,12 +928,19 @@ function processPositionExit(
     // the priority logic is identical.
     if (ptpHit && (!stopHit || gapPastPtp)) {
       pos.ptpTriggered = true;
-      pos.ptpRealizedPct = ptp.closeFraction * ptp.triggerPct;
-      // Auto-move stop to break-even (mirrors backtest fix).
+      // 2026-05-13 Codex Round 5 MED FIX (TS #7): PTP realized must net
+      // partial-fill cost (round-trip cost on the closed-fraction portion).
+      // Without this, multi-leg configs accumulate +closeFrac*triggerPct
+      // per level while live broker pockets cost on each partial close.
+      const assetCfgPtp = cfg.assets.find((a) => a.symbol === pos.symbol);
+      const costPtp = (assetCfgPtp?.costBp ?? 0) / 10000;
+      pos.ptpRealizedPct = ptp.closeFraction * (ptp.triggerPct - costPtp);
+      // Auto-move stop to cost-adjusted break-even (mirrors backtest fix).
+      const beStop = computeBeStop(pos, cfg);
       if (pos.direction === "long") {
-        if (pos.entryPrice > pos.stopPrice) pos.stopPrice = pos.entryPrice;
+        if (beStop > pos.stopPrice) pos.stopPrice = beStop;
       } else {
-        if (pos.entryPrice < pos.stopPrice) pos.stopPrice = pos.entryPrice;
+        if (beStop < pos.stopPrice) pos.stopPrice = beStop;
       }
       pos.beActive = true;
       // Reset chandelier reference to current close.
@@ -895,15 +990,21 @@ function processPositionExit(
           ? candle.open >= triggerPrice
           : candle.open <= triggerPrice;
       if (stopHitMulti && !gapPastLvl) break;
-      pos.ptpLevelsRealized += lvl!.closeFraction * lvl!.triggerPct;
+      // 2026-05-13 Codex Round 5 MED FIX (TS #7): cost-net the realized
+      // partial gain per level (round-trip cost on the closed fraction).
+      const assetCfgPtp = cfg.assets.find((a) => a.symbol === pos.symbol);
+      const costPtp = (assetCfgPtp?.costBp ?? 0) / 10000;
+      pos.ptpLevelsRealized += lvl!.closeFraction * (lvl!.triggerPct - costPtp);
       pos.ptpLevelIdx++;
       realisedAny = true;
     }
     if (realisedAny) {
+      // 2026-05-13 Codex Round 5 MED FIX (TS #7): cost-adjusted BE.
+      const beStop = computeBeStop(pos, cfg);
       if (pos.direction === "long") {
-        if (pos.entryPrice > pos.stopPrice) pos.stopPrice = pos.entryPrice;
+        if (beStop > pos.stopPrice) pos.stopPrice = beStop;
       } else {
-        if (pos.entryPrice < pos.stopPrice) pos.stopPrice = pos.entryPrice;
+        if (beStop < pos.stopPrice) pos.stopPrice = beStop;
       }
       pos.beActive = true;
       pos.highWatermark = candle.close;
@@ -917,12 +1018,40 @@ function processPositionExit(
         ? (candle.close - pos.entryPrice) / pos.entryPrice
         : (pos.entryPrice - candle.close) / pos.entryPrice;
     if (fav >= cfg.breakEven.threshold) {
-      pos.stopPrice = pos.entryPrice;
+      // 2026-05-13 Codex Round 5 MED FIX (TS #7): cost-adjusted BE.
+      pos.stopPrice = computeBeStop(pos, cfg);
       pos.beActive = true;
     }
   }
 
-  // 4. ChandelierExit — ATR-smoothed trailing stop, gated by minMoveR.
+  // 4. TrailingStop — 2026-05-13 Codex Round 5 HIGH FIX (TS #3): cfg.trailingStop
+  // was previously unimplemented in V4. Mirrors source backtest
+  // ftmoDaytrade24h.ts:4670-4691. Activates when unrealized ≥ activatePct,
+  // then trails stop by trailPct from the favorable peak close. Only ratchets.
+  if (cfg.trailingStop) {
+    const trail = cfg.trailingStop;
+    const unrealized =
+      pos.direction === "long"
+        ? (candle.close - pos.entryPrice) / pos.entryPrice
+        : (pos.entryPrice - candle.close) / pos.entryPrice;
+    if (!pos.trailActive && unrealized >= trail.activatePct) {
+      pos.trailActive = true;
+      pos.trailPeak = candle.close;
+    }
+    if (pos.trailActive && pos.trailPeak != null) {
+      if (pos.direction === "long") {
+        if (candle.close > pos.trailPeak) pos.trailPeak = candle.close;
+        const trailStop = pos.trailPeak * (1 - trail.trailPct);
+        if (trailStop > pos.stopPrice) pos.stopPrice = trailStop;
+      } else {
+        if (candle.close < pos.trailPeak) pos.trailPeak = candle.close;
+        const trailStop = pos.trailPeak * (1 + trail.trailPct);
+        if (trailStop < pos.stopPrice) pos.stopPrice = trailStop;
+      }
+    }
+  }
+
+  // 5. ChandelierExit — ATR-smoothed trailing stop, gated by minMoveR.
   if (cfg.chandelierExit && atrAtBar != null) {
     const minMoveR = cfg.chandelierExit.minMoveR ?? 0.5;
     const originalR = pos.initialStopPct * pos.entryPrice;
@@ -941,56 +1070,6 @@ function processPositionExit(
           if (newStop < pos.stopPrice) pos.stopPrice = newStop;
         }
       }
-    }
-  }
-
-  // 5. SL/TP cross-detection at this bar — with weekend-gap parity to backtest
-  //    `runFtmoDaytrade24h` (ftmoDaytrade24h.ts ~line 4428-4470).
-  //
-  //    Crypto markets DO trade weekends but exhibit liquidity-thin gaps after
-  //    Friday-NY close vs Sunday-Asia open. FTMO Forex symbols gap over the
-  //    weekend. Both cases need realistic gap-fill semantics:
-  //
-  //    - gap-past-TP (favorable):  exitPrice = bar.open (we capture the gap).
-  //                                 Tie-break: gap-past-TP wins over same-bar stop.
-  //    - gap-past-stop (adverse):  exitPrice = bar.open (slippage through stop).
-  //                                 The position closes at a worse price than
-  //                                 stopPrice — realised loss can exceed stopPct.
-  //    - normal cross (no gap):    exitPrice = stopPrice / tpPrice (cross-fill).
-  //
-  //    The -1.5R floor in `computeEffPnl` (GAP_TAIL_MULT) only takes effect
-  //    when the engine ACTUALLY emits a sub-stop exit price. Without this
-  //    block the engine clamps every loss to exactly -stopPct → gap-tail
-  //    realism is silently disabled and pass-rate is over-stated.
-  if (pos.direction === "long") {
-    const stopHit = candle.low <= pos.stopPrice;
-    const tpHit = candle.high >= pos.tpPrice;
-    const gapPastTp = candle.open >= pos.tpPrice;
-    if (tpHit && gapPastTp) {
-      return { exitPrice: candle.open, reason: "tp" };
-    }
-    if (stopHit) {
-      const exitPrice =
-        candle.open < pos.stopPrice ? candle.open : pos.stopPrice;
-      return { exitPrice, reason: "stop" };
-    }
-    if (tpHit) {
-      return { exitPrice: pos.tpPrice, reason: "tp" };
-    }
-  } else {
-    const stopHit = candle.high >= pos.stopPrice;
-    const tpHit = candle.low <= pos.tpPrice;
-    const gapPastTp = candle.open <= pos.tpPrice;
-    if (tpHit && gapPastTp) {
-      return { exitPrice: candle.open, reason: "tp" };
-    }
-    if (stopHit) {
-      const exitPrice =
-        candle.open > pos.stopPrice ? candle.open : pos.stopPrice;
-      return { exitPrice, reason: "stop" };
-    }
-    if (tpHit) {
-      return { exitPrice: pos.tpPrice, reason: "tp" };
     }
   }
 
@@ -1406,6 +1485,18 @@ export function pollLive(
     // pushes don't unbounded-grow the buffer.
     trimInline(state, cfg);
 
+    // 2026-05-13 Codex Round 5 HIGH FIX (TS #5): paused-at-target ping-day
+    // push BEFORE the pass-check. Without this, a paused-target window that
+    // hits max_days on the final tick (before the regular path at line 1696
+    // had a chance to push) could false-fail on minTradingDays. Mirrors the
+    // identical push at lines 1696-1701.
+    if (state.pausedAtTarget && state.firstTargetHitDay !== null) {
+      const pingDay = dayIndex(lastBar.openTime, state.challengeStartTs);
+      if (!state.tradingDays.includes(pingDay)) {
+        state.tradingDays.push(pingDay);
+      }
+    }
+
     // Time exhausted — evaluate pass on post-close equity (both predicates
     // identical now since no open positions remain, but kept symmetric for
     // parity with the mid-stream pass-check at Phase 84).
@@ -1599,6 +1690,14 @@ export function pollLive(
     state.equity >= 1 + cfg.profitTarget &&
     state.mtmEquity >= 1 + cfg.profitTarget
   ) {
+    // 2026-05-13 Codex Round 5 KRITISCH FIX (TS #1): provisional latch.
+    // computeEffPnl on close-all (line 1649) deducts cost/swap/slippage; the
+    // post-close equity can fall below target while the pre-close
+    // computeMtmEquity check (line 1599-1600) passed. Capture prev state
+    // for revert path. Same pattern as Rust commit bdc26bb and Python
+    // commit f98c3c2.
+    const prevFirstTargetHitDay = state.firstTargetHitDay;
+    const prevPausedAtTarget = state.pausedAtTarget;
     state.firstTargetHitDay = state.day;
     // R67 audit fix: when closeAllOnTargetReached=true but
     // pauseAtTargetReached=false (config misuse), the close-all force-loop
@@ -1679,6 +1778,25 @@ export function pollLive(
       }
       state.openPositions = [];
       state.mtmEquity = state.equity;
+    }
+    // 2026-05-13 Codex Round 5 KRITISCH FIX (TS #1, continued): post-close
+    // re-check. Only commit the latch + pause-state if post-close equity
+    // AND mtmEquity STILL clear the target. If cost/swap/slippage pulled
+    // equity below target during the close-all, REVERT the provisional
+    // latch so the soft-pass tail / pause-resolver doesn't false-pass the
+    // window.
+    if (
+      !(
+        state.equity >= 1 + cfg.profitTarget &&
+        state.mtmEquity >= 1 + cfg.profitTarget
+      )
+    ) {
+      state.firstTargetHitDay = prevFirstTargetHitDay;
+      state.pausedAtTarget = prevPausedAtTarget;
+      result.targetHit = false;
+      result.notes.push(
+        "V4: target-hit REVERTED — post-close-all equity dropped below target (cost/swap drift)",
+      );
     }
   }
   // After target hit, EVERY subsequent calendar day counts as a trading-day
@@ -1923,10 +2041,13 @@ export function pollLive(
         if (cfg.volAdaptiveTpMult) {
           const va = cfg.volAdaptiveTpMult;
           const series = atr(candles, va.atrPeriod);
-          const prev =
-            series.length >= 2 ? series[series.length - 2] : undefined;
-          const cur = series[series.length - 1];
-          const v = prev ?? cur;
+          // 2026-05-13 Codex Round 5 MED FIX (TS #6): use ONLY prev-bar ATR.
+          // The legacy `prev ?? cur` fallback during warmup pulled
+          // candles[i].high/low/close into the value — that's entry-bar
+          // lookahead. If prev ATR is null (warmup), SKIP the modifier
+          // entirely (legacy behavior was "fall forward to current bar"
+          // which silently introduced lookahead on early-window entries).
+          const v = series.length >= 2 ? series[series.length - 2] : undefined;
           if (v != null && matched.entryPrice > 0) {
             const atrFrac = v / matched.entryPrice;
             if (atrFrac < va.lowVolThreshold) {
@@ -1938,19 +2059,11 @@ export function pollLive(
         }
         let stopPct = asset.stopPct ?? cfg.stopPct;
         if (cfg.atrStop) {
-          // Round 54 (R54-V4-6): anchor ATR on prev-bar (length-2), not
-          // current-bar (length-1). The series is computed from
-          // `candles.slice(0, i+1)` where `i` is the just-closed bar;
-          // length-1 includes the entry-bar's high/low/close which is a
-          // subtle look-ahead. Backtest engine resolves stop via the
-          // signal-bar's ATR (computed on bars up-to and INCLUDING the
-          // signal bar) — same convention. Falls back to length-1 only if
-          // the prev-bar ATR is null (warm-up window).
+          // 2026-05-13 Codex Round 5 MED FIX (TS #6): same as above — drop
+          // the `prev ?? cur` fallback. cur = series[i] = current entry-bar
+          // ATR is lookahead (uses bar i's high/low/close). Warmup → skip.
           const series = atr(candles, cfg.atrStop.period);
-          const prev =
-            series.length >= 2 ? series[series.length - 2] : undefined;
-          const cur = series[series.length - 1];
-          const v = prev ?? cur;
+          const v = series.length >= 2 ? series[series.length - 2] : undefined;
           if (v != null) {
             const atrFrac = (cfg.atrStop.stopMult * v) / matched.entryPrice;
             stopPct = Math.max(stopPct, atrFrac);
@@ -2008,14 +2121,36 @@ export function pollLive(
 
         let chandelierAtrAtEntry: number | null = null;
         if (cfg.chandelierExit) {
+          // 2026-05-13 Codex Round 5 MED FIX (TS #6): chandelier ATR seed
+          // must be from the SIGNAL bar (length-2), not the entry bar
+          // (length-1). The signal-bar is just-closed; the entry-bar's
+          // high/low/close are NOT yet known when the order is placed.
+          // LiveSignalV231 doc at ftmoLiveSignalV231.ts:122 confirms
+          // "ATR computed at signal time" — Rust mirrors this convention.
           const series = atr(candles, cfg.chandelierExit.period);
-          const v = series[series.length - 1];
+          const v = series.length >= 2 ? series[series.length - 2] : undefined;
           if (v != null) chandelierAtrAtEntry = v;
         }
 
-        // Ticket id includes direction so two signals (long+short) on the
-        // same bar produce distinct ids.
-        const ticketId = `${asset.symbol}@${matched.entryTime}@${matched.direction}`;
+        // 2026-05-13 Codex Round 5 MED FIX (TS #9): ticket-id ordinal
+        // suffix. Two parallel same-symbol same-direction signals on the
+        // same bar (e.g. pullback + breakout-confluence both firing long)
+        // previously collided on
+        //   `${symbol}@${entryTime}@${direction}` → second push silently
+        // overwrote the first in lookups by ticketId. Add a deterministic
+        // ordinal counted from the EXISTING open positions matching the
+        // same key — collision-free across the position lifetime.
+        const sameKeyOpen = state.openPositions.filter(
+          (p) =>
+            p.symbol === asset.symbol &&
+            p.entryTime === matched.entryTime &&
+            p.direction === matched.direction,
+        ).length;
+        const ordinal = sameKeyOpen;
+        const ticketId =
+          ordinal === 0
+            ? `${asset.symbol}@${matched.entryTime}@${matched.direction}`
+            : `${asset.symbol}@${matched.entryTime}@${matched.direction}@${ordinal}`;
         const newPos: OpenPositionV4 = {
           ticketId,
           symbol: asset.symbol,

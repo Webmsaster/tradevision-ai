@@ -85,19 +85,39 @@ pub struct OpenPosition {
 
 impl OpenPosition {
     /// Compose ticket id from symbol + entry time + direction — mirrors
-    /// TS `ftmoLiveEngineV4.ts:2018` (`${symbol}@${entryTime}@${direction}`)
+    /// TS `ftmoLiveEngineV4.ts:2115` (`${symbol}@${entryTime}@${direction}`)
     /// so persisted state files are interoperable AND so same-bar
     /// Long+Short pairs on one symbol get DISTINCT ids.
     ///
-    /// 2026-05-13 Codex HIGH FIX: previously omitted direction → Long+Short
-    /// same-bar same-symbol collided on a single ticket, causing the second
-    /// entry to overwrite the first in `state.open_positions`.
+    /// 2026-05-13 Codex Round 1 HIGH FIX: previously omitted direction →
+    /// Long+Short same-bar same-symbol collided on a single ticket.
     pub fn make_ticket_id(entry_time: i64, symbol: &str, direction: PositionSide) -> String {
+        Self::make_ticket_id_with_ordinal(entry_time, symbol, direction, 0)
+    }
+
+    /// 2026-05-13 Codex Round 5 MED FIX (#9): ticket-id ordinal suffix to
+    /// resolve same-bar same-symbol same-direction collisions. Two parallel
+    /// signals (e.g. pullback + breakout-confluence both Long on BTC at the
+    /// same entry bar) previously got identical ticket ids; downstream
+    /// lookups by ticket would silently address only one of the two
+    /// positions. The TS-engine emits the ordinal-suffixed form at
+    /// `ftmoLiveEngineV4.ts:2115` for the 2nd+ collision; ordinal=0 emits
+    /// the legacy 3-token form for back-compat.
+    pub fn make_ticket_id_with_ordinal(
+        entry_time: i64,
+        symbol: &str,
+        direction: PositionSide,
+        ordinal: usize,
+    ) -> String {
         let d = match direction {
             PositionSide::Long => "long",
             PositionSide::Short => "short",
         };
-        format!("{symbol}@{entry_time}@{d}")
+        if ordinal == 0 {
+            format!("{symbol}@{entry_time}@{d}")
+        } else {
+            format!("{symbol}@{entry_time}@{d}@{ordinal}")
+        }
     }
 }
 

@@ -838,11 +838,27 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
             if reentry_scale.is_some() {
                 state.pending_reentries.remove(&key);
             }
+            // 2026-05-13 Codex Round 5 MED FIX (#9): ticket-id ordinal
+            // suffix to resolve same-bar same-symbol same-direction
+            // collisions. Count existing matching open positions for the
+            // ordinal — first ticket gets the legacy 3-token form, 2nd+
+            // get @1, @2, … suffixes. Matches TS V4 emission at
+            // ftmoLiveEngineV4.ts:2115.
+            let same_key_open = state
+                .open_positions
+                .iter()
+                .filter(|p| {
+                    p.symbol == sig.symbol
+                        && p.entry_time == sig.entry_time
+                        && p.direction == sig.direction
+                })
+                .count();
             let pos = OpenPosition {
-                ticket_id: OpenPosition::make_ticket_id(
+                ticket_id: OpenPosition::make_ticket_id_with_ordinal(
                     sig.entry_time,
                     &sig.symbol,
                     sig.direction,
+                    same_key_open,
                 ),
                 symbol: sig.symbol.clone(),
                 source_symbol: sig.source_symbol.clone(),
