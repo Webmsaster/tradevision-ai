@@ -587,6 +587,11 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
         }
     }
     if entries_allowed {
+        // 2026-05-13 Bug-Audit Round 2 — Bug E DOC: `allowed_dows_utc` uses
+        // `num_days_from_sunday()` semantics → **Sunday=0, Monday=1, …,
+        // Saturday=6**. This matches JS `Date.getUTCDay()` and TS V4-Sim.
+        // DO NOT confuse with chrono's `num_days_from_monday()` (Mo=0).
+        // Common config: `[1,2,3,4,5]` = Monday-Friday (skip weekends).
         if let Some(dows) = cfg.allowed_dows_utc.as_ref() {
             if let Some(dt) = DateTime::<Utc>::from_timestamp_millis(entry_bar_time) {
                 let dow = dt.weekday().num_days_from_sunday();

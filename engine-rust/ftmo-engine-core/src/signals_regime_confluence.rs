@@ -278,9 +278,15 @@ pub fn detect_regime_confluence(
     // 2026-05-13 Audit-3: debug counter for "winning vote without R28V6
     // contribution". If env REGIME_DEBUG=1, eprintln when this happens —
     // exposes any signal that was claimed valid despite R28V6 not voting
-    // on the winning side. With MR-source = None (AMBER family), 2-of-3
-    // mathematically requires R28V6 + breakout consensus. Any fire here
-    // without R28V6 would be a logic bug.
+    // on the winning side.
+    //
+    // 2026-05-13 Bug-Audit Round 2 — Bug F clarification: previously this
+    // comment claimed "MR-source=None ⇒ mv=2 mathematically requires
+    // R28V6 + breakout consensus". That's only true when
+    // `use_vol_confirm=false`. When vol-confirm is enabled, Breakout +
+    // Volume-Spike together carry quorum=2 without R28V6 — and that path
+    // IS reachable (params.require_r28v6=false by default). Use the
+    // require_r28v6 flag to enforce R28V6 mandatory.
     let r28_in_winning = match winning_side {
         PositionSide::Long => r28v6_voted_long,
         PositionSide::Short => r28v6_voted_short,
