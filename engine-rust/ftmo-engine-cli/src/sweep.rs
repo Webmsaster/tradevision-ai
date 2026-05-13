@@ -190,6 +190,20 @@ struct MultiSignalCfg {
     mr_overbought: Option<f64>,
     mr_cooldown: Option<u64>,
     mr_size_mult: Option<f64>,
+    /// 2026-05-13 — R28V6 detector secondary-gate overrides. Activate ADX,
+    /// choppiness, RSI gates that exist in `signals_r28v6.rs` but were
+    /// never wired to a config field. Honest sweep target = lift pass-rate
+    /// above 58-60% plateau on AMBER/AMBER_EXT PASSLOCK by filtering out
+    /// no-trend / overextended entries.
+    r28v6_adx_min: Option<f64>,
+    r28v6_adx_period: Option<usize>,
+    r28v6_chop_max: Option<f64>,
+    r28v6_chop_period: Option<usize>,
+    r28v6_rsi_long_max: Option<f64>,
+    r28v6_rsi_short_min: Option<f64>,
+    r28v6_rsi_period: Option<usize>,
+    // Below: deliberately at end so the field-init order in `let cfg =
+    // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
     /// over-blocked legitimate entries (-23pp on R28_V6_PASSLOCK vs TS V4-Sim)
     /// because TS detectAsset's stateless slice-from-zero re-detection is not
@@ -205,6 +219,29 @@ struct MultiSignalCfg {
     /// quality, not trade-count reduction.
     random_gate_keep: Option<f64>,
     random_gate_seed: u64,
+}
+
+/// 2026-05-13 65%-hunt: apply CLI-flag overrides for the secondary R28V6
+/// detector gates (ADX, choppiness, RSI). All gates default to None in
+/// `R28V6Params::default_for`; this helper activates them when the user
+/// passed `--override-adx-min` etc.
+fn apply_r28v6_param_overrides(
+    params: &mut ftmo_engine_core::signals_r28v6::R28V6Params,
+    cfg: &MultiSignalCfg,
+) {
+    if let Some(min) = cfg.r28v6_adx_min {
+        params.adx_min = Some(min);
+        params.adx_period = Some(cfg.r28v6_adx_period.unwrap_or(14));
+    }
+    if let Some(max) = cfg.r28v6_chop_max {
+        params.choppiness_max = Some(max);
+        params.choppiness_period = Some(cfg.r28v6_chop_period.unwrap_or(14));
+    }
+    if cfg.r28v6_rsi_long_max.is_some() || cfg.r28v6_rsi_short_min.is_some() {
+        params.rsi_period = Some(cfg.r28v6_rsi_period.unwrap_or(14));
+        params.rsi_long_max = cfg.r28v6_rsi_long_max;
+        params.rsi_short_min = cfg.r28v6_rsi_short_min;
+    }
 }
 
 /// R29-PassrateHunt: post-template config mutations. Bundle all override
@@ -237,6 +274,7 @@ struct CfgOverrides {
     idl_factor: Option<f64>,
     min_trading_days: Option<u32>,
     profit_target: Option<f64>,
+    max_days: Option<u32>,
     lscool_after: Option<u32>,
     lscool_bars: Option<u64>,
 }
@@ -363,6 +401,9 @@ fn apply_overrides(
     }
     if let Some(d) = ov.min_trading_days {
         cfg.min_trading_days = d;
+    }
+    if let Some(d) = ov.max_days {
+        cfg.max_days = d;
     }
     if ov.pdd_from_peak.is_some() || ov.pdd_factor.is_some() {
         let cur = cfg.peak_drawdown_throttle.unwrap_or(PeakDrawdownThrottle {
@@ -491,6 +532,14 @@ fn main() -> Result<()> {
     let mut idl_factor: Option<f64> = None; // intraday_daily_loss_throttle.size_factor
     let mut min_trading_days: Option<u32> = None;
     let mut profit_target: Option<f64> = None;
+    let mut max_days: Option<u32> = None;
+    let mut adx_min: Option<f64> = None;
+    let mut adx_period: Option<usize> = None;
+    let mut chop_max: Option<f64> = None;
+    let mut chop_period: Option<usize> = None;
+    let mut rsi_long_max: Option<f64> = None;
+    let mut rsi_short_min: Option<f64> = None;
+    let mut rsi_period: Option<usize> = None;
     let mut lscool_after: Option<u32> = None;
     let mut lscool_bars: Option<u64> = None;
     let mut ml_model_path: Option<PathBuf> = None;
@@ -592,6 +641,20 @@ fn main() -> Result<()> {
             "--idl-factor" => idl_factor = Some(need!("--idl-factor").parse()?),
             "--min-trading-days" => min_trading_days = Some(need!("--min-trading-days").parse()?),
             "--profit-target" => profit_target = Some(need!("--profit-target").parse()?),
+            "--max-days" => max_days = Some(need!("--max-days").parse()?),
+            "--override-adx-min" => adx_min = Some(need!("--override-adx-min").parse()?),
+            "--override-adx-period" => adx_period = Some(need!("--override-adx-period").parse()?),
+            "--override-chop-max" => chop_max = Some(need!("--override-chop-max").parse()?),
+            "--override-chop-period" => {
+                chop_period = Some(need!("--override-chop-period").parse()?)
+            }
+            "--override-rsi-long-max" => {
+                rsi_long_max = Some(need!("--override-rsi-long-max").parse()?)
+            }
+            "--override-rsi-short-min" => {
+                rsi_short_min = Some(need!("--override-rsi-short-min").parse()?)
+            }
+            "--override-rsi-period" => rsi_period = Some(need!("--override-rsi-period").parse()?),
             "--lscool-after" => lscool_after = Some(need!("--lscool-after").parse()?),
             "--lscool-bars" => lscool_bars = Some(need!("--lscool-bars").parse()?),
             "--trades-out" => trades_out = Some(PathBuf::from(need!("--trades-out"))),
@@ -699,6 +762,7 @@ fn main() -> Result<()> {
         idl_factor,
         min_trading_days,
         profit_target,
+        max_days,
         lscool_after,
         lscool_bars,
     };
@@ -727,6 +791,13 @@ fn main() -> Result<()> {
                 mr_overbought,
                 mr_cooldown,
                 mr_size_mult,
+                r28v6_adx_min: adx_min,
+                r28v6_adx_period: adx_period,
+                r28v6_chop_max: chop_max,
+                r28v6_chop_period: chop_period,
+                r28v6_rsi_long_max: rsi_long_max,
+                r28v6_rsi_short_min: rsi_short_min,
+                r28v6_rsi_period: rsi_period,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -1541,7 +1612,8 @@ fn run_one_window(
                         // all-or-nothing: ONE asset with cvd_entry silenced
                         // ALL others. Now each asset that doesn't set an
                         // alt entry-type falls through individually.
-                        let r28p = R28V6Params::default_for(asset, cfg);
+                        let mut r28p = R28V6Params::default_for(asset, cfg);
+                        apply_r28v6_param_overrides(&mut r28p, multi_signal);
                         let funding = funding_feed.get(&source).map(|v| v.as_slice());
                         let r28in = R28V6Inputs {
                             htf_closes: None,
@@ -1561,7 +1633,8 @@ fn run_one_window(
                     detect_trend_pullback(&mut state, cfg, asset, &source, arr, &tp)
                 }
                 SignalSrc::R28V6 => {
-                    let r28p = R28V6Params::default_for(asset, cfg);
+                    let mut r28p = R28V6Params::default_for(asset, cfg);
+                    apply_r28v6_param_overrides(&mut r28p, multi_signal);
                     let funding = funding_feed.get(&source).map(|v| v.as_slice());
                     let r28in = R28V6Inputs {
                         htf_closes: None,
