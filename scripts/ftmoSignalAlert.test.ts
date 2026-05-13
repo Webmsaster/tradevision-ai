@@ -385,18 +385,27 @@ describe("ftmo signal alert", { timeout: 60_000 }, () => {
               statePath,
             );
           } else if (alert.signalBarClose > state.lastAlertedBarCloseTime) {
+            // 2026-05-13 Codex Round 7 #B20 FIX: save state BEFORE Telegram
+            // push. If saveState throws (disk full, EROFS), we miss this
+            // alert but won't double-push next cron. If sendTelegram fails
+            // AFTER state-save, we log loudly but accept the missed alert.
+            // Trades a one-off "missed alert" for "no duplicate pushes" —
+            // the safer failure mode for FTMO live trading.
+            saveState(
+              { lastAlertedBarCloseTime: alert.signalBarClose },
+              statePath,
+            );
             const pushed = await sendTelegram(rendered);
             if (pushed) {
               console.log("\n📲 Pushed to Telegram");
             } else {
               console.log(
-                "\n📲 (Telegram not configured; set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID env)",
+                "\n📲 (Telegram not configured OR push failed; state already advanced — alert lost",
+              );
+              console.log(
+                "  set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID env to enable Telegram)",
               );
             }
-            saveState(
-              { lastAlertedBarCloseTime: alert.signalBarClose },
-              statePath,
-            );
           } else {
             console.log(
               `\n⏭ Signal for this bar already alerted (${new Date(alert.signalBarClose).toISOString()})`,

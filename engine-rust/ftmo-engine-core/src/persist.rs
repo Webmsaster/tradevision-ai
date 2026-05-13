@@ -102,7 +102,15 @@ pub fn load_state(state_dir: &Path) -> Result<EngineState> {
 
 /// Lenient load — never panics, always produces a usable state. Migrations
 /// are attempted; corrupt state is backed up and a fresh state returned.
+///
+/// 2026-05-13 Codex Round 7 #B12 FIX: acquire the same advisory lock that
+/// `save_state` uses so a concurrent writer doesn't rename the final-path
+/// out from under us between `read_with_retry` and the migration logic.
 pub fn load_state_or_reset(state_dir: &Path, cfg_label: &str) -> LoadOutcome {
+    let _guard = match acquire_state_lock(state_dir) {
+        Ok(g) => Some(g),
+        Err(_) => None, // lock dir may not exist yet; continue best-effort
+    };
     let path = state_path(state_dir);
     let raw = match read_with_retry(&path) {
         Ok(b) => b,
@@ -256,10 +264,19 @@ fn read_with_retry(path: &Path) -> Result<Vec<u8>> {
 pub fn save_state(state: &EngineState, state_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(state_dir)
         .with_context(|| format!("creating state dir {}", state_dir.display()))?;
+    // 2026-05-13 Codex Round 7 #B12 FIX: acquire advisory file lock + use
+    // pid-suffixed tmp file. Previously save_state had NO lock protection
+    // and used a fixed tmp filename ({STATE_FILENAME}.tmp) → two processes
+    // could truncate each other's tmpfile mid-write, producing a
+    // partial-JSON output. The acquire_state_lock helper existed since
+    // commit f3d9814 but was dead code (never called). fs4 locks auto-
+    // release on process death (incl. SIGKILL) so no orphan lock.
+    let _guard = acquire_state_lock(state_dir)?;
     let final_path = state_path(state_dir);
-    let tmp_path = state_dir.join(format!("{STATE_FILENAME}.tmp"));
+    let pid = std::process::id();
+    let tmp_path = state_dir.join(format!("{STATE_FILENAME}.tmp.{pid}"));
     let json = serde_json::to_vec_pretty(state).context("serialising state")?;
-    {
+    let write_res: Result<()> = (|| -> Result<()> {
         let mut tmp = OpenOptions::new()
             .write(true)
             .create(true)
@@ -269,8 +286,18 @@ pub fn save_state(state: &EngineState, state_dir: &Path) -> Result<()> {
         tmp.write_all(&json)?;
         tmp.flush()?;
         tmp.sync_all()?;
+        Ok(())
+    })();
+    if let Err(e) = write_res {
+        // Clean up tmp on write failure so we don't leak orphan files.
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
     }
-    std::fs::rename(&tmp_path, &final_path)
+    let rename_res = std::fs::rename(&tmp_path, &final_path);
+    if rename_res.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    rename_res
         .with_context(|| format!("renaming {} → {}", tmp_path.display(), final_path.display()))?;
     // R67-r10: POSIX requires fsync of parent directory for rename durability.
     if let Ok(dir) = File::open(state_dir) {

@@ -390,11 +390,28 @@ def write_json(path: Path, obj: Any) -> None:
     # disk, the rename can be lost — `path` then points to the OLD inode,
     # leaving an orphaned-but-fsynced tmpfile next to the stale state file.
     tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
-    with open(tmp, "w") as f:
-        json.dump(obj, f, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    tmp.replace(path)
+    # 2026-05-13 Codex Round 7 #B14 FIX: try/finally so .tmp.<pid> doesn't
+    # orphan when json.dump or tmp.replace raise (ENOSPC, EPERM on Windows
+    # after AV-scan locks, EXDEV across mounts). Without cleanup, repeated
+    # write failures fill the state-dir with orphan tmpfiles and an
+    # operator can't tell which is canonical.
+    renamed = False
+    try:
+        with open(tmp, "w") as f:
+            # allow_nan=False: reject NaN/Inf which would produce invalid
+            # JSON readable by Python but rejected by JS/Rust consumers.
+            # Forces upstream code to clean numerics before serialising.
+            json.dump(obj, f, indent=2, allow_nan=False)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.replace(path)
+        renamed = True
+    finally:
+        if not renamed:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
     # POSIX: fsync the parent dir so the rename is durable. Best-effort on
     # Windows / unsupported FS (os.open of a directory raises there).
     try:
