@@ -39,6 +39,13 @@ pub struct BarInput<'a> {
     pub atr_series_by_source: &'a HashMap<String, Vec<Option<f64>>>,
     /// Pre-computed entry signals for this bar (from external detector).
     pub signals: Vec<PollSignal>,
+    /// 2026-05-13 Round-2 Audit Fix — Funding-rate series per source-symbol,
+    /// aligned with `candles_by_source`. When supplied, `apply_exits` will
+    /// deduct funding-cost from raw_pnl over 8h settlement boundaries
+    /// crossed during the trade lifetime (TS V4 parity, ftmoDaytrade24h.ts
+    /// L4819-4862). When `None`, funding is treated as zero (legacy path).
+    /// CLAUDE.md documented this as "Rust-Gap" — closes that gap.
+    pub funding_by_source: Option<&'a HashMap<String, Vec<Option<f64>>>>,
 }
 
 /// Result of a single `step_bar` call.
@@ -276,7 +283,7 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                         },
                     ));
                 }
-                apply_exits(state, &mut closes, cfg, last_bar_time, &mut result);
+                apply_exits(state, &mut closes, cfg, last_bar_time, &mut result, input);
                 result.notes.push(format!(
                     "dailyEquityGuardian fired: day_pnl={:.2}% <= -{:.2}%",
                     day_pnl * 100.0,
@@ -327,7 +334,7 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
             exits.push((idx, out));
         }
     }
-    apply_exits(state, &mut exits, cfg, last_bar_time, &mut result);
+    apply_exits(state, &mut exits, cfg, last_bar_time, &mut result, input);
 
     // POST-EXIT MTM update — matches TS pollLive line 1361-1382. After
     // exits update state.equity, recompute MTM over the REMAINING open
@@ -462,7 +469,7 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                     },
                 ));
             }
-            apply_exits(state, &mut to_close, cfg, last_bar_time, &mut result);
+            apply_exits(state, &mut to_close, cfg, last_bar_time, &mut result, input);
             // R67 audit fix: refresh mtm_equity to match realised after
             // close-all. Without this, state.mtm_equity retained the stale
             // pre-close value (from step 4) which could diverge from
@@ -857,13 +864,40 @@ fn apply_exits(
     cfg: &EngineConfig,
     last_bar_time: i64,
     result: &mut StepResult,
+    input: &BarInput<'_>,
 ) {
     // Process highest-index first so removals don't shift indices for later
     // entries.
     exits.sort_by_key(|e| std::cmp::Reverse(e.0));
     for (idx, out) in exits.drain(..) {
         let pos = state.open_positions.remove(idx);
-        let pnl = compute_eff_pnl_with_time(&pos, out.exit_price, cfg, Some(last_bar_time));
+        // 2026-05-13 Round-2 Audit Fix — funding-cost-deduction. When BarInput
+        // carries funding_by_source, walk every 8h settlement boundary within
+        // the trade lifetime and deduct (long) / receive (short) the funding
+        // rate. Without this the engine was applying funding-RATE entry-gate
+        // but never paying the cost (R56 TS audit fix that hadn't been ported).
+        let pnl = if let Some(fmap) = input.funding_by_source {
+            let funding_series = fmap.get(&pos.source_symbol).map(|v| v.as_slice());
+            let bar_dur_ms = (cfg.bar_minutes as i64).saturating_mul(60_000);
+            // bar_open_time_0 = open_time of feed[0] for this source.
+            let bar0 = input
+                .candles_by_source
+                .get(&pos.source_symbol)
+                .and_then(|v| v.first())
+                .map(|c| c.open_time)
+                .unwrap_or(0);
+            crate::pnl::compute_eff_pnl_with_funding(
+                &pos,
+                out.exit_price,
+                cfg,
+                Some(last_bar_time),
+                funding_series,
+                bar0,
+                bar_dur_ms,
+            )
+        } else {
+            compute_eff_pnl_with_time(&pos, out.exit_price, cfg, Some(last_bar_time))
+        };
         // Compound realised equity.
         state.equity *= 1.0 + pnl.eff_pnl;
         let trade = ClosedTrade {
@@ -958,7 +992,7 @@ fn force_close_all(
             },
         ));
     }
-    apply_exits(state, &mut closes, cfg, last_bar_time, result);
+    apply_exits(state, &mut closes, cfg, last_bar_time, result, input);
 }
 
 #[allow(unused)]
@@ -993,6 +1027,7 @@ mod tests {
         BarInput {
             candles_by_source: candles,
             atr_series_by_source: atr,
+            funding_by_source: None,
             signals,
         }
     }

@@ -104,6 +104,7 @@ fn run_with_filter(fix: &Fixture, exclude_source: Option<&str>) -> bool {
             &BarInput {
                 candles_by_source: &feeds,
                 atr_series_by_source: &atr_feed,
+                funding_by_source: None,
                 signals,
             },
             &fix.cfg,

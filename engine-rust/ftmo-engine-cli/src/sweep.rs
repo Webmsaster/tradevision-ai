@@ -1092,6 +1092,7 @@ fn run_single_asset(
                     &BarInput {
                         candles_by_source: &feed,
                         atr_series_by_source: &atr_feed,
+                        funding_by_source: None,
                         signals: signals_for_bar,
                     },
                     cfg.as_ref(),
@@ -1992,6 +1993,12 @@ fn run_one_window(
             &BarInput {
                 candles_by_source: &feed,
                 atr_series_by_source: &atr_feed,
+                // 2026-05-13 Phase 2: feed funding series into harness so
+                // apply_exits can deduct funding-cost over 8h settlement
+                // boundaries crossed during the trade lifetime. Closes the
+                // CLAUDE.md-documented "Rust gap" (perp-crypto funding
+                // payments were filtered but never charged against PnL).
+                funding_by_source: Some(&funding_feed),
                 signals: signals_for_bar,
             },
             cfg,

@@ -139,6 +139,74 @@ pub fn compute_eff_pnl_with_time(
     EffPnl { raw_pnl, eff_pnl }
 }
 
+/// 2026-05-13 Round-2 Audit Bug A FIX — funding-cost-deduction port of TS
+/// `ftmoDaytrade24h.ts:4819-4862` (R56 audit fix). Walks every 8h settlement
+/// boundary in `(entry_time, exit_time]` and deducts the funding rate at the
+/// containing bar from raw_pnl.
+///
+/// Sign convention: positive funding rate ⇒ long pays, short receives.
+/// → Long position: raw_pnl -= sum_funding
+/// → Short position: raw_pnl += sum_funding
+///
+/// `funding_series` is forward-filled per-bar (typically from `align_funding`
+/// in loader.rs). `bar_open_time_0` is the open_time of `funding_series[0]`.
+/// `bar_dur_ms` is the candle duration (e.g. 1_800_000 for 30m).
+pub fn compute_eff_pnl_with_funding(
+    pos: &OpenPosition,
+    exit_price: f64,
+    cfg: &EngineConfig,
+    exit_time: Option<i64>,
+    funding_series: Option<&[Option<f64>]>,
+    bar_open_time_0: i64,
+    bar_dur_ms: i64,
+) -> EffPnl {
+    // Compute base PnL via existing path (without funding).
+    let mut base = compute_eff_pnl_with_time(pos, exit_price, cfg, exit_time);
+    // Funding-cost only when series provided AND exit_time known AND bar_dur valid.
+    let (Some(funding), Some(exit_t)) = (funding_series, exit_time) else {
+        return base;
+    };
+    if bar_dur_ms <= 0 || funding.is_empty() {
+        return base;
+    }
+    const EIGHT_H_MS: i64 = 8 * 3_600_000;
+    let sign: f64 = match pos.direction {
+        PositionSide::Long => 1.0,
+        PositionSide::Short => -1.0,
+    };
+    // First settlement strictly after entry open_time.
+    let mut bucket = (pos.entry_time.div_euclid(EIGHT_H_MS)) * EIGHT_H_MS;
+    if bucket <= pos.entry_time {
+        bucket += EIGHT_H_MS;
+    }
+    let mut sum_funding = 0.0_f64;
+    let max_iter = (funding.len() as i64).saturating_add(8);
+    let mut iter = 0_i64;
+    while bucket <= exit_t && iter < max_iter {
+        iter += 1;
+        let bar_idx_signed = (bucket - bar_open_time_0).div_euclid(bar_dur_ms);
+        if bar_idx_signed >= 0 {
+            let bar_idx = bar_idx_signed as usize;
+            if bar_idx < funding.len() {
+                if let Some(f) = funding[bar_idx] {
+                    if f.is_finite() {
+                        sum_funding += f;
+                    }
+                }
+            }
+        }
+        bucket += EIGHT_H_MS;
+    }
+    if sum_funding != 0.0 {
+        base.raw_pnl -= sign * sum_funding;
+        // Recompute eff_pnl with same GAP_TAIL floor.
+        let risk_for_floor = pos.eff_risk.max(0.0);
+        base.eff_pnl =
+            (base.raw_pnl * cfg.leverage * pos.eff_risk).max(GAP_TAIL_MULT * risk_for_floor);
+    }
+    base
+}
+
 /// Mark-to-market equity = realised + Σ unrealised at the current bar.
 /// Mutates `pos.last_known_price` for every position whose source symbol
 /// has a price on this tick — TS `ftmoLiveEngineV4.ts` line 605 parity.

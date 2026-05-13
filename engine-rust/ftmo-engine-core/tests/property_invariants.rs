@@ -44,6 +44,7 @@ fn drive(
             &BarInput {
                 candles_by_source: &feed,
                 atr_series_by_source: &atr,
+                funding_by_source: None,
                 signals,
             },
             cfg,

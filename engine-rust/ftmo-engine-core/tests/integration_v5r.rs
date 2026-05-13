@@ -68,6 +68,7 @@ fn v5r_guardian_closes_on_intraday_drawdown() {
         &BarInput {
             candles_by_source: &feed,
             atr_series_by_source: &atr,
+            funding_by_source: None,
             signals: vec![],
         },
         &cfg,
@@ -84,6 +85,7 @@ fn v5r_guardian_closes_on_intraday_drawdown() {
         &BarInput {
             candles_by_source: &feed,
             atr_series_by_source: &atr,
+            funding_by_source: None,
             signals: vec![],
         },
         &cfg,
@@ -157,6 +159,7 @@ fn v5r_reentry_after_stop_with_mean_rev_size_mult() {
         &BarInput {
             candles_by_source: &feed,
             atr_series_by_source: &atr,
+            funding_by_source: None,
             signals: vec![],
         },
         &cfg,
@@ -186,6 +189,7 @@ fn v5r_reentry_after_stop_with_mean_rev_size_mult() {
         &BarInput {
             candles_by_source: &feed,
             atr_series_by_source: &atr,
+            funding_by_source: None,
             signals: vec![sig],
         },
         &cfg,
