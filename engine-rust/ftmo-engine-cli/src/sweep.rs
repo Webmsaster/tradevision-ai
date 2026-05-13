@@ -817,10 +817,62 @@ fn main() -> Result<()> {
     }
 
     if let Some(t) = threads {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(t)
-            .build_global()
-            .ok();
+        // 2026-05-13 Codex Round 7 #B10 FIX: reject --threads 0. Rayon
+        // interprets 0 as "all logical CPUs" — surprising semantic when a
+        // hunt loop computes threads from another arg and produces 0.
+        if t == 0 {
+            anyhow::bail!("--threads must be > 0 (got 0; rayon would silently use all CPUs)");
+        }
+        // .ok() previously swallowed double-init failures; surface them.
+        if let Err(e) = rayon::ThreadPoolBuilder::new().num_threads(t).build_global() {
+            eprintln!("[sweep] WARN: rayon thread-pool init failed: {e}");
+        }
+    }
+
+    // 2026-05-13 Codex Round 7 #B8 FIX: hard-error when single-asset path
+    // (--candles) is combined with flags that ONLY work via --candles-dir
+    // + --symbols multi-asset orchestration. Previously silently ignored.
+    // Done BEFORE the CfgOverrides struct literal so we can still read the
+    // option-values by reference.
+    if candles_path.is_some() {
+        let mut unsupported: Vec<&str> = Vec::new();
+        if strict_pass {
+            unsupported.push("--strict-pass");
+        }
+        if ml_model_path.is_some() {
+            unsupported.push("--ml-model");
+        }
+        if random_gate_keep.is_some() {
+            unsupported.push("--random-gate-keep");
+        }
+        if use_htf_confirm {
+            unsupported.push("--use-htf-confirm");
+        }
+        if cross_asset_sym.is_some() {
+            unsupported.push("--cross-asset-sym");
+        }
+        if also_fire_meanrev {
+            unsupported.push("--also-fire-meanrev");
+        }
+        if also_fire_breakout {
+            unsupported.push("--also-fire-breakout");
+        }
+        if regime_use_vol_confirm
+            || regime_use_vwap_trend
+            || regime_force_mr
+            || adx_min.is_some()
+            || chop_max.is_some()
+            || rsi_long_max.is_some()
+            || rsi_short_min.is_some()
+        {
+            unsupported.push("--regime-* / --override-adx-* / --override-chop-* / --override-rsi-*");
+        }
+        if !unsupported.is_empty() {
+            anyhow::bail!(
+                "single-asset path (--candles) does not honor: {}. Use --candles-dir + --symbols instead.",
+                unsupported.join(", "),
+            );
+        }
     }
 
     let overrides = CfgOverrides {
@@ -1285,11 +1337,47 @@ fn run_multi_asset(
         candles_by_sym.insert(sym.clone(), candles);
     }
 
+    // 2026-05-13 Codex Round 7 #B17 FIX: warn on duplicate openTimes
+    // (silent dedup hides corrupt cache files).
+    for (sym, cs) in candles_by_sym.iter() {
+        let mut seen: std::collections::HashSet<i64> =
+            std::collections::HashSet::with_capacity(cs.len());
+        let mut dupes = 0usize;
+        for c in cs.iter() {
+            if !seen.insert(c.open_time) {
+                dupes += 1;
+            }
+        }
+        if dupes > 0 {
+            eprintln!(
+                "[sweep] WARN: {sym} has {dupes} duplicate openTime entries — \
+                 silently using last-seen close. Cache file may be corrupt."
+            );
+        }
+    }
+
     // Align by openTime intersection. Build a sorted vector of bar-times
     // present in EVERY symbol — those are our common bars.
     let aligned_times = align_open_times(&candles_by_sym);
     if aligned_times.is_empty() {
         return Err(anyhow!("no overlapping openTimes across symbols"));
+    }
+
+    // 2026-05-13 Codex Round 7 #B16 FIX: assert observed bar-duration
+    // matches cfg.bar_minutes. funding-cost bucket-indexing relies on this
+    // invariant; a 5m cache loaded with a 30m cfg silently mis-bucketizes
+    // funding by 6×.
+    if aligned_times.len() >= 2 {
+        let observed_ms = aligned_times[1] - aligned_times[0];
+        let expected_ms = (cfg.bar_minutes as i64) * 60_000;
+        if expected_ms > 0 && observed_ms != expected_ms {
+            eprintln!(
+                "[sweep] WARN: observed bar duration {observed_ms} ms ≠ cfg.bar_minutes \
+                 {} ms ({} min). Funding-cost bucket indexing may mis-align.",
+                expected_ms,
+                cfg.bar_minutes,
+            );
+        }
     }
 
     // Build aligned per-symbol candle vectors of length aligned_times.len().
@@ -1475,6 +1563,25 @@ fn run_multi_asset(
         win_plans
     };
     let actual_windows = win_plans.len();
+    // 2026-05-13 Codex Round 7 #B9 FIX: warn loudly when window-plan
+    // construction drops everything (cache too short for requested
+    // --max-days + --step-days, or --start-after-ts cuts past the cache).
+    // Without this, output reads `passed=0 / 0 (NaN%)` — looks identical
+    // to "all windows failed" and the unsatisfiable-request reason is
+    // hidden.
+    if actual_windows == 0 && windows > 0 {
+        eprintln!(
+            "[sweep] WARN: --windows {windows} requested but ZERO survived planning. \
+             Likely causes: (a) cache too short for max_days × bars_per_day, \
+             (b) --start-after-ts cuts past the cache end, \
+             (c) step_days × windows exceeds cache range."
+        );
+    } else if actual_windows < (windows / 2).max(1) && windows > 0 {
+        eprintln!(
+            "[sweep] WARN: only {actual_windows}/{windows} windows survived planning. \
+             Check --max-days / --start-after-ts vs cache extent."
+        );
+    }
 
     let writer: Arc<Mutex<Option<BufWriter<File>>>> = Arc::new(Mutex::new(match &out_path {
         Some(p) => Some(BufWriter::new(File::create(p)?)),
@@ -1986,10 +2093,12 @@ fn run_one_window(
             // can both reach the harness for the same asset on the same
             // bar. The harness's per-asset+direction trade-exclusivity
             // gate (commit 50194dc) ensures only one position opens.
-            if multi_signal.also_meanrev
-                && matches!(signals_mode, SignalSrc::PerAssetCfg)
-                && asset_uses_r28v6_fallback(asset)
-            {
+            // 2026-05-13 Codex Round 7 #B11 FIX: drop the PerAssetCfg gate.
+            // The extras should fire when the asset's primary path is
+            // R28V6-style (asset_uses_r28v6_fallback), regardless of the
+            // outer signals_mode. Previously --signals r28v6 --also-fire-meanrev
+            // silently no-op'd because signals_mode != PerAssetCfg.
+            if multi_signal.also_meanrev && asset_uses_r28v6_fallback(asset) {
                 let arr = match feed.get(&source) {
                     Some(v) => v,
                     None => continue,
@@ -2007,10 +2116,8 @@ fn run_one_window(
                     push_with_gates(s, &mut signals_for_bar);
                 }
             }
-            if multi_signal.also_breakout
-                && matches!(signals_mode, SignalSrc::PerAssetCfg)
-                && asset_uses_r28v6_fallback(asset)
-            {
+            // 2026-05-13 Codex Round 7 #B11 FIX: mirror of also_meanrev gate fix.
+            if multi_signal.also_breakout && asset_uses_r28v6_fallback(asset) {
                 let arr = match feed.get(&source) {
                     Some(v) => v,
                     None => continue,

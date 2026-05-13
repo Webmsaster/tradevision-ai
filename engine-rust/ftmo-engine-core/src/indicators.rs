@@ -10,17 +10,49 @@
 use crate::candle::Candle;
 
 /// Simple moving average. `out[i]` is `Some` once `i + 1 ≥ period`.
+///
+/// 2026-05-13 Codex Round 7 #B15 FIX: NaN self-heal. A single NaN/Inf input
+/// previously poisoned `sum` for the remainder of the series (rolling
+/// subtract NaN never recovers). Now: track `nan_count` in the rolling
+/// window; when it drops to 0, recompute `sum` from scratch from
+/// `values[i-period+1..=i]` so a single bad bar doesn't kill the rest.
+/// Symmetric with EMA/RSI/ATR which already self-heal.
 pub fn sma(values: &[f64], period: usize) -> Vec<Option<f64>> {
     let mut out: Vec<Option<f64>> = vec![None; values.len()];
     if period == 0 || values.len() < period {
         return out;
     }
-    let mut sum: f64 = values[..period].iter().sum();
+    let count_nan = |slice: &[f64]| slice.iter().filter(|v| !v.is_finite()).count();
+    let mut nan_count: usize = count_nan(&values[..period]);
+    let mut sum: f64 = if nan_count == 0 {
+        values[..period].iter().sum()
+    } else {
+        f64::NAN
+    };
     if sum.is_finite() {
         out[period - 1] = Some(sum / period as f64);
     }
     for i in period..values.len() {
-        sum += values[i] - values[i - period];
+        let added = values[i];
+        let removed = values[i - period];
+        // Maintain NaN-count in window.
+        if !added.is_finite() {
+            nan_count += 1;
+        }
+        if !removed.is_finite() {
+            nan_count = nan_count.saturating_sub(1);
+        }
+        if nan_count == 0 {
+            if sum.is_finite() {
+                // Normal rolling update.
+                sum += added - removed;
+            } else {
+                // Sum was NaN-poisoned but window is now clean → recompute.
+                sum = values[i + 1 - period..=i].iter().sum();
+            }
+        } else {
+            sum = f64::NAN;
+        }
         if sum.is_finite() {
             out[i] = Some(sum / period as f64);
         }
