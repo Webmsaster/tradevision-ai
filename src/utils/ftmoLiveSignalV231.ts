@@ -75,6 +75,24 @@ export interface LiveSignal {
   sourceSymbol: string;
   direction: "short" | "long";
   regime: Regime;
+  /**
+   * 2026-05-13 Codex Round 4 Python #9 FIX: engine-side canonical ticket id
+   * `${symbol}@${entryTime}@${direction}` — matches `OpenPositionV4.ticketId`
+   * format at `ftmoLiveEngineV4.ts:2018` and Rust `position::make_ticket_id`
+   * post commit `bdc26bb`. The Python executor persists this on its
+   * position records so restart-recovery via MT5 enumeration can join
+   * broker tickets back to engine state (instead of hashing a synthesized
+   * id and losing all PTP/trail/chandelier modifiers). Optional for back-
+   * compat with older signal log replays.
+   */
+  engineTicketId?: string;
+  /**
+   * 2026-05-13 Codex Round 4 Python #9 FIX: entryTime in ms-since-epoch so
+   * the executor can persist the engine-side anchor and reconstruct
+   * ticketId deterministically on restart even if `engineTicketId` got
+   * truncated by a downstream consumer.
+   */
+  entryTime?: number;
   entryPrice: number; // market-bar close; exec price will be next-bar open
   stopPrice: number;
   tpPrice: number;

@@ -304,11 +304,24 @@ export function detectLiveSignalsV4(
     const maxHoldHours = (holdBars + 1) * hoursPerBar;
     // engine effRisk → live-loss-fraction conversion
     const equityLossFrac = open.effRisk * open.stopPct * cfg.leverage;
+    // 2026-05-13 Codex Round 4 Python #9 FIX: emit engine-side ticket id so
+    // the Python executor can rebuild state on restart instead of hashing
+    // a synthesized id. Format matches OpenPositionV4 (line 2018).
+    const engineTicketId = `${open.symbol}@${open.entryTime}@${open.direction}`;
+    // 2026-05-13 Codex Round 4 Python #3 FIX: V4 sim disables hold-bars
+    // time-exit (ftmoLiveEngineV4.ts:997-1003). Only emit maxHoldUntil when
+    // the config opts-in via cfg.timeExitEnabled — keeps live executor in
+    // V4-Sim parity by default and avoids force-truncating positions sim
+    // would keep open until SL/TP/PASSLOCK/maxDays.
+    const timeExitEnabled =
+      (cfg as { timeExitEnabled?: boolean }).timeExitEnabled === true;
     const sig: LiveSignal = {
       assetSymbol: open.symbol,
       sourceSymbol: open.sourceSymbol,
       direction: open.direction,
       regime: result.regime,
+      engineTicketId,
+      entryTime: open.entryTime,
       entryPrice: open.entryPrice,
       stopPrice: open.stopPrice,
       tpPrice: open.tpPrice,
@@ -317,7 +330,14 @@ export function detectLiveSignalsV4(
       riskFrac: Math.min(equityLossFrac, 0.04), // live-cap 4% per trade
       sizingFactor: 1, // already baked into effRisk by engine
       maxHoldHours,
-      maxHoldUntil: open.entryTime + maxHoldHours * 3_600_000,
+      // maxHoldUntil only set when timeExitEnabled. The field is still
+      // required by the LiveSignal interface; we set it to Number.MAX_SAFE_INTEGER
+      // when disabled so any executor that reads it without guarding sees
+      // "effectively never" — but a Python executor that checks for the
+      // gate (recommended) will skip the time-exit branch entirely.
+      maxHoldUntil: timeExitEnabled
+        ? open.entryTime + maxHoldHours * 3_600_000
+        : Number.MAX_SAFE_INTEGER,
       signalBarClose: lastBar.closeTime,
       reasons: [`V4 engine open: ${open.symbol} ${open.direction}`],
       ...(open.chandelierAtrAtEntry != null
@@ -331,6 +351,14 @@ export function detectLiveSignalsV4(
           }
         : {}),
       ...(open.ptpConfig ? { partialTakeProfit: open.ptpConfig } : {}),
+      // 2026-05-13 Codex Round 4 Python #6 FIX: propagate multi-level PTP
+      // when cfg.partialTakeProfitLevels is set. Previously the wrapper
+      // only emitted single-level partialTakeProfit, so multi-level configs
+      // silently degraded to "no PTP" in live execution. Engine + LiveSignal
+      // already supported multi-level; this closes the wrapper-side gap.
+      ...(cfg.partialTakeProfitLevels && cfg.partialTakeProfitLevels.length > 0
+        ? { partialTakeProfitLevels: cfg.partialTakeProfitLevels }
+        : {}),
       ...(open.beThreshold !== undefined
         ? { breakEvenAtProfit: { threshold: open.beThreshold } }
         : {}),

@@ -107,6 +107,10 @@ PING_LOT_SIZE = float(os.environ.get("FTMO_PING_LOT", "0.01"))  # tiny lot
 # ("5% means at worst single fill costs 5%") and could blow the FTMO -5%
 # DL on a single stop-out. Lowered to 0.05 to match the comment.
 RISK_FRAC_HARD_CAP = float(os.environ.get("FTMO_RISK_HARD_CAP", "0.05"))
+# 2026-05-13 Codex Round 4 Python #5: max entry-price slippage between signal
+# emission and order placement. If exceeded, signal is skipped. Default 0.5%
+# matches typical crypto-tick latency budget.
+MAX_ENTRY_SLIPPAGE_PCT = float(os.environ.get("FTMO_MAX_ENTRY_SLIPPAGE", "0.005"))
 
 
 # R67-r12 audit fix (Hedge-Mode close-deal codes): closing deals on FTMO
@@ -610,12 +614,16 @@ def check_ftmo_rules(current_equity: float, day_start_equity: float) -> Optional
         )
         return "invalid day_start_equity — refusing to entry-check"
     daily_pct = (current_equity - day_start_equity) / day_start_equity
-    # 0.005 → 0.010 (block at -4.0% instead of -4.5%): crypto can move 0.5%
-    # in a 30-second poll window, that buffer was too tight to prevent breach.
-    if daily_pct <= -MAX_DAILY_LOSS_PCT + 0.010:
+    # 2026-05-13 Codex Round 4 Python #8 FIX: configurable entry-block buffer.
+    # Defaults preserve existing live safety overlay (block at -4%/-8.5%),
+    # but FTMO_STRICT_PARITY=1 zeroes the buffer for exact-sim parity runs
+    # used in daily drift-vs-simulator validation.
+    dl_block_buf = 0.0 if STRICT_PARITY else DL_ENTRY_BLOCK_BUFFER
+    tl_block_buf = 0.0 if STRICT_PARITY else TL_ENTRY_BLOCK_BUFFER
+    if daily_pct <= -MAX_DAILY_LOSS_PCT + dl_block_buf:
         return f"daily_loss: {daily_pct:.2%} near -{MAX_DAILY_LOSS_PCT:.0%} cap"
     total_pct = (current_equity - CHALLENGE_START_BALANCE) / CHALLENGE_START_BALANCE
-    if total_pct <= -MAX_TOTAL_LOSS_PCT + 0.015:
+    if total_pct <= -MAX_TOTAL_LOSS_PCT + tl_block_buf:
         return f"total_loss: {total_pct:.2%} near -{MAX_TOTAL_LOSS_PCT:.0%} cap"
     return None
 
@@ -625,8 +633,18 @@ def check_ftmo_rules(current_equity: float, day_start_equity: float) -> Optional
 #     SL slippage room before the actual -5% breach.
 # TL: close all open positions at -7.5% to prevent the -10% all-time breach
 #     (was completely missing — only DL had emergency close).
-DL_EMERGENCY_BUFFER = 0.025  # close positions at -(MAX_DAILY_LOSS_PCT - 0.025) = -2.5%
-TL_EMERGENCY_BUFFER = 0.025  # close positions at -(MAX_TOTAL_LOSS_PCT - 0.025) = -7.5%
+# 2026-05-13 Codex Round 4 Python #8 FIX: buffers configurable via env.
+# Default values preserve existing live safety behavior (slippage room +
+# requote tolerance). Set FTMO_STRICT_PARITY=1 to zero them for exact-sim
+# drift-monitor runs — DO NOT use strict-parity for actual live trading,
+# only for backtest-comparison validation.
+DL_ENTRY_BLOCK_BUFFER = float(os.environ.get("FTMO_DL_ENTRY_BLOCK_BUFFER", "0.010"))
+TL_ENTRY_BLOCK_BUFFER = float(os.environ.get("FTMO_TL_ENTRY_BLOCK_BUFFER", "0.015"))
+DL_EMERGENCY_BUFFER_DEFAULT = float(os.environ.get("FTMO_DL_EMERGENCY_BUFFER", "0.025"))
+TL_EMERGENCY_BUFFER_DEFAULT = float(os.environ.get("FTMO_TL_EMERGENCY_BUFFER", "0.025"))
+STRICT_PARITY = os.environ.get("FTMO_STRICT_PARITY", "").lower() in ("1", "true", "yes")
+DL_EMERGENCY_BUFFER = 0.0 if STRICT_PARITY else DL_EMERGENCY_BUFFER_DEFAULT
+TL_EMERGENCY_BUFFER = 0.0 if STRICT_PARITY else TL_EMERGENCY_BUFFER_DEFAULT
 
 
 def get_day_peak_state() -> dict:
@@ -1244,6 +1262,14 @@ class OrderResult:
     error: Optional[str]
     lot: Optional[float]
     entry_price: Optional[float]
+    # 2026-05-13 Codex Round 4 Python #5 FIX: broker-confirmed SL/TP exposed
+    # to caller so the persisted position record reflects BROKER REALITY
+    # (rounded to tick grid, slippage-adjusted), NOT the idealized signal
+    # payload values. Without these, BE/PTP/trail logic computed deltas
+    # against persisted-but-stale levels while the broker held different
+    # SL/TP → state-vs-reality drift on every modifier.
+    stop_price: Optional[float] = None
+    tp_price: Optional[float] = None
 
 
 def compute_lot_size(symbol_info: Any, risk_frac: float, stop_pct: float, account_equity: float, direction: str = "long") -> float:
@@ -1426,7 +1452,34 @@ def place_market_order(
     # Prefer the broker-reported fill (real MT5) when available, else fall
     # back to our slipped price (mock or no-fill-price retcode).
     reported = getattr(result, "price", 0.0) or 0.0
-    return OrderResult(True, result.order, None, lot, reported if reported > 0 else fill_price)
+    # 2026-05-13 Codex Round 4 Python #5 FIX: read broker-confirmed SL/TP
+    # from the freshly-opened position. MT5's OrderSendResult doesn't
+    # always carry sl/tp, but mt5.positions_get(ticket=...) does. Falls
+    # back to the request values (which match the order MT5 just accepted)
+    # if the lookup fails. The persisted SL/TP MUST match broker reality
+    # so BE/PTP/trail/chandelier modifiers compute correct deltas later.
+    broker_sl = stop_price
+    broker_tp = tp_price
+    if not MOCK_MODE:
+        try:
+            poslist = mt5.positions_get(ticket=result.order)
+            if poslist:
+                p = poslist[0]
+                if getattr(p, "sl", 0.0):
+                    broker_sl = float(p.sl)
+                if getattr(p, "tp", 0.0):
+                    broker_tp = float(p.tp)
+        except Exception:
+            pass  # keep request values
+    return OrderResult(
+        True,
+        result.order,
+        None,
+        lot,
+        reported if reported > 0 else fill_price,
+        stop_price=broker_sl,
+        tp_price=broker_tp,
+    )
 
 
 def _fit_lot_to_margin(
@@ -1664,10 +1717,37 @@ def _prague_today_str() -> str:
     return datetime.now(prague_tz).strftime("%Y-%m-%d")
 
 
+def _get_broker_equity_now() -> float | None:
+    """Refresh broker equity from MT5. Returns None if unavailable (mock or
+    disconnect). 2026-05-13 Codex Round 4 Python #4 helper."""
+    if MOCK_MODE:
+        return None
+    try:
+        info = mt5.account_info()
+    except Exception:
+        return None
+    if info is None:
+        return None
+    try:
+        return float(info.equity)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def check_target_and_pause(current_equity: float) -> bool:
     """
     Returns True if pause is active (target hit, waiting for minTradingDays).
     On first detection of target hit: send Telegram, set state.
+
+    2026-05-13 Codex Round 4 Python #4 KRITISCH FIX: previously target_hit
+    was latched BEFORE _emergency_close_all_positions ran. If close failed
+    (MT5 requote / spread / disconnect) or post-close equity dropped below
+    target (swap, commission, slippage on close), state remained
+    `target_hit=true` while live equity was actually below target → false
+    PASSLOCK pause. Mirrors the Rust harness fix in commit bdc26bb.
+
+    New order: close FIRST → refresh broker equity → only latch target_hit
+    when BOTH (a) all closes succeeded AND (b) post-close equity ≥ target.
     """
     if not PAUSE_AT_TARGET:
         return False
@@ -1676,22 +1756,58 @@ def check_target_and_pause(current_equity: float) -> bool:
         return True  # already passed, keep skipping
     target_equity = CHALLENGE_START_BALANCE * (1 + PROFIT_TARGET_PCT)
     if current_equity >= target_equity and not state["target_hit"]:
+        # R67 audit fix (Bug-Audit-Round): R60 PASSLOCK closeAllOnTargetReached
+        # was implemented in V4 backtest engine (see project_round60_engine_patches.md)
+        # but was NOT propagated to the live Python executor. The full +6.62pp
+        # PASSLOCK pass-rate edge depends on locking equity at first target hit.
+        # Gate via FTMO_PASSLOCK env (default ON for R60+ champion configs).
+        passlock = os.environ.get("FTMO_PASSLOCK", "1").lower() in ("1", "true", "yes")
+        if passlock:
+            close_outcome = _emergency_close_all_positions("target_reached_passlock_R60")
+            # 2026-05-13 Codex Python #4 FIX: bail without latching if any
+            # close failed. Next cycle will retry.
+            if not close_outcome.get("all_closed", False):
+                tg_send(
+                    "⚠️ <b>PASSLOCK close PARTIAL FAIL — target NOT latched</b>\n"
+                    f"Trigger equity: <b>${current_equity:,.2f}</b>\n"
+                    f"Failed closes: <b>{close_outcome.get('failed', 0)}</b>\n"
+                    "Bot state remains ACTIVE. Will retry on next cycle."
+                )
+                log_event(
+                    "target_hit_deferred_partial_close",
+                    equity=current_equity,
+                    target=target_equity,
+                    failed=close_outcome.get("failed", 0),
+                )
+                return False
+            # Refresh broker equity AFTER close — swap, commission, and
+            # slippage on the close-trade can pull equity below target even
+            # when MTM mid-bar said we were above it.
+            refreshed = _get_broker_equity_now()
+            if refreshed is not None and refreshed < target_equity:
+                tg_send(
+                    "⚠️ <b>PASSLOCK funding/slippage drift — target NOT latched</b>\n"
+                    f"Pre-close equity: ${current_equity:,.2f}\n"
+                    f"Post-close equity: <b>${refreshed:,.2f}</b> &lt; target ${target_equity:,.2f}\n"
+                    "Bot state remains ACTIVE."
+                )
+                log_event(
+                    "target_hit_deferred_funding_drift",
+                    pre_close=current_equity,
+                    post_close=refreshed,
+                    target=target_equity,
+                )
+                return False
+            # Post-close equity confirms the pass — use the refreshed value
+            # for the Telegram and state record.
+            if refreshed is not None:
+                current_equity = refreshed
         # R56 audit fix: use Prague-TZ date (FTMO trading-day anchor).
         today = _prague_today_str()
         state["target_hit"] = True
         state["target_hit_date"] = today
         write_pause_state(state)
         log_event("target_hit", equity=current_equity, target=target_equity)
-        # R67 audit fix (Bug-Audit-Round): R60 PASSLOCK closeAllOnTargetReached
-        # was implemented in V4 backtest engine (see project_round60_engine_patches.md)
-        # but was NOT propagated to the live Python executor. The full +6.62pp
-        # PASSLOCK pass-rate edge depends on locking equity at first target hit
-        # by force-closing all positions — otherwise positions can drift back
-        # below target, breaking the give_back-elimination guarantee.
-        # Gate via FTMO_PASSLOCK env (default ON for R60+ champion configs).
-        passlock = os.environ.get("FTMO_PASSLOCK", "1").lower() in ("1", "true", "yes")
-        if passlock:
-            _emergency_close_all_positions("target_reached_passlock_R60")
         tg_send(
             f"🎯 <b>+{PROFIT_TARGET_PCT*100:.0f}% TARGET HIT!</b>\n"
             f"Equity: <b>${current_equity:,.2f}</b> (start ${CHALLENGE_START_BALANCE:,.0f})\n"
@@ -2003,6 +2119,43 @@ def _process_pending_signals_locked() -> None:
         regime = sig.get("regime", "BEAR_CHOP")
         tag = "iter213-bull" if regime == "BULL" else "iter231"
 
+        # 2026-05-13 Codex Round 4 Python #5 FIX: entry-slippage tolerance.
+        # Reject signals whose payload entryPrice has drifted too far from
+        # the current MT5 tick. Without this, a long signal at $50,000 could
+        # fill at $50,500+ in volatile bars, putting the SL inside the
+        # actual entry (instant stop-out). Tolerance from env, default 0.5%.
+        sig_entry_for_slip = sig.get("entryPrice")
+        if not DRY_RUN and sig_entry_for_slip and sig_entry_for_slip > 0:
+            ftmo_sym = _resolve_broker_symbol(sig["sourceSymbol"])
+            if ftmo_sym:
+                tick_now = mt5.symbol_info_tick(ftmo_sym) if not MOCK_MODE else None
+                if tick_now is not None:
+                    current_quote = tick_now.ask if direction == "long" else tick_now.bid
+                    if current_quote > 0:
+                        slip_pct = abs(current_quote - sig_entry_for_slip) / sig_entry_for_slip
+                        if slip_pct > MAX_ENTRY_SLIPPAGE_PCT:
+                            log_event(
+                                "signal_skipped_entry_slippage",
+                                asset=sig["assetSymbol"],
+                                signal_entry=sig_entry_for_slip,
+                                current=current_quote,
+                                slip_pct=round(slip_pct, 5),
+                                cap=MAX_ENTRY_SLIPPAGE_PCT,
+                            )
+                            tg_send(
+                                f"⚠️ <b>Entry-slip skip</b>\n"
+                                f"{html_escape(sig['assetSymbol'])} {direction.upper()}\n"
+                                f"Signal: ${sig_entry_for_slip:.4f} · Now: ${current_quote:.4f}\n"
+                                f"Slip: {slip_pct*100:.2f}% > cap {MAX_ENTRY_SLIPPAGE_PCT*100:.2f}%"
+                            )
+                            executed["executions"].append({
+                                "signal": sig,
+                                "result": "entry_slippage_skip",
+                                "slip_pct": round(slip_pct, 5),
+                                "ts": datetime.now(timezone.utc).isoformat(),
+                            })
+                            continue
+
         if DRY_RUN:
             log_event("dry_run_order", asset=sig["assetSymbol"], risk=sig["riskFrac"], stop=sig["stopPct"])
             tg_send(
@@ -2092,6 +2245,18 @@ def _process_pending_signals_locked() -> None:
             )
             open_positions["positions"].append({
                 "ticket": result.ticket,
+                # 2026-05-13 Codex Round 4 Python #9 FIX: persist engine-side
+                # ticket id so restart-recovery via mt5.positions_get() can
+                # join broker tickets back to engine state. Format matches
+                # OpenPositionV4 (`ftmoLiveEngineV4.ts:2018`) and Rust
+                # make_ticket_id post commit bdc26bb: ${symbol}@${entryTime}@${dir}.
+                # Falls back to a deterministic reconstruction from signal
+                # fields if the wrapper didn't supply engineTicketId.
+                "engine_ticket_id": sig.get(
+                    "engineTicketId",
+                    f"{sig['assetSymbol']}@{sig.get('entryTime', sig.get('signalBarClose', 0))}@{direction}",
+                ),
+                "engine_entry_time": sig.get("entryTime"),
                 "signalAsset": sig["assetSymbol"],
                 "sourceSymbol": sig["sourceSymbol"],
                 "direction": direction,
@@ -2102,8 +2267,18 @@ def _process_pending_signals_locked() -> None:
                 # 30% + 0.7×40% = 58% instead of the engine's 70%.
                 "original_lot": result.lot,
                 "entry_price": result.entry_price,
-                "stop_price": sig["stopPrice"],
-                "tp_price": sig["tpPrice"],
+                # 2026-05-13 Codex Round 4 Python #5 FIX: persist BROKER-
+                # confirmed SL/TP (from mt5.positions_get on the new ticket,
+                # or fallback to the order-request values) instead of the
+                # signal payload's idealized levels. Without this fix, BE/PTP/
+                # trail/chandelier modifiers later computed deltas against a
+                # stale "stop_price" while the broker held a different SL.
+                "stop_price": result.stop_price or sig["stopPrice"],
+                "tp_price": result.tp_price or sig["tpPrice"],
+                # Keep the signal-side values for drift diagnostics so reports
+                # can attribute differences to slippage, spread, or rounding.
+                "signal_stop_price": sig["stopPrice"],
+                "signal_tp_price": sig["tpPrice"],
                 # BUGFIX 2026-04-29 (Agent 4 Bug 8): preserve original stopPct
                 # — `stop_price` is mutated by break-even/chandelier; time-exit
                 # min-gain check needs the IMMUTABLE original.
@@ -2505,16 +2680,65 @@ def _apply_partial_tp_levels(pos: dict) -> dict:
     return pos
 
 
+def _fetch_recent_atr(binance_symbol: str, period: int = 14, bar_minutes: int = 30) -> float | None:
+    """Compute current ATR(period) from the freshest broker bars.
+    Returns None if MT5 lookup fails — caller falls back to atrAtEntry.
+
+    2026-05-13 Codex Round 4 Python #7 helper: enables _apply_chandelier_stop
+    to re-evaluate ATR each management cycle instead of using the fixed
+    signal-time snapshot. Matches TS engine semantics
+    (ftmoDaytrade24h.ts:4044-4077 recomputes ATR per bar).
+    """
+    if MOCK_MODE:
+        return None
+    ftmo_sym = _resolve_broker_symbol(binance_symbol)
+    if not ftmo_sym:
+        return None
+    try:
+        if bar_minutes >= 60:
+            tf = mt5.TIMEFRAME_H1 if bar_minutes == 60 else mt5.TIMEFRAME_H4
+        elif bar_minutes >= 30:
+            tf = mt5.TIMEFRAME_M30
+        elif bar_minutes >= 15:
+            tf = mt5.TIMEFRAME_M15
+        elif bar_minutes >= 5:
+            tf = mt5.TIMEFRAME_M5
+        else:
+            tf = mt5.TIMEFRAME_M1
+        bars = mt5.copy_rates_from_pos(ftmo_sym, tf, 0, period + 2)
+        if bars is None or len(bars) < period + 1:
+            return None
+        # Wilder ATR(period). TR_i = max(high-low, |high-prevClose|, |low-prevClose|).
+        # Then ATR_period = SMA(TR, period); after that, Wilder smoothing:
+        # ATR_t = (ATR_{t-1}*(period-1) + TR_t) / period.
+        trs: list[float] = []
+        for i in range(1, len(bars)):
+            high = float(bars[i]["high"])
+            low = float(bars[i]["low"])
+            prev_close = float(bars[i - 1]["close"])
+            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            trs.append(tr)
+        if len(trs) < period:
+            return None
+        atr = sum(trs[:period]) / period
+        for tr in trs[period:]:
+            atr = (atr * (period - 1) + tr) / period
+        return atr if atr > 0 else None
+    except Exception:
+        return None
+
+
 def _apply_chandelier_stop(pos: dict) -> dict:
     """ATR-based trailing stop: highest_close − K × ATR (long) or
     lowest_close + K × ATR (short). Arms only after price moves
     minMoveR × stopPct in favorable direction. Only ratchets, never widens.
     Mirrors engine src/utils/ftmoDaytrade24h.ts:4044-4077.
 
-    NB: ATR is fixed at signal-time (atrAtEntry). The engine recomputes ATR
-    each bar; live executor uses the snapshot to avoid pulling a fresh OHLC
-    feed. For 30m–4h timeframes this is a safe approximation (bot is meant
-    to ratchet on price extremes, not chase real-time volatility shifts).
+    2026-05-13 Codex Round 4 Python #7 FIX: re-evaluate ATR each cycle
+    via _fetch_recent_atr() instead of using the fixed snapshot
+    `atrAtEntry`. Engine + Rust harness recompute ATR every bar, so live
+    must too. Falls back to atrAtEntry if MT5 copy_rates lookup fails
+    (mock mode, disconnect, or new symbol with no history).
     """
     cfg = pos.get("chandelier")
     if not cfg:
@@ -2525,6 +2749,12 @@ def _apply_chandelier_stop(pos: dict) -> dict:
     stop_pct = float(cfg.get("stopPct", 0))
     if atr_at_entry <= 0 or mult <= 0:
         return pos
+    # Live ATR — fall back to atrAtEntry on lookup failure.
+    atr_period = int(cfg.get("atrPeriod", 14))
+    bar_minutes = int(cfg.get("barMinutes", 30))
+    source_symbol = pos.get("sourceSymbol", "")
+    live_atr = _fetch_recent_atr(source_symbol, atr_period, bar_minutes) if source_symbol else None
+    atr_for_calc = live_atr if (live_atr is not None and live_atr > 0) else atr_at_entry
     live = mt5.positions_get(ticket=pos["ticket"])
     if not live:
         return pos
@@ -2544,11 +2774,11 @@ def _apply_chandelier_stop(pos: dict) -> dict:
     if direction == "long":
         if best is None or current_close > best:
             best = current_close
-        new_sl = best - mult * atr_at_entry
+        new_sl = best - mult * atr_for_calc
     else:
         if best is None or current_close < best:
             best = current_close
-        new_sl = best + mult * atr_at_entry
+        new_sl = best + mult * atr_for_calc
     pos["chandelier_best_close"] = best
 
     # Ratchet only — never loosen
@@ -2561,7 +2791,8 @@ def _apply_chandelier_stop(pos: dict) -> dict:
 
     if _modify_position_sl(pos["ticket"], new_sl):
         log_event("chandelier_sl_updated", ticket=pos["ticket"],
-                  old_sl=current_sl, new_sl=new_sl, best=best, atr=atr_at_entry,
+                  old_sl=current_sl, new_sl=new_sl, best=best,
+                  atr_used=atr_for_calc, atr_live=live_atr, atr_entry=atr_at_entry,
                   unrealized=unrealized, dir=direction)
         pos["stop_price"] = new_sl
     return pos
@@ -2800,7 +3031,7 @@ def reconcile_pending_order_markers() -> None:
     log_event("order_marker_reconcile_done", cleaned=cleaned, requeued=len(requeued))
 
 
-def _emergency_close_all_positions(reason: str) -> None:
+def _emergency_close_all_positions(reason: str) -> dict:
     """BUGFIX 2026-04-28 (Round 23 C2): force-close all open positions when
     daily-loss approaches breach. Was previously only blocking new signals
     while existing positions could still drag equity past -5%.
@@ -2840,7 +3071,9 @@ def _emergency_close_all_positions(reason: str) -> None:
             f"MT5 disconnected — cannot enumerate live positions. Reason: "
             f"{html_escape(reason)}. Will retry on next sync cycle."
         )
-        return
+        # 2026-05-13 Codex Round 4 Python #4: signal that NO positions were
+        # closed so callers don't latch PASSLOCK state on a deferred close.
+        return {"closed": 0, "failed": 0, "all_closed": False, "deferred": True}
     bot_positions = [p for p in mt5_live if getattr(p, "magic", 0) == 231]
     open_json = read_json(OPEN_POS_PATH, {"positions": []}).get("positions", [])
     json_by_ticket = {
@@ -2888,6 +3121,15 @@ def _emergency_close_all_positions(reason: str) -> None:
         )
     # Only retain still-failed tickets so manage_open_positions can retry.
     write_json(OPEN_POS_PATH, {"positions": failed_positions})
+    # 2026-05-13 Codex Round 4 Python #4 (KRITISCH) — return outcome so
+    # callers (esp. check_target_and_pause) can defer state-mutations
+    # (target_hit latch) until ALL closes succeed AND broker equity is
+    # refreshed. Returns {"closed": int, "failed": int, "all_closed": bool}.
+    return {
+        "closed": closed,
+        "failed": len(failed_positions),
+        "all_closed": len(failed_positions) == 0,
+    }
 
 
 def manage_open_positions() -> None:
@@ -2900,7 +3142,14 @@ def manage_open_positions() -> None:
             log_event("position_gone", ticket=pos["ticket"], reason="closed by SL/TP or manually")
             tg_send(f"📉 <b>Position Closed (SL/TP)</b>\n{pos['signalAsset']} ticket <code>{pos['ticket']}</code>")
             continue
-        if now_ms >= pos.get("max_hold_until", 0):
+        # 2026-05-13 Codex Round 4 Python #3 FIX: max_hold_until=0 OR a
+        # sentinel like JS Number.MAX_SAFE_INTEGER (9007199254740991) means
+        # "no time exit configured". The TS wrapper now emits this sentinel
+        # for V4-Sim parity (V4 simulator disables hold-bars time-exit;
+        # ftmoLiveEngineV4.ts:997-1003). Only fire hold-expired when
+        # max_hold_until is a realistic ms-timestamp (≤ 1e15 = year ~33658).
+        max_hold = pos.get("max_hold_until", 0)
+        if 0 < max_hold < 1_000_000_000_000_000 and now_ms >= max_hold:
             log_event("hold_expired", ticket=pos["ticket"])
             if close_position(pos["ticket"], exit_reason_override="hold_expired"):
                 tg_send(f"⏱ <b>Hold Expired — Closed</b>\n{pos['signalAsset']} ticket <code>{pos['ticket']}</code>")
