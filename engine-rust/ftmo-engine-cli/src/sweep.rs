@@ -449,6 +449,8 @@ fn apply_overrides(
                 .unwrap_or_else(|| "any".to_string()),
             fast_period: ov.cross_asset_fast.unwrap_or(9),
             slow_period: ov.cross_asset_slow.unwrap_or(21),
+            skip_longs_if_secondary_downtrend: false,
+            skip_shorts_if_secondary_uptrend: false,
         });
     }
     if ov.pdd_from_peak.is_some() || ov.pdd_factor.is_some() {
@@ -1693,7 +1695,16 @@ fn run_one_window(
     };
 
     for i in lo..hi {
-        // Push current bar for every symbol.
+        // Push current bar for every symbol. `feed` MUST contain bar i so
+        // `step_bar` can apply exits against the just-arrived candle; detectors
+        // that read it use `candles.len()-1` as the entry bar and rely on
+        // their own trigger_idx = i-1 convention to avoid lookahead.
+        //
+        // 2026-05-13 Codex HIGH FIX (Fix 4): the HTF-close buffer must NOT
+        // include bar i's close at detector-time — the filter calls .last()
+        // on it. Push is deferred to the END of the loop iter so detectors
+        // for bar i only see HTF closes up to bar i-1 (TS V4 parity:
+        // `htfCloses` series in ts-source is built from CLOSED bars only).
         for sym in symbols.iter() {
             let c = aligned.get(sym).expect("aligned missing sym")[i];
             feed.get_mut(sym).unwrap().push(c);
@@ -1704,11 +1715,6 @@ fn run_one_window(
                 .and_then(|s| s.get(i).copied())
                 .flatten();
             funding_feed.get_mut(sym).unwrap().push(f);
-            if multi_signal.use_htf_confirm && i % multi_signal.htf_stride == 0 {
-                if let Some(buf) = htf_closes_buf.get_mut(sym) {
-                    buf.push(c.close);
-                }
-            }
         }
 
         // Build signals: one detector pass per asset entry, dispatched off
@@ -1718,11 +1724,21 @@ fn run_one_window(
         // 2026-05-13 Hebel 2: build cross-asset closes (e.g. BTCUSDT) once
         // per bar, then re-use for every asset's detector call below. Only
         // built when cfg.cross_asset_filter is set (CLI flag activated).
+        //
+        // 2026-05-13 Codex HIGH FIX (Fix 4): cross_closes EXCLUDES bar i so
+        // the EMA-cross trend filter (which calls .last() on this slice) is
+        // computed only on closed bars. Without this skip, signal-time
+        // direction-test sees future bar-i close → lookahead. `v.len() - 1`
+        // is safe because we always push to feed BEFORE building this slice;
+        // saturating_sub keeps it well-defined on bar 0.
         let cross_closes_owned: Option<Vec<f64>> = cfg
             .cross_asset_filter
             .as_ref()
             .and_then(|f| feed.get(f.symbol.as_str()))
-            .map(|v| v.iter().map(|c| c.close).collect());
+            .map(|v| {
+                let end = v.len().saturating_sub(1);
+                v.iter().take(end).map(|c| c.close).collect()
+            });
         let cross_closes_slice: Option<&[f64]> = cross_closes_owned.as_deref();
 
         for asset in cfg.assets.iter() {
@@ -2022,6 +2038,19 @@ fn run_one_window(
             cfg,
         );
         bars += 1;
+        // 2026-05-13 Codex HIGH FIX (Fix 4): HTF push deferred to AFTER
+        // step_bar so the NEXT bar's detector pass sees this bar's close
+        // (now closed and safe). Pushing BEFORE detector at the same i
+        // would make bar i's close visible via htf_closes_buf.last() →
+        // lookahead through htf_trend_allows.
+        if multi_signal.use_htf_confirm && i % multi_signal.htf_stride == 0 {
+            for sym in symbols.iter() {
+                let c = aligned.get(sym).expect("aligned missing sym")[i];
+                if let Some(buf) = htf_closes_buf.get_mut(sym) {
+                    buf.push(c.close);
+                }
+            }
+        }
         if r.challenge_ended {
             last_passed = r.passed;
             last_fail = r.fail_reason.map(|f| format!("{f:?}"));

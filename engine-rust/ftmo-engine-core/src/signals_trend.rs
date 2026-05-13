@@ -57,18 +57,24 @@ pub fn detect_trend_pullback(
     candles: &[Candle],
     params: &TrendParams,
 ) -> Option<PollSignal> {
-    if candles.len() < params.slow_period + 2 {
+    // 2026-05-13 Codex HIGH FIX: signal-bar = i-1 (just closed). All trend
+    // computations + trigger conditions + filter gates read at trigger_idx,
+    // entry uses candles[i].open. Previously used candles[i].* throughout
+    // → lookahead.
+    if candles.len() < params.slow_period + 3 {
         return None;
     }
     let i = candles.len() - 1;
-    let last = candles[i];
+    let trigger_idx = i - 1;
+    let signal_bar = candles[trigger_idx];
+    let entry_bar = candles[i];
     let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
     let sma_fast = sma(&closes, params.fast_period);
     let sma_slow = sma(&closes, params.slow_period);
 
-    let cur_slow = sma_slow[i]?;
-    let prev_slow = sma_slow[i - 1]?;
-    let cur_fast = sma_fast[i]?;
+    let cur_slow = sma_slow[trigger_idx]?;
+    let prev_slow = sma_slow[trigger_idx - 1]?;
+    let cur_fast = sma_fast[trigger_idx]?;
 
     let direction = if cur_slow > prev_slow {
         PositionSide::Long
@@ -78,38 +84,39 @@ pub fn detect_trend_pullback(
         return None;
     };
 
-    // Pull-back-then-recover trigger.
+    // Pull-back-then-recover trigger — on signal_bar (closed).
     let triggered = match direction {
-        PositionSide::Long => last.low <= cur_fast && last.close > cur_fast,
-        PositionSide::Short => last.high >= cur_fast && last.close < cur_fast,
+        PositionSide::Long => signal_bar.low <= cur_fast && signal_bar.close > cur_fast,
+        PositionSide::Short => signal_bar.high >= cur_fast && signal_bar.close < cur_fast,
     };
     if !triggered {
         return None;
     }
 
-    // Optional RSI confluence.
+    // Optional RSI confluence — at signal_bar.
     if let Some((period, long_max, short_min)) = params.rsi_filter {
         let series = rsi(&closes, period);
-        if !rsi_filter_allows(series[i], direction, long_max, short_min) {
+        if !rsi_filter_allows(series[trigger_idx], direction, long_max, short_min) {
             return None;
         }
     }
 
-    // Compose final stop_pct via optional ATR-stop.
+    let entry_price = entry_bar.open;
+    // Compose final stop_pct via optional ATR-stop (read at signal_bar).
     let mut stop_pct = params.stop_pct;
     if let Some(at) = cfg.atr_stop {
         let series = atr(candles, at.period as usize);
-        if let Some(a) = series[i] {
-            let atr_stop = (at.stop_mult * a) / last.close.max(1e-9);
+        if let Some(a) = series[trigger_idx] {
+            let atr_stop = (at.stop_mult * a) / entry_price.max(1e-9);
             stop_pct = stop_pct.max(atr_stop);
         }
     }
-    // Optional R60 vol-adaptive TP multiplier.
+    // Optional R60 vol-adaptive TP multiplier (read at signal_bar).
     let mut tp_pct = params.tp_pct;
     if let Some(va) = cfg.vol_adaptive_tp_mult {
         let series = atr(candles, va.atr_period as usize);
-        if let Some(a) = series[i] {
-            let atr_pct = a / last.close.max(1e-9);
+        if let Some(a) = series[trigger_idx] {
+            let atr_pct = a / entry_price.max(1e-9);
             if atr_pct >= va.atr_pct_above {
                 tp_pct *= va.factor;
             }
@@ -124,7 +131,7 @@ pub fn detect_trend_pullback(
     }
 
     // Sizing.
-    let factor = resolve_sizing_factor(state, cfg, last.open_time);
+    let factor = resolve_sizing_factor(state, cfg, entry_bar.open_time);
     let mut eff_risk = params.base_risk_frac * factor;
     if !cfg.bypass_live_caps {
         if let Some(caps) = cfg.live_caps.as_ref() {
@@ -135,22 +142,23 @@ pub fn detect_trend_pullback(
         return None;
     }
     let (stop_price, tp_price) = match direction {
-        PositionSide::Long => (last.close * (1.0 - stop_pct), last.close * (1.0 + tp_pct)),
-        PositionSide::Short => (last.close * (1.0 + stop_pct), last.close * (1.0 - tp_pct)),
+        PositionSide::Long => (entry_price * (1.0 - stop_pct), entry_price * (1.0 + tp_pct)),
+        PositionSide::Short => (entry_price * (1.0 + stop_pct), entry_price * (1.0 - tp_pct)),
     };
 
-    // ChandelierATR-at-entry passes through if cfg.chandelier_exit is on.
+    // ChandelierATR-at-entry passes through if cfg.chandelier_exit is on,
+    // read at signal_bar like other indicators.
     let chandelier_atr = cfg.chandelier_exit.and_then(|ce| {
         let series = atr(candles, ce.period as usize);
-        series[i]
+        series[trigger_idx]
     });
 
     Some(PollSignal {
         symbol: asset.symbol.clone(),
         source_symbol: source_symbol.to_string(),
         direction,
-        entry_time: last.open_time,
-        entry_price: last.close,
+        entry_time: entry_bar.open_time,
+        entry_price,
         stop_price,
         tp_price,
         stop_pct,
@@ -204,15 +212,15 @@ mod tests {
     #[test]
     fn long_signal_on_uptrend_with_pullback() {
         let mut s = EngineState::initial("x");
-        let mut candles = ramp(60, 100.0, 0.5);
-        // Force last bar to dip down to/below SMA-fast then close above.
-        let last = candles.last_mut().unwrap();
-        // SMA-fast(20) at end of a 0.5/bar ramp at i=59 is around the middle
-        // of the last 20 → close-ish to 124.5. Make last bar's low touch
-        // that level and close above.
-        last.low = 124.0;
-        last.high = 130.5;
-        last.close = 130.0;
+        // 2026-05-13 Codex Fix 3 test-update: signal-bar = i-1 (idx 59),
+        // entry-bar = i (idx 60). Force signal-bar to be the pullback.
+        let mut candles = ramp(61, 100.0, 0.5);
+        let n = candles.len();
+        // signal-bar (n-2) is the pullback that triggers; entry-bar (n-1)
+        // opens at the next bar's open (no constraints needed on it).
+        candles[n - 2].low = 124.0;
+        candles[n - 2].high = 130.5;
+        candles[n - 2].close = 130.0;
         let p = TrendParams::from_cfg(&cfg(), &asset());
         let sig = detect_trend_pullback(&mut s, &cfg(), &asset(), "BTCUSDT", &candles, &p);
         assert!(sig.is_some(), "expected long signal on uptrend pullback");

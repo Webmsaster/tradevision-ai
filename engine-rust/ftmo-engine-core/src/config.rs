@@ -85,6 +85,21 @@ pub struct AssetConfig {
     #[serde(default, rename = "disableShort")]
     pub disable_short: bool,
 
+    /// 2026-05-13 Codex HIGH FIX (Fix 6): symmetric `disableLong` flag in
+    /// TS `ftmoDaytrade24h.ts:99/663`. Several TS configs (e.g. FOREX-MR
+    /// short-only baskets) set this true. Rust previously silently
+    /// deserialized the field and DROPPED it, letting longs through that
+    /// should have been blocked.
+    #[serde(default, rename = "disableLong")]
+    pub disable_long: bool,
+
+    /// 2026-05-13 Codex HIGH FIX (Fix 6): TS `deactivateAfterDay`
+    /// (`ftmoDaytrade24h.ts:218`, used in `ftmoLiveEngineV4.ts:1787-1792`)
+    /// — assets stop firing entries once `state.day >= deactivateAfterDay`.
+    /// Used to phase out a strategy mid-challenge.
+    #[serde(default, rename = "deactivateAfterDay")]
+    pub deactivate_after_day: Option<u32>,
+
     /// Per-asset N-consecutive-close trigger override; falls back to
     /// `cfg.trigger_bars`. Mirrors `asset.triggerBars ?? cfg.triggerBars`
     /// in `src/utils/ftmoDaytrade24h.ts:3608`. None = use cfg.trigger_bars.
@@ -134,18 +149,42 @@ impl AssetConfig {
 }
 
 /// Cross-asset filter — only allow signals if `symbol` is currently
-/// trending in `direction`. Trend determined by EMA(fast_period) vs EMA(slow_period)
-/// on `symbol`'s candle stream supplied at runtime.
+/// trending in the configured direction(s). Trend determined by
+/// EMA(fast) vs EMA(slow) on `symbol`'s candle stream supplied at runtime.
+///
+/// 2026-05-13 Codex HIGH FIX (Fix 7): TS source-of-truth
+/// (`ftmoDaytrade24h.ts:837-862`) uses `emaFastPeriod` / `emaSlowPeriod`
+/// plus four boolean blocker fields. Rust previously used `fastPeriod` /
+/// `slowPeriod` (silently dropped TS-named fields on load) and a single
+/// `direction` string. Now: serde aliases accept BOTH names, and the
+/// TS-style boolean blockers are honored alongside the legacy `direction`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrossAssetFilter {
     pub symbol: String,
     /// Required direction — `"long"`, `"short"`, or `"any"` (just trend up OR down).
+    /// Legacy Rust-only field. When skip-* booleans are set, takes precedence over `direction`.
     #[serde(default = "default_cross_dir")]
     pub direction: String,
-    #[serde(default = "default_fast_period", rename = "fastPeriod")]
+    #[serde(
+        default = "default_fast_period",
+        rename = "fastPeriod",
+        alias = "emaFastPeriod"
+    )]
     pub fast_period: u32,
-    #[serde(default = "default_slow_period", rename = "slowPeriod")]
+    #[serde(
+        default = "default_slow_period",
+        rename = "slowPeriod",
+        alias = "emaSlowPeriod"
+    )]
     pub slow_period: u32,
+    /// 2026-05-13 Codex Fix 7: skip long signals when secondary is in downtrend
+    /// (EMA-fast < EMA-slow on secondary). TS `skipLongsIfSecondaryDowntrend`.
+    #[serde(default, rename = "skipLongsIfSecondaryDowntrend")]
+    pub skip_longs_if_secondary_downtrend: bool,
+    /// 2026-05-13 Codex Fix 7: skip short signals when secondary is in uptrend.
+    /// TS `skipShortsIfSecondaryUptrend`.
+    #[serde(default, rename = "skipShortsIfSecondaryUptrend")]
+    pub skip_shorts_if_secondary_uptrend: bool,
 }
 
 fn default_cross_dir() -> String {
@@ -243,6 +282,17 @@ pub struct KellySizing {
     #[serde(rename = "minTrades")]
     pub min_trades: u32,
     pub tiers: Vec<KellyTier>,
+}
+
+/// 2026-05-13 Codex HIGH FIX (Fix 8): TS `dayBasedRiskMultiplier` schema
+/// from `ftmoLiveEngineV4.ts:1976-1981`. While `state.day <
+/// conservativeFirstDays`, multiply effective risk by `conservativeFactor`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct DayBasedRiskMultiplier {
+    #[serde(rename = "conservativeFirstDays")]
+    pub conservative_first_days: u32,
+    #[serde(rename = "conservativeFactor")]
+    pub conservative_factor: f64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -414,6 +464,13 @@ pub struct EngineConfig {
     pub time_boost: Option<TimeBoost>,
     #[serde(default, rename = "kellySizing")]
     pub kelly_sizing: Option<KellySizing>,
+    /// 2026-05-13 Codex HIGH FIX (Fix 8): TS `dayBasedRiskMultiplier`
+    /// (`ftmoLiveEngineV4.ts:1975-1981`) — early challenge days run with a
+    /// `conservativeFactor` (typically 0.5) for `conservativeFirstDays` to
+    /// preserve capital, then full risk-frac after the floor day. Rust
+    /// previously dropped this field on load → over-sized in early days.
+    #[serde(default, rename = "dayBasedRiskMultiplier")]
+    pub day_based_risk_multiplier: Option<DayBasedRiskMultiplier>,
     #[serde(default, rename = "drawdownShield")]
     pub drawdown_shield: Option<DrawdownShield>,
     #[serde(default, rename = "peakDrawdownThrottle")]
@@ -532,6 +589,7 @@ impl EngineConfig {
             adaptive_sizing: None,
             time_boost: None,
             kelly_sizing: None,
+            day_based_risk_multiplier: None,
             drawdown_shield: None,
             peak_drawdown_throttle: None,
             intraday_daily_loss_throttle: None,

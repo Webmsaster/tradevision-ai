@@ -82,12 +82,21 @@ pub fn detect_breakout(
     // detect_breakout's output direction is the "open this side" trade
     // direction — same convention R28V6 emits AFTER its internal invert
     // bookkeeping. They both fire "Long" on momentum-up regardless of
-    // invert=true. (Previous attempt to invert here regressed Champion C2
-    // by 48pp because it flipped breakout's vote against R28V6's vote in
-    // REGIME consensus.) disable_short still warranted at signal source
-    // for parity with R28V6's `candidates` filter.
+    // invert=true.
+    //
+    // 2026-05-13 Codex HIGH FIX (Fix 6): also honor disable_long and
+    // deactivate_after_day so parity with R28V6 candidate-filter holds in
+    // REGIME consensus + standalone-breakout paths.
     if asset.disable_short && direction == PositionSide::Short {
         return None;
+    }
+    if asset.disable_long && direction == PositionSide::Long {
+        return None;
+    }
+    if let Some(deact) = asset.deactivate_after_day {
+        if state.day >= deact {
+            return None;
+        }
     }
 
     let factor = resolve_sizing_factor(state, cfg, entry_bar.open_time);

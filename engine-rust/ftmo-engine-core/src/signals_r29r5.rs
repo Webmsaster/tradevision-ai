@@ -21,18 +21,22 @@ use crate::state::EngineState;
 /// Build the standard PollSignal payload — sizing + stop/tp prices + caps.
 /// Returns `None` if `eff_risk <= 0` after live-cap clamp, mirroring the
 /// other detectors.
+/// 2026-05-13 Codex KRITISCH FIX: entry_bar = `candles[i]` (current bar,
+/// open known, close NOT yet known), so entry_price MUST use entry_bar.open
+/// and stop/TP anchor on that same known price. Previously used last.close
+/// which was a lookahead (bar i's close is future data at signal-emit time).
 fn finalise_signal(
     state: &mut EngineState,
     cfg: &EngineConfig,
     asset: &AssetConfig,
     source_symbol: &str,
-    last: &Candle,
+    entry_bar: &Candle,
     direction: PositionSide,
 ) -> Option<PollSignal> {
     let stop_pct = asset.stop_pct.unwrap_or(cfg.stop_pct);
     let tp_pct = asset.tp_pct.unwrap_or(cfg.tp_pct);
 
-    let factor = resolve_sizing_factor(state, cfg, last.open_time);
+    let factor = resolve_sizing_factor(state, cfg, entry_bar.open_time);
     let mut eff_risk = asset.risk_frac * factor;
     if !cfg.bypass_live_caps {
         if let Some(caps) = cfg.live_caps.as_ref() {
@@ -48,16 +52,17 @@ fn finalise_signal(
     if eff_risk <= 0.0 {
         return None;
     }
+    let entry_price = entry_bar.open;
     let (stop_price, tp_price) = match direction {
-        PositionSide::Long => (last.close * (1.0 - stop_pct), last.close * (1.0 + tp_pct)),
-        PositionSide::Short => (last.close * (1.0 + stop_pct), last.close * (1.0 - tp_pct)),
+        PositionSide::Long => (entry_price * (1.0 - stop_pct), entry_price * (1.0 + tp_pct)),
+        PositionSide::Short => (entry_price * (1.0 + stop_pct), entry_price * (1.0 - tp_pct)),
     };
     Some(PollSignal {
         symbol: asset.symbol.clone(),
         source_symbol: source_symbol.to_string(),
         direction,
-        entry_time: last.open_time,
-        entry_price: last.close,
+        entry_time: entry_bar.open_time,
+        entry_price,
         stop_price,
         tp_price,
         stop_pct,
@@ -86,18 +91,23 @@ pub fn detect_cvd_divergence(
     // (5 bars). Templates may set the param at any TF; this normalises.
     let scale = (30.0 / (cfg.bar_minutes.max(1) as f64)).round().max(1.0) as usize;
     let lb = (params.lookback_bars as usize) * scale;
+    // 2026-05-13 Codex KRITISCH FIX: signal-bar = i-1 (just closed), entry-bar
+    // = i (current). Window must end at signal_idx so the trigger uses ONLY
+    // bars whose close is known. Need lb+2 bars: lb for window + 1 for
+    // signal-bar boundary + 1 for entry-bar.
     if candles.len() < lb + 2 {
         return None;
     }
     let i = candles.len() - 1;
+    let signal_idx = i - 1;
 
-    // Accumulate over window [i-lb, i] inclusive.
+    // Accumulate over window [signal_idx-lb, signal_idx] inclusive (all closed bars).
     let mut cvd = 0.0_f64;
     let mut cvd_min = f64::INFINITY;
     let mut cvd_max = f64::NEG_INFINITY;
     let mut price_min = f64::INFINITY;
     let mut price_max = f64::NEG_INFINITY;
-    for c in candles[(i - lb)..=i].iter().copied() {
+    for c in candles[(signal_idx - lb)..=signal_idx].iter().copied() {
         let tbv = c.taker_buy_volume.unwrap_or(c.volume * 0.5);
         cvd += 2.0 * tbv - c.volume;
         if cvd < cvd_min {
@@ -114,18 +124,20 @@ pub fn detect_cvd_divergence(
         }
     }
 
-    let last = candles[i];
+    let signal_bar = candles[signal_idx];
+    let entry_bar = candles[i];
     // Try long first, then short. Same per-direction logic as TS `for direction
-    // of ['long','short']` outer loop.
+    // of ['long','short']` outer loop. Trigger compares signal_bar close vs
+    // window min/max (which include signal_bar) — no lookahead.
     for direction in [PositionSide::Long, PositionSide::Short] {
         let ok = match direction {
             PositionSide::Long => {
-                let price_at_min = last.close <= price_min + 1e-9;
+                let price_at_min = signal_bar.close <= price_min + 1e-9;
                 let cvd_at_min = cvd <= cvd_min + 1e-6;
                 price_at_min && !cvd_at_min
             }
             PositionSide::Short => {
-                let price_at_max = last.close >= price_max - 1e-9;
+                let price_at_max = signal_bar.close >= price_max - 1e-9;
                 let cvd_at_max = cvd >= cvd_max - 1e-6;
                 price_at_max && !cvd_at_max
             }
@@ -133,7 +145,7 @@ pub fn detect_cvd_divergence(
         if !ok {
             continue;
         }
-        if let Some(s) = finalise_signal(state, cfg, asset, source_symbol, &last, direction) {
+        if let Some(s) = finalise_signal(state, cfg, asset, source_symbol, &entry_bar, direction) {
             return Some(s);
         }
     }
@@ -149,13 +161,20 @@ pub fn detect_vol_imbalance(
     candles: &[Candle],
     params: &VolImbalanceEntry,
 ) -> Option<PollSignal> {
-    let i = candles.len().checked_sub(1)?;
-    let last = candles[i];
-    let tbv = last.taker_buy_volume?;
-    if last.volume <= 0.0 {
+    // 2026-05-13 Codex KRITISCH FIX: read taker_buy_volume + volume from
+    // signal_bar (i-1), enter at candles[i].open. Previously read bar i's
+    // volume/tbv → lookahead.
+    if candles.len() < 2 {
         return None;
     }
-    let ratio = tbv / last.volume;
+    let i = candles.len() - 1;
+    let signal_bar = candles[i - 1];
+    let entry_bar = candles[i];
+    let tbv = signal_bar.taker_buy_volume?;
+    if signal_bar.volume <= 0.0 {
+        return None;
+    }
+    let ratio = tbv / signal_bar.volume;
     let direction = if ratio >= params.long_min {
         PositionSide::Long
     } else if ratio <= 1.0 - params.long_min {
@@ -163,7 +182,7 @@ pub fn detect_vol_imbalance(
     } else {
         return None;
     };
-    finalise_signal(state, cfg, asset, source_symbol, &last, direction)
+    finalise_signal(state, cfg, asset, source_symbol, &entry_bar, direction)
 }
 
 /// Volume-Profile POC mean-reversion. POC = close-of-bar with the highest
@@ -183,10 +202,14 @@ pub fn detect_vol_poc(
     if candles.len() < wb + 2 {
         return None;
     }
+    // 2026-05-13 Codex KRITISCH FIX: POC window ends at signal_idx (i-1),
+    // distance compares signal_bar close vs POC (both closed bars). Entry
+    // at candles[i].open via entry_bar.
     let i = candles.len() - 1;
+    let signal_idx = i - 1;
     let mut poc_vol = -1.0_f64;
-    let mut poc_close = candles[i].close;
-    for c in candles[(i - wb)..=i].iter().copied() {
+    let mut poc_close = candles[signal_idx].close;
+    for c in candles[(signal_idx - wb)..=signal_idx].iter().copied() {
         if c.volume > poc_vol {
             poc_vol = c.volume;
             poc_close = c.close;
@@ -195,8 +218,9 @@ pub fn detect_vol_poc(
     if poc_close <= 0.0 {
         return None;
     }
-    let last = candles[i];
-    let dist_pct = (poc_close - last.close) / poc_close;
+    let signal_bar = candles[signal_idx];
+    let entry_bar = candles[i];
+    let dist_pct = (poc_close - signal_bar.close) / poc_close;
     let direction = if dist_pct >= params.min_dist_from_poc_pct {
         // price BELOW poc → expect revert UP → long
         PositionSide::Long
@@ -206,7 +230,7 @@ pub fn detect_vol_poc(
     } else {
         return None;
     };
-    finalise_signal(state, cfg, asset, source_symbol, &last, direction)
+    finalise_signal(state, cfg, asset, source_symbol, &entry_bar, direction)
 }
 
 #[cfg(test)]
@@ -297,7 +321,12 @@ mod tests {
         let mut s = EngineState::initial("x");
         let cfg = cfg();
         let a = asset();
-        let candles = vec![candle_with(0, 100.0, 100.0, 70.0)];
+        // 2026-05-13 Codex Fix 1 test-update: signal-bar = idx 0 (i-1),
+        // entry-bar = idx 1 (current). Spike volume on signal-bar.
+        let candles = vec![
+            candle_with(0, 100.0, 100.0, 70.0), // signal-bar with imbalanced volume
+            candle_with(1_800_000, 100.5, 50.0, 25.0), // entry-bar (neutral)
+        ];
         let sig = detect_vol_imbalance(
             &mut s,
             &cfg,
@@ -315,7 +344,10 @@ mod tests {
         let mut s = EngineState::initial("x");
         let cfg = cfg();
         let a = asset();
-        let candles = vec![candle_with(0, 100.0, 100.0, 30.0)];
+        let candles = vec![
+            candle_with(0, 100.0, 100.0, 30.0), // signal-bar
+            candle_with(1_800_000, 99.5, 50.0, 25.0),
+        ];
         let sig = detect_vol_imbalance(
             &mut s,
             &cfg,
@@ -350,17 +382,19 @@ mod tests {
         let mut s = EngineState::initial("x");
         let cfg = cfg();
         let a = asset();
-        // 100 bars: highest volume is bar 50 with close=100. Last close is 95
-        // (5% below POC). distPct = (100-95)/100 = 0.05 ≥ 0.015 → long.
+        // 100 bars: highest volume is bar 50 with close=100. signal-bar
+        // (idx 98 = len-2) close is 95 (5% below POC). distPct = (100-95)/100
+        // = 0.05 ≥ 0.015 → long. 2026-05-13 Codex Fix 1: trigger on signal-bar,
+        // not last-bar.
         let mut candles = vec![];
         for k in 0..100 {
             let close = if k == 50 { 100.0 } else { 99.0 };
             let vol = if k == 50 { 5_000.0 } else { 100.0 };
             candles.push(candle_with(k * 1_800_000, close, vol, vol * 0.5));
         }
-        // last bar at 95
-        let last_idx = candles.len() - 1;
-        candles[last_idx].close = 95.0;
+        // signal-bar (i-1) at 95
+        let signal_idx = candles.len() - 2;
+        candles[signal_idx].close = 95.0;
         let sig = detect_vol_poc(
             &mut s,
             &cfg,
@@ -387,8 +421,9 @@ mod tests {
             let vol = if k == 50 { 5_000.0 } else { 100.0 };
             candles.push(candle_with(k * 1_800_000, close, vol, vol * 0.5));
         }
-        let last_idx = candles.len() - 1;
-        candles[last_idx].close = 105.0;
+        // 2026-05-13 Codex Fix 1: signal-bar = i-1.
+        let signal_idx = candles.len() - 2;
+        candles[signal_idx].close = 105.0;
         let sig = detect_vol_poc(
             &mut s,
             &cfg,

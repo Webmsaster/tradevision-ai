@@ -102,6 +102,8 @@ fn make_assets(symbols: &[&str], risk_frac: f64) -> Vec<AssetConfig> {
             hold_bars: None,
             invert_direction: true,
             disable_short: true,
+            disable_long: false,
+            deactivate_after_day: None,
             trigger_bars: Some(1),
             cost_bp: Some(30.0),
             slippage_bp: Some(8.0),

@@ -447,10 +447,32 @@ pub fn detect_regime_confluence(
     //     instead of being throttled
     //   - Kelly-tier index decrement on a fresh tier-roll is lost → next
     //     bar's sizing reads stale tier, causing repeated over-sizing
+    //
+    // 2026-05-13 Codex MED FIX (Fix 5): when MR voted on the winning side
+    // but R28/BO became the anchor, MR's cooldown install on
+    // `state_for_mr.loss_streak_by_asset_dir` was discarded → MR voted
+    // again every bar (anti-spam dead). Now we MERGE MR's
+    // loss_streak_by_asset_dir delta whenever MR contributed a vote on
+    // `winning_side`, regardless of which probe was the anchor.
+    let mr_voted_on_winning = mr.as_ref().is_some_and(|s| s.direction == winning_side);
+    let pre_mr_keys: std::collections::HashSet<String> =
+        state.loss_streak_by_asset_dir.keys().cloned().collect();
     match anchor_kind {
         AnchorKind::R28V6 => *state = state_for_r28,
         AnchorKind::Breakout => *state = state_for_bo,
-        AnchorKind::MeanReversion => *state = state_for_mr,
+        AnchorKind::MeanReversion => *state = state_for_mr.clone(),
+    }
+    if mr_voted_on_winning && anchor_kind != AnchorKind::MeanReversion {
+        // Copy any MR-installed cooldown entries (keys present in state_for_mr
+        // but NOT in pre_mr state). MR's detect_mean_reversion writes
+        // entries with key prefix "MR|" — copy those forward.
+        for (key, value) in state_for_mr.loss_streak_by_asset_dir.iter() {
+            if key.starts_with("MR|") && !pre_mr_keys.contains(key) {
+                state
+                    .loss_streak_by_asset_dir
+                    .insert(key.clone(), value.clone());
+            }
+        }
     }
     Some(anchor.clone())
 }

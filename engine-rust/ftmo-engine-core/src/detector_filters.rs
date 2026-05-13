@@ -192,6 +192,28 @@ pub fn cross_asset_filter_allows(
     } else {
         None
     };
+    // 2026-05-13 Codex HIGH FIX (Fix 7): TS-style boolean blockers take
+    // precedence over legacy `direction` field. TS reference
+    // `ftmoDaytrade24h.ts:841-842`: skipLongs blocks longs when secondary
+    // is downtrend, skipShorts blocks shorts when secondary is uptrend.
+    if filter.skip_longs_if_secondary_downtrend
+        && side == PositionSide::Long
+        && trend == Some(PositionSide::Short)
+    {
+        return false;
+    }
+    if filter.skip_shorts_if_secondary_uptrend
+        && side == PositionSide::Short
+        && trend == Some(PositionSide::Long)
+    {
+        return false;
+    }
+    // If only the TS-style blockers are set (no legacy direction), allow
+    // through unless explicitly blocked above. Otherwise fall back to the
+    // legacy direction semantics for back-compat.
+    if filter.skip_longs_if_secondary_downtrend || filter.skip_shorts_if_secondary_uptrend {
+        return true;
+    }
     match filter.direction.as_str() {
         "long" => trend == Some(PositionSide::Long) && side == PositionSide::Long,
         "short" => trend == Some(PositionSide::Short) && side == PositionSide::Short,

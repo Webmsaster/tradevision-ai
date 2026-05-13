@@ -139,14 +139,18 @@ pub fn detect_mean_reversion(
     candles: &[Candle],
     src: &MeanReversionSource,
 ) -> Option<PollSignal> {
-    if candles.len() < src.period as usize + 2 {
+    // 2026-05-13 Codex HIGH FIX: signal-bar = i-1 (just closed); entry-bar
+    // = i (open known, close future). Previously read RSI[i] which uses
+    // bar i's close in the EMA-smoothed RSI computation → lookahead.
+    if candles.len() < src.period as usize + 3 {
         return None;
     }
     let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
     let series = rsi(&closes, src.period as usize);
     let i = candles.len() - 1;
-    let cur = series[i]?;
-    let prev = series[i - 1]?;
+    let trigger_idx = i - 1;
+    let cur = series[trigger_idx]?;
+    let prev = series[trigger_idx - 1]?;
 
     // Cross detection.
     let direction = if prev > src.oversold && cur <= src.oversold {
@@ -168,9 +172,11 @@ pub fn detect_mean_reversion(
     }
     // R67 audit (Round 2): same cooldown-before-eff_risk-gate bug as
     // finish_signal — fixed identically by moving cooldown insert below.
-    // Sizing — apply the engine factor pipeline, then the MR-specific multiplier.
-    let last = candles[i];
-    let factor = resolve_sizing_factor(state, cfg, last.open_time);
+    // 2026-05-13 Codex HIGH FIX: entry uses bar-i's OPEN (known) — was last.close
+    // (lookahead). Stop/TP anchored on entry_price.
+    let entry_bar = candles[i];
+    let entry_price = entry_bar.open;
+    let factor = resolve_sizing_factor(state, cfg, entry_bar.open_time);
     let mut eff_risk = asset.risk_frac * factor * src.size_mult;
     if !cfg.bypass_live_caps {
         if let Some(caps) = cfg.live_caps.as_ref() {
@@ -183,8 +189,8 @@ pub fn detect_mean_reversion(
     let stop_pct = asset.stop_pct.unwrap_or(cfg.stop_pct);
     let tp_pct = asset.tp_pct.unwrap_or(cfg.tp_pct);
     let (stop_price, tp_price) = match direction {
-        PositionSide::Long => (last.close * (1.0 - stop_pct), last.close * (1.0 + tp_pct)),
-        PositionSide::Short => (last.close * (1.0 + stop_pct), last.close * (1.0 - tp_pct)),
+        PositionSide::Long => (entry_price * (1.0 - stop_pct), entry_price * (1.0 + tp_pct)),
+        PositionSide::Short => (entry_price * (1.0 + stop_pct), entry_price * (1.0 - tp_pct)),
     };
     state.loss_streak_by_asset_dir.insert(
         key,
@@ -197,8 +203,8 @@ pub fn detect_mean_reversion(
         symbol: asset.symbol.clone(),
         source_symbol: source_symbol.to_string(),
         direction,
-        entry_time: last.open_time,
-        entry_price: last.close,
+        entry_time: entry_bar.open_time,
+        entry_price,
         stop_price,
         tp_price,
         stop_pct,
@@ -241,14 +247,18 @@ mod tests {
         }
     }
 
-    /// Build a price series whose LAST bar is a sharp drop so RSI crosses
-    /// below `oversold` AT that bar (prev was 50 on the flat phase).
+    /// Build a price series whose SIGNAL-bar (i-1 = idx 15) is a sharp drop
+    /// so RSI crosses below `oversold` AT that bar (prev was 50 on the
+    /// flat phase). 2026-05-13 Codex Fix 2 test-update: extra entry-bar
+    /// appended so the trigger now reads idx 15 (signal-bar) and entries
+    /// open at idx 16 (entry-bar open).
     fn drop_series() -> Vec<Candle> {
-        // 15 flat + 1 down — RSI at index 14 = 50, at index 15 = 0.
+        // 15 flat + 1 down (signal-bar) + 1 entry-bar
         let mut v: Vec<Candle> = (0..15)
             .map(|i| Candle::new(i as i64 * 1800_000, 100.0, 100.5, 99.5, 100.0, 0.0))
             .collect();
         v.push(Candle::new(15 * 1800_000, 100.0, 100.0, 95.0, 95.0, 0.0));
+        v.push(Candle::new(16 * 1800_000, 95.0, 95.5, 94.5, 95.2, 0.0));
         v
     }
 

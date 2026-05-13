@@ -81,21 +81,31 @@ pub fn detect_forex_mr(
     candles: &[Candle],
     params: &ForexMrParams,
 ) -> Option<PollSignal> {
-    if candles.len() < params.bb_period + 4 {
+    // 2026-05-13 Codex HIGH FIX: signal-bar = i-1 (just closed), entry-bar
+    // = i (open known). BB-cross uses signal_bar.close vs prev_close (bars
+    // i-2 to i-1). RSI gate at signal_bar.
+    if candles.len() < params.bb_period + 5 {
         return None;
     }
     let i = candles.len() - 1;
-    let last = candles[i];
+    let trigger_idx = i - 1;
+    let signal_bar = candles[trigger_idx];
+    let entry_bar = candles[i];
     let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
     let (upper, lower) = bollinger(&closes, params.bb_period, params.bb_mult);
-    let (cur_u, prev_u, cur_l, prev_l) = (upper[i]?, upper[i - 1]?, lower[i]?, lower[i - 1]?);
-    let prev_close = closes[i - 1];
+    let (cur_u, prev_u, cur_l, prev_l) = (
+        upper[trigger_idx]?,
+        upper[trigger_idx - 1]?,
+        lower[trigger_idx]?,
+        lower[trigger_idx - 1]?,
+    );
+    let prev_close = closes[trigger_idx - 1];
 
-    // Cross detection.
-    let mut direction = if prev_close >= prev_l && last.close < cur_l {
+    // Cross detection — at signal_bar.
+    let mut direction = if prev_close >= prev_l && signal_bar.close < cur_l {
         // Crossed below lower → long (oversold bounce).
         PositionSide::Long
-    } else if prev_close <= prev_u && last.close > cur_u {
+    } else if prev_close <= prev_u && signal_bar.close > cur_u {
         // Crossed above upper → short.
         PositionSide::Short
     } else {
@@ -105,11 +115,11 @@ pub fn detect_forex_mr(
         direction = direction.opposite();
     }
 
-    // RSI confluence.
+    // RSI confluence — at signal_bar.
     if let Some(period) = params.rsi_period {
         let series = rsi(&closes, period);
         if !rsi_filter_allows(
-            series[i],
+            series[trigger_idx],
             direction,
             params.rsi_long_max,
             params.rsi_short_min,
@@ -130,12 +140,13 @@ pub fn detect_forex_mr(
     // already set → blocked legitimate next-bar signals. Moved cooldown-insert
     // to just before the final Some(PollSignal) construction.
 
-    // Stop_pct via optional ATR-stop.
+    let entry_price = entry_bar.open;
+    // Stop_pct via optional ATR-stop — read at signal_bar.
     let mut stop_pct = params.stop_pct;
     if let Some(at) = cfg.atr_stop {
         let series = atr(candles, at.period as usize);
-        if let Some(a) = series[i] {
-            let atr_stop = (at.stop_mult * a) / last.close.max(1e-9);
+        if let Some(a) = series[trigger_idx] {
+            let atr_stop = (at.stop_mult * a) / entry_price.max(1e-9);
             stop_pct = stop_pct.max(atr_stop);
         }
     }
@@ -148,7 +159,7 @@ pub fn detect_forex_mr(
     }
 
     // Sizing.
-    let factor = resolve_sizing_factor(state, cfg, last.open_time);
+    let factor = resolve_sizing_factor(state, cfg, entry_bar.open_time);
     let mut eff_risk = params.base_risk_frac * factor * params.size_mult;
     if !cfg.bypass_live_caps {
         if let Some(caps) = cfg.live_caps.as_ref() {
@@ -160,12 +171,12 @@ pub fn detect_forex_mr(
     }
     let (stop_price, tp_price) = match direction {
         PositionSide::Long => (
-            last.close * (1.0 - stop_pct),
-            last.close * (1.0 + params.tp_pct),
+            entry_price * (1.0 - stop_pct),
+            entry_price * (1.0 + params.tp_pct),
         ),
         PositionSide::Short => (
-            last.close * (1.0 + stop_pct),
-            last.close * (1.0 - params.tp_pct),
+            entry_price * (1.0 + stop_pct),
+            entry_price * (1.0 - params.tp_pct),
         ),
     };
     state.loss_streak_by_asset_dir.insert(
@@ -179,8 +190,8 @@ pub fn detect_forex_mr(
         symbol: asset.symbol.clone(),
         source_symbol: source_symbol.to_string(),
         direction,
-        entry_time: last.open_time,
-        entry_price: last.close,
+        entry_time: entry_bar.open_time,
+        entry_price,
         stop_price,
         tp_price,
         stop_pct,
@@ -214,13 +225,16 @@ mod tests {
     }
 
     fn build_lower_cross() -> Vec<Candle> {
-        // 28 stable bars (≥ bb_period+4), then a sharp drop on the last bar
-        // pushes close below lower band.
+        // 28 stable bars (≥ bb_period+5 after Codex Fix 3), then a sharp drop
+        // on the SIGNAL bar (i-1) pushes close below lower band, then an
+        // entry-bar follows so the detector's i-1 trigger fires.
         let mut v: Vec<Candle> = (0..28)
             .map(|i| Candle::new(i * 1800_000, 1.0, 1.001, 0.999, 1.0, 0.0))
             .collect();
-        // Final bar: deep drop close — clearly below lower band.
+        // Signal-bar: deep drop close — clearly below lower band.
         v.push(Candle::new(28 * 1800_000, 0.99, 0.99, 0.95, 0.95, 0.0));
+        // Entry-bar: opens at 0.95 (the just-closed price).
+        v.push(Candle::new(29 * 1800_000, 0.95, 0.96, 0.94, 0.95, 0.0));
         v
     }
 

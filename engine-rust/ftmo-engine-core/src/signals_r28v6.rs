@@ -180,10 +180,18 @@ pub fn detect_r28_v6(
     // (TS fires on green-bar bursts regardless of trend; Rust required
     // SMA-slow to be sloping the "right" way too).
     let invert = asset.effective_invert_direction(cfg);
-    let candidates: &[PositionSide] = if asset.disable_short {
-        &[PositionSide::Long]
-    } else {
-        &[PositionSide::Long, PositionSide::Short]
+    // 2026-05-13 Codex HIGH FIX (Fix 6): honor disable_long (was unimplemented)
+    // and deactivate_after_day. TS reference: ftmoLiveEngineV4.ts:1787-1792.
+    if let Some(deact) = asset.deactivate_after_day {
+        if state.day >= deact {
+            return None;
+        }
+    }
+    let candidates: &[PositionSide] = match (asset.disable_long, asset.disable_short) {
+        (true, true) => &[],
+        (true, false) => &[PositionSide::Short],
+        (false, true) => &[PositionSide::Long],
+        (false, false) => &[PositionSide::Long, PositionSide::Short],
     };
 
     for &direction in candidates {
@@ -389,10 +397,28 @@ fn try_detect_direction(
 
     // 11. Sizing pipeline.
     let factor = resolve_sizing_factor(state, cfg, last.open_time);
-    let mut eff_risk = params.base_risk_frac * factor;
+    // 2026-05-13 Codex HIGH FIX (Fix 8): apply dayBasedRiskMultiplier BEFORE
+    // live-cap (TS ftmoLiveEngineV4.ts:1975-1981). When state.day is in the
+    // conservative early-window, scale risk down to preserve capital.
+    let day_risk_mult = match cfg.day_based_risk_multiplier {
+        Some(dbrm) if state.day < dbrm.conservative_first_days => dbrm.conservative_factor,
+        _ => 1.0,
+    };
+    let mut eff_risk = params.base_risk_frac * factor * day_risk_mult;
     if !cfg.bypass_live_caps {
         if let Some(caps) = cfg.live_caps.as_ref() {
             eff_risk = eff_risk.min(caps.max_risk_frac);
+        }
+    }
+    // 2026-05-13 Codex HIGH FIX (Fix 8): derived live-loss cap from
+    // ftmoLiveEngineV4.ts:1991-1997. Cap eff_risk so that the modelled
+    // worst-case loss (effRisk × stopPct × leverage) never exceeds
+    // maxDailyLoss × 0.8. Back-derive from final stop_pct.
+    let live_loss_cap = cfg.max_daily_loss.max(0.0) * 0.8;
+    if stop_pct > 0.0 && cfg.leverage > 0.0 {
+        let modelled_loss = eff_risk * stop_pct * cfg.leverage;
+        if modelled_loss > live_loss_cap && live_loss_cap > 0.0 {
+            eff_risk = live_loss_cap / (stop_pct * cfg.leverage);
         }
     }
     if eff_risk <= 0.0 {
