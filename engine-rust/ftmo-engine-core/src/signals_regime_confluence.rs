@@ -42,6 +42,14 @@ fn compute_vol_confirm_vote(
     if n == 0 || candles.len() <= n {
         return None;
     }
+    // 2026-05-13 Bug-Audit Round 3 — BUG #5 FIX: guard against vol_confirm_mult
+    // ≤ 0 or non-finite. Previously mult=0 made the comparison
+    // `last.volume >= 0 * sma` = `last.volume >= 0` always true → unconditional
+    // fire. Negative mult triggered same pathology. Now treated as "gate
+    // disabled" (no vote).
+    if !params.vol_confirm_mult.is_finite() || params.vol_confirm_mult <= 0.0 {
+        return None;
+    }
     let bo = bo_signal?;
     let last = candles.last()?;
     let sma: f64 = candles[candles.len() - 1 - n..candles.len() - 1]
@@ -49,7 +57,7 @@ fn compute_vol_confirm_vote(
         .map(|c| c.volume)
         .sum::<f64>()
         / n as f64;
-    if sma <= 0.0 || !last.volume.is_finite() {
+    if !sma.is_finite() || sma <= 0.0 || !last.volume.is_finite() {
         return None;
     }
     if last.volume >= params.vol_confirm_mult * sma {
@@ -211,7 +219,6 @@ pub fn detect_regime_confluence(
     let mut short_votes = 0u8;
     let mut r28v6_voted_long = false;
     let mut r28v6_voted_short = false;
-    let mut anchor: Option<&PollSignal> = None;
 
     if let Some(s) = r28.as_ref() {
         match s.direction {
@@ -224,24 +231,17 @@ pub fn detect_regime_confluence(
                 r28v6_voted_short = true;
             }
         }
-        anchor = Some(s);
     }
     if let Some(s) = bo.as_ref() {
         match s.direction {
             PositionSide::Long => long_votes += 1,
             PositionSide::Short => short_votes += 1,
         }
-        if anchor.is_none() {
-            anchor = Some(s);
-        }
     }
     if let Some(s) = mr.as_ref() {
         match s.direction {
             PositionSide::Long => long_votes += 1,
             PositionSide::Short => short_votes += 1,
-        }
-        if anchor.is_none() {
-            anchor = Some(s);
         }
     }
     if let Some(side) = vol_vote {
@@ -252,13 +252,27 @@ pub fn detect_regime_confluence(
     }
 
     let min = params.min_votes as u8;
-    let (winning_side, winning_count) = if long_votes >= short_votes {
+    // 2026-05-13 Bug-Audit Round 3 — BUG #2 FIX: strict majority `>` not `>=`.
+    // Tie (long_votes == short_votes) means no consensus → return None.
+    // Previously `>=` favored Long unconditionally on tied votes which fired
+    // unsupported entries (e.g. R28V6=Long + Bo=Short with mv=1).
+    let (winning_side, winning_count) = if long_votes > short_votes {
         (PositionSide::Long, long_votes)
-    } else {
+    } else if short_votes > long_votes {
         (PositionSide::Short, short_votes)
+    } else {
+        // Tie → no consensus. Return None even if min_votes would be met.
+        return None;
     };
 
     if winning_count < min {
+        return None;
+    }
+    // 2026-05-13 Bug-Audit Round 3 — BUG #3 FIX: disable_short policy enforcement.
+    // Previously breakout/MR/vol-confirm could outvote a disable-short asset
+    // to a Short signal because only R28V6 honored the asset flag internally.
+    // Now enforced at the consensus output (AssetConfig has no disable_long).
+    if asset.disable_short && winning_side == PositionSide::Short {
         return None;
     }
     // 2026-05-13 Audit-3: debug counter for "winning vote without R28V6
@@ -286,16 +300,21 @@ pub fn detect_regime_confluence(
         return None;
     }
 
-    // Prefer the anchor signal's pricing (entry/stop/tp/eff_risk). We do
-    // NOT re-derive sizing — the anchor detector already applied the
-    // engine's risk model. Forcing `direction = winning_side` ensures
-    // votes from opposing detectors don't fire conflicting trades.
+    // 2026-05-13 Bug-Audit Round 3 — BUG #1 FIX: anchor selection. Previously
+    // the FIRST detector to fire (R28V6 typically) became the anchor. When
+    // R28V6 dissented from the winning side (e.g. R28V6=Short, Bo=Long, Vol=Long
+    // → winning=Long but anchor=R28V6-Short), the function returned None and
+    // silently dropped legitimate consensus entries.
+    //
+    // Fix: pick the FIRST signal in (r28, bo, mr) whose direction matches the
+    // winning side. Vol-confirm only carries a PositionSide vote, not a full
+    // PollSignal, so it cannot be the anchor — but the breakout signal (which
+    // vol-confirm parasitizes) is available as a fallback anchor in that case.
+    let anchor: Option<&PollSignal> = [r28.as_ref(), bo.as_ref(), mr.as_ref()]
+        .into_iter()
+        .flatten()
+        .find(|s| s.direction == winning_side);
     let anchor = anchor?;
-    if anchor.direction != winning_side {
-        // Anchor disagrees with winning vote → no valid signal we can
-        // emit without recomputing. Return None rather than fabricate.
-        return None;
-    }
     Some(anchor.clone())
 }
 

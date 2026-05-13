@@ -2028,10 +2028,17 @@ fn run_one_window(
         && !last_passed
         && state.stopped_reason.is_none()
         && state.equity >= 1.0 + cfg.profit_target
+        && state.mtm_equity >= 1.0 + cfg.profit_target
         && state.trading_days.len() >= cfg.min_trading_days as usize
     {
-        // Strict path: final equity must be ≥ 1+target AND min_trading_days
-        // satisfied. No give-back tolerance.
+        // Strict path: final equity AND mtm_equity must both be ≥ 1+target
+        // AND min_trading_days satisfied. No give-back tolerance.
+        //
+        // 2026-05-13 Bug-Audit Round 3 — BUG #6 FIX: previously only equity
+        // was checked, but the R29-R4.3 parity gate in harness.rs L485-487
+        // requires BOTH equity AND mtm_equity ≥ target. The strict-pass tail
+        // mirrors that parity requirement now (also matches TS V4 sim tail
+        // gate which checks both).
         last_passed = true;
     }
 
