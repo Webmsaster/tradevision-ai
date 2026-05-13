@@ -162,7 +162,13 @@ pub fn choppiness_index(candles: &[Candle], period: usize) -> Vec<Option<f64>> {
             .fold(f64::MAX, f64::min);
         let range = max_h - min_l;
         if range > 0.0 && sum_tr > 0.0 {
-            out[i] = Some(100.0 * (sum_tr / range).log10() / log_p);
+            // 2026-05-13 Codex Audit Round 4 — Fix 1: clamp to documented
+            // [0, 100] scale (TS indicators.ts:301). log10(sum_tr/range)
+            // is negative when sum_tr < range (compact range) → CI can be
+            // negative; sum_tr ≫ range can drive CI above 100. Both cases
+            // would mis-fire `choppiness_max` gates.
+            let ci = 100.0 * (sum_tr / range).log10() / log_p;
+            out[i] = Some(ci.clamp(0.0, 100.0));
         }
     }
     out
