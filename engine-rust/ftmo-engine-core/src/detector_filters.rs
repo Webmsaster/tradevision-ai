@@ -221,7 +221,13 @@ pub fn htf_trend_allows(
             PositionSide::Long => f > s,
             PositionSide::Short => f < s,
         },
-        _ => false,
+        // 2026-05-13 Bug-Audit Round 3 — BUG #4 FIX: previously fell to `false`
+        // when EMAs not yet defined (e.g. htf_closes.len() < slow_period during
+        // window warmup). This was asymmetric with the `is_empty()` branch
+        // above (which allows): same "no usable HTF data" condition gave
+        // contradictory verdicts. Now both paths return true (gate dormant
+        // until EMAs are defined).
+        _ => true,
     }
 }
 

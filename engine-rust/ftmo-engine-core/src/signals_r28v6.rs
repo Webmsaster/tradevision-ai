@@ -343,8 +343,16 @@ fn try_detect_direction(
         }
     }
 
-    // 7b. R29-R7: Funding-rate filter — consults trigger-bar value.
-    if !funding_filter_allows(cfg, asset, direction, inputs.funding_series, trigger_idx) {
+    // 7b. R29-R7: Funding-rate filter.
+    //
+    // 2026-05-13 Bug-Audit Round 2 — Bug D FIX: TS reads
+    // `fundingSeries[i]` (entry-bar candle), Rust was reading at
+    // `trigger_idx = i-1`. At 8h settlement boundary bars (~1.5% of 30m
+    // bars per day) the two indices reference DIFFERENT funding rates
+    // because forward-fill convention places the new rate at the
+    // settlement candle. Read at `i` (entry-bar) for parity with TS
+    // ftmoDaytrade24h.ts:4226.
+    if !funding_filter_allows(cfg, asset, direction, inputs.funding_series, i) {
         return None;
     }
 

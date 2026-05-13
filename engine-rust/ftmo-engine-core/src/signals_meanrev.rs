@@ -80,6 +80,15 @@ fn finish_signal(
     // `cooldown_bars` worth of bars block legitimate signals on this asset/dir.
     // Move cooldown-insert below all the "may return None" gates so only
     // emitted signals install the cooldown.
+    //
+    // 2026-05-13 Bug-Audit Round 2 — Bug C clarification: the field name
+    // `loss_streak_by_asset_dir` + `cd_until_bars_seen` suggests "cooldown
+    // ONLY after loss streak", but the actual semantic is ANTI-SPAM: every
+    // emitted MR signal installs a `cooldown_bars` block on the same
+    // asset+direction, regardless of subsequent trade outcome. This is
+    // intentional (per TS V4-Sim parity) — but worth noting that a winning
+    // MR entry also triggers the cooldown, suppressing follow-on entries
+    // for `cooldown_bars`.
     let factor = resolve_sizing_factor(state, cfg, last.open_time);
     let mut eff_risk = asset.risk_frac * factor * src.size_mult;
     if !cfg.bypass_live_caps {

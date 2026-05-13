@@ -222,6 +222,52 @@ fn v5_topaz_tp_for(symbol: &str) -> f64 {
     }
 }
 
+/// Per-asset tp for V5_RUBIN: identical to V5_TOPAZ except INJ 0.045 → 0.050.
+/// Source: ftmoDaytrade24h.ts:7466-7492. Phase ZA single-axis sweep on TOPAZ
+/// concluded INJ wanted tp 5.0% (delta +0.09pp step=1d, +0.54pp step=3d).
+fn v5_rubin_tp_for(symbol: &str) -> f64 {
+    match symbol {
+        "INJ-TREND" => 0.050,
+        other => v5_topaz_tp_for(other),
+    }
+}
+
+/// V5_SAPPHIR basket = V5_RUBIN (14 from TOPAZ) + DOT/TRX/ALGO/NEAR (18 total).
+/// Source: ftmoDaytrade24h.ts:7510-7585. Cache claim: 66.85% step=3d / 64.73%
+/// step=1d / wr 87.65% / TL 0 (best in V5 family on these dimensions).
+const V5_SAPPHIR_NEW_ASSETS: &[&str] = &["DOT-TREND", "TRX-TREND", "ALGO-TREND", "NEAR-TREND"];
+
+/// V5_DIAMOND extension = V5_SAPPHIR + ATOM/LINK/SOL/STX/UNI (23 total).
+/// All 5 are available 30m candles with full history back to 2020-2021.
+/// 2026-05-13 hypothesis: PASSLOCK family pattern is +6-12pp on base; if
+/// adding these net-positive assets even slightly, SAPPHIR_PASSLOCK ≈ 60-65%
+/// could clear 65% on the extended basket.
+const V5_DIAMOND_NEW_ASSETS: &[&str] = &[
+    "ATOM-TREND",
+    "LINK-TREND",
+    "SOL-TREND",
+    "STX-TREND",
+    "UNI-TREND",
+];
+
+/// Per-asset tp for V5_SAPPHIR: V5_RUBIN tps + DOT/TRX/ALGO/NEAR at 0.020.
+fn v5_sapphir_tp_for(symbol: &str) -> f64 {
+    match symbol {
+        "DOT-TREND" | "TRX-TREND" | "ALGO-TREND" | "NEAR-TREND" => 0.020,
+        other => v5_rubin_tp_for(other),
+    }
+}
+
+/// Per-asset tp for V5_DIAMOND: V5_SAPPHIR tps + ATOM/LINK/SOL/STX/UNI at
+/// 0.020 (same conservative default as the SAPPHIR additions — best-guess
+/// before per-asset tuning).
+fn v5_diamond_tp_for(symbol: &str) -> f64 {
+    match symbol {
+        "ATOM-TREND" | "LINK-TREND" | "SOL-TREND" | "STX-TREND" | "UNI-TREND" => 0.020,
+        other => v5_sapphir_tp_for(other),
+    }
+}
+
 /// Base R28_V4 config (parent of R28_V6 / PASSLOCK chain). Mirrors
 /// `FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V4` in
 /// `src/utils/ftmoDaytrade24h.ts:8201-8208` plus the engine stack
@@ -395,6 +441,120 @@ pub fn v5_amber() -> EngineConfig {
     cfg
 }
 
+/// 2026-05-13 V5_AMBER_EXT — V5_AMBER + DOT/TRX/ALGO/NEAR (19 assets). The
+/// SAPPHIR-style basket extension applied to AMBER's higher-uplift engine
+/// stack. AMBER showed +12pp PASSLOCK uplift vs TOPAZ family +8pp; extension
+/// hopes are 60%+ PASSLOCK rate on the wider basket.
+pub fn v5_amber_ext() -> EngineConfig {
+    let mut cfg = v5_amber();
+    cfg.label = "V5_AMBER_EXT".into();
+    let mut extra = make_assets(V5_SAPPHIR_NEW_ASSETS, 0.4);
+    for asset in extra.iter_mut() {
+        asset.tp_pct = Some(0.020);
+        asset.stop_pct = Some(0.05);
+        asset.hold_bars = Some(240);
+    }
+    cfg.assets.extend(extra);
+    cfg
+}
+
+/// 2026-05-13 V5_AMBER_EXT + PASSLOCK.
+pub fn v5_amber_ext_passlock() -> EngineConfig {
+    let mut cfg = v5_amber_ext();
+    cfg.label = "V5_AMBER_EXT_PASSLOCK".into();
+    cfg.close_all_on_target_reached = true;
+    cfg
+}
+
+/// 2026-05-13 V5_AMBER_MAX — V5_AMBER + 9 extra (DOT/TRX/ALGO/NEAR + ATOM/
+/// LINK/SOL/STX/UNI) = 24 assets. Full available 30m universe.
+pub fn v5_amber_max() -> EngineConfig {
+    let mut cfg = v5_amber_ext();
+    cfg.label = "V5_AMBER_MAX".into();
+    let mut extra = make_assets(V5_DIAMOND_NEW_ASSETS, 0.4);
+    for asset in extra.iter_mut() {
+        asset.tp_pct = Some(0.020);
+        asset.stop_pct = Some(0.05);
+        asset.hold_bars = Some(240);
+    }
+    cfg.assets.extend(extra);
+    cfg
+}
+
+/// 2026-05-13 V5_AMBER_MAX + PASSLOCK.
+pub fn v5_amber_max_passlock() -> EngineConfig {
+    let mut cfg = v5_amber_max();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK".into();
+    cfg.close_all_on_target_reached = true;
+    cfg
+}
+
+/// 2026-05-13 V5_AMBER_QUARTZ — AMBER assets + Quartz engine stack:
+/// atrStop p56m2, chandelierExit p56m2 min_move_r=0.5, breakEven 3%,
+/// PTP trigger=0.012 closeFraction=0.7. Hypothesis: AMBER's 15-asset basket
+/// combined with QUARTZ's loss-distribution-improving engine stack lifts
+/// PASSLOCK pass-rate above 60%.
+pub fn v5_amber_quartz() -> EngineConfig {
+    let mut cfg = v5_amber();
+    cfg.label = "V5_AMBER_QUARTZ".into();
+    cfg.atr_stop = Some(crate::config::AtrStop {
+        period: 56,
+        stop_mult: 2.0,
+    });
+    cfg.chandelier_exit = Some(ChandelierExit {
+        period: 56,
+        mult: 2.0,
+        min_move_r: Some(0.5),
+    });
+    cfg.break_even = Some(BreakEven { threshold: 0.03 });
+    cfg.partial_take_profit = Some(PartialTakeProfit {
+        trigger_pct: 0.012,
+        close_fraction: 0.7,
+    });
+    cfg
+}
+
+/// 2026-05-13 V5_AMBER_QUARTZ + PASSLOCK.
+pub fn v5_amber_quartz_passlock() -> EngineConfig {
+    let mut cfg = v5_amber_quartz();
+    cfg.label = "V5_AMBER_QUARTZ_PASSLOCK".into();
+    cfg.close_all_on_target_reached = true;
+    cfg
+}
+
+/// 2026-05-13 V5_AMBER + BreakEven 3% only (isolate the BE contribution).
+pub fn v5_amber_be_passlock() -> EngineConfig {
+    let mut cfg = v5_amber();
+    cfg.label = "V5_AMBER_BE_PASSLOCK".into();
+    cfg.break_even = Some(BreakEven { threshold: 0.03 });
+    cfg.close_all_on_target_reached = true;
+    cfg
+}
+
+/// 2026-05-13 V5_AMBER + PTP only (isolate the PTP contribution).
+pub fn v5_amber_ptp_passlock() -> EngineConfig {
+    let mut cfg = v5_amber();
+    cfg.label = "V5_AMBER_PTP_PASSLOCK".into();
+    cfg.partial_take_profit = Some(PartialTakeProfit {
+        trigger_pct: 0.012,
+        close_fraction: 0.7,
+    });
+    cfg.close_all_on_target_reached = true;
+    cfg
+}
+
+/// 2026-05-13 V5_AMBER + atrStop only (isolate the trailing-stop contribution).
+pub fn v5_amber_atr_passlock() -> EngineConfig {
+    let mut cfg = v5_amber();
+    cfg.label = "V5_AMBER_ATR_PASSLOCK".into();
+    cfg.atr_stop = Some(crate::config::AtrStop {
+        period: 56,
+        stop_mult: 2.0,
+    });
+    cfg.close_all_on_target_reached = true;
+    cfg
+}
+
 /// V5_TOPAZ — V5_QUARTZ minus RUNE (14 assets). Inherits the QUARTZ engine
 /// stack (atrStop p56m2 + chandelier p56m2 + breakEven 3%, mct=10,
 /// allowedHoursUtc=[4,6,8,10,14,18,22]).
@@ -455,6 +615,74 @@ pub fn v5_amber_passlock() -> EngineConfig {
 pub fn v5_topaz_passlock() -> EngineConfig {
     let mut cfg = v5_topaz();
     cfg.label = "V5_TOPAZ_PASSLOCK".into();
+    cfg.close_all_on_target_reached = true;
+    cfg
+}
+
+/// 2026-05-13 V5_RUBIN — V5_TOPAZ + INJ tp 0.045 → 0.050. Cache: 64.40%
+/// step=3d / 61.74% step=1d / wr 86.72% / TL 0. Source: ftmoDaytrade24h.ts:
+/// FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_RUBIN.
+pub fn v5_rubin() -> EngineConfig {
+    let mut cfg = v5_topaz();
+    cfg.label = "V5_RUBIN".into();
+    for asset in cfg.assets.iter_mut() {
+        asset.tp_pct = Some(v5_rubin_tp_for(&asset.symbol));
+    }
+    cfg
+}
+
+/// 2026-05-13 V5_RUBIN + PASSLOCK — closeAllOnTargetReached. Honest target ≥65%.
+pub fn v5_rubin_passlock() -> EngineConfig {
+    let mut cfg = v5_rubin();
+    cfg.label = "V5_RUBIN_PASSLOCK".into();
+    cfg.close_all_on_target_reached = true;
+    cfg
+}
+
+/// 2026-05-13 V5_SAPPHIR — V5_RUBIN + DOT/TRX/ALGO/NEAR (18 assets). Cache:
+/// 66.85% step=3d / 64.73% step=1d / wr 87.65% / TL 0 (best in V5 family on
+/// these dimensions per ftmoDaytrade24h.ts:7510-7522).
+pub fn v5_sapphir() -> EngineConfig {
+    let mut cfg = v5_rubin();
+    cfg.label = "V5_SAPPHIR".into();
+    let mut extra = make_assets(V5_SAPPHIR_NEW_ASSETS, 0.4);
+    for asset in extra.iter_mut() {
+        asset.tp_pct = Some(v5_sapphir_tp_for(&asset.symbol));
+        asset.stop_pct = Some(0.05);
+        asset.hold_bars = Some(240);
+    }
+    cfg.assets.extend(extra);
+    cfg
+}
+
+/// 2026-05-13 V5_SAPPHIR + PASSLOCK — primary 65%-mandate candidate.
+pub fn v5_sapphir_passlock() -> EngineConfig {
+    let mut cfg = v5_sapphir();
+    cfg.label = "V5_SAPPHIR_PASSLOCK".into();
+    cfg.close_all_on_target_reached = true;
+    cfg
+}
+
+/// 2026-05-13 V5_DIAMOND — V5_SAPPHIR + ATOM/LINK/SOL/STX/UNI (23 assets).
+/// Extension over SAPPHIR's basket; new assets default tp 0.020, hold 240.
+pub fn v5_diamond() -> EngineConfig {
+    let mut cfg = v5_sapphir();
+    cfg.label = "V5_DIAMOND".into();
+    let mut extra = make_assets(V5_DIAMOND_NEW_ASSETS, 0.4);
+    for asset in extra.iter_mut() {
+        asset.tp_pct = Some(v5_diamond_tp_for(&asset.symbol));
+        asset.stop_pct = Some(0.05);
+        asset.hold_bars = Some(240);
+    }
+    cfg.assets.extend(extra);
+    cfg
+}
+
+/// 2026-05-13 V5_DIAMOND + PASSLOCK — secondary 65%-mandate candidate
+/// with 23-asset universe diversification.
+pub fn v5_diamond_passlock() -> EngineConfig {
+    let mut cfg = v5_diamond();
+    cfg.label = "V5_DIAMOND_PASSLOCK".into();
     cfg.close_all_on_target_reached = true;
     cfg
 }
@@ -717,6 +945,21 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-obsidian-passlock" => v5_obsidian_passlock(),
         "2h-trend-v5-amber-passlock" => v5_amber_passlock(),
         "2h-trend-v5-topaz-passlock" => v5_topaz_passlock(),
+        "2h-trend-v5-rubin" => v5_rubin(),
+        "2h-trend-v5-rubin-passlock" => v5_rubin_passlock(),
+        "2h-trend-v5-sapphir" => v5_sapphir(),
+        "2h-trend-v5-sapphir-passlock" => v5_sapphir_passlock(),
+        "2h-trend-v5-diamond" => v5_diamond(),
+        "2h-trend-v5-diamond-passlock" => v5_diamond_passlock(),
+        "2h-trend-v5-amber-ext" => v5_amber_ext(),
+        "2h-trend-v5-amber-ext-passlock" => v5_amber_ext_passlock(),
+        "2h-trend-v5-amber-max" => v5_amber_max(),
+        "2h-trend-v5-amber-max-passlock" => v5_amber_max_passlock(),
+        "2h-trend-v5-amber-quartz" => v5_amber_quartz(),
+        "2h-trend-v5-amber-quartz-passlock" => v5_amber_quartz_passlock(),
+        "2h-trend-v5-amber-be-passlock" => v5_amber_be_passlock(),
+        "2h-trend-v5-amber-ptp-passlock" => v5_amber_ptp_passlock(),
+        "2h-trend-v5-amber-atr-passlock" => v5_amber_atr_passlock(),
         "2h-trend-v5-titanium-passlock-lscool-tight" => v5_titanium_passlock_lscool_tight(),
         "2h-trend-v5-titanium-passlock-lscool-loose" => v5_titanium_passlock_lscool_loose(),
         "2h-trend-v5-titanium-passlock-mct5" => v5_titanium_passlock_mct5(),
@@ -738,7 +981,24 @@ pub fn known_selectors() -> &'static [&'static str] {
         "2h-trend-v5-quartz-lite-r28-v6-v4engine",
         "2h-trend-v5-titanium",
         "2h-trend-v5-amber",
+        "2h-trend-v5-amber-passlock",
         "2h-trend-v5-topaz",
+        "2h-trend-v5-topaz-passlock",
+        "2h-trend-v5-rubin",
+        "2h-trend-v5-rubin-passlock",
+        "2h-trend-v5-sapphir",
+        "2h-trend-v5-sapphir-passlock",
+        "2h-trend-v5-diamond",
+        "2h-trend-v5-diamond-passlock",
+        "2h-trend-v5-amber-ext",
+        "2h-trend-v5-amber-ext-passlock",
+        "2h-trend-v5-amber-max",
+        "2h-trend-v5-amber-max-passlock",
+        "2h-trend-v5-amber-quartz",
+        "2h-trend-v5-amber-quartz-passlock",
+        "2h-trend-v5-amber-be-passlock",
+        "2h-trend-v5-amber-ptp-passlock",
+        "2h-trend-v5-amber-atr-passlock",
         "r28_v6_cvd",
         "r28_v6_volimb",
         "r28_v6_poc",
@@ -1042,6 +1302,50 @@ mod tests {
                 "R29-R10 selector {s:?} did not resolve"
             );
         }
+    }
+
+    #[test]
+    fn rubin_sapphir_selectors_resolve_and_shape() {
+        for s in &[
+            "2h-trend-v5-rubin",
+            "2h-trend-v5-rubin-passlock",
+            "2h-trend-v5-sapphir",
+            "2h-trend-v5-sapphir-passlock",
+        ] {
+            assert!(
+                template_by_selector(s).is_some(),
+                "RUBIN/SAPPHIR selector {s:?} did not resolve"
+            );
+        }
+        // V5_RUBIN: same 14 assets as TOPAZ, INJ tp 0.050
+        let rubin = v5_rubin();
+        assert_eq!(rubin.assets.len(), 14);
+        let inj = rubin
+            .assets
+            .iter()
+            .find(|a| a.symbol == "INJ-TREND")
+            .expect("INJ in RUBIN");
+        assert!((inj.tp_pct.unwrap() - 0.050).abs() < 1e-12, "INJ tp 0.050");
+        // V5_RUBIN_PASSLOCK carries PASSLOCK flag
+        assert!(v5_rubin_passlock().close_all_on_target_reached);
+        // V5_SAPPHIR: 18 assets (14 + DOT/TRX/ALGO/NEAR), new ones tp 0.020
+        let sapphir = v5_sapphir();
+        assert_eq!(sapphir.assets.len(), 18);
+        for new_sym in &["DOT-TREND", "TRX-TREND", "ALGO-TREND", "NEAR-TREND"] {
+            let a = sapphir
+                .assets
+                .iter()
+                .find(|a| a.symbol == *new_sym)
+                .unwrap_or_else(|| panic!("{new_sym} missing"));
+            assert!(
+                (a.tp_pct.unwrap() - 0.020).abs() < 1e-12,
+                "{new_sym} tp 0.020"
+            );
+            assert_eq!(a.hold_bars, Some(240), "{new_sym} hold_bars 240");
+            assert!(a.invert_direction, "{new_sym} invert_direction");
+            assert!(a.disable_short, "{new_sym} disable_short");
+        }
+        assert!(v5_sapphir_passlock().close_all_on_target_reached);
     }
 
     #[test]

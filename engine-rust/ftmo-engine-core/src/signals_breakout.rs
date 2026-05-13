@@ -68,6 +68,19 @@ pub fn detect_breakout(
         return None;
     };
 
+    // 2026-05-13 Bug-Audit Round 2 — Bug B FIX (revised): honor only
+    // asset.disable_short. Direction inversion is INCORRECT here because
+    // detect_breakout's output direction is the "open this side" trade
+    // direction — same convention R28V6 emits AFTER its internal invert
+    // bookkeeping. They both fire "Long" on momentum-up regardless of
+    // invert=true. (Previous attempt to invert here regressed Champion C2
+    // by 48pp because it flipped breakout's vote against R28V6's vote in
+    // REGIME consensus.) disable_short still warranted at signal source
+    // for parity with R28V6's `candidates` filter.
+    if asset.disable_short && direction == PositionSide::Short {
+        return None;
+    }
+
     let factor = resolve_sizing_factor(state, cfg, last.open_time);
     let mut eff_risk = params.base_risk_frac * factor;
     if !cfg.bypass_live_caps {

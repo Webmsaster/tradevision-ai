@@ -190,6 +190,44 @@ struct MultiSignalCfg {
     mr_overbought: Option<f64>,
     mr_cooldown: Option<u64>,
     mr_size_mult: Option<f64>,
+    /// 2026-05-13 — R28V6 detector secondary-gate overrides. Activate ADX,
+    /// choppiness, RSI gates that exist in `signals_r28v6.rs` but were
+    /// never wired to a config field. Honest sweep target = lift pass-rate
+    /// above 58-60% plateau on AMBER/AMBER_EXT PASSLOCK by filtering out
+    /// no-trend / overextended entries.
+    r28v6_adx_min: Option<f64>,
+    r28v6_adx_period: Option<usize>,
+    r28v6_chop_max: Option<f64>,
+    r28v6_chop_period: Option<usize>,
+    r28v6_rsi_long_max: Option<f64>,
+    r28v6_rsi_short_min: Option<f64>,
+    r28v6_rsi_period: Option<usize>,
+    /// 2026-05-13 65%-hunt: activate dormant HTF-EMA stack via downsampled
+    /// 30m → 4h closes. When true, every 8th bar of `feed` is forwarded as
+    /// `R28V6Inputs.htf_closes`, gating long-entries on EMA-fast > EMA-slow
+    /// and shorts on the inverse.
+    use_htf_confirm: bool,
+    /// HTF downsample stride (bars). Default 8 (30m → 4h). Configurable for
+    /// experiment: 4 (2h), 16 (8h), 24 (12h), 48 (1d).
+    htf_stride: usize,
+    /// Phase B Regime-Confluence: min consensus votes (1-4). Default 2.
+    regime_min_votes: usize,
+    /// When true, the winning side MUST include the R28V6 detector's vote.
+    regime_require_r28v6: bool,
+    /// 2026-05-13 Phase B-2: enable a 4th vote from a volume-spike confirm.
+    regime_use_vol_confirm: bool,
+    regime_vol_period: usize,
+    regime_vol_mult: f64,
+    /// Force MR-source override even if template doesn't carry one.
+    regime_force_mr: bool,
+    /// 2026-05-13 Audit Round 3: when true, disable the engine's "soft pass"
+    /// tail check that allows a window to pass if target was ever hit AND
+    /// `final_equity >= 0.5 × target`. Strict mode requires `final_equity ≥
+    /// target` at end. Champion C2 (pt=0.04) drops from 80.04% → 73.25%
+    /// under strict rule; Champion B (pt=0.08) drops 72.37% → 64.04%.
+    strict_pass: bool,
+    // Below: deliberately at end so the field-init order in `let cfg =
+    // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
     /// over-blocked legitimate entries (-23pp on R28_V6_PASSLOCK vs TS V4-Sim)
     /// because TS detectAsset's stateless slice-from-zero re-detection is not
@@ -205,6 +243,29 @@ struct MultiSignalCfg {
     /// quality, not trade-count reduction.
     random_gate_keep: Option<f64>,
     random_gate_seed: u64,
+}
+
+/// 2026-05-13 65%-hunt: apply CLI-flag overrides for the secondary R28V6
+/// detector gates (ADX, choppiness, RSI). All gates default to None in
+/// `R28V6Params::default_for`; this helper activates them when the user
+/// passed `--override-adx-min` etc.
+fn apply_r28v6_param_overrides(
+    params: &mut ftmo_engine_core::signals_r28v6::R28V6Params,
+    cfg: &MultiSignalCfg,
+) {
+    if let Some(min) = cfg.r28v6_adx_min {
+        params.adx_min = Some(min);
+        params.adx_period = Some(cfg.r28v6_adx_period.unwrap_or(14));
+    }
+    if let Some(max) = cfg.r28v6_chop_max {
+        params.choppiness_max = Some(max);
+        params.choppiness_period = Some(cfg.r28v6_chop_period.unwrap_or(14));
+    }
+    if cfg.r28v6_rsi_long_max.is_some() || cfg.r28v6_rsi_short_min.is_some() {
+        params.rsi_period = Some(cfg.r28v6_rsi_period.unwrap_or(14));
+        params.rsi_long_max = cfg.r28v6_rsi_long_max;
+        params.rsi_short_min = cfg.r28v6_rsi_short_min;
+    }
 }
 
 /// R29-PassrateHunt: post-template config mutations. Bundle all override
@@ -237,8 +298,16 @@ struct CfgOverrides {
     idl_factor: Option<f64>,
     min_trading_days: Option<u32>,
     profit_target: Option<f64>,
+    max_days: Option<u32>,
     lscool_after: Option<u32>,
     lscool_bars: Option<u64>,
+    /// 2026-05-13 Hebel 2: cross-asset stress filter (e.g. BTC trend gate
+    /// for AMBER basket). Activates `cfg.cross_asset_filter` and injects
+    /// per-asset cross-symbol closes at sweep-loop time.
+    cross_asset_sym: Option<String>,
+    cross_asset_dir: Option<String>,
+    cross_asset_fast: Option<u32>,
+    cross_asset_slow: Option<u32>,
 }
 
 fn apply_overrides(
@@ -364,6 +433,20 @@ fn apply_overrides(
     if let Some(d) = ov.min_trading_days {
         cfg.min_trading_days = d;
     }
+    if let Some(d) = ov.max_days {
+        cfg.max_days = d;
+    }
+    if let Some(sym) = ov.cross_asset_sym.as_ref() {
+        cfg.cross_asset_filter = Some(ftmo_engine_core::config::CrossAssetFilter {
+            symbol: sym.clone(),
+            direction: ov
+                .cross_asset_dir
+                .clone()
+                .unwrap_or_else(|| "any".to_string()),
+            fast_period: ov.cross_asset_fast.unwrap_or(9),
+            slow_period: ov.cross_asset_slow.unwrap_or(21),
+        });
+    }
     if ov.pdd_from_peak.is_some() || ov.pdd_factor.is_some() {
         let cur = cfg.peak_drawdown_throttle.unwrap_or(PeakDrawdownThrottle {
             from_peak: 0.03,
@@ -446,6 +529,11 @@ enum SignalSrc {
     /// entry-type is set BUT the cfg has `funding_rate_filter` configured,
     /// falls back to `detect_r28_v6` so the funding gate gets honoured.
     PerAssetCfg,
+    /// 2026-05-13 Phase B — Regime-Confluence consensus detector. Polls
+    /// R28V6 + breakout + meanrev simultaneously and only emits a signal
+    /// when `min_votes` detectors agree on direction. See
+    /// `signals_regime_confluence.rs`.
+    RegimeConfluence,
 }
 
 fn main() -> Result<()> {
@@ -491,6 +579,18 @@ fn main() -> Result<()> {
     let mut idl_factor: Option<f64> = None; // intraday_daily_loss_throttle.size_factor
     let mut min_trading_days: Option<u32> = None;
     let mut profit_target: Option<f64> = None;
+    let mut max_days: Option<u32> = None;
+    let mut cross_asset_sym: Option<String> = None;
+    let mut cross_asset_dir: Option<String> = None;
+    let mut cross_asset_fast: Option<u32> = None;
+    let mut cross_asset_slow: Option<u32> = None;
+    let mut adx_min: Option<f64> = None;
+    let mut adx_period: Option<usize> = None;
+    let mut chop_max: Option<f64> = None;
+    let mut chop_period: Option<usize> = None;
+    let mut rsi_long_max: Option<f64> = None;
+    let mut rsi_short_min: Option<f64> = None;
+    let mut rsi_period: Option<usize> = None;
     let mut lscool_after: Option<u32> = None;
     let mut lscool_bars: Option<u64> = None;
     let mut ml_model_path: Option<PathBuf> = None;
@@ -506,6 +606,15 @@ fn main() -> Result<()> {
     let mut timeframe: Option<String> = None;
     let mut also_fire_meanrev: bool = false;
     let mut also_fire_breakout: bool = false;
+    let mut use_htf_confirm: bool = false;
+    let mut htf_stride: usize = 8;
+    let mut regime_min_votes: usize = 2;
+    let mut regime_require_r28v6: bool = false;
+    let mut regime_use_vol_confirm: bool = false;
+    let mut regime_vol_period: usize = 20;
+    let mut regime_vol_mult: f64 = 1.2;
+    let mut regime_force_mr: bool = false;
+    let mut strict_pass: bool = false;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
@@ -544,6 +653,7 @@ fn main() -> Result<()> {
                     "trend" => SignalSrc::Trend,
                     "r28v6" => SignalSrc::R28V6,
                     "per-asset" => SignalSrc::PerAssetCfg,
+                    "regime" | "regime-confluence" => SignalSrc::RegimeConfluence,
                     other => return Err(anyhow!("unknown --signals: {other}")),
                 };
             }
@@ -592,6 +702,24 @@ fn main() -> Result<()> {
             "--idl-factor" => idl_factor = Some(need!("--idl-factor").parse()?),
             "--min-trading-days" => min_trading_days = Some(need!("--min-trading-days").parse()?),
             "--profit-target" => profit_target = Some(need!("--profit-target").parse()?),
+            "--max-days" => max_days = Some(need!("--max-days").parse()?),
+            "--cross-asset-sym" => cross_asset_sym = Some(need!("--cross-asset-sym")),
+            "--cross-asset-dir" => cross_asset_dir = Some(need!("--cross-asset-dir")),
+            "--cross-asset-fast" => cross_asset_fast = Some(need!("--cross-asset-fast").parse()?),
+            "--cross-asset-slow" => cross_asset_slow = Some(need!("--cross-asset-slow").parse()?),
+            "--override-adx-min" => adx_min = Some(need!("--override-adx-min").parse()?),
+            "--override-adx-period" => adx_period = Some(need!("--override-adx-period").parse()?),
+            "--override-chop-max" => chop_max = Some(need!("--override-chop-max").parse()?),
+            "--override-chop-period" => {
+                chop_period = Some(need!("--override-chop-period").parse()?)
+            }
+            "--override-rsi-long-max" => {
+                rsi_long_max = Some(need!("--override-rsi-long-max").parse()?)
+            }
+            "--override-rsi-short-min" => {
+                rsi_short_min = Some(need!("--override-rsi-short-min").parse()?)
+            }
+            "--override-rsi-period" => rsi_period = Some(need!("--override-rsi-period").parse()?),
             "--lscool-after" => lscool_after = Some(need!("--lscool-after").parse()?),
             "--lscool-bars" => lscool_bars = Some(need!("--lscool-bars").parse()?),
             "--trades-out" => trades_out = Some(PathBuf::from(need!("--trades-out"))),
@@ -614,6 +742,15 @@ fn main() -> Result<()> {
             "--timeframe" => timeframe = Some(need!("--timeframe")),
             "--also-fire-meanrev" => also_fire_meanrev = true,
             "--also-fire-breakout" => also_fire_breakout = true,
+            "--use-htf-confirm" => use_htf_confirm = true,
+            "--htf-stride" => htf_stride = need!("--htf-stride").parse()?,
+            "--strict-pass" => strict_pass = true,
+            "--regime-min-votes" => regime_min_votes = need!("--regime-min-votes").parse()?,
+            "--regime-require-r28v6" => regime_require_r28v6 = true,
+            "--regime-vol-confirm" => regime_use_vol_confirm = true,
+            "--regime-vol-period" => regime_vol_period = need!("--regime-vol-period").parse()?,
+            "--regime-vol-mult" => regime_vol_mult = need!("--regime-vol-mult").parse()?,
+            "--regime-force-mr" => regime_force_mr = true,
             "--mr-period" => mr_period = Some(need!("--mr-period").parse()?),
             "--mr-oversold" => mr_oversold = Some(need!("--mr-oversold").parse()?),
             "--mr-overbought" => mr_overbought = Some(need!("--mr-overbought").parse()?),
@@ -699,6 +836,11 @@ fn main() -> Result<()> {
         idl_factor,
         min_trading_days,
         profit_target,
+        max_days,
+        cross_asset_sym,
+        cross_asset_dir,
+        cross_asset_fast,
+        cross_asset_slow,
         lscool_after,
         lscool_bars,
     };
@@ -727,6 +869,22 @@ fn main() -> Result<()> {
                 mr_overbought,
                 mr_cooldown,
                 mr_size_mult,
+                r28v6_adx_min: adx_min,
+                r28v6_adx_period: adx_period,
+                r28v6_chop_max: chop_max,
+                r28v6_chop_period: chop_period,
+                r28v6_rsi_long_max: rsi_long_max,
+                r28v6_rsi_short_min: rsi_short_min,
+                r28v6_rsi_period: rsi_period,
+                use_htf_confirm,
+                htf_stride,
+                regime_min_votes,
+                regime_require_r28v6,
+                regime_use_vol_confirm,
+                regime_vol_period,
+                regime_vol_mult,
+                regime_force_mr,
+                strict_pass,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -849,7 +1007,9 @@ fn run_single_asset(
                     .unwrap()
                     .push(atr_series[i]);
                 let signals_for_bar: Vec<PollSignal> = match signals {
-                    SignalSrc::None | SignalSrc::PerAssetCfg => vec![],
+                    SignalSrc::None | SignalSrc::PerAssetCfg | SignalSrc::RegimeConfluence => {
+                        vec![]
+                    }
                     SignalSrc::Breakout => {
                         let arr = feed.get(symbol.as_str()).unwrap();
                         match detect_breakout(
@@ -994,6 +1154,7 @@ fn signal_label(s: SignalSrc) -> &'static str {
         SignalSrc::Trend => "trend",
         SignalSrc::R28V6 => "r28v6",
         SignalSrc::PerAssetCfg => "per-asset",
+        SignalSrc::RegimeConfluence => "regime",
     }
 }
 
@@ -1424,10 +1585,19 @@ fn run_one_window(
     let mut feed: HashMap<String, Vec<Candle>> = HashMap::new();
     let mut atr_feed: HashMap<String, Vec<Option<f64>>> = HashMap::new();
     let mut funding_feed: HashMap<String, Vec<Option<f64>>> = HashMap::new();
+    // 2026-05-13 65%-hunt: per-symbol HTF closes (every `htf_stride`-th
+    // primary close). Only populated when `multi_signal.use_htf_confirm`.
+    let mut htf_closes_buf: HashMap<String, Vec<f64>> = HashMap::new();
     for sym in symbols.iter() {
         feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
         atr_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
         funding_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
+        if multi_signal.use_htf_confirm {
+            htf_closes_buf.insert(
+                sym.clone(),
+                Vec::with_capacity((hi - lo) / multi_signal.htf_stride + 8),
+            );
+        }
     }
 
     // PerAssetCfg dispatch: prefer per-asset entry-type (cvd/volimb/poc)
@@ -1467,6 +1637,11 @@ fn run_one_window(
                 .and_then(|s| s.get(i).copied())
                 .flatten();
             funding_feed.get_mut(sym).unwrap().push(f);
+            if multi_signal.use_htf_confirm && i % multi_signal.htf_stride == 0 {
+                if let Some(buf) = htf_closes_buf.get_mut(sym) {
+                    buf.push(c.close);
+                }
+            }
         }
     }
 
@@ -1513,11 +1688,27 @@ fn run_one_window(
                 .and_then(|s| s.get(i).copied())
                 .flatten();
             funding_feed.get_mut(sym).unwrap().push(f);
+            if multi_signal.use_htf_confirm && i % multi_signal.htf_stride == 0 {
+                if let Some(buf) = htf_closes_buf.get_mut(sym) {
+                    buf.push(c.close);
+                }
+            }
         }
 
         // Build signals: one detector pass per asset entry, dispatched off
         // its config field set when in PerAssetCfg mode.
         let mut signals_for_bar: Vec<PollSignal> = Vec::new();
+
+        // 2026-05-13 Hebel 2: build cross-asset closes (e.g. BTCUSDT) once
+        // per bar, then re-use for every asset's detector call below. Only
+        // built when cfg.cross_asset_filter is set (CLI flag activated).
+        let cross_closes_owned: Option<Vec<f64>> = cfg
+            .cross_asset_filter
+            .as_ref()
+            .and_then(|f| feed.get(f.symbol.as_str()))
+            .map(|v| v.iter().map(|c| c.close).collect());
+        let cross_closes_slice: Option<&[f64]> = cross_closes_owned.as_deref();
+
         for asset in cfg.assets.iter() {
             let source = asset
                 .source_symbol
@@ -1541,11 +1732,23 @@ fn run_one_window(
                         // all-or-nothing: ONE asset with cvd_entry silenced
                         // ALL others. Now each asset that doesn't set an
                         // alt entry-type falls through individually.
-                        let r28p = R28V6Params::default_for(asset, cfg);
+                        let mut r28p = R28V6Params::default_for(asset, cfg);
+                        apply_r28v6_param_overrides(&mut r28p, multi_signal);
                         let funding = funding_feed.get(&source).map(|v| v.as_slice());
+                        // 2026-05-13 65%-hunt: enable dormant HTF-EMA stack
+                        // confirmation. `htf_closes` was always None in the
+                        // sweep path → `htf_trend_allows()` never ran. Build
+                        // a same-source HTF series by downsampling primary
+                        // 30m bars every 8 → 4h closes (htf_fast=9 / htf_slow=21
+                        // = 9× & 21× 4h-bar EMAs).
+                        let htf_buf = htf_closes_buf.get(&source).map(|v| v.as_slice());
                         let r28in = R28V6Inputs {
-                            htf_closes: None,
-                            cross_asset_closes: None,
+                            htf_closes: if multi_signal.use_htf_confirm {
+                                htf_buf
+                            } else {
+                                None
+                            },
+                            cross_asset_closes: cross_closes_slice,
                             news_events: None,
                             funding_series: funding,
                         };
@@ -1561,10 +1764,16 @@ fn run_one_window(
                     detect_trend_pullback(&mut state, cfg, asset, &source, arr, &tp)
                 }
                 SignalSrc::R28V6 => {
-                    let r28p = R28V6Params::default_for(asset, cfg);
+                    let mut r28p = R28V6Params::default_for(asset, cfg);
+                    apply_r28v6_param_overrides(&mut r28p, multi_signal);
                     let funding = funding_feed.get(&source).map(|v| v.as_slice());
+                    let htf_buf = htf_closes_buf.get(&source).map(|v| v.as_slice());
                     let r28in = R28V6Inputs {
-                        htf_closes: None,
+                        htf_closes: if multi_signal.use_htf_confirm {
+                            htf_buf
+                        } else {
+                            None
+                        },
                         cross_asset_closes: None,
                         news_events: None,
                         funding_series: funding,
@@ -1582,6 +1791,53 @@ fn run_one_window(
                         },
                     );
                     detect_mean_reversion(&mut state, cfg, asset, &source, arr, &src)
+                }
+                SignalSrc::RegimeConfluence => {
+                    let funding = funding_feed.get(&source).map(|v| v.as_slice());
+                    let htf_buf = htf_closes_buf.get(&source).map(|v| v.as_slice());
+                    let r28in = R28V6Inputs {
+                        htf_closes: if multi_signal.use_htf_confirm {
+                            htf_buf
+                        } else {
+                            None
+                        },
+                        cross_asset_closes: cross_closes_slice,
+                        news_events: None,
+                        funding_series: funding,
+                    };
+                    let mr_override = if multi_signal.regime_force_mr {
+                        Some(ftmo_engine_core::config::MeanReversionSource {
+                            period: multi_signal.mr_period.unwrap_or(14),
+                            oversold: multi_signal.mr_oversold.unwrap_or(25.0),
+                            overbought: multi_signal.mr_overbought.unwrap_or(75.0),
+                            cooldown_bars: multi_signal.mr_cooldown.unwrap_or(8),
+                            size_mult: multi_signal.mr_size_mult.unwrap_or(0.5),
+                        })
+                    } else {
+                        None
+                    };
+                    let rc_params =
+                        ftmo_engine_core::signals_regime_confluence::RegimeConfluenceParams {
+                            min_votes: multi_signal.regime_min_votes,
+                            require_r28v6: multi_signal.regime_require_r28v6,
+                            mr_source_override: mr_override,
+                            use_vol_confirm: multi_signal.regime_use_vol_confirm,
+                            vol_confirm_period: multi_signal.regime_vol_period,
+                            vol_confirm_mult: multi_signal.regime_vol_mult,
+                            // 2026-05-13 Audit Round 2 — propagate R28V6 secondary
+                            // gate flags into REGIME mode so they don't silently
+                            // no-op.
+                            r28v6_adx_min: multi_signal.r28v6_adx_min,
+                            r28v6_adx_period: multi_signal.r28v6_adx_period,
+                            r28v6_chop_max: multi_signal.r28v6_chop_max,
+                            r28v6_chop_period: multi_signal.r28v6_chop_period,
+                            r28v6_rsi_long_max: multi_signal.r28v6_rsi_long_max,
+                            r28v6_rsi_short_min: multi_signal.r28v6_rsi_short_min,
+                            r28v6_rsi_period: multi_signal.r28v6_rsi_period,
+                        };
+                    ftmo_engine_core::signals_regime_confluence::detect_regime_confluence(
+                        &mut state, cfg, asset, &source, arr, &rc_params, &r28in,
+                    )
                 }
                 SignalSrc::None => None,
             };
@@ -1753,7 +2009,13 @@ fn run_one_window(
     // bar count is short of `cfg.max_days` (e.g. 28×48 bars on a 30-day
     // max_days config) never trigger the harness force-close path; any
     // mid-run target-hit was silently discarded as `passed=false`.
-    if !last_passed && state.stopped_reason.is_none() {
+    //
+    // 2026-05-13 Audit Round 3 (bug-frei 80% audit): strict_pass disables
+    // the "give-back half" soft rule below — only equity >= 1+target at
+    // window-end counts as pass. On Champion C2 (pt=0.04) this drops
+    // 80.04% → 73.25% (31 soft passes / 456 windows). For honest FTMO
+    // backtests use --strict-pass.
+    if !last_passed && state.stopped_reason.is_none() && !multi_signal.strict_pass {
         let target_hit = state.first_target_hit_day.is_some()
             && state.trading_days.len() >= cfg.min_trading_days as usize;
         let final_equity_floor = 1.0 + cfg.profit_target * 0.5;
@@ -1762,6 +2024,22 @@ fn run_one_window(
         if target_hit && !give_back_too_far {
             last_passed = true;
         }
+    } else if multi_signal.strict_pass
+        && !last_passed
+        && state.stopped_reason.is_none()
+        && state.equity >= 1.0 + cfg.profit_target
+        && state.mtm_equity >= 1.0 + cfg.profit_target
+        && state.trading_days.len() >= cfg.min_trading_days as usize
+    {
+        // Strict path: final equity AND mtm_equity must both be ≥ 1+target
+        // AND min_trading_days satisfied. No give-back tolerance.
+        //
+        // 2026-05-13 Bug-Audit Round 3 — BUG #6 FIX: previously only equity
+        // was checked, but the R29-R4.3 parity gate in harness.rs L485-487
+        // requires BOTH equity AND mtm_equity ≥ target. The strict-pass tail
+        // mirrors that parity requirement now (also matches TS V4 sim tail
+        // gate which checks both).
+        last_passed = true;
     }
 
     let report = WindowResult {
