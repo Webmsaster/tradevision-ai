@@ -353,14 +353,15 @@ fn try_detect_direction(
 
     // 7b. R29-R7: Funding-rate filter.
     //
-    // 2026-05-13 Bug-Audit Round 2 — Bug D FIX: TS reads
-    // `fundingSeries[i]` (entry-bar candle), Rust was reading at
-    // `trigger_idx = i-1`. At 8h settlement boundary bars (~1.5% of 30m
-    // bars per day) the two indices reference DIFFERENT funding rates
-    // because forward-fill convention places the new rate at the
-    // settlement candle. Read at `i` (entry-bar) for parity with TS
-    // ftmoDaytrade24h.ts:4226.
-    if !funding_filter_allows(cfg, asset, direction, inputs.funding_series, i) {
+    // 2026-05-13 Codex Round 7 #B1 RE-FIX: previous Bug-D fix mis-cited
+    // TS as "reads at entry-bar". Actually TS `ftmoDaytrade24h.ts:4231`
+    // reads `fundingSeries[i]` where `i` is the TS detectAsset LOOP
+    // variable (signal-bar; entry is `eb = candles[i+1]`). So TS reads
+    // at the TRIGGER bar, not the entry bar. Rust's `trigger_idx = i-1`
+    // (where Rust's `i` = entry-bar) IS the matching index. The 8h-
+    // boundary forward-fill that Bug-D was meant to align is now
+    // correctly anchored at the trigger bar.
+    if !funding_filter_allows(cfg, asset, direction, inputs.funding_series, trigger_idx) {
         return None;
     }
 

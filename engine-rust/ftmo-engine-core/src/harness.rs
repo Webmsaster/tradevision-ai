@@ -680,11 +680,19 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                 }
             }
             // CrossAssetFilter — only allow when reference symbol's trend matches.
+            // 2026-05-13 Codex Round 7 #B2 FIX: slice cross_closes to EXCLUDE
+            // the current bar's close (mirror sweep.rs:1739 Codex Fix 4).
+            // Detector path already excludes; harness was re-running the
+            // filter with the full feed → lookahead on this gate. The
+            // saturating_sub(1) handles the empty-feed warmup edge.
             if let Some(filter) = cfg.cross_asset_filter.as_ref() {
                 let cross_closes: Vec<f64> = input
                     .candles_by_source
                     .get(&filter.symbol)
-                    .map(|arr| arr.iter().map(|c| c.close).collect())
+                    .map(|arr| {
+                        let end = arr.len().saturating_sub(1);
+                        arr.iter().take(end).map(|c| c.close).collect()
+                    })
                     .unwrap_or_default();
                 if !crate::detector_filters::cross_asset_filter_allows(
                     filter,
@@ -707,7 +715,10 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                     let cross_closes: Vec<f64> = input
                         .candles_by_source
                         .get(&filter.symbol)
-                        .map(|arr| arr.iter().map(|c| c.close).collect())
+                        .map(|arr| {
+                            let end = arr.len().saturating_sub(1);
+                            arr.iter().take(end).map(|c| c.close).collect()
+                        })
                         .unwrap_or_default();
                     if !crate::detector_filters::cross_asset_filter_allows(
                         filter,
@@ -830,10 +841,26 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
             if !state.trading_days.contains(&state.day) {
                 state.trading_days.push(state.day);
             }
+            // 2026-05-13 Codex Round 7 #B5 FIX: reentry size_mult could push
+            // eff_risk ABOVE the caps the detector already applied. Re-apply
+            // the centralized caps after the multiplication so reentry never
+            // exceeds maxRiskFrac or LIVE_LOSS_CAP.
             let final_eff_risk = match reentry_scale {
-                Some(m) => sig.eff_risk * m,
+                Some(m) => crate::sizing::apply_post_factor_caps(
+                    cfg,
+                    state,
+                    sig.eff_risk * m,
+                    sig.stop_pct,
+                ),
                 None => sig.eff_risk,
             };
+            if final_eff_risk <= 0.0 {
+                result.skipped.push(crate::signal::PollSkip {
+                    asset: sig.symbol.clone(),
+                    reason: "reentry eff_risk ≤ 0 after caps".into(),
+                });
+                continue;
+            }
             // Consume the re-entry slot now that we're opening.
             if reentry_scale.is_some() {
                 state.pending_reentries.remove(&key);

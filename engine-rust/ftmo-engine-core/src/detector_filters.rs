@@ -184,24 +184,28 @@ pub fn cross_asset_filter_allows(
     if cross_closes.is_empty() {
         return true; // no data = don't gate
     }
+    // 2026-05-13 Codex Round 7 #B3 FIX: TS source `ftmoDaytrade24h.ts:4282`
+    // uses 3-way trend test (price > fast AND fast > slow). Rust previously
+    // only checked fast > slow which over-blocks when current close sits
+    // between fast and slow EMAs (e.g. mean-reverting bars). Read the last
+    // close (post-B2 fix this is the closed-signal-bar's close, no
+    // lookahead) and require ALL three relationships.
     let fast = ema(cross_closes, filter.fast_period as usize);
     let slow = ema(cross_closes, filter.slow_period as usize);
     let last_fast = fast.last().copied().flatten();
     let last_slow = slow.last().copied().flatten();
-    let (Some(f), Some(s)) = (last_fast, last_slow) else {
+    let last_close = cross_closes.last().copied();
+    let (Some(f), Some(s), Some(c)) = (last_fast, last_slow, last_close) else {
         return false;
     };
-    let trend = if f > s {
+    let trend = if c > f && f > s {
         Some(PositionSide::Long)
-    } else if f < s {
+    } else if c < f && f < s {
         Some(PositionSide::Short)
     } else {
         None
     };
-    // 2026-05-13 Codex HIGH FIX (Fix 7): TS-style boolean blockers take
-    // precedence over legacy `direction` field. TS reference
-    // `ftmoDaytrade24h.ts:841-842`: skipLongs blocks longs when secondary
-    // is downtrend, skipShorts blocks shorts when secondary is uptrend.
+    // TS-style boolean blockers take precedence over legacy `direction` field.
     if filter.skip_longs_if_secondary_downtrend
         && side == PositionSide::Long
         && trend == Some(PositionSide::Short)
@@ -214,16 +218,12 @@ pub fn cross_asset_filter_allows(
     {
         return false;
     }
-    // If only the TS-style blockers are set (no legacy direction), allow
-    // through unless explicitly blocked above. Otherwise fall back to the
-    // legacy direction semantics for back-compat.
     if filter.skip_longs_if_secondary_downtrend || filter.skip_shorts_if_secondary_uptrend {
         return true;
     }
     match filter.direction.as_str() {
         "long" => trend == Some(PositionSide::Long) && side == PositionSide::Long,
         "short" => trend == Some(PositionSide::Short) && side == PositionSide::Short,
-        // "any" or unknown → require trend matches signal side
         _ => trend == Some(side),
     }
 }

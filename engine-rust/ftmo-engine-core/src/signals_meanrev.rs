@@ -89,18 +89,18 @@ fn finish_signal(
     // intentional (per TS V4-Sim parity) — but worth noting that a winning
     // MR entry also triggers the cooldown, suppressing follow-on entries
     // for `cooldown_bars`.
+    // 2026-05-13 Codex Round 7 #B4 FIX: hot-path now uses centralized
+    // apply_post_factor_caps (dayBased + maxRiskFrac + LIVE_LOSS_CAP).
+    // Previously skipped both dayBased and the maxDailyLoss-derived cap,
+    // letting MR-hot-path-only configs silently over-size in early days.
+    let stop_pct = asset.stop_pct.unwrap_or(cfg.stop_pct);
+    let tp_pct = asset.tp_pct.unwrap_or(cfg.tp_pct);
     let factor = resolve_sizing_factor(state, cfg, last.open_time);
-    let mut eff_risk = asset.risk_frac * factor * src.size_mult;
-    if !cfg.bypass_live_caps {
-        if let Some(caps) = cfg.live_caps.as_ref() {
-            eff_risk = eff_risk.min(caps.max_risk_frac);
-        }
-    }
+    let eff_risk =
+        apply_post_factor_caps(cfg, state, asset.risk_frac * factor * src.size_mult, stop_pct);
     if eff_risk <= 0.0 {
         return None;
     }
-    let stop_pct = asset.stop_pct.unwrap_or(cfg.stop_pct);
-    let tp_pct = asset.tp_pct.unwrap_or(cfg.tp_pct);
     let (stop_price, tp_price) = match direction {
         PositionSide::Long => (last.close * (1.0 - stop_pct), last.close * (1.0 + tp_pct)),
         PositionSide::Short => (last.close * (1.0 + stop_pct), last.close * (1.0 - tp_pct)),
