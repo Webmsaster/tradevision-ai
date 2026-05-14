@@ -265,6 +265,14 @@ struct MultiSignalCfg {
     regime_use_smc_fvg: bool,
     regime_use_supertrend: bool,
     regime_use_kalman_trend: bool,
+    // 2026-05-14 — macro / cross-market voters. Toggle-only; external series
+    // are still default-None until per-feed loaders ship.
+    regime_use_cb_premium: bool,
+    regime_use_cme_basis: bool,
+    regime_use_hmm: bool,
+    regime_use_nupl: bool,
+    regime_use_top_trader_ls: bool,
+    regime_use_stablecoin: bool,
     // Below: deliberately at end so the field-init order in `let cfg =
     // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
@@ -862,6 +870,12 @@ fn main() -> Result<()> {
     let mut regime_use_smc_fvg: bool = false;
     let mut regime_use_supertrend: bool = false;
     let mut regime_use_kalman_trend: bool = false;
+    let mut regime_use_cb_premium: bool = false;
+    let mut regime_use_cme_basis: bool = false;
+    let mut regime_use_hmm: bool = false;
+    let mut regime_use_nupl: bool = false;
+    let mut regime_use_top_trader_ls: bool = false;
+    let mut regime_use_stablecoin: bool = false;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
@@ -1048,6 +1062,17 @@ fn main() -> Result<()> {
             "--regime-use-smc-fvg" => regime_use_smc_fvg = true,
             "--regime-use-supertrend" => regime_use_supertrend = true,
             "--regime-use-kalman-trend" => regime_use_kalman_trend = true,
+            // 2026-05-14 macro / cross-market voter toggles. Series loaders
+            // are pending; until then these flags enable the voter machinery
+            // but the helper abstains on missing series → zero votes
+            // contributed. CLI surface is forward-compatible so a follow-up
+            // loader patch immediately activates the voters.
+            "--regime-use-cb-premium" => regime_use_cb_premium = true,
+            "--regime-use-cme-basis" => regime_use_cme_basis = true,
+            "--regime-use-hmm" => regime_use_hmm = true,
+            "--regime-use-nupl" => regime_use_nupl = true,
+            "--regime-use-top-trader-ls" => regime_use_top_trader_ls = true,
+            "--regime-use-stablecoin" => regime_use_stablecoin = true,
             // Detector #20 — day-stage sizing CLI flags.
             "--ds-aggressive-until" => {
                 ds_aggressive_until = Some(need!("--ds-aggressive-until").parse()?)
@@ -1316,6 +1341,12 @@ fn main() -> Result<()> {
                 regime_use_smc_fvg,
                 regime_use_supertrend,
                 regime_use_kalman_trend,
+                regime_use_cb_premium,
+                regime_use_cme_basis,
+                regime_use_hmm,
+                regime_use_nupl,
+                regime_use_top_trader_ls,
+                regime_use_stablecoin,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -1837,6 +1868,32 @@ fn run_multi_asset(
             .collect(),
     };
 
+    // 2026-05-14 Detector #22 — load DefiLlama USDT-supply macro feed once and
+    // forward-fill it onto each symbol's candle timeline. Single global feed
+    // reused across the basket. Missing file → all symbols get `vec![None; n]`.
+    let stablecoin_by_sym: HashMap<String, Vec<Option<f64>>> = match &funding_dir {
+        Some(fd) => {
+            let pts = loader::load_stablecoin_supply(fd).unwrap_or(None);
+            let mut map = HashMap::new();
+            for sym in symbols.iter() {
+                let candles_for_sym = aligned.get(sym).expect("aligned missing sym");
+                let series = match &pts {
+                    Some(p) => loader::align_stablecoin_supply(candles_for_sym, p),
+                    None => vec![None; candles_for_sym.len()],
+                };
+                map.insert(sym.clone(), series);
+            }
+            map
+        }
+        None => symbols
+            .iter()
+            .map(|s| {
+                let n = aligned.get(s).map(|v| v.len()).unwrap_or(0);
+                (s.clone(), vec![None; n])
+            })
+            .collect(),
+    };
+
     let total_bars = aligned_times.len();
     println!(
         "ftmo-sweep (multi-asset): {} symbols × {} bars; cfg={}; {} threads; funding={}",
@@ -1959,6 +2016,7 @@ fn run_multi_asset(
     let aligned = Arc::new(aligned);
     let atr_by_sym = Arc::new(atr_by_sym);
     let funding_by_sym = Arc::new(funding_by_sym);
+    let stablecoin_by_sym = Arc::new(stablecoin_by_sym);
     let symbols = Arc::new(symbols);
     let multi_signal = Arc::new(multi_signal);
     let ml_features_by_sym = Arc::new(ml_features_by_sym);
@@ -1976,6 +2034,7 @@ fn run_multi_asset(
                 aligned.as_ref(),
                 atr_by_sym.as_ref(),
                 funding_by_sym.as_ref(),
+                stablecoin_by_sym.as_ref(),
                 symbols.as_ref(),
                 signals_mode,
                 writer.clone(),
@@ -2056,6 +2115,7 @@ fn run_one_window(
     aligned: &HashMap<String, Vec<Candle>>,
     atr_by_sym: &HashMap<String, Vec<Option<f64>>>,
     funding_by_sym: &HashMap<String, Vec<Option<f64>>>,
+    stablecoin_by_sym: &HashMap<String, Vec<Option<f64>>>,
     symbols: &[String],
     signals_mode: SignalSrc,
     writer: Arc<Mutex<Option<BufWriter<File>>>>,
@@ -2072,6 +2132,9 @@ fn run_one_window(
     let mut feed: HashMap<String, Vec<Candle>> = HashMap::new();
     let mut atr_feed: HashMap<String, Vec<Option<f64>>> = HashMap::new();
     let mut funding_feed: HashMap<String, Vec<Option<f64>>> = HashMap::new();
+    // 2026-05-14 Detector #22 — per-symbol growing stablecoin-supply feed,
+    // parallel to funding_feed. Each bar appends `stablecoin_by_sym[sym][i]`.
+    let mut stablecoin_feed: HashMap<String, Vec<Option<f64>>> = HashMap::new();
     // 2026-05-13 65%-hunt: per-symbol HTF closes (every `htf_stride`-th
     // primary close). Only populated when `multi_signal.use_htf_confirm`.
     let mut htf_closes_buf: HashMap<String, Vec<f64>> = HashMap::new();
@@ -2079,6 +2142,7 @@ fn run_one_window(
         feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
         atr_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
         funding_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
+        stablecoin_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
         if multi_signal.use_htf_confirm {
             htf_closes_buf.insert(
                 sym.clone(),
@@ -2124,6 +2188,11 @@ fn run_one_window(
                 .and_then(|s| s.get(i).copied())
                 .flatten();
             funding_feed.get_mut(sym).unwrap().push(f);
+            let sc = stablecoin_by_sym
+                .get(sym)
+                .and_then(|s| s.get(i).copied())
+                .flatten();
+            stablecoin_feed.get_mut(sym).unwrap().push(sc);
             if multi_signal.use_htf_confirm && i % multi_signal.htf_stride == 0 {
                 if let Some(buf) = htf_closes_buf.get_mut(sym) {
                     buf.push(c.close);
@@ -2184,6 +2253,11 @@ fn run_one_window(
                 .and_then(|s| s.get(i).copied())
                 .flatten();
             funding_feed.get_mut(sym).unwrap().push(f);
+            let sc = stablecoin_by_sym
+                .get(sym)
+                .and_then(|s| s.get(i).copied())
+                .flatten();
+            stablecoin_feed.get_mut(sym).unwrap().push(sc);
         }
 
         // Build signals: one detector pass per asset entry, dispatched off
@@ -2364,15 +2438,15 @@ fn run_one_window(
                             },
                             use_cmf: multi_signal.regime_use_cmf,
                             cmf_params: ftmo_engine_core::signals_cmf::CmfParams::default_30m_crypto(),
-                            use_cme_basis: false,
+                            use_cme_basis: multi_signal.regime_use_cme_basis,
                             cme_basis_params: ftmo_engine_core::signals_cme_basis::CmeBasisParams::default(),
-                            use_hmm_regime: false,
+                            use_hmm_regime: multi_signal.regime_use_hmm,
                             hmm_regime_params: ftmo_engine_core::signals_hmm_regime::HmmRegimeParams::default(),
-                            use_nupl: false,
+                            use_nupl: multi_signal.regime_use_nupl,
                             nupl_params: ftmo_engine_core::signals_nupl::NuplParams::default(),
                             use_rsi_hidden_div: multi_signal.regime_use_rsi_hidden_div,
                             rsi_hidden_div_params: ftmo_engine_core::signals_rsi_hidden_div::RsiHiddenDivParams::default(),
-                            use_top_trader_ls: false,
+                            use_top_trader_ls: multi_signal.regime_use_top_trader_ls,
                             top_trader_ls_params: ftmo_engine_core::signals_top_trader_ls::TopTraderLsParams::default(),
                             // 2026-05-14 Phase-3 voters — default-off; CLI flags wired below in a follow-up.
                             use_ad_line: multi_signal.regime_use_ad_line,
@@ -2387,9 +2461,54 @@ fn run_one_window(
                             supertrend_params: ftmo_engine_core::signals_supertrend::SupertrendParams::default_30m_crypto(),
                             use_kalman_trend: multi_signal.regime_use_kalman_trend,
                             kalman_trend_params: ftmo_engine_core::signals_kalman_trend::KalmanTrendParams::default_30m_crypto(),
+                            // 2026-05-14 — newly-wired macro / cross-market voters.
+                            //
+                            // Activation status per voter:
+                            //   --regime-use-hmm       ACTIVE (HMM falls back to
+                            //                          `HmmModel::default_btc_30m()`
+                            //                          when hmm_model is None, so
+                            //                          the voter fires immediately
+                            //                          on any backtest).
+                            //   --regime-use-cb-premium     INERT until a per-bar
+                            //   --regime-use-cme-basis        cb_premium / cme_basis
+                            //   --regime-use-top-trader-ls   / top-trader-LS /
+                            //   --regime-use-nupl             nupl-samples /
+                            //   --regime-use-stablecoin       stablecoin supply
+                            //                          series is fed via
+                            //                          `RegimeConfluenceInputs`.
+                            //                          Loader-side helpers exist
+                            //                          for stablecoin
+                            //                          (`loader::load_stablecoin_
+                            //                          supply`) but are not yet
+                            //                          wired into the sweep loop.
+                            //                          CLI flag accepts the
+                            //                          toggle so future loader
+                            //                          patches activate the
+                            //                          voter without re-touching
+                            //                          this surface.
+                            use_cb_premium: multi_signal.regime_use_cb_premium,
+                            cb_premium_params: ftmo_engine_core::signals_cb_premium::CbPremiumParams::default(),
+                            use_stablecoin_flow: multi_signal.regime_use_stablecoin,
+                            stablecoin_flow_params: ftmo_engine_core::signals_stablecoin_flow::StablecoinFlowParams::default_30m_crypto(),
+                            hmm_model: None,
+                            nupl_samples: None,
+                        };
+                    let stablecoin_slice =
+                        stablecoin_feed.get(&source).map(|v| v.as_slice());
+                    let regime_inputs =
+                        ftmo_engine_core::signals_regime_confluence::RegimeConfluenceInputs {
+                            stablecoin_supply_series: stablecoin_slice,
+                            ..ftmo_engine_core::signals_regime_confluence::RegimeConfluenceInputs::default()
                         };
                     ftmo_engine_core::signals_regime_confluence::detect_regime_confluence(
-                        &mut state, cfg, asset, &source, arr, &rc_params, &r28in,
+                        &mut state,
+                        cfg,
+                        asset,
+                        &source,
+                        arr,
+                        &rc_params,
+                        &r28in,
+                        &regime_inputs,
                     )
                 }
                 SignalSrc::None => None,

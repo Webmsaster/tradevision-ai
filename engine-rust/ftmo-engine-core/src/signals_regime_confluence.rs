@@ -24,9 +24,26 @@ use crate::config::{AssetConfig, EngineConfig};
 use crate::position::PositionSide;
 use crate::signal::PollSignal;
 use crate::signals_breakout::{detect_breakout, BreakoutParams};
+use crate::signals_hmm_regime::HmmModel;
 use crate::signals_meanrev::detect_mean_reversion;
+use crate::signals_nupl::{NuplSample, NuplSeries};
 use crate::signals_r28v6::{detect_r28_v6, R28V6Inputs, R28V6Params};
 use crate::state::EngineState;
+
+/// External time-series fed to the macro / cross-market voters
+/// (CB-Premium, CME-Basis, Top-Trader-LS, Stablecoin-Supply-Flow). Every
+/// field is `Option<&[Option<f64>]>` so callers that haven't loaded a feed
+/// pass `None` → the corresponding voter abstains gracefully. Loader-side
+/// helpers (`loader::align_funding`-style) align the source feed onto the
+/// per-bar candle index so `series[i]` corresponds to `candles[i]`.
+#[derive(Default, Clone, Copy)]
+pub struct RegimeConfluenceInputs<'a> {
+    pub cb_premium_series: Option<&'a [Option<f64>]>,
+    pub cme_basis_series: Option<&'a [Option<f64>]>,
+    pub top_ls_series: Option<&'a [Option<f64>]>,
+    pub global_ls_series: Option<&'a [Option<f64>]>,
+    pub stablecoin_supply_series: Option<&'a [Option<f64>]>,
+}
 
 /// 2026-05-13 Phase 3b — VWAP-trend vote helper. Returns the trend
 /// direction sampled from VWAP — Long if signal-bar close > VWAP AND VWAP
@@ -223,6 +240,26 @@ pub struct RegimeConfluenceParams {
     /// 2026-05-14 Phase-2 — Top-trader long/short follow voter (smart-money).
     pub use_top_trader_ls: bool,
     pub top_trader_ls_params: crate::signals_top_trader_ls::TopTraderLsParams,
+    /// 2026-05-14 Detector #33 — CME futures-basis premium voter (BTC-only).
+    /// Loader feeds `cme_basis_series` (annualised premium f64) + optional
+    /// `funding_series` into the helper. When the series is absent the voter
+    /// abstains.
+    pub use_cb_premium: bool,
+    pub cb_premium_params: crate::signals_cb_premium::CbPremiumParams,
+    /// 2026-05-14 Detector #22 — USDT stablecoin-supply-flow voter
+    /// (LONG-only macro regime gate). Requires `stablecoin_supply_series`
+    /// in `RegimeConfluenceInputs`.
+    pub use_stablecoin_flow: bool,
+    pub stablecoin_flow_params: crate::signals_stablecoin_flow::StablecoinFlowParams,
+    /// 2026-05-14 — pre-loaded HMM model passed by value so we don't have to
+    /// propagate lifetimes through the params struct. When `use_hmm_regime`
+    /// is true but `hmm_model` is None, the voter falls back to
+    /// `HmmModel::default_btc_30m()`.
+    pub hmm_model: Option<HmmModel>,
+    /// 2026-05-14 — owned NUPL sample buffer (loader hands the parsed JSON
+    /// over by value). The voter wraps it in a borrowed `NuplSeries` at call
+    /// time so the sweep loop avoids per-bar allocation.
+    pub nupl_samples: Option<Vec<NuplSample>>,
     /// 2026-05-14 Phase-3 — A/D-Line divergence voter (#14).
     pub use_ad_line: bool,
     pub ad_line_params: crate::signals_ad_line::AdLineTrendParams,
@@ -282,6 +319,13 @@ impl RegimeConfluenceParams {
             rsi_hidden_div_params: crate::signals_rsi_hidden_div::RsiHiddenDivParams::default(),
             use_top_trader_ls: false,
             top_trader_ls_params: crate::signals_top_trader_ls::TopTraderLsParams::default(),
+            use_cb_premium: false,
+            cb_premium_params: crate::signals_cb_premium::CbPremiumParams::default(),
+            use_stablecoin_flow: false,
+            stablecoin_flow_params:
+                crate::signals_stablecoin_flow::StablecoinFlowParams::default_30m_crypto(),
+            hmm_model: None,
+            nupl_samples: None,
             use_ad_line: false,
             ad_line_params: crate::signals_ad_line::AdLineTrendParams::default_30m_crypto(),
             use_aroon: false,
@@ -330,6 +374,7 @@ pub fn detect_regime_confluence(
     candles: &[Candle],
     params: &RegimeConfluenceParams,
     inputs: &R28V6Inputs<'_>,
+    regime_inputs: &RegimeConfluenceInputs<'_>,
 ) -> Option<PollSignal> {
     // 2026-05-13 Audit-2 fix: each probe gets its OWN clone of state so
     // a probe's internal state-mutations (resolve_sizing_factor mutates
@@ -381,6 +426,20 @@ pub fn detect_regime_confluence(
         && !params.use_stop_hunt
         && !params.use_bb_z_mr
         && !params.use_ofi
+        && !params.use_cmf
+        && !params.use_rsi_hidden_div
+        && !params.use_ad_line
+        && !params.use_aroon
+        && !params.use_double_top
+        && !params.use_smc_fvg
+        && !params.use_supertrend
+        && !params.use_kalman_trend
+        && !params.use_cb_premium
+        && !params.use_cme_basis
+        && !params.use_hmm_regime
+        && !params.use_nupl
+        && !params.use_top_trader_ls
+        && !params.use_stablecoin_flow
     {
         return None;
     }
@@ -504,6 +563,89 @@ pub fn detect_regime_confluence(
     } else {
         None
     };
+    // 2026-05-14 Detector #33 — CME/Coinbase basis-premium voter (BTC-only).
+    // Series fed via RegimeConfluenceInputs; absent series → abstain.
+    let cb_premium_vote = if params.use_cb_premium {
+        crate::signals_cb_premium::compute_cb_premium_vote(
+            candles,
+            regime_inputs.cb_premium_series,
+            asset,
+            &params.cb_premium_params,
+        )
+    } else {
+        None
+    };
+    // 2026-05-14 Detector #33 — CME futures-basis voter. Helper consumes the
+    // funding-series carried by R28V6Inputs as the "spread mode" subtrahend.
+    let cme_basis_vote = if params.use_cme_basis {
+        crate::signals_cme_basis::compute_cme_basis_vote(
+            candles,
+            regime_inputs.cme_basis_series,
+            inputs.funding_series,
+            asset,
+            &params.cme_basis_params,
+        )
+    } else {
+        None
+    };
+    // 2026-05-14 — HMM 3-state regime voter. Caller passes an owned model in
+    // params (no per-bar allocation). When None we synthesise the default
+    // BTC-30m model once on the stack and pass a borrow into the helper.
+    let hmm_default = if params.use_hmm_regime && params.hmm_model.is_none() {
+        Some(HmmModel::default_btc_30m())
+    } else {
+        None
+    };
+    let hmm_vote = if params.use_hmm_regime {
+        let model_ref: &HmmModel = params
+            .hmm_model
+            .as_ref()
+            .or(hmm_default.as_ref())
+            .expect("hmm model present when use_hmm_regime=true");
+        crate::signals_hmm_regime::compute_hmm_regime_vote(
+            candles,
+            model_ref,
+            &params.hmm_regime_params,
+        )
+    } else {
+        None
+    };
+    // 2026-05-14 — NUPL macro voter. Loader-side parses JSON into
+    // params.nupl_samples; we wrap a borrowed view per call.
+    let nupl_vote = if params.use_nupl {
+        match params.nupl_samples.as_ref() {
+            Some(samples) if candles.len() >= 2 => {
+                let series = NuplSeries::new(samples);
+                let signal_bar = &candles[candles.len() - 2];
+                crate::signals_nupl::compute_nupl_vote(signal_bar, &series, &params.nupl_params)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    // 2026-05-14 — Top-trader long/short follow voter. Two aligned series.
+    let top_trader_vote = if params.use_top_trader_ls {
+        crate::signals_top_trader_ls::compute_top_trader_ls_vote(
+            regime_inputs.top_ls_series,
+            regime_inputs.global_ls_series,
+            candles,
+            asset,
+            &params.top_trader_ls_params,
+        )
+    } else {
+        None
+    };
+    // 2026-05-14 Detector #22 — USDT-supply long-only macro voter.
+    let stablecoin_vote = if params.use_stablecoin_flow {
+        crate::signals_stablecoin_flow::compute_stablecoin_flow_vote(
+            regime_inputs.stablecoin_supply_series,
+            candles,
+            &params.stablecoin_flow_params,
+        )
+    } else {
+        None
+    };
 
     // Count directional votes. We allow a None probe to count as "abstain"
     // — only positive votes count toward the threshold.
@@ -609,6 +751,42 @@ pub fn detect_regime_confluence(
         }
     }
     if let Some(side) = kalman_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = cb_premium_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = cme_basis_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = hmm_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = nupl_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = top_trader_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = stablecoin_vote {
         match side {
             PositionSide::Long => long_votes += 1,
             PositionSide::Short => short_votes += 1,
@@ -770,7 +948,14 @@ mod tests {
             funding_series: None,
         };
         let s = detect_regime_confluence(
-            &mut state, &cfg, &asset, "BTCUSDT", &candles, &params, &inputs,
+            &mut state,
+            &cfg,
+            &asset,
+            "BTCUSDT",
+            &candles,
+            &params,
+            &inputs,
+            &RegimeConfluenceInputs::default(),
         );
         assert!(s.is_none(), "flat market: no detector should fire");
     }
@@ -795,7 +980,14 @@ mod tests {
             funding_series: None,
         };
         let s = detect_regime_confluence(
-            &mut state, &cfg, &asset, "BTCUSDT", &candles, &params, &inputs,
+            &mut state,
+            &cfg,
+            &asset,
+            "BTCUSDT",
+            &candles,
+            &params,
+            &inputs,
+            &RegimeConfluenceInputs::default(),
         );
         // require_r28v6 forces a winning vote that includes R28V6. On flat
         // candles none of the detectors fire so result is None either way,
@@ -843,6 +1035,7 @@ mod tests {
             &flat_candles(100),
             &params,
             &nop_inputs(),
+            &RegimeConfluenceInputs::default(),
         );
         assert!(
             s.is_none(),
@@ -870,6 +1063,7 @@ mod tests {
             &flat_candles(100),
             &params,
             &nop_inputs(),
+            &RegimeConfluenceInputs::default(),
         );
         assert!(s.is_none(), "mv=4 with 3 max detectors must be unreachable");
     }
@@ -894,6 +1088,7 @@ mod tests {
             &flat_candles(100),
             &params,
             &nop_inputs(),
+            &RegimeConfluenceInputs::default(),
         );
         assert_eq!(state.equity, pre_equity, "equity must not change");
         assert_eq!(

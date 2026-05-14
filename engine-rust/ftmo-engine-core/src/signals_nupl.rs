@@ -5,15 +5,19 @@
 //! NUPL is a **macro / long-term-cycle** indicator. It measures the aggregate
 //! unrealised profit/loss of all on-chain holders, normalised by market cap:
 //!
-//!     NUPL = (market_cap − realised_cap) / market_cap
+//! ```text
+//! NUPL = (market_cap − realised_cap) / market_cap
+//! ```
 //!
 //! Glassnode's canonical bands (Renato Shirakashi 2018):
 //!
-//!     NUPL > +0.75   →  EUPHORIA / GREED / cycle TOP region
-//!     NUPL > +0.50   →  belief         (mid-bull warning)
-//!     NUPL > +0.25   →  optimism / anxiety
-//!     NUPL ∈ [0, +0.25] → hope / fear (neutral)
-//!     NUPL < 0       →  capitulation / cycle BOTTOM
+//! ```text
+//! NUPL > +0.75   →  EUPHORIA / GREED / cycle TOP region
+//! NUPL > +0.50   →  belief         (mid-bull warning)
+//! NUPL > +0.25   →  optimism / anxiety
+//! NUPL ∈ [0, +0.25] → hope / fear (neutral)
+//! NUPL < 0       →  capitulation / cycle BOTTOM
+//! ```
 //!
 //! These bands move on a **multi-week to multi-month** time scale. The mean
 //! dwell-time in any single regime is roughly **60-180 days** for BTC across
