@@ -255,6 +255,9 @@ struct MultiSignalCfg {
     ofi_threshold: f64,
     ofi_sma: usize,
     ofi_cooldown: u64,
+    // 2026-05-14 Phase-2 voter flags (CMF + RSI-Hidden-Divergence wired).
+    regime_use_cmf: bool,
+    regime_use_rsi_hidden_div: bool,
     // Below: deliberately at end so the field-init order in `let cfg =
     // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
@@ -842,6 +845,9 @@ fn main() -> Result<()> {
     let mut ofi_threshold: f64 = 0.20;
     let mut ofi_sma: usize = 20;
     let mut ofi_cooldown: u64 = 12;
+    // 2026-05-14 Phase-2 — voter on/off flags.
+    let mut regime_use_cmf: bool = false;
+    let mut regime_use_rsi_hidden_div: bool = false;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
@@ -1018,6 +1024,9 @@ fn main() -> Result<()> {
             "--ofi-threshold" => ofi_threshold = need!("--ofi-threshold").parse()?,
             "--ofi-sma" => ofi_sma = need!("--ofi-sma").parse()?,
             "--ofi-cooldown" => ofi_cooldown = need!("--ofi-cooldown").parse()?,
+            // 2026-05-14 Phase-2 voter flags
+            "--regime-use-cmf" => regime_use_cmf = true,
+            "--regime-use-rsi-hidden-div" => regime_use_rsi_hidden_div = true,
             // Detector #20 — day-stage sizing CLI flags.
             "--ds-aggressive-until" => {
                 ds_aggressive_until = Some(need!("--ds-aggressive-until").parse()?)
@@ -1278,6 +1287,8 @@ fn main() -> Result<()> {
                 ofi_threshold,
                 ofi_sma,
                 ofi_cooldown,
+                regime_use_cmf,
+                regime_use_rsi_hidden_div,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -2324,6 +2335,18 @@ fn run_one_window(
                                 cooldown_bars: multi_signal.ofi_cooldown,
                                 ..ftmo_engine_core::signals_ofi::OfiPersistentParams::default_30m_crypto()
                             },
+                            use_cmf: multi_signal.regime_use_cmf,
+                            cmf_params: ftmo_engine_core::signals_cmf::CmfParams::default_30m_crypto(),
+                            use_cme_basis: false,
+                            cme_basis_params: ftmo_engine_core::signals_cme_basis::CmeBasisParams::default(),
+                            use_hmm_regime: false,
+                            hmm_regime_params: ftmo_engine_core::signals_hmm_regime::HmmRegimeParams::default(),
+                            use_nupl: false,
+                            nupl_params: ftmo_engine_core::signals_nupl::NuplParams::default(),
+                            use_rsi_hidden_div: multi_signal.regime_use_rsi_hidden_div,
+                            rsi_hidden_div_params: ftmo_engine_core::signals_rsi_hidden_div::RsiHiddenDivParams::default(),
+                            use_top_trader_ls: false,
+                            top_trader_ls_params: ftmo_engine_core::signals_top_trader_ls::TopTraderLsParams::default(),
                         };
                     ftmo_engine_core::signals_regime_confluence::detect_regime_confluence(
                         &mut state, cfg, asset, &source, arr, &rc_params, &r28in,

@@ -138,7 +138,7 @@ fn compute_vol_confirm_vote(
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RegimeConfluenceParams {
     /// Number of detectors that must agree on direction. With 3 detectors
     /// in the panel, 2 = majority vote, 3 = unanimous.
@@ -205,6 +205,24 @@ pub struct RegimeConfluenceParams {
     /// Lookahead-safe: window strictly ends at `signal_idx = len-2`.
     pub use_ofi: bool,
     pub ofi_params: crate::signals_ofi::OfiPersistentParams,
+    /// 2026-05-14 Phase-2 — Chaikin Money Flow voter (volume-weighted price-position).
+    pub use_cmf: bool,
+    pub cmf_params: crate::signals_cmf::CmfParams,
+    /// 2026-05-14 Phase-2 — CME futures basis premium voter (BTC-only).
+    pub use_cme_basis: bool,
+    pub cme_basis_params: crate::signals_cme_basis::CmeBasisParams,
+    /// 2026-05-14 Phase-2 — HMM regime classifier voter (3-state bear/range/bull).
+    pub use_hmm_regime: bool,
+    pub hmm_regime_params: crate::signals_hmm_regime::HmmRegimeParams,
+    /// 2026-05-14 Phase-2 — NUPL regime voter (multi-week macro on-chain signal).
+    pub use_nupl: bool,
+    pub nupl_params: crate::signals_nupl::NuplParams,
+    /// 2026-05-14 Phase-2 — RSI hidden-divergence trend-continuation voter.
+    pub use_rsi_hidden_div: bool,
+    pub rsi_hidden_div_params: crate::signals_rsi_hidden_div::RsiHiddenDivParams,
+    /// 2026-05-14 Phase-2 — Top-trader long/short follow voter (smart-money).
+    pub use_top_trader_ls: bool,
+    pub top_trader_ls_params: crate::signals_top_trader_ls::TopTraderLsParams,
 }
 
 impl RegimeConfluenceParams {
@@ -234,6 +252,18 @@ impl RegimeConfluenceParams {
             bb_z_params: crate::signals_bb_zscore_mr::BollingerZScoreSource::default(),
             use_ofi: false,
             ofi_params: crate::signals_ofi::OfiPersistentParams::default_30m_crypto(),
+            use_cmf: false,
+            cmf_params: crate::signals_cmf::CmfParams::default_30m_crypto(),
+            use_cme_basis: false,
+            cme_basis_params: crate::signals_cme_basis::CmeBasisParams::default(),
+            use_hmm_regime: false,
+            hmm_regime_params: crate::signals_hmm_regime::HmmRegimeParams::default(),
+            use_nupl: false,
+            nupl_params: crate::signals_nupl::NuplParams::default(),
+            use_rsi_hidden_div: false,
+            rsi_hidden_div_params: crate::signals_rsi_hidden_div::RsiHiddenDivParams::default(),
+            use_top_trader_ls: false,
+            top_trader_ls_params: crate::signals_top_trader_ls::TopTraderLsParams::default(),
         }
     }
 
@@ -394,6 +424,20 @@ pub fn detect_regime_confluence(
     } else {
         None
     };
+    // 2026-05-14 Phase-2 voters — module-only registered. Wire via dedicated flags.
+    let cmf_vote = if params.use_cmf {
+        crate::signals_cmf::compute_cmf_vote(candles, &params.cmf_params, cfg)
+    } else {
+        None
+    };
+    let rsi_hd_vote = if params.use_rsi_hidden_div {
+        crate::signals_rsi_hidden_div::compute_rsi_hidden_div_vote(
+            candles,
+            &params.rsi_hidden_div_params,
+        )
+    } else {
+        None
+    };
 
     // Count directional votes. We allow a None probe to count as "abstain"
     // — only positive votes count toward the threshold.
@@ -451,6 +495,18 @@ pub fn detect_regime_confluence(
         }
     }
     if let Some(side) = ofi_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = cmf_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = rsi_hd_vote {
         match side {
             PositionSide::Long => long_votes += 1,
             PositionSide::Short => short_votes += 1,
