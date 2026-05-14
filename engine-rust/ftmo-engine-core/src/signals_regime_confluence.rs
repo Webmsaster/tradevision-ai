@@ -223,6 +223,24 @@ pub struct RegimeConfluenceParams {
     /// 2026-05-14 Phase-2 — Top-trader long/short follow voter (smart-money).
     pub use_top_trader_ls: bool,
     pub top_trader_ls_params: crate::signals_top_trader_ls::TopTraderLsParams,
+    /// 2026-05-14 Phase-3 — A/D-Line divergence voter (#14).
+    pub use_ad_line: bool,
+    pub ad_line_params: crate::signals_ad_line::AdLineTrendParams,
+    /// 2026-05-14 Phase-3 — Aroon oscillator voter (#17).
+    pub use_aroon: bool,
+    pub aroon_params: crate::signals_aroon::AroonParams,
+    /// 2026-05-14 Phase-3 — Double-Top/Bottom pattern voter (#29).
+    pub use_double_top: bool,
+    pub double_top_params: crate::signals_double_top::DoubleTopParams,
+    /// 2026-05-14 Phase-3 — SMC Fair-Value-Gap voter (#21).
+    pub use_smc_fvg: bool,
+    pub smc_fvg_params: crate::signals_smc_fvg::FvgParams,
+    /// 2026-05-14 Phase-3 — Supertrend volatility-band voter.
+    pub use_supertrend: bool,
+    pub supertrend_params: crate::signals_supertrend::SupertrendParams,
+    /// 2026-05-14 Phase-3 — Kalman trend-filter voter.
+    pub use_kalman_trend: bool,
+    pub kalman_trend_params: crate::signals_kalman_trend::KalmanTrendParams,
 }
 
 impl RegimeConfluenceParams {
@@ -264,6 +282,18 @@ impl RegimeConfluenceParams {
             rsi_hidden_div_params: crate::signals_rsi_hidden_div::RsiHiddenDivParams::default(),
             use_top_trader_ls: false,
             top_trader_ls_params: crate::signals_top_trader_ls::TopTraderLsParams::default(),
+            use_ad_line: false,
+            ad_line_params: crate::signals_ad_line::AdLineTrendParams::default_30m_crypto(),
+            use_aroon: false,
+            aroon_params: crate::signals_aroon::AroonParams::default_30m_crypto(),
+            use_double_top: false,
+            double_top_params: crate::signals_double_top::DoubleTopParams::default(),
+            use_smc_fvg: false,
+            smc_fvg_params: crate::signals_smc_fvg::FvgParams::default_30m_crypto(),
+            use_supertrend: false,
+            supertrend_params: crate::signals_supertrend::SupertrendParams::default_30m_crypto(),
+            use_kalman_trend: false,
+            kalman_trend_params: crate::signals_kalman_trend::KalmanTrendParams::default_30m_crypto(),
         }
     }
 
@@ -438,6 +468,42 @@ pub fn detect_regime_confluence(
     } else {
         None
     };
+    // 2026-05-14 Phase-3 voters (#14, #17, #29, #21 + supertrend + kalman).
+    // All pure helpers — no state-clone juggling required, lookahead-safe by
+    // construction (consult candles[..=len-2]).
+    let ad_line_vote = if params.use_ad_line {
+        crate::signals_ad_line::compute_ad_line_vote(candles, &params.ad_line_params, cfg)
+    } else {
+        None
+    };
+    let aroon_vote = if params.use_aroon {
+        crate::signals_aroon::compute_aroon_vote(candles, &params.aroon_params)
+    } else {
+        None
+    };
+    let double_top_vote = if params.use_double_top {
+        crate::signals_double_top::compute_double_top_vote(candles, &params.double_top_params)
+    } else {
+        None
+    };
+    let smc_fvg_vote = if params.use_smc_fvg {
+        crate::signals_smc_fvg::compute_smc_fvg_vote(candles, &params.smc_fvg_params)
+    } else {
+        None
+    };
+    let supertrend_vote = if params.use_supertrend {
+        crate::signals_supertrend::compute_supertrend_vote(candles, &params.supertrend_params)
+    } else {
+        None
+    };
+    let kalman_vote = if params.use_kalman_trend {
+        crate::signals_kalman_trend::compute_kalman_trend_vote(
+            candles,
+            &params.kalman_trend_params,
+        )
+    } else {
+        None
+    };
 
     // Count directional votes. We allow a None probe to count as "abstain"
     // — only positive votes count toward the threshold.
@@ -507,6 +573,42 @@ pub fn detect_regime_confluence(
         }
     }
     if let Some(side) = rsi_hd_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = ad_line_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = aroon_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = double_top_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = smc_fvg_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = supertrend_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = kalman_vote {
         match side {
             PositionSide::Long => long_votes += 1,
             PositionSide::Short => short_votes += 1,

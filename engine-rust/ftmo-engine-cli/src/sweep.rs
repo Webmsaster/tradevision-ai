@@ -258,6 +258,13 @@ struct MultiSignalCfg {
     // 2026-05-14 Phase-2 voter flags (CMF + RSI-Hidden-Divergence wired).
     regime_use_cmf: bool,
     regime_use_rsi_hidden_div: bool,
+    // 2026-05-14 Phase-3 voter flags (7 new modules — cb_premium deferred for series loader).
+    regime_use_ad_line: bool,
+    regime_use_aroon: bool,
+    regime_use_double_top: bool,
+    regime_use_smc_fvg: bool,
+    regime_use_supertrend: bool,
+    regime_use_kalman_trend: bool,
     // Below: deliberately at end so the field-init order in `let cfg =
     // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
@@ -848,6 +855,13 @@ fn main() -> Result<()> {
     // 2026-05-14 Phase-2 — voter on/off flags.
     let mut regime_use_cmf: bool = false;
     let mut regime_use_rsi_hidden_div: bool = false;
+    // 2026-05-14 Phase-3 — voter on/off flags (defaults off).
+    let mut regime_use_ad_line: bool = false;
+    let mut regime_use_aroon: bool = false;
+    let mut regime_use_double_top: bool = false;
+    let mut regime_use_smc_fvg: bool = false;
+    let mut regime_use_supertrend: bool = false;
+    let mut regime_use_kalman_trend: bool = false;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
@@ -1027,6 +1041,13 @@ fn main() -> Result<()> {
             // 2026-05-14 Phase-2 voter flags
             "--regime-use-cmf" => regime_use_cmf = true,
             "--regime-use-rsi-hidden-div" => regime_use_rsi_hidden_div = true,
+            // 2026-05-14 Phase-3 voter flags
+            "--regime-use-ad-line" => regime_use_ad_line = true,
+            "--regime-use-aroon" => regime_use_aroon = true,
+            "--regime-use-double-top" => regime_use_double_top = true,
+            "--regime-use-smc-fvg" => regime_use_smc_fvg = true,
+            "--regime-use-supertrend" => regime_use_supertrend = true,
+            "--regime-use-kalman-trend" => regime_use_kalman_trend = true,
             // Detector #20 — day-stage sizing CLI flags.
             "--ds-aggressive-until" => {
                 ds_aggressive_until = Some(need!("--ds-aggressive-until").parse()?)
@@ -1289,6 +1310,12 @@ fn main() -> Result<()> {
                 ofi_cooldown,
                 regime_use_cmf,
                 regime_use_rsi_hidden_div,
+                regime_use_ad_line,
+                regime_use_aroon,
+                regime_use_double_top,
+                regime_use_smc_fvg,
+                regime_use_supertrend,
+                regime_use_kalman_trend,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -2347,6 +2374,19 @@ fn run_one_window(
                             rsi_hidden_div_params: ftmo_engine_core::signals_rsi_hidden_div::RsiHiddenDivParams::default(),
                             use_top_trader_ls: false,
                             top_trader_ls_params: ftmo_engine_core::signals_top_trader_ls::TopTraderLsParams::default(),
+                            // 2026-05-14 Phase-3 voters — default-off; CLI flags wired below in a follow-up.
+                            use_ad_line: multi_signal.regime_use_ad_line,
+                            ad_line_params: ftmo_engine_core::signals_ad_line::AdLineTrendParams::default_30m_crypto(),
+                            use_aroon: multi_signal.regime_use_aroon,
+                            aroon_params: ftmo_engine_core::signals_aroon::AroonParams::default_30m_crypto(),
+                            use_double_top: multi_signal.regime_use_double_top,
+                            double_top_params: ftmo_engine_core::signals_double_top::DoubleTopParams::default(),
+                            use_smc_fvg: multi_signal.regime_use_smc_fvg,
+                            smc_fvg_params: ftmo_engine_core::signals_smc_fvg::FvgParams::default_30m_crypto(),
+                            use_supertrend: multi_signal.regime_use_supertrend,
+                            supertrend_params: ftmo_engine_core::signals_supertrend::SupertrendParams::default_30m_crypto(),
+                            use_kalman_trend: multi_signal.regime_use_kalman_trend,
+                            kalman_trend_params: ftmo_engine_core::signals_kalman_trend::KalmanTrendParams::default_30m_crypto(),
                         };
                     ftmo_engine_core::signals_regime_confluence::detect_regime_confluence(
                         &mut state, cfg, asset, &source, arr, &rc_params, &r28in,
