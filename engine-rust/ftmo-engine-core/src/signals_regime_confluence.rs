@@ -155,6 +155,98 @@ fn compute_vol_confirm_vote(
     }
 }
 
+/// 2026-05-14 Detector #12 — multi-bar Volume-Profile POC-Z distance voter.
+///
+/// Builds a discrete volume profile over the last `poc_window_bars` (TF-scaled
+/// by `30 / cfg.bar_minutes` so a 30m-tuned window stays time-equivalent on
+/// 5m/2h feeds). Each bar's close is bucketed by `poc_bucket_pct × first-close`,
+/// volumes summed per bucket; bucket with max volume = POC. Distance from
+/// signal-bar close to POC-mid is then z-scored against the window's close-std.
+///
+/// Voting contract:
+///   z ≥ +poc_z_min  → Short  (price far above value → mean-revert down)
+///   z ≤ -poc_z_min  → Long   (price far below value → mean-revert up)
+///   |z| < poc_z_min → None   (within typical band; abstain)
+///
+/// Lookahead-safe: the window strictly ends at `signal_idx = candles.len() - 2`
+/// (the last fully-closed bar). The entry bar `candles[candles.len() - 1]`
+/// is NEVER consulted — verified by `poc_z_window_excludes_entry_bar` test.
+fn compute_poc_z_vote(
+    candles: &[Candle],
+    params: &RegimeConfluenceParams,
+    cfg: &EngineConfig,
+) -> Option<PositionSide> {
+    // TF-scale: 30 / cfg.bar_minutes so a 30m-tuned `poc_window_bars` stays
+    // time-equivalent on 5m/2h feeds. Same convention as r29r5::detect_vol_poc.
+    let scale = (30.0 / (cfg.bar_minutes.max(1) as f64)).round().max(1.0) as usize;
+    let n = (params.poc_window_bars as usize).saturating_mul(scale);
+    if n < 4 || candles.len() < n + 2 {
+        return None;
+    }
+    if !params.poc_z_min.is_finite() || params.poc_z_min <= 0.0 {
+        return None;
+    }
+    if !params.poc_bucket_pct.is_finite() || params.poc_bucket_pct <= 0.0 {
+        return None;
+    }
+
+    let signal_idx = candles.len() - 2;
+    // Window = signal_idx-n+1 ..= signal_idx (n bars ending at last-closed).
+    let window = &candles[signal_idx + 1 - n..=signal_idx];
+    let first_close = window[0].close;
+    if !first_close.is_finite() || first_close <= 0.0 {
+        return None;
+    }
+    let bucket_size = params.poc_bucket_pct * first_close;
+    if bucket_size <= 0.0 || !bucket_size.is_finite() {
+        return None;
+    }
+
+    use std::collections::HashMap;
+    let mut buckets: HashMap<i64, f64> = HashMap::with_capacity(n);
+    let mut closes: Vec<f64> = Vec::with_capacity(n);
+    let mut total_vol = 0.0_f64;
+    for c in window.iter() {
+        if !c.close.is_finite() || !c.volume.is_finite() || c.volume < 0.0 {
+            return None;
+        }
+        let key = (c.close / bucket_size).floor() as i64;
+        *buckets.entry(key).or_insert(0.0) += c.volume;
+        closes.push(c.close);
+        total_vol += c.volume;
+    }
+    if total_vol <= 0.0 {
+        return None;
+    }
+
+    let (&poc_key, _) = buckets.iter().max_by(|a, b| a.1.total_cmp(b.1))?;
+    let poc_price = (poc_key as f64 + 0.5) * bucket_size;
+
+    // Sample-std of closes — guards flat-market (std=0 → no vote).
+    let mean = closes.iter().sum::<f64>() / n as f64;
+    let var = closes.iter().map(|c| (c - mean).powi(2)).sum::<f64>() / (n as f64 - 1.0);
+    let std = var.sqrt();
+    if std <= 0.0 || !std.is_finite() {
+        return None;
+    }
+
+    let signal_close = candles[signal_idx].close;
+    let dist_z = (signal_close - poc_price) / std;
+    if !dist_z.is_finite() {
+        return None;
+    }
+
+    if dist_z >= params.poc_z_min {
+        // Price far above POC value-area → mean-revert short.
+        Some(PositionSide::Short)
+    } else if dist_z <= -params.poc_z_min {
+        // Price far below POC value-area → mean-revert long.
+        Some(PositionSide::Long)
+    } else {
+        None
+    }
+}
+
 // 2026-05-14 Detector #34 — dropped Copy: `cb_premium_params.symbol_allowlist`
 // is a Vec<String> which is owned heap data. Clone is sufficient for the
 // few call-sites that pass-by-value (e.g. test fixtures); the regime
@@ -296,6 +388,22 @@ pub struct RegimeConfluenceParams {
     pub htf_macd_signal: usize,
     pub htf_macd_rising_lookback: usize,
     pub htf_macd_min_magnitude: f64,
+    /// 2026-05-14 Detector #12: multi-bar Volume-Profile POC-Z distance voter.
+    /// 6th independent voter (counting vol_confirm as 4th + future vwap as
+    /// 5th). When `use_poc_z`, a multi-bar volume-profile is built across
+    /// `poc_window_bars` (TF-scaled), bucketing closes by `poc_bucket_pct ×
+    /// first-window-close`. The bar with max bucketed volume is the POC.
+    /// The signal-bar's distance-to-POC is z-scored against the window's
+    /// close-distribution std. If z ≥ +poc_z_min → Short (over-extended
+    /// above value); z ≤ -poc_z_min → Long (deep-discount).
+    ///
+    /// Orthogonal to single-bar `signals_r29r5::detect_vol_poc` (which uses
+    /// a fixed-pct distance threshold) — z-norm gives self-adaptive thresholds
+    /// across regimes (calm vs. volatile).
+    pub use_poc_z: bool,
+    pub poc_window_bars: u32,
+    pub poc_bucket_pct: f64,
+    pub poc_z_min: f64,
 }
 
 impl RegimeConfluenceParams {
@@ -362,6 +470,10 @@ impl RegimeConfluenceParams {
             htf_macd_signal: 9,
             htf_macd_rising_lookback: 1,
             htf_macd_min_magnitude: 0.0,
+            use_poc_z: false,
+            poc_window_bars: 20,
+            poc_bucket_pct: 0.005,
+            poc_z_min: 1.5,
         }
     }
 
@@ -455,6 +567,8 @@ pub fn detect_regime_confluence(
     // can carry quorum with breakout when R28V6 abstains and every other
     // optional voter is off.
     // 2026-05-14 Detector #34: CB-premium can also carry quorum with breakout.
+    // 2026-05-14 Detector #12: POC-Z is also an independent voter — can
+    // carry quorum with breakout when R28V6 abstains.
     if r28.is_none()
         && params.min_votes >= 2
         && !mr_effective_some
@@ -477,6 +591,7 @@ pub fn detect_regime_confluence(
         && !params.use_nupl
         && !params.use_top_trader_ls
         && !params.use_stablecoin_flow
+        && !params.use_poc_z
     {
         return None;
     }
@@ -683,6 +798,15 @@ pub fn detect_regime_confluence(
     } else {
         None
     };
+    // 2026-05-14 Detector #12 — POC-Z voter. Independent of vol_confirm
+    // (bucketed volume profile vs raw SMA) and orthogonal to breakout (uses
+    // price-vs-value-area-z, not price-vs-prev-high). Direction self-derived
+    // from price-vs-POC distribution.
+    let poc_z_vote = if params.use_poc_z {
+        compute_poc_z_vote(candles, params, cfg)
+    } else {
+        None
+    };
 
     // Count directional votes. We allow a None probe to count as "abstain"
     // — only positive votes count toward the threshold.
@@ -824,6 +948,12 @@ pub fn detect_regime_confluence(
         }
     }
     if let Some(side) = stablecoin_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = poc_z_vote {
         match side {
             PositionSide::Long => long_votes += 1,
             PositionSide::Short => short_votes += 1,
@@ -1322,5 +1452,277 @@ mod tests {
         };
         let v = compute_vol_confirm_vote(&candles, &params, Some(&fake_signal));
         assert!(v.is_none(), "sma=0 must not divide-by-zero");
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Detector #12 — multi-bar Volume-Profile POC-Z distance voter tests
+    // ──────────────────────────────────────────────────────────────────
+
+    fn cfg_30m() -> EngineConfig {
+        EngineConfig::r28_v6_passlock_template() // bar_minutes=30
+    }
+
+    fn poc_z_params_on() -> RegimeConfluenceParams {
+        RegimeConfluenceParams {
+            use_poc_z: true,
+            poc_window_bars: 20,
+            poc_bucket_pct: 0.005,
+            poc_z_min: 1.5,
+            ..RegimeConfluenceParams::default_2of3()
+        }
+    }
+
+    fn candle_full(t: i64, close: f64, volume: f64) -> Candle {
+        Candle::new(t, close, close + 0.5, close - 0.5, close, volume)
+    }
+
+    #[test]
+    fn poc_z_zero_period_safe() {
+        // poc_window_bars=0 → n=0 < 4 → None (no divide-by-zero, no panic).
+        let cfg = cfg_30m();
+        let candles: Vec<Candle> = (0..100)
+            .map(|i| candle_full(i * 1_800_000, 100.0, 100.0))
+            .collect();
+        let params = RegimeConfluenceParams {
+            poc_window_bars: 0,
+            ..poc_z_params_on()
+        };
+        let v = compute_poc_z_vote(&candles, &params, &cfg);
+        assert!(v.is_none(), "period=0 must safely produce no vote");
+    }
+
+    #[test]
+    fn poc_z_zero_bucket_safe() {
+        let cfg = cfg_30m();
+        let candles: Vec<Candle> = (0..100)
+            .map(|i| candle_full(i * 1_800_000, 100.0, 100.0))
+            .collect();
+        let params = RegimeConfluenceParams {
+            poc_bucket_pct: 0.0,
+            ..poc_z_params_on()
+        };
+        let v = compute_poc_z_vote(&candles, &params, &cfg);
+        assert!(v.is_none(), "bucket_pct=0 must safely produce no vote");
+    }
+
+    #[test]
+    fn poc_z_nan_volume_safe() {
+        // NaN volume inside window must NOT propagate to result; guard → None.
+        let cfg = cfg_30m();
+        let mut candles: Vec<Candle> = (0..100)
+            .map(|i| candle_full(i * 1_800_000, 100.0, 100.0))
+            .collect();
+        candles[80].volume = f64::NAN;
+        let params = poc_z_params_on();
+        let v = compute_poc_z_vote(&candles, &params, &cfg);
+        assert!(v.is_none(), "NaN volume in window must produce no vote");
+    }
+
+    #[test]
+    fn poc_z_zero_total_volume_safe() {
+        // All-zero volume → total_vol=0 → guard triggers → None.
+        let cfg = cfg_30m();
+        let candles: Vec<Candle> = (0..100)
+            .map(|i| candle_full(i * 1_800_000, 100.0, 0.0))
+            .collect();
+        let params = poc_z_params_on();
+        let v = compute_poc_z_vote(&candles, &params, &cfg);
+        assert!(v.is_none(), "total_vol=0 must safely produce no vote");
+    }
+
+    #[test]
+    fn poc_z_flat_market_zero_std_safe() {
+        // All-equal closes → std=0 → divide-by-zero guard → None.
+        let cfg = cfg_30m();
+        let candles: Vec<Candle> = (0..100)
+            .map(|i| candle_full(i * 1_800_000, 100.0, 100.0))
+            .collect();
+        let params = poc_z_params_on();
+        let v = compute_poc_z_vote(&candles, &params, &cfg);
+        assert!(v.is_none(), "flat market std=0 must not divide-by-zero");
+    }
+
+    #[test]
+    fn poc_z_fires_long_below_poc() {
+        // 25 flat bars (POC ~100, std ~0.04) + signal-bar at 80 (3σ-ish below).
+        // n=20 (bar_minutes=30, scale=1). signal_idx = len - 2 = 28.
+        let cfg = cfg_30m();
+        let mut closes: Vec<f64> = Vec::with_capacity(30);
+        for i in 0..28 {
+            closes.push(100.0 + (i as f64 % 4.0 - 1.5) * 0.05);
+        }
+        closes.push(80.0); // signal-bar idx 28
+        closes.push(80.0); // entry-bar idx 29 (NOT consulted)
+        let candles: Vec<Candle> = closes
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| candle_full(i as i64 * 1_800_000, c, 100.0))
+            .collect();
+        let params = poc_z_params_on();
+        let v = compute_poc_z_vote(&candles, &params, &cfg);
+        assert_eq!(
+            v,
+            Some(PositionSide::Long),
+            "signal-close well below POC must vote Long"
+        );
+    }
+
+    #[test]
+    fn poc_z_fires_short_above_poc() {
+        let cfg = cfg_30m();
+        let mut closes: Vec<f64> = Vec::with_capacity(30);
+        for i in 0..28 {
+            closes.push(100.0 + (i as f64 % 4.0 - 1.5) * 0.05);
+        }
+        closes.push(120.0); // signal-bar idx 28 — high
+        closes.push(120.0); // entry-bar idx 29
+        let candles: Vec<Candle> = closes
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| candle_full(i as i64 * 1_800_000, c, 100.0))
+            .collect();
+        let params = poc_z_params_on();
+        let v = compute_poc_z_vote(&candles, &params, &cfg);
+        assert_eq!(
+            v,
+            Some(PositionSide::Short),
+            "signal-close well above POC must vote Short"
+        );
+    }
+
+    #[test]
+    fn poc_z_signal_at_poc_no_vote() {
+        // Signal-close right at the POC → |z| < poc_z_min → None.
+        let cfg = cfg_30m();
+        let mut closes: Vec<f64> = Vec::with_capacity(30);
+        for i in 0..28 {
+            closes.push(100.0 + (i as f64 % 4.0 - 1.5) * 0.5);
+        }
+        closes.push(100.0); // signal-bar AT POC
+        closes.push(100.0); // entry-bar
+        let candles: Vec<Candle> = closes
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| candle_full(i as i64 * 1_800_000, c, 100.0))
+            .collect();
+        let params = poc_z_params_on();
+        let v = compute_poc_z_vote(&candles, &params, &cfg);
+        assert!(v.is_none(), "signal at POC → |z|<min → abstain");
+    }
+
+    #[test]
+    fn poc_z_window_excludes_entry_bar() {
+        // LOOKAHEAD test (Codex 2026-05-13 #1 bug-class). Build a Short-firing
+        // setup, then mutate the last index (entry bar) to 9999 — decision
+        // must be IDENTICAL.
+        let cfg = cfg_30m();
+        let mut closes: Vec<f64> = Vec::with_capacity(30);
+        for i in 0..28 {
+            closes.push(100.0 + (i as f64 % 4.0 - 1.5) * 0.05);
+        }
+        closes.push(120.0); // signal-bar
+        closes.push(120.0); // entry-bar
+        let mut candles: Vec<Candle> = closes
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| candle_full(i as i64 * 1_800_000, c, 100.0))
+            .collect();
+        let params = poc_z_params_on();
+        let before = compute_poc_z_vote(&candles, &params, &cfg);
+        // Mutate entry-bar to absurd value — must not change decision.
+        let last = candles.len() - 1;
+        candles[last].close = 9999.0;
+        candles[last].high = 9999.5;
+        candles[last].low = 9998.5;
+        candles[last].volume = 1.0e9;
+        let after = compute_poc_z_vote(&candles, &params, &cfg);
+        assert_eq!(
+            before, after,
+            "LOOKAHEAD: mutating entry-bar must NOT change POC-Z decision"
+        );
+        assert_eq!(before, Some(PositionSide::Short));
+    }
+
+    #[test]
+    fn poc_z_5min_tf_scales_window() {
+        // bar_minutes=5 → scale=6 → effective n = 20*6 = 120. Need ≥ 122 candles.
+        let mut cfg = cfg_30m();
+        cfg.bar_minutes = 5;
+        let candles: Vec<Candle> = (0..125)
+            .map(|i| candle_full(i as i64 * 300_000, 100.0, 100.0))
+            .collect();
+        let params = poc_z_params_on();
+        // Flat market → std=0 → None even though n is reachable.
+        let v = compute_poc_z_vote(&candles, &params, &cfg);
+        assert!(
+            v.is_none(),
+            "flat 5m feed safely returns None (scaled n=120)"
+        );
+        // Below scaled-n threshold must early-return None.
+        let short = candles[..100].to_vec();
+        let v2 = compute_poc_z_vote(&short, &params, &cfg);
+        assert!(
+            v2.is_none(),
+            "5m feed below scaled-n threshold must return None"
+        );
+    }
+
+    #[test]
+    fn mv2_poc_z_plus_breakout_consensus() {
+        // Integration: POC-Z votes Long, R28V6 abstains, MR off, vol-confirm
+        // off. POC anchored at ~100 by heavy volume in first 52 bars; later
+        // 48 bars descend with light volume so POC bucket stays at 100.
+        // Signal-bar at 80 → POC-Z Long. detect_regime_confluence MUST NOT
+        // panic on integration; we accept either Some or None depending on
+        // whether breakout fires on the synthetic fixture.
+        let cfg = cfg_30m();
+        let asset = AssetConfig::default();
+        let mut state = EngineState::initial(&cfg.label);
+        let mut closes: Vec<f64> = Vec::with_capacity(102);
+        let mut volumes: Vec<f64> = Vec::with_capacity(102);
+        for i in 0..52 {
+            closes.push(100.0 + (i as f64 % 4.0 - 1.5) * 0.05);
+            volumes.push(1000.0); // heavy → POC anchor
+        }
+        for i in 0..48 {
+            let p = 100.0 - (i as f64 + 1.0) * (20.0 / 48.0);
+            closes.push(p);
+            volumes.push(50.0); // light → doesn't move POC
+        }
+        closes.push(80.0); // signal-bar
+        volumes.push(50.0);
+        closes.push(80.0); // entry-bar
+        volumes.push(50.0);
+        let candles: Vec<Candle> = closes
+            .iter()
+            .zip(volumes.iter())
+            .enumerate()
+            .map(|(i, (&c, &v))| Candle::new(i as i64 * 1_800_000, c, c + 0.5, c - 0.5, c, v))
+            .collect();
+        let params = RegimeConfluenceParams {
+            min_votes: 2,
+            use_poc_z: true,
+            poc_window_bars: 50,
+            poc_bucket_pct: 0.005,
+            poc_z_min: 1.0,
+            ..RegimeConfluenceParams::default_2of3()
+        };
+        let inputs = R28V6Inputs {
+            htf_closes: None,
+            cross_asset_closes: None,
+            news_events: None,
+            funding_series: None,
+        };
+        // Precondition: helper fires Long on this fixture.
+        let poc_vote = compute_poc_z_vote(&candles, &params, &cfg);
+        assert_eq!(
+            poc_vote,
+            Some(PositionSide::Long),
+            "POC-Z fixture precondition: must vote Long"
+        );
+        // Integration must not panic, regardless of consensus outcome.
+        let _ = detect_regime_confluence(
+            &mut state, &cfg, &asset, "BTCUSDT", &candles, &params, &inputs,
+        );
     }
 }

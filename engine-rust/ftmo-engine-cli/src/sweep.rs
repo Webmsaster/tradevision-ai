@@ -294,6 +294,12 @@ struct MultiSignalCfg {
     htf_macd_signal: usize,
     htf_macd_rising_lookback: usize,
     htf_macd_min_magnitude: f64,
+    /// 2026-05-14 Detector #12 — multi-bar Volume-Profile POC-Z distance
+    /// voter activation + params. Independent voter in the REGIME panel.
+    regime_use_poc_z: bool,
+    regime_poc_period: u32,
+    regime_poc_bucket: f64,
+    regime_poc_z_min: f64,
     // Below: deliberately at end so the field-init order in `let cfg =
     // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
@@ -1020,6 +1026,11 @@ fn main() -> Result<()> {
     let mut htf_macd_signal: usize = 9;
     let mut htf_macd_rising_lookback: usize = 1;
     let mut htf_macd_min_magnitude: f64 = 0.0;
+    // 2026-05-14 Detector #12 — POC-Z voter knobs.
+    let mut regime_use_poc_z: bool = false;
+    let mut regime_poc_period: u32 = 20;
+    let mut regime_poc_bucket: f64 = 0.005;
+    let mut regime_poc_z_min: f64 = 1.5;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
@@ -1273,6 +1284,11 @@ fn main() -> Result<()> {
             "--htf-macd-min-magnitude" => {
                 htf_macd_min_magnitude = need!("--htf-macd-min-magnitude").parse()?
             }
+            // 2026-05-14 Detector #12 — POC-Z voter flags.
+            "--regime-poc-z" => regime_use_poc_z = true,
+            "--regime-poc-period" => regime_poc_period = need!("--regime-poc-period").parse()?,
+            "--regime-poc-bucket" => regime_poc_bucket = need!("--regime-poc-bucket").parse()?,
+            "--regime-poc-z-min" => regime_poc_z_min = need!("--regime-poc-z-min").parse()?,
             "--mr-period" => mr_period = Some(need!("--mr-period").parse()?),
             "--mr-oversold" => mr_oversold = Some(need!("--mr-oversold").parse()?),
             "--mr-overbought" => mr_overbought = Some(need!("--mr-overbought").parse()?),
@@ -1554,6 +1570,11 @@ fn main() -> Result<()> {
                 htf_macd_signal,
                 htf_macd_rising_lookback,
                 htf_macd_min_magnitude,
+                // 2026-05-14 Detector #12 — POC-Z voter init.
+                regime_use_poc_z,
+                regime_poc_period,
+                regime_poc_bucket,
+                regime_poc_z_min,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -2784,6 +2805,11 @@ fn run_one_window(
                             htf_macd_signal: multi_signal.htf_macd_signal,
                             htf_macd_rising_lookback: multi_signal.htf_macd_rising_lookback,
                             htf_macd_min_magnitude: multi_signal.htf_macd_min_magnitude,
+                            // 2026-05-14 Detector #12 — POC-Z voter wiring.
+                            use_poc_z: multi_signal.regime_use_poc_z,
+                            poc_window_bars: multi_signal.regime_poc_period,
+                            poc_bucket_pct: multi_signal.regime_poc_bucket,
+                            poc_z_min: multi_signal.regime_poc_z_min,
                         };
                     let stablecoin_slice =
                         stablecoin_feed.get(&source).map(|v| v.as_slice());
