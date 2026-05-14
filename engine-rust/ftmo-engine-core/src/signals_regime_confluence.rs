@@ -155,6 +155,10 @@ fn compute_vol_confirm_vote(
     }
 }
 
+// 2026-05-14 Detector #34 — dropped Copy: `cb_premium_params.symbol_allowlist`
+// is a Vec<String> which is owned heap data. Clone is sufficient for the
+// few call-sites that pass-by-value (e.g. test fixtures); the regime
+// orchestrator passes by reference exclusively.
 #[derive(Debug, Clone)]
 pub struct RegimeConfluenceParams {
     /// Number of detectors that must agree on direction. With 3 detectors
@@ -320,7 +324,7 @@ impl RegimeConfluenceParams {
             use_top_trader_ls: false,
             top_trader_ls_params: crate::signals_top_trader_ls::TopTraderLsParams::default(),
             use_cb_premium: false,
-            cb_premium_params: crate::signals_cb_premium::CbPremiumParams::default(),
+            cb_premium_params: crate::signals_cb_premium::CbPremiumParams::default_30m_crypto(),
             use_stablecoin_flow: false,
             stablecoin_flow_params:
                 crate::signals_stablecoin_flow::StablecoinFlowParams::default_30m_crypto(),
@@ -418,6 +422,7 @@ pub fn detect_regime_confluence(
     // 2026-05-14 Detector #2: OFI is the 8th voter — same reasoning, it
     // can carry quorum with breakout when R28V6 abstains and every other
     // optional voter is off.
+    // 2026-05-14 Detector #34: CB-premium can also carry quorum with breakout.
     if r28.is_none()
         && params.min_votes >= 2
         && !mr_effective_some
@@ -946,6 +951,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: None,
+            cb_premium_series: None,
         };
         let s = detect_regime_confluence(
             &mut state,
@@ -978,6 +984,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: None,
+            cb_premium_series: None,
         };
         let s = detect_regime_confluence(
             &mut state,
@@ -1006,6 +1013,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: None,
+            cb_premium_series: None,
         }
     }
 

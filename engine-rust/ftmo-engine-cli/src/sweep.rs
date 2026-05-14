@@ -220,6 +220,14 @@ struct MultiSignalCfg {
     regime_vol_mult: f64,
     /// Force MR-source override even if template doesn't carry one.
     regime_force_mr: bool,
+    /// 2026-05-14 Detector #34 — Coinbase-Binance Premium voter activation
+    /// + tunable knobs. CLI flags: `--regime-cb-premium`,
+    /// `--cb-threshold-bps`, `--cb-consecutive`. The premium data
+    /// directory comes via `--cb-premium-dir` (separate top-level
+    /// argument so the loader call sees it before MultiSignalCfg is built).
+    regime_use_cb_premium: bool,
+    cb_threshold_bps: u32,
+    cb_consecutive_bars: usize,
     /// 2026-05-13 Audit Round 3: when true, disable the engine's "soft pass"
     /// tail check that allows a window to pass if target was ever hit AND
     /// `final_equity >= 0.5 × target`. Strict mode requires `final_equity ≥
@@ -267,7 +275,7 @@ struct MultiSignalCfg {
     regime_use_kalman_trend: bool,
     // 2026-05-14 — macro / cross-market voters. Toggle-only; external series
     // are still default-None until per-feed loaders ship.
-    regime_use_cb_premium: bool,
+    // (regime_use_cb_premium is defined above with detector-34 knobs.)
     regime_use_cme_basis: bool,
     regime_use_hmm: bool,
     regime_use_nupl: bool,
@@ -882,6 +890,10 @@ fn main() -> Result<()> {
     let mut regime_use_nupl: bool = false;
     let mut regime_use_top_trader_ls: bool = false;
     let mut regime_use_stablecoin: bool = false;
+    // 2026-05-14 Detector #34 — Coinbase-Binance Premium voter knobs.
+    let mut cb_threshold_bps: u32 = 15;
+    let mut cb_consecutive_bars: usize = 2;
+    let mut cb_premium_dir: Option<PathBuf> = None;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
@@ -1101,6 +1113,17 @@ fn main() -> Result<()> {
                 ds_progress_factor = Some(need!("--ds-progress-factor").parse()?)
             }
             "--disable-day-stage" => disable_day_stage = true,
+            // 2026-05-14 Detector #34 — Coinbase-Binance Premium voter flags.
+            "--cb-premium-dir" => {
+                cb_premium_dir = Some(PathBuf::from(need!("--cb-premium-dir")))
+            }
+            "--regime-cb-premium" => regime_use_cb_premium = true,
+            "--cb-threshold-bps" => {
+                cb_threshold_bps = need!("--cb-threshold-bps").parse()?
+            }
+            "--cb-consecutive" => {
+                cb_consecutive_bars = need!("--cb-consecutive").parse()?
+            }
             "--mr-period" => mr_period = Some(need!("--mr-period").parse()?),
             "--mr-oversold" => mr_oversold = Some(need!("--mr-oversold").parse()?),
             "--mr-overbought" => mr_overbought = Some(need!("--mr-overbought").parse()?),
@@ -1287,6 +1310,7 @@ fn main() -> Result<()> {
         return run_multi_asset(
             candles_dir,
             funding_dir,
+            cb_premium_dir,
             symbols_arg,
             config_selector,
             windows,
@@ -1357,6 +1381,9 @@ fn main() -> Result<()> {
                 regime_use_nupl,
                 regime_use_top_trader_ls,
                 regime_use_stablecoin,
+                // 2026-05-14 Detector #34 — CB-premium voter init.
+                cb_threshold_bps,
+                cb_consecutive_bars,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -1544,6 +1571,7 @@ fn run_single_asset(
                             cross_asset_closes: None,
                             news_events: None,
                             funding_series: None,
+                            cb_premium_series: None,
                         };
                         match detect_r28_v6(
                             &mut state,
@@ -1658,6 +1686,7 @@ fn finalise_report(reports: &[WindowResult], windows: usize, started: Instant) {
 fn run_multi_asset(
     candles_dir: Option<PathBuf>,
     funding_dir: Option<PathBuf>,
+    cb_premium_dir: Option<PathBuf>,
     symbols_arg: Option<String>,
     config_selector: Option<String>,
     windows: usize,
@@ -1904,14 +1933,42 @@ fn run_multi_asset(
             .collect(),
     };
 
+    // 2026-05-14 Detector #34 — load + forward-fill Coinbase-Binance Premium
+    // series per symbol, aligned 1:1 onto the candle openTime sequence.
+    // Missing files become `vec![None; n]` so the voter sees "no data →
+    // abstain" semantics (matches funding-rate convention).
+    let cb_premium_by_sym: HashMap<String, Vec<Option<f64>>> = match &cb_premium_dir {
+        Some(pd) => {
+            let mut map = HashMap::new();
+            for sym in symbols.iter() {
+                let candles_for_sym = aligned.get(sym).expect("aligned missing sym");
+                let pts = loader::load_cb_premium(pd, sym)?;
+                let series = match pts {
+                    Some(p) => loader::align_cb_premium(candles_for_sym, &p),
+                    None => vec![None; candles_for_sym.len()],
+                };
+                map.insert(sym.clone(), series);
+            }
+            map
+        }
+        None => symbols
+            .iter()
+            .map(|s| {
+                let n = aligned.get(s).map(|v| v.len()).unwrap_or(0);
+                (s.clone(), vec![None; n])
+            })
+            .collect(),
+    };
+
     let total_bars = aligned_times.len();
     println!(
-        "ftmo-sweep (multi-asset): {} symbols × {} bars; cfg={}; {} threads; funding={}",
+        "ftmo-sweep (multi-asset): {} symbols × {} bars; cfg={}; {} threads; funding={}; cb_premium={}",
         symbols.len(),
         total_bars,
         cfg.label,
         rayon::current_num_threads(),
         if funding_dir.is_some() { "yes" } else { "no" },
+        if cb_premium_dir.is_some() { "yes" } else { "no" },
     );
 
     // Effective signal mode default for multi-asset: PerAssetCfg unless user
@@ -2027,6 +2084,7 @@ fn run_multi_asset(
     let atr_by_sym = Arc::new(atr_by_sym);
     let funding_by_sym = Arc::new(funding_by_sym);
     let stablecoin_by_sym = Arc::new(stablecoin_by_sym);
+    let cb_premium_by_sym = Arc::new(cb_premium_by_sym);
     let symbols = Arc::new(symbols);
     let multi_signal = Arc::new(multi_signal);
     let ml_features_by_sym = Arc::new(ml_features_by_sym);
@@ -2045,6 +2103,7 @@ fn run_multi_asset(
                 atr_by_sym.as_ref(),
                 funding_by_sym.as_ref(),
                 stablecoin_by_sym.as_ref(),
+                cb_premium_by_sym.as_ref(),
                 symbols.as_ref(),
                 signals_mode,
                 writer.clone(),
@@ -2126,6 +2185,7 @@ fn run_one_window(
     atr_by_sym: &HashMap<String, Vec<Option<f64>>>,
     funding_by_sym: &HashMap<String, Vec<Option<f64>>>,
     stablecoin_by_sym: &HashMap<String, Vec<Option<f64>>>,
+    cb_premium_by_sym: &HashMap<String, Vec<Option<f64>>>,
     symbols: &[String],
     signals_mode: SignalSrc,
     writer: Arc<Mutex<Option<BufWriter<File>>>>,
@@ -2145,6 +2205,11 @@ fn run_one_window(
     // 2026-05-14 Detector #22 — per-symbol growing stablecoin-supply feed,
     // parallel to funding_feed. Each bar appends `stablecoin_by_sym[sym][i]`.
     let mut stablecoin_feed: HashMap<String, Vec<Option<f64>>> = HashMap::new();
+    // 2026-05-14 Detector #34 — per-symbol Coinbase-Binance Premium growing
+    // feed. Mirrors `funding_feed` shape exactly so the slice consumed by
+    // `R28V6Inputs.cb_premium_series` matches the candle-feed length at
+    // every poll. Empty / None-only entries are safe (the voter abstains).
+    let mut cb_premium_feed: HashMap<String, Vec<Option<f64>>> = HashMap::new();
     // 2026-05-13 65%-hunt: per-symbol HTF closes (every `htf_stride`-th
     // primary close). Only populated when `multi_signal.use_htf_confirm`.
     let mut htf_closes_buf: HashMap<String, Vec<f64>> = HashMap::new();
@@ -2153,6 +2218,7 @@ fn run_one_window(
         atr_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
         funding_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
         stablecoin_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
+        cb_premium_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
         if multi_signal.use_htf_confirm {
             htf_closes_buf.insert(
                 sym.clone(),
@@ -2203,6 +2269,13 @@ fn run_one_window(
                 .and_then(|s| s.get(i).copied())
                 .flatten();
             stablecoin_feed.get_mut(sym).unwrap().push(sc);
+            // 2026-05-14 Detector #34 — keep CB-premium feed in lock-step
+            // with funding_feed shape. None entries are safe (voter abstains).
+            let cb_p = cb_premium_by_sym
+                .get(sym)
+                .and_then(|s| s.get(i).copied())
+                .flatten();
+            cb_premium_feed.get_mut(sym).unwrap().push(cb_p);
             if multi_signal.use_htf_confirm && i % multi_signal.htf_stride == 0 {
                 if let Some(buf) = htf_closes_buf.get_mut(sym) {
                     buf.push(c.close);
@@ -2268,6 +2341,12 @@ fn run_one_window(
                 .and_then(|s| s.get(i).copied())
                 .flatten();
             stablecoin_feed.get_mut(sym).unwrap().push(sc);
+            // 2026-05-14 Detector #34 — keep CB-premium feed in lock-step.
+            let cb_p = cb_premium_by_sym
+                .get(sym)
+                .and_then(|s| s.get(i).copied())
+                .flatten();
+            cb_premium_feed.get_mut(sym).unwrap().push(cb_p);
         }
 
         // Build signals: one detector pass per asset entry, dispatched off
@@ -2336,6 +2415,12 @@ fn run_one_window(
                             cross_asset_closes: cross_closes_slice,
                             news_events: None,
                             funding_series: funding,
+                            // 2026-05-14 Detector #34: CB-premium is wired to
+                            // None on the per-asset primary R28V6 path. The
+                            // voter is only consulted inside the regime-
+                            // confluence panel where the slice is plumbed in
+                            // via `cb_premium_feed`.
+                            cb_premium_series: None,
                         };
                         detect_r28_v6(&mut state, cfg, asset, &source, arr, &r28p, &r28in)
                     }
@@ -2362,6 +2447,7 @@ fn run_one_window(
                         cross_asset_closes: None,
                         news_events: None,
                         funding_series: funding,
+                        cb_premium_series: None,
                     };
                     detect_r28_v6(&mut state, cfg, asset, &source, arr, &r28p, &r28in)
                 }
@@ -2380,6 +2466,12 @@ fn run_one_window(
                 SignalSrc::RegimeConfluence => {
                     let funding = funding_feed.get(&source).map(|v| v.as_slice());
                     let htf_buf = htf_closes_buf.get(&source).map(|v| v.as_slice());
+                    // 2026-05-14 Detector #34 — wire growing CB-premium feed
+                    // into the regime panel so `compute_cb_premium_vote` sees
+                    // the per-asset slice matched to the current candle feed
+                    // length. None when --regime-cb-premium isn't active or
+                    // the symbol has no premium cache file (voter abstains).
+                    let cb_premium = cb_premium_feed.get(&source).map(|v| v.as_slice());
                     let r28in = R28V6Inputs {
                         htf_closes: if multi_signal.use_htf_confirm {
                             htf_buf
@@ -2389,6 +2481,7 @@ fn run_one_window(
                         cross_asset_closes: cross_closes_slice,
                         news_events: None,
                         funding_series: funding,
+                        cb_premium_series: cb_premium,
                     };
                     let mr_override = if multi_signal.regime_force_mr {
                         Some(ftmo_engine_core::config::MeanReversionSource {
@@ -2496,8 +2589,18 @@ fn run_one_window(
                             //                          patches activate the
                             //                          voter without re-touching
                             //                          this surface.
+                            // 2026-05-14 Detector #34 — CB-premium voter wired
+                            // through CLI flags (threshold_bps, consecutive_bars).
+                            // `cb_premium_series` is plumbed via `R28V6Inputs`
+                            // / `RegimeConfluenceInputs` on the side that owns
+                            // the per-asset loaded data.
                             use_cb_premium: multi_signal.regime_use_cb_premium,
-                            cb_premium_params: ftmo_engine_core::signals_cb_premium::CbPremiumParams::default(),
+                            cb_premium_params:
+                                ftmo_engine_core::signals_cb_premium::CbPremiumParams {
+                                    threshold_bps: multi_signal.cb_threshold_bps,
+                                    consecutive_bars: multi_signal.cb_consecutive_bars,
+                                    ..ftmo_engine_core::signals_cb_premium::CbPremiumParams::default_30m_crypto()
+                                },
                             use_stablecoin_flow: multi_signal.regime_use_stablecoin,
                             stablecoin_flow_params: ftmo_engine_core::signals_stablecoin_flow::StablecoinFlowParams::default_30m_crypto(),
                             hmm_model: None,
@@ -2505,9 +2608,12 @@ fn run_one_window(
                         };
                     let stablecoin_slice =
                         stablecoin_feed.get(&source).map(|v| v.as_slice());
+                    let cb_premium_slice =
+                        cb_premium_feed.get(&source).map(|v| v.as_slice());
                     let regime_inputs =
                         ftmo_engine_core::signals_regime_confluence::RegimeConfluenceInputs {
                             stablecoin_supply_series: stablecoin_slice,
+                            cb_premium_series: cb_premium_slice,
                             ..ftmo_engine_core::signals_regime_confluence::RegimeConfluenceInputs::default()
                         };
                     ftmo_engine_core::signals_regime_confluence::detect_regime_confluence(

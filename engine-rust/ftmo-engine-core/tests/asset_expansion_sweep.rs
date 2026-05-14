@@ -185,6 +185,7 @@ fn run_window(
                 },
                 news_events: None,
                 funding_series: None,
+                cb_premium_series: None,
             };
             let mut state_clone = state.clone();
             if let Some(s) =

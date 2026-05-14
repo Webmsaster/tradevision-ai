@@ -161,6 +161,14 @@ pub struct R28V6Inputs<'a> {
     /// that bar (skip the gate, don't reject the entry). Length must match
     /// `candles.len()`.
     pub funding_series: Option<&'a [Option<f64>]>,
+    /// 2026-05-14 Detector #34 — Coinbase-Binance Premium series, aligned
+    /// 1:1 onto candle openTimes by `loader::align_cb_premium`. Each entry
+    /// is the fractional premium `(cb_close - bn_close) / bn_close` (e.g.
+    /// `Some(0.0015)` = +15 bp Coinbase richer). `None` element = no data
+    /// for that bar (Coinbase feed gap → voter abstains rather than mis-
+    /// fires). Length must match `candles.len()`. Consumed by the regime-
+    /// confluence voter only — the standalone R28V6 path ignores this slot.
+    pub cb_premium_series: Option<&'a [Option<f64>]>,
 }
 
 pub fn detect_r28_v6(
@@ -547,6 +555,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: None,
+            cb_premium_series: None,
         };
         assert!(detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs).is_none());
     }
@@ -576,6 +585,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: None,
+            cb_premium_series: None,
         };
         let sig = detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs);
         assert!(sig.is_some(), "expected long fire");
@@ -613,6 +623,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: Some(&events),
             funding_series: None,
+            cb_premium_series: None,
         };
         assert!(detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs).is_none());
     }
@@ -653,6 +664,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: Some(&funding),
+            cb_premium_series: None,
         };
         assert!(
             detect_r28_v6(
@@ -675,6 +687,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: Some(&funding_ok),
+            cb_premium_series: None,
         };
         let mut s2 = EngineState::initial("x");
         let sig = detect_r28_v6(&mut s2, &cfg, &a, "BTCUSDT", &candles, &p, &inputs_long_ok);
@@ -697,6 +710,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: Some(&funding_neg),
+            cb_premium_series: None,
         };
         assert!(
             detect_r28_v6(
@@ -727,6 +741,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: Some(&funding_extreme_neg),
+            cb_premium_series: None,
         };
         let sig_short = detect_r28_v6(
             &mut s4,
@@ -771,6 +786,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: Some(&funding),
+            cb_premium_series: None,
         };
         let sig = detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs);
         assert!(sig.is_some(), "per-asset override should permit entry");
@@ -864,6 +880,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: None,
+            cb_premium_series: None,
         };
         let sig = detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs);
         assert!(
@@ -907,6 +924,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: None,
+            cb_premium_series: None,
         };
         let sig = detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs);
         assert!(
@@ -941,6 +959,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: None,
+            cb_premium_series: None,
         };
         let sig = detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs);
         assert!(

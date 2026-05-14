@@ -213,6 +213,68 @@ pub fn align_top_ls(candles: &[Candle], pts: &[TopLsPt]) -> Vec<Option<f64>> {
     out
 }
 
+/// 2026-05-14 Detector #34 — Coinbase-Binance Premium per-bar point. One
+/// record per bar:
+///   `{ "t": openTime_ms, "premium_pct": (cb_close - bn_close) / bn_close }`
+/// Files under `scripts/cache_bakeoff/{SYMBOL}_cb_premium.json` follow this
+/// shape (TS ingest script writes the cache; Rust just consumes).
+#[allow(dead_code)]
+#[derive(serde::Deserialize, Clone, Copy, Debug)]
+pub struct CbPremiumPt {
+    pub t: i64,
+    pub premium_pct: f64,
+}
+
+/// Load `{dir}/{symbol}_cb_premium.json` if it exists. Returns `Ok(None)`
+/// when the file is missing — callers should treat that as "no Coinbase
+/// premium data available" and fall through (the gate becomes dormant
+/// rather than hard-failing the sweep). Mirrors `load_funding` shape.
+#[allow(dead_code)]
+pub fn load_cb_premium(dir: &Path, symbol: &str) -> Result<Option<Vec<CbPremiumPt>>> {
+    let p = dir.join(format!("{symbol}_cb_premium.json"));
+    if !p.exists() {
+        return Ok(None);
+    }
+    let f = File::open(&p).with_context(|| format!("opening {}", p.display()))?;
+    let pts: Vec<CbPremiumPt> = serde_json::from_reader(BufReader::new(f))
+        .with_context(|| format!("parsing CB-premium JSON in {}", p.display()))?;
+    Ok(Some(pts))
+}
+
+/// Align CB-premium samples onto a candle openTime sequence. Each candle
+/// at openTime `t` receives the LATEST premium sample whose timestamp lies
+/// in `[t, t + bar_dur)`, with forward-fill on later bars (the most recent
+/// observed premium carries forward until a new sample lands). Returns
+/// `None` for candles strictly before the first observed sample.
+///
+/// Bar duration is derived from `candles[1].open_time - candles[0].open_time`,
+/// falling back to 30min when only one candle is supplied — mirrors the
+/// `align_funding` shape exactly so the integration is straightforward.
+///
+/// LOOKAHEAD safety: a candle never receives a premium sample whose
+/// timestamp is BEYOND `bar_start + bar_dur` (i.e. lies in a future bar).
+#[allow(dead_code)]
+pub fn align_cb_premium(candles: &[Candle], pts: &[CbPremiumPt]) -> Vec<Option<f64>> {
+    let mut out = Vec::with_capacity(candles.len());
+    let mut p_idx = 0usize;
+    let mut cur: Option<f64> = None;
+    let bar_dur_ms: i64 = if candles.len() >= 2 {
+        (candles[1].open_time - candles[0].open_time).max(1)
+    } else {
+        30 * 60 * 1000
+    };
+    for c in candles {
+        let t = c.open_time;
+        let upper = t + bar_dur_ms;
+        while p_idx < pts.len() && pts[p_idx].t < upper {
+            cur = Some(pts[p_idx].premium_pct);
+            p_idx += 1;
+        }
+        out.push(cur);
+    }
+    out
+}
+
 /// 2026-05-14 Detector #22 — DefiLlama daily stablecoin-supply aggregate
 /// point. Source endpoint `/stablecoincharts/all?stablecoin=1` returns one
 /// record per day in `{ "date": unix_seconds_str, "totalCirculatingUSD": {...}
@@ -277,7 +339,6 @@ pub fn align_stablecoin_supply(
     }
     out
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -378,4 +439,43 @@ mod tests {
         assert_eq!(align_stablecoin_supply(&candles, &[]), vec![None; 3]);
     }
 
+    // 2026-05-14 Detector #34 — alignment shape tests for CB-premium loader.
+
+    #[test]
+    fn align_cb_premium_forward_fills() {
+        // bar_dur derives from candles[1] - candles[0]. Use stride 10 so the
+        // semantics match `align_funding_forward_fills`.
+        let pts = vec![
+            CbPremiumPt { t: 10, premium_pct: 0.0015 },
+            CbPremiumPt { t: 20, premium_pct: 0.0025 },
+            CbPremiumPt { t: 30, premium_pct: 0.0035 },
+        ];
+        let candles: Vec<Candle> = [5, 15, 25, 35, 45].iter().map(|t| candle(*t)).collect();
+        let aligned = align_cb_premium(&candles, &pts);
+        assert_eq!(
+            aligned,
+            vec![
+                Some(0.0015),
+                Some(0.0025),
+                Some(0.0035),
+                Some(0.0035),
+                Some(0.0035),
+            ]
+        );
+    }
+
+    #[test]
+    fn align_cb_premium_empty_pts_returns_none() {
+        let candles: Vec<Candle> = (0..5).map(candle).collect();
+        let aligned = align_cb_premium(&candles, &[]);
+        assert_eq!(aligned, vec![None; 5]);
+    }
+
+    #[test]
+    fn align_cb_premium_no_pre_event_returns_none() {
+        let pts = vec![CbPremiumPt { t: 100, premium_pct: 0.005 }];
+        let candles: Vec<Candle> = [10, 20, 30, 100, 110].iter().map(|t| candle(*t)).collect();
+        let aligned = align_cb_premium(&candles, &pts);
+        assert_eq!(aligned, vec![None, None, None, Some(0.005), Some(0.005)]);
+    }
 }
