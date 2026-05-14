@@ -282,6 +282,20 @@ pub struct RegimeConfluenceParams {
     /// 2026-05-14 Phase-3 — Kalman trend-filter voter.
     pub use_kalman_trend: bool,
     pub kalman_trend_params: crate::signals_kalman_trend::KalmanTrendParams,
+    /// 2026-05-14 Detector #13 — HTF MACD-histogram trend gate. Applied
+    /// INSIDE the R28V6 probe of the regime panel (via
+    /// `apply_r28v6_overrides` → `R28V6Params.htf_macd_*`). Propagating
+    /// here keeps the same CLI flags (`--use-htf-macd-gate`, …) honored
+    /// in both standalone-R28V6 and REGIME mode — closing the bug-class
+    /// that bit us in Codex Round 2 (silent no-op of CLI flags inside
+    /// REGIME). Each field defaults to dormant; the gate only activates
+    /// when `htf_macd_enabled = true`.
+    pub htf_macd_enabled: bool,
+    pub htf_macd_fast: usize,
+    pub htf_macd_slow: usize,
+    pub htf_macd_signal: usize,
+    pub htf_macd_rising_lookback: usize,
+    pub htf_macd_min_magnitude: f64,
 }
 
 impl RegimeConfluenceParams {
@@ -342,6 +356,12 @@ impl RegimeConfluenceParams {
             supertrend_params: crate::signals_supertrend::SupertrendParams::default_30m_crypto(),
             use_kalman_trend: false,
             kalman_trend_params: crate::signals_kalman_trend::KalmanTrendParams::default_30m_crypto(),
+            htf_macd_enabled: false,
+            htf_macd_fast: 12,
+            htf_macd_slow: 26,
+            htf_macd_signal: 9,
+            htf_macd_rising_lookback: 1,
+            htf_macd_min_magnitude: 0.0,
         }
     }
 
@@ -361,6 +381,18 @@ impl RegimeConfluenceParams {
             p.rsi_period = Some(self.r28v6_rsi_period.unwrap_or(14));
             p.rsi_long_max = self.r28v6_rsi_long_max;
             p.rsi_short_min = self.r28v6_rsi_short_min;
+        }
+        // Detector #13 — forward HTF MACD-hist params into the R28V6 probe.
+        // Sweep.rs `apply_r28v6_param_overrides` mirrors the same wiring on
+        // the standalone path so the CLI flags don't silently no-op inside
+        // REGIME mode (Codex Round 2 bug class).
+        if self.htf_macd_enabled {
+            p.htf_macd_enabled = true;
+            p.htf_macd_fast = self.htf_macd_fast;
+            p.htf_macd_slow = self.htf_macd_slow;
+            p.htf_macd_signal = self.htf_macd_signal;
+            p.htf_macd_rising_lookback = self.htf_macd_rising_lookback;
+            p.htf_macd_min_magnitude = self.htf_macd_min_magnitude;
         }
     }
 }

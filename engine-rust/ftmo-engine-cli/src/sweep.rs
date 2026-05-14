@@ -281,6 +281,19 @@ struct MultiSignalCfg {
     regime_use_nupl: bool,
     regime_use_top_trader_ls: bool,
     regime_use_stablecoin: bool,
+    /// 2026-05-14 Detector #13 — Higher-timeframe MACD-histogram trend
+    /// confluence gate. Wired into both standalone-R28V6
+    /// (`apply_r28v6_param_overrides`) and REGIME mode
+    /// (`RegimeConfluenceParams.htf_macd_*`). Dormant by default; activate
+    /// with `--use-htf-macd-gate`. Operates on the same `htf_closes` buffer
+    /// as the EMA-9/21 gate so the user only needs to pass `--use-htf-confirm`
+    /// once.
+    use_htf_macd_gate: bool,
+    htf_macd_fast: usize,
+    htf_macd_slow: usize,
+    htf_macd_signal: usize,
+    htf_macd_rising_lookback: usize,
+    htf_macd_min_magnitude: f64,
     // Below: deliberately at end so the field-init order in `let cfg =
     // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
@@ -391,6 +404,18 @@ fn apply_r28v6_param_overrides(
         params.rsi_period = Some(cfg.r28v6_rsi_period.unwrap_or(14));
         params.rsi_long_max = cfg.r28v6_rsi_long_max;
         params.rsi_short_min = cfg.r28v6_rsi_short_min;
+    }
+    // 2026-05-14 Detector #13 — HTF MACD-histogram gate. Mirror of the
+    // wiring in `RegimeConfluenceParams::apply_r28v6_overrides` so the same
+    // CLI flags govern both signal paths (Codex Round 2 bug class: silent
+    // no-op when REGIME mode rebuilds R28V6Params via `default_for`).
+    if cfg.use_htf_macd_gate {
+        params.htf_macd_enabled = true;
+        params.htf_macd_fast = cfg.htf_macd_fast;
+        params.htf_macd_slow = cfg.htf_macd_slow;
+        params.htf_macd_signal = cfg.htf_macd_signal;
+        params.htf_macd_rising_lookback = cfg.htf_macd_rising_lookback;
+        params.htf_macd_min_magnitude = cfg.htf_macd_min_magnitude;
     }
 }
 
@@ -894,6 +919,14 @@ fn main() -> Result<()> {
     let mut cb_threshold_bps: u32 = 15;
     let mut cb_consecutive_bars: usize = 2;
     let mut cb_premium_dir: Option<PathBuf> = None;
+    // Detector #13 — HTF MACD-histogram gate. Defaults match classic
+    // MACD(12, 26, 9) with `rising_lookback = 1` (bar-over-bar momentum).
+    let mut use_htf_macd_gate: bool = false;
+    let mut htf_macd_fast: usize = 12;
+    let mut htf_macd_slow: usize = 26;
+    let mut htf_macd_signal: usize = 9;
+    let mut htf_macd_rising_lookback: usize = 1;
+    let mut htf_macd_min_magnitude: f64 = 0.0;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
@@ -1123,6 +1156,17 @@ fn main() -> Result<()> {
             }
             "--cb-consecutive" => {
                 cb_consecutive_bars = need!("--cb-consecutive").parse()?
+            }
+            // Detector #13 — HTF MACD-histogram trend confluence gate.
+            "--use-htf-macd-gate" => use_htf_macd_gate = true,
+            "--htf-macd-fast" => htf_macd_fast = need!("--htf-macd-fast").parse()?,
+            "--htf-macd-slow" => htf_macd_slow = need!("--htf-macd-slow").parse()?,
+            "--htf-macd-signal" => htf_macd_signal = need!("--htf-macd-signal").parse()?,
+            "--htf-macd-rising-lookback" => {
+                htf_macd_rising_lookback = need!("--htf-macd-rising-lookback").parse()?
+            }
+            "--htf-macd-min-magnitude" => {
+                htf_macd_min_magnitude = need!("--htf-macd-min-magnitude").parse()?
             }
             "--mr-period" => mr_period = Some(need!("--mr-period").parse()?),
             "--mr-oversold" => mr_oversold = Some(need!("--mr-oversold").parse()?),
@@ -1384,6 +1428,13 @@ fn main() -> Result<()> {
                 // 2026-05-14 Detector #34 — CB-premium voter init.
                 cb_threshold_bps,
                 cb_consecutive_bars,
+                // 2026-05-14 Detector #13 — HTF MACD-histogram gate.
+                use_htf_macd_gate,
+                htf_macd_fast,
+                htf_macd_slow,
+                htf_macd_signal,
+                htf_macd_rising_lookback,
+                htf_macd_min_magnitude,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -2605,6 +2656,15 @@ fn run_one_window(
                             stablecoin_flow_params: ftmo_engine_core::signals_stablecoin_flow::StablecoinFlowParams::default_30m_crypto(),
                             hmm_model: None,
                             nupl_samples: None,
+                            // 2026-05-14 Detector #13 — forward HTF MACD-hist
+                            // params so the same CLI flags activate the gate
+                            // inside REGIME mode AND on standalone-R28V6.
+                            htf_macd_enabled: multi_signal.use_htf_macd_gate,
+                            htf_macd_fast: multi_signal.htf_macd_fast,
+                            htf_macd_slow: multi_signal.htf_macd_slow,
+                            htf_macd_signal: multi_signal.htf_macd_signal,
+                            htf_macd_rising_lookback: multi_signal.htf_macd_rising_lookback,
+                            htf_macd_min_magnitude: multi_signal.htf_macd_min_magnitude,
                         };
                     let stablecoin_slice =
                         stablecoin_feed.get(&source).map(|v| v.as_slice());

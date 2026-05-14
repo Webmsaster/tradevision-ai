@@ -18,7 +18,8 @@
 use crate::candle::Candle;
 use crate::config::{AssetConfig, EngineConfig};
 use crate::detector_filters::{
-    adx, choppiness_index, cross_asset_filter_allows, htf_trend_allows, rsi_filter_allows,
+    adx, choppiness_index, cross_asset_filter_allows, htf_macd_hist_allows, htf_trend_allows,
+    rsi_filter_allows,
 };
 use crate::indicators::{atr, rsi, sma};
 use crate::news::NewsEvent;
@@ -114,6 +115,19 @@ pub struct R28V6Params {
     /// Optional HTF EMA-fast/slow trend confirmation.
     pub htf_fast: usize,
     pub htf_slow: usize,
+
+    /// Detector #13 (2026-05-14) — Higher-timeframe MACD-histogram trend
+    /// confluence gate. When `htf_macd_enabled` is true and `inputs.htf_closes`
+    /// is supplied, the entry must agree with the HTF MACD-hist sign AND
+    /// rising/falling direction over `htf_macd_rising_lookback` bars.
+    /// `htf_macd_min_magnitude` rejects entries when `|hist|` sits inside a
+    /// near-zero noise band (0.0 disables that filter).
+    pub htf_macd_enabled: bool,
+    pub htf_macd_fast: usize,
+    pub htf_macd_slow: usize,
+    pub htf_macd_signal: usize,
+    pub htf_macd_rising_lookback: usize,
+    pub htf_macd_min_magnitude: f64,
 }
 
 impl R28V6Params {
@@ -144,6 +158,17 @@ impl R28V6Params {
             rsi_short_min: None,
             htf_fast: scale_period(9),
             htf_slow: scale_period(21),
+            // Detector #13 defaults — gate dormant until the caller flips
+            // `htf_macd_enabled` (e.g. via `--use-htf-macd-gate` CLI flag).
+            // Periods are the classic MACD(12, 26, 9). `rising_lookback = 1`
+            // = compare current vs previous bar. `min_magnitude = 0.0`
+            // = no near-zero band filter.
+            htf_macd_enabled: false,
+            htf_macd_fast: 12,
+            htf_macd_slow: 26,
+            htf_macd_signal: 9,
+            htf_macd_rising_lookback: 1,
+            htf_macd_min_magnitude: 0.0,
         }
     }
 }
@@ -340,6 +365,28 @@ fn try_detect_direction(
     if let Some(htf_closes) = inputs.htf_closes {
         if !htf_trend_allows(htf_closes, params.htf_fast, params.htf_slow, direction) {
             return None;
+        }
+    }
+
+    // 5b. Detector #13 — HTF MACD-histogram trend confluence gate. Runs in
+    // addition to the EMA-fast/slow gate above; both must agree when both
+    // are active. Dormant by default; user activates via CLI
+    // `--use-htf-macd-gate`. Source: `htf_closes` is the same downsampled
+    // buffer as the EMA gate, populated AFTER step_bar in the sweep loop
+    // (Codex HIGH FIX #4 pattern) so no entry-bar lookahead is introduced.
+    if params.htf_macd_enabled {
+        if let Some(htf_closes) = inputs.htf_closes {
+            if !htf_macd_hist_allows(
+                htf_closes,
+                params.htf_macd_fast,
+                params.htf_macd_slow,
+                params.htf_macd_signal,
+                params.htf_macd_rising_lookback,
+                direction,
+                params.htf_macd_min_magnitude,
+            ) {
+                return None;
+            }
         }
     }
 
@@ -965,6 +1012,74 @@ mod tests {
         assert!(
             sig.is_some(),
             "per-asset trigger_bars=1 should permit entry"
+        );
+        assert_eq!(sig.unwrap().direction, PositionSide::Long);
+    }
+
+    /// Detector #13 — when `htf_macd_enabled` and the HTF stream is in a
+    /// downtrend, a primary Long entry that would otherwise fire must be
+    /// blocked by the MACD-hist gate (hist negative → long disallowed).
+    #[test]
+    fn macd_gate_blocks_against_htf_trend() {
+        let mut s = EngineState::initial("x");
+        // Pullback-recovery fallback path keeps the test self-contained.
+        let mut cfg = cfg();
+        cfg.trigger_bars = 0;
+        let a = asset();
+        let mut p = R28V6Params::default_for(&a, &cfg);
+        p.adx_min = None;
+        p.choppiness_max = None;
+        p.rsi_long_max = None;
+        // Activate Detector #13 with classic MACD(12, 26, 9).
+        p.htf_macd_enabled = true;
+        p.htf_macd_fast = 12;
+        p.htf_macd_slow = 26;
+        p.htf_macd_signal = 9;
+        p.htf_macd_rising_lookback = 1;
+
+        // Primary uptrend with a pullback-and-recovery on the last bar →
+        // would normally trigger a long entry.
+        let mut candles = ramp(80, 100.0, 0.5);
+        let last = candles.last_mut().unwrap();
+        last.low = 130.0;
+        last.high = 145.0;
+        last.close = 144.0;
+
+        // HTF closes describe a clear DOWNTREND → MACD-hist negative →
+        // long must be blocked. Quadratic acceleration keeps the histogram
+        // strictly in expansion (a purely linear ramp would converge the
+        // Wilder-EMA-difference to a steady-state constant).
+        let htf_down: Vec<f64> = (0..120)
+            .map(|i| 200.0 - i as f64 * 0.5 - (i as f64).powi(2) * 0.002)
+            .collect();
+        let inputs_blocked = R28V6Inputs {
+            htf_closes: Some(&htf_down),
+            cross_asset_closes: None,
+            news_events: None,
+            funding_series: None,
+        };
+        assert!(
+            detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs_blocked).is_none(),
+            "MACD gate must block long when HTF histogram is negative"
+        );
+
+        // Same primary candles but HTF in a strong UPTREND → MACD-hist
+        // positive and rising → gate allows long. We re-run with a fresh
+        // state to avoid cooldown/streak carryover from the blocked attempt.
+        let mut s2 = EngineState::initial("x");
+        let htf_up: Vec<f64> = (0..120)
+            .map(|i| 100.0 + i as f64 * 0.5 + (i as f64).powi(2) * 0.002)
+            .collect();
+        let inputs_allowed = R28V6Inputs {
+            htf_closes: Some(&htf_up),
+            cross_asset_closes: None,
+            news_events: None,
+            funding_series: None,
+        };
+        let sig = detect_r28_v6(&mut s2, &cfg, &a, "BTCUSDT", &candles, &p, &inputs_allowed);
+        assert!(
+            sig.is_some(),
+            "MACD gate must allow long when HTF histogram is positive-rising"
         );
         assert_eq!(sig.unwrap().direction, PositionSide::Long);
     }

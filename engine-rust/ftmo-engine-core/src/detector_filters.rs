@@ -244,6 +244,87 @@ pub fn cross_asset_filter_allows(
     }
 }
 
+/// Detector #13 (2026-05-14) — Higher-timeframe MACD-histogram trend
+/// confluence gate. The classic MACD = EMA(fast) − EMA(slow); signal-line =
+/// EMA(period) of the MACD; histogram = MACD − signal. We gate entries on
+/// (a) histogram sign (positive for long, negative for short) AND
+/// (b) histogram momentum (rising for long, falling for short across
+/// `rising_lookback` bars). Optional `min_magnitude` rejects entries when
+/// `|hist|` sits inside a near-zero noise band.
+///
+/// Behavioural contract mirrors `htf_trend_allows`:
+///   - Empty / warmup-short input → return `true` (gate dormant; no data
+///     to base a verdict on).
+///   - Direction matches sign-and-momentum requirements → `true`.
+///   - Otherwise (e.g. long but hist < 0, or hist not rising) → `false`.
+///
+/// Index discipline: we read `hist[n-1]` (the latest closed HTF bar). HTF
+/// closes buffer is pushed AFTER step_bar in the sweep loop (Codex HIGH
+/// FIX #4 pattern), so `hist[n-1]` is at-or-before the current primary
+/// entry-bar — no lookahead introduced.
+pub fn htf_macd_hist_allows(
+    htf_closes: &[f64],
+    fast: usize,
+    slow: usize,
+    signal: usize,
+    rising_lookback: usize,
+    side: PositionSide,
+    min_magnitude: f64,
+) -> bool {
+    // Need slow + signal + lookback bars to define `hist[n-1]` AND
+    // `hist[n-1-lookback]`. Below warmup → gate dormant.
+    let need = slow.saturating_add(signal).saturating_add(rising_lookback);
+    if htf_closes.len() < need || fast == 0 || slow == 0 || signal == 0 {
+        return true; // warmup-tolerant (same pattern as htf_trend_allows)
+    }
+
+    // MACD line = EMA(fast) − EMA(slow). Both EMAs share the same length
+    // as the input series; bars before each EMA's warmup are `None`.
+    let ema_fast = ema(htf_closes, fast);
+    let ema_slow = ema(htf_closes, slow);
+    let macd_line: Vec<f64> = ema_fast
+        .iter()
+        .zip(ema_slow.iter())
+        .map(|(f, s)| match (f, s) {
+            (Some(a), Some(b)) => a - b,
+            _ => f64::NAN,
+        })
+        .collect();
+
+    // Signal line — EMA over the MACD line. `ema` self-heals on NaN by
+    // carrying the previous valid value, so the warmup-NaN run at the
+    // start of `macd_line` doesn't poison the recursion.
+    let signal_line = ema(&macd_line, signal);
+
+    // Histogram series. Pair each MACD bar with its signal-bar; both must
+    // be finite for the histogram entry to exist.
+    let n = macd_line.len();
+    let hist: Vec<Option<f64>> = (0..n)
+        .map(|i| match (macd_line[i].is_finite(), signal_line[i]) {
+            (true, Some(s)) => Some(macd_line[i] - s),
+            _ => None,
+        })
+        .collect();
+
+    let h_now = hist[n - 1];
+    let h_prev = hist[n - 1 - rising_lookback];
+
+    match (h_now, h_prev) {
+        (Some(now), Some(prev)) => {
+            if min_magnitude > 0.0 && now.abs() < min_magnitude {
+                return false; // magnitude band — near-zero histogram = no edge
+            }
+            match side {
+                PositionSide::Long => now > 0.0 && now > prev,
+                PositionSide::Short => now < 0.0 && now < prev,
+            }
+        }
+        // Histogram not yet defined on one of the two reference bars → gate
+        // dormant (mirror the empty/warmup branch above).
+        _ => true,
+    }
+}
+
 /// Higher-timeframe trend filter — long allowed if HTF EMA-fast > EMA-slow
 /// (uptrend). Short allowed if EMA-fast < EMA-slow (downtrend). Returns
 /// `false` if EMAs are not yet defined or the trend is the wrong way.
@@ -491,6 +572,161 @@ mod tests {
             &long,
             PositionSide::Long,
             &down_closes
+        ));
+    }
+
+    // ─── Detector #13 — HTF MACD-histogram gate ──────────────────────────
+
+    #[test]
+    fn macd_hist_long_requires_positive_rising() {
+        // Accelerating uptrend → MACD line growing → histogram positive AND
+        // rising bar-over-bar → long allowed. A perfectly linear ramp would
+        // converge the Wilder-EMA-difference to a steady-state constant
+        // (hist == prev) which would correctly fail "strictly rising"; the
+        // quadratic component below keeps the histogram in expansion.
+        let closes: Vec<f64> = (0..120)
+            .map(|i| 100.0 + i as f64 * 0.5 + (i as f64).powi(2) * 0.002)
+            .collect();
+        assert!(
+            htf_macd_hist_allows(&closes, 12, 26, 9, 1, PositionSide::Long, 0.0),
+            "long must be allowed on rising-positive histogram"
+        );
+        // Same series → short must be blocked (hist positive, not negative).
+        assert!(
+            !htf_macd_hist_allows(&closes, 12, 26, 9, 1, PositionSide::Short, 0.0),
+            "short must be blocked on rising-positive histogram"
+        );
+    }
+
+    #[test]
+    fn macd_hist_short_requires_negative_falling() {
+        // Accelerating downtrend (linear + quadratic acceleration) so the
+        // histogram stays in strict expansion rather than asymptoting to a
+        // steady-state constant.
+        let closes: Vec<f64> = (0..120)
+            .map(|i| 200.0 - i as f64 * 0.5 - (i as f64).powi(2) * 0.002)
+            .collect();
+        assert!(
+            htf_macd_hist_allows(&closes, 12, 26, 9, 1, PositionSide::Short, 0.0),
+            "short must be allowed on falling-negative histogram"
+        );
+        assert!(
+            !htf_macd_hist_allows(&closes, 12, 26, 9, 1, PositionSide::Long, 0.0),
+            "long must be blocked on negative histogram"
+        );
+    }
+
+    #[test]
+    fn macd_hist_dormant_until_warmup() {
+        // Below `slow + signal + lookback` = 26 + 9 + 1 = 36 bars → gate
+        // dormant (returns true regardless of direction). Mirrors the
+        // empty/warmup-tolerant contract of htf_trend_allows.
+        let closes: Vec<f64> = (0..20).map(|i| 100.0 + i as f64).collect();
+        assert!(htf_macd_hist_allows(
+            &closes,
+            12,
+            26,
+            9,
+            1,
+            PositionSide::Long,
+            0.0
+        ));
+        assert!(htf_macd_hist_allows(
+            &closes,
+            12,
+            26,
+            9,
+            1,
+            PositionSide::Short,
+            0.0
+        ));
+        // Exactly at warmup boundary should also dormant-pass (need - 1).
+        let need = 26 + 9 + 1;
+        let exact: Vec<f64> = (0..need - 1).map(|i| 100.0 + i as f64).collect();
+        assert!(htf_macd_hist_allows(
+            &exact,
+            12,
+            26,
+            9,
+            1,
+            PositionSide::Long,
+            0.0
+        ));
+    }
+
+    #[test]
+    fn macd_hist_strict_vs_permissive_lookback() {
+        // Accelerating uptrend so the histogram is strictly rising under both
+        // lookback=1 (recent slope) and lookback=20 (multi-bar slope).
+        let closes: Vec<f64> = (0..120)
+            .map(|i| 100.0 + i as f64 * 0.3 + (i as f64).powi(2) * 0.002)
+            .collect();
+        assert!(htf_macd_hist_allows(
+            &closes,
+            12,
+            26,
+            9,
+            1,
+            PositionSide::Long,
+            0.0
+        ));
+        assert!(htf_macd_hist_allows(
+            &closes,
+            12,
+            26,
+            9,
+            20,
+            PositionSide::Long,
+            0.0
+        ));
+        // Reversal series: first 80 bars uptrend, last 40 bars decay. With
+        // lookback large enough to span the reversal, MACD-hist must be
+        // falling → long blocked.
+        let mut decay: Vec<f64> = (0..80).map(|i| 100.0 + i as f64 * 0.5).collect();
+        decay.extend((0..40).map(|i| 140.0 - i as f64 * 0.5));
+        assert!(!htf_macd_hist_allows(
+            &decay,
+            12,
+            26,
+            9,
+            20,
+            PositionSide::Long,
+            0.0
+        ));
+    }
+
+    #[test]
+    fn macd_hist_min_magnitude_blocks_near_zero() {
+        // Almost-flat closes → MACD near zero → near-zero histogram.
+        // min_magnitude=1.0 is a large band → must block regardless of sign.
+        let closes: Vec<f64> = (0..120).map(|i| 100.0 + i as f64 * 0.001).collect();
+        let strict = htf_macd_hist_allows(&closes, 12, 26, 9, 1, PositionSide::Long, 1.0);
+        assert!(
+            !strict,
+            "long must be blocked when |hist| < min_magnitude band"
+        );
+    }
+
+    #[test]
+    fn macd_hist_handles_empty_closes() {
+        // No data → gate dormant (returns true).
+        assert!(htf_macd_hist_allows(
+            &[],
+            12,
+            26,
+            9,
+            1,
+            PositionSide::Long,
+            0.0
+        ));
+        assert!(htf_macd_hist_allows(
+            &[],
+            12,
+            26,
+            9,
+            1,
+            PositionSide::Short,
+            0.0
         ));
     }
 }
