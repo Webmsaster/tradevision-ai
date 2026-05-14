@@ -177,6 +177,34 @@ pub struct RegimeConfluenceParams {
     pub use_vwap_trend: bool,
     pub vwap_period: usize,
     pub vwap_min_dev_pct: f64,
+    /// 2026-05-14 Detector #14 — Stop-Hunt Liquidity-Sweep Reversal voter
+    /// (6th independent voter). Fires Long when the signal-bar wicks below
+    /// the prior N-bar swing-low by ≥ `stop_hunt_wick_pct` then closes back
+    /// above it; Short on the symmetric upside sweep. Reference range is
+    /// EXCLUSIVE of the signal bar to prevent self-fulfilling lookahead
+    /// (the bug class from TS `ftmoSmcEngine.ts:138-170`).
+    pub use_stop_hunt: bool,
+    pub stop_hunt_lookback: usize,
+    pub stop_hunt_wick_pct: f64,
+    pub stop_hunt_close_strict: bool,
+    /// 2026-05-14 Detector #1 — Bollinger-Band Z-score Mean-Reversion voter
+    /// (7th independent voter). Fires Long when price dips to a deep z-extreme
+    /// (Z ≤ -threshold) within the last `look_back_bars` AND closes back inside
+    /// the lower BB on the signal bar AND the signal-bar z is back below
+    /// `z_recover_cap`. Short on the symmetric upside extreme. Orthogonal to
+    /// RSI-MR (cross-of-threshold) and Stop-Hunt (wick-depth) — picks up clean
+    /// snap-back setups from absolute-price displacement.
+    pub use_bb_z_mr: bool,
+    pub bb_z_params: crate::signals_bb_zscore_mr::BollingerZScoreSource,
+    /// 2026-05-14 Detector #2 — Order-Flow-Imbalance Persistent Cluster voter
+    /// (8th independent voter). Fires the direction agreed by every bar in the
+    /// last N closed bars' signed taker-flow delta, gated by a min ratio
+    /// threshold, an SMA-trend confirmation, and a net-return secondary
+    /// filter. Orthogonal to vol_confirm (raw volume), VWAP-trend
+    /// (price-vs-mean slope), and the MR/Stop-Hunt voters (reversal-class).
+    /// Lookahead-safe: window strictly ends at `signal_idx = len-2`.
+    pub use_ofi: bool,
+    pub ofi_params: crate::signals_ofi::OfiPersistentParams,
 }
 
 impl RegimeConfluenceParams {
@@ -198,6 +226,14 @@ impl RegimeConfluenceParams {
             use_vwap_trend: false,
             vwap_period: 20,
             vwap_min_dev_pct: 0.0,
+            use_stop_hunt: false,
+            stop_hunt_lookback: 20,
+            stop_hunt_wick_pct: 0.003,
+            stop_hunt_close_strict: false,
+            use_bb_z_mr: false,
+            bb_z_params: crate::signals_bb_zscore_mr::BollingerZScoreSource::default(),
+            use_ofi: false,
+            ofi_params: crate::signals_ofi::OfiPersistentParams::default_30m_crypto(),
         }
     }
 
@@ -271,11 +307,16 @@ pub fn detect_regime_confluence(
     // enabled it can carry quorum with breakout even when R28V6 abstains
     // and MR/vol-confirm are disabled. Previously the early-exit didn't
     // know about VWAP and dropped legitimate VWAP+BO consensus.
+    // 2026-05-14 Detector #14: Stop-Hunt is the 6th voter — same reasoning,
+    // it can carry quorum with breakout when R28V6 abstains and MR/vol-
+    // confirm/VWAP are disabled.
     if r28.is_none()
         && params.min_votes >= 2
         && !mr_effective_some
         && !params.use_vol_confirm
         && !params.use_vwap_trend
+        && !params.use_stop_hunt
+        && !params.use_bb_z_mr
     {
         return None;
     }
@@ -313,6 +354,29 @@ pub fn detect_regime_confluence(
     // price+volume signal.
     let vwap_vote = if params.use_vwap_trend {
         compute_vwap_trend_vote(candles, params)
+    } else {
+        None
+    };
+    // 2026-05-14 Detector #14 — Stop-Hunt Liquidity-Sweep 6th voter.
+    // Independent of all prior voters: uses OHLC wick-vs-prior-swing
+    // relationship, not trend / volume / VWAP slope. Lookahead-safe by
+    // construction (reference range EXCLUDES signal bar).
+    let stop_hunt_vote = if params.use_stop_hunt {
+        let sh_params = crate::signals_stop_hunt::StopHuntParams {
+            lookback: params.stop_hunt_lookback,
+            required_wick_depth_pct: params.stop_hunt_wick_pct,
+            close_back_strict: params.stop_hunt_close_strict,
+        };
+        crate::signals_stop_hunt::compute_stop_hunt_vote(candles, &sh_params)
+    } else {
+        None
+    };
+    // 2026-05-14 Detector #1 — Bollinger-Band Z-score MR 7th voter. Vote is
+    // computed by `compute_bb_zscore_vote` (pure helper, no state). Provides
+    // an orthogonal mean-reversion read independent of RSI-MR / Stop-Hunt /
+    // VWAP-trend. Lookahead-safe by construction (reads candles[..=i-1]).
+    let bb_z_vote = if params.use_bb_z_mr {
+        crate::signals_bb_zscore_mr::compute_bb_zscore_vote(candles, &params.bb_z_params)
     } else {
         None
     };
@@ -355,6 +419,18 @@ pub fn detect_regime_confluence(
         }
     }
     if let Some(side) = vwap_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = stop_hunt_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = bb_z_vote {
         match side {
             PositionSide::Long => long_votes += 1,
             PositionSide::Short => short_votes += 1,

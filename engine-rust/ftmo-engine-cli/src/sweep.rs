@@ -230,6 +230,19 @@ struct MultiSignalCfg {
     regime_use_vwap_trend: bool,
     regime_vwap_period: usize,
     regime_vwap_min_dev: f64,
+    /// 2026-05-14 Detector #14 — Stop-Hunt Liquidity-Sweep Reversal voter
+    /// activation + params. 6th independent voter in the REGIME panel.
+    regime_use_stop_hunt: bool,
+    regime_sh_lookback: usize,
+    regime_sh_wick_pct: f64,
+    regime_sh_close_strict: bool,
+    /// 2026-05-14 Detector #1 — Bollinger-Band Z-score Mean-Reversion voter
+    /// activation + params. 7th independent voter in the REGIME panel.
+    regime_use_bb_z_mr: bool,
+    regime_bb_z_period: u32,
+    regime_bb_z_mult: f64,
+    regime_bb_z_threshold: f64,
+    regime_bb_z_cooldown: u64,
     // Below: deliberately at end so the field-init order in `let cfg =
     // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
@@ -253,6 +266,77 @@ struct MultiSignalCfg {
 /// detector gates (ADX, choppiness, RSI). All gates default to None in
 /// `R28V6Params::default_for`; this helper activates them when the user
 /// passed `--override-adx-min` etc.
+/// 2026-05-14 Detector #18 — parse `--ptp-levels "0.02:0.30,0.04:0.30,0.06:0.40"`.
+///
+/// Validation rules (mirror `exit.rs` invariants):
+///   * each token must be `trigger_pct:close_fraction` floats
+///   * trigger_pct strictly monotone increasing (early-stop in
+///     `process_position_exit_with_held` requires sorted-ascending levels)
+///   * every trigger_pct > 0 and every close_fraction > 0
+///   * sum(close_fraction) <= 1.0 (cannot close more than 100% of the
+///     remaining position across all tiers)
+fn parse_ptp_levels(
+    csv: &str,
+) -> Result<Vec<ftmo_engine_core::config::PartialTakeProfitLevel>> {
+    let mut out: Vec<ftmo_engine_core::config::PartialTakeProfitLevel> = Vec::new();
+    let mut prev_trigger: Option<f64> = None;
+    let mut frac_sum = 0.0_f64;
+    for raw in csv.split(',') {
+        let tok = raw.trim();
+        if tok.is_empty() {
+            continue;
+        }
+        let mut parts = tok.splitn(2, ':');
+        let t_str = parts
+            .next()
+            .ok_or_else(|| anyhow!("--ptp-levels token '{tok}' missing trigger_pct"))?;
+        let f_str = parts
+            .next()
+            .ok_or_else(|| anyhow!("--ptp-levels token '{tok}' missing close_fraction"))?;
+        let trigger_pct: f64 = t_str
+            .trim()
+            .parse()
+            .map_err(|e| anyhow!("--ptp-levels '{tok}': trigger_pct parse error: {e}"))?;
+        let close_fraction: f64 = f_str
+            .trim()
+            .parse()
+            .map_err(|e| anyhow!("--ptp-levels '{tok}': close_fraction parse error: {e}"))?;
+        if !(trigger_pct > 0.0) {
+            return Err(anyhow!(
+                "--ptp-levels '{tok}': trigger_pct must be > 0 (got {trigger_pct})"
+            ));
+        }
+        if !(close_fraction > 0.0) {
+            return Err(anyhow!(
+                "--ptp-levels '{tok}': close_fraction must be > 0 (got {close_fraction})"
+            ));
+        }
+        if let Some(prev) = prev_trigger {
+            if !(trigger_pct > prev) {
+                return Err(anyhow!(
+                    "--ptp-levels: trigger_pct must be strictly increasing (got {trigger_pct} after {prev})"
+                ));
+            }
+        }
+        prev_trigger = Some(trigger_pct);
+        frac_sum += close_fraction;
+        out.push(ftmo_engine_core::config::PartialTakeProfitLevel {
+            trigger_pct,
+            close_fraction,
+        });
+    }
+    if out.is_empty() {
+        return Err(anyhow!("--ptp-levels: at least one level required"));
+    }
+    // Allow tiny FP slack so "0.30,0.30,0.40" doesn't trip on epsilon drift.
+    if frac_sum > 1.0 + 1e-9 {
+        return Err(anyhow!(
+            "--ptp-levels: sum(close_fraction) = {frac_sum} > 1.0 (cannot close more than full position)"
+        ));
+    }
+    Ok(out)
+}
+
 fn apply_r28v6_param_overrides(
     params: &mut ftmo_engine_core::signals_r28v6::R28V6Params,
     cfg: &MultiSignalCfg,
@@ -312,6 +396,27 @@ struct CfgOverrides {
     cross_asset_dir: Option<String>,
     cross_asset_fast: Option<u32>,
     cross_asset_slow: Option<u32>,
+    /// 2026-05-14 Detector #18 — multi-level PTP CSV override.
+    /// Format: "trigger_pct:close_fraction[,trigger_pct:close_fraction]...".
+    /// Parsed list is forwarded to `cfg.partial_take_profit_levels` and the
+    /// single-tier `partial_take_profit` is forcibly cleared so the two
+    /// branches in `exit::process_position_exit` cannot double-fire on the
+    /// same bar.
+    ptp_levels: Option<Vec<ftmo_engine_core::config::PartialTakeProfitLevel>>,
+    /// Detector #20 — 3-phase day-stage sizing (aggressive → neutral →
+    /// defensive). When any of the `ds_*_factor` flags is set, a fresh tier
+    /// ladder is built in `apply_overrides`. Template-supplied tiers are
+    /// kept when no flag is supplied.
+    ds_aggressive_until: Option<u32>,
+    ds_aggressive_factor: Option<f64>,
+    ds_neutral_until: Option<u32>,
+    ds_neutral_factor: Option<f64>,
+    ds_defensive_factor: Option<f64>,
+    /// Detector #20 cross-cut — equity-progress early-defensive trigger.
+    ds_progress_frac: Option<f64>,
+    ds_progress_factor: Option<f64>,
+    /// Detector #20 kill-switch — wipes day-stage AND early-progress.
+    disable_day_stage: bool,
 }
 
 fn apply_overrides(
@@ -319,8 +424,9 @@ fn apply_overrides(
     ov: &CfgOverrides,
 ) -> Result<()> {
     use ftmo_engine_core::config::{
-        BreakEven, FundingRateFilter, IntradayDailyLossThrottle, LossStreakCooldown,
-        PeakDrawdownThrottle, PeakTrailingStop, TrailingStop,
+        BreakEven, DayProgressiveTier, EarlyDefensiveOnProgress, FundingRateFilter,
+        IntradayDailyLossThrottle, LossStreakCooldown, PeakDrawdownThrottle, PeakTrailingStop,
+        TrailingStop,
     };
 
     if let Some(m) = ov.tp_mult {
@@ -493,6 +599,16 @@ fn apply_overrides(
             cooldown_bars: ov.lscool_bars.unwrap_or(cur.cooldown_bars),
         });
     }
+    // 2026-05-14 Detector #18 — multi-level PTP override. When set, we
+    // FORCE-CLEAR single-tier `partial_take_profit` so the two PRE-cross PTP
+    // branches in `exit::process_position_exit_with_held` cannot stack on the
+    // same bar (single-tier sets ptp_triggered + BE; multi-level then would
+    // also realise its levels and shift BE a second time). Documented in
+    // CfgOverrides::ptp_levels above.
+    if let Some(levels) = ov.ptp_levels.as_ref() {
+        cfg.partial_take_profit = None;
+        cfg.partial_take_profit_levels = Some(levels.clone());
+    }
     if let Some(csv) = &ov.adaptive_tp {
         // Format: "BTC:0.025,ETH:0.030,..."
         for pair in csv.split(',') {
@@ -590,6 +706,15 @@ fn main() -> Result<()> {
     let mut cross_asset_dir: Option<String> = None;
     let mut cross_asset_fast: Option<u32> = None;
     let mut cross_asset_slow: Option<u32> = None;
+    // Detector #20 — 3-phase day-stage sizing + equity-progress trigger.
+    let mut ds_aggressive_until: Option<u32> = None;
+    let mut ds_aggressive_factor: Option<f64> = None;
+    let mut ds_neutral_until: Option<u32> = None;
+    let mut ds_neutral_factor: Option<f64> = None;
+    let mut ds_defensive_factor: Option<f64> = None;
+    let mut ds_progress_frac: Option<f64> = None;
+    let mut ds_progress_factor: Option<f64> = None;
+    let mut disable_day_stage: bool = false;
     let mut adx_min: Option<f64> = None;
     let mut adx_period: Option<usize> = None;
     let mut chop_max: Option<f64> = None;
@@ -624,11 +749,24 @@ fn main() -> Result<()> {
     let mut regime_use_vwap_trend: bool = false;
     let mut regime_vwap_period: usize = 20;
     let mut regime_vwap_min_dev: f64 = 0.0;
+    // 2026-05-14 Detector #14 — Stop-Hunt Liquidity-Sweep voter knobs.
+    let mut regime_use_stop_hunt: bool = false;
+    let mut regime_sh_lookback: usize = 20;
+    let mut regime_sh_wick_pct: f64 = 0.003;
+    let mut regime_sh_close_strict: bool = false;
+    // 2026-05-14 Detector #1 — Bollinger-Band Z-score MR voter knobs.
+    let mut regime_use_bb_z_mr: bool = false;
+    let mut regime_bb_z_period: u32 = 20;
+    let mut regime_bb_z_mult: f64 = 2.0;
+    let mut regime_bb_z_threshold: f64 = 2.0;
+    let mut regime_bb_z_cooldown: u64 = 8;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
     let mut mr_cooldown: Option<u64> = None;
     let mut mr_size_mult: Option<f64> = None;
+    // 2026-05-14 Detector #18 — multi-level PTP CLI override.
+    let mut ptp_levels: Option<Vec<ftmo_engine_core::config::PartialTakeProfitLevel>> = None;
 
     // R67 audit (Round 2): replace `args.next().unwrap()` with `ok_or_else`
     // — `ftmo-sweep --candles` (no path follows) panics with the usual Rust
@@ -765,11 +903,41 @@ fn main() -> Result<()> {
             "--regime-vwap-min-dev" => {
                 regime_vwap_min_dev = need!("--regime-vwap-min-dev").parse()?
             }
+            // 2026-05-14 Detector #14 — Stop-Hunt Liquidity-Sweep voter flags.
+            "--regime-stophunt" => regime_use_stop_hunt = true,
+            "--regime-sh-lookback" => {
+                regime_sh_lookback = need!("--regime-sh-lookback").parse()?
+            }
+            "--regime-sh-wick-pct" => {
+                regime_sh_wick_pct = need!("--regime-sh-wick-pct").parse()?
+            }
+            "--regime-sh-close-strict" => regime_sh_close_strict = true,
+            // 2026-05-14 Detector #1 — Bollinger-Band Z-score MR voter flags.
+            "--regime-bb-z-mr" => regime_use_bb_z_mr = true,
+            "--regime-bb-z-period" => {
+                regime_bb_z_period = need!("--regime-bb-z-period").parse()?
+            }
+            "--regime-bb-z-mult" => {
+                regime_bb_z_mult = need!("--regime-bb-z-mult").parse()?
+            }
+            "--regime-bb-z-threshold" => {
+                regime_bb_z_threshold = need!("--regime-bb-z-threshold").parse()?
+            }
+            "--regime-bb-z-cooldown" => {
+                regime_bb_z_cooldown = need!("--regime-bb-z-cooldown").parse()?
+            }
             "--mr-period" => mr_period = Some(need!("--mr-period").parse()?),
             "--mr-oversold" => mr_oversold = Some(need!("--mr-oversold").parse()?),
             "--mr-overbought" => mr_overbought = Some(need!("--mr-overbought").parse()?),
             "--mr-cooldown" => mr_cooldown = Some(need!("--mr-cooldown").parse()?),
             "--mr-size-mult" => mr_size_mult = Some(need!("--mr-size-mult").parse()?),
+            // 2026-05-14 Detector #18 — multi-level PTP exposure. Parser +
+            // validator lives in `parse_ptp_levels` above. Setting this
+            // clears `cfg.partial_take_profit` in `apply_overrides` so the
+            // two PRE-cross branches in `exit.rs` cannot double-fire.
+            "--ptp-levels" => {
+                ptp_levels = Some(parse_ptp_levels(&need!("--ptp-levels"))?);
+            }
             other => return Err(anyhow!("unknown arg: {other}")),
         }
     }
@@ -859,6 +1027,8 @@ fn main() -> Result<()> {
         }
         if regime_use_vol_confirm
             || regime_use_vwap_trend
+            || regime_use_stop_hunt
+            || regime_use_bb_z_mr
             || regime_force_mr
             || adx_min.is_some()
             || chop_max.is_some()
@@ -909,6 +1079,7 @@ fn main() -> Result<()> {
         cross_asset_slow,
         lscool_after,
         lscool_bars,
+        ptp_levels,
     };
 
     if candles_dir.is_some() || symbols_arg.is_some() {
@@ -954,6 +1125,15 @@ fn main() -> Result<()> {
                 regime_use_vwap_trend,
                 regime_vwap_period,
                 regime_vwap_min_dev,
+                regime_use_stop_hunt,
+                regime_sh_lookback,
+                regime_sh_wick_pct,
+                regime_sh_close_strict,
+                regime_use_bb_z_mr,
+                regime_bb_z_period,
+                regime_bb_z_mult,
+                regime_bb_z_threshold,
+                regime_bb_z_cooldown,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -1976,6 +2156,18 @@ fn run_one_window(
                             use_vwap_trend: multi_signal.regime_use_vwap_trend,
                             vwap_period: multi_signal.regime_vwap_period,
                             vwap_min_dev_pct: multi_signal.regime_vwap_min_dev,
+                            use_stop_hunt: multi_signal.regime_use_stop_hunt,
+                            stop_hunt_lookback: multi_signal.regime_sh_lookback,
+                            stop_hunt_wick_pct: multi_signal.regime_sh_wick_pct,
+                            stop_hunt_close_strict: multi_signal.regime_sh_close_strict,
+                            use_bb_z_mr: multi_signal.regime_use_bb_z_mr,
+                            bb_z_params: ftmo_engine_core::signals_bb_zscore_mr::BollingerZScoreSource {
+                                bb_period: multi_signal.regime_bb_z_period,
+                                bb_mult: multi_signal.regime_bb_z_mult,
+                                z_threshold: multi_signal.regime_bb_z_threshold,
+                                cooldown_bars: multi_signal.regime_bb_z_cooldown,
+                                ..ftmo_engine_core::signals_bb_zscore_mr::BollingerZScoreSource::default()
+                            },
                         };
                     ftmo_engine_core::signals_regime_confluence::detect_regime_confluence(
                         &mut state, cfg, asset, &source, arr, &rc_params, &r28in,
