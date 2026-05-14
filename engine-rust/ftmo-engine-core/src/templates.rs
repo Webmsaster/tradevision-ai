@@ -680,6 +680,27 @@ pub fn v5_amber_passlock_daystage() -> EngineConfig {
     cfg
 }
 
+/// 2026-05-14 Detector #48 — V5_AMBER_PASSLOCK + Time-Decay Sizing.
+///
+/// Applies the default decay schedule (`decay=0.7`, `start_day=15`,
+/// `min_factor=0.3`, mode=CapDown) on top of the AMBER_PASSLOCK basket.
+/// Hypothesis: late-challenge bars carry the highest blow-up risk because
+/// the FTMO trailing-equity rules trigger on the running peak — reducing
+/// sizing as `state.day` approaches `max_days=30` should preserve realised
+/// gains without forfeiting earlier compounding.
+pub fn v5_amber_passlock_timedecay() -> EngineConfig {
+    use crate::config::{TimeDecayMode, TimeDecaySizing};
+    let mut cfg = v5_amber_passlock();
+    cfg.label = "V5_AMBER_PASSLOCK_TIMEDECAY".into();
+    cfg.time_decay_sizing = Some(TimeDecaySizing {
+        decay: 0.7,
+        start_day: 15,
+        min_factor: 0.3,
+        mode: TimeDecayMode::CapDown,
+    });
+    cfg
+}
+
 /// 2026-05-12 V5_TOPAZ + PASSLOCK. V5_TOPAZ = V5_QUARTZ - RUNE (14 assets,
 /// QUARTZ engine stack with atrStop p56m2 + chandelier p56m2 + breakEven).
 pub fn v5_topaz_passlock() -> EngineConfig {
@@ -1016,6 +1037,7 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-amber-passlock" => v5_amber_passlock(),
         "2h-trend-v5-amber-passlock-daystage" => v5_amber_passlock_daystage(),
         "2h-trend-v5-amber-passlock-mptp" => v5_amber_passlock_mptp(),
+        "2h-trend-v5-amber-passlock-timedecay" => v5_amber_passlock_timedecay(),
         "2h-trend-v5-topaz-passlock" => v5_topaz_passlock(),
         "2h-trend-v5-rubin" => v5_rubin(),
         "2h-trend-v5-rubin-passlock" => v5_rubin_passlock(),
@@ -1056,6 +1078,7 @@ pub fn known_selectors() -> &'static [&'static str] {
         "2h-trend-v5-amber-passlock",
         "2h-trend-v5-amber-passlock-daystage",
         "2h-trend-v5-amber-passlock-mptp",
+        "2h-trend-v5-amber-passlock-timedecay",
         "2h-trend-v5-topaz",
         "2h-trend-v5-topaz-passlock",
         "2h-trend-v5-rubin",

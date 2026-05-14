@@ -489,6 +489,14 @@ struct CfgOverrides {
     /// 2026-05-14 (detector-41): when set, the cross-asset filter inverts
     /// secondary-trend semantics before gating (DXY ↔ crypto-style).
     cross_asset_inverse: bool,
+    /// 2026-05-14 Detector #48 — Time-Decay Sizing CLI override knobs.
+    /// `td_enable=true` activates the modifier; the four knobs fall back to
+    /// spec defaults (decay=0.7, start_day=15, min_factor=0.3, mode=CapDown).
+    td_enable: bool,
+    td_decay: Option<f64>,
+    td_start_day: Option<u32>,
+    td_min_factor: Option<f64>,
+    td_mode: Option<String>,
 }
 
 fn apply_overrides(
@@ -498,7 +506,7 @@ fn apply_overrides(
     use ftmo_engine_core::config::{
         BreakEven, DayProgressiveTier, EarlyDefensiveOnProgress, FundingRateFilter,
         IntradayDailyLossThrottle, LossStreakCooldown, PeakDrawdownThrottle, PeakTrailingStop,
-        TrailingStop,
+        TimeDecayMode, TimeDecaySizing, TrailingStop,
     };
 
     if let Some(m) = ov.tp_mult {
@@ -758,6 +766,33 @@ fn apply_overrides(
             }
         }
     }
+    // 2026-05-14 Detector #48 — Time-Decay Sizing CLI activation. Any
+    // `--td-*` flag activates the modifier; missing knobs fall back to the
+    // spec defaults. `--td-enable` alone activates with full defaults.
+    if ov.td_enable
+        || ov.td_decay.is_some()
+        || ov.td_start_day.is_some()
+        || ov.td_min_factor.is_some()
+        || ov.td_mode.is_some()
+    {
+        let mode = match ov.td_mode.as_deref().map(str::to_ascii_lowercase).as_deref() {
+            Some("mult") | Some("multiplicative") => TimeDecayMode::Multiplicative,
+            // Default & explicit "capdown" both land here.
+            _ => TimeDecayMode::CapDown,
+        };
+        let cur = cfg.time_decay_sizing.unwrap_or(TimeDecaySizing {
+            decay: 0.7,
+            start_day: 15,
+            min_factor: 0.3,
+            mode,
+        });
+        cfg.time_decay_sizing = Some(TimeDecaySizing {
+            decay: ov.td_decay.unwrap_or(cur.decay),
+            start_day: ov.td_start_day.unwrap_or(cur.start_day),
+            min_factor: ov.td_min_factor.unwrap_or(cur.min_factor),
+            mode,
+        });
+    }
     Ok(())
 }
 
@@ -845,6 +880,12 @@ fn main() -> Result<()> {
     let mut funding_sizing_min_factor: Option<f64> = None;
     // 2026-05-14 (detector-41): inverse-correlation gate for DXY-style drivers.
     let mut cross_asset_inverse: bool = false;
+    // 2026-05-14 Detector #48 — Time-Decay Sizing CLI flags.
+    let mut td_enable: bool = false;
+    let mut td_decay: Option<f64> = None;
+    let mut td_start_day: Option<u32> = None;
+    let mut td_min_factor: Option<f64> = None;
+    let mut td_mode: Option<String> = None;
     let mut adx_min: Option<f64> = None;
     let mut adx_period: Option<usize> = None;
     let mut chop_max: Option<f64> = None;
@@ -1039,6 +1080,14 @@ fn main() -> Result<()> {
             "--override-rsi-period" => rsi_period = Some(need!("--override-rsi-period").parse()?),
             "--lscool-after" => lscool_after = Some(need!("--lscool-after").parse()?),
             "--lscool-bars" => lscool_bars = Some(need!("--lscool-bars").parse()?),
+            // 2026-05-14 Detector #48 — Time-Decay Sizing flags. `--td-enable`
+            // alone activates the modifier with spec defaults; the four knobs
+            // override individual parameters (capdown is the default mode).
+            "--td-enable" => td_enable = true,
+            "--td-decay" => td_decay = Some(need!("--td-decay").parse()?),
+            "--td-start-day" => td_start_day = Some(need!("--td-start-day").parse()?),
+            "--td-min-factor" => td_min_factor = Some(need!("--td-min-factor").parse()?),
+            "--td-mode" => td_mode = Some(need!("--td-mode")),
             "--trades-out" => trades_out = Some(PathBuf::from(need!("--trades-out"))),
             "--debug-window" => debug_window = Some(need!("--debug-window").parse()?),
             // R29-Audit-2026-05-12: --phantom-suppress flag removed.
@@ -1348,6 +1397,11 @@ fn main() -> Result<()> {
         funding_sizing_alpha,
         funding_sizing_window,
         funding_sizing_min_factor,
+        td_enable,
+        td_decay,
+        td_start_day,
+        td_min_factor,
+        td_mode,
     };
 
     if candles_dir.is_some() || symbols_arg.is_some() {

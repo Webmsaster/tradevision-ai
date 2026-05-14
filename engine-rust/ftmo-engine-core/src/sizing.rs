@@ -2,20 +2,23 @@
 //! `ftmoLiveEngineV4.ts`.
 //!
 //! Pipeline order (matches V4 + R57-V4-3 hysteresis):
-//!   1. adaptiveSizing tiers (sorted asc by equityAbove)
-//!   2. timeBoost — only INCREASES factor (never overrides protection)
-//!   3. kellySizing with persisted-tier hysteresis (HYST = 5pp)
-//!   4. Hard cap at 4×
-//!   5. drawdownShield — caps DOWN
-//!   6. peakDrawdownThrottle — caps DOWN (MTM-based)
-//!   7. intradayDailyLossThrottle.soft — caps DOWN
+//!   0.  dayProgressiveSizing (V5R) — pick the highest matching tier
+//!   0b. earlyDefensiveOnProgress (Detector #20) — cap-down on equity progress
+//!   0c. timeDecaySizing (Detector #48) — exp-decay glide-path; cap-down default
+//!   1.  adaptiveSizing tiers (sorted asc by equityAbove)
+//!   2.  timeBoost — only INCREASES factor (never overrides protection)
+//!   3.  kellySizing with persisted-tier hysteresis (HYST = 5pp)
+//!   4.  Hard cap at 4×
+//!   5.  drawdownShield — caps DOWN
+//!   6.  peakDrawdownThrottle — caps DOWN (MTM-based)
+//!   7.  intradayDailyLossThrottle.soft — caps DOWN
 //!
 //! Post-factor caps (centralized helper `apply_post_factor_caps`):
 //!   8. dayBasedRiskMultiplier early-day conservative factor
 //!   9. liveCaps.maxRiskFrac clamp
 //!  10. derived LIVE_LOSS_CAP = maxDailyLoss × 0.8 / (stopPct × leverage)
 
-use crate::config::EngineConfig;
+use crate::config::{EngineConfig, TimeDecayMode};
 use crate::state::EngineState;
 
 /// Hysteresis for kelly tier transitions.
@@ -62,6 +65,24 @@ pub fn resolve_sizing_factor(
             let trigger = cfg.profit_target * edp.progress_frac;
             if progress >= trigger && edp.factor < factor {
                 factor = edp.factor;
+            }
+        }
+    }
+
+    // 0c. Time-Decay Sizing (Detector #48).
+    //
+    // Lookahead-safe: consults `state.day` only (no MTM equity). Activates
+    // once `state.day >= start_day`. Negative `decay` is treated as zero (no
+    // factor change) so a misconfigured config can never grow sizing. The
+    // `max_days > start_day` guard avoids divide-by-zero / negative range.
+    if let Some(tds) = cfg.time_decay_sizing.as_ref() {
+        if state.day >= tds.start_day && tds.decay > 0.0 && cfg.max_days > tds.start_day {
+            let progress =
+                (state.day - tds.start_day) as f64 / (cfg.max_days - tds.start_day) as f64;
+            let raw = (-tds.decay * progress).exp().max(tds.min_factor);
+            match tds.mode {
+                TimeDecayMode::Multiplicative => factor *= raw,
+                TimeDecayMode::CapDown => factor = factor.min(raw),
             }
         }
     }
@@ -329,6 +350,7 @@ mod tests {
     use crate::config::{
         AdaptiveSizingTier, DayProgressiveTier, DrawdownShield, EarlyDefensiveOnProgress,
         IntradayDailyLossThrottle, KellySizing, KellyTier, PeakDrawdownThrottle, TimeBoost,
+        TimeDecayMode, TimeDecaySizing,
     };
     use crate::state::KellyPnl;
 
@@ -908,6 +930,84 @@ mod tests {
         );
     }
 
+    // ─── Detector #48 — Time-Decay Sizing Modifier (pipeline step 0c) ───
+
+    /// Helper: build a CapDown TDS with the spec default params
+    /// (decay=0.7, start_day=15, min_factor=0.3).
+    fn default_tds() -> TimeDecaySizing {
+        TimeDecaySizing {
+            decay: 0.7,
+            start_day: 15,
+            min_factor: 0.3,
+            mode: TimeDecayMode::CapDown,
+        }
+    }
+
+    #[test]
+    fn time_decay_baseline_day_0_is_one() {
+        // Day 0 is well before start_day=15 → modifier should be inert and
+        // the baseline 1.0× factor must come through unchanged.
+        let mut c = cfg();
+        c.time_decay_sizing = Some(default_tds());
+        let mut s = EngineState::initial("x");
+        s.day = 0;
+        let f = resolve_sizing_factor(&mut s, &c, 0);
+        assert!((f - 1.0).abs() < 1e-12, "day=0 must be 1.0, got {f}");
+    }
+
+    #[test]
+    fn time_decay_at_day_15_just_starts() {
+        // state.day == start_day → progress = 0 → exp(0) = 1.0; in CapDown
+        // mode `min(1.0, 1.0) = 1.0`. Effectively the first day of the curve
+        // is still neutral; the decay only bites once `state.day > start_day`.
+        let mut c = cfg();
+        c.time_decay_sizing = Some(default_tds());
+        let mut s = EngineState::initial("x");
+        s.day = 15;
+        let f = resolve_sizing_factor(&mut s, &c, 0);
+        assert!((f - 1.0).abs() < 1e-12, "day=15 onset = 1.0, got {f}");
+    }
+
+    #[test]
+    fn time_decay_at_day_25_half_with_default_params() {
+        // start_day=15, max_days=30 → range=15. At day=25: progress = 10/15.
+        // raw = exp(-0.7 * 10/15) ≈ exp(-0.4667) ≈ 0.6271. Well above the
+        // 0.3 min_factor floor, so the actual `raw` is what we expect.
+        let mut c = cfg();
+        c.max_days = 30;
+        c.time_decay_sizing = Some(default_tds());
+        let mut s = EngineState::initial("x");
+        s.day = 25;
+        let f = resolve_sizing_factor(&mut s, &c, 0);
+        let expected = (-0.7_f64 * (10.0 / 15.0)).exp();
+        assert!(
+            (f - expected).abs() < 1e-9,
+            "day=25 expected ≈ {expected}, got {f}"
+        );
+        assert!(f < 1.0, "day=25 must cap below 1.0, got {f}");
+    }
+
+    #[test]
+    fn time_decay_min_factor_floor() {
+        // Push decay extreme so the raw value would fall WAY below min_factor.
+        // The floor must clamp the modifier to min_factor exactly.
+        let mut c = cfg();
+        c.max_days = 30;
+        c.time_decay_sizing = Some(TimeDecaySizing {
+            decay: 50.0, // exp(-50) ≈ 0 — would normally collapse sizing
+            start_day: 15,
+            min_factor: 0.3,
+            mode: TimeDecayMode::CapDown,
+        });
+        let mut s = EngineState::initial("x");
+        s.day = 29;
+        let f = resolve_sizing_factor(&mut s, &c, 0);
+        assert!(
+            (f - 0.3).abs() < 1e-12,
+            "extreme decay must clamp at min_factor=0.3, got {f}"
+        );
+    }
+
     #[test]
     fn funding_modifier_clamped_between_min_and_one() {
         // Random-ish positive funding spike that should produce a moderate
@@ -930,6 +1030,109 @@ mod tests {
             m >= 0.4 && m <= 1.0,
             "modifier {} out of [min_factor=0.4, 1.0]",
             m
+        );
+    }
+
+    #[test]
+    fn time_decay_lookahead_audit() {
+        // Lookahead audit: TDS reads `state.day` only — never `mtm_equity` or
+        // any unrealised metric. Diverge mtm_equity wildly from equity; the
+        // result must be identical to the baseline at the same `state.day`.
+        let mut c = cfg();
+        c.max_days = 30;
+        c.time_decay_sizing = Some(default_tds());
+
+        let mut s = EngineState::initial("x");
+        s.day = 22;
+        s.equity = 1.0;
+        s.mtm_equity = 1.50; // huge MTM lie — must not be consulted
+        let f_mtm = resolve_sizing_factor(&mut s, &c, 0);
+
+        let mut s2 = EngineState::initial("x");
+        s2.day = 22;
+        s2.equity = 1.0;
+        s2.mtm_equity = 0.50; // opposite MTM lie
+        let f_no_mtm = resolve_sizing_factor(&mut s2, &c, 0);
+
+        assert!(
+            (f_mtm - f_no_mtm).abs() < 1e-12,
+            "TDS must depend on state.day only — got {f_mtm} vs {f_no_mtm}"
+        );
+    }
+
+    #[test]
+    fn time_decay_cap_down_mode_never_raises() {
+        // Prior factor = 0.5 (set via day-stage). CapDown mode with raw=1.0
+        // (state.day == start_day → exp(0)=1.0) must NOT raise to 1.0.
+        let mut c = cfg();
+        c.max_days = 30;
+        c.day_progressive_sizing = Some(vec![crate::config::DayProgressiveTier {
+            day_at_least: 0,
+            factor: 0.5,
+        }]);
+        c.time_decay_sizing = Some(TimeDecaySizing {
+            decay: 0.7,
+            start_day: 0, // start immediately so raw = 1.0 on day 0
+            min_factor: 0.3,
+            mode: TimeDecayMode::CapDown,
+        });
+        let mut s = EngineState::initial("x");
+        s.day = 0;
+        let f = resolve_sizing_factor(&mut s, &c, 0);
+        assert!(
+            (f - 0.5).abs() < 1e-12,
+            "CapDown must not raise prior factor — got {f}"
+        );
+    }
+
+    #[test]
+    fn time_decay_disabled_template_no_op() {
+        // Smoke: time_decay_sizing=None at day 25 must yield baseline 1.0.
+        let mut c = cfg();
+        c.time_decay_sizing = None;
+        let mut s = EngineState::initial("x");
+        s.day = 25;
+        let f = resolve_sizing_factor(&mut s, &c, 0);
+        assert!(
+            (f - 1.0).abs() < 1e-12,
+            "disabled TDS must yield 1.0, got {f}"
+        );
+    }
+
+    #[test]
+    fn time_decay_zero_max_days_safe() {
+        // Pathological: max_days <= start_day → division-by-zero/negative
+        // range would crash without the guard. We expect no-op.
+        let mut c = cfg();
+        c.max_days = 10; // less than start_day=15
+        c.time_decay_sizing = Some(default_tds());
+        let mut s = EngineState::initial("x");
+        s.day = 20;
+        let f = resolve_sizing_factor(&mut s, &c, 0);
+        assert!(
+            (f - 1.0).abs() < 1e-12,
+            "max_days < start_day must be safe no-op, got {f}"
+        );
+    }
+
+    #[test]
+    fn time_decay_negative_decay_treated_as_zero() {
+        // Negative decay would compute exp(+x) > 1 and (in Multiplicative
+        // mode) inflate sizing. The guard `decay > 0.0` neutralises this.
+        let mut c = cfg();
+        c.max_days = 30;
+        c.time_decay_sizing = Some(TimeDecaySizing {
+            decay: -1.0,
+            start_day: 15,
+            min_factor: 0.3,
+            mode: TimeDecayMode::Multiplicative,
+        });
+        let mut s = EngineState::initial("x");
+        s.day = 25;
+        let f = resolve_sizing_factor(&mut s, &c, 0);
+        assert!(
+            (f - 1.0).abs() < 1e-12,
+            "negative decay must be treated as zero, got {f}"
         );
     }
 }

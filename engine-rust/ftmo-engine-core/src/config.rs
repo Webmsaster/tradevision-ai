@@ -374,6 +374,49 @@ pub struct EarlyDefensiveOnProgress {
     pub factor: f64,
 }
 
+/// 2026-05-14 Detector #48 — Time-Decay Sizing Modifier.
+///
+/// Applies an exponentially decaying sizing factor as the challenge approaches
+/// `max_days`. The decay starts at `start_day` and accelerates linearly
+/// toward `max_days`:
+///
+/// ```text
+///   progress = (state.day - start_day) / (max_days - start_day)   // 0..1
+///   raw      = max(exp(-decay * progress), min_factor)
+/// ```
+///
+/// `mode` controls how `raw` interacts with the prior sizing factor:
+///   - `Multiplicative` — `factor *= raw` (always shrinks, may compound).
+///   - `CapDown` (default) — `factor = min(factor, raw)` (cap-only, never raises).
+///
+/// Cap-down mode is safer for stacking with other defensive throttles: a
+/// misconfigured `factor: 2.0` cannot blow up sizing because the comparison
+/// is monotone. The exp curve gives a smoother glide-path than discrete
+/// day-tiers and is lookahead-safe (consults `state.day` only).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct TimeDecaySizing {
+    /// Exponential decay rate. Higher = faster cap-down toward `min_factor`.
+    /// Typical: 0.7 → factor halves around day ≈ start_day + 0.99 × range.
+    pub decay: f64,
+    /// Day index at which decay starts. Earlier days run at 1.0.
+    #[serde(rename = "startDay")]
+    pub start_day: u32,
+    /// Hard floor for the decay factor — guards against zero-sizing as
+    /// `state.day` approaches `max_days`.
+    #[serde(rename = "minFactor")]
+    pub min_factor: f64,
+    /// Composition rule against the prior sizing factor.
+    pub mode: TimeDecayMode,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TimeDecayMode {
+    /// `factor *= raw` — always shrinks, can compound with other multipliers.
+    Multiplicative,
+    /// `factor = min(factor, raw)` — caps DOWN only, monotone-safe.
+    CapDown,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct ReentryAfterStop {
     #[serde(rename = "sizeMult")]
@@ -599,6 +642,9 @@ pub struct EngineConfig {
     /// Lookahead-safe: `state.equity` is realized-only. See struct doc.
     #[serde(default, rename = "earlyDefensiveOnProgress")]
     pub early_defensive_on_progress: Option<EarlyDefensiveOnProgress>,
+    /// 2026-05-14 Detector #48 — see `TimeDecaySizing` docstring. None = no-op.
+    #[serde(default, rename = "timeDecaySizing")]
+    pub time_decay_sizing: Option<TimeDecaySizing>,
     #[serde(default, rename = "reentryAfterStop")]
     pub reentry_after_stop: Option<ReentryAfterStop>,
     #[serde(default, rename = "meanReversionSource")]
@@ -677,6 +723,7 @@ impl EngineConfig {
             bypass_live_caps: false,
             day_progressive_sizing: None,
             early_defensive_on_progress: None,
+            time_decay_sizing: None,
             reentry_after_stop: None,
             mean_reversion_source: None,
         }
