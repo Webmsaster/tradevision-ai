@@ -185,6 +185,13 @@ pub struct CrossAssetFilter {
     /// TS `skipShortsIfSecondaryUptrend`.
     #[serde(default, rename = "skipShortsIfSecondaryUptrend")]
     pub skip_shorts_if_secondary_uptrend: bool,
+    /// 2026-05-14 (detector-41): when `true`, invert the secondary-asset
+    /// trend before applying the direction gate. Used to model
+    /// inverse-correlated drivers such as DXY ↔ crypto: a *down*-trending DXY
+    /// supports long crypto, an *up*-trending DXY supports short crypto.
+    /// Default `false` preserves existing direct-correlation semantics.
+    #[serde(default, rename = "inverseCorrelation")]
+    pub inverse_correlation: bool,
 }
 
 fn default_cross_dir() -> String {

@@ -205,16 +205,31 @@ pub fn cross_asset_filter_allows(
     } else {
         None
     };
+    // 2026-05-14 (detector-41): for inverse-correlated drivers (e.g. DXY vs
+    // crypto), swap the secondary trend before applying any gate. A *down*-
+    // trending DXY then counts as a Long-supporting signal, an *up*-trending
+    // DXY as a Short-supporting signal. Direct-correlation (default) keeps
+    // the original direction-match semantics. Boolean blockers below also
+    // consult `trend_for_gate` so inverse-correlation propagates uniformly.
+    let trend_for_gate = if filter.inverse_correlation {
+        match trend {
+            Some(PositionSide::Long) => Some(PositionSide::Short),
+            Some(PositionSide::Short) => Some(PositionSide::Long),
+            None => None,
+        }
+    } else {
+        trend
+    };
     // TS-style boolean blockers take precedence over legacy `direction` field.
     if filter.skip_longs_if_secondary_downtrend
         && side == PositionSide::Long
-        && trend == Some(PositionSide::Short)
+        && trend_for_gate == Some(PositionSide::Short)
     {
         return false;
     }
     if filter.skip_shorts_if_secondary_uptrend
         && side == PositionSide::Short
-        && trend == Some(PositionSide::Long)
+        && trend_for_gate == Some(PositionSide::Long)
     {
         return false;
     }
@@ -222,9 +237,10 @@ pub fn cross_asset_filter_allows(
         return true;
     }
     match filter.direction.as_str() {
-        "long" => trend == Some(PositionSide::Long) && side == PositionSide::Long,
-        "short" => trend == Some(PositionSide::Short) && side == PositionSide::Short,
-        _ => trend == Some(side),
+        "long" => trend_for_gate == Some(PositionSide::Long) && side == PositionSide::Long,
+        "short" => trend_for_gate == Some(PositionSide::Short) && side == PositionSide::Short,
+        // "any" or unknown → require trend matches signal side
+        _ => trend_for_gate == Some(side),
     }
 }
 
@@ -355,5 +371,126 @@ mod tests {
     #[test]
     fn htf_trend_no_data_does_not_gate() {
         assert!(htf_trend_allows(&[], 9, 21, PositionSide::Long));
+    }
+
+    // ---------------------------------------------------------------
+    // 2026-05-14 detector-41: inverse-correlation gate (DXY-style)
+    // ---------------------------------------------------------------
+
+    fn cross_filter(direction: &str, inverse: bool) -> crate::config::CrossAssetFilter {
+        crate::config::CrossAssetFilter {
+            symbol: "DXY".to_string(),
+            direction: direction.to_string(),
+            fast_period: 9,
+            slow_period: 21,
+            inverse_correlation: inverse,
+        }
+    }
+
+    /// Inverse-correlation, direction="long": when DXY (secondary) shows an
+    /// up-trend (fast > slow), inversion treats it as bearish for the primary
+    /// → block long entries.
+    #[test]
+    fn inverse_correlation_long_blocks_on_secondary_uptrend() {
+        // Secondary uptrend: rising closes → fast EMA > slow EMA
+        let closes: Vec<f64> = (0..60).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let filter = cross_filter("long", true);
+        assert!(!cross_asset_filter_allows(
+            &filter,
+            PositionSide::Long,
+            &closes
+        ));
+        // Sanity check: with inverse=false the same data WOULD allow.
+        let filter_direct = cross_filter("long", false);
+        assert!(cross_asset_filter_allows(
+            &filter_direct,
+            PositionSide::Long,
+            &closes
+        ));
+    }
+
+    /// Inverse-correlation, direction="long": when DXY shows a down-trend,
+    /// inversion treats it as bullish → allow long entries.
+    #[test]
+    fn inverse_correlation_long_allows_on_secondary_downtrend() {
+        // Secondary downtrend: falling closes → fast EMA < slow EMA
+        let closes: Vec<f64> = (0..60).map(|i| 100.0 - i as f64 * 0.5).collect();
+        let filter = cross_filter("long", true);
+        assert!(cross_asset_filter_allows(
+            &filter,
+            PositionSide::Long,
+            &closes
+        ));
+        // Sanity check: with inverse=false the same downtrend BLOCKS long.
+        let filter_direct = cross_filter("long", false);
+        assert!(!cross_asset_filter_allows(
+            &filter_direct,
+            PositionSide::Long,
+            &closes
+        ));
+    }
+
+    /// Inverse-correlation, direction="short": when DXY shows a down-trend,
+    /// inversion treats it as bullish for the primary → block short entries.
+    #[test]
+    fn inverse_correlation_short_blocks_on_secondary_downtrend() {
+        // Secondary downtrend
+        let closes: Vec<f64> = (0..60).map(|i| 100.0 - i as f64 * 0.5).collect();
+        let filter = cross_filter("short", true);
+        assert!(!cross_asset_filter_allows(
+            &filter,
+            PositionSide::Short,
+            &closes
+        ));
+        // Same data with inverse=false: downtrend confirms short → allow.
+        let filter_direct = cross_filter("short", false);
+        assert!(cross_asset_filter_allows(
+            &filter_direct,
+            PositionSide::Short,
+            &closes
+        ));
+    }
+
+    /// Default `inverse_correlation = false` must preserve existing
+    /// direct-correlation behavior. Long allowed on secondary uptrend,
+    /// short allowed on secondary downtrend.
+    #[test]
+    fn inverse_correlation_default_false_preserves_existing_behavior() {
+        let up_closes: Vec<f64> = (0..60).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let down_closes: Vec<f64> = (0..60).map(|i| 100.0 - i as f64 * 0.5).collect();
+        // direction="any" relies on trend matching side
+        let any = cross_filter("any", false);
+        assert!(cross_asset_filter_allows(
+            &any,
+            PositionSide::Long,
+            &up_closes
+        ));
+        assert!(!cross_asset_filter_allows(
+            &any,
+            PositionSide::Short,
+            &up_closes
+        ));
+        assert!(cross_asset_filter_allows(
+            &any,
+            PositionSide::Short,
+            &down_closes
+        ));
+        assert!(!cross_asset_filter_allows(
+            &any,
+            PositionSide::Long,
+            &down_closes
+        ));
+        // direction="long" requires secondary uptrend
+        let long = cross_filter("long", false);
+        assert!(cross_asset_filter_allows(
+            &long,
+            PositionSide::Long,
+            &up_closes
+        ));
+        assert!(!cross_asset_filter_allows(
+            &long,
+            PositionSide::Long,
+            &down_closes
+        ));
     }
 }

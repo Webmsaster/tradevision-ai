@@ -453,6 +453,9 @@ struct CfgOverrides {
     funding_sizing_alpha: Option<f64>,
     funding_sizing_window: Option<u32>,
     funding_sizing_min_factor: Option<f64>,
+    /// 2026-05-14 (detector-41): when set, the cross-asset filter inverts
+    /// secondary-trend semantics before gating (DXY ↔ crypto-style).
+    cross_asset_inverse: bool,
 }
 
 fn apply_overrides(
@@ -593,6 +596,7 @@ fn apply_overrides(
             slow_period: ov.cross_asset_slow.unwrap_or(21),
             skip_longs_if_secondary_downtrend: false,
             skip_shorts_if_secondary_uptrend: false,
+            inverse_correlation: ov.cross_asset_inverse,
         });
     }
     if ov.pdd_from_peak.is_some() || ov.pdd_factor.is_some() {
@@ -806,6 +810,8 @@ fn main() -> Result<()> {
     let mut funding_sizing_alpha: Option<f64> = None;
     let mut funding_sizing_window: Option<u32> = None;
     let mut funding_sizing_min_factor: Option<f64> = None;
+    // 2026-05-14 (detector-41): inverse-correlation gate for DXY-style drivers.
+    let mut cross_asset_inverse: bool = false;
     let mut adx_min: Option<f64> = None;
     let mut adx_period: Option<usize> = None;
     let mut chop_max: Option<f64> = None;
@@ -970,6 +976,9 @@ fn main() -> Result<()> {
             "--cross-asset-dir" => cross_asset_dir = Some(need!("--cross-asset-dir")),
             "--cross-asset-fast" => cross_asset_fast = Some(need!("--cross-asset-fast").parse()?),
             "--cross-asset-slow" => cross_asset_slow = Some(need!("--cross-asset-slow").parse()?),
+            // 2026-05-14 (detector-41): boolean flag — presence enables inverse
+            // correlation (DXY ↔ crypto). Defaults to false (direct-correlation).
+            "--cross-asset-inverse" => cross_asset_inverse = true,
             "--override-adx-min" => adx_min = Some(need!("--override-adx-min").parse()?),
             "--override-adx-period" => adx_period = Some(need!("--override-adx-period").parse()?),
             "--override-chop-max" => chop_max = Some(need!("--override-chop-max").parse()?),
@@ -1257,6 +1266,7 @@ fn main() -> Result<()> {
         cross_asset_dir,
         cross_asset_fast,
         cross_asset_slow,
+        cross_asset_inverse,
         lscool_after,
         lscool_bars,
         ptp_levels,
