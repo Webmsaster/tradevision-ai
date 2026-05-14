@@ -25,7 +25,12 @@ use crate::state::EngineState;
 /// open known, close NOT yet known), so entry_price MUST use entry_bar.open
 /// and stop/TP anchor on that same known price. Previously used last.close
 /// which was a lookahead (bar i's close is future data at signal-emit time).
-fn finalise_signal(
+///
+/// 2026-05-14 Detector #2 OFI port: visibility raised to `pub(crate)` so
+/// `signals_ofi.rs` can reuse the same sizing+caps shape without duplicating
+/// the eff-risk / stop-pct / TP-anchoring math (which would be a future
+/// audit-headache to keep in sync).
+pub(crate) fn finalise_signal(
     state: &mut EngineState,
     cfg: &EngineConfig,
     asset: &AssetConfig,

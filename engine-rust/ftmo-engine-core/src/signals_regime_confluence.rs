@@ -310,6 +310,9 @@ pub fn detect_regime_confluence(
     // 2026-05-14 Detector #14: Stop-Hunt is the 6th voter — same reasoning,
     // it can carry quorum with breakout when R28V6 abstains and MR/vol-
     // confirm/VWAP are disabled.
+    // 2026-05-14 Detector #2: OFI is the 8th voter — same reasoning, it
+    // can carry quorum with breakout when R28V6 abstains and every other
+    // optional voter is off.
     if r28.is_none()
         && params.min_votes >= 2
         && !mr_effective_some
@@ -317,6 +320,7 @@ pub fn detect_regime_confluence(
         && !params.use_vwap_trend
         && !params.use_stop_hunt
         && !params.use_bb_z_mr
+        && !params.use_ofi
     {
         return None;
     }
@@ -380,6 +384,16 @@ pub fn detect_regime_confluence(
     } else {
         None
     };
+    // 2026-05-14 Detector #2 — OFI persistent-cluster 8th voter. Pure
+    // helper (`compute_ofi_vote`) so no state-clone juggling — orthogonal
+    // taker-flow-aggregate signal independent of all prior voters
+    // (price-only, single-bar volume, raw aggressor ratio, value-area
+    // distance). Lookahead-safe by construction (window ends at signal_idx).
+    let ofi_vote = if params.use_ofi {
+        crate::signals_ofi::compute_ofi_vote(candles, &params.ofi_params, cfg)
+    } else {
+        None
+    };
 
     // Count directional votes. We allow a None probe to count as "abstain"
     // — only positive votes count toward the threshold.
@@ -431,6 +445,12 @@ pub fn detect_regime_confluence(
         }
     }
     if let Some(side) = bb_z_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = ofi_vote {
         match side {
             PositionSide::Long => long_votes += 1,
             PositionSide::Short => short_votes += 1,
