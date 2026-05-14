@@ -1712,7 +1712,9 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: None,
+            cb_premium_series: None,
         };
+        let regime_inputs = RegimeConfluenceInputs::default();
         // Precondition: helper fires Long on this fixture.
         let poc_vote = compute_poc_z_vote(&candles, &params, &cfg);
         assert_eq!(
@@ -1722,7 +1724,7 @@ mod tests {
         );
         // Integration must not panic, regardless of consensus outcome.
         let _ = detect_regime_confluence(
-            &mut state, &cfg, &asset, "BTCUSDT", &candles, &params, &inputs,
+            &mut state, &cfg, &asset, "BTCUSDT", &candles, &params, &inputs, &regime_inputs,
         );
     }
 }

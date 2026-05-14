@@ -1057,6 +1057,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: None,
+            cb_premium_series: None,
         };
         assert!(
             detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs_blocked).is_none(),
@@ -1075,6 +1076,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: None,
+            cb_premium_series: None,
         };
         let sig = detect_r28_v6(&mut s2, &cfg, &a, "BTCUSDT", &candles, &p, &inputs_allowed);
         assert!(

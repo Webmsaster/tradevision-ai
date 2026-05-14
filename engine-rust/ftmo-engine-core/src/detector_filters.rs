@@ -465,6 +465,8 @@ mod tests {
             fast_period: 9,
             slow_period: 21,
             inverse_correlation: inverse,
+            skip_longs_if_secondary_downtrend: false,
+            skip_shorts_if_secondary_uptrend: false,
         }
     }
 
