@@ -13,7 +13,8 @@
 
 use crate::config::{
     AssetConfig, BreakEven, ChandelierExit, CorrelationFilter, EngineConfig, LiveCaps,
-    LossStreakCooldown, PartialTakeProfit, PeakDrawdownThrottle, PeakTrailingStop, TrailingStop,
+    LossStreakCooldown, PartialTakeProfit, PartialTakeProfitLevel, PeakDrawdownThrottle,
+    PeakTrailingStop, TrailingStop,
 };
 
 const R28_V6_BASKET: &[&str] = &[
@@ -612,6 +613,73 @@ pub fn v5_amber_passlock() -> EngineConfig {
     cfg
 }
 
+/// 2026-05-14 Detector #18 — V5_AMBER + PASSLOCK with the default
+/// multi-level PTP ladder. Three tiers crammed below the per-asset tp_pct
+/// (typical AMBER tp ≈ 0.04-0.06): scale-out 25% at +1.5%, another 30% at
+/// +3%, and 45% at +4.5%. After the first realisation `exit.rs` shifts the
+/// stop to cost-adjusted break-even, so subsequent tiers effectively trade
+/// risk-free.
+///
+/// Single-tier `partial_take_profit` is explicitly cleared to prevent the
+/// two PRE-cross PTP branches in `process_position_exit_with_held` from
+/// stacking on the same bar.
+pub fn v5_amber_passlock_mptp() -> EngineConfig {
+    let mut cfg = v5_amber_passlock();
+    cfg.label = "V5_AMBER_PASSLOCK_MPTP".into();
+    cfg.partial_take_profit = None;
+    cfg.partial_take_profit_levels = Some(vec![
+        PartialTakeProfitLevel {
+            trigger_pct: 0.015,
+            close_fraction: 0.25,
+        },
+        PartialTakeProfitLevel {
+            trigger_pct: 0.030,
+            close_fraction: 0.30,
+        },
+        PartialTakeProfitLevel {
+            trigger_pct: 0.045,
+            close_fraction: 0.45,
+        },
+    ]);
+    cfg
+}
+
+/// 2026-05-14 Detector #20 — V5_AMBER_PASSLOCK + 3-phase day-stage sizing
+/// + equity-progress early-defensive override.
+///
+/// Phase 1 (day 0..2): aggressive 1.5× — fastest possible target run while
+/// drawdown headroom is full.
+/// Phase 2 (day 3..7): neutral 1.0× — once initial gains are realized.
+/// Phase 3 (day 8+):   defensive 0.7× — preserve capital toward closeout.
+///
+/// Cross-cut: when realized equity already reflects 70% of profit_target
+/// (e.g. +5.6% on a 8% target), switch to 0.5× immediately regardless of
+/// day-stage. Lookahead-safe (uses realized equity only).
+pub fn v5_amber_passlock_daystage() -> EngineConfig {
+    use crate::config::{DayProgressiveTier, EarlyDefensiveOnProgress};
+    let mut cfg = v5_amber_passlock();
+    cfg.label = "V5_AMBER_PASSLOCK_DAYSTAGE".into();
+    cfg.day_progressive_sizing = Some(vec![
+        DayProgressiveTier {
+            day_at_least: 0,
+            factor: 1.5,
+        },
+        DayProgressiveTier {
+            day_at_least: 3,
+            factor: 1.0,
+        },
+        DayProgressiveTier {
+            day_at_least: 8,
+            factor: 0.7,
+        },
+    ]);
+    cfg.early_defensive_on_progress = Some(EarlyDefensiveOnProgress {
+        progress_frac: 0.7,
+        factor: 0.5,
+    });
+    cfg
+}
+
 /// 2026-05-12 V5_TOPAZ + PASSLOCK. V5_TOPAZ = V5_QUARTZ - RUNE (14 assets,
 /// QUARTZ engine stack with atrStop p56m2 + chandelier p56m2 + breakEven).
 pub fn v5_topaz_passlock() -> EngineConfig {
@@ -946,6 +1014,8 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-titanium-passlock-norune" => v5_titanium_passlock_norune(),
         "2h-trend-v5-obsidian-passlock" => v5_obsidian_passlock(),
         "2h-trend-v5-amber-passlock" => v5_amber_passlock(),
+        "2h-trend-v5-amber-passlock-daystage" => v5_amber_passlock_daystage(),
+        "2h-trend-v5-amber-passlock-mptp" => v5_amber_passlock_mptp(),
         "2h-trend-v5-topaz-passlock" => v5_topaz_passlock(),
         "2h-trend-v5-rubin" => v5_rubin(),
         "2h-trend-v5-rubin-passlock" => v5_rubin_passlock(),
@@ -984,6 +1054,8 @@ pub fn known_selectors() -> &'static [&'static str] {
         "2h-trend-v5-titanium",
         "2h-trend-v5-amber",
         "2h-trend-v5-amber-passlock",
+        "2h-trend-v5-amber-passlock-daystage",
+        "2h-trend-v5-amber-passlock-mptp",
         "2h-trend-v5-topaz",
         "2h-trend-v5-topaz-passlock",
         "2h-trend-v5-rubin",

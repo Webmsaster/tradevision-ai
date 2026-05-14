@@ -351,6 +351,22 @@ pub struct DayProgressiveTier {
     pub factor: f64,
 }
 
+/// Detector #20 — early defensive sizing when realized equity has already
+/// reached a fraction of profit-target. Lookahead-safe: `state.equity` is
+/// realized-only at the signal bar (only mutated in `close_trade` via
+/// `state.equity *= 1.0 + pnl.eff_pnl`). When `state.equity - 1.0 >=
+/// profit_target * progressFrac`, the sizing factor is capped at `factor`
+/// — but ONLY if `factor` is smaller than the day-stage factor (override
+/// never raises sizing, only lowers).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct EarlyDefensiveOnProgress {
+    /// Trigger when state.equity - 1.0 >= profit_target * this_frac.
+    #[serde(rename = "progressFrac")]
+    pub progress_frac: f64,
+    /// Override factor once trigger fires (replaces day-stage factor if smaller).
+    pub factor: f64,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct ReentryAfterStop {
     #[serde(rename = "sizeMult")]
@@ -400,6 +416,37 @@ pub struct FundingRateFilter {
     pub max_funding_for_long: Option<f64>,
     #[serde(default, rename = "minFundingForShort")]
     pub min_funding_for_short: Option<f64>,
+}
+
+/// 2026-05-14 Detector #11 Phase-1 — Funding-Cost sizing modifier config.
+///
+/// When `Some`, signal-emit paths scale eff_risk by
+/// `funding_cost_modifier(...)` (see `sizing.rs`). Asymmetric clamp: only
+/// penalises pay-side, never bonus on receive-side. No-op (factor = 1.0)
+/// when funding series is unavailable.
+///
+/// `alpha`: sensitivity (1.5 ≈ aggressive de-risk on +1σ pay-side spike)
+/// `norm_window_buckets`: reference-window length in bars (720 ≈ 15 days
+///   at 30min cadence; longer = more stable z-norm)
+/// `min_factor`: floor for the modifier (0.4 ≈ keep at least 40% sizing
+///   even on extreme pay-side spikes)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct FundingCostSizing {
+    pub alpha: f64,
+    #[serde(rename = "normWindowBuckets")]
+    pub norm_window_buckets: u32,
+    #[serde(rename = "minFactor")]
+    pub min_factor: f64,
+}
+
+impl Default for FundingCostSizing {
+    fn default() -> Self {
+        Self {
+            alpha: 1.5,
+            norm_window_buckets: 720,
+            min_factor: 0.4,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -517,6 +564,10 @@ pub struct EngineConfig {
     #[serde(default, rename = "fundingRateFilter")]
     pub funding_rate_filter: Option<FundingRateFilter>,
 
+    /// 2026-05-14 Detector #11 Phase-1 — see `FundingCostSizing` docstring.
+    #[serde(default, rename = "fundingCostSizing")]
+    pub funding_cost_sizing: Option<FundingCostSizing>,
+
     #[serde(default, rename = "crossAssetFilter")]
     pub cross_asset_filter: Option<CrossAssetFilter>,
     #[serde(default, rename = "crossAssetFiltersExtra")]
@@ -536,6 +587,11 @@ pub struct EngineConfig {
     pub bypass_live_caps: bool,
     #[serde(default, rename = "dayProgressiveSizing")]
     pub day_progressive_sizing: Option<Vec<DayProgressiveTier>>,
+    /// Detector #20 — equity-progress trigger that overrides day-stage
+    /// sizing into defensive mode early, BEFORE the day counter catches up.
+    /// Lookahead-safe: `state.equity` is realized-only. See struct doc.
+    #[serde(default, rename = "earlyDefensiveOnProgress")]
+    pub early_defensive_on_progress: Option<EarlyDefensiveOnProgress>,
     #[serde(default, rename = "reentryAfterStop")]
     pub reentry_after_stop: Option<ReentryAfterStop>,
     #[serde(default, rename = "meanReversionSource")]
@@ -600,6 +656,7 @@ impl EngineConfig {
             trailing_stop: None,
             max_concurrent_trades: None,
             funding_rate_filter: None,
+            funding_cost_sizing: None,
             cross_asset_filter: None,
             cross_asset_filters_extra: None,
             vol_adaptive_tp_mult: None,
@@ -612,6 +669,7 @@ impl EngineConfig {
             daily_equity_guardian: None,
             bypass_live_caps: false,
             day_progressive_sizing: None,
+            early_defensive_on_progress: None,
             reentry_after_stop: None,
             mean_reversion_source: None,
         }

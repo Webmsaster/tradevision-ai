@@ -243,6 +243,18 @@ struct MultiSignalCfg {
     regime_bb_z_mult: f64,
     regime_bb_z_threshold: f64,
     regime_bb_z_cooldown: u64,
+    /// 2026-05-14 Detector #2 — Order-Flow-Imbalance Persistent Cluster.
+    /// `also_fire_ofi_persistent` adds the detector as an ADDITIVE entry
+    /// alongside R28V6 (mirrors `also_fire_meanrev/breakout`). `regime_use_ofi`
+    /// enrolls it as the 8th independent voter inside the regime panel.
+    /// Tuneable knobs: window_bars (5), delta_threshold (0.20 ≈ 60/40 ratio),
+    /// SMA-period (20), cooldown (12 bars on a 30m feed = 6 hours).
+    also_fire_ofi_persistent: bool,
+    regime_use_ofi: bool,
+    ofi_window: usize,
+    ofi_threshold: f64,
+    ofi_sma: usize,
+    ofi_cooldown: u64,
     // Below: deliberately at end so the field-init order in `let cfg =
     // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
@@ -417,6 +429,12 @@ struct CfgOverrides {
     ds_progress_factor: Option<f64>,
     /// Detector #20 kill-switch — wipes day-stage AND early-progress.
     disable_day_stage: bool,
+    /// 2026-05-14 Detector #11 Phase-1 — funding-cost sizing modifier.
+    /// All three flags wire `cfg.funding_cost_sizing = Some(...)`. Any
+    /// `Some` value triggers activation; defaults match `FundingCostSizing::default()`.
+    funding_sizing_alpha: Option<f64>,
+    funding_sizing_window: Option<u32>,
+    funding_sizing_min_factor: Option<f64>,
 }
 
 fn apply_overrides(
@@ -609,6 +627,57 @@ fn apply_overrides(
         cfg.partial_take_profit = None;
         cfg.partial_take_profit_levels = Some(levels.clone());
     }
+    // ─── Detector #20 — 3-phase day-stage sizing + equity-progress ──
+    if ov.disable_day_stage {
+        cfg.day_progressive_sizing = None;
+        cfg.early_defensive_on_progress = None;
+    } else if ov.ds_aggressive_factor.is_some()
+        || ov.ds_defensive_factor.is_some()
+        || ov.ds_neutral_factor.is_some()
+        || ov.ds_aggressive_until.is_some()
+        || ov.ds_neutral_until.is_some()
+    {
+        let agg_until = ov.ds_aggressive_until.unwrap_or(3);
+        let neu_until = ov.ds_neutral_until.unwrap_or(8);
+        let agg_f = ov.ds_aggressive_factor.unwrap_or(1.5);
+        let neu_f = ov.ds_neutral_factor.unwrap_or(1.0);
+        let def_f = ov.ds_defensive_factor.unwrap_or(0.7);
+        cfg.day_progressive_sizing = Some(vec![
+            DayProgressiveTier {
+                day_at_least: 0,
+                factor: agg_f,
+            },
+            DayProgressiveTier {
+                day_at_least: agg_until,
+                factor: neu_f,
+            },
+            DayProgressiveTier {
+                day_at_least: neu_until,
+                factor: def_f,
+            },
+        ]);
+    }
+    if let (Some(p), Some(f)) = (ov.ds_progress_frac, ov.ds_progress_factor) {
+        cfg.early_defensive_on_progress = Some(EarlyDefensiveOnProgress {
+            progress_frac: p,
+            factor: f,
+        });
+    }
+    // 2026-05-14 Detector #11 Phase-1 — funding-cost sizing modifier.
+    // Any flag activates the modifier; missing flags fall back to defaults.
+    if ov.funding_sizing_alpha.is_some()
+        || ov.funding_sizing_window.is_some()
+        || ov.funding_sizing_min_factor.is_some()
+    {
+        let cur = cfg
+            .funding_cost_sizing
+            .unwrap_or_else(ftmo_engine_core::config::FundingCostSizing::default);
+        cfg.funding_cost_sizing = Some(ftmo_engine_core::config::FundingCostSizing {
+            alpha: ov.funding_sizing_alpha.unwrap_or(cur.alpha),
+            norm_window_buckets: ov.funding_sizing_window.unwrap_or(cur.norm_window_buckets),
+            min_factor: ov.funding_sizing_min_factor.unwrap_or(cur.min_factor),
+        });
+    }
     if let Some(csv) = &ov.adaptive_tp {
         // Format: "BTC:0.025,ETH:0.030,..."
         for pair in csv.split(',') {
@@ -715,6 +784,10 @@ fn main() -> Result<()> {
     let mut ds_progress_frac: Option<f64> = None;
     let mut ds_progress_factor: Option<f64> = None;
     let mut disable_day_stage: bool = false;
+    // 2026-05-14 Detector #11 Phase-1 — funding-cost sizing modifier flags.
+    let mut funding_sizing_alpha: Option<f64> = None;
+    let mut funding_sizing_window: Option<u32> = None;
+    let mut funding_sizing_min_factor: Option<f64> = None;
     let mut adx_min: Option<f64> = None;
     let mut adx_period: Option<usize> = None;
     let mut chop_max: Option<f64> = None;
@@ -760,6 +833,15 @@ fn main() -> Result<()> {
     let mut regime_bb_z_mult: f64 = 2.0;
     let mut regime_bb_z_threshold: f64 = 2.0;
     let mut regime_bb_z_cooldown: u64 = 8;
+    // 2026-05-14 Detector #2 — OFI persistent-cluster knobs. Defaults mirror
+    // `OfiPersistentParams::default_30m_crypto()` so flag-free callers see
+    // the same shape as direct API users.
+    let mut also_fire_ofi_persistent: bool = false;
+    let mut regime_use_ofi: bool = false;
+    let mut ofi_window: usize = 5;
+    let mut ofi_threshold: f64 = 0.20;
+    let mut ofi_sma: usize = 20;
+    let mut ofi_cooldown: u64 = 12;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
@@ -926,6 +1008,35 @@ fn main() -> Result<()> {
             "--regime-bb-z-cooldown" => {
                 regime_bb_z_cooldown = need!("--regime-bb-z-cooldown").parse()?
             }
+            // 2026-05-14 Detector #2 — Order-Flow-Imbalance Persistent Cluster.
+            // `--also-fire-ofi-persistent` runs OFI as an additive entry source
+            // alongside the primary R28V6 detector; `--regime-use-ofi` enrolls
+            // it as the 8th voter in regime-confluence.
+            "--also-fire-ofi-persistent" => also_fire_ofi_persistent = true,
+            "--regime-use-ofi" => regime_use_ofi = true,
+            "--ofi-window" => ofi_window = need!("--ofi-window").parse()?,
+            "--ofi-threshold" => ofi_threshold = need!("--ofi-threshold").parse()?,
+            "--ofi-sma" => ofi_sma = need!("--ofi-sma").parse()?,
+            "--ofi-cooldown" => ofi_cooldown = need!("--ofi-cooldown").parse()?,
+            // Detector #20 — day-stage sizing CLI flags.
+            "--ds-aggressive-until" => {
+                ds_aggressive_until = Some(need!("--ds-aggressive-until").parse()?)
+            }
+            "--ds-aggressive-factor" => {
+                ds_aggressive_factor = Some(need!("--ds-aggressive-factor").parse()?)
+            }
+            "--ds-neutral-until" => ds_neutral_until = Some(need!("--ds-neutral-until").parse()?),
+            "--ds-neutral-factor" => {
+                ds_neutral_factor = Some(need!("--ds-neutral-factor").parse()?)
+            }
+            "--ds-defensive-factor" => {
+                ds_defensive_factor = Some(need!("--ds-defensive-factor").parse()?)
+            }
+            "--ds-progress-frac" => ds_progress_frac = Some(need!("--ds-progress-frac").parse()?),
+            "--ds-progress-factor" => {
+                ds_progress_factor = Some(need!("--ds-progress-factor").parse()?)
+            }
+            "--disable-day-stage" => disable_day_stage = true,
             "--mr-period" => mr_period = Some(need!("--mr-period").parse()?),
             "--mr-oversold" => mr_oversold = Some(need!("--mr-oversold").parse()?),
             "--mr-overbought" => mr_overbought = Some(need!("--mr-overbought").parse()?),
@@ -937,6 +1048,16 @@ fn main() -> Result<()> {
             // two PRE-cross branches in `exit.rs` cannot double-fire.
             "--ptp-levels" => {
                 ptp_levels = Some(parse_ptp_levels(&need!("--ptp-levels"))?);
+            }
+            // 2026-05-14 Detector #11 Phase-1 — funding-cost sizing modifier.
+            "--funding-sizing-alpha" => {
+                funding_sizing_alpha = Some(need!("--funding-sizing-alpha").parse()?)
+            }
+            "--funding-sizing-window" => {
+                funding_sizing_window = Some(need!("--funding-sizing-window").parse()?)
+            }
+            "--funding-sizing-min-factor" => {
+                funding_sizing_min_factor = Some(need!("--funding-sizing-min-factor").parse()?)
             }
             other => return Err(anyhow!("unknown arg: {other}")),
         }
@@ -1025,10 +1146,14 @@ fn main() -> Result<()> {
         if also_fire_breakout {
             unsupported.push("--also-fire-breakout");
         }
+        if also_fire_ofi_persistent {
+            unsupported.push("--also-fire-ofi-persistent");
+        }
         if regime_use_vol_confirm
             || regime_use_vwap_trend
             || regime_use_stop_hunt
             || regime_use_bb_z_mr
+            || regime_use_ofi
             || regime_force_mr
             || adx_min.is_some()
             || chop_max.is_some()
@@ -1080,6 +1205,17 @@ fn main() -> Result<()> {
         lscool_after,
         lscool_bars,
         ptp_levels,
+        ds_aggressive_until,
+        ds_aggressive_factor,
+        ds_neutral_until,
+        ds_neutral_factor,
+        ds_defensive_factor,
+        ds_progress_frac,
+        ds_progress_factor,
+        disable_day_stage,
+        funding_sizing_alpha,
+        funding_sizing_window,
+        funding_sizing_min_factor,
     };
 
     if candles_dir.is_some() || symbols_arg.is_some() {
@@ -1134,6 +1270,14 @@ fn main() -> Result<()> {
                 regime_bb_z_mult,
                 regime_bb_z_threshold,
                 regime_bb_z_cooldown,
+                // Build-fix: OFI voter fields default off — not exposed as
+                // CLI flags in this Detector #20 patch.
+                also_fire_ofi_persistent,
+                regime_use_ofi,
+                ofi_window,
+                ofi_threshold,
+                ofi_sma,
+                ofi_cooldown,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -2168,6 +2312,18 @@ fn run_one_window(
                                 cooldown_bars: multi_signal.regime_bb_z_cooldown,
                                 ..ftmo_engine_core::signals_bb_zscore_mr::BollingerZScoreSource::default()
                             },
+                            // 2026-05-14 Detector #2 — wire CLI-supplied OFI knobs
+                            // through to the regime voter. Keep the rest of the
+                            // `OfiPersistentParams` defaults so the user only
+                            // overrides what they explicitly passed.
+                            use_ofi: multi_signal.regime_use_ofi,
+                            ofi_params: ftmo_engine_core::signals_ofi::OfiPersistentParams {
+                                window_bars: multi_signal.ofi_window,
+                                delta_threshold: multi_signal.ofi_threshold,
+                                sma_period: multi_signal.ofi_sma,
+                                cooldown_bars: multi_signal.ofi_cooldown,
+                                ..ftmo_engine_core::signals_ofi::OfiPersistentParams::default_30m_crypto()
+                            },
                         };
                     ftmo_engine_core::signals_regime_confluence::detect_regime_confluence(
                         &mut state, cfg, asset, &source, arr, &rc_params, &r28in,
@@ -2316,6 +2472,27 @@ fn run_one_window(
                 };
                 let bp = BreakoutParams::from_cfg(cfg, asset);
                 if let Some(s) = detect_breakout(&mut state, cfg, asset, &source, arr, &bp) {
+                    push_with_gates(s, &mut signals_for_bar);
+                }
+            }
+            // 2026-05-14 Detector #2 — additive OFI persistent-cluster. Mirrors
+            // the `also_fire_breakout` wiring. Same `push_with_gates` pipeline
+            // (phantom-suppress + random-gate + ML-gate) applies.
+            if multi_signal.also_fire_ofi_persistent && asset_uses_r28v6_fallback(asset) {
+                let arr = match feed.get(&source) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                let ofi_p = ftmo_engine_core::signals_ofi::OfiPersistentParams {
+                    window_bars: multi_signal.ofi_window,
+                    delta_threshold: multi_signal.ofi_threshold,
+                    sma_period: multi_signal.ofi_sma,
+                    cooldown_bars: multi_signal.ofi_cooldown,
+                    ..ftmo_engine_core::signals_ofi::OfiPersistentParams::default_30m_crypto()
+                };
+                if let Some(s) = ftmo_engine_core::signals_ofi::detect_ofi_persistent(
+                    &mut state, cfg, asset, &source, arr, &ofi_p,
+                ) {
                     push_with_gates(s, &mut signals_for_bar);
                 }
             }
