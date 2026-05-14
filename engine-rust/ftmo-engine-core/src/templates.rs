@@ -701,6 +701,48 @@ pub fn v5_amber_passlock_timedecay() -> EngineConfig {
     cfg
 }
 
+/// 2026-05-14 Detector #49 — V5_AMBER_PASSLOCK + Sharpe-ratio-optimized
+/// sizing modifier.
+///
+/// Tiers chosen to bite progressively as recent Sharpe deteriorates:
+///   sharpe ≥  0.30 → no-op (1.0 — cap-down only, so config harmless)
+///   sharpe ≥  0.10 → 0.85
+///   sharpe ≥ -0.10 → 0.60
+///   sharpe ≥ -∞    → 0.40
+///
+/// Window 100 / min_trades 30 balances responsiveness against statistical
+/// stability: at AMBER's typical ~3-5 trades/day on the 30m basket, 100
+/// closed PnLs span ~3 weeks — enough samples for a meaningful mean/std
+/// without lagging the regime indefinitely.
+pub fn v5_amber_passlock_sharpe() -> EngineConfig {
+    use crate::config::{SharpeSizing, SharpeTier};
+    let mut cfg = v5_amber_passlock();
+    cfg.label = "V5_AMBER_PASSLOCK_SHARPE".into();
+    cfg.sharpe_sizing = Some(SharpeSizing {
+        window_size: 100,
+        min_trades: 30,
+        tiers: vec![
+            SharpeTier {
+                sharpe_above: 0.30,
+                multiplier: 1.0,
+            },
+            SharpeTier {
+                sharpe_above: 0.10,
+                multiplier: 0.85,
+            },
+            SharpeTier {
+                sharpe_above: -0.10,
+                multiplier: 0.60,
+            },
+            SharpeTier {
+                sharpe_above: f64::NEG_INFINITY,
+                multiplier: 0.40,
+            },
+        ],
+    });
+    cfg
+}
+
 /// 2026-05-12 V5_TOPAZ + PASSLOCK. V5_TOPAZ = V5_QUARTZ - RUNE (14 assets,
 /// QUARTZ engine stack with atrStop p56m2 + chandelier p56m2 + breakEven).
 pub fn v5_topaz_passlock() -> EngineConfig {
@@ -1038,6 +1080,7 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-amber-passlock-daystage" => v5_amber_passlock_daystage(),
         "2h-trend-v5-amber-passlock-mptp" => v5_amber_passlock_mptp(),
         "2h-trend-v5-amber-passlock-timedecay" => v5_amber_passlock_timedecay(),
+        "2h-trend-v5-amber-passlock-sharpe" => v5_amber_passlock_sharpe(),
         "2h-trend-v5-topaz-passlock" => v5_topaz_passlock(),
         "2h-trend-v5-rubin" => v5_rubin(),
         "2h-trend-v5-rubin-passlock" => v5_rubin_passlock(),
@@ -1079,6 +1122,7 @@ pub fn known_selectors() -> &'static [&'static str] {
         "2h-trend-v5-amber-passlock-daystage",
         "2h-trend-v5-amber-passlock-mptp",
         "2h-trend-v5-amber-passlock-timedecay",
+        "2h-trend-v5-amber-passlock-sharpe",
         "2h-trend-v5-topaz",
         "2h-trend-v5-topaz-passlock",
         "2h-trend-v5-rubin",

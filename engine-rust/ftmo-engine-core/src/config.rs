@@ -302,6 +302,41 @@ pub struct DayBasedRiskMultiplier {
     pub conservative_factor: f64,
 }
 
+/// 2026-05-14 Detector #49 — Sharpe-ratio-optimized sizing modifier.
+///
+/// Computes a rolling per-trade Sharpe over the last `window_size` Kelly-PnL
+/// entries (mean / std-dev, NOT annualized — the FTMO universe sizes per
+/// trade so annualizing introduces a horizon term the modifier doesn't need)
+/// then maps the result through a `SharpeTier` ladder. Tiers are sorted
+/// descending by `sharpe_above`; the highest matching tier wins. Hysteresis
+/// (`HYST=0.05`) prevents flicker, mirroring the Kelly-tier pattern in
+/// `sizing.rs`.
+///
+/// Cap-down-only: the chosen `multiplier` is applied as
+/// `factor = factor.min(multiplier)`. A tier with `multiplier > 1.0` is
+/// therefore a no-op — by design, so an over-eager config can never inflate
+/// risk on the back of recent Sharpe.
+///
+/// Lookahead-safe: the reference window is `state.kelly_pnls` filtered
+/// strictly to `close_time < entry_time_ms`. The PnL of a trade that closed
+/// at the entry-bar's open MUST NOT enter the Sharpe — `close_trade` writes
+/// it on the SAME bar, so the strict-less filter is load-bearing.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct SharpeTier {
+    #[serde(rename = "sharpeAbove")]
+    pub sharpe_above: f64,
+    pub multiplier: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SharpeSizing {
+    #[serde(rename = "windowSize")]
+    pub window_size: u32,
+    #[serde(rename = "minTrades")]
+    pub min_trades: u32,
+    pub tiers: Vec<SharpeTier>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct DrawdownShield {
     #[serde(rename = "belowEquity")]
@@ -568,6 +603,12 @@ pub struct EngineConfig {
     /// previously dropped this field on load → over-sized in early days.
     #[serde(default, rename = "dayBasedRiskMultiplier")]
     pub day_based_risk_multiplier: Option<DayBasedRiskMultiplier>,
+    /// 2026-05-14 Detector #49 — Sharpe-ratio-optimized sizing modifier.
+    /// See `SharpeSizing` doc for semantics. Lives BETWEEN Kelly-block and
+    /// Hard-Cap in `resolve_sizing_factor` so it can cap-down anything
+    /// Kelly-or-earlier raised, but cannot exceed `HARD_CAP=4.0`.
+    #[serde(default, rename = "sharpeSizing")]
+    pub sharpe_sizing: Option<SharpeSizing>,
     #[serde(default, rename = "drawdownShield")]
     pub drawdown_shield: Option<DrawdownShield>,
     #[serde(default, rename = "peakDrawdownThrottle")]
@@ -699,6 +740,7 @@ impl EngineConfig {
             time_boost: None,
             kelly_sizing: None,
             day_based_risk_multiplier: None,
+            sharpe_sizing: None,
             drawdown_shield: None,
             peak_drawdown_throttle: None,
             intraday_daily_loss_throttle: None,

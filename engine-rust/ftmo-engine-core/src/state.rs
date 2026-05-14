@@ -103,6 +103,17 @@ pub struct EngineState {
         skip_serializing_if = "Option::is_none"
     )]
     pub kelly_tier_idx: Option<usize>,
+    /// Detector #49 — persisted Sharpe-tier index for hysteresis (HYST=0.05).
+    /// Mirrors `kelly_tier_idx`: `None` = cold start (greedy lookup), `Some(i)`
+    /// = last-chosen tier in the descending-`sharpe_above` order. Skipped
+    /// during serialization when `None` to keep state-blob small for
+    /// pre-Sharpe configs.
+    #[serde(
+        rename = "sharpeTierIdx",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sharpe_tier_idx: Option<usize>,
     #[serde(rename = "closedTrades", default)]
     pub closed_trades: Vec<ClosedTrade>,
     #[serde(rename = "barsSeen", default)]
@@ -136,6 +147,7 @@ impl EngineState {
             loss_streak_by_asset_dir: HashMap::new(),
             kelly_pnls: vec![],
             kelly_tier_idx: None,
+            sharpe_tier_idx: None,
             closed_trades: vec![],
             bars_seen: 0,
             stopped_reason: None,

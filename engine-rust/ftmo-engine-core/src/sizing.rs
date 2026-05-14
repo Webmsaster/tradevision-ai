@@ -8,6 +8,10 @@
 //!   1.  adaptiveSizing tiers (sorted asc by equityAbove)
 //!   2.  timeBoost — only INCREASES factor (never overrides protection)
 //!   3.  kellySizing with persisted-tier hysteresis (HYST = 5pp)
+//!   3b. sharpeSizing — cap-DOWN-only sizing based on rolling per-trade
+//!       Sharpe over the last N Kelly-PnLs (Detector #49). Reuses the same
+//!       hysteresis pattern as Kelly. Lookahead-safe via strict
+//!       `close_time < entry_time_ms` filter on `state.kelly_pnls`.
 //!   4.  Hard cap at 4×
 //!   5.  drawdownShield — caps DOWN
 //!   6.  peakDrawdownThrottle — caps DOWN (MTM-based)
@@ -165,6 +169,84 @@ pub fn resolve_sizing_factor(
             };
             state.kelly_tier_idx = Some(tier_idx);
             factor *= sorted_tiers[tier_idx].multiplier;
+        }
+    }
+
+    // 3b. Sharpe-Ratio-Optimized Sizing (Detector #49, cap-DOWN only).
+    //
+    // Computes a rolling per-trade Sharpe over the last `window_size`
+    // Kelly-PnL entries (mean / std-dev — NOT annualized, since the FTMO
+    // sweep universe sizes per-trade). The chosen `multiplier` is applied
+    // as `factor = factor.min(multiplier)` so an over-eager config can
+    // NEVER inflate risk on the back of recent Sharpe.
+    //
+    // Lookahead-safe: filter is `close_time < entry_time_ms` (strict). A
+    // trade that closed at the same bar `entry_time_ms` would be future
+    // information at signal time.
+    if let Some(ss) = cfg.sharpe_sizing.as_ref() {
+        let recent: Vec<f64> = state
+            .kelly_pnls
+            .iter()
+            .filter(|p| p.close_time < entry_time_ms)
+            .rev()
+            .take(ss.window_size as usize)
+            .map(|p| p.eff_pnl)
+            .collect();
+        if recent.len() >= ss.min_trades as usize && !ss.tiers.is_empty() {
+            let n = recent.len() as f64;
+            let mean = recent.iter().sum::<f64>() / n;
+            let var = recent.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / n;
+            let std = var.sqrt();
+            // Numerical-safety floor: zero/near-zero std produces a
+            // meaningless Sharpe (infinity or NaN). Skip the modifier in
+            // that case rather than poison `factor`.
+            if std.is_finite() && std > 1e-10 {
+                let sharpe = mean / std;
+                // Sort tiers descending by sharpe_above, mirroring the
+                // Kelly tier-lookup pattern.
+                let mut sorted_tiers: Vec<_> = ss.tiers.clone();
+                sorted_tiers.sort_by(|a, b| b.sharpe_above.total_cmp(&a.sharpe_above));
+                let tiers_n = sorted_tiers.len();
+                let tier_idx: usize = match state.sharpe_tier_idx {
+                    None => {
+                        // Cold start: greedy lookup, then persist.
+                        sorted_tiers
+                            .iter()
+                            .position(|t| sharpe >= t.sharpe_above)
+                            .unwrap_or(tiers_n - 1)
+                    }
+                    Some(prev) => {
+                        let cur = prev.min(tiers_n - 1);
+                        let cur_tier = &sorted_tiers[cur];
+                        if cur > 0 && sharpe >= sorted_tiers[cur - 1].sharpe_above + HYST {
+                            // Step UP — find highest tier we comfortably cleared.
+                            let mut idx = cur - 1;
+                            while idx > 0
+                                && sharpe >= sorted_tiers[idx - 1].sharpe_above + HYST
+                            {
+                                idx -= 1;
+                            }
+                            idx
+                        } else if cur < tiers_n - 1
+                            && sharpe <= cur_tier.sharpe_above - HYST
+                        {
+                            // Step DOWN.
+                            let mut idx = cur + 1;
+                            while idx < tiers_n - 1
+                                && sharpe <= sorted_tiers[idx].sharpe_above - HYST
+                            {
+                                idx += 1;
+                            }
+                            idx
+                        } else {
+                            cur
+                        }
+                    }
+                };
+                state.sharpe_tier_idx = Some(tier_idx);
+                // Cap-DOWN only: a misconfigured multiplier > 1.0 is a no-op.
+                factor = factor.min(sorted_tiers[tier_idx].multiplier);
+            }
         }
     }
 
@@ -349,8 +431,8 @@ mod tests {
     use super::*;
     use crate::config::{
         AdaptiveSizingTier, DayProgressiveTier, DrawdownShield, EarlyDefensiveOnProgress,
-        IntradayDailyLossThrottle, KellySizing, KellyTier, PeakDrawdownThrottle, TimeBoost,
-        TimeDecayMode, TimeDecaySizing,
+        IntradayDailyLossThrottle, KellySizing, KellyTier, PeakDrawdownThrottle, SharpeSizing,
+        SharpeTier, TimeBoost, TimeDecayMode, TimeDecaySizing,
     };
     use crate::state::KellyPnl;
 
@@ -568,6 +650,30 @@ mod tests {
         ]
     }
 
+    // ─── Detector #49 — Sharpe-ratio-optimized sizing modifier tests ───
+
+    /// Build a 4-tier Sharpe ladder used by most tests below.
+    fn sharpe_tiers_default() -> Vec<SharpeTier> {
+        vec![
+            SharpeTier {
+                sharpe_above: 0.30,
+                multiplier: 1.0,
+            },
+            SharpeTier {
+                sharpe_above: 0.10,
+                multiplier: 0.85,
+            },
+            SharpeTier {
+                sharpe_above: -0.10,
+                multiplier: 0.60,
+            },
+            SharpeTier {
+                sharpe_above: f64::NEG_INFINITY,
+                multiplier: 0.40,
+            },
+        ]
+    }
+
     #[test]
     fn day_stage_aggressive_at_day_0() {
         let mut c = cfg();
@@ -700,6 +806,39 @@ mod tests {
         assert!(
             (f2 - 0.5).abs() < 1e-9,
             "realized +4% must trigger early-defensive (got {f2})"
+        );
+    }
+
+    fn seed_pnls(state: &mut EngineState, pnls: &[f64]) {
+        for (i, p) in pnls.iter().enumerate() {
+            state.kelly_pnls.push(KellyPnl {
+                close_time: i as i64,
+                eff_pnl: *p,
+            });
+        }
+    }
+
+    #[test]
+    fn sharpe_sizing_warmup_no_op() {
+        // Fewer than `min_trades` recent samples → modifier is skipped, factor
+        // stays at the upstream baseline (1.0).
+        let mut c = cfg();
+        c.sharpe_sizing = Some(SharpeSizing {
+            window_size: 50,
+            min_trades: 30,
+            tiers: sharpe_tiers_default(),
+        });
+        let mut s = EngineState::initial("x");
+        // 20 PnLs — well below min_trades=30.
+        seed_pnls(&mut s, &vec![-0.005; 20]);
+        let f = resolve_sizing_factor(&mut s, &c, 10_000);
+        assert!(
+            (f - 1.0).abs() < 1e-9,
+            "warmup phase must be a no-op, got {f}"
+        );
+        assert_eq!(
+            s.sharpe_tier_idx, None,
+            "tier-idx must stay unset during warmup"
         );
     }
 
@@ -1133,6 +1272,233 @@ mod tests {
         assert!(
             (f - 1.0).abs() < 1e-12,
             "negative decay must be treated as zero, got {f}"
+        );
+    }
+
+    #[test]
+    fn sharpe_sizing_zero_variance_safe() {
+        // All-zero PnLs → std=0 → modifier MUST short-circuit instead of
+        // dividing by zero. Factor stays at baseline.
+        let mut c = cfg();
+        c.sharpe_sizing = Some(SharpeSizing {
+            window_size: 100,
+            min_trades: 30,
+            tiers: sharpe_tiers_default(),
+        });
+        let mut s = EngineState::initial("x");
+        seed_pnls(&mut s, &vec![0.0; 50]);
+        let f = resolve_sizing_factor(&mut s, &c, 10_000);
+        assert!(
+            (f - 1.0).abs() < 1e-9,
+            "zero-variance window must yield no-op, got {f}"
+        );
+        assert_eq!(s.sharpe_tier_idx, None);
+    }
+
+    #[test]
+    fn sharpe_sizing_hysteresis_no_flicker() {
+        // Sharpe sitting right at a tier boundary must not flicker. Cold-start
+        // sharpe = 0.30 → tier 0 (multiplier=1.0). Then drop sharpe to ~0.27
+        // (boundary - small margin); without hysteresis it would already step
+        // down. With HYST=0.05 it stays.
+        let mut c = cfg();
+        c.sharpe_sizing = Some(SharpeSizing {
+            window_size: 100,
+            min_trades: 30,
+            tiers: sharpe_tiers_default(),
+        });
+
+        // Hand-built window: mean=0.001, std≈0.01 → sharpe=0.1. That places
+        // us at tier 1 (sharpe_above=0.10) on cold start.
+        let mut s = EngineState::initial("x");
+        // 50 entries alternating ±0.01 with a tiny upward drift to land
+        // sharpe at exactly 0.1.
+        let mut pnls = Vec::with_capacity(50);
+        for i in 0..50 {
+            if i % 2 == 0 {
+                pnls.push(0.011);
+            } else {
+                pnls.push(-0.009);
+            }
+        }
+        seed_pnls(&mut s, &pnls);
+        let f1 = resolve_sizing_factor(&mut s, &c, 10_000);
+        assert_eq!(s.sharpe_tier_idx, Some(1), "cold-start at sharpe≈0.1 → tier 1");
+        assert!((f1 - 0.85).abs() < 1e-9, "tier 1 multiplier 0.85, got {f1}");
+
+        // Now nudge sharpe slightly down to ~0.08 — would CROSS the 0.10
+        // boundary without hysteresis. We're at tier 1 (sharpe_above=0.10);
+        // stepping DOWN to tier 2 requires sharpe ≤ 0.10 - HYST = 0.05.
+        // 0.08 fails that test → stays at tier 1.
+        for p in s.kelly_pnls.iter_mut() {
+            p.eff_pnl *= 0.98; // mean shrinks slightly, std too — sharpe ≈ 0.08
+        }
+        let f2 = resolve_sizing_factor(&mut s, &c, 10_000);
+        assert_eq!(
+            s.sharpe_tier_idx,
+            Some(1),
+            "hysteresis must hold tier 1 when sharpe dips just past boundary"
+        );
+        assert!((f2 - 0.85).abs() < 1e-9, "tier still 0.85, got {f2}");
+    }
+
+    #[test]
+    fn sharpe_sizing_cap_down_only() {
+        // A tier with multiplier=2.0 must NEVER raise factor above the
+        // upstream baseline. We arrange a window with positive sharpe so the
+        // top tier fires (multiplier=2.0); resulting factor must stay = 1.0.
+        let mut c = cfg();
+        c.sharpe_sizing = Some(SharpeSizing {
+            window_size: 100,
+            min_trades: 30,
+            tiers: vec![
+                SharpeTier {
+                    sharpe_above: 0.0,
+                    multiplier: 2.0, // would RAISE — cap-down must reject
+                },
+                SharpeTier {
+                    sharpe_above: f64::NEG_INFINITY,
+                    multiplier: 0.5,
+                },
+            ],
+        });
+        let mut s = EngineState::initial("x");
+        // 50 PnLs with strong positive bias → sharpe ≫ 0.
+        let pnls: Vec<f64> = (0..50)
+            .map(|i| if i % 2 == 0 { 0.015 } else { -0.005 })
+            .collect();
+        seed_pnls(&mut s, &pnls);
+        let f = resolve_sizing_factor(&mut s, &c, 10_000);
+        assert!(
+            (f - 1.0).abs() < 1e-9,
+            "multiplier=2.0 must NOT raise factor above 1.0, got {f}"
+        );
+        assert_eq!(s.sharpe_tier_idx, Some(0));
+    }
+
+    #[test]
+    fn sharpe_sizing_lookahead_audit() {
+        // A KellyPnl with `close_time == entry_time_ms` MUST be excluded from
+        // the reference window. We construct a window of 50 LOSER PnLs that
+        // would yield sharpe ≪ 0 (bottom tier, mult=0.40), then place ONE
+        // late entry at `close_time == entry_time_ms`. If the leak happened
+        // we'd include it; the test passes because the leak is forbidden.
+        //
+        // Strategy: seed 50 losers (close_time 0..50). Set entry_time_ms=50.
+        // Add a 51st PnL at close_time=50 with a huge positive value. With
+        // strict `<` filter, the 51st PnL is excluded → sharpe stays
+        // bottom-tier. With `<=` (leak) it would shift mean upward.
+        let mut c = cfg();
+        c.sharpe_sizing = Some(SharpeSizing {
+            window_size: 100,
+            min_trades: 30,
+            tiers: sharpe_tiers_default(),
+        });
+        let mut s = EngineState::initial("x");
+        // 50 losing PnLs — std defined, sharpe deeply negative.
+        let mut pnls: Vec<f64> = (0..50)
+            .map(|i| if i % 2 == 0 { -0.012 } else { -0.008 })
+            .collect();
+        // The leak candidate: close_time == entry_time_ms == 50, big positive
+        // value that — if it leaked — would flip sharpe to positive.
+        pnls.push(10.0);
+        for (i, p) in pnls.iter().enumerate() {
+            s.kelly_pnls.push(KellyPnl {
+                close_time: i as i64, // i=50 for the leak entry
+                eff_pnl: *p,
+            });
+        }
+        let entry_time_ms: i64 = 50;
+        let f = resolve_sizing_factor(&mut s, &c, entry_time_ms);
+        // With strict-`<` filter: only the 50 losers contribute → sharpe deep
+        // negative → bottom tier multiplier=0.40 → factor=0.40.
+        assert!(
+            (f - 0.40).abs() < 1e-9,
+            "strict close_time<entry_time_ms must exclude same-bar trade; got {f}"
+        );
+        assert_eq!(s.sharpe_tier_idx, Some(3));
+    }
+
+    #[test]
+    fn sharpe_sizing_interacts_correctly_with_kelly() {
+        // Kelly raises factor (1.5×), Sharpe caps it DOWN to its tier
+        // multiplier. Verify Kelly's effect is properly applied first, then
+        // Sharpe trims it. Final = min(1.0 * 1.5, sharpe_tier).
+        let mut c = cfg();
+        c.kelly_sizing = Some(KellySizing {
+            window_size: 50,
+            min_trades: 10,
+            tiers: vec![
+                KellyTier {
+                    win_rate_above: 0.5,
+                    multiplier: 1.5, // raises factor
+                },
+                KellyTier {
+                    win_rate_above: 0.0,
+                    multiplier: 1.0,
+                },
+            ],
+        });
+        c.sharpe_sizing = Some(SharpeSizing {
+            window_size: 50,
+            min_trades: 10,
+            tiers: vec![
+                // Set top tier high so we always fall into the lower tier.
+                SharpeTier {
+                    sharpe_above: 100.0,
+                    multiplier: 1.0,
+                },
+                SharpeTier {
+                    sharpe_above: f64::NEG_INFINITY,
+                    multiplier: 0.7, // caps DOWN
+                },
+            ],
+        });
+        let mut s = EngineState::initial("x");
+        // 30 PnLs: 60% wins (>50% → kelly tier 0 multiplier=1.5).
+        let pnls: Vec<f64> = (0..30)
+            .map(|i| if i < 18 { 0.01 } else { -0.01 })
+            .collect();
+        seed_pnls(&mut s, &pnls);
+        let f = resolve_sizing_factor(&mut s, &c, 10_000);
+        // Kelly raises to 1.5, Sharpe caps to 0.7 → expected 0.7.
+        assert!(
+            (f - 0.7).abs() < 1e-9,
+            "Sharpe must cap Kelly-raised factor 1.5 → 0.7, got {f}"
+        );
+        assert_eq!(s.kelly_tier_idx, Some(0));
+        assert_eq!(s.sharpe_tier_idx, Some(1));
+    }
+
+    #[test]
+    fn sharpe_sizing_interacts_correctly_with_drawdown_shield() {
+        // Both Sharpe and Drawdown-Shield cap DOWN; the SMALLER multiplier
+        // should win. With shield=0.3 < sharpe=0.6, shield bites.
+        let mut c = cfg();
+        c.sharpe_sizing = Some(SharpeSizing {
+            window_size: 50,
+            min_trades: 10,
+            tiers: vec![SharpeTier {
+                sharpe_above: f64::NEG_INFINITY,
+                multiplier: 0.6,
+            }],
+        });
+        c.drawdown_shield = Some(DrawdownShield {
+            below_equity: -0.02,
+            factor: 0.3,
+        });
+        let mut s = EngineState::initial("x");
+        s.equity = 0.95; // -5% from baseline → shield triggers
+        let pnls: Vec<f64> = (0..30)
+            .map(|i| if i % 2 == 0 { 0.005 } else { -0.005 })
+            .collect();
+        seed_pnls(&mut s, &pnls);
+        let f = resolve_sizing_factor(&mut s, &c, 10_000);
+        // Pipeline: Sharpe drops to 0.6 → Hard cap (4.0) keeps it →
+        // Drawdown shield caps further to min(0.6, 0.3) = 0.3.
+        assert!(
+            (f - 0.3).abs() < 1e-9,
+            "drawdown shield 0.3 must dominate sharpe 0.6, got {f}"
         );
     }
 }

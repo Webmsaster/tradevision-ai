@@ -497,6 +497,14 @@ struct CfgOverrides {
     td_start_day: Option<u32>,
     td_min_factor: Option<f64>,
     td_mode: Option<String>,
+    /// 2026-05-14 Detector #49 — Sharpe-ratio-optimized sizing modifier.
+    /// `--sharpe-sizing` toggles activation; when set, the template's
+    /// `sharpe_sizing` (or a stock default ladder if none) is kept while
+    /// `--sharpe-window` / `--sharpe-min-trades` can patch the window
+    /// parameters without recompiling.
+    sharpe_sizing_enable: bool,
+    sharpe_window: Option<u32>,
+    sharpe_min_trades: Option<u32>,
 }
 
 fn apply_overrides(
@@ -793,6 +801,50 @@ fn apply_overrides(
             mode,
         });
     }
+    // 2026-05-14 Detector #49 — Sharpe-ratio-optimized sizing modifier.
+    // Three activation paths:
+    //  1. `--sharpe-sizing` with an empty `sharpe_sizing` on the template:
+    //     install a stock 4-tier ladder so sweeps don't need a custom
+    //     selector to test the feature.
+    //  2. `--sharpe-sizing` with a template-supplied ladder: keep tiers,
+    //     possibly patch `window_size` / `min_trades`.
+    //  3. `--sharpe-window` / `--sharpe-min-trades` without `--sharpe-sizing`
+    //     and without a template ladder: NO-OP (don't fabricate config).
+    //     With a template ladder: patch only the window-params.
+    {
+        use ftmo_engine_core::config::{SharpeSizing, SharpeTier};
+        let want_activate = ov.sharpe_sizing_enable;
+        let cur = cfg.sharpe_sizing.clone();
+        if want_activate || cur.is_some() {
+            let base = cur.unwrap_or_else(|| SharpeSizing {
+                window_size: 100,
+                min_trades: 30,
+                tiers: vec![
+                    SharpeTier {
+                        sharpe_above: 0.30,
+                        multiplier: 1.0,
+                    },
+                    SharpeTier {
+                        sharpe_above: 0.10,
+                        multiplier: 0.85,
+                    },
+                    SharpeTier {
+                        sharpe_above: -0.10,
+                        multiplier: 0.60,
+                    },
+                    SharpeTier {
+                        sharpe_above: f64::NEG_INFINITY,
+                        multiplier: 0.40,
+                    },
+                ],
+            });
+            cfg.sharpe_sizing = Some(SharpeSizing {
+                window_size: ov.sharpe_window.unwrap_or(base.window_size),
+                min_trades: ov.sharpe_min_trades.unwrap_or(base.min_trades),
+                tiers: base.tiers,
+            });
+        }
+    }
     Ok(())
 }
 
@@ -975,6 +1027,10 @@ fn main() -> Result<()> {
     let mut mr_size_mult: Option<f64> = None;
     // 2026-05-14 Detector #18 — multi-level PTP CLI override.
     let mut ptp_levels: Option<Vec<ftmo_engine_core::config::PartialTakeProfitLevel>> = None;
+    // 2026-05-14 Detector #49 — Sharpe-ratio-optimized sizing modifier.
+    let mut sharpe_sizing_enable: bool = false;
+    let mut sharpe_window: Option<u32> = None;
+    let mut sharpe_min_trades: Option<u32> = None;
 
     // R67 audit (Round 2): replace `args.next().unwrap()` with `ok_or_else`
     // — `ftmo-sweep --candles` (no path follows) panics with the usual Rust
@@ -1239,6 +1295,12 @@ fn main() -> Result<()> {
             "--funding-sizing-min-factor" => {
                 funding_sizing_min_factor = Some(need!("--funding-sizing-min-factor").parse()?)
             }
+            // 2026-05-14 Detector #49 — Sharpe-ratio-optimized sizing modifier.
+            "--sharpe-sizing" => sharpe_sizing_enable = true,
+            "--sharpe-window" => sharpe_window = Some(need!("--sharpe-window").parse()?),
+            "--sharpe-min-trades" => {
+                sharpe_min_trades = Some(need!("--sharpe-min-trades").parse()?)
+            }
             other => return Err(anyhow!("unknown arg: {other}")),
         }
     }
@@ -1402,6 +1464,9 @@ fn main() -> Result<()> {
         td_start_day,
         td_min_factor,
         td_mode,
+        sharpe_sizing_enable,
+        sharpe_window,
+        sharpe_min_trades,
     };
 
     if candles_dir.is_some() || symbols_arg.is_some() {
