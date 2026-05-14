@@ -29,6 +29,7 @@ pub mod signals_ofi;
 pub mod signals_r28v6;
 pub mod signals_r29r5;
 pub mod signals_regime_confluence;
+pub mod signals_stablecoin_flow;
 pub mod signals_stop_hunt;
 pub mod signals_trend;
 pub mod signals_v12;

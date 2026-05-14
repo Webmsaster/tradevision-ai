@@ -160,6 +160,125 @@ pub fn align_funding(candles: &[Candle], funding: &[FundingPt]) -> Vec<Option<f6
     out
 }
 
+
+/// 2026-05-14 Detector #36 — Top-Trader Long/Short Ratio sample. Mirrors
+/// the Binance `/futures/data/topLongShortAccountRatio` JSON shape:
+/// `{ "t": eventTime_ms, "r": longShortRatio }`. Stored under
+/// `scripts/cache_bakeoff/{SYMBOL}_top_ls.json`.
+#[allow(dead_code)]
+#[derive(serde::Deserialize, Clone, Copy, Debug)]
+pub struct TopLsPt {
+    pub t: i64,
+    pub r: f64,
+}
+
+/// Load `{dir}/{symbol}_top_ls.json` if present, else `Ok(None)`. Callers
+/// treat None as "no top-trader L/S data for this asset" and the voter
+/// becomes dormant (mirrors `load_funding`).
+#[allow(dead_code)]
+pub fn load_top_ls(dir: &Path, symbol: &str) -> Result<Option<Vec<TopLsPt>>> {
+    let p = dir.join(format!("{symbol}_top_ls.json"));
+    if !p.exists() {
+        return Ok(None);
+    }
+    let f = File::open(&p).with_context(|| format!("opening {}", p.display()))?;
+    let pts: Vec<TopLsPt> = serde_json::from_reader(BufReader::new(f))
+        .with_context(|| format!("parsing top-LS JSON in {}", p.display()))?;
+    Ok(Some(pts))
+}
+
+/// Forward-fill top-trader L/S samples onto candle openTimes. Boundary
+/// semantics match `align_funding` post-Codex-Round-8: any event with
+/// timestamp `t ∈ [bar_start, bar_start + bar_dur)` is attributed to that
+/// bar. Returns `None` for candles before the first sample.
+#[allow(dead_code)]
+pub fn align_top_ls(candles: &[Candle], pts: &[TopLsPt]) -> Vec<Option<f64>> {
+    let mut out = Vec::with_capacity(candles.len());
+    let mut f_idx = 0usize;
+    let mut cur: Option<f64> = None;
+    let bar_dur_ms: i64 = if candles.len() >= 2 {
+        (candles[1].open_time - candles[0].open_time).max(1)
+    } else {
+        30 * 60 * 1000
+    };
+    for c in candles {
+        let t = c.open_time;
+        let upper = t + bar_dur_ms;
+        while f_idx < pts.len() && pts[f_idx].t < upper {
+            cur = Some(pts[f_idx].r);
+            f_idx += 1;
+        }
+        out.push(cur);
+    }
+    out
+}
+
+/// 2026-05-14 Detector #22 — DefiLlama daily stablecoin-supply aggregate
+/// point. Source endpoint `/stablecoincharts/all?stablecoin=1` returns one
+/// record per day in `{ "date": unix_seconds_str, "totalCirculatingUSD": {...}
+/// }` format upstream; the cache-builder converts to the canonical
+/// `{ "t": unix_ms, "supply_usd": float }` shape and persists to
+/// `data/macro/usdt_supply_daily.json`. Single global file (not per-symbol)
+/// because USDT supply is one macro time-series consumed by every asset's
+/// regime voter.
+#[allow(dead_code)]
+#[derive(serde::Deserialize, Clone, Copy, Debug)]
+pub struct StablecoinSupplyPt {
+    pub t: i64,
+    pub supply_usd: f64,
+}
+
+/// 2026-05-14 Detector #22 — load `{dir}/macro/usdt_supply_daily.json` if it
+/// exists. Returns `Ok(None)` when the file is missing so callers can fall
+/// back to "no data → voter dormant" (analog to `load_funding`). The `dir`
+/// argument is the cache root; the relative `macro/usdt_supply_daily.json`
+/// path keeps the macro feed segregated from per-symbol caches.
+#[allow(dead_code)]
+pub fn load_stablecoin_supply(dir: &Path) -> Result<Option<Vec<StablecoinSupplyPt>>> {
+    let p = dir.join("macro").join("usdt_supply_daily.json");
+    if !p.exists() {
+        return Ok(None);
+    }
+    let f = File::open(&p).with_context(|| format!("opening {}", p.display()))?;
+    let pts: Vec<StablecoinSupplyPt> = serde_json::from_reader(BufReader::new(f))
+        .with_context(|| format!("parsing stablecoin-supply JSON in {}", p.display()))?;
+    Ok(Some(pts))
+}
+
+/// Forward-fill DefiLlama daily stablecoin-supply points onto a candle
+/// openTime sequence. For each candle at time `c.open_time`, find the largest
+/// sample-time strictly before `c.open_time + bar_dur` — same boundary-
+/// inclusive semantic as `align_funding`. Returns `None` for candles before
+/// the first sample. Non-finite `supply_usd` values are filtered at this edge
+/// so downstream detectors never see NaN.
+#[allow(dead_code)]
+pub fn align_stablecoin_supply(
+    candles: &[Candle],
+    pts: &[StablecoinSupplyPt],
+) -> Vec<Option<f64>> {
+    let mut out = Vec::with_capacity(candles.len());
+    let mut p_idx = 0usize;
+    let mut cur: Option<f64> = None;
+    let bar_dur_ms: i64 = if candles.len() >= 2 {
+        (candles[1].open_time - candles[0].open_time).max(1)
+    } else {
+        30 * 60 * 1000
+    };
+    for c in candles {
+        let t = c.open_time;
+        let upper = t + bar_dur_ms;
+        while p_idx < pts.len() && pts[p_idx].t < upper {
+            if pts[p_idx].supply_usd.is_finite() {
+                cur = Some(pts[p_idx].supply_usd);
+            }
+            p_idx += 1;
+        }
+        out.push(cur);
+    }
+    out
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,4 +338,44 @@ mod tests {
         let aligned = align_funding(&candles, &[]);
         assert_eq!(aligned, vec![None; 5]);
     }
+
+    // 2026-05-14 Detector #22 — stablecoin supply alignment mirrors funding
+    // semantics (boundary-inclusive forward-fill on `[bar_start, bar_start +
+    // bar_dur)`).
+    #[test]
+    fn align_stablecoin_supply_forward_fills() {
+        let pts = vec![
+            StablecoinSupplyPt { t: 10, supply_usd: 1.0e11 },
+            StablecoinSupplyPt { t: 30, supply_usd: 1.05e11 },
+        ];
+        let candles: Vec<Candle> = [5, 15, 25, 35, 45].iter().map(|t| candle(*t)).collect();
+        let aligned = align_stablecoin_supply(&candles, &pts);
+        // bar_dur = 10. bar@5 covers [5,15) → captures sample @10. bar@15
+        // covers [15,25) — no sample → carries 1.0e11. bar@25 covers [25,35)
+        // → captures @30. Subsequent bars carry forward 1.05e11.
+        assert_eq!(
+            aligned,
+            vec![Some(1.0e11), Some(1.0e11), Some(1.05e11), Some(1.05e11), Some(1.05e11)]
+        );
+    }
+
+    #[test]
+    fn align_stablecoin_supply_filters_non_finite_input() {
+        // Upstream cache bug occasionally emits NaN — must be rejected at the
+        // loader edge so detectors never see NaN through align.
+        let pts = vec![
+            StablecoinSupplyPt { t: 10, supply_usd: f64::NAN },
+            StablecoinSupplyPt { t: 20, supply_usd: 9.5e10 },
+        ];
+        let candles: Vec<Candle> = [5, 15, 25].iter().map(|t| candle(*t)).collect();
+        let aligned = align_stablecoin_supply(&candles, &pts);
+        assert_eq!(aligned, vec![None, Some(9.5e10), Some(9.5e10)]);
+    }
+
+    #[test]
+    fn align_stablecoin_supply_empty_pts_returns_none() {
+        let candles: Vec<Candle> = (0..3).map(candle).collect();
+        assert_eq!(align_stablecoin_supply(&candles, &[]), vec![None; 3]);
+    }
+
 }
