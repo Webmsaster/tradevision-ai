@@ -642,6 +642,98 @@ mod tests {
         );
     }
 
+    /// 2026-05-14 Detector #18 — 3-tier sequence test (state-corruption
+    /// safety for the multi-bar path).
+    ///
+    /// Setup: 3 PTP tiers (1%, 2%, 3%) each closing 0.25, cost_bp=30.
+    ///   Bar 1 — high tags tier 1 (≥101), low stays above BE → realise tier 1.
+    ///   Bar 2 — high tags tier 2 (≥102), low stays above BE → realise tier 2.
+    ///   Bar 3 — low crosses the BE stop → exit at cost-adjusted BE.
+    ///
+    /// Asserts:
+    ///   * `ptp_levels_realized` == sum_{tier∈{1,2}} fraction × (trigger − cost).
+    ///   * exit_price == entry × (1 + cost_bp/10_000).
+    ///   * tier 3 is left untouched in `ptp_level_idx`.
+    #[test]
+    fn multi_level_ptp_three_tier_sequence_then_be_stop() {
+        use crate::config::AssetConfig;
+        let mut cfg = base_cfg();
+        // Inject explicit cost_bp on the test symbol so the BE adjustment is
+        // observable (raw entry would be 100.0 otherwise).
+        cfg.assets = vec![AssetConfig {
+            symbol: "BTC-TREND".into(),
+            source_symbol: Some("BTCUSDT".into()),
+            risk_frac: 0.4,
+            cost_bp: Some(30.0),
+            ..Default::default()
+        }];
+        cfg.partial_take_profit = None;
+        cfg.partial_take_profit_levels = Some(vec![
+            PartialTakeProfitLevel {
+                trigger_pct: 0.01,
+                close_fraction: 0.25,
+            },
+            PartialTakeProfitLevel {
+                trigger_pct: 0.02,
+                close_fraction: 0.25,
+            },
+            PartialTakeProfitLevel {
+                trigger_pct: 0.03,
+                close_fraction: 0.25,
+            },
+        ]);
+
+        let cost = 30.0 / 10_000.0; // = 0.003
+        let be_stop = 100.0 * (1.0 + cost); // = 100.30
+
+        let mut p = long_pos(100.0);
+
+        // Bar 1: high 101.2 hits tier 1 (≥101.0), tier 2 (≥102.0) NOT hit.
+        // Low must stay above BE (100.30) so no cross on this bar.
+        let bar1 = bar(100.5, 101.2, 100.4, 101.0);
+        let r1 = process_position_exit(&mut p, &bar1, &cfg, None);
+        assert!(r1.is_none(), "bar1 must not exit");
+        assert_eq!(p.ptp_level_idx, 1, "tier 1 realised");
+        assert!(p.be_active, "BE shift after first realise");
+        assert!(
+            (p.stop_price - be_stop).abs() < 1e-9,
+            "stop pushed to cost-adjusted BE = {be_stop}, got {}",
+            p.stop_price
+        );
+
+        // Bar 2: high 102.5 hits tier 2 (≥102.0), tier 3 (≥103.0) NOT hit.
+        // Low must stay above BE so no cross.
+        let bar2 = bar(101.1, 102.5, 100.5, 102.2);
+        let r2 = process_position_exit(&mut p, &bar2, &cfg, None);
+        assert!(r2.is_none(), "bar2 must not exit");
+        assert_eq!(p.ptp_level_idx, 2, "tier 2 realised");
+        // tier 1 + tier 2 cost-net sum.
+        let expected_realised =
+            0.25 * (0.01 - cost) + 0.25 * (0.02 - cost);
+        assert!(
+            (p.ptp_levels_realized - expected_realised).abs() < 1e-12,
+            "ptp_levels_realized = {expected_realised}, got {}",
+            p.ptp_levels_realized
+        );
+
+        // Bar 3: low 100.20 < BE (100.30) → stop crosses at cost-adjusted BE.
+        let bar3 = bar(101.0, 101.5, 100.20, 100.50);
+        let r3 = process_position_exit(&mut p, &bar3, &cfg, None).unwrap();
+        assert_eq!(r3.reason, ExitReason::Stop);
+        assert!(
+            (r3.exit_price - be_stop).abs() < 1e-9,
+            "exit at cost-adjusted BE = {be_stop}, got {}",
+            r3.exit_price
+        );
+        // Tier 3 must NOT have been touched (bar3 high was 101.5 — below the
+        // 103 trigger — and the cross fires before any wick could).
+        assert_eq!(p.ptp_level_idx, 2, "tier 3 must remain unrealised");
+        assert!(
+            (p.ptp_levels_realized - expected_realised).abs() < 1e-12,
+            "ptp_levels_realized unchanged on bar 3"
+        );
+    }
+
     #[test]
     fn no_movement_returns_none() {
         let cfg = base_cfg();
