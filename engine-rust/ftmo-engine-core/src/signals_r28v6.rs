@@ -401,8 +401,35 @@ fn try_detect_direction(
     // centralized in sizing::apply_post_factor_caps so MR/Breakout/Trend/
     // V12/ForexMR/R29R5 detectors get the same safety pipeline.
     let factor = resolve_sizing_factor(state, cfg, last.open_time);
-    let eff_risk =
-        apply_post_factor_caps(cfg, state, params.base_risk_frac * factor, stop_pct);
+    // 2026-05-14 Detector #11 Phase-1 — funding-cost sizing modifier.
+    // Multiplicative factor in [min_factor, 1.0]; only penalises pay-side.
+    // Reads funding[trigger_idx] (lookahead-safe — same index already used
+    // by the funding-rate FILTER gate above at L364). Expected-hold proxy
+    // = cfg.hold_bars converted to 8h-buckets via bar_minutes.
+    let funding_factor: f64 = if let Some(fcs) = cfg.funding_cost_sizing.as_ref() {
+        // 8h-buckets covered by an average held trade. bar_minutes is
+        // typically 30 → buckets = hold_bars * 30 / (60 * 8) = hold_bars / 16.
+        // Guard div-by-zero by clamping bar_minutes >= 1.
+        let bar_min = cfg.bar_minutes.max(1) as f64;
+        let buckets = (cfg.hold_bars as f64 * bar_min) / (60.0 * 8.0);
+        crate::sizing::funding_cost_modifier(
+            direction,
+            inputs.funding_series,
+            trigger_idx,
+            buckets.max(0.0),
+            fcs.alpha,
+            fcs.norm_window_buckets as usize,
+            fcs.min_factor,
+        )
+    } else {
+        1.0
+    };
+    let eff_risk = apply_post_factor_caps(
+        cfg,
+        state,
+        params.base_risk_frac * factor * funding_factor,
+        stop_pct,
+    );
     if eff_risk <= 0.0 {
         return None;
     }

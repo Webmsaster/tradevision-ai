@@ -559,4 +559,282 @@ mod tests {
         // Oldest should be dropped — kept the LAST 500 (close_time 500..999)
         assert_eq!(state.kelly_pnls[0].close_time, 500);
     }
+
+    // ────────────────────────────────────────────────────────────────
+    // Detector #11 Phase 0 — funding-cost bit-parity test suite.
+    // Reference: ftmoDaytrade24h.ts:4888-4937 (post Codex Round 6 #S7).
+    // ────────────────────────────────────────────────────────────────
+
+    const BAR_DUR_30M: i64 = 30 * 60 * 1_000;
+    const EIGHT_H_MS: i64 = 8 * 3_600 * 1_000;
+
+    fn make_funding(n_bars: usize, overrides: &[(usize, f64)]) -> Vec<Option<f64>> {
+        let mut v = vec![Some(0.0_f64); n_bars];
+        for &(idx, rate) in overrides {
+            v[idx] = Some(rate);
+        }
+        v
+    }
+
+    fn ts_reference_funding_walk(
+        entry_time: i64,
+        exit_time: i64,
+        funding: &[Option<f64>],
+        bar0_open: i64,
+        bar_dur_ms: i64,
+    ) -> (f64, usize) {
+        let mut bucket = entry_time.div_euclid(EIGHT_H_MS) * EIGHT_H_MS;
+        if bucket < entry_time {
+            bucket += EIGHT_H_MS;
+        }
+        let mut sum = 0.0_f64;
+        let mut n = 0usize;
+        let max_iter = funding.len() + 8;
+        let mut iter = 0usize;
+        while bucket <= exit_time && iter < max_iter {
+            iter += 1;
+            let bar_idx_signed = (bucket - bar0_open).div_euclid(bar_dur_ms);
+            if bar_idx_signed >= 0 {
+                let bar_idx = bar_idx_signed as usize;
+                if bar_idx < funding.len() {
+                    if let Some(f) = funding[bar_idx] {
+                        if f.is_finite() {
+                            sum += f;
+                            n += 1;
+                        }
+                    }
+                }
+            }
+            bucket += EIGHT_H_MS;
+        }
+        (sum, n)
+    }
+
+    #[test]
+    fn funding_parity_entry_at_8h_boundary_pays_that_bucket() {
+        let cfg = base_cfg();
+        let mut pos = make_pos(PositionSide::Long, 100.0);
+        let boundary = (1_700_000_000_000_i64 / EIGHT_H_MS) * EIGHT_H_MS;
+        pos.entry_time = boundary;
+        let bar0_open = boundary;
+        let exit_time = boundary + EIGHT_H_MS;
+        let funding = make_funding(50, &[(0, 0.0001), (16, 0.0002)]);
+        let (sum_ref, n_buckets) =
+            ts_reference_funding_walk(pos.entry_time, exit_time, &funding, bar0_open, BAR_DUR_30M);
+        assert_eq!(n_buckets, 2);
+        assert!((sum_ref - 0.0003).abs() < 1e-15);
+        let r = compute_eff_pnl_with_funding(
+            &pos,
+            104.0,
+            &cfg,
+            Some(exit_time),
+            Some(&funding),
+            bar0_open,
+            BAR_DUR_30M,
+        );
+        let expected_raw = 0.04 - 0.0003;
+        assert!(
+            (r.raw_pnl - expected_raw).abs() < 1e-12,
+            "raw_pnl={} expected={}",
+            r.raw_pnl,
+            expected_raw
+        );
+    }
+
+    #[test]
+    fn funding_parity_three_bucket_mixed_signs() {
+        let cfg = base_cfg();
+        let mut pos = make_pos(PositionSide::Long, 100.0);
+        let bar0_open = (1_700_000_000_000_i64 / EIGHT_H_MS) * EIGHT_H_MS;
+        pos.entry_time = bar0_open + BAR_DUR_30M;
+        let exit_time = bar0_open + 3 * EIGHT_H_MS;
+        let funding = make_funding(
+            100,
+            &[(16, 0.0001), (32, -0.0002), (48, 0.00015)],
+        );
+        let (sum_ref, n_buckets) =
+            ts_reference_funding_walk(pos.entry_time, exit_time, &funding, bar0_open, BAR_DUR_30M);
+        assert_eq!(n_buckets, 3);
+        let expected_sum = 0.0001 - 0.0002 + 0.00015;
+        assert!((sum_ref - expected_sum).abs() < 1e-15);
+        let r = compute_eff_pnl_with_funding(
+            &pos,
+            104.0,
+            &cfg,
+            Some(exit_time),
+            Some(&funding),
+            bar0_open,
+            BAR_DUR_30M,
+        );
+        let expected_raw = 0.04 - expected_sum;
+        assert!(
+            (r.raw_pnl - expected_raw).abs() < 1e-12,
+            "raw_pnl={} expected={}",
+            r.raw_pnl,
+            expected_raw
+        );
+    }
+
+    #[test]
+    fn funding_parity_short_position_symmetric() {
+        let cfg = base_cfg();
+        let mut pos = make_pos(PositionSide::Short, 100.0);
+        let bar0_open = (1_700_000_000_000_i64 / EIGHT_H_MS) * EIGHT_H_MS;
+        pos.entry_time = bar0_open + BAR_DUR_30M;
+        let exit_time = bar0_open + 2 * EIGHT_H_MS;
+        let funding = make_funding(100, &[(16, 0.0001), (32, 0.0002)]);
+        let (sum_ref, n_buckets) =
+            ts_reference_funding_walk(pos.entry_time, exit_time, &funding, bar0_open, BAR_DUR_30M);
+        assert_eq!(n_buckets, 2);
+        assert!((sum_ref - 0.0003).abs() < 1e-15);
+        let r = compute_eff_pnl_with_funding(
+            &pos,
+            96.0,
+            &cfg,
+            Some(exit_time),
+            Some(&funding),
+            bar0_open,
+            BAR_DUR_30M,
+        );
+        let expected_raw = 0.04 + 0.0003;
+        assert!(
+            (r.raw_pnl - expected_raw).abs() < 1e-12,
+            "raw_pnl={} expected={}",
+            r.raw_pnl,
+            expected_raw
+        );
+    }
+
+    #[test]
+    fn funding_parity_empty_series_identical_to_with_time() {
+        let cfg = base_cfg();
+        let mut pos = make_pos(PositionSide::Long, 100.0);
+        pos.entry_time = 1_700_000_000_000;
+        let exit_time = pos.entry_time + 86_400_000;
+        let baseline = compute_eff_pnl_with_time(&pos, 104.0, &cfg, Some(exit_time));
+        let with_none = compute_eff_pnl_with_funding(
+            &pos,
+            104.0,
+            &cfg,
+            Some(exit_time),
+            None,
+            pos.entry_time,
+            BAR_DUR_30M,
+        );
+        assert_eq!(baseline.raw_pnl, with_none.raw_pnl);
+        assert_eq!(baseline.eff_pnl, with_none.eff_pnl);
+        let empty: Vec<Option<f64>> = vec![];
+        let with_empty = compute_eff_pnl_with_funding(
+            &pos,
+            104.0,
+            &cfg,
+            Some(exit_time),
+            Some(&empty),
+            pos.entry_time,
+            BAR_DUR_30M,
+        );
+        assert_eq!(baseline.raw_pnl, with_empty.raw_pnl);
+        assert_eq!(baseline.eff_pnl, with_empty.eff_pnl);
+    }
+
+    #[test]
+    fn funding_parity_exit_equals_entry_yields_zero_funding() {
+        let cfg = base_cfg();
+        let mut pos = make_pos(PositionSide::Long, 100.0);
+        let bar0_open = (1_700_000_000_000_i64 / EIGHT_H_MS) * EIGHT_H_MS;
+        pos.entry_time = bar0_open + 60_000;
+        let exit_time = pos.entry_time;
+        let funding = make_funding(50, &[(0, 0.0001), (16, 0.0002)]);
+        let (_, n_buckets) =
+            ts_reference_funding_walk(pos.entry_time, exit_time, &funding, bar0_open, BAR_DUR_30M);
+        assert_eq!(n_buckets, 0);
+        let r = compute_eff_pnl_with_funding(
+            &pos,
+            104.0,
+            &cfg,
+            Some(exit_time),
+            Some(&funding),
+            bar0_open,
+            BAR_DUR_30M,
+        );
+        assert!((r.raw_pnl - 0.04).abs() < 1e-12);
+        // Entry-on-boundary, exit==entry: exactly 1 bucket visited.
+        pos.entry_time = bar0_open;
+        let exit_time_b = pos.entry_time;
+        let (sum_b, n_b) =
+            ts_reference_funding_walk(pos.entry_time, exit_time_b, &funding, bar0_open, BAR_DUR_30M);
+        assert_eq!(n_b, 1);
+        assert!((sum_b - 0.0001).abs() < 1e-15);
+        let r_b = compute_eff_pnl_with_funding(
+            &pos,
+            104.0,
+            &cfg,
+            Some(exit_time_b),
+            Some(&funding),
+            bar0_open,
+            BAR_DUR_30M,
+        );
+        assert!((r_b.raw_pnl - (0.04 - 0.0001)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn funding_parity_reference_walker_matches_engine_across_random_cases() {
+        let cfg = base_cfg();
+        let bar0_open = (1_700_000_000_000_i64 / EIGHT_H_MS) * EIGHT_H_MS;
+        let funding = make_funding(
+            200,
+            &[
+                (16, 0.00007),
+                (32, -0.00015),
+                (48, 0.00022),
+                (64, -0.00009),
+                (80, 0.00004),
+            ],
+        );
+        let cases: &[(PositionSide, i64, i64)] = &[
+            (PositionSide::Long, BAR_DUR_30M, 4 * EIGHT_H_MS),
+            (PositionSide::Long, 0, EIGHT_H_MS),
+            (PositionSide::Short, BAR_DUR_30M * 3, 2 * EIGHT_H_MS),
+            (PositionSide::Short, EIGHT_H_MS / 2, 3 * EIGHT_H_MS),
+            (PositionSide::Long, 7 * EIGHT_H_MS / 8, 5 * EIGHT_H_MS),
+            (PositionSide::Long, 0, 0),
+        ];
+        for (i, (dir, entry_off, exit_off)) in cases.iter().enumerate() {
+            let mut pos = make_pos(*dir, 100.0);
+            pos.entry_time = bar0_open + entry_off;
+            let exit_time = bar0_open + exit_off;
+            let exit_price = match dir {
+                PositionSide::Long => 104.0,
+                PositionSide::Short => 96.0,
+            };
+            let (sum_ref, _) = ts_reference_funding_walk(
+                pos.entry_time,
+                exit_time,
+                &funding,
+                bar0_open,
+                BAR_DUR_30M,
+            );
+            let sign = match dir {
+                PositionSide::Long => 1.0,
+                PositionSide::Short => -1.0,
+            };
+            let expected_raw = 0.04 - sign * sum_ref;
+            let r = compute_eff_pnl_with_funding(
+                &pos,
+                exit_price,
+                &cfg,
+                Some(exit_time),
+                Some(&funding),
+                bar0_open,
+                BAR_DUR_30M,
+            );
+            assert!(
+                (r.raw_pnl - expected_raw).abs() < 1e-12,
+                "case {}: raw_pnl={} expected={}",
+                i,
+                r.raw_pnl,
+                expected_raw
+            );
+        }
+    }
 }
