@@ -43,10 +43,10 @@ step "ESLint" "npm run lint 2>&1 | tail -5 | grep -E '0 errors' || { echo 'lint 
 step "Vitest" "npm test 2>&1 | grep -E 'Tests\\s+[0-9]+ passed' | tail -1"
 
 # 4. Rust build (release)
-step "Cargo build --release" "cd engine-rust && cargo build --release 2>&1 | tail -3"
+step "Cargo build --release" "(cd engine-rust && cargo build --release 2>&1 | tail -3)"
 
 # 5. Rust workspace tests
-step "Cargo test --workspace" "cd engine-rust && cargo test --release --workspace 2>&1 | grep -E 'test result:' | tail -3"
+step "Cargo test --workspace" "(cd engine-rust && cargo test --release --workspace 2>&1 | grep -E 'test result:' | tail -3)"
 
 # 6. Pytest
 step "Pytest tools/" "/usr/bin/python3 -m pytest tools/test_ftmo_executor.py --tb=line 2>&1 | tail -3"
@@ -56,7 +56,7 @@ step "py_compile (live-bot)" "/usr/bin/python3 -m py_compile tools/ftmo_executor
 
 # 8. Smoke sweep — AMBER_MAX_PASSLOCK champion config
 SYMS="AAVEUSDT,ADAUSDT,ALGOUSDT,ARBUSDT,ATOMUSDT,AVAXUSDT,BCHUSDT,BNBUSDT,BTCUSDT,DOTUSDT,ETCUSDT,ETHUSDT,LINKUSDT,LTCUSDT,NEARUSDT,SOLUSDT,TRXUSDT,UNIUSDT,XRPUSDT"
-step "Smoke sweep (AMBER_MAX_PASSLOCK champion)" "cd engine-rust && ./target/release/ftmo-sweep \
+step "Smoke sweep (AMBER_MAX_PASSLOCK champion)" "(cd engine-rust && ./target/release/ftmo-sweep \
   --candles-dir ../scripts/cache_bakeoff \
   --funding-dir ../scripts/cache_bakeoff \
   --symbols $SYMS \
@@ -64,10 +64,10 @@ step "Smoke sweep (AMBER_MAX_PASSLOCK champion)" "cd engine-rust && ./target/rel
   --signals regime --regime-min-votes 2 \
   --regime-poc-z --regime-bb-z-mr --regime-use-supertrend --regime-use-smc-fvg --regime-use-hmm \
   --windows 1000 --step-days 1 --threads 8 \
-  --profit-target 0.08 2>&1 | tail -2"
+  --profit-target 0.08 2>&1 | tail -2)"
 
 # 9. Strict-pass identity check (post-Codex give-back fix sanity)
-step "Strict-pass identity" "cd engine-rust && ./target/release/ftmo-sweep \
+step "Strict-pass identity" "(cd engine-rust && ./target/release/ftmo-sweep \
   --candles-dir ../scripts/cache_bakeoff \
   --funding-dir ../scripts/cache_bakeoff \
   --symbols $SYMS \
@@ -75,7 +75,7 @@ step "Strict-pass identity" "cd engine-rust && ./target/release/ftmo-sweep \
   --signals regime --regime-min-votes 2 \
   --regime-poc-z --regime-bb-z-mr --regime-use-supertrend --regime-use-smc-fvg --regime-use-hmm \
   --windows 100 --step-days 14 --threads 8 \
-  --profit-target 0.08 --strict-pass 2>&1 | tail -1"
+  --profit-target 0.08 --strict-pass 2>&1 | tail -1)"
 
 echo
 bold "════════════════════════════════════════"
