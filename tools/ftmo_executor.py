@@ -268,18 +268,38 @@ _validate_config()
 # =============================================================================
 def _rotate_jsonl_if_needed(path: Path, max_mb: int = 50, keep: int = 14) -> None:
     """Rotate at max_mb; keep last `keep` daily archives.
-    R67-r10: prevent unbounded archive accumulation."""
+    R67-r10: prevent unbounded archive accumulation.
+
+    2026-05-15 Codex-Audit Wave-2 Bug 10 (NIEDRIG/MITTEL): rotation suffix
+    used `%Y%m%d` only. A second rotation within the same UTC day
+    silently overwrote the earlier archive (`mv -f` semantics via
+    `Path.rename`) — log evidence for an early-morning incident vanished
+    when a noisy afternoon triggered a second rotation. Now we use
+    `%Y%m%dT%H%M%S` (ISO compact) so each rotation gets a unique archive
+    even at sub-second cadence (combined with a counter fallback for the
+    same-second edge case).
+    """
     try:
         if path.exists() and path.stat().st_size > max_mb * 1024 * 1024:
-            archive = path.with_suffix(
-                f".{datetime.now(timezone.utc).strftime('%Y%m%d')}.jsonl"
-            )
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+            archive = path.with_suffix(f".{ts}.jsonl")
+            # Same-second collision guard: append a counter if the chosen
+            # archive name is already taken (e.g. two parallel processes
+            # rotating within the same wall-clock second).
+            if archive.exists():
+                for n in range(1, 1000):
+                    candidate = path.with_suffix(f".{ts}-{n:03d}.jsonl")
+                    if not candidate.exists():
+                        archive = candidate
+                        break
             path.rename(archive)
         # Reap old archives (regardless of whether we just rotated).
+        # Glob covers both the legacy `YYYYMMDD` and the new `YYYYMMDDT...`
+        # suffixes — `[0-9]{8}` is a strict prefix of both forms.
         stem = path.stem
         suffix = path.suffix
         archives = sorted(
-            path.parent.glob(f"{stem}.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]{suffix}"),
+            path.parent.glob(f"{stem}.[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*{suffix}"),
             key=lambda p: p.name,
             reverse=True,
         )
@@ -1170,13 +1190,29 @@ def _build_daily_summary(today_utc: str, last_date: str, prev_pct: float, prev_p
 def _get_yesterday_trade_stats(date_str: str) -> tuple[float, float, float, float, int]:
     """
     Returns (win_rate, avg_trade_usd, best_usd, worst_usd, n_trades) for the
-    given UTC date. Pulls from MT5 history. Returns (0,0,0,0,0) if no data.
+    given Prague date. Pulls from MT5 history. Returns (0,0,0,0,0) if no data.
+
+    2026-05-15 Codex-Audit Wave-2 Bug 9 (NIEDRIG/MITTEL): the daily-summary
+    Telegram is anchored to the Prague trading-day (matching FTMO's
+    accounting); `_build_daily_summary` is called with `last_date` already in
+    Europe/Prague. Previously this function expanded that date into
+    `datetime(y, m, d, 0, 0, 0, tzinfo=UTC)` — i.e. Prague-day name with UTC
+    boundaries. Trades placed close to midnight Prague (22:00 / 23:00 UTC
+    depending on DST) were attributed to the WRONG daily summary, hiding
+    the late-day loss or counting a win twice. Use Prague boundaries to
+    match `handle_daily_reset` / `_prague_today_str`.
     """
+    try:
+        from zoneinfo import ZoneInfo
+        prague_tz = ZoneInfo("Europe/Prague")
+    except ImportError:
+        from datetime import timedelta
+        prague_tz = timezone(timedelta(hours=1))  # CET, ignores DST
     try:
         # date_str is "YYYY-MM-DD"
         y, m, d = (int(x) for x in date_str.split("-"))
-        day_start = datetime(y, m, d, 0, 0, 0, tzinfo=timezone.utc)
-        day_end = datetime(y, m, d, 23, 59, 59, tzinfo=timezone.utc)
+        day_start = datetime(y, m, d, 0, 0, 0, tzinfo=prague_tz)
+        day_end = datetime(y, m, d, 23, 59, 59, tzinfo=prague_tz)
         deals = mt5.history_deals_get(day_start, day_end) or []
         closes = [d for d in deals if getattr(d, "magic", 0) == 231 and _is_close_deal(d)]
         if not closes:
@@ -1198,6 +1234,13 @@ def _get_yesterday_trade_stats(date_str: str) -> tuple[float, float, float, floa
 # Symbol resolver (FTMO naming differs from Binance — try variants & cache)
 # =============================================================================
 _SYMBOL_CACHE: dict[str, Optional[str]] = {}
+# 2026-05-15 Codex-Audit Bug 7: track when None-cache entries were written so
+# transient MT5 / symbol-window failures don't blacklist a symbol for the
+# whole process lifetime. Hit-cache entries (str values) stay forever — they
+# are stable broker-symbol mappings.
+_SYMBOL_CACHE_NEG_TS: dict[str, float] = {}
+# Negative-cache TTL in seconds; tunable via env for ops.
+_SYMBOL_NEG_CACHE_TTL = float(os.environ.get("FTMO_SYMBOL_NEG_CACHE_TTL_SEC", "60"))
 
 
 def _resolve_broker_symbol(binance_symbol: str) -> Optional[str]:
@@ -1211,9 +1254,22 @@ def _resolve_broker_symbol(binance_symbol: str) -> Optional[str]:
       3. Drop trailing "E" before USD (Binance "AAVE" → broker "AAV")
       4. Bracketed variants: "X/USD", "X.USD", "X-USD", "X_USD"
       5. With ".x" / ".c" / ".raw" suffixes (some brokers stack these)
+
+    2026-05-15 Codex-Audit Bug 7: positive cache (str) is permanent; negative
+    cache (None) has a TTL so a transient symbol_info failure doesn't
+    blacklist the asset until process restart.
     """
     if binance_symbol in _SYMBOL_CACHE:
-        return _SYMBOL_CACHE[binance_symbol]
+        cached = _SYMBOL_CACHE[binance_symbol]
+        if cached is not None:
+            return cached
+        # Negative cache: respect TTL, then retry.
+        cached_at = _SYMBOL_CACHE_NEG_TS.get(binance_symbol, 0.0)
+        if (time.time() - cached_at) < _SYMBOL_NEG_CACHE_TTL:
+            return None
+        # TTL expired → drop and re-resolve below.
+        _SYMBOL_CACHE.pop(binance_symbol, None)
+        _SYMBOL_CACHE_NEG_TS.pop(binance_symbol, None)
 
     candidates: list[str] = []
 
@@ -1260,10 +1316,12 @@ def _resolve_broker_symbol(binance_symbol: str) -> Optional[str]:
             continue
 
     _SYMBOL_CACHE[binance_symbol] = None
+    _SYMBOL_CACHE_NEG_TS[binance_symbol] = time.time()
     log_event(
         "symbol_unresolved",
         binance=binance_symbol,
         tried=unique,
+        ttl_sec=_SYMBOL_NEG_CACHE_TTL,
         level="warn",
     )
     return None
@@ -1679,6 +1737,35 @@ def close_position(ticket: int, exit_reason_override: Optional[str] = None) -> b
             planned_exit = sl
             slip = (sl - actual) / sl if pos.type == mt5.POSITION_TYPE_BUY else (actual - sl) / sl
             slippage_bps = round(slip * 10_000, 2)
+        # 2026-05-15 Codex-Audit Bug 10: include realized pnl + swap/commission
+        # in the close-log so the Next.js dashboard /api/ftmo-state can compute
+        # win-rate / PF / avg-win-loss. MT5's `position` object exposes
+        # `profit` (unrealized PnL of remaining lot before close) and `swap`
+        # accrued so far; the post-close history-deal has the realized PnL.
+        # Best-effort: derive PnL from the open-position object + recent
+        # close-deal if we can find it.
+        pnl_realized: Optional[float] = None
+        pnl_swap: Optional[float] = None
+        pnl_commission: Optional[float] = None
+        try:
+            # First look at the close-deal that just executed — most accurate.
+            since = datetime.now(timezone.utc) - timedelta(minutes=5)
+            now = datetime.now(timezone.utc)
+            deals = mt5.history_deals_get(since, now) or []
+            for d in deals:
+                if getattr(d, "position_id", None) == ticket and _is_close_deal(d):
+                    pnl_realized = float(getattr(d, "profit", 0.0) or 0.0)
+                    pnl_swap = float(getattr(d, "swap", 0.0) or 0.0)
+                    pnl_commission = float(getattr(d, "commission", 0.0) or 0.0)
+                    break
+            # Fallback: pre-close MTM profit on the position object.
+            if pnl_realized is None:
+                pnl_realized = float(getattr(pos, "profit", 0.0) or 0.0)
+                pnl_swap = float(getattr(pos, "swap", 0.0) or 0.0)
+        except Exception:
+            # PnL is best-effort — never block the close-log on a derivation
+            # exception.
+            pass
         log_event(
             "closed",
             ticket=ticket,
@@ -1691,6 +1778,9 @@ def close_position(ticket: int, exit_reason_override: Optional[str] = None) -> b
             slippage_bps=slippage_bps,
             symbol=getattr(pos, "symbol", None),
             volume=getattr(pos, "volume", None),
+            pnl=pnl_realized,
+            swap=pnl_swap,
+            commission=pnl_commission,
         )
     else:
         log_event("close_failed", ticket=ticket, retcode=getattr(result, "retcode", None))
@@ -1887,43 +1977,80 @@ def maybe_place_ping_trade() -> None:
                 _clear_pending_order_marker(ping_marker)
                 return
             # Close immediately
+            # 2026-05-15 Codex-Audit Bug 8: previously a ping was credited
+            # (ping_dates.append) whenever the open-leg succeeded, even if
+            # positions_get() returned an empty list (MT5 sync lag) and we
+            # silently never closed the new long. That left an orphan
+            # magic=232 long un-closed AND counted the trading-day as done →
+            # double risk: equity drift on the un-closed long + MIN_TRADING_DAYS
+            # gate satisfied with no actual closed trade.
+            # Fix: require at least one successful position-found-and-closed
+            # cycle before crediting the ping.
+            closed_at_least_one = False
             positions = mt5.positions_get(symbol=sym) or []
-            for pos in positions:
-                if getattr(pos, "magic", 0) == 232:
-                    tick2 = mt5.symbol_info_tick(sym)
-                    if tick2 is None or tick2.bid <= 0 or tick2.ask <= 0:
-                        continue
-                    close_request = {
-                        "action": mt5.TRADE_ACTION_DEAL, "symbol": sym, "volume": pos.volume,
-                        "type": mt5.ORDER_TYPE_SELL, "position": pos.ticket,
-                        "price": tick2.bid, "deviation": 20, "magic": 232,
-                        "comment": "iter236-ping-close",
-                        "type_filling": _pick_filling_mode(sym),
-                    }
-                    # R67-r12 audit fix: check the close-leg result. Was
-                    # silently ignored, leaving an SL-less magic=232 ping
-                    # position open at MT5 if the close requoted/rejected.
-                    # We log it + leave the marker in place so the next
-                    # boot's reconcile picks it up.
-                    close_res = mt5.order_send(close_request)
-                    if close_res is None or getattr(close_res, "retcode", None) != mt5.TRADE_RETCODE_DONE:
-                        log_event(
-                            "ping_close_failed",
-                            ticket=getattr(pos, "ticket", None),
-                            retcode=getattr(close_res, "retcode", None),
-                        )
-                        tg_send(
-                            "⚠️ <b>Ping-close failed</b>\n"
-                            f"ticket <code>{getattr(pos, 'ticket', '?')}</code> "
-                            f"retcode={getattr(close_res, 'retcode', None)} — orphan ping position."
-                        )
-                        # Don't append to ping_dates and don't clear the
-                        # marker — boot reconcile will pick it up.
-                        return
+            magic_positions = [p for p in positions if getattr(p, "magic", 0) == 232]
+            for pos in magic_positions:
+                tick2 = mt5.symbol_info_tick(sym)
+                if tick2 is None or tick2.bid <= 0 or tick2.ask <= 0:
+                    continue
+                close_request = {
+                    "action": mt5.TRADE_ACTION_DEAL, "symbol": sym, "volume": pos.volume,
+                    "type": mt5.ORDER_TYPE_SELL, "position": pos.ticket,
+                    "price": tick2.bid, "deviation": 20, "magic": 232,
+                    "comment": "iter236-ping-close",
+                    "type_filling": _pick_filling_mode(sym),
+                }
+                # R67-r12 audit fix: check the close-leg result. Was
+                # silently ignored, leaving an SL-less magic=232 ping
+                # position open at MT5 if the close requoted/rejected.
+                # We log it + leave the marker in place so the next
+                # boot's reconcile picks it up.
+                close_res = mt5.order_send(close_request)
+                if close_res is None or getattr(close_res, "retcode", None) != mt5.TRADE_RETCODE_DONE:
+                    log_event(
+                        "ping_close_failed",
+                        ticket=getattr(pos, "ticket", None),
+                        retcode=getattr(close_res, "retcode", None),
+                    )
+                    tg_send(
+                        "⚠️ <b>Ping-close failed</b>\n"
+                        f"ticket <code>{getattr(pos, 'ticket', '?')}</code> "
+                        f"retcode={getattr(close_res, 'retcode', None)} — orphan ping position."
+                    )
+                    # Don't append to ping_dates and don't clear the
+                    # marker — boot reconcile will pick it up.
+                    return
+                closed_at_least_one = True
+            if not closed_at_least_one:
+                # 2026-05-15 Codex-Audit Bug 8: open succeeded but no matching
+                # magic=232 position was visible. Leave marker in place so
+                # boot-reconcile picks up the orphan and closes it; do NOT
+                # credit the ping for today.
+                log_event(
+                    "ping_open_no_position_found",
+                    symbol=sym,
+                    queried=len(positions),
+                    level="warn",
+                )
+                tg_send(
+                    "⚠️ <b>Ping-open succeeded but position not visible</b>\n"
+                    f"symbol <code>{sym}</code> — leaving marker for boot reconcile. "
+                    "Trading-day NOT credited."
+                )
+                return
             log_event("ping_trade_placed", date=today, symbol=sym, lot=PING_LOT_SIZE)
             state["ping_dates"].append(today)
-            # Clear marker AFTER state is durably mutated; reconcile-on-boot
-            # will re-queue / clean any orphan ping if we crash before this.
+            # 2026-05-15 Codex-Audit Wave-2 Bug 5 (MITTEL): write the pause-
+            # state durably BEFORE deleting the marker. The previous order
+            # was (1) mutate state in-memory, (2) delete marker, (3) fsync
+            # state to disk via `write_pause_state` below. A crash between
+            # (2) and (3) lost both the ping_dates entry AND the marker →
+            # the trading-day credit disappeared with no recovery path, while
+            # MT5 already had the closed ping deal. Pre-emptive fsync makes
+            # recovery robust: if we crash after fsync but before the unlink,
+            # boot-reconcile sees the marker AND the persisted ping_dates
+            # entry and short-circuits any re-attempt.
+            write_pause_state(state)
             _clear_pending_order_marker(ping_marker)
         except Exception as e:
             log_event("ping_trade_exception", error=str(e))
@@ -1933,17 +2060,32 @@ def maybe_place_ping_trade() -> None:
     write_pause_state(state)
 
     # Check if challenge passed
-    if len(state["ping_dates"]) + 1 >= MIN_TRADING_DAYS:  # +1 for the target-hit day
+    # 2026-05-15 Codex-Audit Bug 1 (KRITISCH): previously
+    # `len(ping_dates) + 1 >= MIN_TRADING_DAYS` treated target_hit_date as a
+    # COUNT to add to ping_dates. That double-counted in two scenarios:
+    #   (a) target_hit_date got appended to ping_dates by an earlier
+    #       maybe_place_ping_trade run on the same Prague day (which is
+    #       still possible because target detection runs on every cycle
+    #       and the ping path appends `today` regardless of target_hit_date
+    #       overlap).
+    #   (b) MIN_TRADING_DAYS=4 → off-by-one false-pass when only 3 ping
+    #       trades were actually placed but `+1` masked the missing day.
+    # Honest count: number of *unique* Prague trading-days on which
+    # we have a recorded ping or the target_hit_date.
+    distinct_days = set(state.get("ping_dates", []) or [])
+    if state.get("target_hit_date"):
+        distinct_days.add(state["target_hit_date"])
+    if len(distinct_days) >= MIN_TRADING_DAYS:
         if not state["passed"]:
             state["passed"] = True
             write_pause_state(state)
             tg_send(
                 f"🏆 <b>CHALLENGE PASSED!</b> 🎉\n"
                 f"Target hit: {state['target_hit_date']}\n"
-                f"Total trading days: {len(state['ping_dates']) + 1}\n"
+                f"Total trading days: {len(distinct_days)}\n"
                 f"Bot will continue placing ping trades until you reset state."
             )
-            log_event("challenge_passed", trading_days=len(state["ping_dates"]) + 1)
+            log_event("challenge_passed", trading_days=len(distinct_days))
 
 
 def process_pending_signals() -> None:
@@ -1952,28 +2094,105 @@ def process_pending_signals() -> None:
     # on the Node side but not here — Python was racing the Node writer,
     # leaving the cross-process race only HALF closed.
     #
-    # Round 55 audit fix: the lock previously wrapped only the initial read.
+    # Round 55 audit fix: previously the lock wrapped only the initial read.
     # The order_send loop, slippage, regime/news gates AND the final write
     # of `remaining` ran OUTSIDE the lock — Node could append a signal X
-    # mid-flight, then Python's final write_json(PENDING) silently dropped
-    # X. Now the lock wraps the FULL critical section. Lock window is
-    # bounded by len(pending) × ~150ms (typically 1-5 signals).
+    # mid-flight, then Python's final write_json(PENDING) silently dropped X.
+    # Round 55 closed that race by holding the lock for the FULL critical
+    # section (read → MT5 order_send loop → Telegram → write).
+    #
+    # 2026-05-15 Codex-Audit Wave-2 Bug 6 (MITTEL): the wide lock caused the
+    # OPPOSITE problem — `order_send` (5-30s on slow brokers) + per-signal
+    # Telegram (`tg_send` is ~200ms but can stall on 429/timeout) kept the
+    # lock held longer than the Node side's 5s default `withFileLock`
+    # timeout. Node then either dropped signals or force-claimed our lock
+    # (`staleMs:5000` default) → cross-process races re-opened.
+    #
+    # New pattern (3 phases):
+    #   Phase A (under lock): read pending+executed+open_positions, then
+    #     clear `PENDING_PATH` to {"signals": []} so Node sees our snapshot
+    #     as "consumed" and any new signals go to a fresh queue.
+    #   Phase B (NO lock): MT5 order_send loop, slippage gates, Telegram.
+    #     This is where the wall-clock budget lives — Node can append
+    #     freely during this phase.
+    #   Phase C (under lock): re-read PENDING_PATH (= Node's new appends),
+    #     merge with our `remaining` + retried signals, write
+    #     pending/executed/open_positions. Re-read is what protects against
+    #     the original Round 55 race; the lock just keeps the write atomic
+    #     vs Node's R-M-W.
     pending_lock = STATE_DIR / "pending-signals.lock"
+
+    # Phase A — read + clear queue under lock.
     with _file_lock(pending_lock, timeout_sec=10.0, stale_sec=30.0):
-        _process_pending_signals_locked()
+        data = read_json(PENDING_PATH, {"signals": []})
+        snapshot_pending = data.get("signals", [])
+        if not snapshot_pending:
+            return
+        executed = read_json(EXECUTED_PATH, {"executions": []})
+        open_positions = read_json(OPEN_POS_PATH, {"positions": []})
+        # Atomically remove the snapshot from the queue so Node treats it
+        # as consumed. Any new signals Node appends from here on land in a
+        # fresh `{"signals": []}` and will be merged back in Phase C.
+        write_json(PENDING_PATH, {"signals": []})
+
+    # Phase B — process the snapshot WITHOUT holding the lock.
+    proc = _process_signals_unlocked(
+        snapshot_pending, executed, open_positions
+    )
+
+    # Phase C — merge + write under lock.
+    with _file_lock(pending_lock, timeout_sec=10.0, stale_sec=30.0):
+        # Re-read pending: Node may have appended new signals during Phase B.
+        latest = read_json(PENDING_PATH, {"signals": []})
+        late_signals = latest.get("signals", [])
+        # Dedup new arrivals against our snapshot (Node may have racily
+        # re-queued one we already processed if it didn't see our Phase-A
+        # clear in time).
+        original_keys = {
+            (s.get("signalBarClose"), s.get("assetSymbol")) for s in snapshot_pending
+        }
+        new_signals = [
+            s for s in late_signals
+            if (s.get("signalBarClose"), s.get("assetSymbol")) not in original_keys
+        ]
+        if new_signals:
+            log_event("merged_late_signals", count=len(new_signals))
+        merged_pending = proc["remaining"] + new_signals
+        # Cap executed entries at 500 (same as Round 12 fix).
+        executed_out = proc["executed"]
+        if len(executed_out.get("executions", [])) > 500:
+            executed_out["executions"] = executed_out["executions"][-500:]
+        write_json(PENDING_PATH, {"signals": merged_pending})
+        write_json(EXECUTED_PATH, executed_out)
+        write_json(OPEN_POS_PATH, proc["open_positions"])
+        # WAL-marker cleanup: only after all three writes succeed. See
+        # Wave-2 Bug 1 KRITISCH note in `_process_signals_unlocked`.
+        for marker in proc["placed_markers"]:
+            _clear_pending_order_marker(marker)
 
 
-def _process_pending_signals_locked() -> None:
-    """Critical section of process_pending_signals — must be called with the
-    pending-signals.lock held. Split out so the lock-acquisition is a single
-    point, and so callers/tests can inject the lock."""
-    data = read_json(PENDING_PATH, {"signals": []})
-    pending = data.get("signals", [])
-    if not pending:
-        return
-    executed = read_json(EXECUTED_PATH, {"executions": []})
-    open_positions = read_json(OPEN_POS_PATH, {"positions": []})
+def _process_signals_unlocked(
+    pending: list[dict],
+    executed: dict,
+    open_positions: dict,
+) -> dict:
+    """2026-05-15 Codex-Audit Wave-2 Bug 6 (MITTEL): Phase-B handler.
 
+    Process a pre-snapshotted batch of pending signals WITHOUT holding the
+    pending-signals.lock. Caller is responsible for:
+      - Reading pending/executed/open_positions under the lock (Phase A)
+      - Atomically clearing PENDING_PATH so Node sees them as consumed
+      - Writing the returned `remaining` / `executed` / `open_positions`
+        back under the lock (Phase C), merging in any new arrivals.
+
+    Splitting the function this way keeps the wall-clock budget of MT5
+    `order_send` + Telegram out of the lock window, so the Node-side
+    5s default `withFileLock` timeout doesn't trip on a slow broker.
+
+    Returns a dict with keys: `remaining` (signals to keep in pending),
+    `executed`, `open_positions`, `placed_markers` (WAL markers to delete
+    after writes succeed).
+    """
     acct = mt5_get_equity()
     account_equity = acct["equity"] or CHALLENGE_START_BALANCE
     day_start_usd = handle_daily_reset(account_equity)
@@ -1983,18 +2202,20 @@ def _process_pending_signals_locked() -> None:
     # placed separately in main_loop via maybe_place_ping_trade().
     if check_target_and_pause(account_equity):
         log_event("signals_skipped_post_target", count=len(pending))
-        # Mark all pending as "skipped_post_target" so they don't re-trigger
-        executed = read_json(EXECUTED_PATH, {"executions": []})
+        # Mark all pending as "skipped_post_target" so they don't re-trigger.
+        # Caller (`process_pending_signals`) will write executed + clear
+        # the pending queue under the lock in Phase C.
         for sig in pending:
             executed["executions"].append({
                 "signal": sig, "result": "skipped_post_target",
                 "ts": datetime.now(timezone.utc).isoformat(),
             })
-        # BUGFIX 2026-04-28: atomic writes (was non-atomic, corrupt-on-crash risk).
-        write_json(EXECUTED_PATH, executed)
-        # Clear pending queue
-        write_json(PENDING_PATH, {"signals": []})
-        return
+        return {
+            "remaining": [],
+            "executed": executed,
+            "open_positions": open_positions,
+            "placed_markers": [],
+        }
 
     remaining: list[dict] = []
     # BUGFIX 2026-04-28: signal staleness check — drop signals older than 5min
@@ -2004,7 +2225,12 @@ def _process_pending_signals_locked() -> None:
     # MCT counter — tracks orders placed during THIS batch run so back-to-back
     # signals can't bypass the cap before MT5's positions_get sees them.
     in_batch_placed = 0
-    for sig in pending:
+    # 2026-05-15 Codex-Audit Wave-2 Bug 1 (KRITISCH): markers of successfully
+    # placed orders are held until after pending/executed/open-positions are
+    # durably written. Then bulk-deleted. A crash in that window leaves the
+    # markers in place so boot-reconcile can detect the orphan broker fill.
+    placed_markers: list[Path] = []
+    for i, sig in enumerate(pending):
         # BUGFIX 2026-04-28 (Round 24): validate required fields up-front to
         # prevent KeyError crashes from malformed signals (schema drift, manual
         # JSON edits, corruption). Skip + log signal if any required field missing.
@@ -2123,16 +2349,33 @@ def _process_pending_signals_locked() -> None:
             })
             continue
 
-        # Bug-Audit Round 4: default to "long" (not "short") on missing
-        # direction field. Engine convention (see _apply_trailing_stop /
-        # _apply_break_even / _apply_chandelier_stop at lines 2279/2393/2461)
-        # uniformly defaults to "long" — keeping the place-order path on
-        # "short" was a divergent, silent legacy bias that could open the
-        # wrong side on a legacy/malformed signal. R28_V6 trend-cont config
-        # is long-biased, so "long" is the safer default if direction is
-        # absent for any reason. Required-fields validation does NOT
-        # currently cover "direction", so silent fallback was reachable.
-        direction = sig.get("direction", "long")
+        # 2026-05-15 Codex-Audit Wave-2 Bug 4 (HOCH): direction MUST be one of
+        # ("long", "short"). The previous code silently fell back to "long" on
+        # any malformed / missing direction — a legacy short signal with a
+        # mistyped direction field could open a long with mirror-image SL/TP
+        # placement (SL below entry for a "long" derived from a short signal
+        # is INSIDE the actual stop level → catastrophic). Skip + log explicit
+        # rejection instead of guessing the trade side.
+        direction = sig.get("direction")
+        if direction not in ("long", "short"):
+            log_event(
+                "signal_invalid_direction",
+                asset=sig.get("assetSymbol"),
+                got=direction,
+                level="warn",
+            )
+            tg_send(
+                f"⚠️ <b>Signal dropped — invalid direction</b>\n"
+                f"{html_escape(sig.get('assetSymbol', '<?>'))}\n"
+                f"direction=<code>{html_escape(str(direction))}</code> "
+                "(expected 'long' or 'short')"
+            )
+            executed["executions"].append({
+                "signal": sig, "result": "invalid_direction",
+                "direction": direction,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+            continue
         regime = sig.get("regime", "BEAR_CHOP")
         tag = "iter213-bull" if regime == "BULL" else "iter231"
 
@@ -2212,9 +2455,30 @@ def _process_pending_signals_locked() -> None:
             account_equity=account_equity,
             comment=f"{marker_short} {tag} {sig['assetSymbol']}",
         )
-        # Marker stays until executed-signals is written successfully (cleanup at end).
+        # 2026-05-15 Codex-Audit Wave-2 Bug 1 (KRITISCH): strict WAL pattern.
+        #
+        # Problem A: previously the marker was deleted immediately after a
+        # successful `order_send()` (`_clear_pending_order_marker` inside
+        # `if result.ok:`), BEFORE the pending-signals / executed-signals /
+        # open-positions state was written at the end of the loop. A crash
+        # in that window would leave a real broker fill with NO marker AND
+        # NO open-position record → boot-reconcile cannot detect or attach.
+        #
+        # Problem B: on a failed `order_send()`, the marker was left behind
+        # for boot-reconcile to "investigate" — but reconcile re-queues
+        # markers without a matching MT5 deal as pending signals → duplicate
+        # order attempts on restart. We DO know the order didn't fill, so
+        # delete the marker explicitly on send-fail.
+        #
+        # New rule:
+        #   - send FAIL: delete marker immediately (we have authoritative
+        #     proof from MT5 that no order was placed).
+        #   - send OK:  keep marker in `placed_markers`; delete ONLY after
+        #     pending/executed/open-positions writes at the bottom of the
+        #     loop succeed. Boot-reconcile keeps its "marker + no MT5 deal
+        #     + no open-position" inference intact.
         if result.ok:
-            _clear_pending_order_marker(order_marker)
+            placed_markers.append(order_marker)
             _reset_order_fail_counter()
             in_batch_placed += 1
             # Drift-monitor fields: capture signal-side prediction + MT5
@@ -2338,6 +2602,12 @@ def _process_pending_signals_locked() -> None:
                 "ts": datetime.now(timezone.utc).isoformat(),
             })
         else:
+            # 2026-05-15 Codex-Audit Wave-2 Bug 1B (KRITISCH): on a send-fail
+            # we have authoritative confirmation that no broker order exists.
+            # Delete the WAL marker immediately so boot-reconcile doesn't
+            # re-queue this signal on restart (which would attempt a 2nd
+            # order). The marker is only needed when MT5 status is unknown.
+            _clear_pending_order_marker(order_marker)
             _bump_order_fail_counter(result.error or "unknown")
             log_event("order_failed", asset=sig["assetSymbol"], error=result.error)
             tg_send(f"❌ <b>ORDER FAILED</b>\n{html_escape(sig['assetSymbol'])}\nError: {html_escape(result.error or 'unknown')}")
@@ -2366,35 +2636,81 @@ def _process_pending_signals_locked() -> None:
                 "retried": is_retryable and retry_count < 5,
                 "ts": datetime.now(timezone.utc).isoformat(),
             })
-            # If auto-pause kicked in, stop processing more pending signals
+            # If auto-pause kicked in, stop processing more pending signals.
+            # 2026-05-15 Codex-Audit Wave-2 Bug 2 (HOCH): use the enumerate
+            # index `i` directly rather than `pending.index(sig)`. The
+            # latter returns the FIRST match by structural equality, so a
+            # later duplicate signal dict (same assetSymbol+signalBarClose,
+            # which happens on signal-source restart races) would re-queue
+            # everything from the first occurrence — including signals we
+            # already processed earlier in this loop.
             if is_paused():
-                remaining.extend(pending[pending.index(sig) + 1:])
+                remaining.extend(pending[i + 1:])
                 break
 
-    # BUGFIX 2026-04-28: re-read PENDING_PATH before write to merge signals
-    # that arrived during this iteration (signal-service may have written new
-    # signals while executor was placing orders → would silently overwrite).
+    # 2026-05-15 Codex-Audit Wave-2 Bug 6 (MITTEL): merge + writes happen in
+    # Phase C of `process_pending_signals` (caller). This function returns
+    # the in-progress state and lets the caller pick up Node's late writes
+    # before persisting.
+    return {
+        "remaining": remaining,
+        "executed": executed,
+        "open_positions": open_positions,
+        "placed_markers": placed_markers,
+    }
+
+
+# 2026-05-15 Codex-Audit Wave-2 Bug 6 (MITTEL): keep the old function name
+# as a thin compatibility shim. Existing tests inspect this symbol's source
+# (direction-default regression) or call it directly without the lock. The
+# shim wraps the new Phase-A/Phase-B/Phase-C flow used by the production
+# `process_pending_signals` entrypoint.
+def _process_pending_signals_locked() -> None:
+    """Backward-compat wrapper around the new 3-phase flow.
+
+    Earlier audit-rounds (Round 55) exposed this name as the locked
+    critical section; tests still call it directly. We delegate to the
+    same 3-phase logic used by `process_pending_signals` but without
+    acquiring the outer lock (caller is expected to hold it, as the
+    function name suggests).
+    """
+    data = read_json(PENDING_PATH, {"signals": []})
+    snapshot = data.get("signals", [])
+    if not snapshot:
+        return
+    executed = read_json(EXECUTED_PATH, {"executions": []})
+    open_positions = read_json(OPEN_POS_PATH, {"positions": []})
+    # Mirror Phase A: atomically clear the pending queue so callers that
+    # treat the wrapper as the lock-holder see the snapshot as consumed.
+    write_json(PENDING_PATH, {"signals": []})
+
+    proc = _process_signals_unlocked(snapshot, executed, open_positions)
+
+    # Phase C — re-read pending, merge with new arrivals, persist.
     try:
-        latest_pending = read_json(PENDING_PATH, {"signals": []})
-        latest_signals = latest_pending.get("signals", [])
-        # Find signals not in our original 'pending' list (= newly arrived)
-        # BUGFIX 2026-04-28: dedup-key fixed — was using "ts" (None for all signals)
-        # → key collapsed to (None, asset) → late merge re-queued duplicates.
-        # Now uses signalBarClose (the schema actually used by Node).
-        original_keys = {(s.get("signalBarClose"), s.get("assetSymbol")) for s in pending}
-        new_signals = [s for s in latest_signals if (s.get("signalBarClose"), s.get("assetSymbol")) not in original_keys]
+        latest = read_json(PENDING_PATH, {"signals": []})
+        late_signals = latest.get("signals", [])
+        original_keys = {
+            (s.get("signalBarClose"), s.get("assetSymbol")) for s in snapshot
+        }
+        new_signals = [
+            s for s in late_signals
+            if (s.get("signalBarClose"), s.get("assetSymbol")) not in original_keys
+        ]
         if new_signals:
             log_event("merged_late_signals", count=len(new_signals))
-            remaining.extend(new_signals)
     except Exception as e:
         log_event("merge_check_failed", error=str(e))
-    # BUGFIX 2026-04-28 (Round 12): cap executed-signals.json at 500 entries
-    # to prevent unbounded growth + JSON-parse stalls.
-    if len(executed.get("executions", [])) > 500:
-        executed["executions"] = executed["executions"][-500:]
-    write_json(PENDING_PATH, {"signals": remaining})
-    write_json(EXECUTED_PATH, executed)
-    write_json(OPEN_POS_PATH, open_positions)
+        new_signals = []
+    merged_pending = proc["remaining"] + new_signals
+    executed_out = proc["executed"]
+    if len(executed_out.get("executions", [])) > 500:
+        executed_out["executions"] = executed_out["executions"][-500:]
+    write_json(PENDING_PATH, {"signals": merged_pending})
+    write_json(EXECUTED_PATH, executed_out)
+    write_json(OPEN_POS_PATH, proc["open_positions"])
+    for marker in proc["placed_markers"]:
+        _clear_pending_order_marker(marker)
 
 
 def _modify_position_sl(ticket: int, new_sl: float) -> bool:
@@ -2607,7 +2923,13 @@ def _apply_partial_tp(pos: dict) -> dict:
     close_lot = float(p.volume) * frac
     # BUGFIX 2026-04-29 (Agent 4 R10 #11): if close_lot < vol_min, PTP can never
     # fire. Mark done to avoid retry-storm (used to retry every poll forever).
-    info = mt5.symbol_info(pos.get("sourceSymbol", p.symbol))
+    # 2026-05-15 Codex-Audit Bug 9: previously used pos["sourceSymbol"] (Binance
+    # ticker like ETHUSDT) for symbol_info — but MT5 wants the broker symbol
+    # (ETHUSD, etc.). symbol_info would return None → vol_min defaulted to
+    # 0.01 → either skipped legitimate PTP fires (lot=0.005 broker minlot)
+    # or false-fired below broker minlot. Always use the live position's
+    # broker symbol `p.symbol`, which is authoritative.
+    info = mt5.symbol_info(p.symbol)
     vol_min_check = info.volume_min if info else 0.01
     if close_lot < vol_min_check:
         pos["partial_tp_done"] = True
@@ -2914,13 +3236,24 @@ def _apply_time_exit(pos: dict, now_ms: int) -> bool:
         log_event("time_exit_close", ticket=pos["ticket"],
                   bars_held=int(bars_held), unrealized=unrealized,
                   min_gain_abs=min_gain_abs)
+        # 2026-05-15 Codex-Audit Wave-2 Bug 3 (HOCH): only return True if the
+        # close actually succeeded. Returning True unconditionally caused the
+        # caller (`manage_open_positions`) to drop this position from
+        # `still_open` even when the broker rejected the close → engine state
+        # lost the position while the live trade stayed open + unmanaged.
         if close_position(pos["ticket"], exit_reason_override="time_exit"):
             tg_send(
                 f"⏳ <b>Time-exit close</b>\n"
                 f"{pos['signalAsset']} ticket <code>{pos['ticket']}</code>\n"
                 f"Held {int(bars_held)} bars, no min-gain reached."
             )
-        return True
+            return True
+        log_event(
+            "time_exit_close_failed",
+            ticket=pos["ticket"],
+            level="warn",
+        )
+        return False
     return False
 
 
@@ -2987,16 +3320,25 @@ def reconcile_pending_order_markers() -> None:
     # Bug-Audit Phase 3 (Python Bug 11): magic= is NOT a documented MT5 API
     # parameter — filter manually so we don't accidentally see manual trades
     # or other bots' positions.
+    # 2026-05-15 Codex-Audit Bug 3: ping trades use magic=232 (signal=231).
+    # Previously ping-markers fell into the generic 231-only comment match,
+    # so a successful ping-open with a failed close would be re-queued as a
+    # phantom signal AND its magic=232 orphan position lived on forever
+    # (manage_open_positions ignores magic!=231). We now split markers by
+    # type: signal-markers (have `signal` key) vs ping-markers (`ping=True`).
     try:
         all_positions = mt5.positions_get() or []
-        positions = [p for p in all_positions if getattr(p, "magic", 0) == 231]
-        comments = {p.comment for p in positions}
+        signal_positions = [p for p in all_positions if getattr(p, "magic", 0) == 231]
+        ping_positions = [p for p in all_positions if getattr(p, "magic", 0) == 232]
+        comments = {p.comment for p in signal_positions}
     except Exception:
         comments = set()
+        ping_positions = []
     # BUGFIX 2026-04-28 (Round 36 Bug 3): also check recent history (closed orders
     # within last 60 minutes) — a successful order_send may have completed and
     # already SL/TP'd before the reconcile runs. Without this we'd re-queue
     # signals that already filled-and-exited → duplicate trade on next pickup.
+    ping_history_comments: set[str] = set()
     try:
         # R56 audit fix: use UTC-aware datetimes — naive datetime triggers
         # broker-TZ ambiguity (MT5 interprets naive as broker-local on
@@ -3006,15 +3348,70 @@ def reconcile_pending_order_markers() -> None:
             datetime.now(timezone.utc),
         ) or []
         for d in recent_deals:
-            if getattr(d, "magic", 0) == 231:
-                comments.add(getattr(d, "comment", ""))
+            m = getattr(d, "magic", 0)
+            c = getattr(d, "comment", "")
+            if m == 231:
+                comments.add(c)
+            elif m == 232:
+                ping_history_comments.add(c)
     except Exception:
         pass
     requeued = []
     cleaned = 0
+    ping_orphans_closed = 0
+    ping_cleaned = 0
     for marker in markers:
         try:
             data = read_json(marker, {})
+            is_ping = bool(data.get("ping"))
+            if is_ping:
+                # 2026-05-15 Codex-Audit Bug 3: handle ping markers separately.
+                # A ping is "complete" only when (a) any magic=232 open
+                # position has been closed AND (b) no magic=232 orphan is
+                # still open for the symbol. If an orphan ping position is
+                # still alive, force-close it now — generic order management
+                # ignores magic=232 entirely.
+                ping_symbol = data.get("symbol", "")
+                orphan = [p for p in ping_positions if getattr(p, "symbol", "") == ping_symbol]
+                if orphan:
+                    for pos in orphan:
+                        try:
+                            tick = mt5.symbol_info_tick(ping_symbol)
+                            if tick is None or tick.bid <= 0 or tick.ask <= 0:
+                                continue
+                            opposite = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                            close_price = tick.bid if pos.type == mt5.ORDER_TYPE_BUY else tick.ask
+                            close_req = {
+                                "action": mt5.TRADE_ACTION_DEAL,
+                                "symbol": ping_symbol,
+                                "volume": pos.volume,
+                                "type": opposite,
+                                "position": pos.ticket,
+                                "price": close_price,
+                                "deviation": 20,
+                                "magic": 232,
+                                "comment": "iter236-ping-recover",
+                                "type_filling": _pick_filling_mode(ping_symbol),
+                            }
+                            res = mt5.order_send(close_req)
+                            if res is not None and getattr(res, "retcode", None) == mt5.TRADE_RETCODE_DONE:
+                                ping_orphans_closed += 1
+                            else:
+                                log_event(
+                                    "ping_orphan_close_failed",
+                                    ticket=getattr(pos, "ticket", None),
+                                    retcode=getattr(res, "retcode", None),
+                                    level="warn",
+                                )
+                        except Exception as e:
+                            log_event("ping_orphan_close_exception", error=str(e), level="warn")
+                # Marker can be cleaned in any case — if we crashed before
+                # ping_dates.append, the date was lost anyway; main_loop will
+                # try a fresh ping on the next cycle when today's date is
+                # not in ping_dates.
+                marker.unlink(missing_ok=True)
+                ping_cleaned += 1
+                continue
             sig = data.get("signal", {})
             mid = data.get("id") or _signal_marker_id(sig)
             # BUGFIX 2026-04-28 (Round 36 Bug 3): exact marker-ID match. Was
@@ -3034,18 +3431,37 @@ def reconcile_pending_order_markers() -> None:
                 marker.unlink(missing_ok=True)
                 cleaned += 1
             else:
-                # Re-queue signal to pending-signals.json
-                requeued.append(sig)
+                # 2026-05-15 Codex-Audit Bug 3: only re-queue if the marker
+                # carries an actual signal payload. Empty `sig` could come
+                # from a corrupt/legacy file; re-queueing {} previously
+                # filled pending-signals.json with no-op blanks.
+                if sig:
+                    requeued.append(sig)
                 marker.unlink(missing_ok=True)
         except Exception as e:
             log_event("marker_reconcile_failed", marker=str(marker), error=str(e), level="warn")
     if requeued:
-        existing = read_json(PENDING_PATH, {"signals": []})
-        existing["signals"] = existing.get("signals", []) + requeued
-        write_json(PENDING_PATH, existing)
+        # 2026-05-15 Codex-Audit Bug 2: take pending-signals.lock so a
+        # concurrent Node signal-service writer + executor reconcile can't
+        # race. Previously this read-modify-write happened lock-free → a
+        # Node append in the gap would be lost (silently overwritten by
+        # our merged dict).
+        pending_lock = STATE_DIR / "pending-signals.lock"
+        with _file_lock(pending_lock, timeout_sec=10.0, stale_sec=30.0):
+            existing = read_json(PENDING_PATH, {"signals": []})
+            existing["signals"] = existing.get("signals", []) + requeued
+            write_json(PENDING_PATH, existing)
         log_event("orphan_signals_requeued", count=len(requeued))
         tg_send(f"🔄 <b>Recovery</b>\nRe-queued {len(requeued)} orphan signal(s) from previous crash")
-    log_event("order_marker_reconcile_done", cleaned=cleaned, requeued=len(requeued))
+    if ping_orphans_closed > 0:
+        tg_send(f"🧹 <b>Ping-Recovery</b>\nClosed {ping_orphans_closed} orphan ping position(s) from previous crash")
+    log_event(
+        "order_marker_reconcile_done",
+        cleaned=cleaned,
+        requeued=len(requeued),
+        ping_cleaned=ping_cleaned,
+        ping_orphans_closed=ping_orphans_closed,
+    )
 
 
 def _emergency_close_all_positions(reason: str) -> dict:
@@ -3168,8 +3584,22 @@ def manage_open_positions() -> None:
         max_hold = pos.get("max_hold_until", 0)
         if 0 < max_hold < 1_000_000_000_000_000 and now_ms >= max_hold:
             log_event("hold_expired", ticket=pos["ticket"])
+            # 2026-05-15 Codex-Audit Wave-2 Bug 3 (HOCH): if close fails, keep
+            # the position in still_open so the next loop retries instead of
+            # silently dropping live-broker state. Previously `continue` ran
+            # unconditionally → engine forgot the ticket while the live trade
+            # kept running unmanaged.
             if close_position(pos["ticket"], exit_reason_override="hold_expired"):
                 tg_send(f"⏱ <b>Hold Expired — Closed</b>\n{pos['signalAsset']} ticket <code>{pos['ticket']}</code>")
+                continue
+            log_event(
+                "hold_expired_close_failed",
+                ticket=pos["ticket"],
+                level="warn",
+            )
+            # Fall through to normal management (BE/trail/etc.) so SL still
+            # reacts. Next loop retries the hold-expired close.
+            still_open.append(pos)
             continue
         # Round 11: time-exit short-circuits before any other management.
         if _apply_time_exit(pos, now_ms):
@@ -3272,17 +3702,40 @@ def handle_kill_request() -> bool:
         update_controls(_pause_only)
         return False
     closed = 0
-    for pos in positions:
-        if pos.magic == 231:
-            if close_position(pos.ticket, exit_reason_override="kill_request"):
-                closed += 1
+    failed = 0
+    bot_positions = [p for p in positions if p.magic == 231]
+    for pos in bot_positions:
+        if close_position(pos.ticket, exit_reason_override="kill_request"):
+            closed += 1
+        else:
+            failed += 1
+    # 2026-05-15 Codex-Audit Bug 5: only clear killRequested when ALL closes
+    # succeeded. A silent clear after partial-fail previously left live
+    # positions running while the operator saw "Kill complete" — defeating
+    # the kill switch's safety guarantee. We always set paused=True so no
+    # NEW signals fire, but keep killRequested=true so the next handle_kill_request
+    # cycle retries the un-closed tickets.
+    all_closed = failed == 0
     def _apply(c: dict) -> dict:
-        c["killRequested"] = False
+        if all_closed:
+            c["killRequested"] = False
+        # else: leave killRequested=True so next cycle retries.
         c["paused"] = True
         return c
     update_controls(_apply)
-    tg_send(f"🛑 <b>Kill complete</b> — {closed} position(s) closed. Bot is PAUSED. Send /resume to re-enable.")
-    log_event("kill_complete", closed=closed)
+    if all_closed:
+        tg_send(
+            f"🛑 <b>Kill complete</b> — {closed} position(s) closed. "
+            f"Bot is PAUSED. Send /resume to re-enable."
+        )
+        log_event("kill_complete", closed=closed)
+    else:
+        tg_send(
+            f"⚠️ <b>Kill PARTIAL</b> — closed {closed}/{len(bot_positions)}, "
+            f"{failed} FAILED. Bot stays PAUSED with killRequested still set; "
+            f"executor will retry next cycle."
+        )
+        log_event("kill_partial", closed=closed, failed=failed, level="warn")
     return True
 
 
@@ -3893,42 +4346,77 @@ def acquire_singleton_or_exit() -> None:
     """
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     pid_file = STATE_DIR / "executor.pid"
-    if pid_file.exists():
+
+    # 2026-05-14 Codex Wave-2 Bug #4 FIX: atomic O_CREAT|O_EXCL replaces the
+    # read-then-write race. Two simultaneous launches can no longer both
+    # observe "no peer" + both win the write. On EEXIST we probe liveness
+    # and, only if the peer is dead, unlink + retry atomic-create.
+    def _try_atomic_create() -> bool:
+        try:
+            flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+            fd = os.open(str(pid_file), flags, 0o644)
+            try:
+                os.write(fd, str(os.getpid()).encode("ascii"))
+            finally:
+                os.close(fd)
+            return True
+        except FileExistsError:
+            return False
+        except Exception:
+            # EACCES / EROFS / ENOSPC — best-effort, match prior fallback.
+            return False
+
+    def _peer_alive(pid: int) -> bool:
+        try:
+            if os.name == "nt":  # type: ignore[reportUnnecessaryComparison]
+                import ctypes
+                PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                handle = ctypes.windll.kernel32.OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+                )
+                if handle:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                    return True
+                return False
+            os.kill(pid, 0)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+        except Exception:
+            return False
+
+    if not _try_atomic_create():
+        # EEXIST: someone holds the slot. Inspect their PID.
         try:
             other_pid = int(pid_file.read_text().strip())
         except Exception:
             other_pid = 0
-        if other_pid > 0 and other_pid != os.getpid():
-            alive = False
+        if other_pid > 0 and other_pid != os.getpid() and _peer_alive(other_pid):
+            msg = (
+                f"Another ftmo_executor is already running "
+                f"(pid={other_pid}, state_dir={STATE_DIR}). Refusing to start."
+            )
+            print(msg, file=sys.stderr)
+            log_event("singleton_refused", other_pid=other_pid)
+            sys.exit(11)
+        # Peer is dead (or pidfile malformed). Try to take over atomically.
+        try:
+            pid_file.unlink()
+        except Exception:
+            pass
+        if not _try_atomic_create():
+            # Someone won the race between our unlink and create.
             try:
-                if os.name == "nt":  # type: ignore[reportUnnecessaryComparison]
-                    import ctypes
-                    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-                    handle = ctypes.windll.kernel32.OpenProcess(
-                        PROCESS_QUERY_LIMITED_INFORMATION, False, other_pid
-                    )
-                    if handle:
-                        alive = True
-                        ctypes.windll.kernel32.CloseHandle(handle)
-                else:
-                    os.kill(other_pid, 0)
-                    alive = True
-            except (OSError, ProcessLookupError):
-                alive = False
+                race_pid = int(pid_file.read_text().strip())
             except Exception:
-                alive = False
-            if alive:
-                msg = (
-                    f"Another ftmo_executor is already running "
-                    f"(pid={other_pid}, state_dir={STATE_DIR}). Refusing to start."
-                )
-                print(msg, file=sys.stderr)
-                log_event("singleton_refused", other_pid=other_pid)
-                sys.exit(11)
-    try:
-        pid_file.write_text(str(os.getpid()))
-    except Exception:
-        pass
+                race_pid = 0
+            msg = (
+                f"ftmo_executor lost race for state-dir lock "
+                f"(other_pid={race_pid}, state_dir={STATE_DIR})."
+            )
+            print(msg, file=sys.stderr)
+            log_event("singleton_refused", other_pid=race_pid)
+            sys.exit(11)
 
     # Mid-session FTMO_TF switch protection: refuse to attach to a state-dir
     # whose recorded timeframe differs from ours when there are still open

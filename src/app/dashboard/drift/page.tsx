@@ -95,6 +95,9 @@ interface Position {
   tp_price: number;
   opened_at: string;
   ageMin: number;
+  // 2026-05-14 Codex Wave-2 Bug #13: live PnL fields from API.
+  currentPrice?: number | null;
+  pnlPct?: number | null;
 }
 interface ExecutorEvent {
   ts: string;
@@ -716,10 +719,13 @@ function PositionsTable({ data }: { data: DriftData }) {
             </thead>
             <tbody>
               {positions.map((p) => {
-                // Estimated PnL based on SL/entry distance — we don't have
-                // live mid-price here, so approximate with entry (PnL=0) and
-                // let the user know it's an estimate.
-                const pnlPct = 0;
+                // 2026-05-14 Codex Wave-2 Bug #13: real unrealised PnL %,
+                // computed by the API from the latest executor-log price
+                // event per ticket. Falls back to 0 only when no price
+                // has been observed yet (very fresh position).
+                const pnlPct =
+                  p.pnlPct !== null && p.pnlPct !== undefined ? p.pnlPct : 0;
+                const isStale = p.currentPrice == null;
                 const dirColor =
                   p.direction === "long" ? "text-profit" : "text-loss";
                 return (
@@ -741,9 +747,21 @@ function PositionsTable({ data }: { data: DriftData }) {
                     <td className="py-2 px-2 text-right text-profit/80">
                       ${p.tp_price.toFixed(2)}
                     </td>
-                    <td className="py-2 px-2 text-right text-txt/70">
+                    <td
+                      className={`py-2 px-2 text-right ${
+                        isStale
+                          ? "text-txt/40"
+                          : pnlPct > 0
+                            ? "text-profit"
+                            : pnlPct < 0
+                              ? "text-loss"
+                              : "text-txt/70"
+                      }`}
+                    >
                       {fmtPct(pnlPct)}
-                      <span className="text-[9px] text-txt/40 ml-1">est</span>
+                      <span className="text-[9px] text-txt/40 ml-1">
+                        {isStale ? "no-tick" : "live"}
+                      </span>
                     </td>
                     <td className="py-2 px-2 text-right text-txt/70">
                       {fmtAge(p.ageMin * 60)}

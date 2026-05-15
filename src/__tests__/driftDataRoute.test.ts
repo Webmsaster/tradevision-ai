@@ -213,13 +213,23 @@ describe("/api/drift-data route", () => {
     expect(body.meta.backtestRef.passRatePct).toBe(64.77);
   });
 
-  it("flags pass status as 'passed' when total P&L ≥ +10%", async () => {
+  it("flags pass status as 'passed' when total P&L ≥ +10% AND min trading days met", async () => {
     fs.writeFileSync(
       path.join(testStateDir, "account.json"),
       JSON.stringify({
         equity: 1.105,
         day: 5,
         raw_equity_usd: 110_500,
+      }),
+    );
+    // 2026-05-14 Codex Wave-2 Bug #5: passStatus now also requires
+    // FTMO min-trading-days (4) AND not paused. Provide v4-engine.json
+    // to clear both gates.
+    fs.writeFileSync(
+      path.join(testStateDir, "v4-engine.json"),
+      JSON.stringify({
+        tradingDays: [0, 1, 2, 3, 4],
+        pausedAtTarget: false,
       }),
     );
     const { GET } = await import("@/app/api/drift-data/route");
@@ -238,6 +248,38 @@ describe("/api/drift-data route", () => {
         updated_at: "2026-04-26T18:00:00Z",
       }),
     );
+    fs.rmSync(path.join(testStateDir, "v4-engine.json"), { force: true });
+  });
+
+  it("does NOT flag pass when +10% but min-trading-days < 4 (FTMO rule)", async () => {
+    fs.writeFileSync(
+      path.join(testStateDir, "account.json"),
+      JSON.stringify({
+        equity: 1.105,
+        day: 2,
+        raw_equity_usd: 110_500,
+      }),
+    );
+    fs.writeFileSync(
+      path.join(testStateDir, "v4-engine.json"),
+      JSON.stringify({ tradingDays: [0, 1], pausedAtTarget: false }),
+    );
+    const { GET } = await import("@/app/api/drift-data/route");
+    const resp = await GET(makeReq());
+    const body = await resp.json();
+    expect(body.header.passStatus).toBe("active");
+
+    fs.writeFileSync(
+      path.join(testStateDir, "account.json"),
+      JSON.stringify({
+        equity: 1.025,
+        day: 3,
+        raw_equity_usd: 102_500,
+        equityAtDayStart: 1.015,
+        updated_at: "2026-04-26T18:00:00Z",
+      }),
+    );
+    fs.rmSync(path.join(testStateDir, "v4-engine.json"), { force: true });
   });
 
   it("returns 404 when FTMO_MONITOR_ENABLED is unset", async () => {
@@ -249,7 +291,10 @@ describe("/api/drift-data route", () => {
 
   it("rejects ftmo_tf slugs with invalid characters (path-traversal guard)", async () => {
     const { GET } = await import("@/app/api/drift-data/route");
-    const bad = ["../etc", "foo/bar", "FOO", "x".repeat(80), "..", ""];
+    // 2026-05-14 Codex Wave-2 Bug #10: regex widened to allow underscores
+    // and uppercase so multi-account state-dirs are resolvable. Still must
+    // reject path-traversal characters (`.`, `/`, `\`) and over-length.
+    const bad = ["../etc", "foo/bar", "x".repeat(80), "..", ""];
     for (const slug of bad) {
       const resp = await GET(makeReq(`?ftmo_tf=${encodeURIComponent(slug)}`));
       // Empty slug falls through to default state-dir (200 OK)
@@ -258,6 +303,16 @@ describe("/api/drift-data route", () => {
       } else {
         expect(resp.status).toBe(400);
       }
+    }
+  });
+
+  it("accepts uppercase + underscore in slug (multi-account state-dirs)", async () => {
+    const { GET } = await import("@/app/api/drift-data/route");
+    // These were rejected by the prior lowercase-only regex.
+    const good = ["Account_A", "FOO", "x1_y2-z3"];
+    for (const slug of good) {
+      const resp = await GET(makeReq(`?ftmo_tf=${encodeURIComponent(slug)}`));
+      expect(resp.status).toBe(200);
     }
   });
 

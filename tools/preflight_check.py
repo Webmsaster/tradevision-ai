@@ -196,12 +196,17 @@ def check_telegram_chat() -> tuple[bool, str]:
         os.environ.get(f"TELEGRAM_CHAT_ID_{aid}") if aid else None
     ) or os.environ.get("TELEGRAM_CHAT_ID")
     if not cid:
-        return False, "missing — set TELEGRAM_CHAT_ID (positive integer)"
+        return False, "missing — set TELEGRAM_CHAT_ID (positive or negative integer)"
     try:
         cid_int = int(cid)
-        if cid_int <= 0:
-            return False, f"chat ID must be positive (got {cid_int}); negative = group/channel"
-        return True, f"chat={cid_int}"
+        # 2026-05-15 Codex-Audit Bug 12: negative chat IDs are valid Telegram
+        # group/channel IDs (super-groups start with -100xxxxxxxxxx). Previous
+        # check rejected them outright → preflight blocked any operator using
+        # a notifications group. Accept any non-zero integer.
+        if cid_int == 0:
+            return False, "chat ID must be a non-zero integer"
+        kind = "group/channel" if cid_int < 0 else "private chat"
+        return True, f"chat={cid_int} ({kind})"
     except ValueError:
         return False, f"not an integer: {cid!r}"
 
@@ -309,7 +314,15 @@ def check_mt5_connect() -> tuple[bool, str]:
         import MetaTrader5 as mt5  # type: ignore
     except ImportError:
         return False, "MetaTrader5 not installed (skipping)"
-    if not mt5.initialize():
+    # 2026-05-15 Codex-Audit Bug 13: honor MT5_PATH if set. The bare
+    # `mt5.initialize()` previously launched whichever terminal was last
+    # used by the system, which on multi-terminal VPS deployments could
+    # attach to the wrong broker. The executor itself already honors
+    # MT5_PATH (ftmo_executor.py:_mt5_init_with_retry) so preflight must
+    # mirror it.
+    mt5_path = os.environ.get("MT5_PATH", "").strip()
+    init_ok = mt5.initialize(mt5_path) if mt5_path else mt5.initialize()
+    if not init_ok:
         err = mt5.last_error()
         return False, f"initialize() failed: {err}"
     info = mt5.account_info()
@@ -393,8 +406,17 @@ def check_slippage() -> tuple[bool, str]:
 # Main
 # =============================================================================
 
-def load_env_file(path: Path) -> None:
-    """Load KEY=VALUE pairs from a file into os.environ (bash-style)."""
+def load_env_file(path: Path, override: bool = True) -> None:
+    """Load KEY=VALUE pairs from a file into os.environ (bash-style).
+
+    2026-05-15 Codex-Audit Bug 13: previously used `setdefault`, so an env-file
+    explicitly passed on the CLI could never overwrite a shell value that was
+    set wrongly (e.g. a leftover FTMO_TF from a previous shell session). Now
+    we OVERWRITE by default — the operator's invocation
+    `python preflight_check.py prod.env` is the source of truth.
+    `override=False` preserves the legacy lazy behaviour for callers that
+    explicitly want shell-wins semantics.
+    """
     if not path.exists():
         return
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -406,7 +428,9 @@ def load_env_file(path: Path) -> None:
         k, _, v = line.partition("=")
         # strip surrounding quotes
         v = v.strip().strip('"').strip("'")
-        os.environ.setdefault(k.strip(), v)
+        key = k.strip()
+        if override or key not in os.environ:
+            os.environ[key] = v
 
 
 def main() -> int:

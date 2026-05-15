@@ -101,4 +101,11 @@ echo "  /dashboard/drift?ftmo_tf=2h-trend-v5-titanium-titanium"
 echo "  /dashboard/drift?ftmo_tf=2h-trend-v5-amber-amber"
 echo ""
 echo "Monitor: pm2 logs --lines 50"
-echo "Kill all: pm2 stop ftmo-r28-v6 ftmo-titanium ftmo-amber"
+# 2026-05-15 Codex-Audit Bug 14: pm2 process names follow the pattern set
+# by tools/ecosystem-multi.config.js — `ftmo-signal-<label>` and
+# `ftmo-executor-<label>`, NOT `ftmo-<label>`. Telling operators the wrong
+# names previously meant `pm2 stop` failed silently (returns 0 with
+# "Process not found"), leaving live bots running after a believed-safe
+# shutdown. Default labels are demo1 / titanium / amber.
+echo "Kill all: pm2 stop ftmo-signal-demo1 ftmo-executor-demo1 ftmo-signal-titanium ftmo-executor-titanium ftmo-signal-amber ftmo-executor-amber"
+echo "  (or:  pm2 delete tools/ecosystem-multi.config.js)"

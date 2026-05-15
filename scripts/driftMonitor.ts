@@ -257,14 +257,27 @@ function buildReport(
   const manualCount = recent.filter((t) => t.exit_reason === "manual").length;
 
   const winRate = recent.length > 0 ? tpCount / recent.length : 0;
+  // R29-Frontend-Audit Bug 13: previously the effective return was
+  // `raw_pnl_pct * risk_frac * 2`. `risk_frac` is the desired loss
+  // fraction of equity if the stop trips, NOT a fixed 2x leverage
+  // multiplier. The correct equity-return is
+  //   raw_pnl_pct * (risk_frac / stop_pct)
+  // because (1 / stop_pct) is the leverage chosen to hit the target
+  // loss when the stop triggers. We fall back to the historical
+  // 0.4 × 2 product (=0.8) when either field is missing so the report
+  // doesn't break on legacy logs.
+  const effExposure = (t: JoinedTrade): number => {
+    const rf = t.risk_frac ?? 0.4;
+    const sp = t.stop_pct;
+    if (sp && Number.isFinite(sp) && sp > 0) return rf / sp;
+    return rf * 2; // legacy fallback
+  };
   const totalRealisedPct =
-    recent.reduce((s, t) => s + t.raw_pnl_pct * (t.risk_frac ?? 0.4) * 2, 0) /
+    recent.reduce((s, t) => s + t.raw_pnl_pct * effExposure(t), 0) /
     Math.max(1, recent.length);
   const totalExpectedPct =
-    recent.reduce(
-      (s, t) => s + t.expected_pnl_pct * (t.risk_frac ?? 0.4) * 2,
-      0,
-    ) / Math.max(1, recent.length);
+    recent.reduce((s, t) => s + t.expected_pnl_pct * effExposure(t), 0) /
+    Math.max(1, recent.length);
   const drift_pp = (totalRealisedPct - totalExpectedPct) * 100;
 
   lines.push(`## Aggregate`);
@@ -313,12 +326,9 @@ function buildReport(
     const ts = byAsset.get(asset)!;
     const tpA = ts.filter((t) => t.exit_reason === "tp").length;
     const winA = ts.length ? (tpA / ts.length) * 100 : 0;
-    const realised = avg(
-      ts.map((t) => t.raw_pnl_pct * (t.risk_frac ?? 0.4) * 2),
-    );
-    const expected = avg(
-      ts.map((t) => t.expected_pnl_pct * (t.risk_frac ?? 0.4) * 2),
-    );
+    // R29-Frontend-Audit Bug 13: see effExposure helper above.
+    const realised = avg(ts.map((t) => t.raw_pnl_pct * effExposure(t)));
+    const expected = avg(ts.map((t) => t.expected_pnl_pct * effExposure(t)));
     const driftA =
       realised !== null && expected !== null
         ? (realised - expected) * 100

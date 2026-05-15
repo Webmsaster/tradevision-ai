@@ -100,6 +100,30 @@ export default function TradeForm({
   // Round 54 fix: deps reduced to [editTrade?.id, isOpen] — re-init only when actually
   // switching trades or open/close. Parent re-renders that pass a new editTrade object
   // identity (e.g. via spread) no longer obliterate user input.
+  //
+  // R29-Frontend-Audit Bug 7: keying on `editTrade?.id` alone also missed
+  // the case where a cloud-sync re-fetched the SAME id with updated
+  // field values — the form kept showing stale data the user thought
+  // they had saved. We now re-init when EITHER the id swaps (different
+  // trade) OR a meaningful payload field changes (entry/exit price,
+  // entry/exit date, direction, quantity). Pure cosmetic re-renders
+  // from the parent (same payload, new object identity from a spread)
+  // still preserve in-progress user input — the Round 54 guarantee.
+
+  // Content-fingerprint: a string that only changes when the underlying
+  // trade record changes, not on cosmetic re-renders. Cheap to compare
+  // by React's deps-array shallow check.
+  const editFingerprint = editTrade
+    ? [
+        editTrade.id,
+        editTrade.entryPrice,
+        editTrade.exitPrice,
+        editTrade.entryDate,
+        editTrade.exitDate,
+        editTrade.direction,
+        editTrade.quantity,
+      ].join("|")
+    : null;
 
   useEffect(() => {
     if (editTrade) {
@@ -129,7 +153,8 @@ export default function TradeForm({
     } else {
       resetForm();
     }
-  }, [editTrade?.id, isOpen]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editFingerprint, isOpen]);
 
   // Escape key and body scroll lock
   useEffect(() => {

@@ -45,7 +45,7 @@ if [[ -z "$FTMO_TF" ]]; then
   exit 1
 fi
 
-ACCOUNT_ID="${FTMO_ACCOUNT_ID:-default}"
+ACCOUNT_ID="${FTMO_ACCOUNT_ID:-}"
 
 # Sanity-check: FTMO_TF / ACCOUNT_ID must be safe path-component (no slash,
 # no shell metachar). Used to build STATE_DIR + Python heredoc + sed pattern.
@@ -53,12 +53,27 @@ if [[ ! "$FTMO_TF" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "[promote] FATAL: FTMO_TF contains unsafe chars: $FTMO_TF"
   exit 1
 fi
-if [[ ! "$ACCOUNT_ID" =~ ^[A-Za-z0-9._-]+$ ]]; then
+if [[ -n "$ACCOUNT_ID" && ! "$ACCOUNT_ID" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "[promote] FATAL: FTMO_ACCOUNT_ID contains unsafe chars: $ACCOUNT_ID"
   exit 1
 fi
 
-STATE_DIR="ftmo-state-${FTMO_TF}-${ACCOUNT_ID}"
+# 2026-05-15 Codex-Audit Wave-2 Bug 8 (MITTEL): align the state-dir derivation
+# with the executor's `ftmo_executor.py:73-78` logic. Previously we always
+# appended `-default` when FTMO_ACCOUNT_ID was unset, which produced
+# `ftmo-state-<TF>-default`. The executor falls back to plain
+# `ftmo-state-<TF>` (no suffix) when no account id is set, so promote was
+# pointing at a different (usually non-existent) directory than the running
+# bot. We now mirror the executor's rule exactly.
+if [[ -n "$ACCOUNT_ID" ]]; then
+  STATE_DIR="ftmo-state-${FTMO_TF}-${ACCOUNT_ID}"
+else
+  STATE_DIR="ftmo-state-${FTMO_TF}"
+fi
+
+# Per-account ID used in PM2 process names + Telegram messages — keep the
+# "default" label for those (matches ecosystem-multi.config.js behaviour).
+ACCOUNT_LABEL="${ACCOUNT_ID:-default}"
 
 if [[ ! -d "$STATE_DIR" ]]; then
   echo "[promote] FATAL: $STATE_DIR not found — bot never ran?"
@@ -114,7 +129,7 @@ echo ""
 echo "═══════════════════════════════════════════════════════"
 echo "  STEP-1 → STEP-2 PROMOTION"
 echo "═══════════════════════════════════════════════════════"
-echo "  Account:       $ACCOUNT_ID"
+echo "  Account:       $ACCOUNT_LABEL"
 echo "  Current TF:    $FTMO_TF"
 echo "  New TF:        $STEP2_TF"
 echo "  State-dir:     $STATE_DIR"
@@ -128,7 +143,7 @@ if [[ "$confirm" != "yes" ]]; then
 fi
 
 # Stop matching pm2 processes for this account.
-PM2_PATTERN="ftmo-(signal|executor)-${ACCOUNT_ID}"
+PM2_PATTERN="ftmo-(signal|executor)-${ACCOUNT_LABEL}"
 echo "[promote] Stopping pm2 processes matching: $PM2_PATTERN"
 pm2 list | grep -E "$PM2_PATTERN" | awk '{print $4}' | while read -r name; do
   if [[ -n "$name" && "$name" != "name" ]]; then
@@ -167,7 +182,7 @@ echo ""
 echo "═══════════════════════════════════════════════════════"
 echo "  ✅ STEP-2 STARTED"
 echo "═══════════════════════════════════════════════════════"
-echo "  Account:    $ACCOUNT_ID"
+echo "  Account:    $ACCOUNT_LABEL"
 echo "  Strategy:   $STEP2_TF"
 echo "  Target:     +5% in 60 days (5% DL, 10% TL, minDays 4)"
 echo "  Backtest:   77.86% pass-rate (R28_STEP2 honest, V4-Sim)"

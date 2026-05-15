@@ -95,16 +95,18 @@ export default function AccountSwitcher() {
     );
   }, []);
 
-  if (accounts.length < 2) return null;
-
-  // Phase 78: length >= 2 guarded above.
   // R67-r22 audit fix: memoise the .find() lookup so it doesn't run on
   // every parent re-render. Also indexes accounts by id for O(1) lookup
   // when the dropdown menu maps over them.
+  // R29-Frontend-Audit: useMemo MUST be called before any conditional return
+  // — otherwise React's hook-order invariant breaks when accounts.length
+  // transitions from <2 to >=2 (or vice versa), causing a hard crash.
   const activeAccount = useMemo(
-    () => accounts.find((a) => a.id === activeId) || accounts[0]!,
+    () => accounts.find((a) => a.id === activeId) || accounts[0],
     [accounts, activeId],
   );
+
+  if (accounts.length < 2 || !activeAccount) return null;
 
   return (
     <div className="account-switcher" ref={rootRef}>

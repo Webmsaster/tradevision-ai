@@ -350,6 +350,15 @@ def _events() -> list[tuple[datetime, str]]:
     """
     Return the active event list. Prefers a fresh cache file if present
     and parseable, otherwise falls back to HIGH_IMPACT_EVENTS_2026.
+
+    2026-05-15 Codex-Audit Bug 11: previously the module documented
+    NEWS_API_KEY as an auto-refresh source, but `_events()` only read the
+    cache — it never CALLED refresh_from_api(). Consequence: an operator
+    setting NEWS_API_KEY would never see fresh events until they ran a
+    separate refresh script. We now call refresh_from_api() opportunistically
+    when (a) NEWS_API_KEY is set and (b) the cache is missing or stale.
+    refresh_from_api() itself short-circuits when the cache is fresh and
+    never raises — so this is safe to call from a hot path.
     """
     global _EVENTS_CACHE
     if _EVENTS_CACHE is not None:
@@ -358,6 +367,12 @@ def _events() -> list[tuple[datetime, str]]:
     if os.environ.get("NEWS_API_DISABLED", "").lower() != "true":
         try:
             cache_path = _default_cache_path()
+            # 2026-05-15 Codex-Audit Bug 11: opportunistic API refresh.
+            if os.environ.get("NEWS_API_KEY", "").strip():
+                try:
+                    refresh_from_api(cache_path=cache_path, force=False)
+                except Exception as refresh_exc:  # noqa: BLE001
+                    _log(f"opportunistic refresh failed (ignored): {refresh_exc}")
             cached = _read_cache(cache_path)
             if cached:
                 _EVENTS_CACHE = cached

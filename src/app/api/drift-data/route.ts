@@ -213,7 +213,10 @@ function canReadArbitrarySlug(auth: {
 // Path resolution (security: whitelist + resolve-and-prefix-check)
 // ---------------------------------------------------------------------------
 
-const TF_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+// 2026-05-14 Codex Wave-2 Bug #10 FIX: allow underscores + uppercase so
+// multi-account state-dirs (e.g. `Account_A_2h-trend-v5-amber`) are
+// resolvable. First char must still be alphanumeric to block dot/slash.
+const TF_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 /**
  * Resolve the state directory. Priority:
@@ -679,17 +682,30 @@ interface NewsMarker {
  * markers on the equity chart.
  */
 function extractNewsMarkers(executorLog: ExecutorEvent[]): NewsMarker[] {
+  // 2026-05-14 Codex Wave-2 Bug #12 FIX: recognise the executor's actual
+  // event names. Python writes `news_blackout_block` (entry-side skip) and
+  // `news_auto_close_trigger` (active auto-close) — neither was in the
+  // legacy whitelist, so news blackouts have been invisible on the chart.
+  const NEWS_EVENTS = new Set([
+    "news_blackout_skip",
+    "news_blackout",
+    "blackout_skip",
+    "news_blackout_block",
+    "news_auto_close_trigger",
+  ]);
   const markers: NewsMarker[] = [];
   for (const e of executorLog) {
-    if (
-      e.event === "news_blackout_skip" ||
-      e.event === "news_blackout" ||
-      e.event === "blackout_skip"
-    ) {
-      markers.push({
-        ts: e.ts,
-        label: (e["reason"] as string | undefined) ?? "news",
-      });
+    if (NEWS_EVENTS.has(e.event)) {
+      // Label: prefer reason; fall back to a short event-tag so auto-close
+      // markers (which usually don't carry "reason") still surface clearly.
+      const reason = e["reason"] as string | undefined;
+      const tag =
+        e.event === "news_auto_close_trigger"
+          ? "news-auto-close"
+          : e.event === "news_blackout_block"
+            ? "news-block"
+            : "news";
+      markers.push({ ts: e.ts, label: reason ?? tag });
     }
   }
   return markers;
@@ -762,14 +778,63 @@ function computeHealth(
 
 interface ActivePosition extends OpenPosition {
   ageMin: number;
+  /** Last-known current price (from executor-log) or null if unavailable. */
+  currentPrice: number | null;
+  /** Unrealised PnL % vs entry (positive=profit, negative=loss). */
+  pnlPct: number | null;
 }
 
-function annotatePositions(positions: OpenPosition[]): ActivePosition[] {
+/**
+ * Scan the executor log for the most-recent price observation per ticket.
+ * The executor emits `trailing_activated`, `trailing_sl_updated`,
+ * `chandelier_sl_updated`, `break_even_moved`, `partial_tp_fired`,
+ * `partial_tp_level_fired` — each carries `price` (current bid/ask at
+ * the time of the event) plus `ticket`. That's the freshest price-info
+ * available to the route without re-querying MT5.
+ */
+function buildLatestPriceByTicket(
+  executorLog: ExecutorEvent[],
+): Map<number, number> {
+  const PRICE_EVENTS = new Set([
+    "trailing_activated",
+    "trailing_sl_updated",
+    "trailing_skip",
+    "chandelier_sl_updated",
+    "break_even_moved",
+    "partial_tp_fired",
+    "partial_tp_level_fired",
+    "partial_close",
+  ]);
+  const out = new Map<number, number>();
+  for (const e of executorLog) {
+    if (!PRICE_EVENTS.has(e.event)) continue;
+    const ticket = e["ticket"];
+    const price = e["price"];
+    if (typeof ticket !== "number" || typeof price !== "number") continue;
+    if (!Number.isFinite(price) || price <= 0) continue;
+    out.set(ticket, price); // last write wins (executor log is chronological)
+  }
+  return out;
+}
+
+function annotatePositions(
+  positions: OpenPosition[],
+  executorLog: ExecutorEvent[],
+): ActivePosition[] {
+  // 2026-05-14 Codex Wave-2 Bug #13 FIX: compute live unrealised PnL %
+  // from latest executor-log price events instead of hardcoding 0.
   const now = Date.now();
+  const lastPriceByTicket = buildLatestPriceByTicket(executorLog);
   return positions.map((p) => {
     const opened = new Date(p.opened_at).getTime();
     const ageMin = Number.isFinite(opened) ? (now - opened) / 60_000 : 0;
-    return { ...p, ageMin: Math.max(0, ageMin) };
+    const currentPrice = lastPriceByTicket.get(p.ticket) ?? null;
+    let pnlPct: number | null = null;
+    if (currentPrice !== null && p.entry_price > 0) {
+      const raw = (currentPrice - p.entry_price) / p.entry_price;
+      pnlPct = p.direction === "long" ? raw : -raw;
+    }
+    return { ...p, ageMin: Math.max(0, ageMin), currentPrice, pnlPct };
   });
 }
 
@@ -882,6 +947,15 @@ export async function GET(req: NextRequest) {
     "bot-controls.json",
     { paused: false, killRequested: false },
   );
+  // 2026-05-14 Codex Wave-2 Bug #5: load V4 engine state so passStatus can
+  // ALSO check FTMO min-trading-days + pause-state. Without this the
+  // dashboard flagged accounts as passed the moment equity crossed +8%,
+  // hiding the FTMO 4-trading-day rule from the operator.
+  const v4State = readJson<{
+    tradingDays?: number[];
+    pausedAtTarget?: boolean;
+    firstTargetHitDay?: number | null;
+  }>(stateDir, "v4-engine.json", {});
   const pending = readJson<{ signals: unknown[] }>(
     stateDir,
     "pending-signals.json",
@@ -929,8 +1003,22 @@ export async function GET(req: NextRequest) {
   const totalPnlPct = (liveEquityUsd / startBalanceUsd - 1) * 100;
 
   // Pass status
+  // 2026-05-14 Codex Wave-2 Bug #5 FIX: passing requires +8% AND
+  // FTMO min-trading-days (4) AND not currently in a paused/blocked state.
+  // Previous logic flagged the account as passed the instant equity crossed
+  // +8%, even if FTMO would still hold the account in min-trading-days.
+  const FTMO_MIN_TRADING_DAYS = 4;
+  const tradingDayCount = Array.isArray(v4State.tradingDays)
+    ? v4State.tradingDays.length
+    : 0;
+  const isPaused = v4State.pausedAtTarget === true || controls.paused === true;
   let passStatus: "passed" | "active" | "failed" = "active";
-  if (totalPnlPct >= FTMO_PROFIT_TARGET * 100) passStatus = "passed";
+  if (
+    totalPnlPct >= FTMO_PROFIT_TARGET * 100 &&
+    tradingDayCount >= FTMO_MIN_TRADING_DAYS &&
+    !isPaused
+  )
+    passStatus = "passed";
   else if (totalPnlPct <= -FTMO_TOTAL_LOSS_CAP * 100) passStatus = "failed";
   else if (dailyPnlPct <= -FTMO_DAILY_LOSS_CAP * 100) passStatus = "failed";
 
@@ -970,7 +1058,7 @@ export async function GET(req: NextRequest) {
     return out as ExecutorEvent;
   };
   const recentEvents = executorLog.slice(-20).reverse().map(_capEvent);
-  const positions = annotatePositions(openPosRaw.positions);
+  const positions = annotatePositions(openPosRaw.positions, executorLog);
   const health = computeHealth(
     executorLog,
     pending.signals.length,

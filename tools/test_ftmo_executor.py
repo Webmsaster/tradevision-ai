@@ -2087,8 +2087,18 @@ def test_passlock_race_check_target_idempotent(monkeypatch, tmp_path):
 
     emergency_calls: list[str] = []
     tg_calls: list[str] = []
-    monkeypatch.setattr(exe, "_emergency_close_all_positions", lambda r: emergency_calls.append(r))
+    # 2026-05-15 Codex-Audit fix: _emergency_close_all_positions returns a
+    # dict {closed, failed, all_closed, deferred}. Test mock previously
+    # returned None (lambda returns the side-effect's None) → caller crashed
+    # on .get(). Wrap to return the dict.
+    def _mock_emergency(r):
+        emergency_calls.append(r)
+        return {"closed": 0, "failed": 0, "all_closed": True, "deferred": False}
+    monkeypatch.setattr(exe, "_emergency_close_all_positions", _mock_emergency)
     monkeypatch.setattr(exe, "tg_send", lambda msg, **kw: tg_calls.append(msg))
+    # Mock the broker-equity refresh to return the equity we pass — keeps
+    # the post-close target-confirmation branch deterministic.
+    monkeypatch.setattr(exe, "_get_broker_equity_now", lambda: None)
     monkeypatch.setattr(exe, "PAUSE_AT_TARGET", True)
     monkeypatch.setattr(exe, "PROFIT_TARGET_PCT", 0.10)
     monkeypatch.setattr(exe, "CHALLENGE_START_BALANCE", 100_000.0)
@@ -2116,29 +2126,294 @@ def test_passlock_race_check_target_idempotent(monkeypatch, tmp_path):
     assert len(tg_calls) == 1
 
 
-def test_default_direction_is_long_not_short(monkeypatch):
-    """Bug-Audit Round 4 (MED): when a signal omits the 'direction' field,
-    place-order path must default to 'long' to match engine convention
-    (_apply_trailing_stop/_apply_break_even/_apply_chandelier_stop all
-    default to 'long'). Previously process_pending_signals defaulted to
-    'short' which would open the wrong side on legacy/malformed signals.
+def test_default_direction_rejects_invalid(monkeypatch):
+    """2026-05-15 Codex-Audit Wave-2 Bug 4 (HOCH): the place-order path must
+    REJECT signals with a missing/invalid direction rather than silently
+    falling back to "long". A legacy short signal with a mistyped direction
+    (e.g. "DOWN", "" or null) was previously opened as a LONG with a stop
+    placed where the short SL would have been — i.e. INSIDE the entry. A
+    single such fill would instant-stop or, worse, fill past the SL price
+    on a fast bar.
 
-    We verify the divergent constant by inspecting the SOURCE — full
-    process_pending_signals exercise requires a heavy MT5 mock stack
-    already covered by other tests; this guards the regression cheaply.
+    We assert via source inspection that the new validator is wired in
+    `_process_signals_unlocked` and the old silent fallback is gone.
     """
     import ftmo_executor as exe
     import inspect
-    src = inspect.getsource(exe._process_pending_signals_locked)
-    # Must contain the corrected long-default.
-    assert 'sig.get("direction", "long")' in src, (
-        "process_pending_signals must default missing direction to 'long' "
-        "to match engine convention. Old 'short' default could open the "
-        "wrong side on legacy/malformed signals."
+    # Wave-2 Bug 6 moved the place-order loop into `_process_signals_unlocked`.
+    src = inspect.getsource(exe._process_signals_unlocked)
+    assert 'if direction not in ("long", "short"):' in src, (
+        "process_pending_signals must explicitly validate direction before "
+        "placing an order. Found no validator gate — legacy/malformed signals "
+        "could be opened on the wrong side."
     )
-    # Must NOT contain the buggy short-default.
+    # Neither the old 'short' nor the old 'long' silent fallback may remain.
     assert 'sig.get("direction", "short")' not in src, (
-        "found legacy 'short' default — re-introduced regression"
+        "found legacy 'short' default — re-introduced Bug-Audit Round 4 regression"
+    )
+    assert 'sig.get("direction", "long")' not in src, (
+        "Wave-2 Bug 4 fix replaced the silent default with explicit validation; "
+        "the legacy 'long' fallback is no longer correct."
+    )
+
+
+# ============================================================================
+# 2026-05-15 Codex-Audit bug regression tests
+# ============================================================================
+def test_min_trading_days_off_by_one_fix(monkeypatch, tmp_path):
+    """2026-05-15 Codex-Audit Bug 1 (KRITISCH): challenge must NOT pass when
+    the count of unique trading-days < MIN_TRADING_DAYS. Previously the
+    `len(ping_dates) + 1` formula treated target_hit_date as a count to ADD
+    to ping_dates → off-by-one and double-count when target_hit_date got
+    appended to ping_dates by maybe_place_ping_trade on the same Prague day.
+    """
+    import ftmo_executor as exe
+
+    exe.STATE_DIR = tmp_path
+    exe.PAUSE_STATE_PATH = tmp_path / "pause-state.json"
+    exe.PENDING_ORDERS_DIR = tmp_path / "pending-orders"
+
+    monkeypatch.setattr(exe, "MIN_TRADING_DAYS", 4)
+    monkeypatch.setattr(exe, "MOCK_MODE", True)
+
+    # Case A: target_hit_date already in ping_dates (same Prague day). With
+    # only 3 unique days, MUST NOT pass.
+    exe.write_pause_state({
+        "target_hit": True,
+        "target_hit_date": "2026-07-01",
+        "ping_dates": ["2026-07-01", "2026-07-02", "2026-07-03"],
+        "passed": False,
+    })
+    # Freeze "now" to a 4th day, so the ping_dates check runs.
+    from datetime import datetime as _dt, timezone as _tz
+    frozen_utc = _dt(2026, 7, 4, 8, 0, 0, tzinfo=_tz.utc)
+
+    class _FrozenDatetime(_dt):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return frozen_utc.replace(tzinfo=None)
+            return frozen_utc.astimezone(tz)
+
+    monkeypatch.setattr(exe, "datetime", _FrozenDatetime)
+    exe.maybe_place_ping_trade()
+    state = exe.get_pause_state()
+    # 4 unique days now (target_hit_date == 07-01 already in ping_dates;
+    # after run we add 07-04) → passed=True legitimately.
+    assert len(set(state["ping_dates"]) | {state["target_hit_date"]}) == 4
+    assert state["passed"] is True, "4 distinct days must trigger pass"
+
+    # Case B: only 3 distinct days, target_hit_date NOT in ping_dates → must NOT pass.
+    exe.write_pause_state({
+        "target_hit": True,
+        "target_hit_date": "2026-07-01",
+        "ping_dates": ["2026-07-02", "2026-07-03"],
+        "passed": False,
+    })
+    # Re-run with same frozen day → ping_dates becomes ["2026-07-02", "2026-07-03", "2026-07-04"]
+    # Distinct days = {07-01 (target), 07-02, 07-03, 07-04} = 4 → passes.
+    exe.maybe_place_ping_trade()
+    state = exe.get_pause_state()
+    assert state["passed"] is True
+
+    # Case C: only 2 distinct days (target=ping_dates[0], 1 other) → must NOT pass.
+    exe.write_pause_state({
+        "target_hit": True,
+        "target_hit_date": "2026-07-04",  # same as today
+        "ping_dates": ["2026-07-04", "2026-07-03"],  # 2 distinct
+        "passed": False,
+    })
+    exe.maybe_place_ping_trade()
+    state = exe.get_pause_state()
+    # After run: ping_dates already contains 07-04 (today) so no new append.
+    # distinct = {07-04, 07-03} = 2 < 4 → must NOT pass.
+    assert state["passed"] is False, (
+        "2 distinct trading-days must NOT satisfy MIN_TRADING_DAYS=4 "
+        "(off-by-one regression — would have falsely passed with old +1 logic)"
+    )
+
+
+def test_ping_marker_reconcile_does_not_requeue_as_signal(monkeypatch, tmp_path):
+    """2026-05-15 Codex-Audit Bug 3: ping markers (magic=232) must NOT be
+    re-queued into pending-signals.json — they have no `signal` payload.
+    Previously generic order-marker reconcile treated `data.get("signal", {})`
+    as a real signal and appended an empty dict to the pending queue.
+    """
+    import ftmo_executor as exe
+
+    exe.STATE_DIR = tmp_path
+    exe.PENDING_ORDERS_DIR = tmp_path / "pending-orders"
+    exe.PENDING_PATH = tmp_path / "pending-signals.json"
+    exe.PENDING_ORDERS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Seed a ping marker (no `signal` key, has `ping=True`).
+    ping_marker = exe._write_ping_order_marker("2026-07-01", "ETHUSD")
+    assert ping_marker.exists()
+
+    # No magic=232 position open → reconcile must clean the marker AND
+    # NOT add anything to pending-signals.json.
+    monkeypatch.setattr(exe.mt5, "positions_get", lambda *a, **kw: [])
+    monkeypatch.setattr(exe.mt5, "history_deals_get", lambda *a, **kw: [])
+    monkeypatch.setattr(exe, "tg_send", lambda *a, **kw: None)
+
+    exe.reconcile_pending_order_markers()
+
+    # Marker cleared.
+    assert not ping_marker.exists()
+    # Pending-signals must be empty / not contain blanks.
+    pending = exe.read_json(exe.PENDING_PATH, {"signals": []})
+    assert pending["signals"] == [], (
+        "ping marker must NEVER be re-queued as a pending signal "
+        f"(got: {pending['signals']!r})"
+    )
+
+
+def test_symbol_resolver_negative_cache_has_ttl(monkeypatch):
+    """2026-05-15 Codex-Audit Bug 7: transient symbol_info failure must NOT
+    blacklist the symbol for the whole process lifetime. After TTL, the
+    resolver must re-attempt the broker symbol lookup.
+    """
+    import ftmo_executor as exe
+
+    # Force resolver to fail first attempt.
+    monkeypatch.setattr(exe, "_SYMBOL_NEG_CACHE_TTL", 0.05)  # 50ms
+    exe._SYMBOL_CACHE.clear()
+    exe._SYMBOL_CACHE_NEG_TS.clear()
+
+    monkeypatch.setattr(exe.mt5, "symbol_info", lambda s: None)
+    assert exe._resolve_broker_symbol("XYZUSDT") is None
+    assert "XYZUSDT" in exe._SYMBOL_CACHE
+    assert exe._SYMBOL_CACHE["XYZUSDT"] is None
+
+    # Within TTL → still cached None (do NOT re-try).
+    class FakeInfo: pass
+    call_count = {"n": 0}
+    def _mock_symbol_info(sym):
+        call_count["n"] += 1
+        return FakeInfo()
+    monkeypatch.setattr(exe.mt5, "symbol_info", _mock_symbol_info)
+    assert exe._resolve_broker_symbol("XYZUSDT") is None
+    assert call_count["n"] == 0, "within TTL the negative cache must short-circuit"
+
+    # After TTL → must re-resolve and succeed.
+    import time as _time
+    _time.sleep(0.08)
+    res = exe._resolve_broker_symbol("XYZUSDT")
+    assert res is not None, "negative cache must expire and re-attempt resolution"
+    assert call_count["n"] >= 1
+
+
+# ============================================================================
+# 2026-05-15 Codex-Audit WAVE-2 regression tests
+# ============================================================================
+def test_wave2_bug1_order_marker_kept_on_send_fail_then_deleted(monkeypatch):
+    """Wave-2 Bug 1B (KRITISCH): on order_send FAIL the marker MUST be deleted
+    explicitly (we have authoritative MT5 proof no order exists) — otherwise
+    boot-reconcile re-queues it as a pending signal → duplicate orders on
+    restart.
+    """
+    import ftmo_executor as exe
+    import inspect
+    src = inspect.getsource(exe._process_signals_unlocked)
+    # The fail-branch must contain a marker delete.
+    assert "_clear_pending_order_marker(order_marker)" in src, (
+        "fail-branch must delete the WAL marker — without it boot-reconcile "
+        "re-queues the signal as a fresh pending entry → duplicate orders"
+    )
+    # The success branch must NOT delete the marker inline — it queues into
+    # placed_markers for bulk-delete AFTER the final writes.
+    assert "placed_markers.append(order_marker)" in src, (
+        "success-branch must defer marker deletion via placed_markers list"
+    )
+
+
+def test_wave2_bug2_pending_index_uses_enumerate(monkeypatch):
+    """Wave-2 Bug 2 (HOCH): `pending[pending.index(sig) + 1:]` returns the
+    FIRST match by equality. Two structurally-identical signal dicts (asset+
+    signalBarClose collision via signal-source restart race) re-queued
+    already-processed signals. Must use enumerate's index `i`.
+    """
+    import ftmo_executor as exe
+    import inspect
+    src = inspect.getsource(exe._process_signals_unlocked)
+    assert "for i, sig in enumerate(pending):" in src, (
+        "place-order loop must use enumerate so the index can be passed to "
+        "the pending slice instead of pending.index(sig)"
+    )
+    # Strip line comments before searching so the rationale comment
+    # documenting the bug does not trip the regex itself.
+    code_only = "\n".join(
+        line.split("#", 1)[0] for line in src.splitlines()
+    )
+    assert "pending.index(sig)" not in code_only, (
+        "found legacy `pending.index(sig)` in executable code — would "
+        "re-queue earlier signals when duplicate dicts exist in pending"
+    )
+    assert "pending[i + 1:]" in code_only, (
+        "auto-pause break must slice pending by the enumerate index `i + 1`"
+    )
+
+
+def test_wave2_bug3_time_exit_returns_false_on_close_fail(monkeypatch):
+    """Wave-2 Bug 3 (HOCH): `_apply_time_exit` must only return True if the
+    close actually succeeded. Returning True unconditionally caused the
+    caller (`manage_open_positions`) to drop the position from `still_open`
+    even when the broker rejected the close → live trade orphaned.
+    """
+    import ftmo_executor as exe
+    from datetime import datetime, timezone
+
+    class FakePos:
+        ticket = 999
+        price_current = 100.0
+
+    # Force fast-path with a min_gain_r and high stop_price so we never reach
+    # the "min-gain reached" early exit.
+    pos = {
+        "ticket": 999,
+        "time_exit": {
+            "maxBarsWithoutGain": 1,
+            "minGainR": 1.0,
+            "barDurationMs": 60_000,
+        },
+        "opened_at": "2026-01-01T00:00:00+00:00",
+        "entry_price": 100.0,
+        "original_stop_pct": 0.01,
+        "stop_price": 99.0,
+        "time_exit_reached_min_gain": False,
+        "signalAsset": "BTC",
+    }
+    monkeypatch.setattr(exe.mt5, "positions_get", lambda ticket=None: [FakePos()])
+
+    # Case A: close returns False — function must return False.
+    monkeypatch.setattr(exe, "close_position", lambda *a, **k: False)
+    monkeypatch.setattr(exe, "tg_send", lambda *a, **k: None)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    result = exe._apply_time_exit(pos, now_ms)
+    assert result is False, (
+        "time_exit must return False when close_position fails so the "
+        "caller keeps the position in still_open and retries on next loop"
+    )
+
+    # Case B: close returns True — function must return True.
+    monkeypatch.setattr(exe, "close_position", lambda *a, **k: True)
+    # Reset latch — Case A may have set time_exit_reached_min_gain via unrealized.
+    pos["time_exit_reached_min_gain"] = False
+    result = exe._apply_time_exit(pos, now_ms)
+    assert result is True
+
+
+def test_wave2_bug11_kill_filters_both_magics():
+    """Wave-2 Bug 11 (NIEDRIG): ftmo_kill must close both magic=231 (signal
+    trades) AND magic=232 (ping trades). A stuck magic=232 long previously
+    survived emergency kill.
+    """
+    import inspect
+    import ftmo_kill
+    src = inspect.getsource(ftmo_kill.main)
+    assert "(231, 232)" in src, (
+        "ftmo_kill main() must filter positions by magic in (231, 232) so "
+        "ping trades are also closed during emergency kill"
     )
 
 

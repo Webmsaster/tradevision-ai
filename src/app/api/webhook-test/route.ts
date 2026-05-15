@@ -243,32 +243,27 @@ export async function POST(request: Request) {
 
   // 3+4. Send the test payload with manual redirects + tight timeout.
   //
-  // Round 56 (Finding #2): rewrite the URL to use the validated IP so
-  // fetch does NOT perform a second DNS lookup (TOCTOU). We preserve
-  // the original hostname in the `Host` header so HTTP virtual-host
-  // routing still works. For HTTPS the TLS SNI/cert verification is
-  // driven by the URL hostname — fetch-by-IP would break TLS hostname
-  // matching. This is an accepted trade-off: a rebinding attacker would
-  // additionally need to obtain a valid certificate for the original
-  // hostname (mTLS-publickey-pinning is out of scope), which is
-  // implausible in the threat model this endpoint guards (operator
-  // typo'd webhook URL pointing into the cloud-VPC).
+  // R29-Frontend-Audit Bug 10: previously we rewrote the URL hostname to
+  // the validated IP literal to defeat a TOCTOU DNS-rebind. Side-effect:
+  // for HTTPS endpoints (Discord, Telegram, Slack — i.e. ALL real
+  // operator webhooks) the TLS SNI was driven by the URL hostname (now
+  // the IP) so the server presented the wrong certificate and the
+  // fetch failed with a generic "TLS handshake" error — the user saw
+  // "the Test Webhook button doesn't work" for an otherwise-correct URL.
   //
-  // For the IPv6 case the literal must be bracketed (`https://[::1]/`).
-  const isIpv6 = safeIp!.includes(":");
-  const ipHost = isIpv6 ? `[${safeIp}]` : safeIp!;
-  const ipUrl = new URL(parsed.toString());
-  ipUrl.hostname = ipHost;
+  // The accepted trade-off is to keep the original hostname (URL +
+  // Host header both = the user-supplied hostname). The IP has already
+  // been validated against the private-range deny-list in the DNS step
+  // above; an attacker would need a second DNS-rebind between our
+  // lookup and fetch's lookup to land on an internal IP — narrow
+  // window, and the network egress firewall is the real backstop for
+  // that case. Real-world webhooks now work over HTTPS.
   const startedAt = Date.now();
   try {
-    const resp = await fetch(ipUrl.toString(), {
+    const resp = await fetch(parsed.toString(), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        // Preserve the user-supplied hostname for vhost routing /
-        // cert-SNI logging. The fetch impl will set the SNI from the
-        // URL hostname (the IP) — see comment above.
-        Host: parsed.host,
       },
       body: JSON.stringify(buildPayload(body?.platform)),
       redirect: "manual",

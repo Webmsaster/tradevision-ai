@@ -159,19 +159,33 @@ export async function tgSend(
   // misconfigured bot can't spam Telegram and trigger a global ban.
   if (Date.now() < suppressUntilTs) return false;
   try {
-    const resp = await fetch(
-      `https://api.telegram.org/bot${conf.token}/sendMessage`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          chat_id: conf.chatId,
-          text: body,
-          parse_mode: "HTML",
-          disable_web_page_preview: true,
-        }),
-      },
-    );
+    // R29-Frontend-Audit Bug 11: cap the fetch at 10s with an
+    // AbortController. Telegram occasionally stalls behind Cloudflare
+    // (we've seen 60s+ TLS-handshake hangs) and an unbounded fetch
+    // blocks the signal-service loop / bot startup behind the dead
+    // socket. The catch block below already swallows AbortError as a
+    // regular failure (returns false).
+    const ctrl = new AbortController();
+    const timeoutHandle = setTimeout(() => ctrl.abort(), 10_000);
+    let resp: Response;
+    try {
+      resp = await fetch(
+        `https://api.telegram.org/bot${conf.token}/sendMessage`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            chat_id: conf.chatId,
+            text: body,
+            parse_mode: "HTML",
+            disable_web_page_preview: true,
+          }),
+          signal: ctrl.signal,
+        },
+      );
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
     if (!resp.ok) {
       const t = await resp.text().catch(() => "");
       const safeBody = redactToken(t).slice(0, 200);

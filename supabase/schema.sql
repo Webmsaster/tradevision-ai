@@ -25,10 +25,15 @@ create table if not exists trades (
   -- Phase 58 (R45-DB-H4): notes/tags length-cap. text type is otherwise
   -- unbounded → DoS / TOAST-bloat vector if a client posts megabytes.
   notes text not null default '' check (length(notes) <= 5000),
-  tags text[] not null default '{}' check (
-    cardinality(tags) <= 32 and
-    coalesce((select max(length(t)) from unnest(tags) t), 0) <= 64
-  ),
+  -- Phase 96 (Codex audit): the per-element length check for tags moved
+  -- to a BEFORE INSERT/UPDATE trigger (see validate_trade_tags below).
+  -- PostgreSQL does NOT allow subqueries (incl. `select … from unnest(...)`)
+  -- inside CHECK constraints — the previous predicate
+  --   `coalesce((select max(length(t)) from unnest(tags) t), 0) <= 64`
+  -- raised 0A000 `cannot use subquery in check constraint` on fresh
+  -- deploys, so the cardinality cap was effectively unenforced because
+  -- the entire CHECK was rejected.
+  tags text[] not null default '{}' check (cardinality(tags) <= 32),
   strategy text check (strategy is null or length(strategy) <= 128),
   emotion text check (emotion in ('confident', 'neutral', 'fearful', 'greedy', 'fomo', 'revenge')),
   confidence integer check (confidence between 1 and 5),
@@ -116,6 +121,35 @@ create trigger trades_updated_at
   before update on trades
   for each row
   execute function update_updated_at();
+
+-- Phase 96 (Codex audit): per-element length validation for the `tags`
+-- array. Moved out of the CHECK constraint because PostgreSQL forbids
+-- subqueries (including `select … from unnest(arr)`) inside CHECK. The
+-- BEFORE INSERT/UPDATE trigger enforces the same invariant — every tag
+-- must be ≤ 64 chars — without a subquery in the expression tree.
+-- The cardinality cap (≤ 32) stays as a scalar CHECK on the column.
+create or replace function validate_trade_tags()
+returns trigger as $$
+declare
+  tag text;
+begin
+  if new.tags is not null then
+    foreach tag in array new.tags loop
+      if length(tag) > 64 then
+        raise exception 'tag exceeds 64-character limit: %', left(tag, 80)
+          using errcode = 'check_violation';
+      end if;
+    end loop;
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists trades_validate_tags on trades;
+create trigger trades_validate_tags
+  before insert or update on trades
+  for each row
+  execute function validate_trade_tags();
 
 -- R67 audit (Round 5): the R67-r3 DB-level un-tombstone trigger was
 -- dropped because it conflicted with the R67-r2 UPSERT-resolve-to-UPDATE

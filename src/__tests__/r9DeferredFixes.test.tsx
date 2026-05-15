@@ -4,7 +4,7 @@
  * Task A: settings page client-side platform-URL match (KRITISCH)
  * Task B: testStatus enum replaces fragile testResult.includes("success")
  *         (KRITISCH)
- * Task C: csvParser BOM regex uses explicit ﻿ escape (HOCH)
+ * Task C: csvParser BOM regex uses explicit \uFEFF escape (HOCH)
  * Task D: import dedupes by content-hash, not just UUID (MEDIUM)
  * Task E: handleRemoveAccount no off-by-one — fallback uses post-filter
  *         array (WARNING)
@@ -35,15 +35,15 @@ describe("Round 9 / Task C — csvParser BOM regex (\\uFEFF)", () => {
     // codepoint is U+FEFF (UTF-8: 0xEF 0xBB 0xBF). Allow the BOM only
     // inside non-regex lines (e.g. comments) by checking specifically for
     // the regex shape /^<literal-BOM>/.
-    const literalBomInRegex = /\/\^﻿\//.test(src);
+    const literalBomInRegex = /\/\^\uFEFF\//.test(src);
     expect(literalBomInRegex).toBe(false);
   });
 
   it("strips a literal BOM from a header value at runtime", async () => {
     // The transform-Header lambda is internal to parseCSVFile, but the
     // intent is functional: any value starting with U+FEFF is normalised.
-    const headerWithBom = "﻿Pair";
-    const stripped = headerWithBom.replace(/^﻿/, "").trim();
+    const headerWithBom = "\uFEFF" + "Pair";
+    const stripped = headerWithBom.replace(/^\uFEFF/, "").trim();
     expect(stripped).toBe("Pair");
   });
 });
