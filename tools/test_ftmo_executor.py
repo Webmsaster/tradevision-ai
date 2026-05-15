@@ -2655,5 +2655,232 @@ def test_codex_r4_engine_ticket_id_persisted_in_open_positions():
         "Codex Round 4 #9: engine-side entry-time anchor must be persisted"
 
 
+# =============================================================================
+# R3-B Drift-1: funding-cost / swap reconciliation
+# =============================================================================
+def test_funding_reconcile_disabled_by_default(tmp_path, monkeypatch):
+    """FTMO_FUNDING_RECONCILE default OFF → _reconcile_funding_drift no-ops.
+
+    The funding reconciliation feature is opt-in to avoid noise on crypto
+    accounts with zero swap. Default disabled = returns None.
+    """
+    import ftmo_executor as exe
+
+    # Ensure disabled
+    monkeypatch.setattr(exe, "FUNDING_RECONCILE_ENABLED", False)
+    result = exe._reconcile_funding_drift(force=True)
+    assert result is None, "disabled feature must short-circuit to None"
+
+
+def test_funding_reconcile_drift_detection(tmp_path, monkeypatch):
+    """Engine-projected swap vs MT5-reported swap drift triggers alert.
+
+    Setup: 1 BTC position open for 3 days at 0.5bp/day on $100k notional.
+      expected = $100k × (0.5/10000) × 3 = $15.0
+    MT5 reports swap = $5.0 (broker accrual lagging).
+      drift = $15 − $5 = $10 → $10 / $100k = 0.0001 (0.01%) below default 0.5%.
+    To force drift-detected, set threshold to 0.00005.
+    """
+    import ftmo_executor as exe
+
+    monkeypatch.setattr(exe, "FUNDING_RECONCILE_ENABLED", True)
+    monkeypatch.setattr(exe, "FUNDING_RATES", {"BTCUSDT": 0.5})
+    monkeypatch.setattr(exe, "FUNDING_RECONCILE_EVERY_N", 1)
+    monkeypatch.setattr(exe, "FUNDING_DRIFT_THRESHOLD", 0.00005)  # 0.005%
+    monkeypatch.setattr(exe, "CHALLENGE_START_BALANCE", 100_000.0)
+
+    open_path = tmp_path / "open-positions.json"
+    monkeypatch.setattr(exe, "OPEN_POS_PATH", open_path)
+    three_days_ago = (
+        __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        - __import__("datetime").timedelta(days=3, hours=1)
+    ).isoformat()
+    open_path.write_text(json.dumps({
+        "positions": [{
+            "ticket": 42,
+            "signalAsset": "BTCUSDT",
+            "lot": 1.0,
+            "entry_price": 100_000.0,
+            "opened_at": three_days_ago,
+        }]
+    }))
+
+    # Mock MT5: return position with swap=$5.0 (drift = $15-$5 = $10 = 0.01%)
+    class FakePos:
+        swap = 5.0
+
+    def fake_get(ticket=None):
+        return [FakePos()]
+
+    monkeypatch.setattr(exe.mt5, "positions_get", fake_get)
+    monkeypatch.setattr(exe, "tg_send", lambda *a, **kw: None)
+
+    summary = exe._reconcile_funding_drift(force=True)
+    assert summary is not None, "must produce summary when enabled + has positions"
+    assert summary["expected"] == pytest.approx(15.0, abs=0.01)
+    assert summary["actual"] == pytest.approx(5.0, abs=0.01)
+    assert abs(summary["drift"] - 10.0) < 0.01
+
+
+def test_funding_reconcile_zero_rate_no_op(tmp_path, monkeypatch):
+    """Asset with zero swap_rate → expected=0 → returns None (no false alert).
+
+    Crypto FTMO accounts typically have 0 swap. Guards against spurious
+    alerts on those accounts even when the feature is enabled.
+    """
+    import ftmo_executor as exe
+
+    monkeypatch.setattr(exe, "FUNDING_RECONCILE_ENABLED", True)
+    monkeypatch.setattr(exe, "FUNDING_RATES", {"BTCUSDT": 0.0})  # zero rate
+    monkeypatch.setattr(exe, "FUNDING_RECONCILE_EVERY_N", 1)
+
+    open_path = tmp_path / "open-positions.json"
+    monkeypatch.setattr(exe, "OPEN_POS_PATH", open_path)
+    open_path.write_text(json.dumps({
+        "positions": [{
+            "ticket": 42,
+            "signalAsset": "BTCUSDT",
+            "lot": 1.0,
+            "entry_price": 100_000.0,
+            "opened_at": "2025-01-01T00:00:00+00:00",
+        }]
+    }))
+
+    result = exe._reconcile_funding_drift(force=True)
+    # All open positions are zero-rate → reconciler returns None (nothing to compare).
+    assert result is None
+
+
+# =============================================================================
+# R3-B Drift-2: risk_frac sanity-check
+# =============================================================================
+def test_sanity_check_risk_frac_in_range_returns_none(monkeypatch):
+    """In-range risk_frac (e.g. 0.01) → returns None (signal allowed)."""
+    import ftmo_executor as exe
+
+    monkeypatch.setattr(exe, "RISK_SANITY_ENABLED", True)
+    monkeypatch.setattr(exe, "RISK_SANITY_REJECT", True)
+    monkeypatch.setattr(exe, "RISK_SANITY_MIN", 0.005)
+    monkeypatch.setattr(exe, "RISK_SANITY_MAX", 0.03)
+    monkeypatch.setattr(exe, "tg_send", lambda *a, **kw: None)
+
+    # Typical Rust-emitted value: 1% risk_frac
+    assert exe._sanity_check_risk_frac(0.01, "BTCUSDT") is None
+    # Lower edge
+    assert exe._sanity_check_risk_frac(0.005, "BTCUSDT") is None
+    # Upper edge
+    assert exe._sanity_check_risk_frac(0.03, "BTCUSDT") is None
+
+
+def test_sanity_check_risk_frac_outlier_reject_mode(monkeypatch):
+    """REJECT mode + out-of-range risk_frac → returns reason-string."""
+    import ftmo_executor as exe
+
+    monkeypatch.setattr(exe, "RISK_SANITY_ENABLED", True)
+    monkeypatch.setattr(exe, "RISK_SANITY_REJECT", True)
+    monkeypatch.setattr(exe, "RISK_SANITY_MIN", 0.005)
+    monkeypatch.setattr(exe, "RISK_SANITY_MAX", 0.03)
+    monkeypatch.setattr(exe, "tg_send", lambda *a, **kw: None)
+
+    # Too small (Rust sizing-ladder collapse / kelly_tier bug)
+    reason_low = exe._sanity_check_risk_frac(0.0001, "BTCUSDT")
+    assert reason_low is not None and "outside plausible range" in reason_low
+
+    # Too large (signal-service regression below RISK_FRAC_HARD_CAP but above sanity)
+    reason_high = exe._sanity_check_risk_frac(0.04, "BTCUSDT")
+    assert reason_high is not None and "outside plausible range" in reason_high
+
+
+def test_sanity_check_risk_frac_outlier_alert_only(monkeypatch):
+    """Alert-only mode (default) + outlier → still returns None (signal passes)."""
+    import ftmo_executor as exe
+
+    monkeypatch.setattr(exe, "RISK_SANITY_ENABLED", True)
+    monkeypatch.setattr(exe, "RISK_SANITY_REJECT", False)  # alert only
+    monkeypatch.setattr(exe, "RISK_SANITY_MIN", 0.005)
+    monkeypatch.setattr(exe, "RISK_SANITY_MAX", 0.03)
+    alerts: list = []
+    monkeypatch.setattr(exe, "tg_send", lambda msg, **kw: alerts.append(msg))
+
+    result = exe._sanity_check_risk_frac(0.10, "BTCUSDT")  # 10% — way over
+    assert result is None, "alert-only mode must NOT reject the signal"
+    assert len(alerts) == 1, "alert-only mode must still send a Telegram alert"
+    assert "Risk-Frac Outlier" in alerts[0]
+
+
+def test_sanity_check_risk_frac_disabled(monkeypatch):
+    """RISK_SANITY_ENABLED=False → returns None for ANY value."""
+    import ftmo_executor as exe
+
+    monkeypatch.setattr(exe, "RISK_SANITY_ENABLED", False)
+    monkeypatch.setattr(exe, "RISK_SANITY_REJECT", True)
+
+    # Even an obviously-bad value passes when disabled.
+    assert exe._sanity_check_risk_frac(99.0, "BTCUSDT") is None
+    assert exe._sanity_check_risk_frac(0.0, "BTCUSDT") is None
+
+
+# =============================================================================
+# R3-B Drift-3: FTMO_STRICT_PARITY documentation + buffer zeroing
+# =============================================================================
+def test_strict_parity_zeroes_all_buffers():
+    """FTMO_STRICT_PARITY=1 must zero ALL defensive buffers.
+
+    Verifies the contract documented in CLAUDE.md / module docstring: when
+    FTMO_STRICT_PARITY=1 is set at startup, every defensive buffer that
+    diverges from the backtest engine's raw -5% / -10% caps is zeroed for
+    deterministic sim parity.
+    """
+    import importlib
+    import os
+    import sys
+
+    # Save/restore env so the test is isolated
+    saved = os.environ.get("FTMO_STRICT_PARITY")
+    os.environ["FTMO_STRICT_PARITY"] = "1"
+    # Force re-import so module-level constants pick up the new env value.
+    if "ftmo_executor" in sys.modules:
+        del sys.modules["ftmo_executor"]
+    try:
+        import ftmo_executor as exe_strict
+        assert exe_strict.FTMO_STRICT_PARITY is True
+        assert exe_strict.DL_EMERGENCY_BUFFER == 0.0, (
+            "DL emergency buffer must be 0 in strict parity mode"
+        )
+        assert exe_strict.TL_EMERGENCY_BUFFER == 0.0, (
+            "TL emergency buffer must be 0 in strict parity mode"
+        )
+        # _parity_buffer must zero the entry-side buffers too.
+        assert exe_strict._parity_buffer(0.010) == 0.0
+        assert exe_strict._parity_buffer(0.015) == 0.0
+    finally:
+        # Restore env + module so subsequent tests see default state.
+        if saved is None:
+            os.environ.pop("FTMO_STRICT_PARITY", None)
+        else:
+            os.environ["FTMO_STRICT_PARITY"] = saved
+        if "ftmo_executor" in sys.modules:
+            del sys.modules["ftmo_executor"]
+        import ftmo_executor  # re-import default-state for downstream tests
+        _ = ftmo_executor  # silence linter
+
+
+def test_strict_parity_default_off_keeps_buffers():
+    """Default (no FTMO_STRICT_PARITY) → defensive buffers stay non-zero.
+
+    Documents the design choice: live deploys keep buffers ON; only
+    explicit FTMO_STRICT_PARITY=1 enables sim-parity mode. This protects
+    funded accounts from a single-poll-cycle breach.
+    """
+    import ftmo_executor as exe
+
+    # Default state must keep buffers protective.
+    assert exe.FTMO_STRICT_PARITY is False
+    assert exe.DL_EMERGENCY_BUFFER > 0
+    assert exe.TL_EMERGENCY_BUFFER > 0
+    assert exe._parity_buffer(0.010) == 0.010
+    assert exe._parity_buffer(0.015) == 0.015
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

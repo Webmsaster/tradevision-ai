@@ -112,6 +112,40 @@ RISK_FRAC_HARD_CAP = float(os.environ.get("FTMO_RISK_HARD_CAP", "0.05"))
 # matches typical crypto-tick latency budget.
 MAX_ENTRY_SLIPPAGE_PCT = float(os.environ.get("FTMO_MAX_ENTRY_SLIPPAGE", "0.005"))
 
+# ---------------------------------------------------------------------------
+# FTMO_STRICT_PARITY (R3-B Drift-3, 2026-05-15)
+#
+# By default the live executor applies *defensive* safety buffers on top of
+# the FTMO rule-set so a single 30-second poll cycle on a fast crypto move
+# can't accidentally breach the hard caps:
+#
+#   - check_ftmo_rules blocks new entries at -4.0% (vs FTMO -5%) daily-loss
+#     and -8.5% (vs FTMO -10%) total-loss.
+#   - sync_account_state emergency-closes all positions at -2.5% daily /
+#     -7.5% total (DL_EMERGENCY_BUFFER / TL_EMERGENCY_BUFFER).
+#
+# These buffers are *intentional* and explain a portion of the live-vs-sim
+# pass-rate drift — backtests use the raw -5% / -10% caps. For deterministic
+# parity tests (or aggressive Demo deploys that want maximum sim-fidelity),
+# set FTMO_STRICT_PARITY=1 to zero ALL buffers. WARNING: strict mode trades
+# pass-rate stability for theoretical parity — a 30-second crypto wick can
+# cause a real -5% breach with no safety margin. Recommended only for
+# CI/regression runs or sim-validation, never for live funded accounts.
+#
+# Verified zeroes: DL_EMERGENCY_BUFFER, TL_EMERGENCY_BUFFER, the +0.010
+# daily-loss entry-buffer, and the +0.015 total-loss entry-buffer.
+# ---------------------------------------------------------------------------
+FTMO_STRICT_PARITY = os.environ.get("FTMO_STRICT_PARITY", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+
+def _parity_buffer(default: float) -> float:
+    """Return 0.0 when FTMO_STRICT_PARITY=1, else the default buffer."""
+    return 0.0 if FTMO_STRICT_PARITY else default
+
 
 # R67-r12 audit fix (Hedge-Mode close-deal codes): closing deals on FTMO
 # Hedge-Mode accounts can have entry codes DEAL_ENTRY_INOUT (=2,
@@ -1347,6 +1381,101 @@ class OrderResult:
     tp_price: Optional[float] = None
 
 
+# ---------------------------------------------------------------------------
+# R3-B Drift-2: risk_frac sanity-check (2026-05-15)
+#
+# The Rust backtest engine applies a 9-stage sizing ladder (live_loss_cap,
+# day_risk_mult, maxRiskFrac, modelled_loss check, kelly_tier, sharpe_sizing,
+# day_progressive, time_decay, hard cap) before emitting the per-signal
+# risk_frac. The live executor *trusts* that output and only enforces the
+# RISK_FRAC_HARD_CAP=0.05 ceiling — meaning a signal-service bug that emits
+# anomalously low/high risk_frac would pass through silently.
+#
+# Defense-in-depth: sanity-check incoming risk_frac against a plausible
+# range. Outliers are flagged (and optionally rejected) so we catch
+# signal-service regressions BEFORE they cost equity. Default: alert-only.
+# Set FTMO_RISK_SANITY_REJECT=1 to additionally reject outlier signals.
+# Set FTMO_RISK_SANITY_ENABLED=0 to disable entirely.
+#
+# Plausible range derivation:
+#   - Lower bound 0.005 (= 0.5%): below this the broker volume_min usually
+#     clips the lot to zero anyway. A signal < 0.005 indicates either an
+#     end-of-day time-decay multiplier collapse or a sizing-ladder bug
+#     (kelly_tier returning ~0). Either way, worth a warn.
+#   - Upper bound = min(RISK_FRAC_HARD_CAP, 0.03) = 0.03 default.
+#     Rust default risk_frac is ~0.01-0.025; 0.03 = +20% headroom over the
+#     typical max. Anything above is a signal-service regression worth
+#     surfacing (even if RISK_FRAC_HARD_CAP would also clip it).
+# ---------------------------------------------------------------------------
+RISK_SANITY_ENABLED = os.environ.get("FTMO_RISK_SANITY_ENABLED", "1").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+RISK_SANITY_REJECT = os.environ.get("FTMO_RISK_SANITY_REJECT", "0").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+RISK_SANITY_MIN = float(os.environ.get("FTMO_RISK_SANITY_MIN", "0.005"))
+RISK_SANITY_MAX = float(
+    os.environ.get("FTMO_RISK_SANITY_MAX", str(min(RISK_FRAC_HARD_CAP, 0.03)))
+)
+
+
+def _sanity_check_risk_frac(payload_risk_frac: float, asset_symbol: str) -> Optional[str]:
+    """Validate that ``payload_risk_frac`` falls inside the plausible range.
+
+    Returns ``None`` when the value is within range OR sanity is disabled.
+    Returns a reason-string when the value is an outlier. Caller decides
+    whether to reject the signal (RISK_SANITY_REJECT=1) or merely warn.
+
+    The function ALWAYS emits a ``log_event`` + Telegram alert on outliers
+    so the operator sees a signal-service regression even in non-reject
+    mode. This is defense-in-depth: the Rust 9-stage sizing ladder may have
+    bugs (kelly_tier returning 0, day_risk_mult inverted, etc.) and the
+    cheap sanity-check surfaces them before live equity is at risk.
+    """
+    if not RISK_SANITY_ENABLED:
+        return None
+    try:
+        rf = float(payload_risk_frac)
+    except (TypeError, ValueError):
+        log_event(
+            "risk_frac_invalid_type",
+            asset=asset_symbol,
+            payload_risk_frac=str(payload_risk_frac),
+            level="warn",
+        )
+        return f"risk_frac type-invalid ({payload_risk_frac!r}) — refusing entry"
+    if not (RISK_SANITY_MIN <= rf <= RISK_SANITY_MAX):
+        reason = (
+            f"risk_frac {rf:.4f} outside plausible range "
+            f"[{RISK_SANITY_MIN:.4f}, {RISK_SANITY_MAX:.4f}]"
+        )
+        log_event(
+            "risk_frac_outlier",
+            asset=asset_symbol,
+            risk_frac=rf,
+            min=RISK_SANITY_MIN,
+            max=RISK_SANITY_MAX,
+            will_reject=RISK_SANITY_REJECT,
+            level="warn",
+        )
+        try:
+            tg_send(
+                "⚠️ <b>Risk-Frac Outlier</b>\n"
+                f"{html_escape(asset_symbol)} risk={rf:.4f} "
+                f"(plausible {RISK_SANITY_MIN:.3f}–{RISK_SANITY_MAX:.3f})\n"
+                + ("🚫 SIGNAL REJECTED" if RISK_SANITY_REJECT else "(alert only)")
+            )
+        except Exception:
+            # tg_send failure must never block sizing — already logged.
+            pass
+        return reason if RISK_SANITY_REJECT else None
+    return None
+
+
 def compute_lot_size(symbol_info: Any, risk_frac: float, stop_pct: float, account_equity: float, direction: str = "long") -> float:
     """
     Compute lot size for a target risk. Always rounds DOWN (floor) to never
@@ -2286,6 +2415,19 @@ def _process_signals_unlocked(
             tg_send(f"🛑 <b>FTMO Rule Block</b>\nAsset: {html_escape(sig['assetSymbol'])}\nReason: {html_escape(blocker)}")
             executed["executions"].append({
                 "signal": sig, "result": "blocked", "reason": blocker,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+            continue
+
+        # R3-B Drift-2: risk_frac sanity-check (2026-05-15). Defense-in-depth
+        # against signal-service regressions in the Rust 9-stage sizing
+        # ladder. Returns None when in-range OR sanity disabled OR alert-only
+        # mode (default). Returns reason-string only when REJECT mode is
+        # active AND value is out-of-range. See _sanity_check_risk_frac doc.
+        sanity_reject = _sanity_check_risk_frac(float(sig.get("riskFrac") or 0.0), sig["assetSymbol"])
+        if sanity_reject:
+            executed["executions"].append({
+                "signal": sig, "result": "risk_sanity_rejected", "reason": sanity_reject,
                 "ts": datetime.now(timezone.utc).isoformat(),
             })
             continue
@@ -3565,6 +3707,177 @@ def _emergency_close_all_positions(reason: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# R3-B Drift-1: funding-cost / swap reconciliation (2026-05-15)
+#
+# The Rust backtest engine models funding/swap as a daily-cross deduction in
+# `pnl.rs` (line 117-126). The live executor does NOT model funding/swap
+# inside the management cycle — it implicitly relies on the MT5 broker's
+# accounting at position close (`pos.swap`). This introduces silent drift
+# between sim-projected PnL and live broker reality.
+#
+# Defense-in-depth: periodically compute the expected funding-cost burden
+# based on currently-open positions × hold-duration × the per-asset
+# swap_bp_per_day (from FUNDING_RATES env JSON), and compare against the
+# sum of `pos.swap` reported by MT5. Drift above FUNDING_DRIFT_THRESHOLD
+# (default 0.5% of start balance) raises an alert.
+#
+# Default: DISABLED (opt-in via FTMO_FUNDING_RECONCILE=1). Most FTMO crypto
+# accounts have zero swap rates so the check would be noise. Enable on FX
+# / commodities deploys or when comparing sim-vs-live drift in CI.
+#
+# Per-position close: when close_position(...) succeeds we ALSO log
+# `expected_funding` vs `actual_swap` so a post-mortem can attribute drift
+# to a specific instrument/period.
+# ---------------------------------------------------------------------------
+FUNDING_RECONCILE_ENABLED = os.environ.get(
+    "FTMO_FUNDING_RECONCILE", ""
+).lower() in ("1", "true", "yes")
+
+# Per-asset annualised swap rate (basis points / day). Override via env JSON,
+# e.g. FTMO_FUNDING_RATES='{"BTCUSD": 0.5, "ETHUSD": 0.3}'. Zero rates skip
+# the per-position accrual; only assets with non-zero rates are reconciled.
+try:
+    FUNDING_RATES = json.loads(os.environ.get("FTMO_FUNDING_RATES", "{}"))
+    if not isinstance(FUNDING_RATES, dict):
+        FUNDING_RATES = {}
+except (TypeError, ValueError):
+    FUNDING_RATES = {}
+
+# Alert threshold: report when |Σ expected − Σ actual| / start_balance > X.
+FUNDING_DRIFT_THRESHOLD = float(
+    os.environ.get("FTMO_FUNDING_DRIFT_THRESHOLD", "0.005")  # 0.5% of start
+)
+# Run reconciliation every N main-loop iterations (poll cycles).
+FUNDING_RECONCILE_EVERY_N = int(
+    os.environ.get("FTMO_FUNDING_RECONCILE_EVERY_N", "120")  # 120 × 30s = 1h
+)
+
+# Module-level cycle counter for periodic reconciliation.
+_funding_reconcile_cycle_count = 0
+# Rate-limit duplicate drift alerts (avoid spam during long-running drift).
+_funding_drift_last_alert_ts: float = 0.0
+
+
+def _expected_swap_for_position(pos: dict, now_ms: Optional[int] = None) -> float:
+    """Return the engine-projected swap cost (USD) for ``pos`` so far.
+
+    Mirrors the Rust `pnl.rs` cross-day swap accrual: ``swap_bp_per_day``
+    × number of UTC-day crossings between entry and now, scaled by the
+    notional implied by the position lot × entry_price. Returns 0.0 when
+    the asset has no configured swap rate or required fields are missing.
+    """
+    asset = pos.get("signalAsset") or pos.get("sourceSymbol")
+    if not asset:
+        return 0.0
+    rate_bp_per_day = float(FUNDING_RATES.get(asset, 0.0))
+    if rate_bp_per_day <= 0.0:
+        return 0.0
+    opened_iso = pos.get("opened_at")
+    if not opened_iso:
+        return 0.0
+    try:
+        opened_dt = datetime.fromisoformat(opened_iso.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return 0.0
+    if opened_dt.tzinfo is None:
+        opened_dt = opened_dt.replace(tzinfo=timezone.utc)
+    if now_ms is None:
+        now_dt = datetime.now(timezone.utc)
+    else:
+        now_dt = datetime.fromtimestamp(now_ms / 1000.0, tz=timezone.utc)
+    ms_per_day = 86_400_000
+    entry_day = int(opened_dt.timestamp() * 1000) // ms_per_day
+    exit_day = int(now_dt.timestamp() * 1000) // ms_per_day
+    crossings = max(0, exit_day - entry_day)
+    if crossings == 0:
+        return 0.0
+    lot = float(pos.get("lot") or 0.0)
+    entry_price = float(pos.get("entry_price") or 0.0)
+    if lot <= 0 or entry_price <= 0:
+        return 0.0
+    notional_usd = lot * entry_price
+    return notional_usd * (rate_bp_per_day / 10_000.0) * crossings
+
+
+def _reconcile_funding_drift(force: bool = False) -> Optional[dict]:
+    """Compare engine-projected funding cost vs MT5-reported swap.
+
+    Called once every FUNDING_RECONCILE_EVERY_N main-loop cycles. Returns
+    None when disabled / no positions / no configured rates, else a dict
+    with ``{expected, actual, drift, threshold}`` for inspection/tests.
+
+    Side effects on drift detection:
+      - ``log_event("funding_drift_detected", ...)``
+      - Telegram alert (rate-limited to once per 15min per process)
+    """
+    global _funding_reconcile_cycle_count, _funding_drift_last_alert_ts
+    if not FUNDING_RECONCILE_ENABLED:
+        return None
+    _funding_reconcile_cycle_count += 1
+    if not force and _funding_reconcile_cycle_count % FUNDING_RECONCILE_EVERY_N != 0:
+        return None
+    if not FUNDING_RATES:
+        return None
+    open_positions = read_json(OPEN_POS_PATH, {"positions": []})
+    positions = open_positions.get("positions", [])
+    if not positions:
+        return None
+
+    # Expected: sum of per-position engine-projected swap accruals.
+    expected_total = 0.0
+    for pos in positions:
+        expected_total += _expected_swap_for_position(pos)
+    if expected_total == 0.0:
+        # All open positions are zero-swap assets — nothing to reconcile.
+        return None
+
+    # Actual: sum of pos.swap from MT5 across our magic=231 tickets.
+    actual_total = 0.0
+    try:
+        for pos in positions:
+            live = mt5.positions_get(ticket=pos["ticket"])
+            if live:
+                actual_total += float(getattr(live[0], "swap", 0.0) or 0.0)
+    except Exception as e:
+        log_event(
+            "funding_reconcile_mt5_failed", error=str(e), level="warn"
+        )
+        return None
+
+    drift_usd = expected_total - actual_total
+    drift_frac = drift_usd / CHALLENGE_START_BALANCE if CHALLENGE_START_BALANCE > 0 else 0.0
+    summary = {
+        "expected": expected_total,
+        "actual": actual_total,
+        "drift": drift_usd,
+        "drift_frac": drift_frac,
+        "threshold": FUNDING_DRIFT_THRESHOLD,
+        "positions_checked": len(positions),
+    }
+    if abs(drift_frac) > FUNDING_DRIFT_THRESHOLD:
+        log_event("funding_drift_detected", level="warn", **summary)
+        # Rate-limit Telegram alerts to once per 15min so a multi-hour
+        # divergence doesn't flood the channel.
+        now_ts = time.time()
+        if now_ts - _funding_drift_last_alert_ts > 900:
+            _funding_drift_last_alert_ts = now_ts
+            try:
+                tg_send(
+                    "⚠️ <b>Funding Drift Detected</b>\n"
+                    f"Expected: ${expected_total:,.2f}\n"
+                    f"Actual (MT5 swap): ${actual_total:,.2f}\n"
+                    f"Drift: ${drift_usd:,.2f} ({drift_frac:.2%} of start balance)\n"
+                    f"Threshold: {FUNDING_DRIFT_THRESHOLD:.2%}"
+                )
+            except Exception:
+                # Telegram failure must never break the trade loop.
+                pass
+    else:
+        log_event("funding_reconcile_ok", **summary)
+    return summary
+
+
 def manage_open_positions() -> None:
     open_positions = read_json(OPEN_POS_PATH, {"positions": []})
     now_ms = int(time.time() * 1000)
@@ -3572,7 +3885,17 @@ def manage_open_positions() -> None:
     for pos in open_positions.get("positions", []):
         live = mt5.positions_get(ticket=pos["ticket"])
         if not live:
-            log_event("position_gone", ticket=pos["ticket"], reason="closed by SL/TP or manually")
+            # R3-B Drift-1: persist engine-projected funding cost so a
+            # post-mortem can attribute live PnL drift to swap accruals.
+            # Asset without a configured rate → expected=0.0 (no-op).
+            expected_funding = _expected_swap_for_position(pos)
+            log_event(
+                "position_gone",
+                ticket=pos["ticket"],
+                reason="closed by SL/TP or manually",
+                expected_funding_usd=round(expected_funding, 4),
+                signal_asset=pos.get("signalAsset"),
+            )
             tg_send(f"📉 <b>Position Closed (SL/TP)</b>\n{pos['signalAsset']} ticket <code>{pos['ticket']}</code>")
             continue
         # 2026-05-13 Codex Round 4 Python #3 FIX: max_hold_until=0 OR a
@@ -4565,6 +4888,14 @@ def main_loop() -> None:
                 else:
                     process_pending_signals()
                     manage_open_positions()
+
+                # R3-B Drift-1: periodic funding/swap reconciliation. Returns
+                # early when disabled (default), no open positions, or not at
+                # the configured cycle boundary. See _reconcile_funding_drift.
+                try:
+                    _reconcile_funding_drift()
+                except Exception as e:
+                    log_event("funding_reconcile_error", error=str(e), level="warn")
 
                 # iter236+: place daily ping trade if target was hit (for FTMO 5-day rule)
                 maybe_place_ping_trade()
