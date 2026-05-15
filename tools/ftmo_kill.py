@@ -43,6 +43,25 @@ except Exception:
         return False
 
 
+# 2026-05-15 R3 audit Bug #2 (MITTEL): mirror ftmo_executor's per-account
+# magic derivation so the kill switch only touches THIS account's tickets.
+# Identical algorithm — SHA-1 mod 100, deterministic across restarts.
+def _compute_magic_id() -> int:
+    base = 231
+    account_id = os.environ.get("FTMO_ACCOUNT_ID", "").strip()
+    if not account_id:
+        return base
+    import hashlib
+
+    digest = hashlib.sha1(account_id.encode("utf-8")).digest()
+    offset = int.from_bytes(digest[:4], "big") % 100
+    return base + offset
+
+
+MAGIC = _compute_magic_id()
+PING_MAGIC = MAGIC + 1
+
+
 def _resolve_state_dir() -> Path:
     """Return the same FTMO_STATE_DIR the executor uses (env override wins,
     else legacy `ftmo-state-<TF>` cwd-relative). Multi-account deploys set
@@ -238,9 +257,9 @@ def main():
         # otherwise survive the kill, leaving an SL-less long on the books
         # while the operator believed "everything is closed". Both magics
         # belong to the same iter231 bot; kill should fully shut it down.
-        bot_positions = [p for p in positions if getattr(p, "magic", 0) in (231, 232)]
+        bot_positions = [p for p in positions if getattr(p, "magic", 0) in (MAGIC, PING_MAGIC)]
         if not bot_positions:
-            print(f"No bot positions (magic 231/232). {len(positions)} other positions left untouched.")
+            print(f"No bot positions (magic {MAGIC}/{PING_MAGIC}). {len(positions)} other positions left untouched.")
             return
 
         print(f"Closing {len(bot_positions)} bot positions...")
@@ -259,7 +278,7 @@ def main():
             # close is also tagged as 232. Some MT5 builds reject closes
             # with a magic mismatch ("invalid magic for position"), so we
             # echo the source magic explicitly.
-            pos_magic = int(getattr(pos, "magic", 231) or 231)
+            pos_magic = int(getattr(pos, "magic", MAGIC) or MAGIC)
             result = mt5.order_send({
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": pos.symbol,
@@ -269,7 +288,7 @@ def main():
                 "price": price,
                 "deviation": 50,
                 "magic": pos_magic,
-                "comment": "iter231 KILL" if pos_magic == 231 else "iter232-ping KILL",
+                "comment": "iter231 KILL" if pos_magic == MAGIC else "iter232-ping KILL",
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": mt5.ORDER_FILLING_IOC,
             })

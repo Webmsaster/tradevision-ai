@@ -2404,16 +2404,20 @@ def test_wave2_bug3_time_exit_returns_false_on_close_fail(monkeypatch):
 
 
 def test_wave2_bug11_kill_filters_both_magics():
-    """Wave-2 Bug 11 (NIEDRIG): ftmo_kill must close both magic=231 (signal
-    trades) AND magic=232 (ping trades). A stuck magic=232 long previously
+    """Wave-2 Bug 11 (NIEDRIG): ftmo_kill must close both magic=MAGIC (signal
+    trades) AND magic=PING_MAGIC (ping trades). A stuck PING_MAGIC long previously
     survived emergency kill.
+
+    2026-05-15 R3 audit Bug #2 update: MAGIC is now per-account (was hardcoded
+    231) — assert the filter uses the module-level constants instead of the
+    literal tuple (231, 232).
     """
     import inspect
     import ftmo_kill
     src = inspect.getsource(ftmo_kill.main)
-    assert "(231, 232)" in src, (
-        "ftmo_kill main() must filter positions by magic in (231, 232) so "
-        "ping trades are also closed during emergency kill"
+    assert "(MAGIC, PING_MAGIC)" in src, (
+        "ftmo_kill main() must filter positions by magic in (MAGIC, PING_MAGIC) "
+        "so ping trades are also closed during emergency kill"
     )
 
 
@@ -2880,6 +2884,148 @@ def test_strict_parity_default_off_keeps_buffers():
     assert exe.TL_EMERGENCY_BUFFER > 0
     assert exe._parity_buffer(0.010) == 0.010
     assert exe._parity_buffer(0.015) == 0.015
+
+
+# =============================================================================
+# 2026-05-15 R3 audit Bug #1 — crash-safe write order regression tests
+# =============================================================================
+def test_r3_audit_bug1_signal_processor_writes_open_positions_first(monkeypatch):
+    """OPEN_POS_PATH must be written BEFORE EXECUTED_PATH and PENDING_PATH.
+
+    Rationale: V12-state (PTP done flags, partial-tp-levels, chandelier
+    highWaterMark, max_hold_until) lives ONLY in open-positions.json. If
+    we write pending first, a crash leaves the ticket on the broker but
+    no JSON state → boot rebuilds a minimal stub and loses V12 features.
+    """
+    import inspect
+    import ftmo_executor as exe
+
+    # Inspect process_pending_signals — the production entrypoint.
+    src = inspect.getsource(exe.process_pending_signals)
+    # Find positions of each write_json call.
+    open_pos_idx = src.find("write_json(OPEN_POS_PATH")
+    executed_idx = src.find("write_json(EXECUTED_PATH")
+    pending_idx = src.find("write_json(PENDING_PATH, {\"signals\": merged_pending")
+
+    assert open_pos_idx > 0, "process_pending_signals must write OPEN_POS_PATH"
+    assert executed_idx > 0, "process_pending_signals must write EXECUTED_PATH"
+    assert pending_idx > 0, "process_pending_signals must write merged PENDING_PATH"
+
+    # Crash-safe order: open_positions FIRST, executed SECOND, pending LAST.
+    assert open_pos_idx < executed_idx < pending_idx, (
+        f"Write order wrong — must be open_positions ({open_pos_idx}) → "
+        f"executed ({executed_idx}) → pending ({pending_idx}). V12 state "
+        "(PTP done-flags, chandelier highWaterMark, max_hold_until) is "
+        "unrecoverable from MT5 alone; writing it last loses state on crash."
+    )
+
+
+def test_r3_audit_bug1_legacy_locked_wrapper_writes_open_positions_first():
+    """Same write-order invariant for the legacy `_process_pending_signals_locked`
+    shim used by older tests.
+    """
+    import inspect
+    import ftmo_executor as exe
+
+    src = inspect.getsource(exe._process_pending_signals_locked)
+    open_pos_idx = src.find("write_json(OPEN_POS_PATH")
+    executed_idx = src.find("write_json(EXECUTED_PATH")
+    pending_idx = src.find("write_json(PENDING_PATH, {\"signals\": merged_pending")
+
+    assert open_pos_idx > 0
+    assert executed_idx > 0
+    assert pending_idx > 0
+    assert open_pos_idx < executed_idx < pending_idx, (
+        "_process_pending_signals_locked write order must be "
+        "open_positions → executed → pending (crash-safe)"
+    )
+
+
+# =============================================================================
+# 2026-05-15 R3 audit Bug #2 — per-account magic IDs
+# =============================================================================
+def test_r3_audit_bug2_magic_default_when_account_id_unset():
+    """FTMO_ACCOUNT_ID unset → MAGIC=231, PING_MAGIC=232 (backwards-compat).
+
+    Legacy single-account deploys must see no change in magic numbers so
+    yesterday's open tickets and history-deal scans still match.
+    """
+    import ftmo_executor as exe
+
+    # Default-state assertion: the module was imported without FTMO_ACCOUNT_ID
+    # (see conftest at top of file — only FTMO_MOCK + FTMO_START_BALANCE set).
+    assert exe.MAGIC == 231, (
+        f"MAGIC must default to 231 when FTMO_ACCOUNT_ID is unset, got {exe.MAGIC}"
+    )
+    assert exe.PING_MAGIC == 232, (
+        f"PING_MAGIC must default to 232 when FTMO_ACCOUNT_ID is unset, got {exe.PING_MAGIC}"
+    )
+
+
+def test_r3_audit_bug2_magic_distinct_per_account_id(monkeypatch):
+    """Two distinct FTMO_ACCOUNT_IDs must produce distinct MAGIC IDs.
+
+    Probes the collision avoidance directly via `_compute_magic_id` —
+    importing the module twice under different env is awkward in-process
+    so we test the pure function.
+    """
+    import ftmo_executor as exe
+
+    monkeypatch.setenv("FTMO_ACCOUNT_ID", "1234567")
+    m1 = exe._compute_magic_id()
+    monkeypatch.setenv("FTMO_ACCOUNT_ID", "7654321")
+    m2 = exe._compute_magic_id()
+    monkeypatch.setenv("FTMO_ACCOUNT_ID", "1234567")
+    m1_again = exe._compute_magic_id()
+
+    assert m1 != m2, (
+        f"Distinct account_ids must yield distinct MAGICs (got {m1} for "
+        f"both). Otherwise two PM2 processes on the same MT5 terminal would "
+        "claim each other's tickets."
+    )
+    assert m1 == m1_again, (
+        f"Same account_id must reproduce the same MAGIC across calls "
+        f"(got {m1} then {m1_again}). Restarts must not orphan tickets."
+    )
+    assert 231 <= m1 <= 330, f"MAGIC must stay in range [231, 330], got {m1}"
+    assert 231 <= m2 <= 330, f"MAGIC must stay in range [231, 330], got {m2}"
+
+
+def test_r3_audit_bug2_magic_unset_account_returns_base(monkeypatch):
+    """`FTMO_ACCOUNT_ID` empty / whitespace → base magic 231 (defensive)."""
+    import ftmo_executor as exe
+
+    monkeypatch.delenv("FTMO_ACCOUNT_ID", raising=False)
+    assert exe._compute_magic_id() == 231
+
+    monkeypatch.setenv("FTMO_ACCOUNT_ID", "")
+    assert exe._compute_magic_id() == 231
+
+    monkeypatch.setenv("FTMO_ACCOUNT_ID", "   ")
+    assert exe._compute_magic_id() == 231
+
+
+def test_r3_audit_bug2_ping_magic_is_base_plus_one():
+    """PING_MAGIC must always equal MAGIC + 1 — paired by convention so
+    reconcile / kill paths handle both with a tuple.
+    """
+    import ftmo_executor as exe
+
+    assert exe.PING_MAGIC == exe.MAGIC + 1
+
+
+def test_r3_audit_bug2_kill_module_magic_matches_executor():
+    """ftmo_kill must derive the same MAGIC as ftmo_executor under same env.
+
+    Single-process import keeps the modules in lock-step; the per-account
+    deriver is identical code.
+    """
+    import ftmo_executor as exe
+    import ftmo_kill
+
+    # Both compute their MAGIC at import time; defaults must match.
+    assert ftmo_kill.MAGIC == exe.MAGIC
+    assert ftmo_kill.PING_MAGIC == exe.PING_MAGIC
 
 
 if __name__ == "__main__":

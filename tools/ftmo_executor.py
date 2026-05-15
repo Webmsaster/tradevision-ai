@@ -253,6 +253,46 @@ SYMBOL_MAP = {
     "AAVEUSDT": os.environ.get("FTMO_AAVE_SYMBOL", "AAVUSD"),
 }
 
+
+# 2026-05-15 R3 audit Bug #2 (MITTEL): per-account magic IDs to avoid
+# cross-claiming positions on shared-MT5 setups. Historically MAGIC was
+# hardcoded 231 (signal trades) / 232 (ping trades). Two PM2 processes
+# accidentally pointing at the same MT5 terminal would treat each other's
+# tickets as their own — `rebuild_open_positions_from_mt5` would falsely
+# claim them, kill switches would close them, etc.
+#
+# Behaviour:
+# - FTMO_ACCOUNT_ID unset (single-account / legacy)  → MAGIC = 231, PING_MAGIC = 232
+# - FTMO_ACCOUNT_ID set                              → MAGIC = 231 + (hash%100), PING_MAGIC = MAGIC + 1
+# Range 231-330 leaves headroom for future bots; ping always =MAGIC+1.
+# The hash is computed via a stable deterministic algorithm (SHA-1 mod 100)
+# rather than Python's built-in `hash()` because PYTHONHASHSEED randomises
+# `hash()` per-process — two restarts of the SAME account would otherwise
+# generate different magics, orphaning yesterday's tickets.
+def _compute_magic_id() -> int:
+    """Derive a per-account magic number from FTMO_ACCOUNT_ID.
+
+    Returns 231 when FTMO_ACCOUNT_ID is unset (backwards-compatible).
+    Otherwise: 231 + (sha1(account_id) mod 100), yielding the range
+    [231, 330]. PING_MAGIC is always MAGIC + 1, so MAGIC % 2 == 1 stays
+    paired correctly. Deterministic across restarts.
+    """
+    base = 231
+    account_id = os.environ.get("FTMO_ACCOUNT_ID", "").strip()
+    if not account_id:
+        return base
+    import hashlib
+
+    digest = hashlib.sha1(account_id.encode("utf-8")).digest()
+    # First 4 bytes → unsigned int. mod 100 → [0, 99]. +base → [231, 330].
+    offset = int.from_bytes(digest[:4], "big") % 100
+    return base + offset
+
+
+MAGIC = _compute_magic_id()
+PING_MAGIC = MAGIC + 1  # was hardcoded 232 — paired with MAGIC for ping trades
+
+
 PENDING_PATH = STATE_DIR / "pending-signals.json"
 EXECUTED_PATH = STATE_DIR / "executed-signals.json"
 ACCOUNT_PATH = STATE_DIR / "account.json"
@@ -1248,7 +1288,7 @@ def _get_yesterday_trade_stats(date_str: str) -> tuple[float, float, float, floa
         day_start = datetime(y, m, d, 0, 0, 0, tzinfo=prague_tz)
         day_end = datetime(y, m, d, 23, 59, 59, tzinfo=prague_tz)
         deals = mt5.history_deals_get(day_start, day_end) or []
-        closes = [d for d in deals if getattr(d, "magic", 0) == 231 and _is_close_deal(d)]
+        closes = [d for d in deals if getattr(d, "magic", 0) == MAGIC and _is_close_deal(d)]
         if not closes:
             return (0.0, 0.0, 0.0, 0.0, 0)
         profits = [d.profit for d in closes]
@@ -1643,7 +1683,7 @@ def place_market_order(
         "sl": stop_price,
         "tp": tp_price,
         "deviation": 20,
-        "magic": 231,
+        "magic": MAGIC,
         "comment": comment[:31],
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": _pick_filling_mode(ftmo_symbol),
@@ -1803,7 +1843,7 @@ def close_position(ticket: int, exit_reason_override: Optional[str] = None) -> b
         "position": ticket,
         "price": price,
         "deviation": 20,
-        "magic": 231,
+        "magic": MAGIC,
         "comment": "iter231 close",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": _pick_filling_mode(pos.symbol),
@@ -2096,7 +2136,7 @@ def maybe_place_ping_trade() -> None:
             request_buy = {
                 "action": mt5.TRADE_ACTION_DEAL, "symbol": sym, "volume": PING_LOT_SIZE,
                 "type": mt5.ORDER_TYPE_BUY, "price": tick.ask,
-                "deviation": 20, "magic": 232, "comment": "iter236-ping",
+                "deviation": 20, "magic": PING_MAGIC, "comment": "iter236-ping",
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": _pick_filling_mode(sym),
             }
@@ -2117,7 +2157,7 @@ def maybe_place_ping_trade() -> None:
             # cycle before crediting the ping.
             closed_at_least_one = False
             positions = mt5.positions_get(symbol=sym) or []
-            magic_positions = [p for p in positions if getattr(p, "magic", 0) == 232]
+            magic_positions = [p for p in positions if getattr(p, "magic", 0) == PING_MAGIC]
             for pos in magic_positions:
                 tick2 = mt5.symbol_info_tick(sym)
                 if tick2 is None or tick2.bid <= 0 or tick2.ask <= 0:
@@ -2125,7 +2165,7 @@ def maybe_place_ping_trade() -> None:
                 close_request = {
                     "action": mt5.TRADE_ACTION_DEAL, "symbol": sym, "volume": pos.volume,
                     "type": mt5.ORDER_TYPE_SELL, "position": pos.ticket,
-                    "price": tick2.bid, "deviation": 20, "magic": 232,
+                    "price": tick2.bid, "deviation": 20, "magic": PING_MAGIC,
                     "comment": "iter236-ping-close",
                     "type_filling": _pick_filling_mode(sym),
                 }
@@ -2291,9 +2331,20 @@ def process_pending_signals() -> None:
         executed_out = proc["executed"]
         if len(executed_out.get("executions", [])) > 500:
             executed_out["executions"] = executed_out["executions"][-500:]
-        write_json(PENDING_PATH, {"signals": merged_pending})
-        write_json(EXECUTED_PATH, executed_out)
+        # 2026-05-15 R3 audit Bug #1 (HIGH): crash-safe write order.
+        # OPEN_POS_PATH FIRST: it is the only file with unrecoverable V12
+        # state (PTP done-flags, partial-tp-levels, chandelier highWaterMark,
+        # max_hold_until, trailing). A crash between writes leaves MT5 with
+        # the live ticket but no JSON state → boot reconcile rebuilds only a
+        # minimal stub and loses the V12 features.
+        # EXECUTED_PATH SECOND: audit log, recoverable from MT5 deal history.
+        # PENDING_PATH LAST: clearing the signal queue is the consumed-marker.
+        # Doing this last guarantees that a partial-crash leaves the signal
+        # in PENDING so the next loop retries it idempotently against the
+        # WAL marker (which is only cleared AFTER all three writes succeed).
         write_json(OPEN_POS_PATH, proc["open_positions"])
+        write_json(EXECUTED_PATH, executed_out)
+        write_json(PENDING_PATH, {"signals": merged_pending})
         # WAL-marker cleanup: only after all three writes succeed. See
         # Wave-2 Bug 1 KRITISCH note in `_process_signals_unlocked`.
         for marker in proc["placed_markers"]:
@@ -2479,7 +2530,7 @@ def _process_signals_unlocked(
         # builds silently ignores → returns ALL positions including manual
         # trades from other bots. Filter by magic manually.
         all_positions = mt5.positions_get() or []
-        live_positions = [p for p in all_positions if getattr(p, "magic", 0) == 231]
+        live_positions = [p for p in all_positions if getattr(p, "magic", 0) == MAGIC]
         open_count = len(live_positions) + in_batch_placed
         if open_count >= MAX_CONCURRENT_TRADES:
             log_event("mct_block", asset=sig["assetSymbol"], open=open_count, cap=MAX_CONCURRENT_TRADES)
@@ -2848,9 +2899,13 @@ def _process_pending_signals_locked() -> None:
     executed_out = proc["executed"]
     if len(executed_out.get("executions", [])) > 500:
         executed_out["executions"] = executed_out["executions"][-500:]
-    write_json(PENDING_PATH, {"signals": merged_pending})
-    write_json(EXECUTED_PATH, executed_out)
+    # 2026-05-15 R3 audit Bug #1 (HIGH): crash-safe write order — same as
+    # `process_pending_signals`. open_positions first (V12 state irrecoverable
+    # from MT5 alone), executed second (audit log, recoverable from deal
+    # history), pending last (signal queue, retry-safe via WAL markers).
     write_json(OPEN_POS_PATH, proc["open_positions"])
+    write_json(EXECUTED_PATH, executed_out)
+    write_json(PENDING_PATH, {"signals": merged_pending})
     for marker in proc["placed_markers"]:
         _clear_pending_order_marker(marker)
 
@@ -2882,7 +2937,7 @@ def _modify_position_sl(ticket: int, new_sl: float) -> bool:
         "symbol": pos.symbol,
         "position": ticket,
         "sl": sl_rounded,
-        "magic": 231,
+        "magic": MAGIC,
     }
     # Only include tp when broker has a non-zero TP set; sending tp=0 is
     # interpreted as "cancel the TP" by most MT5 builds.
@@ -3009,7 +3064,7 @@ def _close_partial_lot(ticket: int, close_lot: float, reason: str) -> bool:
         "position": ticket,
         "price": price,
         "deviation": 20,
-        "magic": 231,
+        "magic": MAGIC,
         "comment": f"r11 {reason}"[:31],
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": _pick_filling_mode(pos.symbol),
@@ -3470,8 +3525,8 @@ def reconcile_pending_order_markers() -> None:
     # type: signal-markers (have `signal` key) vs ping-markers (`ping=True`).
     try:
         all_positions = mt5.positions_get() or []
-        signal_positions = [p for p in all_positions if getattr(p, "magic", 0) == 231]
-        ping_positions = [p for p in all_positions if getattr(p, "magic", 0) == 232]
+        signal_positions = [p for p in all_positions if getattr(p, "magic", 0) == MAGIC]
+        ping_positions = [p for p in all_positions if getattr(p, "magic", 0) == PING_MAGIC]
         comments = {p.comment for p in signal_positions}
     except Exception:
         comments = set()
@@ -3492,9 +3547,9 @@ def reconcile_pending_order_markers() -> None:
         for d in recent_deals:
             m = getattr(d, "magic", 0)
             c = getattr(d, "comment", "")
-            if m == 231:
+            if m == MAGIC:
                 comments.add(c)
-            elif m == 232:
+            elif m == PING_MAGIC:
                 ping_history_comments.add(c)
     except Exception:
         pass
@@ -3531,7 +3586,7 @@ def reconcile_pending_order_markers() -> None:
                                 "position": pos.ticket,
                                 "price": close_price,
                                 "deviation": 20,
-                                "magic": 232,
+                                "magic": PING_MAGIC,
                                 "comment": "iter236-ping-recover",
                                 "type_filling": _pick_filling_mode(ping_symbol),
                             }
@@ -3649,7 +3704,7 @@ def _emergency_close_all_positions(reason: str) -> dict:
         # 2026-05-13 Codex Round 4 Python #4: signal that NO positions were
         # closed so callers don't latch PASSLOCK state on a deferred close.
         return {"closed": 0, "failed": 0, "all_closed": False, "deferred": True}
-    bot_positions = [p for p in mt5_live if getattr(p, "magic", 0) == 231]
+    bot_positions = [p for p in mt5_live if getattr(p, "magic", 0) == MAGIC]
     open_json = read_json(OPEN_POS_PATH, {"positions": []}).get("positions", [])
     json_by_ticket = {
         p["ticket"]: p for p in open_json if isinstance(p, dict) and "ticket" in p
@@ -3969,7 +4024,7 @@ def sync_account_state() -> None:
     )
     recent_pnls: list[float] = []
     if deals:
-        closes = [d for d in deals if d.magic == 231 and _is_close_deal(d)]
+        closes = [d for d in deals if d.magic == MAGIC and _is_close_deal(d)]
         closes.sort(key=lambda d: d.time)
         for d in closes[-20:]:
             recent_pnls.append(d.profit / CHALLENGE_START_BALANCE)
@@ -4026,7 +4081,7 @@ def handle_kill_request() -> bool:
         return False
     closed = 0
     failed = 0
-    bot_positions = [p for p in positions if p.magic == 231]
+    bot_positions = [p for p in positions if p.magic == MAGIC]
     for pos in bot_positions:
         if close_position(pos.ticket, exit_reason_override="kill_request"):
             closed += 1
@@ -4171,7 +4226,7 @@ def check_circuit_breaker() -> Optional[str]:
     if not deals:
         return None
 
-    closes = [d for d in deals if d.magic == 231 and _is_close_deal(d)]
+    closes = [d for d in deals if d.magic == MAGIC and _is_close_deal(d)]
     closes.sort(key=lambda d: d.time)
 
     # Count consecutive losses from most recent
@@ -4307,7 +4362,7 @@ def check_news_auto_close() -> None:
             "MT5 disconnected — cannot enumerate positions. Will retry next poll."
         )
         return
-    bot_positions = [p for p in raw_positions if p.magic == 231]
+    bot_positions = [p for p in raw_positions if p.magic == MAGIC]
     if bot_positions:
         # BUGFIX 2026-04-28: evict timestamps older than 7 days to prevent
         # unbounded set growth in long-running bot.
@@ -4364,7 +4419,7 @@ def check_consistency_rule() -> None:
     )
     if not deals:
         return
-    closes = [d for d in deals if d.magic == 231 and _is_close_deal(d)]
+    closes = [d for d in deals if d.magic == MAGIC and _is_close_deal(d)]
     wins = [d for d in closes if d.profit > 0]
     if not wins:
         return
@@ -4455,7 +4510,7 @@ def reconcile_missing_positions() -> None:
     except Exception as e:
         log_event("reconcile_missing_mt5_get_failed", error=str(e))
         return
-    live_tickets = {p.ticket for p in live_positions if getattr(p, "magic", None) == 231}
+    live_tickets = {p.ticket for p in live_positions if getattr(p, "magic", None) == MAGIC}
 
     existing = read_json(OPEN_POS_PATH, {"positions": []})
     on_disk = existing.get("positions", [])
@@ -4576,7 +4631,7 @@ def rebuild_open_positions_from_mt5() -> None:
     except Exception as e:
         log_event("rebuild_open_positions_mt5_get_failed", error=str(e))
         return
-    bot_positions = [p for p in positions if getattr(p, "magic", None) == 231]
+    bot_positions = [p for p in positions if getattr(p, "magic", None) == MAGIC]
 
     existing = read_json(OPEN_POS_PATH, {"positions": []})
     by_ticket = {p["ticket"]: p for p in existing.get("positions", [])}
