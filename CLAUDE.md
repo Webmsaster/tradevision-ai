@@ -139,7 +139,16 @@ Autonomous parameter-search for `ftmo-sweep`. Random + local refinement around t
   --output hunter_results.jsonl
 ```
 
-Current single-account champion (FTMO Normal pt=0.08, validated bug-frei strict-pass + step=3/7/14 stable + OOS 2024+ identical): **AMBER_MAX_PASSLOCK + 5 voters (POC-Z, BB-Z, Supertrend, SMC-FVG, HMM) → 52.30%** (median 52.0% over 4 time-quartiles, worst-quartile floor 49.6%).
+Current single-account champion measured on multiple profit-targets:
+
+| Target                               | Use-Case                                       | AMBER_MAX_PASSLOCK + 5 voters pass-rate |
+| ------------------------------------ | ---------------------------------------------- | --------------------------------------- |
+| pt=0.08                              | (not a real FTMO product — was design-default) | 52.30%                                  |
+| **pt=0.10 (FTMO Challenge Phase 1)** | real FTMO Standard 2-Step Phase 1              | **49.00%**                              |
+| **pt=0.05 (FTMO Challenge Phase 2)** | real FTMO Standard 2-Step Phase 2              | **59.40%**                              |
+| **Combined Funded (P1 × P2)**        | real FTMO Standard funded probability          | **~29% single-account, ~64% 3-stack**   |
+
+**⚠️ 2026-05-15 honest update:** pt=0.08 was never a real FTMO product — actual FTMO Challenge is Standard 2-Step (+10% / +5%). All prior 52% champion claims should be re-interpreted as pt=0.08 (modelling-only). For real FTMO deploy use pt=0.10 / 0.05.
 
 ### Path Alias
 
