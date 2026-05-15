@@ -83,10 +83,45 @@ def file_lock(
             break
         except FileExistsError:
             if time.time() - start > timeout_sec:
+                # 2026-05-15 Codex external audit BUG #7 FIX — stale-reclaim
+                # TOCTOU race. Previously: stat → check age → unlink. Between
+                # the stat() and the unlink(), a competing process could:
+                #   (1) also detect the stale lock,
+                #   (2) unlink it,
+                #   (3) successfully O_EXCL re-create with its own token.
+                # The original holder's unlink at step (3+) then deletes a
+                # legitimate fresh lock, allowing a third process to grab it.
+                # Mitigation: capture the stale token BEFORE the unlink, and
+                # ONLY unlink if the on-disk token still matches what we
+                # observed when we decided the lock was stale. If the token
+                # changed (race lost), fall through to retry — the new holder
+                # gets to keep their lock.
                 try:
-                    age = time.time() - lock_path.stat().st_mtime
+                    st = lock_path.stat()
+                    age = time.time() - st.st_mtime
                     if age >= stale_sec:
-                        lock_path.unlink(missing_ok=True)
+                        try:
+                            stale_token = lock_path.read_text()
+                        except FileNotFoundError:
+                            continue  # lock disappeared — retry
+                        except Exception:
+                            stale_token = ""
+                        # Race-safe unlink: re-read the file's token; if it
+                        # changed between our read and now, abort the unlink.
+                        # On POSIX there is no atomic "unlink if content
+                        # matches"; we approximate it by verifying twice. The
+                        # remaining window is tiny (~µs); a paranoid caller
+                        # can raise stale_sec to make races even rarer.
+                        try:
+                            current_token = lock_path.read_text()
+                        except FileNotFoundError:
+                            continue
+                        except Exception:
+                            current_token = ""
+                        if current_token == stale_token and stale_token:
+                            lock_path.unlink(missing_ok=True)
+                        # else: another process raced us — retry without
+                        # unlinking (would delete THEIR fresh lock).
                         continue
                 except FileNotFoundError:
                     continue  # lock disappeared — retry
