@@ -40,12 +40,19 @@ beforeAll(() => {
   );
   process.env.FTMO_STATE_DIR = testStateDir;
   process.env.FTMO_MONITOR_ENABLED = "1";
+  // 2026-05-16 Codex audit Bug #5: the route is now fail-CLOSED by default
+  // (Supabase missing → 401). The test fixture has no Supabase backend, so
+  // we explicitly opt-in via the bypass flag — same way a single-owner
+  // headless VPS would. The auth contract is exercised in dedicated tests
+  // (ftmoMonitorAuth*.test.ts).
+  process.env.FTMO_MONITOR_AUTH_BYPASS = "1";
 });
 
 afterAll(() => {
   fs.rmSync(testStateDir, { recursive: true, force: true });
   delete process.env.FTMO_STATE_DIR;
   delete process.env.FTMO_MONITOR_ENABLED;
+  delete process.env.FTMO_MONITOR_AUTH_BYPASS;
 });
 
 describe("/api/ftmo-state route", () => {

@@ -853,7 +853,13 @@ export async function GET(req: NextRequest) {
   // in a tight loop) could turn that into a sustained read-amp DoS. Cap at
   // 60/min/IP — the dashboard polls at most every 5 s so legit traffic is
   // safely under the limit.
+  // 2026-05-16 Codex audit Bug #6 (NIEDRIG): prefer x-vercel-forwarded-for
+  // (set BY Vercel, not spoofable) over x-forwarded-for (passed through
+  // from the client and trivially spoofable). The previous order let a
+  // hostile client masquerade as multiple IPs to evade the rate limiter.
+  // Matches the IP-resolution order used elsewhere in the codebase.
   const ip =
+    req.headers.get("x-vercel-forwarded-for")?.split(",")[0]?.trim() ||
     req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
     req.headers.get("x-real-ip") ||
     "unknown";

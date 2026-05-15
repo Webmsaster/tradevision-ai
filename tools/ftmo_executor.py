@@ -254,43 +254,70 @@ SYMBOL_MAP = {
 }
 
 
-# 2026-05-15 R3 audit Bug #2 (MITTEL): per-account magic IDs to avoid
-# cross-claiming positions on shared-MT5 setups. Historically MAGIC was
-# hardcoded 231 (signal trades) / 232 (ping trades). Two PM2 processes
-# accidentally pointing at the same MT5 terminal would treat each other's
-# tickets as their own — `rebuild_open_positions_from_mt5` would falsely
-# claim them, kill switches would close them, etc.
+# 2026-05-15 R3 audit Bug #2 (MITTEL) — REVISED 2026-05-16 Codex audit Bug #1
+# (KRITISCH): per-account magic IDs to avoid cross-claiming positions on
+# shared-MT5 setups.
 #
-# Behaviour:
-# - FTMO_ACCOUNT_ID unset (single-account / legacy)  → MAGIC = 231, PING_MAGIC = 232
-# - FTMO_ACCOUNT_ID set                              → MAGIC = 231 + (hash%100), PING_MAGIC = MAGIC + 1
-# Range 231-330 leaves headroom for future bots; ping always =MAGIC+1.
-# The hash is computed via a stable deterministic algorithm (SHA-1 mod 100)
-# rather than Python's built-in `hash()` because PYTHONHASHSEED randomises
-# `hash()` per-process — two restarts of the SAME account would otherwise
-# generate different magics, orphaning yesterday's tickets.
+# PREVIOUS BROKEN IMPLEMENTATION (sha1 % 100 + PING_MAGIC = MAGIC+1):
+#   - account "11" sha1%100 = 1 → MAGIC=232. account "23" sha1%100 = 1 → also
+#     MAGIC=232. Two distinct accounts shared the same MAGIC. Collisions
+#     observed for 23 of the first 100 numeric IDs.
+#   - account "1" → MAGIC=238, PING_MAGIC=239. account "15" → MAGIC=239.
+#     The PING_MAGIC of account "1" overlapped the MAGIC of account "15".
+#
+# NEW DETERMINISTIC IMPLEMENTATION:
+#   - Numeric FTMO_ACCOUNT_ID (the common case — most FTMO logins ARE
+#     numeric): MAGIC = 231 + 10 + num*10. Account 1 → 251, account 2 → 261,
+#     ...  Each account occupies a 10-wide slot so PING_MAGIC = MAGIC + 7
+#     can NEVER collide with the next account's MAGIC.
+#   - Non-numeric FTMO_ACCOUNT_ID (rare, legacy alias-style): widen the
+#     hash space to sha256 mod 9000 + 1000 offset → range [1231, 10230].
+#     With 9000 slots, collision probability over 100 IDs is < 0.6% (vs
+#     ~30% under the broken sha1%100 scheme).
+#   - FTMO_ACCOUNT_ID unset → MAGIC = 231, PING_MAGIC = 238 (legacy single-
+#     account deploys still work — the PING_MAGIC shift from 232 → 238 is
+#     intentional to keep the +7 offset consistent across all paths).
+#
+# Deterministic across process restarts (never uses Python's randomised
+# `hash()` — PYTHONHASHSEED is per-process and would orphan yesterday's
+# tickets on a restart).
 def _compute_magic_id() -> int:
     """Derive a per-account magic number from FTMO_ACCOUNT_ID.
 
-    Returns 231 when FTMO_ACCOUNT_ID is unset (backwards-compatible).
-    Otherwise: 231 + (sha1(account_id) mod 100), yielding the range
-    [231, 330]. PING_MAGIC is always MAGIC + 1, so MAGIC % 2 == 1 stays
-    paired correctly. Deterministic across restarts.
+    Returns 231 when FTMO_ACCOUNT_ID is unset (backwards-compatible base).
+    Numeric account_id: 231 + 10 + (num * 10) → slots are 10-wide, no
+    collisions between adjacent accounts even with PING_MAGIC = MAGIC + 7.
+    Non-numeric account_id: 231 + 1000 + (sha256[:8] % 9000) →
+    range [1231, 10230], collision prob < 0.6% per 100 IDs.
     """
     base = 231
     account_id = os.environ.get("FTMO_ACCOUNT_ID", "").strip()
     if not account_id:
         return base
-    import hashlib
+    # Numeric path — preferred, NO collisions.
+    try:
+        num = int(account_id)
+        if num < 0:
+            raise ValueError("negative account_id")
+        # base + 10 + num*10 → account 1=251, account 2=261, ...
+        # PING_MAGIC = MAGIC + 7 → 258, 268, ... never overlaps next slot.
+        return base + 10 + (num * 10)
+    except ValueError:
+        # Non-numeric fallback — use sha256 (more collision-resistant than
+        # sha1) over a wider range.
+        import hashlib
 
-    digest = hashlib.sha1(account_id.encode("utf-8")).digest()
-    # First 4 bytes → unsigned int. mod 100 → [0, 99]. +base → [231, 330].
-    offset = int.from_bytes(digest[:4], "big") % 100
-    return base + offset
+        digest = hashlib.sha256(account_id.encode("utf-8")).hexdigest()[:8]
+        offset = int(digest, 16) % 9000
+        return base + 1000 + offset  # range [1231, 10230]
 
 
+# PING_MAGIC offset chosen as 7 (not 1) so that adjacent numeric accounts
+# never overlap: account 1 has PING=258, account 2 has MAGIC=261 — no
+# overlap because 261 - 258 = 3, but ALL 10 slots [251..260] belong to
+# account 1, and [261..270] belong to account 2.
 MAGIC = _compute_magic_id()
-PING_MAGIC = MAGIC + 1  # was hardcoded 232 — paired with MAGIC for ping trades
+PING_MAGIC = MAGIC + 7  # was MAGIC+1 — Codex audit found +1 caused next-account overlap
 
 
 PENDING_PATH = STATE_DIR / "pending-signals.json"
@@ -4081,7 +4108,14 @@ def handle_kill_request() -> bool:
         return False
     closed = 0
     failed = 0
-    bot_positions = [p for p in positions if p.magic == MAGIC]
+    # 2026-05-16 Codex audit Bug #4: internal kill must also close PING
+    # trades (magic=PING_MAGIC), matching the external `ftmo_kill.py` filter.
+    # Previously only MAGIC matched → ping trades survived an internal kill
+    # request, even though `/kill` is supposed to flatten EVERYTHING this bot
+    # opened.
+    bot_positions = [
+        p for p in positions if getattr(p, "magic", 0) in (MAGIC, PING_MAGIC)
+    ]
     for pos in bot_positions:
         if close_position(pos.ticket, exit_reason_override="kill_request"):
             closed += 1

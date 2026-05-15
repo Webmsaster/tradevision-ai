@@ -32,11 +32,16 @@ beforeAll(() => {
   process.env.HOME = fakeHome;
   process.env.USERPROFILE = fakeHome;
   process.env.FTMO_MONITOR_ENABLED = "1";
+  // 2026-05-16 Codex audit Bug #5: route is now fail-CLOSED — Supabase
+  // missing returns 401, not 200. The test fixture has no Supabase backend,
+  // so opt-in via the explicit bypass flag.
+  process.env.FTMO_MONITOR_AUTH_BYPASS = "1";
 });
 
 afterAll(() => {
   fs.rmSync(fakeHome, { recursive: true, force: true });
   delete process.env.FTMO_MONITOR_ENABLED;
+  delete process.env.FTMO_MONITOR_AUTH_BYPASS;
 });
 
 describe("/api/paper-state error sanitization", () => {

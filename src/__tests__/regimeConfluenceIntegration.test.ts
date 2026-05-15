@@ -199,9 +199,12 @@ describe("RegimeConfluence × V4 integration", () => {
     }
   });
 
-  it("cfg.regimeConfluence undefined + signalsMode='regime' → safe defaults", () => {
-    // Backwards-compat: omitting regimeConfluence is the same as mv=2
-    // + all voters off. pollLive must not crash; it just won't emit.
+  it("cfg.regimeConfluence undefined + signalsMode='regime' → pass-through (Codex audit Bug #3)", () => {
+    // 2026-05-16 Codex audit Bug #3: omitting regimeConfluence now falls
+    // through to pass-through behaviour — the gate is SKIPPED entirely so
+    // candidates emit unchanged. Previously, the gate ran with default
+    // params (mv=2, all voters off) and vetoed every candidate because
+    // only the anchor (1 vote) could fire.
     const startTs = Date.UTC(2026, 0, 1, 0, 0, 0);
     const candles = flatCandles(120, startTs);
     const cfg: FtmoDaytrade24hConfig = {
@@ -215,7 +218,14 @@ describe("RegimeConfluence × V4 integration", () => {
       lastBarOpenTime: 0,
       barsSeen: 0,
     };
+    // (1) Pure smoke test — pollLive must not crash on flat candles.
     expect(() => pollLive(st, { BTCUSDT: candles }, cfg)).not.toThrow();
+    // (2) No regimeConfluence-veto entries in `skipped` (gate was skipped).
+    const r = pollLive(st, { BTCUSDT: candles }, cfg);
+    const regimeVetoes = r.skipped.filter((s) =>
+      s.reason.includes("regimeConfluence veto"),
+    );
+    expect(regimeVetoes.length).toBe(0);
   });
 
   it("default RegimeConfluence params are stable", () => {

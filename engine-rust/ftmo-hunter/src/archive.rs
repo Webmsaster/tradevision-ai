@@ -1,9 +1,14 @@
 //! Trial archive: appends one JSONL record per trial and maintains an
 //! in-memory top-K leaderboard sorted by `pass_rate` descending.
 //!
-//! The on-disk file is the source of truth — restart the hunter and the
-//! archive can be re-read to rebuild the leaderboard. (Restart-replay is
-//! not implemented in the MVP but the JSONL layout is forward-compatible.)
+//! The on-disk JSONL file is append-only. Note: `Archive::new` always
+//! starts with an EMPTY in-memory leaderboard — there is currently no
+//! restart-replay implementation. If the hunter process is killed mid-run,
+//! the on-disk records are preserved but the leaderboard must be rebuilt
+//! by hand (the JSONL layout is forward-compatible and `serde_json::from_str`
+//! can read it back). 2026-05-16 Codex audit Bug #7: comment clarified to
+//! match actual behaviour — earlier docs claimed "can re-read after
+//! restart" which was misleading.
 
 use crate::trial::Trial;
 use anyhow::{Context, Result};

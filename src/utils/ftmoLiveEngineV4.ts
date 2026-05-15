@@ -2018,7 +2018,21 @@ export function pollLive(
       // configured Top-5 voters cast additional votes; tally decides if
       // the candidate's direction wins the consensus. Default-OFF — when
       // signalsMode != "regime", matchedAll is left untouched.
-      if (cfg.signalsMode === "regime" && matchedAll.length > 0) {
+      //
+      // 2026-05-16 Codex audit Bug #3 (NORMAL): when signalsMode="regime"
+      // but `cfg.regimeConfluence` is undefined, the previous behaviour
+      // applied default (minVotes=2, all voters off) → the gate vetoed
+      // EVERY candidate because only the anchor vote (1) could fire,
+      // never reaching mv=2. The cfg-block comment in ftmoDaytrade24h.ts
+      // promised "pass-through" semantics — that promise wins. When
+      // regimeConfluence is missing, fall through to pass-through (same
+      // as signalsMode="default").
+      if (cfg.signalsMode === "regime" && cfg.regimeConfluence === undefined) {
+        // Pass-through: skip the gate entirely. This matches the documented
+        // backwards-compat promise that omitting the regimeConfluence block
+        // is a safe no-op.
+        // Continue without modifying matchedAll.
+      } else if (cfg.signalsMode === "regime" && matchedAll.length > 0) {
         const rcParams: RegimeConfluenceParams = {
           minVotes: cfg.regimeConfluence?.minVotes ?? 2,
           // Anchor-as-self path: we have a single anchor vote (this

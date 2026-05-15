@@ -43,23 +43,35 @@ except Exception:
         return False
 
 
-# 2026-05-15 R3 audit Bug #2 (MITTEL): mirror ftmo_executor's per-account
-# magic derivation so the kill switch only touches THIS account's tickets.
-# Identical algorithm — SHA-1 mod 100, deterministic across restarts.
+# 2026-05-15 R3 audit Bug #2 (MITTEL) — REVISED 2026-05-16 Codex audit Bug #1
+# (KRITISCH): mirror ftmo_executor's per-account magic derivation so the
+# kill switch only touches THIS account's tickets.
+#
+# Algorithm matches `tools/ftmo_executor.py::_compute_magic_id`:
+#   - FTMO_ACCOUNT_ID unset           → 231
+#   - numeric account_id              → 231 + 10 + (num * 10)   [10-wide slots]
+#   - non-numeric account_id          → 231 + 1000 + (sha256[:8] % 9000)
+#   - PING_MAGIC = MAGIC + 7  (NOT +1; +1 overlapped with next slot's MAGIC)
 def _compute_magic_id() -> int:
     base = 231
     account_id = os.environ.get("FTMO_ACCOUNT_ID", "").strip()
     if not account_id:
         return base
-    import hashlib
+    try:
+        num = int(account_id)
+        if num < 0:
+            raise ValueError("negative account_id")
+        return base + 10 + (num * 10)
+    except ValueError:
+        import hashlib
 
-    digest = hashlib.sha1(account_id.encode("utf-8")).digest()
-    offset = int.from_bytes(digest[:4], "big") % 100
-    return base + offset
+        digest = hashlib.sha256(account_id.encode("utf-8")).hexdigest()[:8]
+        offset = int(digest, 16) % 9000
+        return base + 1000 + offset
 
 
 MAGIC = _compute_magic_id()
-PING_MAGIC = MAGIC + 1
+PING_MAGIC = MAGIC + 7  # was MAGIC+1 — Codex audit Bug #1 fix
 
 
 def _resolve_state_dir() -> Path:

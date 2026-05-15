@@ -91,6 +91,13 @@ fn parse_args() -> Result<CliArgs> {
         }
     }
 
+    // 2026-05-16 Codex audit Bug #8 (NIEDRIG): clamp `--random-frac` and
+    // `--mutation-rate` to [0.0, 1.0]. They are passed to `rng.gen_bool(...)`
+    // downstream, which PANICS if the probability is outside [0.0, 1.0]. A
+    // user passing `--mutation-rate 1.5` previously crashed mid-run.
+    let random_frac = random_frac.clamp(0.0, 1.0);
+    let mutation_rate = mutation_rate.clamp(0.0, 1.0);
+
     Ok(CliArgs {
         sweep_binary: sweep_binary
             .ok_or_else(|| anyhow!("--sweep-binary required"))?,

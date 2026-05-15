@@ -12,7 +12,7 @@
 //! emitted by sweep (timings, debug logs) is ignored. When the binary
 //! exits non-zero we return an [`anyhow::Error`].
 
-use crate::space::{SignalsMode, TrialParams};
+use crate::space::{SignalsMode, TrialParams, VOTERS};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -101,6 +101,43 @@ pub fn build_args(params: &TrialParams, env: &TrialEnv) -> Vec<String> {
 
     if params.use_htf_macd_gate {
         args.push("--use-htf-confirm".into());
+    }
+
+    // 2026-05-16 Codex audit Bug #2 (HIGH): voter_set, td_enable, and
+    // sharpe_sizing were sampled in `SearchSpace::sample_random` but never
+    // translated into CLI flags. Result: every trial got the SAME effective
+    // sweep config regardless of these axes → archive lied. Map each
+    // voter bit to its `--regime-*` flag, and the two scalar toggles to
+    // their dedicated flags.
+    //
+    // VOTERS index ↔ sweep-CLI flag mapping (must stay in step with
+    // `space::VOTERS` order).
+    let voter_flags: [&str; VOTERS.len()] = [
+        "--regime-poc-z",              // 0  poc-z
+        "--regime-bb-z-mr",            // 1  bb-z
+        "--regime-use-ofi",            // 2  ofi
+        "--regime-use-cmf",            // 3  cmf
+        "--regime-use-rsi-hidden-div", // 4  rsi-hd
+        "--regime-use-ad-line",        // 5  ad-line
+        "--regime-use-aroon",          // 6  aroon
+        "--regime-use-double-top",     // 7  double-top
+        "--regime-use-smc-fvg",        // 8  smc-fvg
+        "--regime-use-supertrend",     // 9  supertrend
+        "--regime-use-kalman-trend",   // 10 kalman
+        "--regime-stophunt",           // 11 stop-hunt
+        "--regime-use-hmm",            // 12 hmm
+    ];
+    for (i, flag) in voter_flags.iter().enumerate() {
+        if params.voter_set & (1u32 << i) != 0 {
+            args.push((*flag).to_string());
+        }
+    }
+
+    if params.td_enable {
+        args.push("--td-enable".into());
+    }
+    if params.sharpe_sizing {
+        args.push("--sharpe-sizing".into());
     }
 
     if env.strict_pass {
@@ -342,5 +379,128 @@ mod tests {
         env.strict_pass = true;
         let args = build_args(&p, &env);
         assert!(args.iter().any(|a| a == "--strict-pass"));
+    }
+
+    // -----------------------------------------------------------------------
+    // 2026-05-16 Codex audit Bug #2 (HIGH) regression tests — voter_set bits,
+    // td_enable, and sharpe_sizing must surface as CLI flags.
+    // -----------------------------------------------------------------------
+
+    fn base_params() -> TrialParams {
+        TrialParams {
+            config: "2h-trend-v5-amber-passlock".into(),
+            signals_mode: SignalsMode::Default,
+            regime_min_votes: 2,
+            voter_set: 0,
+            pt: 0.08,
+            tp_mult: 1.0,
+            vol_mult: 2.0,
+            vol_confirm: false,
+            drop_symbols: vec![],
+            use_htf_macd_gate: false,
+            td_enable: false,
+            sharpe_sizing: false,
+        }
+    }
+
+    #[test]
+    fn codex_bug2_no_voter_flags_when_voter_set_zero() {
+        let p = base_params();
+        let env = fake_env("BTCUSDT");
+        let args = build_args(&p, &env);
+        // None of the 13 voter flags should appear.
+        for flag in &[
+            "--regime-poc-z",
+            "--regime-bb-z-mr",
+            "--regime-use-ofi",
+            "--regime-use-cmf",
+            "--regime-use-rsi-hidden-div",
+            "--regime-use-ad-line",
+            "--regime-use-aroon",
+            "--regime-use-double-top",
+            "--regime-use-smc-fvg",
+            "--regime-use-supertrend",
+            "--regime-use-kalman-trend",
+            "--regime-stophunt",
+            "--regime-use-hmm",
+        ] {
+            assert!(
+                !args.iter().any(|a| a == flag),
+                "voter flag {flag} should not appear when voter_set=0"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_bug2_bit_zero_maps_to_poc_z_flag() {
+        let mut p = base_params();
+        p.voter_set = 0b1; // bit 0 → poc-z
+        let env = fake_env("BTCUSDT");
+        let args = build_args(&p, &env);
+        assert!(args.iter().any(|a| a == "--regime-poc-z"));
+        // Confirm only ONE voter flag is added (no spillover from other bits).
+        assert!(!args.iter().any(|a| a == "--regime-bb-z-mr"));
+    }
+
+    #[test]
+    fn codex_bug2_all_bits_set_emits_all_thirteen_voter_flags() {
+        let mut p = base_params();
+        // bits 0..=12 all set
+        p.voter_set = (1u32 << 13) - 1;
+        let env = fake_env("BTCUSDT");
+        let args = build_args(&p, &env);
+        for flag in &[
+            "--regime-poc-z",
+            "--regime-bb-z-mr",
+            "--regime-use-ofi",
+            "--regime-use-cmf",
+            "--regime-use-rsi-hidden-div",
+            "--regime-use-ad-line",
+            "--regime-use-aroon",
+            "--regime-use-double-top",
+            "--regime-use-smc-fvg",
+            "--regime-use-supertrend",
+            "--regime-use-kalman-trend",
+            "--regime-stophunt",
+            "--regime-use-hmm",
+        ] {
+            assert!(
+                args.iter().any(|a| a == flag),
+                "expected voter flag {flag} in build_args output"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_bug2_td_enable_emits_flag_only_when_true() {
+        let env = fake_env("BTCUSDT");
+        let mut p = base_params();
+        let args = build_args(&p, &env);
+        assert!(!args.iter().any(|a| a == "--td-enable"));
+        p.td_enable = true;
+        let args = build_args(&p, &env);
+        assert!(args.iter().any(|a| a == "--td-enable"));
+    }
+
+    #[test]
+    fn codex_bug2_sharpe_sizing_emits_flag_only_when_true() {
+        let env = fake_env("BTCUSDT");
+        let mut p = base_params();
+        let args = build_args(&p, &env);
+        assert!(!args.iter().any(|a| a == "--sharpe-sizing"));
+        p.sharpe_sizing = true;
+        let args = build_args(&p, &env);
+        assert!(args.iter().any(|a| a == "--sharpe-sizing"));
+    }
+
+    #[test]
+    fn codex_bug2_mid_voter_bit_maps_to_correct_flag() {
+        // Bit 9 → supertrend ("--regime-use-supertrend")
+        let mut p = base_params();
+        p.voter_set = 1u32 << 9;
+        let args = build_args(&p, &fake_env("BTCUSDT"));
+        assert!(args.iter().any(|a| a == "--regime-use-supertrend"));
+        assert!(!args.iter().any(|a| a == "--regime-use-hmm"));
+        assert!(!args.iter().any(|a| a == "--regime-poc-z"));
     }
 }

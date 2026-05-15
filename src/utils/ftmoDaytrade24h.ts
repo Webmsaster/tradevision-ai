@@ -943,10 +943,12 @@ export interface FtmoDaytrade24hConfig {
    *
    * Default OFF — all existing configs keep their original behaviour.
    * Backwards-compatible: setting `signalsMode="regime"` without a
-   * `regimeConfluence` block falls back to default params (mv=2, all
-   * voters OFF) → equivalent to "candidate must agree with itself" =
-   * candidate emitted unchanged. Toggle individual voters via the
-   * `voters` flags to engage them.
+   * `regimeConfluence` block falls through to pass-through behaviour —
+   * the gate is SKIPPED entirely and candidates emit unchanged. (Codex
+   * audit Bug #3 / 2026-05-16: the previous default-params path silently
+   * vetoed every candidate because mv=2 with no voters could never be
+   * reached.) To engage the gate you must supply a `regimeConfluence`
+   * block with `minVotes` and at least one voter set true.
    *
    * See `src/utils/regimeVoters/index.ts` for the consensus contract.
    */

@@ -2957,8 +2957,10 @@ def test_r3_audit_bug2_magic_default_when_account_id_unset():
     assert exe.MAGIC == 231, (
         f"MAGIC must default to 231 when FTMO_ACCOUNT_ID is unset, got {exe.MAGIC}"
     )
-    assert exe.PING_MAGIC == 232, (
-        f"PING_MAGIC must default to 232 when FTMO_ACCOUNT_ID is unset, got {exe.PING_MAGIC}"
+    # Codex audit Bug #1: PING_MAGIC offset changed from MAGIC+1 to MAGIC+7
+    # so that adjacent 10-wide account slots never overlap.
+    assert exe.PING_MAGIC == 238, (
+        f"PING_MAGIC must default to 238 (=MAGIC+7) when FTMO_ACCOUNT_ID is unset, got {exe.PING_MAGIC}"
     )
 
 
@@ -2987,8 +2989,11 @@ def test_r3_audit_bug2_magic_distinct_per_account_id(monkeypatch):
         f"Same account_id must reproduce the same MAGIC across calls "
         f"(got {m1} then {m1_again}). Restarts must not orphan tickets."
     )
-    assert 231 <= m1 <= 330, f"MAGIC must stay in range [231, 330], got {m1}"
-    assert 231 <= m2 <= 330, f"MAGIC must stay in range [231, 330], got {m2}"
+    # Codex audit Bug #1: numeric account_ids land in the 251+10*N slot range.
+    # 1234567 → 231 + 10 + 12345670 = 12345911 etc. Just assert positive +
+    # >base. Range is no longer [231, 330]; numeric scheme is open-ended.
+    assert m1 > 231, f"MAGIC must exceed base (231), got {m1}"
+    assert m2 > 231, f"MAGIC must exceed base (231), got {m2}"
 
 
 def test_r3_audit_bug2_magic_unset_account_returns_base(monkeypatch):
@@ -3005,13 +3010,15 @@ def test_r3_audit_bug2_magic_unset_account_returns_base(monkeypatch):
     assert exe._compute_magic_id() == 231
 
 
-def test_r3_audit_bug2_ping_magic_is_base_plus_one():
-    """PING_MAGIC must always equal MAGIC + 1 — paired by convention so
-    reconcile / kill paths handle both with a tuple.
+def test_r3_audit_bug2_ping_magic_is_base_plus_seven():
+    """PING_MAGIC must always equal MAGIC + 7 — paired by convention so
+    reconcile / kill paths handle both with a tuple. Codex audit Bug #1
+    revised the offset from +1 → +7 to guarantee no overlap between
+    adjacent numeric account slots (which are 10 wide).
     """
     import ftmo_executor as exe
 
-    assert exe.PING_MAGIC == exe.MAGIC + 1
+    assert exe.PING_MAGIC == exe.MAGIC + 7
 
 
 def test_r3_audit_bug2_kill_module_magic_matches_executor():
@@ -3026,6 +3033,143 @@ def test_r3_audit_bug2_kill_module_magic_matches_executor():
     # Both compute their MAGIC at import time; defaults must match.
     assert ftmo_kill.MAGIC == exe.MAGIC
     assert ftmo_kill.PING_MAGIC == exe.PING_MAGIC
+
+
+# ---------------------------------------------------------------------------
+# 2026-05-16 Codex audit Bug #1 (KRITISCH) — regression tests for the
+# revised _compute_magic_id() collision-free scheme.
+# ---------------------------------------------------------------------------
+def test_codex_bug1_no_collisions_first_100_numeric_accounts(monkeypatch):
+    """100 distinct numeric FTMO_ACCOUNT_IDs must yield 100 distinct (MAGIC,
+    PING_MAGIC) tuples. The PREVIOUS sha1%100 scheme failed this for
+    23 of the first 100 IDs.
+    """
+    import ftmo_executor as exe
+
+    seen: dict[int, str] = {}  # int → account_id-source
+    for n in range(1, 101):
+        monkeypatch.setenv("FTMO_ACCOUNT_ID", str(n))
+        m = exe._compute_magic_id()
+        ping = m + 7
+        # Both MAGIC and PING_MAGIC must be unique across ALL accounts.
+        assert m not in seen, (
+            f"MAGIC collision at account {n}: {m} already used by "
+            f"account {seen[m]}"
+        )
+        assert ping not in seen, (
+            f"PING_MAGIC of account {n} ({ping}) collides with "
+            f"existing MAGIC/PING of account {seen[ping]}"
+        )
+        seen[m] = f"{n}.MAGIC"
+        seen[ping] = f"{n}.PING_MAGIC"
+
+
+def test_codex_bug1_no_collisions_first_1000_numeric_accounts(monkeypatch):
+    """Stress-test: 1000 numeric account_ids must produce 1000 distinct
+    (MAGIC, PING_MAGIC) tuples. Each account claims a 10-wide slot so
+    PING_MAGIC = MAGIC + 7 never escapes its slot.
+    """
+    import ftmo_executor as exe
+
+    used: set[int] = set()
+    for n in range(1, 1001):
+        monkeypatch.setenv("FTMO_ACCOUNT_ID", str(n))
+        m = exe._compute_magic_id()
+        ping = m + 7
+        assert m not in used, f"MAGIC collision for numeric account {n}: {m}"
+        assert ping not in used, f"PING_MAGIC collision for numeric account {n}: {ping}"
+        used.add(m)
+        used.add(ping)
+    # 1000 accounts × 2 magics each = 2000 distinct values.
+    assert len(used) == 2000
+
+
+def test_codex_bug1_old_collision_pairs_now_distinct(monkeypatch):
+    """The previously-broken hash had documented collisions:
+       - account 11 vs 23  → both sha1%100 = 1 → both MAGIC = 232.
+       - account 1 PING (=239) overlapped account 15 MAGIC (=239).
+    Verify the new scheme separates them cleanly.
+    """
+    import ftmo_executor as exe
+
+    monkeypatch.setenv("FTMO_ACCOUNT_ID", "11")
+    m11 = exe._compute_magic_id()
+    monkeypatch.setenv("FTMO_ACCOUNT_ID", "23")
+    m23 = exe._compute_magic_id()
+    assert m11 != m23, f"account 11 and 23 must have distinct MAGICs (got {m11})"
+
+    monkeypatch.setenv("FTMO_ACCOUNT_ID", "1")
+    m1 = exe._compute_magic_id()
+    ping1 = m1 + 7  # mirror executor's PING_MAGIC formula
+    monkeypatch.setenv("FTMO_ACCOUNT_ID", "15")
+    m15 = exe._compute_magic_id()
+    assert ping1 != m15, (
+        f"account 1 PING_MAGIC ({ping1}) must not equal account 15 MAGIC ({m15}) — "
+        "this was the historical overlap that the +1 offset caused."
+    )
+
+
+def test_codex_bug1_non_numeric_account_uses_sha256_fallback(monkeypatch):
+    """Non-numeric account_ids should hit the sha256 fallback path,
+    yielding values in [1231, 10230].
+    """
+    import ftmo_executor as exe
+
+    monkeypatch.setenv("FTMO_ACCOUNT_ID", "alias-prod-01")
+    m_alias = exe._compute_magic_id()
+    assert 1231 <= m_alias <= 10230, (
+        f"non-numeric account_id should hash into [1231, 10230], got {m_alias}"
+    )
+    # Deterministic across calls.
+    m_alias_again = exe._compute_magic_id()
+    assert m_alias == m_alias_again
+
+    # Distinct non-numeric ids should (almost certainly) yield distinct MAGICs.
+    monkeypatch.setenv("FTMO_ACCOUNT_ID", "alias-prod-02")
+    m_alias2 = exe._compute_magic_id()
+    assert m_alias != m_alias2
+
+
+def test_codex_bug1_negative_account_id_falls_through_to_sha256(monkeypatch):
+    """Negative-looking strings hit the ValueError path → sha256 fallback,
+    not the numeric arithmetic path (would give a negative MAGIC, invalid
+    for MT5).
+    """
+    import ftmo_executor as exe
+
+    monkeypatch.setenv("FTMO_ACCOUNT_ID", "-1")
+    m = exe._compute_magic_id()
+    assert 1231 <= m <= 10230
+
+
+def test_codex_bug1_kill_module_no_collisions(monkeypatch):
+    """ftmo_kill's _compute_magic_id mirrors ftmo_executor's. Spot-check
+    a handful of accounts produce identical magics in both modules.
+    """
+    import ftmo_executor as exe
+    import ftmo_kill
+
+    for raw in ["1", "11", "23", "1000", "alias-prod-01", "-1", ""]:
+        monkeypatch.setenv("FTMO_ACCOUNT_ID", raw)
+        assert exe._compute_magic_id() == ftmo_kill._compute_magic_id(), (
+            f"executor and kill module disagree for FTMO_ACCOUNT_ID={raw!r}"
+        )
+
+
+def test_codex_bug4_handle_kill_request_filters_both_magics():
+    """Codex audit Bug #4 (NORMAL): the internal `handle_kill_request` must
+    close both MAGIC and PING_MAGIC positions — mirroring ftmo_kill.py's
+    external behaviour. Previously the internal version filtered only
+    `p.magic == MAGIC`, leaking ping trades through.
+    """
+    import inspect
+    import ftmo_executor as exe
+
+    src = inspect.getsource(exe.handle_kill_request)
+    assert "in (MAGIC, PING_MAGIC)" in src, (
+        "handle_kill_request must filter positions by magic in "
+        "(MAGIC, PING_MAGIC) — found:\n" + src
+    )
 
 
 if __name__ == "__main__":
