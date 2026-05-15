@@ -106,6 +106,11 @@ import {
   type Daytrade24hTrade,
   type FtmoDaytrade24hConfig,
 } from "@/utils/ftmoDaytrade24h";
+import {
+  tallyRegimeConfluence,
+  type RegimeConfluenceParams,
+  type VoterSide,
+} from "@/utils/regimeVoters";
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -2005,8 +2010,62 @@ export function pollLive(
       // sequence (LSC / correlation / MCT recheck / sizing / stop caps) so
       // a previously-opened position in this same bar will correctly bump
       // the openPositions count for subsequent matches.
-      const matchedAll = trades.filter((t) => t.entryTime === lastBar.openTime);
+      let matchedAll = trades.filter((t) => t.entryTime === lastBar.openTime);
       if (matchedAll.length === 0) continue;
+
+      // 2026-05-15 RegimeConfluence gate (cfg.signalsMode === "regime").
+      // Each candidate trade's direction becomes one anchor vote; the
+      // configured Top-5 voters cast additional votes; tally decides if
+      // the candidate's direction wins the consensus. Default-OFF — when
+      // signalsMode != "regime", matchedAll is left untouched.
+      if (cfg.signalsMode === "regime" && matchedAll.length > 0) {
+        const rcParams: RegimeConfluenceParams = {
+          minVotes: cfg.regimeConfluence?.minVotes ?? 2,
+          // Anchor-as-self path: we have a single anchor vote (this
+          // candidate). requireR28v6 only makes sense when multiple anchors
+          // are passed in parallel — keep false here so the gate decision
+          // reduces to "candidate direction wins strict majority".
+          requireR28v6: false,
+          voters: {
+            useBbZMr: cfg.regimeConfluence?.voters?.useBbZMr ?? false,
+            usePocZ: cfg.regimeConfluence?.voters?.usePocZ ?? false,
+            useSupertrend: cfg.regimeConfluence?.voters?.useSupertrend ?? false,
+            useSmcFvg: cfg.regimeConfluence?.voters?.useSmcFvg ?? false,
+            useHmm: cfg.regimeConfluence?.voters?.useHmm ?? false,
+          },
+        };
+        const surviving: Daytrade24hTrade[] = [];
+        for (const cand of matchedAll) {
+          const anchorSide: VoterSide = cand.direction;
+          // The candidate trade is sourced from one of the engine's
+          // detector flavours (R28V6 / breakout / mean-rev). Without
+          // re-running each flavour, we attribute the vote to the
+          // logical "r28v6" anchor slot — the consensus tally cares about
+          // direction, not which specific anchor flavour produced it.
+          let tally;
+          try {
+            tally = tallyRegimeConfluence(candles, rcParams, {
+              r28v6Vote: anchorSide,
+            });
+          } catch (err) {
+            result.skipped.push({
+              asset: asset.symbol,
+              reason: `regimeConfluence error: ${(err as Error).message}`,
+            });
+            continue;
+          }
+          if (tally.consensus === cand.direction) {
+            surviving.push(cand);
+          } else {
+            result.skipped.push({
+              asset: asset.symbol,
+              reason: `regimeConfluence veto (long=${tally.longVotes} short=${tally.shortVotes} consensus=${tally.consensus ?? "null"})`,
+            });
+          }
+        }
+        matchedAll = surviving;
+        if (matchedAll.length === 0) continue;
+      }
 
       let mctBreakOuter = false;
       for (const matched of matchedAll) {

@@ -929,6 +929,40 @@ export interface FtmoDaytrade24hConfig {
    * (ISO timestamp) and passes it through.
    */
   challengeStartTs?: number;
+  /**
+   * 2026-05-15 RegimeConfluence integration into V4 live engine.
+   *
+   * `signalsMode`:
+   *   - "default" (or undefined): legacy path — V4 engine emits whatever
+   *     `detectAsset` produces (R28V6 / Breakout / MR / other), unchanged.
+   *   - "regime": each candidate trade from `detectAsset` is treated as an
+   *     anchor vote (the existing detector's direction). The V4 engine then
+   *     calls `tallyRegimeConfluence` with the configured Top-5 voters
+   *     (POC-Z, BB-Z, Supertrend, SMC-FVG, HMM). A candidate is emitted
+   *     only if the consensus side matches its direction.
+   *
+   * Default OFF — all existing configs keep their original behaviour.
+   * Backwards-compatible: setting `signalsMode="regime"` without a
+   * `regimeConfluence` block falls back to default params (mv=2, all
+   * voters OFF) → equivalent to "candidate must agree with itself" =
+   * candidate emitted unchanged. Toggle individual voters via the
+   * `voters` flags to engage them.
+   *
+   * See `src/utils/regimeVoters/index.ts` for the consensus contract.
+   */
+  signalsMode?: "default" | "regime";
+  regimeConfluence?: {
+    /** Strict-majority threshold (winningCount >= minVotes AND > losing). */
+    minVotes: 2 | 3;
+    /** Voter toggles (default all OFF if omitted). */
+    voters: {
+      useBbZMr?: boolean;
+      usePocZ?: boolean;
+      useSupertrend?: boolean;
+      useSmcFvg?: boolean;
+      useHmm?: boolean;
+    };
+  };
 }
 
 function spreadCrossAssetFilter(

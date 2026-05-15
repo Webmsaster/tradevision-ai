@@ -466,7 +466,23 @@ export function detectLiveSignalsV4(
         ? open.entryTime + maxHoldHours * 3_600_000
         : Number.MAX_SAFE_INTEGER,
       signalBarClose: lastBar.closeTime,
-      reasons: [`V4 engine open: ${open.symbol} ${open.direction}`],
+      reasons: [
+        `V4 engine open: ${open.symbol} ${open.direction}`,
+        // 2026-05-15 RegimeConfluence — informational tag for the live
+        // executor. The gate is already applied inside pollLive(); this
+        // string is purely diagnostic so live logs show the active mode +
+        // voter pack without touching the LiveSignal shape.
+        ...(cfg.signalsMode === "regime"
+          ? [
+              `signalsMode=regime mv=${cfg.regimeConfluence?.minVotes ?? 2} voters=${
+                Object.entries(cfg.regimeConfluence?.voters ?? {})
+                  .filter(([, v]) => v)
+                  .map(([k]) => k)
+                  .join(",") || "none"
+              }`,
+            ]
+          : []),
+      ],
       ...(open.chandelierAtrAtEntry != null
         ? {
             chandelierExit: {
