@@ -99,6 +99,13 @@ pub fn build_args(params: &TrialParams, env: &TrialEnv) -> Vec<String> {
         args.push(params.drop_symbols.join(","));
     }
 
+    // 2026-05-15 (Audit-Round-6 / Agent #7 HINWEIS verified false-positive):
+    // The field is named `use_htf_macd_gate` but maps to `--use-htf-confirm`.
+    // Looks like wiring drift, but `build_args_includes_regime_flags_when_regime`
+    // test (below) explicitly asserts `--use-htf-confirm` — so the field name
+    // is just misleading; the mapping is intentional. Doc-comment in
+    // space.rs:101 already says `--use-htf-confirm`, consistent with this
+    // mapping. Reverted to original after Round 6 test regression.
     if params.use_htf_macd_gate {
         args.push("--use-htf-confirm".into());
     }

@@ -20,12 +20,13 @@
  */
 const path = require("path");
 
-// R67-r12 audit fix: default bumped to Round 60 PASSLOCK champion
-// (63.24% V4-Engine pass-rate). Previously defaulted to R28_V4-era config
-// `2h-trend-v5-quartz-lite-r28-v4engine` — operator running `pm2 start`
-// without FTMO_TF lost +6.62pp pass-rate vs the Pass-Lock champion that
-// CLAUDE.md / PASSLOCK_DEPLOY_RUNBOOK.md / Memory all claim is current.
-const TF = process.env.FTMO_TF || "2h-trend-v5-r28-v6-passlock";
+// 2026-05-15 (Audit-Round-6 / Agent #5 KRIT): default unified with the
+// Python toolkit (tools/_ftmo_defaults.py) and Next API route
+// (src/app/api/ftmo-state/route.ts). Was "2h-trend-v5-r28-v6-passlock"
+// — the prior 2026-05-04 R28_V6 champion. R28_V6 is now superseded by
+// AMBER_MAX_PASSLOCK (2026-05-15). PM2 starting without an env-override
+// would otherwise boot the outdated strategy.
+const TF = process.env.FTMO_TF || "2h-trend-v5-amber-max-passlock";
 const STATE_DIR = path.resolve(__dirname, "..", `ftmo-state-${TF}`);
 const REPO_ROOT = path.resolve(__dirname, "..");
 

@@ -80,9 +80,39 @@ create policy "Users can view their own trades"
   on trades for select
   using (auth.uid() = user_id and deleted_at is null);
 
+-- 2026-05-15 (Audit-Round-5 / Agent #12 KRIT — regression fix on Round-4):
+-- Round-4 introduced a ±60s `created_at` window in the WITH CHECK predicate
+-- to block back-dating, but that broke legitimate use-cases: CSV / JSON
+-- re-imports that preserve original timestamps, bulk multi-device sync after
+-- offline use, and any client with >60s NTP clock-drift. The fresh-row /
+-- anti-tombstone invariant (deleted_at must be null at insert) stays;
+-- created_at hardening moves to a BEFORE INSERT trigger that always
+-- overwrites the column to now(). This is strictly safer: the client can
+-- send any value and it gets normalised server-side.
 create policy "Users can insert their own trades"
   on trades for insert
-  with check (auth.uid() = user_id);
+  with check (
+    auth.uid() = user_id
+    and deleted_at is null
+  );
+
+-- Force created_at = now() on INSERT regardless of what the client sent.
+-- Pairs with the update_updated_at() trigger which freezes created_at on
+-- UPDATE (defined further down the schema). Together: client-provided
+-- created_at is silently ignored at INSERT and forbidden at UPDATE.
+create or replace function force_created_at_now()
+returns trigger as $$
+begin
+  new.created_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists trades_force_created_at on trades;
+create trigger trades_force_created_at
+  before insert on trades
+  for each row
+  execute function force_created_at_now();
 
 -- R67 audit (Round 2): UPDATE allowed on tombstoned rows too. The R67-r1
 -- attempt to block re-tombstoning broke UPSERT-resolve-to-UPDATE on a
@@ -95,9 +125,17 @@ create policy "Users can update their own trades"
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
-create policy "Users can delete their own trades"
+-- 2026-05-15 (Audit-Round-4 / Agent #11 KRIT): hard DELETE bypassed the
+-- project's soft-delete convention (CLAUDE.md). A REST/Studio client could
+-- erase the audit trail by issuing a raw DELETE — the application-side
+-- soft-delete in `storage.ts deleteTradeFromSupabase` was a single line of
+-- defence. Policy now blocks all DELETEs at the DB level; deletion is
+-- exclusively `update set deleted_at = now()`. Hard purge for the 30-day
+-- retention window runs server-side under the service role (e.g. `pg_cron`),
+-- not from the client.
+create policy "Block client-side hard delete (use soft-delete UPDATE)"
   on trades for delete
-  using (auth.uid() = user_id);
+  using (false);
 
 -- Auto-update updated_at timestamp + freeze created_at on update.
 -- Phase 69 (R45-DB-M6): without `new.created_at = old.created_at`, an

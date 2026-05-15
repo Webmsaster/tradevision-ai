@@ -1,6 +1,10 @@
-# R28_V6_PASSLOCK — Live Deploy Runbook
+# PASSLOCK — Live Deploy Runbook
 
-> ⚠️ **2026-05-12 audit notice:** Pass-rate numbers in this runbook (63.24% / 64.77% / 56.62% / 94% min-1-pass) are **cache-era inflated** — fresh Rust re-baseline shows R28*V6_PASSLOCK = 41.18% step=14d, multi-account 3-stack ≈ **87% min-1-pass**. Current honest champion is **V5_AMBER_PASSLOCK at 55.79% step=1d** (`FTMO_TF=2h-trend-v5-amber-passlock`). Use this runbook for \_deploy mechanics only*; the math/expectation table at the bottom is OUT-OF-DATE. See `CLAUDE.md` re-baseline section + memory `project_session_2026_05_12_65pct_hunt.md`.
+> ⚠️ **2026-05-15 audit notice — superseded champion + corrected target:**
+>
+> 1. **Active champion** is now **V5_AMBER_MAX_PASSLOCK** (`FTMO_TF=2h-trend-v5-amber-max-passlock`), not R28_V6_PASSLOCK. Earlier R28_V6_PASSLOCK 63% was cache-era inflated (funding-target-latch bug + stale-cache); honest fresh Rust = 31.62% post-Codex. Round 4 audit added AMBER_MAX_PASSLOCK to TF_DISPATCH + CFG_REGISTRY.
+> 2. **Real FTMO Challenge profit target** is Standard 2-Step (+10% Phase 1 / +5% Phase 2). The "+8% target" referenced below was an imaginary FTMO product never sold. Per CLAUDE.md 2026-05-15: AMBER_MAX_PASSLOCK + 5 voters at FTMO Phase 1 (pt=0.10) = 49.0%, Phase 2 (pt=0.05) = 59.4%, Combined Funded ≈ 29% single, ~64% 3-Stack.
+> 3. Use this runbook for **deploy mechanics only**; replace every `FTMO_TF=2h-trend-v5-r28-v6-passlock` with `FTMO_TF=2h-trend-v5-amber-max-passlock` and set `FTMO_PROFIT_TARGET=0.10` (Phase 1) or `0.05` (Phase 2). The math/expectation tables below are HISTORICAL.
 
 Pre-condition: Round 60 Sweep abgeschlossen, PASSLOCK als Champion bestätigt (63.24% full-sweep / 64.77% preliminary 86-window backtest, +6.62 to +8.15pp vs R28_V6 56.62% baseline). **10 R60 Audit-Rounds COMPLETE** (~80 agents, ~220 findings, ~70 fixes shipped — R6-R10 hardening patches all merged including R9 gap-fix: open-position MTM realised at window end no longer leaks past Pass-Lock fire).
 

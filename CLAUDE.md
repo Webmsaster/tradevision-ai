@@ -88,15 +88,15 @@ All 17 pattern detectors run in the browser with no API calls. Logic is in `src/
     - V5_OBSIDIAN_PASSLOCK step=3d/334w: **54.19%** (cache unknown; 15 assets full basket)
     - V5_TOPAZ_PASSLOCK step=3d/334w: **50.90%** (cache 63.86%, -12.96pp)
     - V5_TOPAZ step=3d/334w: **39.82%** (cache 63.86%, -24.04pp) — no PASSLOCK
-    - V5_RUBIN — NOT in Rust templates.rs; cache 64.40% unverifiable until ported
-    - V5_PLATINUM — NOT in Rust templates.rs; cache 58.46% unverifiable until ported
+    - V5_RUBIN — ported to Rust 2026-05-13 (commit 6d8c784, `v5_rubin()` + `v5_rubin_passlock()` in `engine-rust/ftmo-engine-core/src/templates.rs`). Cache 64.40% claim was -16-17pp inflated like SAPPHIR — re-baseline before deploying.
+    - V5_PLATINUM — exists in `templates.rs` header listing; cache 58.46% pre-audit, needs fresh Rust re-baseline.
     - **Family pattern confirmed:** PASSLOCK = +6 to +12pp uplift over base config; no PASSLOCK variant > 44%. Single-account ceiling ≈ 56% (AMBER_PASSLOCK).
   - **🏆 Active Single-Account Champion (2026-05-12 honest, post-sister-sweep): `V5_AMBER_PASSLOCK`** (`FTMO_TF=2h-trend-v5-amber-passlock`). **Honest pass-rate 55.79% step=1d** (Rust binary, no phantom-suppress, fresh engine `21d3b79`). Runner-ups: V5_OBSIDIAN_PASSLOCK 54.19% step=3d, V5_TOPAZ_PASSLOCK 50.90% step=3d, V5_TITANIUM_PASSLOCK 49.54% step=1d. Multi-account 3-strategy stack (AMBER + OBSIDIAN + TITANIUM all PASSLOCK): 1 − (1−0.558)(1−0.542)(1−0.495) ≈ **90% min-1-pass** (OBSIDIAN replaces R28_V6 41.18% for stronger uplift). Lower-bound stack (AMBER + TITANIUM + R28_V6 PASSLOCK): ~87%. Mechanism: `closeAllOnTargetReached` flag eliminates give_back. Live deploy: `tools/PASSLOCK_DEPLOY_RUNBOOK.md`. Detail in memory `project_session_2026_05_12_65pct_hunt.md`.
   - **🐛 Critical engine-flag warning:** Do NOT pass `--phantom-suppress` to ftmo-sweep — it deflates pass-rate by ~23pp on PASSLOCK configs. The flag's claimed "+7pp inflation correction" turned out inverted on this signal class. Comment fixed in commit `<pending>`.
   - **❌ DEBUNKED — `V12_30M_OPT_STOCK`** (2026-05-08): claimed 77.14% but R29 10-round audit exposed BUG-MAGIC. With FTMO-realistic `liveCaps {maxStopPct:0.05, maxRiskFrac:0.4}` gave 0/140 pass-rate (ATR×48 stops capped → effRisk=0). Cache was 3-asset (SOL silently dropped by `_r29GenericShard.ts`). Walk-forward Q1=54% / Q4=89% (+34pp recency bias). DO NOT DEPLOY. Same failure-mode as archived V5_ONYX. Full audit detail in `MEMORY.md`.
   - **Prev: R28_V6** (`FTMO_TF=2h-trend-v5-quartz-lite-r28-v6-v4engine`): 56.62% V4-Engine, walk-forward drift -0.63pp = robust. Per-asset tpPct ×0.55, plateau 0.55-0.59. Superseded by PASSLOCK.
   - **Sister champions (2026-05-12 fresh Rust re-baseline, sweep set #2 — supersedes earlier today's pre-sister-sweep numbers):**
-    - **`V5_RUBIN`** (`FTMO_TF=2h-trend-v5-rubin`): cache claim 64.40% step=3d. **Not yet ported to Rust** — engine selector unavailable; verify by porting `v5_rubin()` template before deploying.
+    - **`V5_RUBIN`** (`FTMO_TF=2h-trend-v5-rubin`): cache claim 64.40% step=3d. **Now in Rust** (commit 6d8c784, 2026-05-13). Re-baseline needed — cache likely -16-17pp inflated.
     - **`V5_TOPAZ`** (`FTMO_TF=2h-trend-v5-topaz`): cache claim 63.86% step=3d. Fresh Rust 2026-05-12: **39.82% step=3d/334w** (-24.04pp from cache).
     - **`V5_TOPAZ_PASSLOCK`** (`FTMO_TF=2h-trend-v5-topaz-passlock`): no cache. Fresh Rust 2026-05-12: **50.90% step=3d/334w** — +11.08pp uplift from PASSLOCK on TOPAZ.
     - **`V5_OBSIDIAN_PASSLOCK`** (`FTMO_TF=2h-trend-v5-obsidian-passlock`): no cache claim. Fresh Rust 2026-05-12: **54.19% step=3d/334w** — runner-up champion candidate.

@@ -111,6 +111,9 @@ const TF_DISPATCH: Record<string, TfTag> = {
   // OBSIDIAN, QUARTZ_LITE_R28). R3-Bug #2: STEP2 selector.
   "2h-trend-v5-titanium-passlock": "30m",
   "2h-trend-v5-amber-passlock": "30m",
+  // 2026-05-15 (Audit-Round-4 / Agent #12 KRIT): 2026-05-15 champion was
+  // missing → service crashed at boot with "not registered in TF_DISPATCH".
+  "2h-trend-v5-amber-max-passlock": "30m",
   "2h-trend-v5-obsidian-passlock": "30m",
   "2h-trend-v5-quartz-lite-r28-passlock": "30m",
   "2h-trend-v5-quartz-lite-r28-step2": "30m",
@@ -802,6 +805,7 @@ async function runOneCheck(): Promise<DetectionResult> {
   const isExplicitPasslockSister =
     ftmoTf === "2h-trend-v5-titanium-passlock" ||
     ftmoTf === "2h-trend-v5-amber-passlock" ||
+    ftmoTf === "2h-trend-v5-amber-max-passlock" ||
     ftmoTf === "2h-trend-v5-obsidian-passlock" ||
     ftmoTf === "2h-trend-v5-quartz-lite-r28-passlock" ||
     ftmoTf === "2h-trend-v5-quartz-lite-r28-step2";

@@ -25,15 +25,18 @@ test.describe("Settings Page", () => {
 
   test("should navigate to settings via sidebar", async ({ page }) => {
     await gotoAndWaitForApp(page, "/");
-    // Look for settings link - might be in a menu or gear icon
+    // 2026-05-15 (Audit-Round-4 / Agent #8 KRIT): the old `if (visible) {…}`
+    // pattern produced a ghost-pass — when the sidebar regressed and the link
+    // disappeared, the whole block was skipped and the test still passed with
+    // zero assertions. Now we require the link up-front so a regression fails
+    // the test instead of hiding behind a no-op.
     const settingsLink = page
       .locator("a, button")
       .filter({ hasText: /settings/i })
       .first();
-    if (await settingsLink.isVisible()) {
-      await settingsLink.click();
-      await expect(page).toHaveURL(/\/settings/);
-    }
+    await expect(settingsLink).toBeVisible({ timeout: 5000 });
+    await settingsLink.click();
+    await expect(page).toHaveURL(/\/settings/);
   });
 
   test.fixme("should toggle dashboard widget and persist state", async ({

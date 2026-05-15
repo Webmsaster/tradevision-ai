@@ -243,7 +243,14 @@ def check_round60_passlock_engine() -> tuple[bool, str]:
 
 @check("State directory writable", blocking=True)
 def check_state_dir() -> tuple[bool, str]:
-    tf = os.environ.get("FTMO_TF", "default")
+    # 2026-05-15 (Audit-Round-4 / Agent #9 HIGH): unified default.
+    import sys as _sys
+    from pathlib import Path as _Path
+    _td = str(_Path(__file__).resolve().parent)
+    if _td not in _sys.path:
+        _sys.path.insert(0, _td)
+    from _ftmo_defaults import DEFAULT_FTMO_TF  # type: ignore
+    tf = os.environ.get("FTMO_TF", DEFAULT_FTMO_TF)
     aid = os.environ.get("FTMO_ACCOUNT_ID")
     explicit = os.environ.get("FTMO_STATE_DIR")
     if explicit:

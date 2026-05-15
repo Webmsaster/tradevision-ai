@@ -64,7 +64,13 @@ def _round_to_tick(price: float, tick_size: float, digits: int) -> float:
 # =============================================================================
 # Config — via env vars
 # =============================================================================
-_FTMO_TF = os.environ.get("FTMO_TF", "1h")
+# 2026-05-15 (Audit-Round-4 / Agent #9 HIGH): default unified across the
+# Python toolkit via tools/_ftmo_defaults.py. Was "1h" → caused kill / health
+# / news / preflight to resolve different state-dirs when env was unset.
+# Sibling import (tools/ is on sys.path via the block above).
+from _ftmo_defaults import DEFAULT_FTMO_TF  # type: ignore  # noqa: E402
+
+_FTMO_TF = os.environ.get("FTMO_TF", DEFAULT_FTMO_TF)
 # Phase 73 (R44-V4-Bug 1): per-account state isolation. Two bots on the
 # same TF / strategy but different FTMO accounts must NOT share state
 # files. FTMO_STATE_DIR (explicit) wins, else use ACCOUNT_ID suffix
@@ -84,9 +90,12 @@ MAX_TOTAL_LOSS_PCT = 0.10
 CHALLENGE_START_DATE = os.environ.get("FTMO_START_DATE")
 
 # iter236+: Profit target & pause-after-target behavior
-# FIX 2026-04-27: FTMO Step 1 = 8% target (not 10%). Step 2 = 5% / 60d.
-# Default to Step 1 conditions. Override via FTMO_PROFIT_TARGET env var if doing Step 2.
-PROFIT_TARGET_PCT = float(os.environ.get("FTMO_PROFIT_TARGET", "0.08"))  # FTMO Step 1 = 8%
+# 2026-05-15 (Audit-Round-4 / Agent #12 KRIT, commit 65a4181 follow-up):
+# pt=0.08 was an IMAGINARY FTMO product — real FTMO Standard 2-Step Challenge
+# is +10% (Phase 1) / +5% (Phase 2). Default flipped to 0.10 so a user who
+# forgets to set FTMO_PROFIT_TARGET runs Phase-1 numbers, not an unreachable
+# 8% target that triggers Pass-Lock 2pp too early. Phase 2 must set 0.05.
+PROFIT_TARGET_PCT = float(os.environ.get("FTMO_PROFIT_TARGET", "0.10"))  # FTMO Phase 1 = 10%
 MIN_TRADING_DAYS = int(os.environ.get("FTMO_MIN_TRADING_DAYS", "4"))      # FTMO 2-Step (Step 1 & 2) requires 4 trading days minimum
 PAUSE_AT_TARGET = os.environ.get("FTMO_PAUSE_AT_TARGET", "1").lower() in ("1", "true", "yes")
 # Round 28: dailyPeakTrailingStop. When intraday equity drops trailDistance
@@ -447,7 +456,21 @@ def log_event(event: str, level: str = "info", **kwargs: Any) -> None:
                 os.fsync(f.fileno())
             except OSError:
                 pass  # best-effort on filesystems that don't support fsync
-    print(f"[executor] [{level}] {event}: {kwargs}")
+    # 2026-05-15 (Audit-Round-6 / Agent #10 WARNUNG): kwargs is dumped to
+    # stdout for live-tail convenience, but multiple call-sites pass
+    # sensitive fields (e.g. `mt5_connected` includes `login`, `balance`,
+    # `equity`, `server`). The JSONL file is the authoritative sink with
+    # file-locked + fsync'd writes; the stdout mirror previously echoed
+    # the full kwargs into PM2 / systemd logs that may be piped to less
+    # protected aggregators. Now stdout shows only `event` and `level`,
+    # plus an explicit allow-list of non-sensitive fields. To debug, tail
+    # the JSONL file directly.
+    _SAFE_LOG_KEYS = {"event", "level", "ts", "ok", "n", "reason", "phase"}
+    _safe_view = {k: v for k, v in kwargs.items() if k in _SAFE_LOG_KEYS}
+    if _safe_view:
+        print(f"[executor] [{level}] {event}: {_safe_view}")
+    else:
+        print(f"[executor] [{level}] {event}")
 
 
 def read_json(path: Path, fallback: Any) -> Any:
@@ -802,9 +825,16 @@ def update_day_peak(current_equity_usd: float) -> float:
     Mirrors engine line 5045-5048: dayPeak ratchets only upward within a day.
     """
     try:
-        from zoneinfo import ZoneInfo
+        # 2026-05-15 (Audit-Round-6 / Agent #1 KRIT): on Windows-without-tzdata
+        # the ZoneInfo lookup raises `zoneinfo.ZoneInfoNotFoundError` (subclass
+        # of KeyError, NOT ImportError) → previous handler missed it and the
+        # bot crashed on the first tick. `tzdata` is now in requirements.txt,
+        # but the exception clause catches KeyError belt-and-suspenders
+        # (ZoneInfoNotFoundError inherits from KeyError → safe even when the
+        # import itself failed and the name is unbound).
+        from zoneinfo import ZoneInfo  # type: ignore
         prague_tz = ZoneInfo("Europe/Prague")
-    except ImportError:
+    except (ImportError, KeyError):
         from datetime import timedelta
         prague_tz = timezone(timedelta(hours=1))
     today_prague = datetime.now(prague_tz).strftime("%Y-%m-%d")
@@ -1189,9 +1219,16 @@ def handle_daily_reset(current_equity_usd: float) -> float:
     Off-by-1-2h led to spurious DL boundary detection at the timezone edge.
     """
     try:
-        from zoneinfo import ZoneInfo
+        # 2026-05-15 (Audit-Round-6 / Agent #1 KRIT): on Windows-without-tzdata
+        # the ZoneInfo lookup raises `zoneinfo.ZoneInfoNotFoundError` (subclass
+        # of KeyError, NOT ImportError) → previous handler missed it and the
+        # bot crashed on the first tick. `tzdata` is now in requirements.txt,
+        # but the exception clause catches KeyError belt-and-suspenders
+        # (ZoneInfoNotFoundError inherits from KeyError → safe even when the
+        # import itself failed and the name is unbound).
+        from zoneinfo import ZoneInfo  # type: ignore
         prague_tz = ZoneInfo("Europe/Prague")
-    except ImportError:
+    except (ImportError, KeyError):
         # Python <3.9 fallback — use fixed CET offset
         from datetime import timedelta
         prague_tz = timezone(timedelta(hours=1))  # CET, ignores DST
@@ -1304,9 +1341,16 @@ def _get_yesterday_trade_stats(date_str: str) -> tuple[float, float, float, floa
     match `handle_daily_reset` / `_prague_today_str`.
     """
     try:
-        from zoneinfo import ZoneInfo
+        # 2026-05-15 (Audit-Round-6 / Agent #1 KRIT): on Windows-without-tzdata
+        # the ZoneInfo lookup raises `zoneinfo.ZoneInfoNotFoundError` (subclass
+        # of KeyError, NOT ImportError) → previous handler missed it and the
+        # bot crashed on the first tick. `tzdata` is now in requirements.txt,
+        # but the exception clause catches KeyError belt-and-suspenders
+        # (ZoneInfoNotFoundError inherits from KeyError → safe even when the
+        # import itself failed and the name is unbound).
+        from zoneinfo import ZoneInfo  # type: ignore
         prague_tz = ZoneInfo("Europe/Prague")
-    except ImportError:
+    except (ImportError, KeyError):
         from datetime import timedelta
         prague_tz = timezone(timedelta(hours=1))  # CET, ignores DST
     try:
@@ -2012,9 +2056,16 @@ def _prague_today_str() -> str:
     swallow an entire trading day on the boundary.
     """
     try:
-        from zoneinfo import ZoneInfo
+        # 2026-05-15 (Audit-Round-6 / Agent #1 KRIT): on Windows-without-tzdata
+        # the ZoneInfo lookup raises `zoneinfo.ZoneInfoNotFoundError` (subclass
+        # of KeyError, NOT ImportError) → previous handler missed it and the
+        # bot crashed on the first tick. `tzdata` is now in requirements.txt,
+        # but the exception clause catches KeyError belt-and-suspenders
+        # (ZoneInfoNotFoundError inherits from KeyError → safe even when the
+        # import itself failed and the name is unbound).
+        from zoneinfo import ZoneInfo  # type: ignore
         prague_tz = ZoneInfo("Europe/Prague")
-    except ImportError:
+    except (ImportError, KeyError):
         # Python <3.9 fallback — fixed CET offset (ignores DST).
         prague_tz = timezone(timedelta(hours=1))
     return datetime.now(prague_tz).strftime("%Y-%m-%d")

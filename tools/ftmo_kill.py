@@ -37,10 +37,13 @@ else:
         import mock_mt5 as mt5  # type: ignore
 
 try:
-    from telegram_notify import tg_send  # type: ignore
+    from telegram_notify import tg_send, html_escape  # type: ignore
 except Exception:
     def tg_send(_: str) -> bool:  # noqa: D401 - shim
-        return False
+        return True
+
+    def html_escape(s: str) -> str:  # noqa: D401 - shim
+        return s
 
 
 # 2026-05-15 R3 audit Bug #2 (MITTEL) — REVISED 2026-05-16 Codex audit Bug #1
@@ -91,7 +94,13 @@ def _resolve_state_dir() -> Path:
     explicit = os.environ.get("FTMO_STATE_DIR")
     if explicit:
         return Path(explicit)
-    tf = os.environ.get("FTMO_TF", "2h-trend-v5-r28-v6-passlock")
+    # 2026-05-15 (Audit-Round-4 / Agent #9 HIGH): default unified via
+    # tools/_ftmo_defaults.py. Was hard-coded to the prev R28_V6 champion;
+    # post-AMBER_MAX_PASSLOCK promotion this diverged from the executor.
+    # Sibling import (tools/ is on sys.path via _TOOLS_DIR insert above).
+    from _ftmo_defaults import DEFAULT_FTMO_TF  # type: ignore
+
+    tf = os.environ.get("FTMO_TF", DEFAULT_FTMO_TF)
     acct = os.environ.get("FTMO_ACCOUNT_ID", "")
     suffix = f"-{acct}" if acct else ""
     return Path.cwd() / f"ftmo-state-{tf}{suffix}"
@@ -205,9 +214,14 @@ def main():
             got = int(getattr(info, "login", 0)) if info is not None else None
             print(f"[kill] ERROR: wrong MT5 account (got={got}, want={expected}) — refusing to kill")
             try:
+                # 2026-05-15 (Audit-Round-5 / Agent #9 KRIT): html_escape `got`
+                # + `expected` because tg_send uses parse_mode=HTML — an
+                # unescaped `<`/`>` in the values would make Telegram reject
+                # the whole alert and the operator never sees it.
                 tg_send(
                     f"🔴 <b>KILL refused — wrong MT5 account</b>\n"
-                    f"Got login <code>{got}</code>, want <code>{expected}</code>."
+                    f"Got login <code>{html_escape(str(got))}</code>, "
+                    f"want <code>{html_escape(str(expected))}</code>."
                 )
             except Exception:
                 pass
@@ -250,10 +264,11 @@ def main():
                 "  → bot will still be PAUSED so no new signals fire."
             )
             try:
+                # 2026-05-15 (Audit-Round-5 / Agent #9 KRIT): html_escape err.
                 tg_send(
                     "🔴 <b>KILL FAILED — MT5 disconnect</b>\n"
                     "positions_get() returned None after 4 retries.\n"
-                    f"last_error: <code>{err}</code>\n"
+                    f"last_error: <code>{html_escape(str(err))}</code>\n"
                     "Bot has been paused but live positions may still be open."
                 )
             except Exception:

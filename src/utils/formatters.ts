@@ -31,14 +31,23 @@ export function formatPrice(value: number): string {
 
 /** Format PnL with sign: "+123.45" or "-67.89". */
 export function formatPnl(value: number): string {
-  const sign = value > 0 ? "+" : "";
-  return `${sign}${value.toFixed(2)}`;
+  // 2026-05-15 (Audit-Round-6 / Agent #6 HOCH): negative-zero leak. The
+  // old code returned `"-0.00"` for tiny negatives like -0.001 because
+  // `.toFixed(2)` rounds toward zero but preserves the sign. Traders saw
+  // "-$0.00 PnL" — confusing and factually wrong. Round to two decimals
+  // FIRST, then derive the sign from the rounded value.
+  const rounded = Number(value.toFixed(2));
+  const sign = rounded > 0 ? "+" : "";
+  return `${sign}${rounded.toFixed(2)}`;
 }
 
 /** Format a percentage with sign: "+12.3%" or "-4.5%". */
 export function formatPercent(value: number, decimals = 1): string {
-  const sign = value > 0 ? "+" : "";
-  return `${sign}${value.toFixed(decimals)}%`;
+  // 2026-05-15 (Audit-Round-6 / Agent #6 HOCH): same negative-zero fix as
+  // formatPnl above. Round first, then sign.
+  const rounded = Number(value.toFixed(decimals));
+  const sign = rounded > 0 ? "+" : "";
+  return `${sign}${rounded.toFixed(decimals)}%`;
 }
 
 /**

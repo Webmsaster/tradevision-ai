@@ -34,8 +34,12 @@ for tp in 0.50 0.60 0.65 0.70 0.75 0.80 0.85 0.90 0.95 1.05 1.10 1.20; do
 done
 
 # vol-mult sweep with vol-confirm on
+# 2026-05-15 (Audit-Round-4 / Agent #10 KRIT): label was `vm=$vm_vc`, but
+# `$vm_vc` is bash's parse of the variable name `vm_vc` (suffix `_vc` is
+# valid identifier chars) → expanded to empty string → all 7 runs landed
+# in the TSV with identical label "vm=" and earlier rows were clobbered.
 for vm in 1.5 1.8 2.0 2.2 2.5 2.8 3.0; do
-  run "vm=$vm_vc" --regime-vol-confirm --regime-vol-mult $vm
+  run "vm=${vm}_vc" --regime-vol-confirm --regime-vol-mult $vm
 done
 
 # Drop symbols (low-quality assets)

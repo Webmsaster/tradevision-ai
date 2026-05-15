@@ -9,8 +9,16 @@ SYMS="AAVEUSDT,ADAUSDT,ALGOUSDT,ARBUSDT,ATOMUSDT,AVAXUSDT,BCHUSDT,BNBUSDT,BTCUSD
 OUT=scripts/cache_bakeoff/hunt_2026_05_15
 mkdir -p "$OUT"
 RESULTS="$OUT/combined_results.tsv"
-: > "$RESULTS"
-echo -e "label\tP1\tP2\tcombined_pct" >> "$RESULTS"
+# 2026-05-15 (Audit-Round-4 / Agent #10 KRIT): the old `: > "$RESULTS"` wiped
+# the TSV on every invocation. The session memo for this script explicitly
+# advertises it as resumable, but the user had to abandon the run at 12/28 —
+# re-running this script would have erased the prior 12 measurements. Now we
+# create the header iff the file is missing and skip configs already present,
+# so the script is genuinely idempotent. Set FORCE_RESET=1 to start over.
+if [ "${FORCE_RESET:-0}" = "1" ] || [ ! -s "$RESULTS" ]; then
+  : > "$RESULTS"
+  echo -e "label\tP1\tP2\tcombined_pct" >> "$RESULTS"
+fi
 
 # Default voter set = champion
 VOTERS_CHAMP="--signals regime --regime-min-votes 2 --regime-poc-z --regime-bb-z-mr --regime-use-supertrend --regime-use-smc-fvg --regime-use-hmm"
@@ -24,6 +32,10 @@ run() {
   local label="$1"; local cfg="$2"; local voters="$3"
   shift 3
   COUNT=$((COUNT + 1))
+  if grep -q "^${label}"$'\t' "$RESULTS" 2>/dev/null; then
+    echo "[skip-done $COUNT/$TOTAL_EXPECTED] $label"
+    return
+  fi
   local elapsed=$(($(date +%s) - START_TS))
   echo "[$COUNT/$TOTAL_EXPECTED @ ${elapsed}s] $label"
   local p1=$($SWEEP $COMMON --config "$cfg" --profit-target 0.10 $voters "$@" 2>&1 | tail -1 | grep -oE '[0-9]+\.[0-9]+%' | head -1 | tr -d '%')

@@ -13,6 +13,28 @@ import { normalizeDateToUTC } from "@/utils/dateNormalize";
  * cannot extract at least one row with 2+ columns, it is not CSV.
  */
 async function sniffCsvShape(file: File): Promise<boolean> {
+  // 2026-05-15 (Audit-Round-6 / Agent #8 KRIT): UTF-16 LE/BE BOM detection.
+  // Windows Excel "Unicode Text" exports default to UTF-16 LE (FF FE) which
+  // the UTF-8 default decoder turns into garbage like "\x00P\x00a\x00i\x00r"
+  // — `transformHeader: h => h.replace(/^﻿/, "")` only strips UTF-8 BOM
+  // (EF BB BF). The user then saw "skipped all rows" without diagnostic.
+  // Reject early with a clear message so the user re-saves as UTF-8.
+  const headerBytes = file.slice(0, 4);
+  let bom: ArrayBuffer;
+  try {
+    bom = await headerBytes.arrayBuffer();
+  } catch {
+    return false;
+  }
+  const b = new Uint8Array(bom);
+  if (
+    b.length >= 2 &&
+    ((b[0] === 0xff && b[1] === 0xfe) || (b[0] === 0xfe && b[1] === 0xff))
+  ) {
+    throw new Error(
+      "File is UTF-16 encoded. Please re-save as UTF-8 CSV (in Excel: Save As → CSV UTF-8).",
+    );
+  }
   const slice = file.slice(0, 1024);
   let head: string;
   try {

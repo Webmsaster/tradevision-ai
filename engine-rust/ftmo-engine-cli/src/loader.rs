@@ -152,7 +152,16 @@ pub fn align_funding(candles: &[Candle], funding: &[FundingPt]) -> Vec<Option<f6
         // Boundary-INCLUSIVE: events at [t, t + bar_dur) belong to THIS bar.
         let upper = t + bar_dur_ms;
         while f_idx < funding.len() && funding[f_idx].t < upper {
-            cur = Some(funding[f_idx].r);
+            // 2026-05-15 (Audit-Round-7 / Agent #5 KRIT): is_finite() guard
+            // mirrors `align_stablecoin_supply` (line 333). Upstream cache
+            // can emit NaN/Inf for transient feed errors; without this guard
+            // the NaN propagates through `cur` to every subsequent bar
+            // (sticky) and silently poisons funding-cost deduction —
+            // funding-aware detectors see NaN comparisons (always false) and
+            // become dormant.
+            if funding[f_idx].r.is_finite() {
+                cur = Some(funding[f_idx].r);
+            }
             f_idx += 1;
         }
         out.push(cur);
@@ -205,7 +214,11 @@ pub fn align_top_ls(candles: &[Candle], pts: &[TopLsPt]) -> Vec<Option<f64>> {
         let t = c.open_time;
         let upper = t + bar_dur_ms;
         while f_idx < pts.len() && pts[f_idx].t < upper {
-            cur = Some(pts[f_idx].r);
+            // 2026-05-15 (Audit-Round-7 / Agent #5 KRIT): is_finite() guard.
+            // Same rationale as align_funding above.
+            if pts[f_idx].r.is_finite() {
+                cur = Some(pts[f_idx].r);
+            }
             f_idx += 1;
         }
         out.push(cur);
@@ -267,7 +280,12 @@ pub fn align_cb_premium(candles: &[Candle], pts: &[CbPremiumPt]) -> Vec<Option<f
         let t = c.open_time;
         let upper = t + bar_dur_ms;
         while p_idx < pts.len() && pts[p_idx].t < upper {
-            cur = Some(pts[p_idx].premium_pct);
+            // 2026-05-15 (Audit-Round-7 / Agent #5 KRIT): is_finite() guard.
+            // Mirrors align_stablecoin_supply and the funding/top_ls fixes
+            // above. NaN/Inf in upstream cache → silent voter dormancy.
+            if pts[p_idx].premium_pct.is_finite() {
+                cur = Some(pts[p_idx].premium_pct);
+            }
             p_idx += 1;
         }
         out.push(cur);

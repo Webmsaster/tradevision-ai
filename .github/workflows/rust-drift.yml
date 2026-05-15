@@ -15,6 +15,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# 2026-05-15 (Audit-Round-7 / Agent #34 HIGH): least-privilege permissions.
+# Workflow uploads artifacts but doesn't modify repo contents.
+permissions:
+  contents: read
+
 jobs:
   drift:
     name: Regenerate fixtures + drift report

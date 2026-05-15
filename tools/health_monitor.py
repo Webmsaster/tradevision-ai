@@ -58,7 +58,10 @@ def _state_dir() -> Path:
     explicit = os.environ.get("FTMO_STATE_DIR")
     if explicit:
         return Path(explicit)
-    tf = os.environ.get("FTMO_TF", "default")
+    # 2026-05-15 (Audit-Round-4 / Agent #9 HIGH): unified default.
+    # Sibling import (tools/ is on sys.path via the insert at module top).
+    from _ftmo_defaults import DEFAULT_FTMO_TF  # type: ignore
+    tf = os.environ.get("FTMO_TF", DEFAULT_FTMO_TF)
     aid = os.environ.get("FTMO_ACCOUNT_ID")
     if aid:
         return Path.cwd() / f"ftmo-state-{tf}-{aid}"
@@ -106,10 +109,30 @@ def _read_alert_state() -> dict[str, float]:
 
 def _write_alert_state(state: dict[str, float]) -> None:
     """Write alert state. Caller must hold ``file_lock(_alert_lock_path())``
-    (R67-R17 fix #1)."""
+    (R67-R17 fix #1).
+
+    2026-05-15 (Audit-Round-5 / Agent #9 KRIT): atomic tmp+rename. Prior
+    `write_text` was non-atomic — a power-loss mid-write left a truncated
+    alerts.json → next read failed (silent fallback to empty state) →
+    cooldown reset → spam of double-alerts in the 30-min window. Mirrors
+    the pattern in ftmo_kill.py:160-170 and ftmo_executor.py's write_json.
+    """
     p = _alert_state_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(state, indent=2))
+    payload = json.dumps(state, indent=2)
+    tmp = p.with_suffix(f"{p.suffix}.tmp.{os.getpid()}")
+    try:
+        tmp.write_text(payload)
+        # Atomic rename: POSIX guarantees readers see either old or new content,
+        # never a torn write. On Windows os.replace is also atomic.
+        os.replace(tmp, p)
+    except Exception:
+        # If the tmp file leaked, try to remove it so we don't leave debris.
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
 
 
 def _alert(error_type: str, msg: str) -> bool:

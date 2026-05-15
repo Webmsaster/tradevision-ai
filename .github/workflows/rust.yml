@@ -14,6 +14,12 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
+# 2026-05-15 (Audit-Round-7 / Agent #34 HIGH): least-privilege permissions.
+# Without an explicit top-level block, workflows inherit the repo/org default
+# (potentially `contents: write` or broader). Cargo test only needs read.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: cargo test

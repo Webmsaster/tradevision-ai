@@ -89,7 +89,13 @@ fn compute_vwap_trend_vote(
     let (sum_pv_p, sum_v_p) = prev_slice.iter().fold((0.0_f64, 0.0_f64), |(p, v), c| {
         (p + c.close * c.volume, v + c.volume)
     });
-    if sum_v_p <= 0.0 {
+    // 2026-05-15 (Audit-Round-5 / Agent #2 HINWEIS): is_finite guard. A NaN
+    // volume on any prev_slice bar propagates through sum_v_p, makes
+    // `NaN <= 0.0` evaluate to false, division produces NaN vwap_prev, and
+    // rising/falling comparisons return false for ANY bar (NaN-poisoned) →
+    // silent voter-abstain instead of a directional vote. Mirror the
+    // `sum_v` guard on line 80 which already checks `is_finite`.
+    if !sum_v_p.is_finite() || !sum_pv_p.is_finite() || sum_v_p <= 0.0 {
         return None;
     }
     let vwap_prev = sum_pv_p / sum_v_p;

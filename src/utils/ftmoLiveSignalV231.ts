@@ -564,6 +564,13 @@ const CFG_REGISTRY: Record<string, CfgRegistryEntry> = {
     cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_PASSLOCK,
     label: "V5_AMBER_PASSLOCK (closeAllOnTargetReached)",
   },
+  // 2026-05-15 (Audit-Round-4 / Agent #12 KRIT): champion AMBER_MAX_PASSLOCK
+  // was missing from CFG_REGISTRY → resolve threw "not in CFG_REGISTRY" at
+  // service boot. See ftmoDaytrade24h.ts:8678 for the config definition.
+  "2h-trend-v5-amber-max-passlock": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK,
+    label: "V5_AMBER_MAX_PASSLOCK (2026-05-15 champion, 24 assets)",
+  },
   "2h-trend-v5-obsidian-passlock": {
     cfg: CFGS.FTMO_DAYTRADE_24H_V5_OBSIDIAN_PASSLOCK,
     label: "V5_OBSIDIAN_PASSLOCK (closeAllOnTargetReached)",
@@ -1082,7 +1089,24 @@ export function detectLiveSignalsV231(
   const tfHours = cfgTfMs / 3600_000;
   const ethLastIdx = ethCandles.length - 1;
   const b1 = ethCandles[ethLastIdx];
-  const entryOpenTime = b1!.openTime + tfHours * 3600_000;
+  // 2026-05-15 (Audit-Round-5 / Agent #8 KRIT): NaN-Guards. Binance can return
+  // partial candles (openTime/close NaN/Inf) during reconnect. Without these
+  // guards a NaN `entryOpenTime` produced `entryHour = NaN`, `allowedHours
+  // .includes(NaN) = false` → signal fired outside allowed hours; a NaN entry
+  // price propagated into stop/tp and reached the MT5 executor as a NaN price
+  // → MT5 DLL crash with no retry.
+  if (
+    !b1 ||
+    !Number.isFinite(b1.openTime) ||
+    !Number.isFinite(b1.close) ||
+    b1.close <= 0
+  ) {
+    result.notes.push(
+      `Skip: invalid candle (openTime=${b1?.openTime}, close=${b1?.close}).`,
+    );
+    return result;
+  }
+  const entryOpenTime = b1.openTime + tfHours * 3600_000;
   const entryHour = new Date(entryOpenTime).getUTCHours();
   // Default allowed hours by bar-cadence (overridable via CFG.allowedHoursUtc).
   // Sub-2h timeframes get all 24 hours; 2h gets every-other-hour; 4h gets the
@@ -1393,7 +1417,12 @@ export function detectLiveSignalsV231(
         chSeries.length >= 2 ? chSeries[chSeries.length - 2] : undefined;
       const cur = chSeries[chSeries.length - 1];
       const v = prev ?? cur;
-      if (v !== null && v !== undefined) chandelierAtrAtEntry = v;
+      // 2026-05-15 (Audit-Round-5 / Agent #8 HIGH): ATR can return NaN/Infinity
+      // when high==low on flat-candle windows. A NaN `chandelierAtrAtEntry`
+      // propagates to the Python executor where `entry - chandelier * NaN`
+      // produces NaN → trailing-stop never fires, position never closes.
+      if (v !== null && v !== undefined && Number.isFinite(v) && v > 0)
+        chandelierAtrAtEntry = v;
     }
 
     result.signals.push({
@@ -1507,15 +1536,32 @@ function detectBullSignals(
   const ethLastIdx = ethCandles.length - 1;
   const b0 = ethCandles[ethLastIdx - 1];
   const b1 = ethCandles[ethLastIdx];
+  // 2026-05-15 (Audit-Round-5 / Agent #8 KRIT): unified NaN-guard parity with
+  // the main detector (line 1092). Without these guards a NaN close from
+  // partial Binance data slipped through both branches asymmetrically.
+  if (
+    !b0 ||
+    !b1 ||
+    !Number.isFinite(b0.close) ||
+    !Number.isFinite(b1.close) ||
+    !Number.isFinite(b1.openTime) ||
+    b1.close <= 0
+  ) {
+    result.notes.push(
+      `Skip BULL: invalid candle (b1.close=${b1?.close}, b0.close=${b0?.close}).`,
+    );
+    return result;
+  }
+  const prevPrev = ethCandles[ethLastIdx - 2]?.close;
   const last2Green =
-    b1!.close > b0!.close &&
-    b0!.close > (ethCandles[ethLastIdx - 2]?.close ?? Infinity);
+    b1.close > b0.close &&
+    b0.close > (Number.isFinite(prevPrev) ? (prevPrev as number) : Infinity);
   if (!last2Green) {
     result.notes.push("No 2-green sequence → no BULL signal");
     return result;
   }
 
-  const entryOpenTime = b1!.openTime + tfHours * 3600_000;
+  const entryOpenTime = b1.openTime + tfHours * 3600_000;
   if (isNewsBlackout(entryOpenTime, newsEvents, NEWS_BLACKOUT_MINUTES)) {
     result.notes.push("News blackout");
     return result;

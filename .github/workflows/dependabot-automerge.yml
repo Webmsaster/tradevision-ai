@@ -8,8 +8,15 @@ on:
       - synchronize
       - ready_for_review
 
+# 2026-05-15 (Audit-Round-4 / Agent #11 HIGH): `contents: write` was wider
+# than necessary — `gh pr merge --auto --squash` only needs `pull-requests:
+# write`; the actual merge happens through the GitHub-side auto-merge engine
+# under the bot's token, not via a direct git push from this workflow. With
+# `pull_request_target` carrying repo-secret access on `synchronize`, a
+# compromised dependabot branch (or a manipulated metadata-action) would
+# otherwise inherit branch-write rights.
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
 
 jobs:
@@ -34,10 +41,18 @@ jobs:
         if: >-
           steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
           steps.metadata.outputs.update-type == 'version-update:semver-minor'
-        run: gh pr review --repo "$GITHUB_REPOSITORY" "$PR_NUMBER" --approve -b "Auto-approving Dependabot ${{ steps.metadata.outputs.update-type }}."
+        # 2026-05-15 (Audit-Round-7 / Agent #34 HIGH): output-injection
+        # hardening. `${{ ... }}` interpolation of an action output into a
+        # shell `run` string is a known supply-chain risk if the action's
+        # output ever becomes attacker-controllable (today the action is
+        # SHA-pinned + first-party, but future tag-floats would re-open the
+        # gap). Move the value into an env-var and use parameter expansion
+        # so the shell never interprets the contents.
+        run: gh pr review --repo "$GITHUB_REPOSITORY" "$PR_NUMBER" --approve -b "Auto-approving Dependabot $UPDATE_TYPE."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
 
       # Round 54: defense-in-depth — wait for ALL CI checks to finish and
       # require all to pass before enabling auto-merge. Branch protection is

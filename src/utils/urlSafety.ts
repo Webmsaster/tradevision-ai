@@ -30,11 +30,22 @@ export function isPrivateHostname(host: string): boolean {
   if (v4) {
     const a = parseInt(v4[1]!, 10);
     const b = parseInt(v4[2]!, 10);
+    // 2026-05-15 (Audit-Round-7 / Agent #24 HIGH): close defense gaps.
+    // 0.0.0.0/8 — RFC 1122 "this network", on many kernels equivalent to
+    // loopback (was only exact-match before).
+    // 100.64.0.0/10 — RFC 6598 Carrier-Grade NAT (mobile / ISP-NAT). In
+    // CGNAT deployments these IPs reach internal services and bypass
+    // basic SSRF guards.
+    // 198.18.0.0/15 — RFC 2544 benchmark/test (occasionally seen in lab
+    // deployments forwarded to admin endpoints).
+    if (a === 0) return true; // 0/8 this-network
     if (a === 10) return true; // 10/8
+    if (a === 100 && b >= 64 && b <= 127) return true; // 100.64/10 CGNAT (RFC 6598)
     if (a === 127) return true; // 127/8 loopback
     if (a === 169 && b === 254) return true; // 169.254/16 link-local + AWS metadata
     if (a === 172 && b >= 16 && b <= 31) return true; // 172.16/12
     if (a === 192 && b === 168) return true; // 192.168/16
+    if (a === 198 && (b === 18 || b === 19)) return true; // 198.18/15 benchmark
     if (a >= 224) return true; // multicast / reserved
   }
   // IPv6 literals — explicit forms.

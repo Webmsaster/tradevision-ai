@@ -52,6 +52,37 @@ if (DSN) {
     tracesSampleRate: 0.1,
     replaysSessionSampleRate: 0,
     replaysOnErrorSampleRate: 0,
+    sendDefaultPii: false,
     beforeSend: (event) => sanitizeEvent(event),
+    // 2026-05-15 (Audit-Round-5 / Agent #7 WARNUNG): mirror the client-side
+    // breadcrumb + transaction scrubbing on the server runtime.
+    beforeBreadcrumb: (b) => {
+      try {
+        if (b.data && typeof b.data === "object") {
+          for (const k of Object.keys(b.data)) {
+            const v = (b.data as Record<string, unknown>)[k];
+            if (typeof v === "string") {
+              (b.data as Record<string, unknown>)[k] = redactSensitive(v);
+            }
+          }
+        }
+        if (typeof b.message === "string") {
+          b.message = redactSensitive(b.message);
+        }
+      } catch {
+        // best-effort
+      }
+      return b;
+    },
+    beforeSendTransaction: (tx) => {
+      try {
+        if (typeof tx.transaction === "string") {
+          tx.transaction = redactSensitive(tx.transaction);
+        }
+      } catch {
+        // best-effort
+      }
+      return tx;
+    },
   });
 }

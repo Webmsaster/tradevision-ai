@@ -271,6 +271,24 @@ export interface FtmoDaytrade24hConfig {
   timeframe: "5m" | "15m" | "30m" | "1h" | "2h" | "4h";
   assets: Daytrade24hAssetCfg[];
   profitTarget: number;
+  /**
+   * 2026-05-15 (Audit-Round-4 / Agent #5 HIGH): strict-pass mode.
+   *
+   * The Rust ftmo-sweep binary added `--strict-pass` in 2026-05-13 (memory
+   * `project_session_2026_05_13_80pct_audit.md`) — it requires final equity
+   * to be ≥ (1 + profitTarget) at window end, NOT just the "give-back half"
+   * fallback (1 + 0.5×profitTarget). Champion C2 dropped from 80.04% →
+   * 73.25% strict, single-account ceiling 76.32%.
+   *
+   * TS V4-Sim never grew the equivalent flag, so every TS-shard re-run
+   * (`scripts/_r28V6Shard.ts`, `_r29*Shard.ts`) reported the inflated soft-
+   * pass rate while Rust reported honest numbers — silent inflation of all
+   * TS-validated baselines. Set `strictPass: true` on the cfg to mirror
+   * Rust strict semantics.
+   *
+   * Default: `false` (legacy soft-pass behaviour — give-back half allowed).
+   */
+  strictPass?: boolean;
   maxDailyLoss: number;
   maxTotalLoss: number;
   minTradingDays: number;
@@ -8672,6 +8690,52 @@ export const FTMO_DAYTRADE_24H_V12_30M_OPT_STOCK_LIVECAPS: FtmoDaytrade24hConfig
 // mirrors V5_QUARTZ (same 30m timeframe basket).
 export const FTMO_DAYTRADE_24H_V5_AMBER_PASSLOCK: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER,
+  closeAllOnTargetReached: true,
+  atrStop: { period: 56, stopMult: 2 },
+};
+// 2026-05-15 (Audit-Round-4 / Agent #12 KRIT): V5_AMBER_MAX_PASSLOCK is the
+// 2026-05-15 champion measured in Rust ftmo-sweep (templates.rs:488,
+// `v5_amber_max_passlock`). It was missing from the TS pipeline → TF_DISPATCH
+// resolveTf + CFG_REGISTRY failed → Live-Deploy of the active champion was
+// blocked. Mirrors Rust: V5_AMBER base + 9 extra (DOT/TRX/ALGO/NEAR + ATOM/
+// LINK/SOL/STX/UNI) at tpPct=0.020, stopPct=0.05, holdBars=240, riskFrac=1.0,
+// invertDirection=true, disableShort=true. PASSLOCK = closeAllOnTargetReached.
+// Costs match the rest of the V5_* family (costBp=30, slippageBp=8, swapBpPerDay=4).
+const _AMBER_MAX_EXTRA_ASSETS: Daytrade24hAssetCfg[] = [
+  "DOT",
+  "TRX",
+  "ALGO",
+  "NEAR",
+  "ATOM",
+  "LINK",
+  "SOL",
+  "STX",
+  "UNI",
+].map((coin) => ({
+  symbol: `${coin}-TREND`,
+  sourceSymbol: `${coin}USDT`,
+  costBp: 30,
+  slippageBp: 8,
+  swapBpPerDay: 4,
+  riskFrac: 1.0,
+  triggerBars: 1,
+  invertDirection: true,
+  disableShort: true,
+  stopPct: 0.05,
+  tpPct: 0.02,
+  holdBars: 240,
+}));
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER,
+  assets: [
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER.assets,
+    ..._AMBER_MAX_EXTRA_ASSETS.filter(
+      (a) =>
+        !FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER.assets.some(
+          (b) => b.symbol === a.symbol,
+        ),
+    ),
+  ],
   closeAllOnTargetReached: true,
   atrStop: { period: 56, stopMult: 2 },
 };

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   SETTINGS_CHANGED_EVENT,
   SETTINGS_KEY as SETTINGS_STORAGE_KEY,
@@ -274,6 +274,20 @@ export default function SettingsPage() {
   // Remove. While the async cloud reassignment is in flight the button is
   // disabled (per row), and the onClick callback uses `void` so the
   // floating Promise warning is silenced and the click handler stays sync.
+  // 2026-05-15 (Audit-Round-5 / Agent #5 WARNUNG): refs for setTimeout cleanup.
+  // Both `saved` (2s auto-clear) and `testStatus` (5s auto-clear) used to
+  // schedule a setTimeout that could fire after the component unmounted →
+  // "Can't perform a state update on an unmounted component" React warning.
+  // We clear pending timers in the cleanup effect on unmount.
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const testTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+      if (testTimerRef.current) clearTimeout(testTimerRef.current);
+    };
+  }, []);
+
   const [removingAccountId, setRemovingAccountId] = useState<string | null>(
     null,
   );
@@ -327,7 +341,8 @@ export default function SettingsPage() {
     const userKey = resolveUserKey(user?.id);
     await saveSettingsEncrypted(settings, userKey);
     setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+    savedTimerRef.current = setTimeout(() => setSaved(false), 2000);
     // Dispatch event so other components can react. We dispatch the
     // PLAINTEXT in-memory `settings` so listeners (e.g. AccountSwitcher)
     // continue to work without needing to know about the envelope.
@@ -404,7 +419,8 @@ export default function SettingsPage() {
         `Error: ${err instanceof Error ? err.message : "Failed to send"}`,
       );
     }
-    setTimeout(() => {
+    if (testTimerRef.current) clearTimeout(testTimerRef.current);
+    testTimerRef.current = setTimeout(() => {
       setTestStatus(null);
       setTestMessage("");
     }, 5000);

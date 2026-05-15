@@ -2,7 +2,7 @@
 
 AI-powered trading journal and performance analyzer that helps traders identify patterns, track performance, and improve their edge through data-driven insights.
 
-> **Status:** App-side (journal, analytics, AI insights, auth, CSV import/export) is production-grade — all 1049+ vitest + 153+ pytest tests pass, Lighthouse a11y 100/100, CI/CD + Dependabot active. The optional FTMO bot subsystem (`tools/`) is **deploy-ready but not yet live-validated**: champion R28_V6_PASSLOCK = 63.24% backtest pass-rate (10 R60 audit-rounds, ~70 fixes shipped); expected live ~60% single-account pending Demo-account validation.
+> **Status (2026-05-15):** App-side (journal, analytics, AI insights, auth, CSV import/export) is production-grade — full vitest + pytest + cargo test suites pass, Lighthouse a11y 100/100, CI/CD + Dependabot active. The optional FTMO bot subsystem (`tools/`) is **deploy-ready but not yet live-validated**: champion **V5_AMBER_MAX_PASSLOCK** (`FTMO_TF=2h-trend-v5-amber-max-passlock`) on real FTMO Standard 2-Step gives P1=49.0% / P2=59.4% / Combined Funded ~29% single, ~64% 3-Stack. Earlier R28_V6_PASSLOCK 63% claim was inflated by funding-target-latch + cache-staleness — see CLAUDE.md re-baseline section.
 
 ## Features
 
@@ -19,7 +19,7 @@ AI-powered trading journal and performance analyzer that helps traders identify 
 
 | Layer     | Technology                           |
 | --------- | ------------------------------------ |
-| Framework | Next.js 15 (App Router)              |
+| Framework | Next.js 16 (App Router)              |
 | UI        | React 19, Custom CSS                 |
 | Database  | Supabase (PostgreSQL)                |
 | Charts    | Recharts                             |
@@ -30,7 +30,7 @@ AI-powered trading journal and performance analyzer that helps traders identify 
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 20+ (engines.node >=20 — Next.js 16 requirement)
 - npm
 
 ### Installation

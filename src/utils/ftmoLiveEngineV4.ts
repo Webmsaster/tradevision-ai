@@ -2218,7 +2218,13 @@ export function simulate(
   const targetHit =
     state.firstTargetHitDay !== null &&
     state.tradingDays.length >= cfg.minTradingDays;
-  const finalEquityFloor = 1 + cfg.profitTarget * 0.5;
+  // 2026-05-15 (Audit-Round-4 / Agent #5 HIGH): strict-pass support. When
+  // `cfg.strictPass === true`, the give-back floor is the FULL profit target,
+  // matching Rust `--strict-pass`. Otherwise legacy soft-pass behaviour: half
+  // of the profit target is tolerated as "give-back". The TS shard-runners
+  // (`_r28V6Shard.ts` etc.) were reporting +7pp inflated rates vs Rust until
+  // this flag was wired through.
+  const finalEquityFloor = 1 + cfg.profitTarget * (cfg.strictPass ? 1.0 : 0.5);
   const giveBackTooFar =
     targetHit &&
     Number.isFinite(state.equity) &&

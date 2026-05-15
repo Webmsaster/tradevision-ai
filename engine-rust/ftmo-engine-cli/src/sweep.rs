@@ -1178,7 +1178,17 @@ fn main() -> Result<()> {
             "--use-htf-confirm" => use_htf_confirm = true,
             "--htf-stride" => htf_stride = need!("--htf-stride").parse()?,
             "--strict-pass" => strict_pass = true,
-            "--regime-min-votes" => regime_min_votes = need!("--regime-min-votes").parse()?,
+            "--regime-min-votes" => {
+                // 2026-05-15 (Audit-Round-4 / Agent #4 MED): refuse 0. With
+                // min=0 every consensus pair fires (signals_regime_confluence.rs
+                // line ~979 `if winning_count < min`). A Codex audit fixed the
+                // u8::MAX upper-clamp but the 0-floor was still open.
+                let mv: usize = need!("--regime-min-votes").parse()?;
+                if mv == 0 {
+                    anyhow::bail!("--regime-min-votes must be ≥ 1 (0 would fire on every consensus pair)");
+                }
+                regime_min_votes = mv;
+            }
             "--regime-require-r28v6" => regime_require_r28v6 = true,
             "--regime-vol-confirm" => regime_use_vol_confirm = true,
             "--regime-vol-period" => regime_vol_period = need!("--regime-vol-period").parse()?,
@@ -1376,6 +1386,31 @@ fn main() -> Result<()> {
         if let Err(e) = rayon::ThreadPoolBuilder::new().num_threads(t).build_global() {
             eprintln!("[sweep] WARN: rayon thread-pool init failed: {e}");
         }
+    }
+
+    // 2026-05-15 (Audit-Round-6 / Agent #11 WARNUNG): mutually-exclusive flag
+    // combinations that previously silently last-write-wins or no-op. Bail
+    // loud so script bugs are surfaced instead of producing misleading
+    // pass-rates.
+    if disable_passlock && enable_passlock {
+        anyhow::bail!(
+            "--disable-passlock and --enable-passlock are mutually exclusive"
+        );
+    }
+    if drop_symbols.is_some() && keep_symbols.is_some() {
+        anyhow::bail!(
+            "use --keep-symbols (whitelist) OR --drop-symbols (blacklist), not both"
+        );
+    }
+    if disable_trail && (override_trail_pct.is_some() || override_trail_activate.is_some()) {
+        anyhow::bail!(
+            "--disable-trail conflicts with --override-trail-pct / --override-trail-activate (the override would be silently ignored)"
+        );
+    }
+    if debug_window.is_some() && trades_out.is_none() {
+        anyhow::bail!(
+            "--debug-window requires --trades-out PATH to capture the per-trade dump"
+        );
     }
 
     // 2026-05-13 Codex Round 7 #B8 FIX: hard-error when single-asset path
@@ -1822,7 +1857,14 @@ fn run_single_asset(
             if let Ok(mut g) = writer.lock() {
                 if let Some(w) = g.as_mut() {
                     if let Ok(line) = serde_json::to_string(&report) {
-                        let _ = writeln!(w, "{line}");
+                        // 2026-05-15 (Audit-Round-5 / Agent #3 WARNUNG):
+                        // surface write failures instead of swallowing with
+                        // `let _ = …`. Disk-full / EBADF would otherwise let
+                        // the sweep print "100% pass" while the JSONL is
+                        // empty / truncated — silently invalid audit data.
+                        if let Err(e) = writeln!(w, "{line}") {
+                            eprintln!("[sweep] WARN: failed to write window report: {e}");
+                        }
                     }
                 }
             }
@@ -1992,14 +2034,27 @@ fn run_multi_asset(
     // matches cfg.bar_minutes. funding-cost bucket-indexing relies on this
     // invariant; a 5m cache loaded with a 30m cfg silently mis-bucketizes
     // funding by 6×.
+    //
+    // 2026-05-15 (Audit-Round-5 / Agent #10 KRIT): previously this only
+    // emitted `eprintln WARN`. If a sweep accidentally loaded a 5m cache
+    // against a 30m cfg the run still printed a valid-looking `pass_rate`
+    // and that number could land in champion-claim memory. Promoted to a
+    // hard `bail!` — refuse to run rather than risk inflated numbers.
+    // Sample over the median of the first ~100 bars instead of just [0..1]
+    // so a single odd gap can't trick the check.
     if aligned_times.len() >= 2 {
-        let observed_ms = aligned_times[1] - aligned_times[0];
+        let sample_n = aligned_times.len().min(100);
+        let mut deltas: Vec<i64> = (1..sample_n)
+            .map(|i| aligned_times[i] - aligned_times[i - 1])
+            .collect();
+        deltas.sort_unstable();
+        let observed_ms = deltas[deltas.len() / 2];
         let expected_ms = (cfg.bar_minutes as i64) * 60_000;
         if expected_ms > 0 && observed_ms != expected_ms {
-            eprintln!(
-                "[sweep] WARN: observed bar duration {observed_ms} ms ≠ cfg.bar_minutes \
-                 {} ms ({} min). Funding-cost bucket indexing may mis-align.",
-                expected_ms,
+            anyhow::bail!(
+                "observed bar duration {observed_ms} ms ≠ cfg.bar_minutes \
+                 {expected_ms} ms ({} min). Funding-cost bucket indexing would mis-align. \
+                 Check --candles-dir matches cfg.timeframe.",
                 cfg.bar_minutes,
             );
         }
@@ -3091,7 +3146,11 @@ fn run_one_window(
     if let Ok(mut g) = writer.lock() {
         if let Some(w) = g.as_mut() {
             if let Ok(line) = serde_json::to_string(&report) {
-                let _ = writeln!(w, "{line}");
+                // 2026-05-15 (Audit-Round-5 / Agent #3 WARNUNG): surface
+                // write failures instead of swallowing with `let _ = …`.
+                if let Err(e) = writeln!(w, "{line}") {
+                    eprintln!("[sweep] WARN: failed to write window report: {e}");
+                }
             }
         }
     }
@@ -3110,7 +3169,11 @@ fn run_one_window(
                     if let Some(o) = line.as_object_mut() {
                         o.insert("winIdx".into(), serde_json::json!(w_idx));
                     }
-                    let _ = writeln!(w, "{line}");
+                    // 2026-05-15 (Audit-Round-5 / Agent #3 WARNUNG): surface
+                    // trades-out write failures (was `let _ = …`).
+                    if let Err(e) = writeln!(w, "{line}") {
+                        eprintln!("[sweep] WARN: failed to write trades-out line: {e}");
+                    }
                 }
             }
         }

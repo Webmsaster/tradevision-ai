@@ -98,7 +98,11 @@ pub struct TrialParams {
     pub vol_confirm: bool,
     /// Random subset of `DROPPABLE_SYMBOLS`.
     pub drop_symbols: Vec<String>,
-    /// `--use-htf-confirm`
+    /// Maps to `--use-htf-confirm` (sweep.rs:1178). 2026-05-15 audit briefly
+    /// flagged this as wiring drift because the field name suggests
+    /// `--use-htf-macd-gate`, but the build_args test asserts the
+    /// `--use-htf-confirm` mapping is intentional. Field name kept for
+    /// compat with archived hunter results.
     pub use_htf_macd_gate: bool,
     /// Placeholder toggles — currently no CLI mapping (kept to satisfy task
     /// spec; future-work hook).
