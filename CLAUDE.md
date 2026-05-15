@@ -125,6 +125,22 @@ Production-ready full-auto trading bot for FTMO Demo/Live. Default live config (
 - Signal source: `scripts/ftmoSignalAlert.test.ts` polls Binance every 4h, writes to `signal-alerts.log`
 - See `tools/README-ftmo-bot.md` and project memory `project_ftmo_auto_bot.md`.
 
+### Auto-Hunter (`engine-rust/ftmo-hunter/`)
+
+Autonomous parameter-search for `ftmo-sweep`. Random + local refinement around top-K. Use for overnight optimization across configs + voters + pt + tp_mult.
+
+```bash
+./engine-rust/target/release/ftmo-hunter \
+  --sweep-binary ./engine-rust/target/release/ftmo-sweep \
+  --candles-dir ./scripts/cache_bakeoff \
+  --funding-dir ./scripts/cache_bakeoff \
+  --symbols AAVEUSDT,ADAUSDT,ALGOUSDT,ARBUSDT,ATOMUSDT,AVAXUSDT,BCHUSDT,BNBUSDT,BTCUSDT,DOTUSDT,ETCUSDT,ETHUSDT,LINKUSDT,LTCUSDT,NEARUSDT,SOLUSDT,TRXUSDT,UNIUSDT,XRPUSDT \
+  --trials 150 --top-k 10 --validate-top-n 3 \
+  --output hunter_results.jsonl
+```
+
+Current single-account champion (FTMO Normal pt=0.08, validated bug-frei strict-pass + step=3/7/14 stable + OOS 2024+ identical): **AMBER_MAX_PASSLOCK + 5 voters (POC-Z, BB-Z, Supertrend, SMC-FVG, HMM) → 52.30%** (median 52.0% over 4 time-quartiles, worst-quartile floor 49.6%).
+
 ### Path Alias
 
 `@/*` maps to `./src/*` (configured in `tsconfig.json`).
