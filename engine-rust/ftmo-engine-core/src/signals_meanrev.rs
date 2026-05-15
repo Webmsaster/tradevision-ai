@@ -42,12 +42,17 @@ pub fn detect_mean_reversion_with_rsi(
     rsi_series: &[Option<f64>],
     src: &MeanReversionSource,
 ) -> Option<PollSignal> {
-    if candles.len() < src.period as usize + 2 || rsi_series.len() != candles.len() {
+    // 2026-05-14 Lookahead-parity fix: mirror `detect_mean_reversion` —
+    // signal-bar = i-1 (last just-closed bar). RSI[i] folds in candles[i].close
+    // which is future-data at entry time (entry executes @ candles[i].open).
+    // Required ≥ period+3 candles so trigger_idx-1 is in-range.
+    if candles.len() < src.period as usize + 3 || rsi_series.len() != candles.len() {
         return None;
     }
     let i = candles.len() - 1;
-    let cur = rsi_series[i]?;
-    let prev = rsi_series[i - 1]?;
+    let trigger_idx = i - 1;
+    let cur = rsi_series[trigger_idx]?;
+    let prev = rsi_series[trigger_idx - 1]?;
     let direction = if prev > src.oversold && cur <= src.oversold {
         PositionSide::Long
     } else if prev < src.overbought && cur >= src.overbought {
@@ -67,8 +72,11 @@ fn finish_signal(
     src: &MeanReversionSource,
     direction: PositionSide,
 ) -> Option<PollSignal> {
+    // 2026-05-14 Lookahead-parity fix: entry-bar = i, signal-bar = i-1.
+    // Stop/TP/entry must anchor on entry_bar.open (known at signal time)
+    // — was `last.close` which is future-data. Matches `detect_mean_reversion`.
     let i = candles.len() - 1;
-    let last = candles[i];
+    let entry_bar = candles[i];
     let key = format!("MR|{}", ls_key(&asset.symbol, direction));
     if let Some(ls) = state.loss_streak_by_asset_dir.get(&key) {
         if state.bars_seen < ls.cd_until_bars_seen {
@@ -95,15 +103,16 @@ fn finish_signal(
     // letting MR-hot-path-only configs silently over-size in early days.
     let stop_pct = asset.stop_pct.unwrap_or(cfg.stop_pct);
     let tp_pct = asset.tp_pct.unwrap_or(cfg.tp_pct);
-    let factor = resolve_sizing_factor(state, cfg, last.open_time);
+    let entry_price = entry_bar.open;
+    let factor = resolve_sizing_factor(state, cfg, entry_bar.open_time);
     let eff_risk =
         apply_post_factor_caps(cfg, state, asset.risk_frac * factor * src.size_mult, stop_pct);
     if eff_risk <= 0.0 {
         return None;
     }
     let (stop_price, tp_price) = match direction {
-        PositionSide::Long => (last.close * (1.0 - stop_pct), last.close * (1.0 + tp_pct)),
-        PositionSide::Short => (last.close * (1.0 + stop_pct), last.close * (1.0 - tp_pct)),
+        PositionSide::Long => (entry_price * (1.0 - stop_pct), entry_price * (1.0 + tp_pct)),
+        PositionSide::Short => (entry_price * (1.0 + stop_pct), entry_price * (1.0 - tp_pct)),
     };
     state.loss_streak_by_asset_dir.insert(
         key,
@@ -116,8 +125,8 @@ fn finish_signal(
         symbol: asset.symbol.clone(),
         source_symbol: source_symbol.to_string(),
         direction,
-        entry_time: last.open_time,
-        entry_price: last.close,
+        entry_time: entry_bar.open_time,
+        entry_price,
         stop_price,
         tp_price,
         stop_pct,

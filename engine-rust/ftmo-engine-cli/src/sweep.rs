@@ -221,7 +221,7 @@ struct MultiSignalCfg {
     /// Force MR-source override even if template doesn't carry one.
     regime_force_mr: bool,
     /// 2026-05-14 Detector #34 — Coinbase-Binance Premium voter activation
-    /// + tunable knobs. CLI flags: `--regime-cb-premium`,
+    /// + tunable knobs. CLI flags: `--regime-use-cb-premium`,
     /// `--cb-threshold-bps`, `--cb-consecutive`. The premium data
     /// directory comes via `--cb-premium-dir` (separate top-level
     /// argument so the loader call sees it before MultiSignalCfg is built).
@@ -1266,7 +1266,9 @@ fn main() -> Result<()> {
             "--cb-premium-dir" => {
                 cb_premium_dir = Some(PathBuf::from(need!("--cb-premium-dir")))
             }
-            "--regime-cb-premium" => regime_use_cb_premium = true,
+            // 2026-05-14 R2-Fix Bug #3: removed `--regime-cb-premium` duplicate
+            // (use `--regime-use-cb-premium` which matches the naming pattern
+            // of all other voter-toggle flags, e.g. `--regime-use-flow-pulse`).
             "--cb-threshold-bps" => {
                 cb_threshold_bps = need!("--cb-threshold-bps").parse()?
             }
@@ -2660,7 +2662,7 @@ fn run_one_window(
                     // 2026-05-14 Detector #34 — wire growing CB-premium feed
                     // into the regime panel so `compute_cb_premium_vote` sees
                     // the per-asset slice matched to the current candle feed
-                    // length. None when --regime-cb-premium isn't active or
+                    // length. None when --regime-use-cb-premium isn't active or
                     // the symbol has no premium cache file (voter abstains).
                     let cb_premium = cb_premium_feed.get(&source).map(|v| v.as_slice());
                     let r28in = R28V6Inputs {

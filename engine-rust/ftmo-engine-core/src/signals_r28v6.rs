@@ -313,13 +313,18 @@ fn try_detect_direction(
         }
         all_match
     } else {
-        // Fallback: SMA-fast pullback-recovery (legacy Rust default —
-        // operates on the full slice including bar `i`).
+        // Fallback: SMA-fast pullback-recovery.
+        // R29-Rust-Phase2 lookahead fix: candles[i] is the entry-bar
+        // (entry-execution @ candles[i].open). The trigger must therefore
+        // reference data available BEFORE entry, i.e. candles[trigger_idx]
+        // = candles[i-1]. Reading sma_fast[i] (which folds in close[i]) or
+        // candles[i].low/high/close would be future-data at signal time.
         let sma_fast = sma(&closes, params.fast_period);
-        let cur_fast = sma_fast[i]?;
+        let cur_fast = sma_fast[trigger_idx]?;
+        let trigger_bar = candles[trigger_idx];
         match direction {
-            PositionSide::Long => last.low <= cur_fast && last.close > cur_fast,
-            PositionSide::Short => last.high >= cur_fast && last.close < cur_fast,
+            PositionSide::Long => trigger_bar.low <= cur_fast && trigger_bar.close > cur_fast,
+            PositionSide::Short => trigger_bar.high >= cur_fast && trigger_bar.close < cur_fast,
         }
     };
     if !triggered {
@@ -622,11 +627,14 @@ mod tests {
         p.rsi_long_max = None;
 
         let mut candles = ramp(80, 100.0, 0.5);
-        // Force the last bar to dip to/below SMA-fast then close above.
-        let last = candles.last_mut().unwrap();
-        last.low = 130.0;
-        last.high = 145.0;
-        last.close = 144.0;
+        // 2026-05-14 lookahead fix: trigger now evaluated on signal-bar
+        // (i-1), not entry-bar (i). Pullback dip/close-above must therefore
+        // land on candles[len-2], not candles[len-1].
+        let sig_idx = candles.len() - 2;
+        let sig_bar = candles.get_mut(sig_idx).unwrap();
+        sig_bar.low = 130.0;
+        sig_bar.high = 145.0;
+        sig_bar.close = 144.0;
         let inputs = R28V6Inputs {
             htf_closes: None,
             cross_asset_closes: None,
@@ -654,11 +662,15 @@ mod tests {
         p.rsi_long_max = None;
 
         let mut candles = ramp(80, 100.0, 0.5);
+        // 2026-05-14 lookahead fix: trigger evaluated on signal-bar (i-1).
+        // News blackout test still uses entry-bar (last) open_time because
+        // news_blackout checks `last.open_time` (entry bar).
         let last_ts = candles.last().unwrap().open_time;
-        let last = candles.last_mut().unwrap();
-        last.low = 130.0;
-        last.high = 145.0;
-        last.close = 144.0;
+        let sig_idx = candles.len() - 2;
+        let sig_bar = candles.get_mut(sig_idx).unwrap();
+        sig_bar.low = 130.0;
+        sig_bar.high = 145.0;
+        sig_bar.close = 144.0;
         let events = vec![NewsEvent {
             name: "FOMC".into(),
             ts_ms: last_ts,
@@ -699,10 +711,12 @@ mod tests {
         p.rsi_short_min = None;
 
         let mut candles = ramp(80, 100.0, 0.5);
-        let last = candles.last_mut().unwrap();
-        last.low = 130.0;
-        last.high = 145.0;
-        last.close = 144.0;
+        // 2026-05-14 lookahead fix: trigger on signal-bar (i-1).
+        let sig_idx = candles.len() - 2;
+        let sig_bar = candles.get_mut(sig_idx).unwrap();
+        sig_bar.low = 130.0;
+        sig_bar.high = 145.0;
+        sig_bar.close = 144.0;
 
         // Build crowded-long funding series: 0.001 (= 10bp, > maxFL=0.0005).
         let funding: Vec<Option<f64>> = (0..candles.len()).map(|_| Some(0.001)).collect();
@@ -747,10 +761,12 @@ mod tests {
         // ── Short-side test: downtrend + funding < minFS → blocked ──
         let mut s3 = EngineState::initial("x");
         let mut candles_dn = ramp(80, 200.0, -0.5);
-        let last = candles_dn.last_mut().unwrap();
-        last.high = 170.0;
-        last.low = 155.0;
-        last.close = 156.0;
+        // 2026-05-14 lookahead fix: trigger on signal-bar (i-1).
+        let sig_idx_dn = candles_dn.len() - 2;
+        let sig_bar_dn = candles_dn.get_mut(sig_idx_dn).unwrap();
+        sig_bar_dn.high = 170.0;
+        sig_bar_dn.low = 155.0;
+        sig_bar_dn.close = 156.0;
         let funding_neg: Vec<Option<f64>> = (0..candles_dn.len()).map(|_| Some(-0.001)).collect();
         let inputs_short_blocked = R28V6Inputs {
             htf_closes: None,
@@ -823,10 +839,12 @@ mod tests {
         p.rsi_long_max = None;
 
         let mut candles = ramp(80, 100.0, 0.5);
-        let last = candles.last_mut().unwrap();
-        last.low = 130.0;
-        last.high = 145.0;
-        last.close = 144.0;
+        // 2026-05-14 lookahead fix: trigger on signal-bar (i-1).
+        let sig_idx = candles.len() - 2;
+        let sig_bar = candles.get_mut(sig_idx).unwrap();
+        sig_bar.low = 130.0;
+        sig_bar.high = 145.0;
+        sig_bar.close = 144.0;
         let funding: Vec<Option<f64>> = (0..candles.len()).map(|_| Some(0.0008)).collect();
         let inputs = R28V6Inputs {
             htf_closes: None,
@@ -1037,13 +1055,15 @@ mod tests {
         p.htf_macd_signal = 9;
         p.htf_macd_rising_lookback = 1;
 
-        // Primary uptrend with a pullback-and-recovery on the last bar →
-        // would normally trigger a long entry.
+        // Primary uptrend with a pullback-and-recovery on the signal bar
+        // (i-1, just-closed) → would normally trigger a long entry.
+        // 2026-05-14 lookahead fix: trigger on signal-bar (i-1) not entry-bar.
         let mut candles = ramp(80, 100.0, 0.5);
-        let last = candles.last_mut().unwrap();
-        last.low = 130.0;
-        last.high = 145.0;
-        last.close = 144.0;
+        let sig_idx = candles.len() - 2;
+        let sig_bar = candles.get_mut(sig_idx).unwrap();
+        sig_bar.low = 130.0;
+        sig_bar.high = 145.0;
+        sig_bar.close = 144.0;
 
         // HTF closes describe a clear DOWNTREND → MACD-hist negative →
         // long must be blocked. Quadratic acceleration keeps the histogram
