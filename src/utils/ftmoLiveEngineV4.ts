@@ -274,6 +274,15 @@ export interface PollSignal {
   /** Optional derived fields for executor parity. */
   chandelierAtrAtEntry?: number;
   ptpConfig?: { triggerPct: number; closeFraction: number };
+  /**
+   * Codex Round 4 #6 — multi-level PTP carried through to the executor.
+   * Previously the engine supported `partialTakeProfitLevels` in sim but
+   * the PollSignal only carried single-level `ptpConfig`. Executor had
+   * the multi-level apply logic (_apply_partial_tp_levels) but received
+   * no levels → silently degraded to single-level PTP on every live
+   * deploy of a multi-tier config.
+   */
+  ptpLevels?: Array<{ triggerPct: number; closeFraction: number }>;
   beThreshold?: number;
 }
 
@@ -2213,6 +2222,17 @@ export function pollLive(
           ...(chandelierAtrAtEntry !== null ? { chandelierAtrAtEntry } : {}),
           ...(cfg.partialTakeProfit
             ? { ptpConfig: cfg.partialTakeProfit }
+            : {}),
+          // Codex Round 4 #6 — propagate multi-level PTP so the executor's
+          // _apply_partial_tp_levels can fire all tiers.
+          ...(cfg.partialTakeProfitLevels &&
+          cfg.partialTakeProfitLevels.length > 0
+            ? {
+                ptpLevels: cfg.partialTakeProfitLevels.map((lv) => ({
+                  triggerPct: lv.triggerPct,
+                  closeFraction: lv.closeFraction,
+                })),
+              }
             : {}),
           ...(cfg.breakEven ? { beThreshold: cfg.breakEven.threshold } : {}),
         });

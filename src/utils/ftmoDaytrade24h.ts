@@ -254,6 +254,19 @@ export interface FtmoDaytrade24hConfig {
   tpPct: number;
   stopPct: number;
   holdBars: number;
+  /**
+   * Codex Round 4 #3 — alias for `timeExitEnabled`. When true, the live
+   * V4-wrapper emits `maxHoldUntil` so the Python executor force-closes
+   * after holdBars elapsed. The V4 SIM explicitly disables time-exits
+   * (ftmoLiveEngineV4.ts), so leaving this default-false keeps live in
+   * lockstep with the sim. Existing legacy/V231 deploys can opt back into
+   * time-exits by setting this true for backwards compat.
+   *
+   * Default false. Live-Backtest divergence class: live force-closed at
+   * holdBars hours, sim let positions run until natural SL/TP → live
+   * pass-rate consistently 1-3pp below sim on configs with holdBars≤6.
+   */
+  emitMaxHoldUntil?: boolean;
   /** Cosmetic only — engine derives bar duration from candle timestamps. */
   timeframe: "5m" | "15m" | "30m" | "1h" | "2h" | "4h";
   assets: Daytrade24hAssetCfg[];
@@ -542,6 +555,13 @@ export interface FtmoDaytrade24hConfig {
     period: number; // ATR period
     mult: number; // K multiplier on ATR
     minMoveR?: number; // require price to move >= minMoveR × stopPct first (default 0.5)
+    /**
+     * Codex Round 4 #7 — when set ≥ 1, the Python live executor recomputes
+     * ATR every N exit-management cycles (matches TS/Rust sim behaviour).
+     * Default 0 = use atrAtEntry for all cycles (legacy behaviour;
+     * acceptable on 30m+ TFs where intra-trade ATR drift is small).
+     */
+    atrRecomputeIntervalBars?: number;
   };
   /**
    * iter262+ Loss-Streak Cooldown — pause new entries after N consecutive losses.

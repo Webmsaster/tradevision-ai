@@ -2417,5 +2417,243 @@ def test_wave2_bug11_kill_filters_both_magics():
     )
 
 
+# =============================================================================
+# Codex Round 4 — merged regression tests for #3, #4, #5, #6, #7, #8, #9
+# Adapted from R4 worktree to main's executor API (main has equivalent or
+# stronger implementations — these tests guard the documented behaviour).
+# =============================================================================
+
+
+def test_codex_r4_passlock_target_hit_defers_when_close_partially_fails(
+    monkeypatch, tmp_path
+):
+    """Codex Round 4 KRITISCH (#4): if PASSLOCK emergency-close PARTIAL-fails
+    (broker timeout, requote, etc), target_hit MUST NOT be latched. Mirrors
+    the Rust commit `bdc26bb` Codex Round 1 Fix 3.
+    Main API: _emergency_close_all_positions returns
+    {closed, failed, all_closed, deferred} — bail when all_closed=False.
+    """
+    import ftmo_executor as exe
+
+    exe.STATE_DIR = tmp_path
+    exe.PAUSE_STATE_PATH = tmp_path / "pause-state.json"
+    exe.EXECUTOR_LOG_PATH = tmp_path / "executor-log.jsonl"
+
+    tg_calls: list[str] = []
+    monkeypatch.setattr(
+        exe,
+        "_emergency_close_all_positions",
+        lambda r: {"closed": 1, "failed": 1, "all_closed": False, "deferred": False},
+    )
+    monkeypatch.setattr(exe, "tg_send", lambda msg, **kw: tg_calls.append(msg))
+    monkeypatch.setattr(exe, "_get_broker_equity_now", lambda: None)
+    monkeypatch.setattr(exe, "PAUSE_AT_TARGET", True)
+    monkeypatch.setattr(exe, "PROFIT_TARGET_PCT", 0.10)
+    monkeypatch.setattr(exe, "CHALLENGE_START_BALANCE", 100_000.0)
+    monkeypatch.setenv("FTMO_PASSLOCK", "1")
+
+    paused = exe.check_target_and_pause(110_500.0)
+    assert paused is False, "MUST NOT latch target_hit on partial close failure"
+    # operator MUST be alerted to the deferred latch.
+    assert any("PARTIAL FAIL" in m for m in tg_calls), \
+        "operator must be alerted to deferred PASSLOCK on partial close failure"
+
+    state = exe.get_pause_state()
+    assert state.get("target_hit") is False, \
+        "Codex Round 4 #4: target_hit persisted prematurely — soft-pass bug"
+
+
+def test_codex_r4_passlock_target_hit_defers_when_post_close_equity_below_target(
+    monkeypatch, tmp_path
+):
+    """Codex Round 4 KRITISCH (#4): post-close broker equity refresh shows
+    funding/slippage pulled equity BELOW target. target_hit MUST NOT latch.
+    Main uses _get_broker_equity_now() returning float|None.
+    """
+    import ftmo_executor as exe
+
+    exe.STATE_DIR = tmp_path
+    exe.PAUSE_STATE_PATH = tmp_path / "pause-state.json"
+    exe.EXECUTOR_LOG_PATH = tmp_path / "executor-log.jsonl"
+
+    monkeypatch.setattr(
+        exe,
+        "_emergency_close_all_positions",
+        lambda r: {"closed": 1, "failed": 0, "all_closed": True, "deferred": False},
+    )
+    monkeypatch.setattr(exe, "tg_send", lambda *a, **kw: None)
+    monkeypatch.setattr(exe, "PAUSE_AT_TARGET", True)
+    monkeypatch.setattr(exe, "PROFIT_TARGET_PCT", 0.10)
+    monkeypatch.setattr(exe, "CHALLENGE_START_BALANCE", 100_000.0)
+    monkeypatch.setenv("FTMO_PASSLOCK", "1")
+    # MTM equity at-target BUT after partial close residual positions drag
+    # back down to +8% (still profit, but below 10% target).
+    monkeypatch.setattr(exe, "_get_broker_equity_now", lambda: 108_000.0)
+
+    paused = exe.check_target_and_pause(110_500.0)
+    assert paused is False, "MUST NOT latch target_hit when post-close equity < target"
+    state = exe.get_pause_state()
+    assert state.get("target_hit") is False, \
+        "Codex Round 4 #4: target_hit persisted prematurely — soft-pass bug"
+
+
+def test_codex_r4_max_hold_until_zero_or_max_safe_is_sentinel(monkeypatch, tmp_path):
+    """Codex Round 4 #3: V4 sim explicitly disables time-exits. When wrapper
+    emits maxHoldUntil sentinel (0 or Number.MAX_SAFE_INTEGER ≈ 9e15), the
+    executor's manage-loop MUST NOT force-close. Main implements this gate
+    inline in manage_open_positions:
+        if 0 < max_hold < 1_000_000_000_000_000 and now_ms >= max_hold: ...
+    so 0 and 9_007_199_254_740_991 (JS Number.MAX_SAFE_INTEGER) both bypass.
+    Source-level guard.
+    """
+    import ftmo_executor as exe
+    import inspect
+    src = inspect.getsource(exe.manage_open_positions)
+    # The exact gate string preserves the hold-bars sentinel semantics.
+    assert "0 < max_hold < 1_000_000_000_000_000" in src, (
+        "Codex Round 4 #3: manage_open_positions must guard max_hold_until "
+        "sentinel values (0 and JS Number.MAX_SAFE_INTEGER) so V4-sim parity "
+        "configs don't force-close every cycle."
+    )
+    # Direct contract check: a position with max_hold_until=0 must not be
+    # within the trigger range regardless of now_ms.
+    max_hold_zero = 0
+    max_hold_max_safe = 9_007_199_254_740_991  # JS Number.MAX_SAFE_INTEGER
+    now_ms = int(__import__("time").time() * 1000)
+    # The inline check: 0 < max_hold < 1e15
+    assert not (0 < max_hold_zero < 1_000_000_000_000_000), \
+        "max_hold_until=0 sentinel must NOT match the trigger gate"
+    assert not (0 < max_hold_max_safe < 1_000_000_000_000_000), \
+        "max_hold_until=MAX_SAFE_INTEGER sentinel must NOT match the trigger gate"
+    # A realistic past timestamp DOES trigger.
+    assert 0 < (now_ms - 1) < 1_000_000_000_000_000, \
+        "realistic past max_hold_until must fall inside the trigger gate"
+
+
+def test_codex_r4_signal_sltp_preserved_after_order_fill():
+    """Codex Round 4 #5: open-positions must persist BOTH broker-confirmed
+    SL/TP (used for live management) AND the signal payload's idealised
+    SL/TP (used for drift diagnostics). Without this, BE/PTP/trail/chandelier
+    later computed deltas against a stale stop_price while the broker held
+    a different SL.
+    """
+    import ftmo_executor as exe
+    import inspect
+    src = inspect.getsource(exe._process_signals_unlocked)
+    assert '"signal_stop_price"' in src and '"signal_tp_price"' in src, (
+        "Codex Round 4 #5: open-positions schema must carry "
+        "signal_stop_price and signal_tp_price for drift diagnostics"
+    )
+    # Broker-confirmed values are read from OrderResult and persisted.
+    assert "result.stop_price" in src and "result.tp_price" in src, (
+        "Codex Round 4 #5: broker-confirmed SL/TP must be persisted from "
+        "OrderResult into stop_price/tp_price (not from signal payload)"
+    )
+
+
+def test_codex_r4_excess_entry_slippage_rejects_order():
+    """Codex Round 4 #5: when live tick has drifted beyond
+    MAX_ENTRY_SLIPPAGE_PCT from payload entry, the order MUST be rejected
+    before placement. Main implements the gate in _process_signals_unlocked
+    (the wrapper around place_market_order).
+    """
+    import ftmo_executor as exe
+    import inspect
+    # Constant exists and is env-driven.
+    assert hasattr(exe, "MAX_ENTRY_SLIPPAGE_PCT"), \
+        "Codex Round 4 #5: MAX_ENTRY_SLIPPAGE_PCT constant missing"
+    # Gate referenced inside _process_signals_unlocked (the dispatcher).
+    src = inspect.getsource(exe._process_signals_unlocked)
+    assert "MAX_ENTRY_SLIPPAGE_PCT" in src, (
+        "Codex Round 4 #5: _process_signals_unlocked must enforce "
+        "MAX_ENTRY_SLIPPAGE_PCT tolerance before placing the order"
+    )
+
+
+def test_codex_r4_strict_parity_zeros_entry_buffers(monkeypatch):
+    """Codex Round 4 #8: STRICT_PARITY (=FTMO_STRICT_PARITY=1) zeros the
+    entry-block safety buffers so live behaviour matches the backtest sim
+    exactly. Main exposes module-level constant STRICT_PARITY + zeroed
+    buffers (DL_ENTRY_BLOCK_BUFFER / TL_ENTRY_BLOCK_BUFFER).
+    """
+    import ftmo_executor as exe
+
+    monkeypatch.setattr(exe, "MAX_DAILY_LOSS_PCT", 0.05)
+    monkeypatch.setattr(exe, "MAX_TOTAL_LOSS_PCT", 0.10)
+    monkeypatch.setattr(exe, "CHALLENGE_START_BALANCE", 100_000.0)
+
+    day_start = 100_000.0
+    cur = 95_500.0  # -4.5% intraday
+
+    # With a meaningful DL buffer (1%), -4.5% breach is blocked.
+    monkeypatch.setattr(exe, "STRICT_PARITY", False)
+    monkeypatch.setattr(exe, "DL_ENTRY_BLOCK_BUFFER", 0.010, raising=False)
+    monkeypatch.setattr(exe, "TL_ENTRY_BLOCK_BUFFER", 0.015, raising=False)
+    block = exe.check_ftmo_rules(cur, day_start)
+    assert block is not None, "default buffer should block at -4.5%"
+
+    # STRICT_PARITY zeros the buffer — -4.5% does NOT block, only the actual
+    # -5% FTMO cap would.
+    monkeypatch.setattr(exe, "STRICT_PARITY", True)
+    block_strict = exe.check_ftmo_rules(cur, day_start)
+    assert block_strict is None, \
+        "Codex Round 4 #8: STRICT_PARITY must NOT block at -4.5% (only -5% cap)"
+
+    # At -5% with STRICT_PARITY, the hard FTMO cap still blocks.
+    block_at_cap = exe.check_ftmo_rules(95_000.0, day_start)
+    assert block_at_cap is not None, \
+        "STRICT_PARITY must still block at the actual -5% FTMO cap"
+
+
+def test_codex_r4_recompute_atr_returns_none_on_failure(monkeypatch):
+    """Codex Round 4 #7: ATR recompute is best-effort; on MT5 failure
+    returns None so the caller falls back to atrAtEntry (no crash).
+    Main exposes _fetch_recent_atr (equivalent to R4's _recompute_atr_from_mt5).
+    """
+    import ftmo_executor as exe
+
+    # MOCK_MODE short-circuits to None.
+    monkeypatch.setattr(exe, "MOCK_MODE", True)
+    assert exe._fetch_recent_atr("BTCUSDT", 14, 30) is None
+
+    monkeypatch.setattr(exe, "MOCK_MODE", False)
+    monkeypatch.setattr(exe, "_resolve_broker_symbol", lambda s: "BTCUSD")
+
+    # mt5.copy_rates_from_pos throws.
+    def boom(*a, **kw):
+        raise RuntimeError("MT5 disconnect")
+    monkeypatch.setattr(exe.mt5, "copy_rates_from_pos", boom)
+    assert exe._fetch_recent_atr("BTCUSDT", 14, 30) is None
+
+    # mt5.copy_rates_from_pos returns None.
+    monkeypatch.setattr(exe.mt5, "copy_rates_from_pos", lambda *a, **kw: None)
+    assert exe._fetch_recent_atr("BTCUSDT", 14, 30) is None
+
+    # mt5.copy_rates_from_pos returns insufficient bars.
+    monkeypatch.setattr(
+        exe.mt5,
+        "copy_rates_from_pos",
+        lambda *a, **kw: [{"high": 1.0, "low": 1.0, "close": 1.0}],
+    )
+    assert exe._fetch_recent_atr("BTCUSDT", 14, 30) is None
+
+
+def test_codex_r4_engine_ticket_id_persisted_in_open_positions():
+    """Codex Round 4 #9: open-positions.json schema must carry an engine-side
+    ticket identifier so MT5-rebuild can rehydrate state via lookup by
+    engine id. Main persists `engine_ticket_id` + `engine_entry_time`.
+    Source-level guard.
+    """
+    import ftmo_executor as exe
+    import inspect
+    src = inspect.getsource(exe._process_signals_unlocked)
+    assert '"engine_ticket_id"' in src, \
+        "Codex Round 4 #9: engine_ticket_id must be persisted with each open position"
+    # Either entry_time_engine (R4 name) or engine_entry_time (main's name)
+    # — both fulfil the same restart-recovery contract.
+    assert ('"engine_entry_time"' in src) or ('"entry_time_engine"' in src), \
+        "Codex Round 4 #9: engine-side entry-time anchor must be persisted"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

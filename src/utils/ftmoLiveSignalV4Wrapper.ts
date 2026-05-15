@@ -435,11 +435,13 @@ export function detectLiveSignalsV4(
     const engineTicketId = `${open.symbol}@${open.entryTime}@${open.direction}`;
     // 2026-05-13 Codex Round 4 Python #3 FIX: V4 sim disables hold-bars
     // time-exit (ftmoLiveEngineV4.ts:997-1003). Only emit maxHoldUntil when
-    // the config opts-in via cfg.timeExitEnabled — keeps live executor in
+    // the config opts-in via cfg.timeExitEnabled OR the newer alias
+    // cfg.emitMaxHoldUntil (R4 worktree name) — keeps live executor in
     // V4-Sim parity by default and avoids force-truncating positions sim
     // would keep open until SL/TP/PASSLOCK/maxDays.
     const timeExitEnabled =
-      (cfg as { timeExitEnabled?: boolean }).timeExitEnabled === true;
+      (cfg as { timeExitEnabled?: boolean }).timeExitEnabled === true ||
+      cfg.emitMaxHoldUntil === true;
     const sig: LiveSignal = {
       assetSymbol: open.symbol,
       sourceSymbol: open.sourceSymbol,
@@ -472,6 +474,14 @@ export function detectLiveSignalsV4(
               mult: cfg.chandelierExit?.mult ?? 0,
               minMoveR: cfg.chandelierExit?.minMoveR ?? 0.5,
               stopPct: open.stopPct,
+              // Codex Round 4 #7 — expose ATR period + recompute interval so
+              // Python executor can re-evaluate ATR each cycle. Default
+              // interval 0 keeps legacy fixed-atrAtEntry behaviour.
+              ...(cfg.chandelierExit?.period != null
+                ? { atrPeriod: cfg.chandelierExit.period }
+                : {}),
+              atrRecomputeIntervalBars:
+                cfg.chandelierExit?.atrRecomputeIntervalBars ?? 0,
             },
           }
         : {}),

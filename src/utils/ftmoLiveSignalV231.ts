@@ -142,6 +142,20 @@ export interface LiveSignal {
     minMoveR: number;
     /** stopPct used for minMoveR gating (price-fraction units). */
     stopPct: number;
+    /**
+     * Codex Round 4 #7 — ATR period (used by executor to recompute ATR
+     * each cycle if `atrRecomputeIntervalBars > 0`). When omitted or
+     * `atrRecomputeIntervalBars <= 0`, executor falls back to the fixed
+     * `atrAtEntry` value (legacy behaviour).
+     */
+    atrPeriod?: number;
+    /**
+     * Codex Round 4 #7 — re-evaluate ATR every N bars to match
+     * TS/Rust sim behaviour. Default 0 = use `atrAtEntry` for all cycles
+     * (legacy backwards-compat). Set ≥ 1 to recompute (Python tries
+     * mt5.copy_rates_from_pos; falls back to atrAtEntry on failure).
+     */
+    atrRecomputeIntervalBars?: number;
   };
   breakEvenAtProfit?: {
     threshold: number;
