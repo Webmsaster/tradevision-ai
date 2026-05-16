@@ -300,6 +300,9 @@ struct MultiSignalCfg {
     regime_poc_period: u32,
     regime_poc_bucket: f64,
     regime_poc_z_min: f64,
+    // 2026-05-16 Phase 2.2 — POC-Zone Hard-Gate (HVN block)
+    regime_use_poc_zone_gate: bool,
+    regime_poc_zone_hvn_min_ratio: f64,
     // Below: deliberately at end so the field-init order in `let cfg =
     // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
@@ -511,6 +514,18 @@ struct CfgOverrides {
     sharpe_sizing_enable: bool,
     sharpe_window: Option<u32>,
     sharpe_min_trades: Option<u32>,
+    // 2026-05-16 Phase 1 — Kelly-Sizing CLI activation (from 50-agent
+    // brainstorm). Engine has Kelly infrastructure (sizing.rs:124-173)
+    // bug-free + lookahead-safe, but no CLI flag existed. Pattern mirrors
+    // sharpe-sizing exactly.
+    kelly_sizing_enable: bool,
+    kelly_window: Option<u32>,
+    kelly_min_trades: Option<u32>,
+    // 2026-05-16 Phase 2 — Phase-aware risk multiplier. When profit_target
+    // ≈ 0.05 (P2), multiply all per-asset risk_frac by this factor.
+    // Default 1.0 = no change. Hypothesis: P2 (5% target) benefits from
+    // lower risk = fewer DL tail failures, more pass-rate.
+    phase2_risk_mult: Option<f64>,
 }
 
 fn apply_overrides(
@@ -851,6 +866,55 @@ fn apply_overrides(
             });
         }
     }
+    // 2026-05-16 Phase 1 — Kelly-Sizing CLI activation. Mirrors sharpe pattern
+    // exactly. Stock half-Kelly ladder (top tier 1.0 = no over-leverage,
+    // bottom tier 0.3 = defensive on weak win-rate).
+    {
+        use ftmo_engine_core::config::{KellySizing, KellyTier};
+        let want_activate = ov.kelly_sizing_enable;
+        let cur = cfg.kelly_sizing.clone();
+        if want_activate || cur.is_some() {
+            let base = cur.unwrap_or_else(|| KellySizing {
+                window_size: 60,
+                min_trades: 20,
+                tiers: vec![
+                    KellyTier {
+                        win_rate_above: 0.65,
+                        multiplier: 1.0,
+                    },
+                    KellyTier {
+                        win_rate_above: 0.55,
+                        multiplier: 0.75,
+                    },
+                    KellyTier {
+                        win_rate_above: 0.45,
+                        multiplier: 0.50,
+                    },
+                    KellyTier {
+                        win_rate_above: f64::NEG_INFINITY,
+                        multiplier: 0.30,
+                    },
+                ],
+            });
+            cfg.kelly_sizing = Some(KellySizing {
+                window_size: ov.kelly_window.unwrap_or(base.window_size),
+                min_trades: ov.kelly_min_trades.unwrap_or(base.min_trades),
+                tiers: base.tiers,
+            });
+        }
+    }
+    // 2026-05-16 Phase 2 — Phase-aware risk multiplier. Applied only when
+    // profit_target ≈ 0.05 (FTMO Phase 2 heuristic). Multiplies all
+    // per-asset risk_frac. Bug-frei: deterministic per-run scalar from CLI,
+    // no lookahead. The actual application happens at sizing-time via
+    // the cfg field below.
+    if let Some(mult) = ov.phase2_risk_mult {
+        if (cfg.profit_target - 0.05).abs() < 1e-6 {
+            for a in cfg.assets.iter_mut() {
+                a.risk_frac *= mult;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1031,6 +1095,9 @@ fn main() -> Result<()> {
     let mut regime_poc_period: u32 = 20;
     let mut regime_poc_bucket: f64 = 0.005;
     let mut regime_poc_z_min: f64 = 1.5;
+    // 2026-05-16 Phase 2.2 — POC-Zone Hard-Gate (HVN block)
+    let mut regime_use_poc_zone_gate: bool = false;
+    let mut regime_poc_zone_hvn_min_ratio: f64 = 1.5;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
@@ -1042,6 +1109,12 @@ fn main() -> Result<()> {
     let mut sharpe_sizing_enable: bool = false;
     let mut sharpe_window: Option<u32> = None;
     let mut sharpe_min_trades: Option<u32> = None;
+    // 2026-05-16 Phase 1 — Kelly-Sizing CLI activation
+    let mut kelly_sizing_enable: bool = false;
+    let mut kelly_window: Option<u32> = None;
+    let mut kelly_min_trades: Option<u32> = None;
+    // 2026-05-16 Phase 2 — Phase-aware risk multiplier
+    let mut phase2_risk_mult: Option<f64> = None;
 
     // R67 audit (Round 2): replace `args.next().unwrap()` with `ok_or_else`
     // — `ftmo-sweep --candles` (no path follows) panics with the usual Rust
@@ -1301,6 +1374,11 @@ fn main() -> Result<()> {
             "--regime-poc-period" => regime_poc_period = need!("--regime-poc-period").parse()?,
             "--regime-poc-bucket" => regime_poc_bucket = need!("--regime-poc-bucket").parse()?,
             "--regime-poc-z-min" => regime_poc_z_min = need!("--regime-poc-z-min").parse()?,
+            // 2026-05-16 Phase 2.2 — POC-Zone Hard-Gate
+            "--regime-poc-zone-gate" => regime_use_poc_zone_gate = true,
+            "--poc-zone-hvn-min-ratio" => {
+                regime_poc_zone_hvn_min_ratio = need!("--poc-zone-hvn-min-ratio").parse()?
+            }
             "--mr-period" => mr_period = Some(need!("--mr-period").parse()?),
             "--mr-oversold" => mr_oversold = Some(need!("--mr-oversold").parse()?),
             "--mr-overbought" => mr_overbought = Some(need!("--mr-overbought").parse()?),
@@ -1328,6 +1406,21 @@ fn main() -> Result<()> {
             "--sharpe-window" => sharpe_window = Some(need!("--sharpe-window").parse()?),
             "--sharpe-min-trades" => {
                 sharpe_min_trades = Some(need!("--sharpe-min-trades").parse()?)
+            }
+            // 2026-05-16 Phase 1 — Kelly-Sizing CLI activation
+            "--kelly-sizing" => kelly_sizing_enable = true,
+            "--kelly-window" => kelly_window = Some(need!("--kelly-window").parse()?),
+            "--kelly-min-trades" => {
+                kelly_min_trades = Some(need!("--kelly-min-trades").parse()?)
+            }
+            // 2026-05-16 Phase 2 — Phase-aware risk multiplier (applied only
+            // when profit_target ≈ 0.05). Bug-frei: scalar from CLI, no state.
+            "--phase2-risk-mult" => {
+                let v: f64 = need!("--phase2-risk-mult").parse()?;
+                if !(v > 0.0 && v <= 2.0) {
+                    anyhow::bail!("--phase2-risk-mult must be in (0, 2] (got {v})");
+                }
+                phase2_risk_mult = Some(v)
             }
             other => return Err(anyhow!("unknown arg: {other}")),
         }
@@ -1554,6 +1647,10 @@ fn main() -> Result<()> {
         sharpe_sizing_enable,
         sharpe_window,
         sharpe_min_trades,
+        kelly_sizing_enable,
+        kelly_window,
+        kelly_min_trades,
+        phase2_risk_mult,
     };
 
     if candles_dir.is_some() || symbols_arg.is_some() {
@@ -1646,6 +1743,8 @@ fn main() -> Result<()> {
                 regime_poc_period,
                 regime_poc_bucket,
                 regime_poc_z_min,
+                regime_use_poc_zone_gate,
+                regime_poc_zone_hvn_min_ratio,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -2501,7 +2600,15 @@ fn run_one_window(
         funding_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
         stablecoin_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
         cb_premium_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
-        if multi_signal.use_htf_confirm {
+        // 2026-05-16 Round 10 KRIT FIX (HTF cross-confirm agent): previously
+        // htf_closes_buf was only initialized when --use-htf-confirm was ON.
+        // But --use-htf-macd-gate ALSO needs htf_closes (the MACD histogram
+        // is computed from the same buffer). Without buf init, the gate
+        // silently fell through to `return true` in detector_filters.rs:277
+        // (empty slice = dormant). Hunt L01-L04 results were therefore
+        // identical to baseline = NOT actually testing the gate at all.
+        // Fix: init buf when EITHER flag is set.
+        if multi_signal.use_htf_confirm || multi_signal.use_htf_macd_gate {
             htf_closes_buf.insert(
                 sym.clone(),
                 Vec::with_capacity((hi - lo) / multi_signal.htf_stride + 8),
@@ -2901,6 +3008,8 @@ fn run_one_window(
                             poc_window_bars: multi_signal.regime_poc_period,
                             poc_bucket_pct: multi_signal.regime_poc_bucket,
                             poc_z_min: multi_signal.regime_poc_z_min,
+                            use_poc_zone_gate: multi_signal.regime_use_poc_zone_gate,
+                            poc_zone_hvn_min_ratio: multi_signal.regime_poc_zone_hvn_min_ratio,
                         };
                     let stablecoin_slice =
                         stablecoin_feed.get(&source).map(|v| v.as_slice());

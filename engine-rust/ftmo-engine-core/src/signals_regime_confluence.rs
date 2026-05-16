@@ -253,6 +253,83 @@ fn compute_poc_z_vote(
     }
 }
 
+/// 2026-05-16 Phase 2.2 — POC-Zone Hard-Gate (HVN block).
+///
+/// Returns `false` when the signal-bar close sits inside a HIGH-VOLUME NODE
+/// (HVN) bucket — i.e. price is inside a value-area cluster where mean-
+/// reversion dominates. Trend-entries fired from inside HVN have
+/// historically lower follow-through (price oscillates around the cluster).
+///
+/// HVN definition: bucket volume >= `hvn_min_ratio × (total_vol / n_buckets)`.
+/// At ratio=1.5 → bucket carries 1.5× the uniform-distribution average → real
+/// value-area peak.
+///
+/// Bug-frei (verified pattern same as compute_poc_z_vote):
+/// - `signal_idx = len - 2` (just-closed bar)
+/// - Volume profile built from candles `[signal_idx + 1 - n ..= signal_idx]`,
+///   strictly EXCLUDING entry bar `candles[len - 1]`
+/// - Bucket lookup uses `signal_close` (closed bar's close, no lookahead)
+///
+/// Returns:
+/// - `true` (allow entry) when (a) volume profile cannot be computed, or
+///   (b) signal_close NOT in HVN bucket
+/// - `false` (block entry) when signal_close IS in HVN bucket
+pub fn poc_zone_gate_allows(
+    candles: &[Candle],
+    params: &RegimeConfluenceParams,
+    cfg: &EngineConfig,
+) -> bool {
+    let scale = (30.0 / (cfg.bar_minutes.max(1) as f64)).round().max(1.0) as usize;
+    let n = (params.poc_window_bars as usize).saturating_mul(scale);
+    if n < 4 || candles.len() < n + 2 {
+        return true; // not enough data — allow
+    }
+    if !params.poc_bucket_pct.is_finite() || params.poc_bucket_pct <= 0.0 {
+        return true;
+    }
+    if !params.poc_zone_hvn_min_ratio.is_finite() || params.poc_zone_hvn_min_ratio <= 1.0 {
+        return true; // ratio <= 1 means "every bucket is HVN" = block everything; disallow
+    }
+
+    let signal_idx = candles.len() - 2;
+    let window = &candles[signal_idx + 1 - n..=signal_idx];
+    let first_close = window[0].close;
+    if !first_close.is_finite() || first_close <= 0.0 {
+        return true;
+    }
+    let bucket_size = params.poc_bucket_pct * first_close;
+    if bucket_size <= 0.0 || !bucket_size.is_finite() {
+        return true;
+    }
+
+    use std::collections::HashMap;
+    let mut buckets: HashMap<i64, f64> = HashMap::with_capacity(n);
+    let mut total_vol = 0.0_f64;
+    for c in window.iter() {
+        if !c.close.is_finite() || !c.volume.is_finite() || c.volume < 0.0 {
+            return true;
+        }
+        let key = (c.close / bucket_size).floor() as i64;
+        *buckets.entry(key).or_insert(0.0) += c.volume;
+        total_vol += c.volume;
+    }
+    if total_vol <= 0.0 || buckets.is_empty() {
+        return true;
+    }
+    let avg_per_bucket = total_vol / buckets.len() as f64;
+    let hvn_threshold = params.poc_zone_hvn_min_ratio * avg_per_bucket;
+
+    let signal_close = candles[signal_idx].close;
+    if !signal_close.is_finite() {
+        return true;
+    }
+    let signal_bucket_key = (signal_close / bucket_size).floor() as i64;
+    let signal_bucket_vol = *buckets.get(&signal_bucket_key).unwrap_or(&0.0);
+
+    // Block (return false) when signal sits in HVN cluster.
+    !(signal_bucket_vol >= hvn_threshold)
+}
+
 // 2026-05-14 Detector #34 — dropped Copy: `cb_premium_params.symbol_allowlist`
 // is a Vec<String> which is owned heap data. Clone is sufficient for the
 // few call-sites that pass-by-value (e.g. test fixtures); the regime
@@ -410,6 +487,13 @@ pub struct RegimeConfluenceParams {
     pub poc_window_bars: u32,
     pub poc_bucket_pct: f64,
     pub poc_z_min: f64,
+    /// 2026-05-16 Phase 2.2 — POC-Zone Hard-Gate (HVN block).
+    /// When `use_poc_zone_gate` is true, an entry is BLOCKED if the
+    /// signal-bar close sits inside a high-volume-node (HVN) bucket.
+    /// HVN = bucket vol ≥ `poc_zone_hvn_min_ratio × (total_vol / n_buckets)`.
+    /// Default 1.5 → bucket carries 1.5× uniform average. Defaults disabled.
+    pub use_poc_zone_gate: bool,
+    pub poc_zone_hvn_min_ratio: f64,
 }
 
 impl RegimeConfluenceParams {
@@ -480,6 +564,8 @@ impl RegimeConfluenceParams {
             poc_window_bars: 20,
             poc_bucket_pct: 0.005,
             poc_z_min: 1.5,
+            use_poc_zone_gate: false,
+            poc_zone_hvn_min_ratio: 1.5,
         }
     }
 
@@ -530,6 +616,13 @@ pub fn detect_regime_confluence(
     inputs: &R28V6Inputs<'_>,
     regime_inputs: &RegimeConfluenceInputs<'_>,
 ) -> Option<PollSignal> {
+    // 2026-05-16 Phase 2.2 — POC-Zone Hard-Gate: block entries inside HVN
+    // clusters BEFORE running the voter probes (which mutate state-clones
+    // and waste compute). Returns true (allow) when feature disabled or
+    // when signal-bar NOT in HVN; returns false (block) when HVN-inside.
+    if params.use_poc_zone_gate && !poc_zone_gate_allows(candles, params, cfg) {
+        return None;
+    }
     // 2026-05-13 Audit-2 fix: each probe gets its OWN clone of state so
     // a probe's internal state-mutations (resolve_sizing_factor mutates
     // state.kelly_tier_idx; MR mutates state.loss_streak_by_asset_dir)

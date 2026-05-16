@@ -673,6 +673,31 @@ pub fn v5_amber_passlock_mptp() -> EngineConfig {
     cfg
 }
 
+/// 2026-05-16 V04a — V5_AMBER_MAX_PASSLOCK + multi-tier PTP with tiers
+/// UNDER per-asset tp_pct (most assets 0.020-0.025).
+///
+/// 50-agent brainstorm diagnosis: V04 catastrophic (-14pp Combined) because
+/// tier-2 (3.0%) and tier-3 (4.5%) exceeded most assets' tp_pct (0.020),
+/// so they never fired but tier-1 (1.5%) still scaled out 25% before TP.
+/// Solution: tiers strictly UNDER lowest tp_pct. 40% close at 0.8%, 40% at
+/// 1.5%, 20% runner — captures partial gains without decapitating winners.
+pub fn v5_amber_max_passlock_mptp_v04a() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_MPTP_V04A".into();
+    cfg.partial_take_profit = None;
+    cfg.partial_take_profit_levels = Some(vec![
+        PartialTakeProfitLevel {
+            trigger_pct: 0.008,
+            close_fraction: 0.40,
+        },
+        PartialTakeProfitLevel {
+            trigger_pct: 0.015,
+            close_fraction: 0.40,
+        },
+    ]);
+    cfg
+}
+
 /// 2026-05-14 Detector #20 — V5_AMBER_PASSLOCK + 3-phase day-stage sizing
 /// + equity-progress early-defensive override.
 ///
@@ -766,6 +791,43 @@ pub fn v5_amber_passlock_sharpe() -> EngineConfig {
             SharpeTier {
                 sharpe_above: f64::NEG_INFINITY,
                 multiplier: 0.40,
+            },
+        ],
+    });
+    cfg
+}
+
+/// 2026-05-16 V5_AMBER_MAX_PASSLOCK + Sharpe-Sizing with TIGHTER tiers.
+///
+/// 50-agent brainstorm finding: default Sharpe-tier thresholds (0.3/0.1/-0.1)
+/// have most AMBER trades land in top-tier (1.0× = no-op) because AMBER
+/// has 60%+ win-rate → rolling sharpe almost always > 0.3. Tightened
+/// thresholds (0.5/0.3/0.1) force more bars into 0.8×/0.5× tiers,
+/// modestly reducing risk on weak-Sharpe windows. window=60 + min_trades=20
+/// for faster adaptation than baseline (100/30) which was too slow.
+pub fn v5_amber_max_passlock_sharpe_tight() -> EngineConfig {
+    use crate::config::{SharpeSizing, SharpeTier};
+    let mut cfg = v5_amber_max_passlock();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_SHARPE_TIGHT".into();
+    cfg.sharpe_sizing = Some(SharpeSizing {
+        window_size: 60,
+        min_trades: 20,
+        tiers: vec![
+            SharpeTier {
+                sharpe_above: 0.50,
+                multiplier: 1.0,
+            },
+            SharpeTier {
+                sharpe_above: 0.30,
+                multiplier: 0.80,
+            },
+            SharpeTier {
+                sharpe_above: 0.10,
+                multiplier: 0.50,
+            },
+            SharpeTier {
+                sharpe_above: f64::NEG_INFINITY,
+                multiplier: 0.30,
             },
         ],
     });
@@ -1121,6 +1183,8 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-amber-ext-passlock" => v5_amber_ext_passlock(),
         "2h-trend-v5-amber-max" => v5_amber_max(),
         "2h-trend-v5-amber-max-passlock" => v5_amber_max_passlock(),
+        "2h-trend-v5-amber-max-passlock-mptp-v04a" => v5_amber_max_passlock_mptp_v04a(),
+        "2h-trend-v5-amber-max-passlock-sharpe-tight" => v5_amber_max_passlock_sharpe_tight(),
         "2h-trend-v5-amber-quartz" => v5_amber_quartz(),
         "2h-trend-v5-amber-quartz-passlock" => v5_amber_quartz_passlock(),
         "2h-trend-v5-amber-be-passlock" => v5_amber_be_passlock(),
