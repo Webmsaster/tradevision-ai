@@ -27,8 +27,29 @@ const path = require("path");
 // AMBER_MAX_PASSLOCK (2026-05-15). PM2 starting without an env-override
 // would otherwise boot the outdated strategy.
 const TF = process.env.FTMO_TF || "2h-trend-v5-amber-max-passlock";
-const STATE_DIR = path.resolve(__dirname, "..", `ftmo-state-${TF}`);
+// 2026-05-16 Round 9 KRIT FIX (ecosystem agent): STATE_DIR previously had no
+// FTMO_ACCOUNT_ID suffix. With multi-account 3-stack (the documented "only
+// realistic path" per CLAUDE.md), all three PM2 instances would write to the
+// same state directory → MAGIC collisions, state-file corruption, double
+// trades. Per-account state-dirs via FTMO_ACCOUNT_ID env, matching
+// ftmo_executor.py and ftmo_kill.py conventions.
+const ACCT = process.env.FTMO_ACCOUNT_ID || "default";
+const STATE_DIR = path.resolve(
+  __dirname,
+  "..",
+  `ftmo-state-${TF}-${ACCT}`,
+);
 const REPO_ROOT = path.resolve(__dirname, "..");
+
+// 2026-05-16 Round 9 WARN FIX: PM2 opens out_file/error_file immediately.
+// If STATE_DIR doesn't exist on first boot (new TF or new ACCT), the open()
+// fails and autorestart loops until max_restarts is exhausted. Create on
+// load.
+try {
+  require("fs").mkdirSync(STATE_DIR, { recursive: true });
+} catch (e) {
+  console.warn(`[pm2] mkdir failed for ${STATE_DIR}: ${e.message}`);
+}
 
 // Telegram — Phase 12 (CRITICAL Auth Bug 1): hardcoded fallback removed.
 // Previously contained committed bot token + chat-id (visible in git history).

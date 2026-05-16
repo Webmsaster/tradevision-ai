@@ -462,10 +462,17 @@ pub fn v5_amber_ext() -> EngineConfig {
 }
 
 /// 2026-05-13 V5_AMBER_EXT + PASSLOCK.
+/// 2026-05-16 Round 9 KRIT FIX (templates agent): add atrStop {period:56,
+/// stopMult:2} to match TS PASSLOCK family. Same drift class as
+/// v5_amber_max_passlock.
 pub fn v5_amber_ext_passlock() -> EngineConfig {
     let mut cfg = v5_amber_ext();
     cfg.label = "V5_AMBER_EXT_PASSLOCK".into();
     cfg.close_all_on_target_reached = true;
+    cfg.atr_stop = Some(crate::config::AtrStop {
+        period: 56,
+        stop_mult: 2.0,
+    });
     cfg
 }
 
@@ -485,10 +492,24 @@ pub fn v5_amber_max() -> EngineConfig {
 }
 
 /// 2026-05-13 V5_AMBER_MAX + PASSLOCK.
+///
+/// 2026-05-16 Round 9 KRIT FIX (templates agent + parity agent both KRIT):
+/// TS reference `FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK` (ftmoDaytrade24h.ts
+/// line 8740) explicitly sets `atrStop: { period: 56, stopMult: 2 }` on top
+/// of PASSLOCK. Rust port previously inherited from `v5_amber()` which
+/// builds from `v5_titanium_base()` and explicitly nulls atrStop. Result:
+/// Rust AMBER_MAX_PASSLOCK ran WITHOUT trailing ATR-stop, while TS AND live
+/// deploy both ran WITH it. This is a fundamental strategy drift — ATR-trail
+/// protects gains and reduces total-loss tail. Add atrStop here to match TS.
+/// Estimated pp impact: +3-8pp Combined-Funded pass-rate.
 pub fn v5_amber_max_passlock() -> EngineConfig {
     let mut cfg = v5_amber_max();
     cfg.label = "V5_AMBER_MAX_PASSLOCK".into();
     cfg.close_all_on_target_reached = true;
+    cfg.atr_stop = Some(crate::config::AtrStop {
+        period: 56,
+        stop_mult: 2.0,
+    });
     cfg
 }
 
@@ -610,6 +631,14 @@ pub fn v5_amber_passlock() -> EngineConfig {
     let mut cfg = v5_amber();
     cfg.label = "V5_AMBER_PASSLOCK".into();
     cfg.close_all_on_target_reached = true;
+    // 2026-05-16 Round 9 KRIT FIX (templates agent): TS reference at
+    // ftmoDaytrade24h.ts:8691 sets atrStop {period:56, stopMult:2} for
+    // AMBER_PASSLOCK. Rust port previously inherited atr_stop=None from
+    // v5_titanium_base. Same strategy drift as v5_amber_max_passlock.
+    cfg.atr_stop = Some(crate::config::AtrStop {
+        period: 56,
+        stop_mult: 2.0,
+    });
     cfg
 }
 

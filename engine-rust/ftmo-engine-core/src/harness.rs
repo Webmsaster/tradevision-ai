@@ -521,9 +521,20 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
     // Standalone pass-check (TS line 1510) — fires every bar so a paused-
     // after-target run can pass once ping-day accumulation catches
     // trading_days up to min_trading_days.
+    //
+    // 2026-05-16 Round 9 KRIT FIX (harness step_bar agent): require
+    // `first_target_hit_day.is_some()` BEFORE this branch fires. Otherwise:
+    // T0: provisional target_hit → close_all + funding deduction → re-check
+    //     fails → revert paused_at_target + retain ping_day removal (Codex R3 fix).
+    // T1: next bar, transient mtm spike pushes both equity AND mtm above target
+    //     while trading_days still satisfies min_trading_days from earlier entry
+    //     pushes → this standalone branch fires and passes WITHOUT funding
+    //     re-check. Soft-pass class that the Codex R3 fix was supposed to
+    //     eliminate. Require the committed latch to gate this branch.
     if state.equity >= 1.0 + cfg.profit_target
         && state.mtm_equity >= 1.0 + cfg.profit_target
         && state.trading_days.len() >= cfg.min_trading_days as usize
+        && state.first_target_hit_day.is_some()
     {
         result.target_hit = true;
         result.passed = true;
