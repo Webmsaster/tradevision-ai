@@ -494,6 +494,9 @@ pub struct RegimeConfluenceParams {
     /// Default 1.5 → bucket carries 1.5× uniform average. Defaults disabled.
     pub use_poc_zone_gate: bool,
     pub poc_zone_hvn_min_ratio: f64,
+    /// 2026-05-16 Phase 16 — Voter-Disagreement-Bonus (Hunt 40#3). When
+    /// supertrend and bb_z_mr voters agree on direction, add +1 bonus vote.
+    pub disagreement_bonus: bool,
 }
 
 impl RegimeConfluenceParams {
@@ -566,6 +569,7 @@ impl RegimeConfluenceParams {
             poc_z_min: 1.5,
             use_poc_zone_gate: false,
             poc_zone_hvn_min_ratio: 1.5,
+            disagreement_bonus: false,
         }
     }
 
@@ -1056,6 +1060,22 @@ pub fn detect_regime_confluence(
         match side {
             PositionSide::Long => long_votes += 1,
             PositionSide::Short => short_votes += 1,
+        }
+    }
+
+    // 2026-05-16 Phase 16 — Voter-Disagreement-Bonus (Hunt 40 #3 brainstorm).
+    // When the trend-voter (supertrend) and the mean-rev voter (bb_z_mr)
+    // BOTH fire in the SAME direction, that's the rare strong-confluence
+    // signal (cross-paradigm agreement). Add +1 bonus vote in that direction.
+    // Toggle via `params.disagreement_bonus` (default false; set via CLI).
+    if params.disagreement_bonus {
+        if let (Some(st), Some(bb)) = (supertrend_vote, bb_z_vote) {
+            if st == bb {
+                match st {
+                    PositionSide::Long => long_votes += 1,
+                    PositionSide::Short => short_votes += 1,
+                }
+            }
         }
     }
 

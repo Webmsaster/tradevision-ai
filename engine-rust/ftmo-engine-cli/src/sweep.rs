@@ -303,6 +303,8 @@ struct MultiSignalCfg {
     // 2026-05-16 Phase 2.2 — POC-Zone Hard-Gate (HVN block)
     regime_use_poc_zone_gate: bool,
     regime_poc_zone_hvn_min_ratio: f64,
+    // 2026-05-16 Phase 16 — Voter-Disagreement-Bonus (Hunt 40#3)
+    regime_disagreement_bonus: bool,
     // Below: deliberately at end so the field-init order in `let cfg =
     // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
@@ -524,6 +526,10 @@ struct CfgOverrides {
     /// 2026-05-16 Phase 14 — Fractional-Kelly (Hunt 17 brainstorm). 1.0 = full
     /// Kelly, 0.5 = Half-Kelly. Multiplies tier multiplier at apply-time.
     kelly_fraction: Option<f64>,
+    /// 2026-05-16 Phase 15 — Per-asset tp_mult CSV (Hunt 41 brainstorm).
+    /// Format `--override-tp-mult-per-asset BTCUSDT=1.05,SOLUSDT=1.30`.
+    /// Composes with global `--override-tp-mult` (per-asset applied AFTER).
+    tp_mult_per_asset: Option<std::collections::HashMap<String, f64>>,
     // 2026-05-16 Phase 2 — Phase-aware risk multiplier. When profit_target
     // ≈ 0.05 (P2), multiply all per-asset risk_frac by this factor.
     // Default 1.0 = no change. Hypothesis: P2 (5% target) benefits from
@@ -551,6 +557,37 @@ fn apply_overrides(
                 a.tp_pct = Some(t * m);
             } else {
                 a.tp_pct = Some(cfg.tp_pct * m);
+            }
+        }
+    }
+    // 2026-05-16 Phase 15 — Per-asset tp_mult CSV (Hunt 41). Composes with
+    // global --override-tp-mult (applied above first, so per-asset acts on
+    // already-multiplied tpPct). User passes "BTCUSDT=1.05,SOLUSDT=1.30".
+    // Asset config symbols are suffixed "BTC-TREND" etc.; match by base
+    // ticker (strip "-TREND"/"-MR" suffix from asset.symbol, strip "USDT"
+    // suffix from user key, then case-insensitive compare).
+    if let Some(ref per_asset) = ov.tp_mult_per_asset {
+        let normalized: std::collections::HashMap<String, f64> = per_asset
+            .iter()
+            .map(|(k, v)| {
+                let base = k.trim().to_uppercase();
+                let base = base.strip_suffix("USDT").unwrap_or(&base).to_string();
+                (base, *v)
+            })
+            .collect();
+        for a in cfg.assets.iter_mut() {
+            let asset_base = a
+                .symbol
+                .split('-')
+                .next()
+                .unwrap_or(a.symbol.as_str())
+                .to_uppercase();
+            if let Some(&pm) = normalized.get(&asset_base) {
+                if let Some(t) = a.tp_pct {
+                    a.tp_pct = Some(t * pm);
+                } else {
+                    a.tp_pct = Some(cfg.tp_pct * pm);
+                }
             }
         }
     }
@@ -1107,6 +1144,7 @@ fn main() -> Result<()> {
     // 2026-05-16 Phase 2.2 — POC-Zone Hard-Gate (HVN block)
     let mut regime_use_poc_zone_gate: bool = false;
     let mut regime_poc_zone_hvn_min_ratio: f64 = 1.5;
+    let mut regime_disagreement_bonus: bool = false;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
@@ -1124,6 +1162,8 @@ fn main() -> Result<()> {
     let mut kelly_min_trades: Option<u32> = None;
     // 2026-05-16 Phase 14 — Fractional-Kelly modifier (default OFF).
     let mut kelly_fraction: Option<f64> = None;
+    // 2026-05-16 Phase 15 — Per-asset tp_mult CSV (Hunt 41).
+    let mut tp_mult_per_asset: Option<std::collections::HashMap<String, f64>> = None;
     // 2026-05-16 Phase 2 — Phase-aware risk multiplier
     let mut phase2_risk_mult: Option<f64> = None;
     // 2026-05-16 Phase 3 — News-Blackout opt-in (default OFF).
@@ -1389,6 +1429,8 @@ fn main() -> Result<()> {
             "--regime-poc-z-min" => regime_poc_z_min = need!("--regime-poc-z-min").parse()?,
             // 2026-05-16 Phase 2.2 — POC-Zone Hard-Gate
             "--regime-poc-zone-gate" => regime_use_poc_zone_gate = true,
+            // 2026-05-16 Phase 16 — Voter-Disagreement-Bonus (Hunt 40#3).
+            "--regime-disagreement-bonus" => regime_disagreement_bonus = true,
             "--poc-zone-hvn-min-ratio" => {
                 regime_poc_zone_hvn_min_ratio = need!("--poc-zone-hvn-min-ratio").parse()?
             }
@@ -1433,6 +1475,24 @@ fn main() -> Result<()> {
                     anyhow::bail!("--kelly-fraction must be in (0, 1] (got {v})");
                 }
                 kelly_fraction = Some(v)
+            }
+            // 2026-05-16 Phase 15 — Per-asset tp_mult CSV (Hunt 41).
+            "--override-tp-mult-per-asset" => {
+                let raw = need!("--override-tp-mult-per-asset");
+                let mut map = std::collections::HashMap::new();
+                for tok in raw.split(',') {
+                    let tok = tok.trim();
+                    if tok.is_empty() { continue; }
+                    let (sym, val) = tok.split_once('=').or_else(|| tok.split_once(':'))
+                        .ok_or_else(|| anyhow!("invalid --override-tp-mult-per-asset token: {tok}"))?;
+                    let v: f64 = val.parse()
+                        .map_err(|_| anyhow!("invalid f64 in per-asset tp-mult: {val}"))?;
+                    if !(v > 0.0 && v <= 10.0) {
+                        anyhow::bail!("per-asset tp-mult must be in (0, 10] (got {v})");
+                    }
+                    map.insert(sym.to_string(), v);
+                }
+                tp_mult_per_asset = Some(map);
             }
             // 2026-05-16 Phase 2 — Phase-aware risk multiplier (applied only
             // when profit_target ≈ 0.05). Bug-frei: scalar from CLI, no state.
@@ -1674,6 +1734,7 @@ fn main() -> Result<()> {
         kelly_window,
         kelly_min_trades,
         kelly_fraction,
+        tp_mult_per_asset,
         phase2_risk_mult,
         news_blackout_enable,
     };
@@ -1770,6 +1831,7 @@ fn main() -> Result<()> {
                 regime_poc_z_min,
                 regime_use_poc_zone_gate,
                 regime_poc_zone_hvn_min_ratio,
+                regime_disagreement_bonus,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -3046,6 +3108,7 @@ fn run_one_window(
                             poc_z_min: multi_signal.regime_poc_z_min,
                             use_poc_zone_gate: multi_signal.regime_use_poc_zone_gate,
                             poc_zone_hvn_min_ratio: multi_signal.regime_poc_zone_hvn_min_ratio,
+                            disagreement_bonus: multi_signal.regime_disagreement_bonus,
                         };
                     let stablecoin_slice =
                         stablecoin_feed.get(&source).map(|v| v.as_slice());
