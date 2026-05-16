@@ -526,6 +526,10 @@ struct CfgOverrides {
     // Default 1.0 = no change. Hypothesis: P2 (5% target) benefits from
     // lower risk = fewer DL tail failures, more pass-rate.
     phase2_risk_mult: Option<f64>,
+    // 2026-05-16 Phase 3 — News-Blackout opt-in. When true, populate
+    // EngineConfig.news_events with the hardcoded 2026 FOMC list. Default
+    // OFF so prior behaviour is untouched.
+    news_blackout_enable: bool,
 }
 
 fn apply_overrides(
@@ -1115,6 +1119,8 @@ fn main() -> Result<()> {
     let mut kelly_min_trades: Option<u32> = None;
     // 2026-05-16 Phase 2 — Phase-aware risk multiplier
     let mut phase2_risk_mult: Option<f64> = None;
+    // 2026-05-16 Phase 3 — News-Blackout opt-in (default OFF).
+    let mut news_blackout_enable: bool = false;
 
     // R67 audit (Round 2): replace `args.next().unwrap()` with `ok_or_else`
     // — `ftmo-sweep --candles` (no path follows) panics with the usual Rust
@@ -1422,6 +1428,8 @@ fn main() -> Result<()> {
                 }
                 phase2_risk_mult = Some(v)
             }
+            // 2026-05-16 Phase 3 — News-Blackout opt-in (FOMC 2026 ±60min).
+            "--news-blackout" => news_blackout_enable = true,
             other => return Err(anyhow!("unknown arg: {other}")),
         }
     }
@@ -1651,6 +1659,7 @@ fn main() -> Result<()> {
         kelly_window,
         kelly_min_trades,
         phase2_risk_mult,
+        news_blackout_enable,
     };
 
     if candles_dir.is_some() || symbols_arg.is_some() {
@@ -2070,6 +2079,15 @@ fn run_multi_asset(
     multi_signal: MultiSignalCfg,
 ) -> Result<()> {
     let dir = candles_dir.ok_or_else(|| anyhow!("--candles-dir is required for multi-asset"))?;
+    // 2026-05-16 Phase 3 — pre-build the FOMC blackout list once. Lifetime
+    // outlives the per-symbol loops; `news_evts.as_deref()` plugs into each
+    // R28V6Inputs entry below.
+    let news_evts: Option<Vec<ftmo_engine_core::news::NewsEvent>> =
+        if overrides.news_blackout_enable {
+            Some(ftmo_engine_core::news::default_2026_events())
+        } else {
+            None
+        };
     let symbols_str =
         symbols_arg.ok_or_else(|| anyhow!("--symbols is required for multi-asset"))?;
     let symbols: Vec<String> = symbols_str
@@ -2492,6 +2510,7 @@ fn run_multi_asset(
                 debug_window,
                 multi_signal.as_ref(),
                 ml_features_by_sym.as_ref(),
+                news_evts.as_deref(),
             )
         })
         .collect();
@@ -2574,6 +2593,7 @@ fn run_one_window(
     debug_window: Option<usize>,
     multi_signal: &MultiSignalCfg,
     ml_features_by_sym: &HashMap<String, MlFeatureSeries>,
+    news_evts: Option<&[ftmo_engine_core::news::NewsEvent]>,
 ) -> WindowResult {
     let win_started = Instant::now();
     let mut state = EngineState::initial(&cfg.label);
@@ -2802,7 +2822,7 @@ fn run_one_window(
                                 None
                             },
                             cross_asset_closes: cross_closes_slice,
-                            news_events: None,
+                            news_events: news_evts,
                             funding_series: funding,
                             // 2026-05-14 Detector #34: CB-premium is wired to
                             // None on the per-asset primary R28V6 path. The
@@ -2834,7 +2854,7 @@ fn run_one_window(
                             None
                         },
                         cross_asset_closes: None,
-                        news_events: None,
+                        news_events: news_evts,
                         funding_series: funding,
                         cb_premium_series: None,
                     };
@@ -2868,7 +2888,7 @@ fn run_one_window(
                             None
                         },
                         cross_asset_closes: cross_closes_slice,
-                        news_events: None,
+                        news_events: news_evts,
                         funding_series: funding,
                         cb_premium_series: cb_premium,
                     };
