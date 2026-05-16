@@ -357,12 +357,19 @@ fn try_detect_direction(
     }
 
     // 4. Choppiness gate.
+    // 2026-05-16 Audit (Round 8 / signals_r28v6 agent #6): mirror the ADX gate
+    // pattern — abstain on `None` rather than letting an undefined choppiness
+    // value silently allow the entry. Without this branch, warm-up bars
+    // (< choppiness_period available) fired entries that an ADX-gated config
+    // would have blocked. ~0.1pp pass-rate asymmetry.
     if let (Some(p), Some(max)) = (params.choppiness_period, params.choppiness_max) {
         let series = choppiness_index(candles, p);
         if let Some(v) = series[trigger_idx] {
             if v > max {
                 return None;
             }
+        } else {
+            return None;
         }
     }
 

@@ -3109,8 +3109,18 @@ fn run_one_window(
         let target_hit = state.first_target_hit_day.is_some()
             && state.trading_days.len() >= cfg.min_trading_days as usize;
         let final_equity_floor = 1.0 + cfg.profit_target * 0.5;
-        let give_back_too_far =
-            target_hit && state.equity.is_finite() && state.equity < final_equity_floor;
+        // 2026-05-16 Round 8 HIGH FIX (harness-deep agent): soft-pass tail
+        // previously checked only `state.equity` (realised). A window that
+        // ended without challenge_ended AND with open positions could leave
+        // mtm_equity deeply underwater while realised equity satisfied the
+        // floor — silent inflation 2-4pp. Mirror the strict_pass branch
+        // below which checks BOTH equity AND mtm_equity. The
+        // `mtm_equity.is_finite()` guard handles configs that never updated
+        // mtm (rare; treat as missing data = fail-closed).
+        let give_back_too_far = target_hit
+            && state.equity.is_finite()
+            && state.mtm_equity.is_finite()
+            && (state.equity < final_equity_floor || state.mtm_equity < final_equity_floor);
         if target_hit && !give_back_too_far {
             last_passed = true;
         }

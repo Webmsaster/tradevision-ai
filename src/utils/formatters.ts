@@ -85,6 +85,10 @@ export function formatTradeDate(
       : typeof date === "number"
         ? new Date(date)
         : date;
+  // 2026-05-16 Round 8 fix: guard against invalid Date — previously
+  // `MONTHS_SHORT[NaN]` yielded "undefined NaN, NaN:NaN". formatShortDate
+  // had this guard; mirror it here and in formatDetailDate.
+  if (isNaN(d.getTime())) return typeof date === "string" ? date : "";
   const months = MONTHS_SHORT;
   const utc = options.displayInUTC === true;
   const month = months[utc ? d.getUTCMonth() : d.getMonth()];
@@ -103,6 +107,7 @@ export function formatDetailDate(
   options: DateFormatOptions = {},
 ): string {
   const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return dateStr;
   const months = MONTHS_SHORT;
   const utc = options.displayInUTC === true;
   const month = months[utc ? d.getUTCMonth() : d.getMonth()];

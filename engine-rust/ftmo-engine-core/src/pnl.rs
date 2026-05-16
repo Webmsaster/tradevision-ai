@@ -134,8 +134,14 @@ pub fn compute_eff_pnl_with_time(
     // the loss-floor into a profit-floor — that would turn a -150% R loss
     // into a +150% R "gain" silently. The PnL itself uses raw eff_risk for
     // parity with TS, the floor is the defensive clamp.
-    let risk_for_floor = pos.eff_risk.max(0.0);
-    let eff_pnl = (raw_pnl * cfg.leverage * pos.eff_risk).max(GAP_TAIL_MULT * risk_for_floor);
+    // 2026-05-16 Round 8 KRIT FIX (sizing-pnl agent): use the clamped value
+    // in the PnL multiplication too. With raw negative eff_risk a positive
+    // raw_pnl flips sign (Long winner → "Loss"); the floor (=GAP_TAIL_MULT*0)
+    // would NOT catch it because the formula reads max(eff_pnl_neg, 0.0) and
+    // the original eff_pnl already passed the floor. Mirror clamp on both
+    // sides — TS-parity preserved (raw_pnl unchanged, just NaN/<0 defense).
+    let risk_eff = pos.eff_risk.max(0.0);
+    let eff_pnl = (raw_pnl * cfg.leverage * risk_eff).max(GAP_TAIL_MULT * risk_eff);
     EffPnl { raw_pnl, eff_pnl }
 }
 

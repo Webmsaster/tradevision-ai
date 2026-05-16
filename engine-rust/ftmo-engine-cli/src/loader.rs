@@ -21,12 +21,59 @@ pub fn load_candles_json(path: &Path) -> Result<Vec<Candle>> {
     // signal on step=1 sweeps last window.
     let before = candles.len();
     candles.retain(|c| c.is_final);
-    let dropped = before - candles.len();
-    if dropped > 0 {
+    let dropped_nonfinal = before - candles.len();
+    if dropped_nonfinal > 0 {
         eprintln!(
-            "[loader] dropped {dropped} non-final tail bar(s) from {}",
+            "[loader] dropped {dropped_nonfinal} non-final tail bar(s) from {}",
             path.display()
         );
+    }
+    // 2026-05-16 Round 8 HIGH FIX: reject candles with NaN/Inf/negative-price/
+    // inverted HL. Detectors compute `(high-low)/close`; NaN propagates as
+    // false on all comparisons → signals silently dormant. Same failure mode
+    // the R7 funding/top_ls/cb_premium guards prevent, but one layer deeper.
+    let before2 = candles.len();
+    candles.retain(|c| {
+        c.open.is_finite()
+            && c.high.is_finite()
+            && c.low.is_finite()
+            && c.close.is_finite()
+            && c.high >= c.low
+            && c.close > 0.0
+            && c.open > 0.0
+    });
+    let dropped_corrupt = before2 - candles.len();
+    if dropped_corrupt > 0 {
+        eprintln!(
+            "[loader] dropped {dropped_corrupt} corrupt (NaN/Inf/inverted-HL/non-positive) bar(s) from {}",
+            path.display()
+        );
+    }
+    // 2026-05-16 Round 8 MED FIX: bar-duration consistency. Pre-fix only the
+    // first two bars defined `bar_dur_ms` for funding/cb_premium/top_ls/
+    // stablecoin alignment. A 5m-vs-30m silent concat-bug would calibrate
+    // alignment on the first delta and miscount everything after. Warn loudly
+    // if >0.5% of bars deviate from the modal delta.
+    if candles.len() >= 3 {
+        let mut deltas: Vec<i64> = candles
+            .windows(2)
+            .map(|w| w[1].open_time - w[0].open_time)
+            .collect();
+        // Modal delta via simple sort+middle (deterministic).
+        let mut sorted = deltas.clone();
+        sorted.sort_unstable();
+        let modal = sorted[sorted.len() / 2];
+        deltas.retain(|&d| d != modal);
+        let off_count = deltas.len();
+        let off_pct = (off_count as f64) / (candles.len() - 1).max(1) as f64;
+        if off_pct > 0.005 {
+            eprintln!(
+                "[loader] WARN: bar-duration drift in {} — {off_count} of {} deltas differ from modal {modal}ms ({:.2}%). Possible concat-bug (5m+30m mix).",
+                path.display(),
+                candles.len() - 1,
+                off_pct * 100.0
+            );
+        }
     }
     Ok(candles)
 }
