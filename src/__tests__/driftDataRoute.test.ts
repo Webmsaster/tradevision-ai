@@ -14,6 +14,7 @@ import {
   beforeAll,
   afterAll,
   beforeEach,
+  afterEach,
   vi,
 } from "vitest";
 import * as fs from "node:fs";
@@ -159,6 +160,16 @@ describe("/api/drift-data route", () => {
     vi.resetModules();
     process.env.FTMO_MONITOR_ENABLED = "1";
     process.env.FTMO_STATE_DIR = testStateDir;
+    // 2026-05-16 Round 9-Final: drift-data now fail-CLOSED when Supabase
+    // unavailable unless FTMO_MONITOR_AUTH_BYPASS=1 is set. Test env has
+    // no Supabase configured → set bypass so existing tests run against
+    // the headless single-VPS path (which is the intended dev semantic).
+    // The dedicated "fail-closed without bypass" test removes the env var
+    // explicitly.
+    process.env.FTMO_MONITOR_AUTH_BYPASS = "1";
+  });
+  afterEach(() => {
+    delete process.env.FTMO_MONITOR_AUTH_BYPASS;
   });
 
   it("returns full drift payload from the configured state dir", async () => {
@@ -333,6 +344,9 @@ describe("/api/drift-data route", () => {
   // request has no valid session, return 401 — defends against a tenant on
   // the same monitor URL reading another user's equity by guessing the slug.
   it("returns 401 when Supabase is configured but the user is not signed in", async () => {
+    // 2026-05-16 Round 9-Final: this test verifies the AUTH-required path,
+    // so explicitly remove the bypass that the global beforeEach sets.
+    delete process.env.FTMO_MONITOR_AUTH_BYPASS;
     // Mock the supabase-server helper directly: it returns a client whose
     // auth.getUser() resolves with no user (i.e. no session cookie present).
     vi.doMock("@/lib/supabase-server", () => ({
@@ -397,6 +411,8 @@ describe("/api/drift-data route", () => {
   // tenants' live equity. Admin (FTMO_ADMIN_EMAIL match) keeps full access.
   describe("R67-Final cross-tenant slug enumeration guard", () => {
     it("blocks slug-based reads for non-admin authenticated users (403)", async () => {
+      // 2026-05-16 Round 9-Final: AUTH-required path, remove bypass.
+      delete process.env.FTMO_MONITOR_AUTH_BYPASS;
       process.env.FTMO_ADMIN_EMAIL = "admin@example.com";
       vi.doMock("@/lib/supabase-server", () => ({
         createServerSupabaseClient: async () => ({
@@ -493,6 +509,8 @@ describe("/api/drift-data route", () => {
     it("blocks slug reads when FTMO_ADMIN_EMAIL is unset (fail-closed)", async () => {
       // No FTMO_ADMIN_EMAIL → no user can pass a slug. Default-dir reads
       // still work (covered above).
+      // 2026-05-16 Round 9-Final: AUTH-required path, remove bypass.
+      delete process.env.FTMO_MONITOR_AUTH_BYPASS;
       delete process.env.FTMO_ADMIN_EMAIL;
       vi.doMock("@/lib/supabase-server", () => ({
         createServerSupabaseClient: async () => ({
@@ -533,6 +551,8 @@ describe("/api/drift-data route", () => {
   // liveness via the drift-data /403 timing channel afterwards).
   describe("R4 cross-tenant slug picker isolation", () => {
     it("non-admin user only sees their mapped slugs in availableTfSlugs", async () => {
+      // 2026-05-16 Round 9-Final: AUTH-required path, remove bypass.
+      delete process.env.FTMO_MONITOR_AUTH_BYPASS;
       // The default state-dir from beforeAll is already on disk; add a
       // sibling so the picker has two slugs to discriminate between.
       const cwd = process.cwd();
