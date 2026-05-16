@@ -29,6 +29,7 @@ pub mod signals_cb_premium;
 pub mod signals_cme_basis;
 pub mod signals_cmf;
 pub mod signals_double_top;
+pub mod signals_fisher;
 pub mod signals_forex_mr;
 pub mod signals_hmm_regime;
 pub mod signals_kalman_trend;

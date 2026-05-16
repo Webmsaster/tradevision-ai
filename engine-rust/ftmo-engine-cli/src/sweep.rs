@@ -305,6 +305,8 @@ struct MultiSignalCfg {
     regime_poc_zone_hvn_min_ratio: f64,
     // 2026-05-16 Phase 16 — Voter-Disagreement-Bonus (Hunt 40#3)
     regime_disagreement_bonus: bool,
+    // 2026-05-16 Phase 17 — Fisher Transform voter (Hunt 3)
+    regime_use_fisher: bool,
     // Below: deliberately at end so the field-init order in `let cfg =
     // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
@@ -1145,6 +1147,7 @@ fn main() -> Result<()> {
     let mut regime_use_poc_zone_gate: bool = false;
     let mut regime_poc_zone_hvn_min_ratio: f64 = 1.5;
     let mut regime_disagreement_bonus: bool = false;
+    let mut regime_use_fisher: bool = false;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
@@ -1431,6 +1434,8 @@ fn main() -> Result<()> {
             "--regime-poc-zone-gate" => regime_use_poc_zone_gate = true,
             // 2026-05-16 Phase 16 — Voter-Disagreement-Bonus (Hunt 40#3).
             "--regime-disagreement-bonus" => regime_disagreement_bonus = true,
+            // 2026-05-16 Phase 17 — Fisher Transform voter (Hunt 3).
+            "--regime-use-fisher" => regime_use_fisher = true,
             "--poc-zone-hvn-min-ratio" => {
                 regime_poc_zone_hvn_min_ratio = need!("--poc-zone-hvn-min-ratio").parse()?
             }
@@ -1832,6 +1837,7 @@ fn main() -> Result<()> {
                 regime_use_poc_zone_gate,
                 regime_poc_zone_hvn_min_ratio,
                 regime_disagreement_bonus,
+                regime_use_fisher,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -3109,6 +3115,8 @@ fn run_one_window(
                             use_poc_zone_gate: multi_signal.regime_use_poc_zone_gate,
                             poc_zone_hvn_min_ratio: multi_signal.regime_poc_zone_hvn_min_ratio,
                             disagreement_bonus: multi_signal.regime_disagreement_bonus,
+                            use_fisher: multi_signal.regime_use_fisher,
+                            fisher_params: ftmo_engine_core::signals_fisher::FisherParams::default(),
                         };
                     let stablecoin_slice =
                         stablecoin_feed.get(&source).map(|v| v.as_slice());

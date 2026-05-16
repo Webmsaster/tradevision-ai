@@ -454,6 +454,9 @@ pub struct RegimeConfluenceParams {
     /// 2026-05-14 Phase-3 — Supertrend volatility-band voter.
     pub use_supertrend: bool,
     pub supertrend_params: crate::signals_supertrend::SupertrendParams,
+    /// 2026-05-16 Phase 17 — Fisher Transform voter (Hunt 3 brainstorm).
+    pub use_fisher: bool,
+    pub fisher_params: crate::signals_fisher::FisherParams,
     /// 2026-05-14 Phase-3 — Kalman trend-filter voter.
     pub use_kalman_trend: bool,
     pub kalman_trend_params: crate::signals_kalman_trend::KalmanTrendParams,
@@ -555,6 +558,8 @@ impl RegimeConfluenceParams {
             smc_fvg_params: crate::signals_smc_fvg::FvgParams::default_30m_crypto(),
             use_supertrend: false,
             supertrend_params: crate::signals_supertrend::SupertrendParams::default_30m_crypto(),
+            use_fisher: false,
+            fisher_params: crate::signals_fisher::FisherParams::default(),
             use_kalman_trend: false,
             kalman_trend_params: crate::signals_kalman_trend::KalmanTrendParams::default_30m_crypto(),
             htf_macd_enabled: false,
@@ -810,6 +815,11 @@ pub fn detect_regime_confluence(
     } else {
         None
     };
+    let fisher_vote = if params.use_fisher {
+        crate::signals_fisher::compute_fisher_vote(candles, &params.fisher_params)
+    } else {
+        None
+    };
     let kalman_vote = if params.use_kalman_trend {
         crate::signals_kalman_trend::compute_kalman_trend_vote(
             candles,
@@ -1009,6 +1019,12 @@ pub fn detect_regime_confluence(
         }
     }
     if let Some(side) = supertrend_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = fisher_vote {
         match side {
             PositionSide::Long => long_votes += 1,
             PositionSide::Short => short_votes += 1,
