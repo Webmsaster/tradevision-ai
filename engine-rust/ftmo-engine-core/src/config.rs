@@ -289,6 +289,16 @@ pub struct KellySizing {
     #[serde(rename = "minTrades")]
     pub min_trades: u32,
     pub tiers: Vec<KellyTier>,
+    /// 2026-05-16 Phase 14 — Fractional-Kelly modifier. Default 1.0 = full
+    /// Kelly. 0.5 = Half-Kelly (Thorp/Kelly criterion: ~75% of log-growth at
+    /// ~25% of volatility). Multiplies the tier multiplier at apply-time so
+    /// existing tier ladders remain semantically meaningful.
+    #[serde(default = "default_kelly_fraction", rename = "fraction")]
+    pub fraction: f64,
+}
+
+fn default_kelly_fraction() -> f64 {
+    1.0
 }
 
 /// 2026-05-13 Codex HIGH FIX (Fix 8): TS `dayBasedRiskMultiplier` schema

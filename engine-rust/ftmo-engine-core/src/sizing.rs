@@ -168,7 +168,10 @@ pub fn resolve_sizing_factor(
                 }
             };
             state.kelly_tier_idx = Some(tier_idx);
-            factor *= sorted_tiers[tier_idx].multiplier;
+            // 2026-05-16 Phase 14: apply fractional-Kelly modifier (default
+            // 1.0 = full Kelly). 0.5 = Half-Kelly is the classical "safer"
+            // setting from Thorp's Kelly-criterion literature.
+            factor *= sorted_tiers[tier_idx].multiplier * ks.fraction;
         }
     }
 
@@ -559,6 +562,7 @@ mod tests {
                 win_rate_above: 0.0,
                 multiplier: 2.0,
             }],
+            fraction: 1.0,
         });
         let mut s = EngineState::initial("x");
         for i in 0..5 {
@@ -591,6 +595,7 @@ mod tests {
                     multiplier: 0.6,
                 },
             ],
+            fraction: 1.0,
         });
         let mut s = EngineState::initial("x");
         // Seed 7 wins / 3 losses = 70% — borderline tier 0.
@@ -1438,6 +1443,7 @@ mod tests {
                     multiplier: 1.0,
                 },
             ],
+            fraction: 1.0,
         });
         c.sharpe_sizing = Some(SharpeSizing {
             window_size: 50,

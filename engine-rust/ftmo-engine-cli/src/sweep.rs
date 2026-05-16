@@ -521,6 +521,9 @@ struct CfgOverrides {
     kelly_sizing_enable: bool,
     kelly_window: Option<u32>,
     kelly_min_trades: Option<u32>,
+    /// 2026-05-16 Phase 14 — Fractional-Kelly (Hunt 17 brainstorm). 1.0 = full
+    /// Kelly, 0.5 = Half-Kelly. Multiplies tier multiplier at apply-time.
+    kelly_fraction: Option<f64>,
     // 2026-05-16 Phase 2 — Phase-aware risk multiplier. When profit_target
     // ≈ 0.05 (P2), multiply all per-asset risk_frac by this factor.
     // Default 1.0 = no change. Hypothesis: P2 (5% target) benefits from
@@ -899,11 +902,13 @@ fn apply_overrides(
                         multiplier: 0.30,
                     },
                 ],
+                fraction: 1.0,
             });
             cfg.kelly_sizing = Some(KellySizing {
                 window_size: ov.kelly_window.unwrap_or(base.window_size),
                 min_trades: ov.kelly_min_trades.unwrap_or(base.min_trades),
                 tiers: base.tiers,
+                fraction: ov.kelly_fraction.unwrap_or(base.fraction),
             });
         }
     }
@@ -1117,6 +1122,8 @@ fn main() -> Result<()> {
     let mut kelly_sizing_enable: bool = false;
     let mut kelly_window: Option<u32> = None;
     let mut kelly_min_trades: Option<u32> = None;
+    // 2026-05-16 Phase 14 — Fractional-Kelly modifier (default OFF).
+    let mut kelly_fraction: Option<f64> = None;
     // 2026-05-16 Phase 2 — Phase-aware risk multiplier
     let mut phase2_risk_mult: Option<f64> = None;
     // 2026-05-16 Phase 3 — News-Blackout opt-in (default OFF).
@@ -1419,6 +1426,14 @@ fn main() -> Result<()> {
             "--kelly-min-trades" => {
                 kelly_min_trades = Some(need!("--kelly-min-trades").parse()?)
             }
+            // 2026-05-16 Phase 14 — Fractional-Kelly modifier (Half-Kelly etc.).
+            "--kelly-fraction" => {
+                let v: f64 = need!("--kelly-fraction").parse()?;
+                if !(v > 0.0 && v <= 1.0) {
+                    anyhow::bail!("--kelly-fraction must be in (0, 1] (got {v})");
+                }
+                kelly_fraction = Some(v)
+            }
             // 2026-05-16 Phase 2 — Phase-aware risk multiplier (applied only
             // when profit_target ≈ 0.05). Bug-frei: scalar from CLI, no state.
             "--phase2-risk-mult" => {
@@ -1658,6 +1673,7 @@ fn main() -> Result<()> {
         kelly_sizing_enable,
         kelly_window,
         kelly_min_trades,
+        kelly_fraction,
         phase2_risk_mult,
         news_blackout_enable,
     };
