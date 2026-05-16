@@ -312,13 +312,17 @@ def _compute_magic_id() -> int:
         # PING_MAGIC = MAGIC + 7 → 258, 268, ... never overlaps next slot.
         return base + 10 + (num * 10)
     except ValueError:
-        # Non-numeric fallback — use sha256 (more collision-resistant than
-        # sha1) over a wider range.
+        # 2026-05-16 Round 9 MED FIX (ftmo_executor agent): non-numeric
+        # fallback range [1231, 10230] previously overlapped numeric range
+        # for num ∈ [100..999] (numeric: 1241..10241). On a shared VPS with
+        # one numeric and one non-numeric ACCOUNT_ID, MAGIC collision
+        # possible. Shift non-numeric to [11231, 20230] so numeric (num<1000)
+        # and non-numeric ranges are STRICTLY DISJOINT.
         import hashlib
 
         digest = hashlib.sha256(account_id.encode("utf-8")).hexdigest()[:8]
         offset = int(digest, 16) % 9000
-        return base + 1000 + offset  # range [1231, 10230]
+        return base + 11000 + offset  # range [11231, 20230]
 
 
 # PING_MAGIC offset chosen as 7 (not 1) so that adjacent numeric accounts
@@ -1764,6 +1768,22 @@ def place_market_order(
         return OrderResult(False, None, "order_send returned None", lot, fill_price)
     if result.retcode != mt5.TRADE_RETCODE_DONE:
         return OrderResult(False, None, f"retcode={result.retcode} {getattr(result, 'comment', '')}", lot, fill_price)
+    # 2026-05-16 Round 9 HIGH FIX (ftmo_executor agent): MT5 also returns
+    # `TRADE_RETCODE_DONE_PARTIAL` (10009) on partial fills. Pre-fix code
+    # treated that as DONE while the broker filled only a fraction (e.g.
+    # 0.3 of 1.0 lot). Risk management assumed full lot → SL distance × lot
+    # ratio diverged from reality. Use `result.volume` (the broker-filled
+    # qty) as the authoritative size; pass it back so the caller stores
+    # the actual fill, not the requested size.
+    filled_lot = getattr(result, "volume", None) or lot
+    if filled_lot < lot * 0.99:
+        # Partial fill — warn but accept (don't reject, position IS open).
+        # Pass actual filled volume so risk-mgmt downstream uses correct size.
+        print(
+            f"[ftmo] WARN partial_fill {ftmo_symbol}: requested={lot} filled={filled_lot} retcode={result.retcode}",
+            flush=True,
+        )
+        lot = filled_lot
     # Prefer the broker-reported fill (real MT5) when available, else fall
     # back to our slipped price (mock or no-fill-price retcode).
     reported = getattr(result, "price", 0.0) or 0.0
@@ -2071,11 +2091,20 @@ def _prague_today_str() -> str:
     return datetime.now(prague_tz).strftime("%Y-%m-%d")
 
 
-def _get_broker_equity_now() -> float | None:
-    """Refresh broker equity from MT5. Returns None if unavailable (mock or
-    disconnect). 2026-05-13 Codex Round 4 Python #4 helper."""
+def _get_broker_equity_now(mock_fallback: float | None = None) -> float | None:
+    """Refresh broker equity from MT5. Returns None if unavailable (mock
+    without fallback or disconnect). 2026-05-13 Codex Round 4 Python #4
+    helper.
+
+    2026-05-16 Round 9 MED FIX (ftmo_executor agent): accept optional
+    `mock_fallback` so MOCK mode can supply current_equity instead of
+    returning None. Without this, the PASSLOCK refresh-guard at L2161
+    silently bypassed in tests — MOCK PASSLOCK runs latched on
+    current_equity without post-funding re-check, producing false-positive
+    pass-rates in test suites.
+    """
     if MOCK_MODE:
-        return None
+        return mock_fallback
     try:
         info = mt5.account_info()
     except Exception:
@@ -2137,7 +2166,9 @@ def check_target_and_pause(current_equity: float) -> bool:
             # Refresh broker equity AFTER close — swap, commission, and
             # slippage on the close-trade can pull equity below target even
             # when MTM mid-bar said we were above it.
-            refreshed = _get_broker_equity_now()
+            # 2026-05-16 Round 9 MED FIX: pass current_equity as mock-fallback
+            # so MOCK MODE also runs the refresh-guard (test parity).
+            refreshed = _get_broker_equity_now(mock_fallback=current_equity)
             if refreshed is not None and refreshed < target_equity:
                 tg_send(
                     "⚠️ <b>PASSLOCK funding/slippage drift — target NOT latched</b>\n"

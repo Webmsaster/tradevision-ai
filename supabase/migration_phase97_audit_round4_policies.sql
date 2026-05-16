@@ -24,12 +24,20 @@ create policy "Block client-side hard delete (use soft-delete UPDATE)"
   using (false);
 
 -- (2) Tighten INSERT WITH CHECK so clients can't pre-tombstone or backdate.
+--
+-- 2026-05-16 Round 9 KRIT FIX (schema agent): the ±60s window broke bulk
+-- CSV reimports + multi-device sync. Operators MUST also apply
+-- migration_phase98_audit_round5_insert_policy.sql which REVERTS the time
+-- window and installs a force_created_at_now() BEFORE-INSERT trigger
+-- instead. To prevent the ±60s regression on fresh DBs where phase98 is
+-- forgotten, this migration now omits the time-window — keeping only the
+-- auth.uid() + deleted_at=null gate which is the actual security
+-- requirement. The trigger from phase98 handles created_at hardening
+-- without breaking bulk-imports.
 drop policy if exists "Users can insert their own trades" on trades;
 create policy "Users can insert their own trades"
   on trades for insert
   with check (
     auth.uid() = user_id
     and deleted_at is null
-    and created_at >= now() - interval '60 seconds'
-    and created_at <= now() + interval '60 seconds'
   );
