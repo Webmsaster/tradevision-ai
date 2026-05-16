@@ -106,6 +106,18 @@ def check_ftmo_tf() -> tuple[bool, str]:
 
 
 @check("FTMO_ACCOUNT_ID env var (multi-account)", blocking=False)
+def check_live_mock_collision() -> tuple[bool, str]:
+    """2026-05-16 Round 9 KRIT FIX (preflight agent): FTMO_LIVE=1 AND
+    FTMO_MOCK=1 are mutually exclusive — live trading on real MT5 vs mock
+    test harness. Operator setting both signals dangerous misconfig.
+    """
+    live = os.environ.get("FTMO_LIVE") == "1"
+    mock = os.environ.get("FTMO_MOCK") == "1"
+    if live and mock:
+        return False, "INCONSISTENT: FTMO_LIVE=1 AND FTMO_MOCK=1 both set — refuse to start"
+    return True, f"live={live} mock={mock} OK"
+
+
 def check_account_id() -> tuple[bool, str]:
     aid = os.environ.get("FTMO_ACCOUNT_ID")
     if not aid:
@@ -463,6 +475,7 @@ def main() -> int:
                 break
 
     checks = [
+        check_live_mock_collision,
         check_ftmo_tf,
         check_account_id,
         check_expected_login,

@@ -1062,10 +1062,25 @@ export default function SettingsPage() {
                   // even on this radio side-effect write. Errors fall
                   // back to the previous direct setItem path so quota /
                   // disabled storage doesn't break the radio UX.
+                  //
+                  // 2026-05-16 Round 9 KRIT FIX (settings agent): the
+                  // fallback path previously wrote `next` directly to
+                  // localStorage, which leaked the plaintext webhook URL
+                  // + bot-token to disk if encryption ever fell back. Now
+                  // we strip the webhook.url field in the fallback path —
+                  // active-account UI still updates, but secrets stay
+                  // encrypted (last successful encrypted blob remains).
                   const userKey = resolveUserKey(user?.id);
                   void saveSettingsEncrypted(next, userKey).catch(() => {
                     try {
-                      localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+                      const safeNext = {
+                        ...next,
+                        webhook: { ...next.webhook, url: "" },
+                      };
+                      localStorage.setItem(
+                        SETTINGS_KEY,
+                        JSON.stringify(safeNext),
+                      );
                     } catch {
                       /* quota / disabled storage — UI state still updates */
                     }

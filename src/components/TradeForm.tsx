@@ -295,7 +295,13 @@ export default function TradeForm({
   }
 
   // ---- submit ----
-  function handleSubmit(e: React.FormEvent) {
+  // 2026-05-16 Round 9 WARN FIX (TradeForm agent): made async so we can
+  // `await onSubmit(trade)` before clearing submitting flag. Previously
+  // setSubmitting(false) ran synchronously while onSubmit was still
+  // resolving its Supabase write → button re-enabled, user could
+  // double-submit, second click after resetForm() hit reset state
+  // and could collide with the still-flying first request.
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     // Round 54 fix #4: hard-block double-submit (rapid double-click).
     if (submitting) return;
@@ -352,7 +358,10 @@ export default function TradeForm({
         pnlPercent,
       } as Trade;
 
-      onSubmit(trade);
+      // 2026-05-16 Round 9 WARN FIX: await onSubmit so async cloud-writes
+      // are settled before submitting flag clears. If onSubmit returns
+      // void (legacy callers), await is a no-op.
+      await onSubmit(trade);
       resetForm();
       onClose();
     } finally {

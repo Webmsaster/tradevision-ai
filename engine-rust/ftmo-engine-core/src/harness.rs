@@ -157,10 +157,23 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
         // push at L350-355 only runs in the NORMAL path; the force-close
         // shortcut returned before stamping today. TS V4 force-close stamps
         // the active day via the same ping-day branch — Rust parity gap.
+        //
+        // 2026-05-16 Round 9 KRIT FIX (harness step_bar agent): mirror the
+        // Codex R3 fix at L420-497 — track if we pushed ping_day, run
+        // force_close (which deducts funding via apply_exits), then if
+        // funding deduction drops equity below target so passed=false,
+        // revert the ping_day push. Otherwise a window that ALMOST hit
+        // target but lost to funding-fees on the close-all bar still gets
+        // counted as having met min_trading_days via the ping push,
+        // inflating soft-pass for any tail check downstream. +2-5pp
+        // inflation potential on PASSLOCK configs with min_trading_days=4
+        // and exit-day = max_days.
+        let mut pushed_force_close_ping = false;
         if state.paused_at_target {
             let ping_day = new_day as u32;
             if !state.trading_days.contains(&ping_day) {
                 state.trading_days.push(ping_day);
+                pushed_force_close_ping = true;
             }
         }
         force_close_all(state, input, cfg, last_bar_time, &mut result);
@@ -180,6 +193,15 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
             && state.mtm_equity >= 1.0 + cfg.profit_target
             && state.trading_days.len() >= cfg.min_trading_days as usize;
         result.passed = passed;
+        // 2026-05-16 Round 9 KRIT FIX (continued): if force-close-ping push
+        // happened but post-funding check fails, revert the push so any
+        // downstream soft-pass tail (sweep.rs:3108) cannot use this ping
+        // day to satisfy min_trading_days. Mirrors the Codex R3 revert at
+        // L492-496.
+        if !passed && pushed_force_close_ping {
+            let ping_day = new_day as u32;
+            state.trading_days.retain(|&d| d != ping_day);
+        }
         if !result.passed && result.fail_reason.is_none() {
             // give_back / time-exhaustion both surface as plain Time at the
             // end-of-window check (mirror SimulateResult mapping in TS).
@@ -851,10 +873,6 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                 });
                 break;
             }
-            // Day-tracking — entry date counts toward minTradingDays.
-            if !state.trading_days.contains(&state.day) {
-                state.trading_days.push(state.day);
-            }
             // 2026-05-13 Codex Round 7 #B5 FIX: reentry size_mult could push
             // eff_risk ABOVE the caps the detector already applied. Re-apply
             // the centralized caps after the multiplication so reentry never
@@ -874,6 +892,17 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                     reason: "reentry eff_risk ≤ 0 after caps".into(),
                 });
                 continue;
+            }
+            // 2026-05-16 Round 9 KRIT FIX (detector enter agent): trading_days
+            // push was BEFORE the reentry eff_risk validation above. If
+            // apply_post_factor_caps clamped eff_risk to 0 (e.g. maxStopPct
+            // cap on wide ATR-stop), the signal would skip via `continue`
+            // but trading_day was already committed. False min_trading_days
+            // counter — +0.5-1.5pp inflation on reentry-heavy configs.
+            // Moved push AFTER the validation so only actually-entering
+            // signals stamp the day.
+            if !state.trading_days.contains(&state.day) {
+                state.trading_days.push(state.day);
             }
             // Consume the re-entry slot now that we're opening.
             if reentry_scale.is_some() {

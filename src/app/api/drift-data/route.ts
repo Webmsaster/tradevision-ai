@@ -159,11 +159,25 @@ async function isAuthenticated(): Promise<{
     // createServerSupabaseClient throws if cookies() is unavailable in
     // the runtime — treat that as "no auth backend" and let the request
     // through (matches the localStorage-fallback path of the rest of the app).
-    return { ok: true, reason: "no-auth-backend" };
+    //
+    // 2026-05-16 Round 9 KRIT SECURITY FIX (api drift-data agent): the
+    // bare-no-auth-backend fail-OPEN allowed any anonymous caller to read
+    // any state-dir via `?ftmo_tf=<slug>` on a deployment that had
+    // FTMO_MONITOR_ENABLED=1 (live data exposed) but a broken/missing
+    // Supabase config. Now: explicit FTMO_MONITOR_AUTH_BYPASS=1 is
+    // required to pass through, matching the same gate `ftmoMonitorAuth.ts`
+    // already uses. Production single-owner VPS must set the bypass env
+    // var; SaaS multi-tenant fails closed by default.
+    return process.env.FTMO_MONITOR_AUTH_BYPASS === "1"
+      ? { ok: true, reason: "no-auth-backend" }
+      : { ok: false, reason: "no-auth-backend" };
   }
   if (!supabase) {
     // Supabase env vars not configured — no auth to enforce.
-    return { ok: true, reason: "no-auth-backend" };
+    // 2026-05-16 Round 9 KRIT SECURITY FIX: same fail-CLOSED gate.
+    return process.env.FTMO_MONITOR_AUTH_BYPASS === "1"
+      ? { ok: true, reason: "no-auth-backend" }
+      : { ok: false, reason: "no-auth-backend" };
   }
   try {
     const { data, error } = await supabase.auth.getUser();

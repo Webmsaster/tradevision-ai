@@ -419,6 +419,31 @@ export function useTradeStorage() {
               console.warn(
                 `[useTradeStorage] local owner=${localOwner} but logged-in user=${user!.id} — discarding local cache`,
               );
+              // 2026-05-16 Round 9 KRIT FIX (useTradeStorage agent): before
+              // wiping localStorage on owner-mismatch, snapshot the
+              // discarded trades to a dated backup key so a misconfigured
+              // token-refresh or accidental account switch can't
+              // permanently destroy data. User can manually recover via
+              // export-import or browser DevTools.
+              try {
+                if (typeof window !== "undefined" && localTrades.length > 0) {
+                  const backupKey = `tradevision-owner-mismatch-backup-${Date.now()}`;
+                  localStorage.setItem(
+                    backupKey,
+                    JSON.stringify({
+                      discardedAt: new Date().toISOString(),
+                      previousOwner: localOwner,
+                      newOwner: user!.id,
+                      trades: localTrades,
+                    }),
+                  );
+                  console.warn(
+                    `[useTradeStorage] backed up ${localTrades.length} discarded trades to ${backupKey}`,
+                  );
+                }
+              } catch {
+                /* quota/disabled storage — silent acceptance, last resort */
+              }
               setAllTrades([]);
               saveTrades([]);
               return;

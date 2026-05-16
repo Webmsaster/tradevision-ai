@@ -94,11 +94,19 @@ export function detectRevengeTrade(trades: Trade[]): AIInsight | null {
     const current = sorted[i];
 
     if (prev1!.pnl < 0 && prev2!.pnl < 0) {
-      const prevAvgSize =
-        (prev1!.quantity * prev1!.entryPrice +
-          prev2!.quantity * prev2!.entryPrice) /
-        2;
-      const currentSize = current!.quantity * current!.entryPrice;
+      // 2026-05-16 Round 9 WARN FIX (aiAnalysis agent): compare against
+      // margin (notional × leverage) rather than raw notional. A trader
+      // switching leverage from 1× → 10× triggers no alert via notional
+      // alone, while a doubled-price-same-quantity trade looks like
+      // "200% increase" but is actually identical exposure. Margin =
+      // quantity × entryPrice × leverage captures actual risk size.
+      const margin1 =
+        prev1!.quantity * prev1!.entryPrice * (prev1!.leverage || 1);
+      const margin2 =
+        prev2!.quantity * prev2!.entryPrice * (prev2!.leverage || 1);
+      const prevAvgSize = (margin1 + margin2) / 2;
+      const currentSize =
+        current!.quantity * current!.entryPrice * (current!.leverage || 1);
 
       // Guard against zero-cost reference (corrupt data, cash positions).
       // Without this, increasePercent becomes Infinity → "increased by Infinity%".

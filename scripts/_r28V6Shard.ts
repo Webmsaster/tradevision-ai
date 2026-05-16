@@ -72,8 +72,17 @@ function loadAligned(): { aligned: Record<string, Candle[]>; minBars: number } {
   };
 }
 
-const cfg: FtmoDaytrade24hConfig =
-  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
+// 2026-05-16 Round 9 KRIT FIX (TS shards agent): wire FTMO_STRICT_PASS=1
+// through to cfg.strictPass. Without this flag, simulate() falls back to
+// the "give-back half" soft-pass tail (final_equity_floor = 1 + pt*0.5),
+// inflating reported pass-rate by ~+7pp vs Rust strict-pass baseline.
+// Memory explicitly documents this drift class. Default ON for honest
+// re-baseline runs; set FTMO_STRICT_PASS=0 only for legacy comparisons.
+const STRICT_PASS = (process.env.FTMO_STRICT_PASS ?? "1") !== "0";
+const cfg: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  strictPass: STRICT_PASS,
+};
 const { aligned, minBars } = loadAligned();
 // Bug-Audit Round 3 (R3 fix 2): hardcoded `*48` bars/day + `_30m.json`
 // cache name only work for 30m timeframes. Assert so a future 1h or 5m

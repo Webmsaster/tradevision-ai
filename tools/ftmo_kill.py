@@ -39,8 +39,12 @@ else:
 try:
     from telegram_notify import tg_send, html_escape  # type: ignore
 except Exception:
+    # 2026-05-16 Round 9 WARN FIX (ftmo_kill agent): shim previously
+    # returned True, masking telegram_notify import-failure as "alert
+    # delivered". Monitoring scripts wrapping the kill saw false success.
+    # Return False so callers can detect the missing telemetry path.
     def tg_send(_: str) -> bool:  # noqa: D401 - shim
-        return True
+        return False
 
     def html_escape(s: str) -> str:  # noqa: D401 - shim
         return s
@@ -189,7 +193,23 @@ def main():
     mt5_path = os.environ.get("MT5_PATH", "").strip()
     init_ok = mt5.initialize(mt5_path) if mt5_path else mt5.initialize()
     if not init_ok:
-        print(f"MT5 init failed: {mt5.last_error()}")
+        err = mt5.last_error()
+        print(f"MT5 init failed: {err}")
+        # 2026-05-16 Round 9 WARN FIX (ftmo_kill agent): notify operator
+        # AND write pause-marker so the executor still halts on next
+        # cycle. Previously sys.exit(1) returned silently — operator
+        # thought kill ran, bot was neither paused nor closed.
+        try:
+            tg_send(
+                f"❌ <b>KILL ABORTED</b>\nMT5 init failed: <code>{html_escape(str(err))}</code>\n"
+                f"Bot was NOT paused. Investigate and re-run."
+            )
+        except Exception:
+            pass
+        try:
+            _write_pause_marker(_resolve_state_dir(), 0, 0, all_closed=False)
+        except Exception:
+            pass
         sys.exit(1)
 
     # Bug-Audit Round 1: multi-account VPS safety. Parity with executor's

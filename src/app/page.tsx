@@ -176,14 +176,23 @@ export default function DashboardPage() {
    */
   const handleLoadSampleData = async () => {
     const { sampleTrades } = await import("@/data/sampleTrades");
-    const fresh = sampleTrades.map((t) => ({
-      ...t,
-      id:
+    // 2026-05-16 Round 9 WARN FIX (page.tsx agent): demo-mode detection
+    // at L107 checks `id.startsWith("sample-")`. Pre-R67-r7 sample-trades
+    // had ID prefix "sample-"; current code re-stamps with crypto.randomUUID
+    // which removes the prefix → banner never shows → user mixes real
+    // trades with samples unknowingly. Mark sample trades with a "sample-"
+    // ID prefix to preserve demo-mode detection.
+    const fresh = sampleTrades.map((t) => {
+      const uuid =
         typeof crypto !== "undefined" && "randomUUID" in crypto
           ? crypto.randomUUID()
-          : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      accountId: activeAccountId,
-    }));
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      return {
+        ...t,
+        id: `sample-${uuid}`,
+        accountId: activeAccountId,
+      };
+    });
     // R8 fix: surface count to user — silent zero-import was confusing.
     const count = await importTrades(fresh);
     if (count === 0) {
