@@ -63,8 +63,28 @@ def or_stack(arrays):
     or_vec = [any(arr[i] for arr in arrays) for i in range(n)]
     return sum(or_vec) / n
 
+def greedy_anti_corr_stack(configs, k=3):
+    """Greedy anti-correlation: start with best-single, iteratively pick
+    the config that minimizes max pairwise correlation with already-picked."""
+    n = len(configs)
+    arrs = [c["combined_arr"] for c in configs]
+    picked = [max(range(n), key=lambda i: configs[i]["combined"])]
+    while len(picked) < k:
+        best_i = -1
+        best_max_corr = float('inf')
+        for i in range(n):
+            if i in picked: continue
+            max_corr = max(correlation(arrs[i], arrs[j]) for j in picked)
+            if max_corr < best_max_corr:
+                best_max_corr = max_corr
+                best_i = i
+        picked.append(best_i)
+    return picked
+
 def main():
-    labels = ["A_amber", "B_titanium", "C_obsidian", "D_topaz"]
+    labels = ["A_amber", "B_titanium", "C_obsidian", "D_topaz",
+              "E_rubin", "F_sapphir", "G_diamond",
+              "H_amber_ds", "I_amber_atr", "J_r28_v6"]
     configs = [load(l) for l in labels]
     # Align all arrays to MIN length (different configs may have different
     # window counts if some windows skipped).
@@ -122,6 +142,47 @@ def main():
         if best_combo is not None:
             best_labels = ",".join(configs[i]['label'] for i in best_combo)
             print(f"  ★ BEST: {best_labels} = {best*100:.2f}%")
+
+    print("\n" + "=" * 70)
+    print("GREEDY ANTI-CORR STACK (Arch-33 brainstorm):")
+    print("-" * 70)
+    for k in [3, 4, 5]:
+        if k > len(configs): continue
+        picked = greedy_anti_corr_stack(configs, k=k)
+        names = [configs[i]['label'] for i in picked]
+        arrs_p = [configs[i]['combined_arr'] for i in picked]
+        prob = or_stack(arrs_p)
+        print(f"  k={k}: {','.join(names)} → {prob*100:.2f}% Funded-Prob")
+
+    print("\n" + "=" * 70)
+    print("MAX STACKS (all configs at once):")
+    print("-" * 70)
+    arrs_all = [c["combined_arr"] for c in configs]
+    for k in [3, 4, 5, 6, 7, 8, 9, 10]:
+        if k > len(configs): continue
+        best_prob = 0
+        best_combo = None
+        for combo in combinations(range(len(configs)), k):
+            arrs = [arrs_all[i] for i in combo]
+            prob = or_stack(arrs)
+            if prob > best_prob:
+                best_prob = prob
+                best_combo = combo
+        names = ",".join(configs[i]['label'] for i in best_combo)
+        print(f"  best {k}-Stack: {best_prob*100:6.2f}%  {names}")
+
+    print("\n" + "=" * 70)
+    print("ALL 3-STACK COMBINATIONS (sorted top 10):")
+    print("-" * 70)
+    combos = []
+    for combo in combinations(range(len(configs)), 3):
+        arrs = [configs[i]["combined_arr"] for i in combo]
+        prob = or_stack(arrs)
+        names = ",".join(configs[i]['label'] for i in combo)
+        combos.append((prob, names, combo))
+    combos.sort(reverse=True)
+    for prob, names, _ in combos[:10]:
+        print(f"  {prob*100:6.2f}%  {names}")
 
     print("\n" + "=" * 70)
     print("INDEPENDENCE-ASSUMED PROBABILITY (mathematical max):")
