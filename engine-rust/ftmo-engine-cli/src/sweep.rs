@@ -1375,6 +1375,40 @@ fn main() -> Result<()> {
         }
     }
 
+    // 2026-05-16 Round 9-Final FIX (sweep CLI agent): validate risk-parameter
+    // CLI flags against physical bounds. Negative or zero on physically-positive
+    // values would silently corrupt the engine (e.g. negative stop_pct
+    // inverts stop above entry → instant fill; profit_target=0 → 100% pass-
+    // rate trivially). Previously only --threads and --regime-min-votes had
+    // numeric floors; this audit adds floors for the rest of the hot-path
+    // risk parameters.
+    if let Some(pt) = profit_target {
+        if !(pt > 0.0 && pt < 1.0) {
+            anyhow::bail!(
+                "--profit-target must be in (0, 1) (got {pt}); 0.10 = FTMO Phase 1, 0.05 = Phase 2"
+            );
+        }
+    }
+    if let Some(sp) = override_stop_pct {
+        if !(sp > 0.0 && sp < 1.0) {
+            anyhow::bail!("--override-stop-pct must be in (0, 1) (got {sp})");
+        }
+    }
+    if let Some(lev) = override_leverage {
+        if !(lev > 0.0 && lev <= 100.0) {
+            anyhow::bail!("--override-leverage must be in (0, 100] (got {lev})");
+        }
+    }
+    if let Some(tm) = override_tp_mult {
+        if !(tm > 0.0 && tm <= 10.0) {
+            anyhow::bail!("--override-tp-mult must be in (0, 10] (got {tm})");
+        }
+    }
+    if let Some(hb) = override_hold_bars {
+        if hb == 0 {
+            anyhow::bail!("--override-hold-bars must be > 0 (got 0)");
+        }
+    }
     if let Some(t) = threads {
         // 2026-05-13 Codex Round 7 #B10 FIX: reject --threads 0. Rayon
         // interprets 0 as "all logical CPUs" — surprising semantic when a

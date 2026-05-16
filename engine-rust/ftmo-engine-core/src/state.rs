@@ -2,7 +2,11 @@
 //!
 //! State is intentionally serialisable with camelCase field names so the
 //! Rust engine can read / write the same `v4-engine.json` files the
-//! TypeScript engine produces and the Python executor consumes.
+//! TypeScript engine produces. (2026-05-16 Round 9-Final FIX: Python
+//! executor does NOT consume `v4-engine.json` — that was a stale comment.
+//! Python ↔ TS bridges via `open-positions.json`, `pending-signals.json`,
+//! `executed-signals.json`, `challenge-peak.json`, `pause-state.json` —
+//! each owned by separate writer/reader pairs.)
 //!
 //! Schema version 3 (Round 57 V4-3):
 //! - v1 → v2: `lossStreakByAssetDir.cdUntilBarIdx` → `cdUntilBarsSeen` rename
