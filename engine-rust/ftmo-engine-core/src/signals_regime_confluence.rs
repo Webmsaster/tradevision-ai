@@ -460,6 +460,28 @@ pub struct RegimeConfluenceParams {
     /// 2026-05-17 KAMA voter (Architecture-brainstorm Hunt 2).
     pub use_kama: bool,
     pub kama_params: crate::signals_kama::KamaParams,
+    /// 2026-05-17 Stufe-1 batch wireup — 10 new voters.
+    pub use_squeeze: bool,
+    pub squeeze_params: crate::signals_squeeze::SqueezeParams,
+    pub use_hurst: bool,
+    pub hurst_params: crate::signals_hurst::HurstParams,
+    pub use_wavelet: bool,
+    pub wavelet_params: crate::signals_wavelet::WaveletParams,
+    pub use_pivot: bool,
+    pub pivot_params: crate::signals_pivot::PivotParams,
+    pub use_fib: bool,
+    pub fib_params: crate::signals_fib::FibParams,
+    pub use_vah_val: bool,
+    pub vah_val_params: crate::signals_vah_val::VahValParams,
+    pub use_ichimoku: bool,
+    pub ichimoku_params: crate::signals_ichimoku::IchimokuParams,
+    pub use_arima: bool,
+    pub arima_params: crate::signals_arima::ArimaParams,
+    /// Veto-gates (block entries, don't vote direction).
+    pub use_garch_gate: bool,
+    pub garch_params: crate::signals_garch::GarchParams,
+    pub use_bocpd_gate: bool,
+    pub bocpd_params: crate::signals_bocpd::BocpdParams,
     /// 2026-05-14 Phase-3 — Kalman trend-filter voter.
     pub use_kalman_trend: bool,
     pub kalman_trend_params: crate::signals_kalman_trend::KalmanTrendParams,
@@ -565,6 +587,26 @@ impl RegimeConfluenceParams {
             fisher_params: crate::signals_fisher::FisherParams::default(),
             use_kama: false,
             kama_params: crate::signals_kama::KamaParams::default(),
+            use_squeeze: false,
+            squeeze_params: crate::signals_squeeze::SqueezeParams::default(),
+            use_hurst: false,
+            hurst_params: crate::signals_hurst::HurstParams::default(),
+            use_wavelet: false,
+            wavelet_params: crate::signals_wavelet::WaveletParams::default(),
+            use_pivot: false,
+            pivot_params: crate::signals_pivot::PivotParams::default(),
+            use_fib: false,
+            fib_params: crate::signals_fib::FibParams::default(),
+            use_vah_val: false,
+            vah_val_params: crate::signals_vah_val::VahValParams::default(),
+            use_ichimoku: false,
+            ichimoku_params: crate::signals_ichimoku::IchimokuParams::default(),
+            use_arima: false,
+            arima_params: crate::signals_arima::ArimaParams::default(),
+            use_garch_gate: false,
+            garch_params: crate::signals_garch::GarchParams::default(),
+            use_bocpd_gate: false,
+            bocpd_params: crate::signals_bocpd::BocpdParams::default(),
             use_kalman_trend: false,
             kalman_trend_params: crate::signals_kalman_trend::KalmanTrendParams::default_30m_crypto(),
             htf_macd_enabled: false,
@@ -830,6 +872,42 @@ pub fn detect_regime_confluence(
     } else {
         None
     };
+    // Stufe-1 batch wireup voters
+    let squeeze_vote = if params.use_squeeze {
+        crate::signals_squeeze::compute_squeeze_vote(candles, &params.squeeze_params)
+    } else { None };
+    let hurst_vote = if params.use_hurst {
+        crate::signals_hurst::compute_hurst_vote(candles, &params.hurst_params)
+    } else { None };
+    let wavelet_vote = if params.use_wavelet {
+        crate::signals_wavelet::compute_wavelet_vote(candles, &params.wavelet_params)
+    } else { None };
+    let pivot_vote = if params.use_pivot {
+        crate::signals_pivot::compute_pivot_vote(candles, &params.pivot_params)
+    } else { None };
+    let fib_vote = if params.use_fib {
+        crate::signals_fib::compute_fib_vote(candles, &params.fib_params)
+    } else { None };
+    let vah_val_vote = if params.use_vah_val {
+        crate::signals_vah_val::compute_vah_val_vote(candles, &params.vah_val_params)
+    } else { None };
+    let ichimoku_vote = if params.use_ichimoku {
+        crate::signals_ichimoku::compute_ichimoku_vote(candles, &params.ichimoku_params)
+    } else { None };
+    let arima_vote = if params.use_arima {
+        crate::signals_arima::compute_arima_vote(candles, &params.arima_params)
+    } else { None };
+    // Veto-gates (return early if blocking)
+    if params.use_garch_gate
+        && !crate::signals_garch::allow_entry(candles, &params.garch_params)
+    {
+        return None;
+    }
+    if params.use_bocpd_gate
+        && !crate::signals_bocpd::allow_entry(candles, &params.bocpd_params)
+    {
+        return None;
+    }
     let kalman_vote = if params.use_kalman_trend {
         crate::signals_kalman_trend::compute_kalman_trend_vote(
             candles,
@@ -1045,6 +1123,10 @@ pub fn detect_regime_confluence(
             PositionSide::Long => long_votes += 1,
             PositionSide::Short => short_votes += 1,
         }
+    }
+    for v in [squeeze_vote, hurst_vote, wavelet_vote, pivot_vote,
+              fib_vote, vah_val_vote, ichimoku_vote, arima_vote].iter().flatten() {
+        match v { PositionSide::Long => long_votes += 1, PositionSide::Short => short_votes += 1 }
     }
     if let Some(side) = kalman_vote {
         match side {

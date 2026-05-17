@@ -360,6 +360,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ftmo-event-engine"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "ftmo-gpu-accel"
+version = "0.1.0"
+
+[[package]]
 name = "ftmo-hunter"
 version = "0.1.0"
 dependencies = [

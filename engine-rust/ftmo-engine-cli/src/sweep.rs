@@ -309,6 +309,17 @@ struct MultiSignalCfg {
     regime_use_fisher: bool,
     // 2026-05-17 KAMA voter (Architecture-Brainstorm Hunt 2)
     regime_use_kama: bool,
+    // 2026-05-17 Stufe-1 batch voters
+    regime_use_squeeze: bool,
+    regime_use_hurst: bool,
+    regime_use_wavelet: bool,
+    regime_use_pivot: bool,
+    regime_use_fib: bool,
+    regime_use_vah_val: bool,
+    regime_use_ichimoku: bool,
+    regime_use_arima: bool,
+    regime_use_garch_gate: bool,
+    regime_use_bocpd_gate: bool,
     // Below: deliberately at end so the field-init order in `let cfg =
     // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
@@ -1151,6 +1162,16 @@ fn main() -> Result<()> {
     let mut regime_disagreement_bonus: bool = false;
     let mut regime_use_fisher: bool = false;
     let mut regime_use_kama: bool = false;
+    let mut regime_use_squeeze: bool = false;
+    let mut regime_use_hurst: bool = false;
+    let mut regime_use_wavelet: bool = false;
+    let mut regime_use_pivot: bool = false;
+    let mut regime_use_fib: bool = false;
+    let mut regime_use_vah_val: bool = false;
+    let mut regime_use_ichimoku: bool = false;
+    let mut regime_use_arima: bool = false;
+    let mut regime_use_garch_gate: bool = false;
+    let mut regime_use_bocpd_gate: bool = false;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
@@ -1441,6 +1462,17 @@ fn main() -> Result<()> {
             "--regime-use-fisher" => regime_use_fisher = true,
             // 2026-05-17 KAMA voter (Architecture-Brainstorm).
             "--regime-use-kama" => regime_use_kama = true,
+            // 2026-05-17 Stufe-1 batch wireup
+            "--regime-use-squeeze" => regime_use_squeeze = true,
+            "--regime-use-hurst" => regime_use_hurst = true,
+            "--regime-use-wavelet" => regime_use_wavelet = true,
+            "--regime-use-pivot" => regime_use_pivot = true,
+            "--regime-use-fib" => regime_use_fib = true,
+            "--regime-use-vah-val" => regime_use_vah_val = true,
+            "--regime-use-ichimoku" => regime_use_ichimoku = true,
+            "--regime-use-arima" => regime_use_arima = true,
+            "--regime-use-garch-gate" => regime_use_garch_gate = true,
+            "--regime-use-bocpd-gate" => regime_use_bocpd_gate = true,
             "--poc-zone-hvn-min-ratio" => {
                 regime_poc_zone_hvn_min_ratio = need!("--poc-zone-hvn-min-ratio").parse()?
             }
@@ -1844,6 +1876,16 @@ fn main() -> Result<()> {
                 regime_disagreement_bonus,
                 regime_use_fisher,
                 regime_use_kama,
+                regime_use_squeeze,
+                regime_use_hurst,
+                regime_use_wavelet,
+                regime_use_pivot,
+                regime_use_fib,
+                regime_use_vah_val,
+                regime_use_ichimoku,
+                regime_use_arima,
+                regime_use_garch_gate,
+                regime_use_bocpd_gate,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -3125,6 +3167,26 @@ fn run_one_window(
                             fisher_params: ftmo_engine_core::signals_fisher::FisherParams::default(),
                             use_kama: multi_signal.regime_use_kama,
                             kama_params: ftmo_engine_core::signals_kama::KamaParams::default(),
+                            use_squeeze: multi_signal.regime_use_squeeze,
+                            squeeze_params: ftmo_engine_core::signals_squeeze::SqueezeParams::default(),
+                            use_hurst: multi_signal.regime_use_hurst,
+                            hurst_params: ftmo_engine_core::signals_hurst::HurstParams::default(),
+                            use_wavelet: multi_signal.regime_use_wavelet,
+                            wavelet_params: ftmo_engine_core::signals_wavelet::WaveletParams::default(),
+                            use_pivot: multi_signal.regime_use_pivot,
+                            pivot_params: ftmo_engine_core::signals_pivot::PivotParams::default(),
+                            use_fib: multi_signal.regime_use_fib,
+                            fib_params: ftmo_engine_core::signals_fib::FibParams::default(),
+                            use_vah_val: multi_signal.regime_use_vah_val,
+                            vah_val_params: ftmo_engine_core::signals_vah_val::VahValParams::default(),
+                            use_ichimoku: multi_signal.regime_use_ichimoku,
+                            ichimoku_params: ftmo_engine_core::signals_ichimoku::IchimokuParams::default(),
+                            use_arima: multi_signal.regime_use_arima,
+                            arima_params: ftmo_engine_core::signals_arima::ArimaParams::default(),
+                            use_garch_gate: multi_signal.regime_use_garch_gate,
+                            garch_params: ftmo_engine_core::signals_garch::GarchParams::default(),
+                            use_bocpd_gate: multi_signal.regime_use_bocpd_gate,
+                            bocpd_params: ftmo_engine_core::signals_bocpd::BocpdParams::default(),
                         };
                     let stablecoin_slice =
                         stablecoin_feed.get(&source).map(|v| v.as_slice());
