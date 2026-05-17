@@ -45,11 +45,36 @@ Gap zu 90% unconditional = **+35.37pp** auf alle 324 Windows. ENORM.
 
 ### HMM-4state Voter, 14 zusätzliche voters, 11 base-configs, PTP micro-grid, max-days — ❌ alle TIE oder HURT
 
-## Failure-Mode der non-qualifying Windows
+## Failure-Mode der non-qualifying Windows (deep-dive 2026-05-17 evening)
 
-- 84 DailyLoss + 63 TotalLoss fails (per Codex earlier)
-- Meistens bis Tag 5 entschieden
-- Die DL/TL passieren EARLY = bot tradet zu aggressive in non-qualifying setups
+- **Fail-Reason Distribution:** 77 DailyLoss + 61 TotalLoss + 0 Time-fails
+- **88% der Fails passieren binnen Day 3** (Day 1: 52, Day 2: 49, Day 3: 20)
+- **79% der failing non-qual windows haben Day-1 PnL < -5%** (sofort DL-Breach)
+- **CRITICAL: Bot ist hardcoded LONG-ONLY** (`templates.rs:105 disable_short: true`)
+  - 0 Shorts in 4334 trades
+  - In bearish/sideways setups verlieren ALLE longs simultan
+  - Risk-Ramp hilft NICHT (verschiebt fail nur von Tag 1 auf Tag 3-5)
+  - Strategie kann mathematisch nicht in bearish setups gewinnen
+
+## Math-Realität
+
+Für 90% unconditional braucht non-qual pass-rate = **88.7%**.
+Long-only auf bearish 24h-Setups = strukturell unmöglich.
+
+## Frage an Codex (UPDATED)
+
+**Real-Frage:** Können wir die long-only Limitation umgehen, ohne das gesamte
+Strategie-Framework zu pivotieren?
+
+Spezifisch:
+
+1. Ist eine `disable_short: false` Variante von AMBER_MAX_PASSLOCK gangbar
+   (V02-voters können shorts wenn HMM/bb-z-mr/supertrend bearish konsensieren),
+   oder bricht das die qualifying-Performance?
+2. Multi-strategy: Engine läuft AMBER long-only PLUS ein meanrev/short-fähiges
+   sub-detector parallel — addiert Pass-Rate ohne der trend-strategy zu schaden?
+3. **Realistischer Ceiling**: Akzeptiere 65-75% unconditional + 92% conditional
+   (smart-timing), oder strategy-pivot lohnt sich?
 
 ## Konkrete Frage an Codex
 
