@@ -513,6 +513,27 @@ pub fn v5_amber_max_passlock() -> EngineConfig {
     cfg
 }
 
+/// 2026-05-17 Bidirectional variant — enable shorts to address the long-only
+/// fail mode discovered in failure_pattern_analysis: in non-qualifying setups
+/// (bearish/sideways first 24h) the bot's 100% long bias means all entries
+/// lose simultaneously, producing 88% of fails by Day 3.
+///
+/// Conservative change: keep V02 voters, base config, PASSLOCK + atrStop —
+/// only flip `disable_short` to false on every asset. The existing voters
+/// (HMM, bb-z-mr, supertrend, ad-line, poc-z) already vote both directions;
+/// `disable_short=true` was filtering all short votes upstream.
+///
+/// `invert_direction` stays `true` for parity with the V5_AMBER family
+/// trade direction convention (matched against TS V4 sim reference).
+pub fn v5_amber_max_passlock_bidir() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_BIDIR".into();
+    for asset in cfg.assets.iter_mut() {
+        asset.disable_short = false;
+    }
+    cfg
+}
+
 /// 2026-05-13 V5_AMBER_QUARTZ — AMBER assets + Quartz engine stack:
 /// atrStop p56m2, chandelierExit p56m2 min_move_r=0.5, breakEven 3%,
 /// PTP trigger=0.012 closeFraction=0.7. Hypothesis: AMBER's 15-asset basket
@@ -1183,6 +1204,7 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-amber-ext-passlock" => v5_amber_ext_passlock(),
         "2h-trend-v5-amber-max" => v5_amber_max(),
         "2h-trend-v5-amber-max-passlock" => v5_amber_max_passlock(),
+        "2h-trend-v5-amber-max-passlock-bidir" => v5_amber_max_passlock_bidir(),
         "2h-trend-v5-amber-max-passlock-mptp-v04a" => v5_amber_max_passlock_mptp_v04a(),
         "2h-trend-v5-amber-max-passlock-sharpe-tight" => v5_amber_max_passlock_sharpe_tight(),
         "2h-trend-v5-amber-quartz" => v5_amber_quartz(),
@@ -1228,6 +1250,7 @@ pub fn known_selectors() -> &'static [&'static str] {
         "2h-trend-v5-amber-ext-passlock",
         "2h-trend-v5-amber-max",
         "2h-trend-v5-amber-max-passlock",
+        "2h-trend-v5-amber-max-passlock-bidir",
         "2h-trend-v5-amber-quartz",
         "2h-trend-v5-amber-quartz-passlock",
         "2h-trend-v5-amber-be-passlock",
