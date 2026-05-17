@@ -1,0 +1,17 @@
+{
+  "schema": "logistic_pwin_v1",
+  "coefficients": [
+    3.522121597371693, -0.15924015669507763, -0.02487039694189158,
+    3.446535672799953, -0.009732108888959411, -0.07520894712040876
+  ],
+  "intercept": -0.05064428124569707,
+  "feature_names": [
+    "atr_pct",
+    "trend_strength",
+    "bb_z",
+    "votes_count",
+    "btc_aligned",
+    "funding_z"
+  ],
+  "auc_mean": 0.9635944722304546
+}

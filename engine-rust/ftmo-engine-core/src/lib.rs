@@ -71,3 +71,16 @@ pub use state::{
     EngineState, KellyPnl, LossStreakEntry, ReentryState, StoppedReason, SCHEMA_VERSION,
 };
 pub use trade::{ClosedTrade, ExitReason};
+pub mod signals_squeeze;
+pub mod signals_hurst;
+pub mod signals_wavelet;
+pub mod signals_pivot;
+pub mod signals_fib;
+pub mod signals_vah_val;
+pub mod signals_ichimoku;
+pub mod signals_arima;
+pub mod signals_garch;
+pub mod signals_bocpd;
+pub mod risk_parity;
+pub mod hmm_4state_loader;
+pub mod event_bus;

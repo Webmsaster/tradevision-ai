@@ -1,0 +1,31 @@
+# 2026-05-17 Microservice Live-Bot Architecture — SKELETON
+# Run: docker-compose -f scripts/deploy/microservice_compose.yaml up
+version: "3.9"
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+  signal_publisher:
+    image: ftmo/signal-publisher:latest
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - FTMO_TF=2h-trend-v5-amber-max-passlock
+    depends_on: [redis]
+  executor_A:
+    image: ftmo/executor:latest
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - FTMO_ACCOUNT_ID=A
+      - CONSUMER_GROUP=executors
+    depends_on: [signal_publisher]
+  executor_B:
+    image: ftmo/executor:latest
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - FTMO_ACCOUNT_ID=B
+      - CONSUMER_GROUP=executors
+  monitor:
+    image: ftmo/monitor:latest
+    ports: ["3000:3000"]
+    environment:
+      - REDIS_URL=redis://redis:6379
