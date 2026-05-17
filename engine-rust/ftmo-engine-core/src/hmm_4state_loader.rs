@@ -10,8 +10,13 @@ pub struct Hmm4StateModel {
     pub n_features: usize,
     pub feature_names: Vec<String>,
     pub state_labels: Vec<String>,
-    pub start_probs: Vec<f64>,
-    pub transmat: Vec<Vec<f64>>,
+    /// Accept both the new schema (`start_prob`, matches HmmModel in
+    /// signals_hmm_regime) and the legacy schema (`start_probs`) the
+    /// initial Python writer used.
+    #[serde(alias = "start_probs")]
+    pub start_prob: Vec<f64>,
+    #[serde(alias = "transmat")]
+    pub trans_mat: Vec<Vec<f64>>,
     pub means: Vec<Vec<f64>>,
     pub covars: Vec<Vec<f64>>,
 }
@@ -56,13 +61,21 @@ impl Hmm4StateModel {
 mod tests {
     use super::*;
     #[test] fn load_real_model_if_present() {
-        let path = "models/hmm_4state_btc_30m.json";
-        if std::path::Path::new(path).exists() {
-            let m = Hmm4StateModel::load_from_path(path).expect("load");
-            assert_eq!(m.n_states, 4);
-            assert_eq!(m.state_labels.len(), 4);
-            let states = m.classify(&[(0.001, 0.005), (-0.002, 0.012)]);
-            assert_eq!(states.len(), 2);
+        // Resolve via CARGO_MANIFEST_DIR so the test works regardless of the
+        // working directory `cargo test` is invoked from.
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
+        let path = std::path::PathBuf::from(manifest)
+            .join("../../models/hmm_4state_btc_30m.json");
+        if !path.exists() {
+            eprintln!("[skip] {} not present", path.display());
+            return;
         }
+        let m = Hmm4StateModel::load_from_path(&path).expect("load");
+        assert_eq!(m.n_states, 4);
+        assert_eq!(m.state_labels.len(), 4);
+        assert_eq!(m.start_prob.len(), 4);
+        assert_eq!(m.trans_mat.len(), 4);
+        let states = m.classify(&[(0.001, 0.005), (-0.002, 0.012)]);
+        assert_eq!(states.len(), 2);
     }
 }

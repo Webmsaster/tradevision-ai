@@ -449,6 +449,76 @@ fn forward_posterior(model: &HmmModel, obs: &[[f64; 2]]) -> Option<Vec<f64>> {
     Some(alpha)
 }
 
+/// Compute the full posterior state distribution at the most recent
+/// closed bar. Works for any `n_states`, not just 3. Returns the
+/// `Vec<f64>` of state-probabilities (sums to ~1) or `None` if the
+/// candles series is too short / features cannot be built.
+///
+/// Lookahead-safe (`signal_idx = candles.len() - 2`).
+///
+/// Foundation for regime-conditional sizing — e.g. a 4-state model lets
+/// the caller scale position size by `Σ_k posterior[k] · size_mult[k]`
+/// or pick a hard multiplier from the argmax state.
+pub fn compute_hmm_state_distribution(
+    candles: &[Candle],
+    model: &HmmModel,
+    warmup_bars: usize,
+    vol_lookback_bars: usize,
+) -> Option<Vec<f64>> {
+    if warmup_bars == 0 || vol_lookback_bars == 0 {
+        return None;
+    }
+    if candles.len() < warmup_bars.max(vol_lookback_bars + 2) + 1 {
+        return None;
+    }
+    let signal_idx = candles.len() - 2;
+    let obs_start = signal_idx + 1 - warmup_bars;
+    let mut obs: Vec<[f64; 2]> = Vec::with_capacity(warmup_bars);
+    for k in obs_start..=signal_idx {
+        obs.push(compute_features(candles, k, vol_lookback_bars)?);
+    }
+    forward_posterior(model, &obs)
+}
+
+/// Convenience wrapper for regime-conditional sizing: given a map from
+/// state-label to size-multiplier, returns the posterior-weighted expected
+/// size multiplier at signal_idx. Labels missing from the map default to
+/// `1.0`. Returns `1.0` (neutral) if the posterior cannot be computed.
+///
+/// Example: `sizes = {"crash": 0.0, "bear": 0.5, "sideways": 1.0, "bull": 1.2}`
+/// on a 4-state model. A bar where posterior = [0.1 sideways, 0.7 bull,
+/// 0.15 bear, 0.05 crash] yields mult = 0.1·1.0 + 0.7·1.2 + 0.15·0.5 + 0.05·0 = 1.015.
+pub fn compute_hmm_size_mult(
+    candles: &[Candle],
+    model: &HmmModel,
+    warmup_bars: usize,
+    vol_lookback_bars: usize,
+    sizes_by_label: &[(String, f64)],
+) -> f64 {
+    let posterior = match compute_hmm_state_distribution(
+        candles,
+        model,
+        warmup_bars,
+        vol_lookback_bars,
+    ) {
+        Some(p) => p,
+        None => return 1.0,
+    };
+    if model.state_labels.len() != posterior.len() {
+        return 1.0;
+    }
+    let mut acc = 0.0_f64;
+    for (i, p) in posterior.iter().enumerate() {
+        let label = &model.state_labels[i];
+        let mult = sizes_by_label
+            .iter()
+            .find_map(|(l, m)| if l == label { Some(*m) } else { None })
+            .unwrap_or(1.0);
+        acc += p * mult;
+    }
+    if acc.is_finite() && acc >= 0.0 { acc } else { 1.0 }
+}
+
 /// Compute the HMM-regime vote for the most recent closed bar.
 ///
 /// Returns `Some(Long)` when `P(bull) ≥ p_threshold_bull` AND
@@ -694,6 +764,27 @@ mod tests {
             err.to_string().contains("trans_mat row 1"),
             "expected row-len error, got: {err}"
         );
+    }
+
+    /// Sanity-check the regime-conditional sizing wrapper: a flat
+    /// `size = 1.0` per label collapses to `1.0` regardless of posterior,
+    /// and a series too short to compute the posterior also returns 1.0.
+    #[test]
+    fn hmm_size_mult_flat_returns_one() {
+        let model = HmmModel::default_btc_30m();
+        let sizes: Vec<(String, f64)> = model
+            .state_labels
+            .iter()
+            .map(|l| (l.clone(), 1.0))
+            .collect();
+        // Series too short → fallback 1.0.
+        let cs_short: Vec<Candle> = (0..5).map(|i| make_candle(i as i64, 100.0)).collect();
+        let mult = compute_hmm_size_mult(&cs_short, &model, 50, 48, &sizes);
+        assert!((mult - 1.0).abs() < 1.0e-9, "short-series mult={mult}");
+        // Long enough series with flat sizes → 1.0.
+        let cs = synth_series(120, 100.0, 0.0, 0.005, 7);
+        let mult2 = compute_hmm_size_mult(&cs, &model, 50, 48, &sizes);
+        assert!((mult2 - 1.0).abs() < 1.0e-6, "flat-sizes mult={mult2}");
     }
 
     /// Verify the trained 4-state HMM model JSON (written by
