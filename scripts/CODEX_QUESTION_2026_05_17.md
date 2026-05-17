@@ -45,6 +45,22 @@ Gap zu 90% unconditional = **+35.37pp** auf alle 324 Windows. ENORM.
 
 ### HMM-4state Voter, 14 zusätzliche voters, 11 base-configs, PTP micro-grid, max-days — ❌ alle TIE oder HURT
 
+### Pre-Window-Scanner BTC + Multi-Asset — ❌ DEBUNKED
+
+- BTC 24h-Features (ret/atr/slope) vor window-start: NICHT prädiktiv
+  (qualifying ret 0.39 vs non-qual 0.45 — diff 0.06pp)
+- Multi-Asset 19-Symbol Aggregate (24h + 72h lookback): NICHT prädiktiv
+  (qualifying avg_ret 0.375 vs non-qual 0.457 — diff 0.08pp)
+- → Bot kann NICHT via Markt-Scan vor Challenge-Kauf prognostizieren
+
+### Bidirectional Config (disable_short: false) — ❌ DEBUNKED -10.8pp
+
+- v5_amber_max_passlock_bidir Template gebaut
+- Engine bestätigt: shorts feuern (1798 trades, 72.6% winrate)
+- ABER per-cohort: Qualifying 92.3→78.7% (-13.6pp), Non-qual 24.9→13.8% (-11.1pp)
+- ALL: 54.6→43.8% — Shorts CANCEL longs in trending markets, lose in chaotic
+- Long-only hardcoded IST der Design-Choice, kein bug
+
 ## Failure-Mode der non-qualifying Windows (deep-dive 2026-05-17 evening)
 
 - **Fail-Reason Distribution:** 77 DailyLoss + 61 TotalLoss + 0 Time-fails
