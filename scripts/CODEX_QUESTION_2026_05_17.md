@@ -1,0 +1,81 @@
+# Frage an Codex — 2026-05-17
+
+## Situation
+
+User-Goal: **90% UNCONDITIONAL passrate** auf single-account, blind challenge buy,
+keine starken trade-offs.
+
+## Was wir bisher haben
+
+**Champion-Config:**
+
+```
+2h-trend-v5-amber-max-passlock + V02 voters (poc-z, bb-z-mr, supertrend,
+hmm, ad-line, min-votes 2) + BTC cross-asset filter 9/21 + tp_mult 1.14
++ Kelly w60/m20 + PTP @ 0.08:0.25
+```
+
+**Mess-Daten (P06 PTP champion, full 334w / 324 common):**
+
+| Cohort                               | n           | P1 pass | P2 pass | AND        |
+| ------------------------------------ | ----------- | ------- | ------- | ---------- |
+| Both qualifying (b≥4 & maj≥3 in 24h) | 132 (40.7%) | 93.94%  | 96.97%  | **92.42%** |
+| Mixed qualifying                     | 39 (12.0%)  | 30.77%  | 92.31%  | 30.77%     |
+| NOT qualifying                       | 153 (47.2%) | 28.76%  | 33.33%  | 28.10%     |
+| **ALL (no gate)**                    | 324         | 55.56%  | 66.36%  | **54.63%** |
+
+Gap zu 90% unconditional = **+35.37pp** auf alle 324 Windows. ENORM.
+
+## Was wir ausprobiert haben (alle bug-frei post-process sim'd)
+
+### Gate-Filter (Codex Hebel #1) — ✅ WINNER aber NUR CONDITIONAL
+
+- breadth≥4 & majors≥3 in 24h cluster → 92.42% AND auf qualifying subset
+- Engine-Flag implementiert in `sweep.rs`: `--min-initial-signal-breadth`, `--min-initial-majors`
+- ABER: nur 40% der windows qualifying. Unconditional bleibt 54.63%.
+
+### Conditional Risk-Pause auf non-qualifying — ❌ DEBUNKED
+
+- Nach 24h: wenn non-qualifying → reduce trade size 0.0-0.5x
+- Resultat: marginal worse (51% vs baseline 54%). DL/TL passieren BEVOR der 24h check.
+
+### Batch-Exposure-Cap, Initial Risk-Ramp, Damage-Pause — ❌ DEBUNKED (-3 bis -45pp)
+
+- Codex's Hebel #3, #4, #5 alle negativ.
+
+### HMM-4state Voter, 14 zusätzliche voters, 11 base-configs, PTP micro-grid, max-days — ❌ alle TIE oder HURT
+
+## Failure-Mode der non-qualifying Windows
+
+- 84 DailyLoss + 63 TotalLoss fails (per Codex earlier)
+- Meistens bis Tag 5 entschieden
+- Die DL/TL passieren EARLY = bot tradet zu aggressive in non-qualifying setups
+
+## Konkrete Frage an Codex
+
+**Wie kommen wir auf 90% UNCONDITIONAL passrate ohne harten trade-off
+(Bot kauft Challenge blind, spielt ihn, 90% pass)?**
+
+Spezifisch:
+
+1. **Gibt es einen Pre-Window-Indikator** (BTC 4h trend, ATR-Regime, funding-rate Level)
+   der VOR Window-Start mit hoher Genauigkeit prognostiziert ob es ein "qualifying"
+   Window wird? Wenn ja, hat der bot ja LIVE Zugriff darauf bevor er Challenge kauft.
+2. **Welcher Engine-Modus reduziert DL/TL fails auf non-qualifying Setups**, ohne
+   die qualifying-window gewinne zu killen? Risk-Ramp/Damage-Pause haben global
+   gehurt — gibt es einen smarter conditional approach?
+3. **Multi-strategy fallback**: Wenn breadth-gate signal nach 4-8h (nicht 24h)
+   schon "wahrscheinlich non-qualifying" → switch auf andere Strategie-Klasse
+   (z.B. mean-reversion mit anderen voters). Hast du Ideen welche?
+4. **Können wir den P1-fail-Modus drastisch ändern** mit anderen Voter-Kombinationen
+   speziell für die non-qualifying conditions? V02-voters sind für trend-bias
+   getuned. Bei sideways/chaotic markets fehlt was?
+5. **Realistisch erreichbar**: Ist 90% unconditional pass-rate auf single-account
+   mathematisch machbar oder muss man pragmatisch auf ~70-75% setzen?
+
+## Tools die wir haben
+
+- Trade-Dump P1+P2 mit qualifying flag (`scripts/cache_bakeoff/hunt_2026_05_17/`)
+- Engine-Flag `--min-initial-signal-breadth/majors` einsatzbereit
+- Post-process tools: `breadth_quality_analysis.py`, `conditional_pause_sim.py`,
+  `real_funded_prob.py`
