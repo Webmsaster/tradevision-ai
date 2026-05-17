@@ -695,4 +695,31 @@ mod tests {
             "expected row-len error, got: {err}"
         );
     }
+
+    /// Verify the trained 4-state HMM model JSON (written by
+    /// `scripts/ml/hmm_4state_train.py`) loads cleanly via the same
+    /// `HmmModel::load_from_json` used by the 3-state voter, so a future
+    /// 4-state voter / regime-conditional sizing layer can reuse the
+    /// existing loader infrastructure. Skipped silently if the model file
+    /// hasn't been trained yet (CI clean checkout).
+    #[test]
+    fn hmm_loads_4state_trained_model() {
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
+        let p = std::path::PathBuf::from(manifest)
+            .join("../../models/hmm_4state_btc_30m.json");
+        if !p.exists() {
+            eprintln!("[skip] {} not present (run hmm_4state_train.py first)", p.display());
+            return;
+        }
+        let m = HmmModel::load_from_json(&p).expect("load 4-state model");
+        assert_eq!(m.n_states, 4, "expected 4-state model");
+        assert_eq!(m.state_labels.len(), 4);
+        assert_eq!(m.start_prob.len(), 4);
+        assert_eq!(m.trans_mat.len(), 4);
+        assert_eq!(m.means.len(), 4);
+        assert_eq!(m.covars.len(), 4);
+        for row in &m.trans_mat {
+            assert_eq!(row.len(), 4);
+        }
+    }
 }

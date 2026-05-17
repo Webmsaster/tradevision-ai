@@ -42,16 +42,28 @@ labelled = [state_to_label[s] for s in states]
 counts = {l: labelled.count(l) for l in labels}
 print(f"\nState distribution: {counts}")
 
-# Save model JSON
+# Save model JSON — schema matches HmmModel struct in
+# engine-rust/ftmo-engine-core/src/signals_hmm_regime.rs so the
+# existing 3-state loader can also load a 4-state model.
+# hmmlearn returns covars_ for 'diag' as shape (n_states, n_features, n_features)
+# (full-cov format); we collapse the diagonal back to (n_states, n_features).
+covars_diag = []
+for cv in model.covars_:
+    arr = np.asarray(cv)
+    if arr.ndim == 2:
+        covars_diag.append(np.diag(arr).tolist())
+    else:
+        covars_diag.append(arr.tolist())
 out_data = {
+    "schema_version": 1,
     "n_states": 4,
     "n_features": 2,
     "feature_names": ["log_ret", "realized_vol_20"],
     "state_labels": [state_to_label[i] for i in range(4)],
-    "start_probs": model.startprob_.tolist(),
-    "transmat": model.transmat_.tolist(),
+    "start_prob": model.startprob_.tolist(),
+    "trans_mat": model.transmat_.tolist(),
     "means": model.means_.tolist(),
-    "covars": [m.tolist() for m in model.covars_],
+    "covars": covars_diag,
 }
 out_file = OUT / "hmm_4state_btc_30m.json"
 out_file.write_text(json.dumps(out_data, indent=2))
