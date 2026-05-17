@@ -33,6 +33,7 @@ pub mod signals_fisher;
 pub mod signals_forex_mr;
 pub mod signals_hmm_regime;
 pub mod signals_kalman_trend;
+pub mod signals_kama;
 pub mod signals_meanrev;
 pub mod signals_nupl;
 pub mod signals_ofi;

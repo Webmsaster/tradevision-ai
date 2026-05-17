@@ -457,6 +457,9 @@ pub struct RegimeConfluenceParams {
     /// 2026-05-16 Phase 17 — Fisher Transform voter (Hunt 3 brainstorm).
     pub use_fisher: bool,
     pub fisher_params: crate::signals_fisher::FisherParams,
+    /// 2026-05-17 KAMA voter (Architecture-brainstorm Hunt 2).
+    pub use_kama: bool,
+    pub kama_params: crate::signals_kama::KamaParams,
     /// 2026-05-14 Phase-3 — Kalman trend-filter voter.
     pub use_kalman_trend: bool,
     pub kalman_trend_params: crate::signals_kalman_trend::KalmanTrendParams,
@@ -560,6 +563,8 @@ impl RegimeConfluenceParams {
             supertrend_params: crate::signals_supertrend::SupertrendParams::default_30m_crypto(),
             use_fisher: false,
             fisher_params: crate::signals_fisher::FisherParams::default(),
+            use_kama: false,
+            kama_params: crate::signals_kama::KamaParams::default(),
             use_kalman_trend: false,
             kalman_trend_params: crate::signals_kalman_trend::KalmanTrendParams::default_30m_crypto(),
             htf_macd_enabled: false,
@@ -820,6 +825,11 @@ pub fn detect_regime_confluence(
     } else {
         None
     };
+    let kama_vote = if params.use_kama {
+        crate::signals_kama::compute_kama_vote(candles, &params.kama_params)
+    } else {
+        None
+    };
     let kalman_vote = if params.use_kalman_trend {
         crate::signals_kalman_trend::compute_kalman_trend_vote(
             candles,
@@ -1025,6 +1035,12 @@ pub fn detect_regime_confluence(
         }
     }
     if let Some(side) = fisher_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = kama_vote {
         match side {
             PositionSide::Long => long_votes += 1,
             PositionSide::Short => short_votes += 1,

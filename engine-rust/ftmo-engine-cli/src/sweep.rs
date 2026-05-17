@@ -307,6 +307,8 @@ struct MultiSignalCfg {
     regime_disagreement_bonus: bool,
     // 2026-05-16 Phase 17 — Fisher Transform voter (Hunt 3)
     regime_use_fisher: bool,
+    // 2026-05-17 KAMA voter (Architecture-Brainstorm Hunt 2)
+    regime_use_kama: bool,
     // Below: deliberately at end so the field-init order in `let cfg =
     // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
@@ -1148,6 +1150,7 @@ fn main() -> Result<()> {
     let mut regime_poc_zone_hvn_min_ratio: f64 = 1.5;
     let mut regime_disagreement_bonus: bool = false;
     let mut regime_use_fisher: bool = false;
+    let mut regime_use_kama: bool = false;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
@@ -1436,6 +1439,8 @@ fn main() -> Result<()> {
             "--regime-disagreement-bonus" => regime_disagreement_bonus = true,
             // 2026-05-16 Phase 17 — Fisher Transform voter (Hunt 3).
             "--regime-use-fisher" => regime_use_fisher = true,
+            // 2026-05-17 KAMA voter (Architecture-Brainstorm).
+            "--regime-use-kama" => regime_use_kama = true,
             "--poc-zone-hvn-min-ratio" => {
                 regime_poc_zone_hvn_min_ratio = need!("--poc-zone-hvn-min-ratio").parse()?
             }
@@ -1838,6 +1843,7 @@ fn main() -> Result<()> {
                 regime_poc_zone_hvn_min_ratio,
                 regime_disagreement_bonus,
                 regime_use_fisher,
+                regime_use_kama,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -3117,6 +3123,8 @@ fn run_one_window(
                             disagreement_bonus: multi_signal.regime_disagreement_bonus,
                             use_fisher: multi_signal.regime_use_fisher,
                             fisher_params: ftmo_engine_core::signals_fisher::FisherParams::default(),
+                            use_kama: multi_signal.regime_use_kama,
+                            kama_params: ftmo_engine_core::signals_kama::KamaParams::default(),
                         };
                     let stablecoin_slice =
                         stablecoin_feed.get(&source).map(|v| v.as_slice());
