@@ -331,6 +331,19 @@ struct MultiSignalCfg {
     /// gate disabled.
     ml_model: Option<Arc<ftmo_engine_core::ml_gate::MlModel>>,
     ml_threshold: f64,
+    /// 2026-05-17 Phase 27 — Pre-loaded HMM model (3- or 4-state). When
+    /// `regime_use_hmm = true` and this is None, the voter falls back to the
+    /// hardcoded `HmmModel::default_btc_30m()` (3-state). Loaded once at
+    /// sweep-start from `--hmm-model <path>` so the JSON-parse cost is paid
+    /// exactly once, not per-window.
+    hmm_model: Option<Arc<ftmo_engine_core::signals_hmm_regime::HmmModel>>,
+    /// 2026-05-17 Phase 28 — HMM threshold overrides. NaN sentinel = use
+    /// HmmRegimeParams::default_30m_crypto() defaults (0.55/0.55/0.20).
+    regime_hmm_p_bull: f64,
+    regime_hmm_p_bear: f64,
+    regime_hmm_p_opposite: f64,
+    /// 0 sentinel = use default 200 (warmup_bars).
+    regime_hmm_warmup: usize,
     /// R29-Audit: random-gate sanity check. When set to Some(f), each signal
     /// is kept with probability f (deterministic per `random_gate_seed +
     /// entry_time + symbol_hash`). Used to confirm ML "wins" come from signal
@@ -1079,6 +1092,11 @@ fn main() -> Result<()> {
     let mut lscool_after: Option<u32> = None;
     let mut lscool_bars: Option<u64> = None;
     let mut ml_model_path: Option<PathBuf> = None;
+    let mut hmm_model_path: Option<PathBuf> = None;
+    let mut regime_hmm_p_bull: f64 = f64::NAN;
+    let mut regime_hmm_p_bear: f64 = f64::NAN;
+    let mut regime_hmm_p_opposite: f64 = f64::NAN;
+    let mut regime_hmm_warmup: usize = 0;
     // R29-Audit-Round3 2026-05-12 (Bug-1 fix): default sentinel `NaN` lets us
     // detect "user passed `--ml-model` but forgot `--ml-threshold`" and
     // fail-loud below instead of silently keeping every signal (threshold=0
@@ -1318,6 +1336,11 @@ fn main() -> Result<()> {
             }
             "--ml-model" => ml_model_path = Some(PathBuf::from(need!("--ml-model"))),
             "--ml-threshold" => ml_threshold = need!("--ml-threshold").parse()?,
+            "--hmm-model" => hmm_model_path = Some(PathBuf::from(need!("--hmm-model"))),
+            "--hmm-p-bull" => regime_hmm_p_bull = need!("--hmm-p-bull").parse()?,
+            "--hmm-p-bear" => regime_hmm_p_bear = need!("--hmm-p-bear").parse()?,
+            "--hmm-p-opposite" => regime_hmm_p_opposite = need!("--hmm-p-opposite").parse()?,
+            "--hmm-warmup" => regime_hmm_warmup = need!("--hmm-warmup").parse()?,
             "--start-after-ts" => start_after_ts = Some(need!("--start-after-ts").parse()?),
             "--random-gate-keep" => {
                 random_gate_keep = Some(need!("--random-gate-keep").parse()?);
@@ -1901,6 +1924,24 @@ fn main() -> Result<()> {
                     None => None,
                 },
                 ml_threshold,
+                hmm_model: match &hmm_model_path {
+                    Some(p) => {
+                        let m = ftmo_engine_core::signals_hmm_regime::HmmModel::load_from_json(p)
+                            .map_err(|e| anyhow!("hmm model load {}: {e}", p.display()))?;
+                        eprintln!(
+                            "[hmm] loaded {} states from {} (labels={:?})",
+                            m.n_states,
+                            p.display(),
+                            m.state_labels
+                        );
+                        Some(Arc::new(m))
+                    }
+                    None => None,
+                },
+                regime_hmm_p_bull,
+                regime_hmm_p_bear,
+                regime_hmm_p_opposite,
+                regime_hmm_warmup,
                 random_gate_keep,
                 random_gate_seed,
             },
@@ -3085,7 +3126,22 @@ fn run_one_window(
                             use_cme_basis: multi_signal.regime_use_cme_basis,
                             cme_basis_params: ftmo_engine_core::signals_cme_basis::CmeBasisParams::default(),
                             use_hmm_regime: multi_signal.regime_use_hmm,
-                            hmm_regime_params: ftmo_engine_core::signals_hmm_regime::HmmRegimeParams::default(),
+                            hmm_regime_params: {
+                                let mut p = ftmo_engine_core::signals_hmm_regime::HmmRegimeParams::default();
+                                if multi_signal.regime_hmm_p_bull.is_finite() {
+                                    p.p_threshold_bull = multi_signal.regime_hmm_p_bull;
+                                }
+                                if multi_signal.regime_hmm_p_bear.is_finite() {
+                                    p.p_threshold_bear = multi_signal.regime_hmm_p_bear;
+                                }
+                                if multi_signal.regime_hmm_p_opposite.is_finite() {
+                                    p.p_opposite_max = multi_signal.regime_hmm_p_opposite;
+                                }
+                                if multi_signal.regime_hmm_warmup > 0 {
+                                    p.warmup_bars = multi_signal.regime_hmm_warmup;
+                                }
+                                p
+                            },
                             use_nupl: multi_signal.regime_use_nupl,
                             nupl_params: ftmo_engine_core::signals_nupl::NuplParams::default(),
                             use_rsi_hidden_div: multi_signal.regime_use_rsi_hidden_div,
@@ -3144,7 +3200,11 @@ fn run_one_window(
                                 },
                             use_stablecoin_flow: multi_signal.regime_use_stablecoin,
                             stablecoin_flow_params: ftmo_engine_core::signals_stablecoin_flow::StablecoinFlowParams::default_30m_crypto(),
-                            hmm_model: None,
+                            // 2026-05-17 Phase 27 — Pre-loaded HMM model (3- or
+                            // 4-state). When None the voter falls back to the
+                            // hardcoded `HmmModel::default_btc_30m()` inside
+                            // signals_hmm_regime.
+                            hmm_model: multi_signal.hmm_model.as_deref().cloned(),
                             nupl_samples: None,
                             // 2026-05-14 Detector #13 — forward HTF MACD-hist
                             // params so the same CLI flags activate the gate
