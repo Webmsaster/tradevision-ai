@@ -62,6 +62,17 @@ struct WindowResult {
     passed: bool,
     fail_reason: Option<String>,
     elapsed_ms: f64,
+    /// 2026-05-17 Codex Breadth-Gate (Phase 41) — None when no gate configured;
+    /// Some(true/false) when --min-initial-signal-breadth or --min-initial-majors
+    /// is active. The pass-rate reported in finalise_report then uses
+    /// passed/qualified instead of passed/total to mirror live deploy (don't
+    /// start the challenge on under-broad opening clusters).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    qualified_at_start: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_cluster_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_cluster_majors: Option<usize>,
 }
 
 fn ml_features_for_signal(
@@ -344,6 +355,17 @@ struct MultiSignalCfg {
     regime_hmm_p_opposite: f64,
     /// 0 sentinel = use default 200 (warmup_bars).
     regime_hmm_warmup: usize,
+    /// 2026-05-17 Phase 41 — Codex Challenge-Start-Breadth-Gate.
+    /// 0 = gate disabled. Otherwise: a window's `qualified_at_start` is true
+    /// iff its first-cluster (trades inside `initial_window_hours` after the
+    /// first trade) contains >= `min_initial_signal_breadth` distinct symbols
+    /// AND >= `min_initial_majors` from `majors_prefixes`.
+    min_initial_signal_breadth: usize,
+    min_initial_majors: usize,
+    initial_window_hours: u32,
+    /// Short symbol prefixes (e.g. "BTC,ETH,BNB,SOL") — a trade symbol matches
+    /// when it starts with `"<prefix>-"` or equals the prefix exactly.
+    majors_prefixes: Vec<String>,
     /// R29-Audit: random-gate sanity check. When set to Some(f), each signal
     /// is kept with probability f (deterministic per `random_gate_seed +
     /// entry_time + symbol_hash`). Used to confirm ML "wins" come from signal
@@ -1097,6 +1119,15 @@ fn main() -> Result<()> {
     let mut regime_hmm_p_bear: f64 = f64::NAN;
     let mut regime_hmm_p_opposite: f64 = f64::NAN;
     let mut regime_hmm_warmup: usize = 0;
+    let mut min_initial_signal_breadth: usize = 0; // 0 = gate disabled
+    let mut min_initial_majors: usize = 0;
+    let mut initial_window_hours: u32 = 24;
+    let mut majors_prefixes: Vec<String> = vec![
+        "BTC".to_string(),
+        "ETH".to_string(),
+        "BNB".to_string(),
+        "SOL".to_string(),
+    ];
     // R29-Audit-Round3 2026-05-12 (Bug-1 fix): default sentinel `NaN` lets us
     // detect "user passed `--ml-model` but forgot `--ml-threshold`" and
     // fail-loud below instead of silently keeping every signal (threshold=0
@@ -1341,6 +1372,29 @@ fn main() -> Result<()> {
             "--hmm-p-bear" => regime_hmm_p_bear = need!("--hmm-p-bear").parse()?,
             "--hmm-p-opposite" => regime_hmm_p_opposite = need!("--hmm-p-opposite").parse()?,
             "--hmm-warmup" => regime_hmm_warmup = need!("--hmm-warmup").parse()?,
+            "--min-initial-signal-breadth" => {
+                min_initial_signal_breadth = need!("--min-initial-signal-breadth").parse()?;
+            }
+            "--min-initial-majors" => {
+                min_initial_majors = need!("--min-initial-majors").parse()?;
+            }
+            "--initial-window-hours" => {
+                initial_window_hours = need!("--initial-window-hours").parse()?;
+                if initial_window_hours == 0 {
+                    return Err(anyhow!("--initial-window-hours must be > 0"));
+                }
+            }
+            "--majors-list" => {
+                let raw = need!("--majors-list");
+                majors_prefixes = raw
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if majors_prefixes.is_empty() {
+                    return Err(anyhow!("--majors-list must contain at least one prefix"));
+                }
+            }
             "--start-after-ts" => start_after_ts = Some(need!("--start-after-ts").parse()?),
             "--random-gate-keep" => {
                 random_gate_keep = Some(need!("--random-gate-keep").parse()?);
@@ -1942,6 +1996,10 @@ fn main() -> Result<()> {
                 regime_hmm_p_bear,
                 regime_hmm_p_opposite,
                 regime_hmm_warmup,
+                min_initial_signal_breadth,
+                min_initial_majors,
+                initial_window_hours,
+                majors_prefixes,
                 random_gate_keep,
                 random_gate_seed,
             },
@@ -2168,6 +2226,12 @@ fn run_single_asset(
                 passed: last_passed,
                 fail_reason: last_fail.or_else(|| state.stopped_reason.map(|r| format!("{r:?}"))),
                 elapsed_ms: win_started.elapsed().as_secs_f64() * 1000.0,
+                // Single-asset path does not expose a MultiSignalCfg, so the
+                // breadth-gate is intentionally inert here (gate is a multi-
+                // asset feature). None preserves backwards-compat JSONL schema.
+                qualified_at_start: None,
+                first_cluster_size: None,
+                first_cluster_majors: None,
             };
             if let Ok(mut g) = writer.lock() {
                 if let Some(w) = g.as_mut() {
@@ -2228,6 +2292,32 @@ fn finalise_report(reports: &[WindowResult], windows: usize, started: Instant) {
         "passed={passed} / {windows} ({:.2}%)",
         passed as f64 / windows as f64 * 100.0
     );
+    // 2026-05-17 Phase 41 — Codex Challenge-Start-Breadth-Gate report. Print
+    // an additional line when any window carries a qualified_at_start flag.
+    // Production-relevant stat is passed/qualified (live deploy skips windows
+    // that don't form a wide-enough opening cluster).
+    let qualified_count: usize = reports
+        .iter()
+        .filter(|r| matches!(r.qualified_at_start, Some(true)))
+        .count();
+    let gated_any: bool = reports
+        .iter()
+        .any(|r| r.qualified_at_start.is_some());
+    if gated_any {
+        let passed_qualified: usize = reports
+            .iter()
+            .filter(|r| matches!(r.qualified_at_start, Some(true)) && r.passed)
+            .count();
+        let pct_qualified = qualified_count as f64 / windows as f64 * 100.0;
+        let pct_passed_of_qualified = if qualified_count == 0 {
+            0.0
+        } else {
+            passed_qualified as f64 / qualified_count as f64 * 100.0
+        };
+        println!(
+            "qualified={qualified_count} / {windows} ({pct_qualified:.2}%) — passed_of_qualified={passed_qualified} / {qualified_count} ({pct_passed_of_qualified:.2}%)"
+        );
+    }
 }
 
 // ───────────────── Multi-asset (R29-R5) path ────────────────────────
@@ -3522,6 +3612,48 @@ fn run_one_window(
         last_passed = true;
     }
 
+    // 2026-05-17 Phase 41 — Codex Challenge-Start-Breadth-Gate. Compute
+    // first-cluster breadth + majors count from closed_trades. Disabled
+    // when both thresholds are 0.
+    let breadth_gate_active =
+        multi_signal.min_initial_signal_breadth > 0 || multi_signal.min_initial_majors > 0;
+    let (qualified_at_start, first_cluster_size, first_cluster_majors) = if breadth_gate_active
+        && !state.closed_trades.is_empty()
+    {
+        let mut sorted_trades: Vec<&ftmo_engine_core::trade::ClosedTrade> =
+            state.closed_trades.iter().collect();
+        sorted_trades.sort_by_key(|t| t.entry_time);
+        let first_entry = sorted_trades[0].entry_time;
+        let cutoff_ms = first_entry + (multi_signal.initial_window_hours as i64) * 3_600_000;
+        let mut symbols_in_cluster: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut majors_in_cluster: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for t in sorted_trades.iter() {
+            if t.entry_time > cutoff_ms {
+                break;
+            }
+            symbols_in_cluster.insert(t.symbol.clone());
+            for prefix in multi_signal.majors_prefixes.iter() {
+                let starts_dashed = t.symbol.starts_with(&format!("{prefix}-"));
+                if starts_dashed || t.symbol == *prefix {
+                    majors_in_cluster.insert(prefix.clone());
+                    break;
+                }
+            }
+        }
+        let breadth = symbols_in_cluster.len();
+        let majors = majors_in_cluster.len();
+        let qualified = breadth >= multi_signal.min_initial_signal_breadth
+            && majors >= multi_signal.min_initial_majors;
+        (Some(qualified), Some(breadth), Some(majors))
+    } else if breadth_gate_active {
+        // Active gate but no trades produced → does not qualify (no cluster formed).
+        (Some(false), Some(0), Some(0))
+    } else {
+        (None, None, None)
+    };
+
     let report = WindowResult {
         win_idx: w_idx,
         config_label: cfg.label.clone(),
@@ -3532,6 +3664,9 @@ fn run_one_window(
         passed: last_passed,
         fail_reason: last_fail.or_else(|| state.stopped_reason.map(|r| format!("{r:?}"))),
         elapsed_ms: win_started.elapsed().as_secs_f64() * 1000.0,
+        qualified_at_start,
+        first_cluster_size,
+        first_cluster_majors,
     };
     if let Ok(mut g) = writer.lock() {
         if let Some(w) = g.as_mut() {
