@@ -204,18 +204,29 @@ mv -n "$STATE_DIR" "$ARCHIVE_DIR"
 chmod -R go-rwx "$ARCHIVE_DIR" 2>/dev/null || true
 
 # Update env file in-place (FTMO_TF line)
+# 2026-05-18 Bug-Audit (MITTEL): write backup to a state-dir owner-only file
+# instead of <ENV_FILE>.bak in repo-root (could leak TELEGRAM_BOT_TOKEN etc.
+# if user accidentally `git add -A`).
+BACKUP_DIR=".env-backups"
+mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR"
+BACKUP_FILE="${BACKUP_DIR}/$(basename "$ENV_FILE").bak.$(date +%Y%m%d-%H%M%S)"
+cp "$ENV_FILE" "$BACKUP_FILE"
+chmod 600 "$BACKUP_FILE"
 echo "[promote] Updating $ENV_FILE: FTMO_TF=$STEP2_TF"
-sed -i.bak -E "s|^FTMO_TF=.*|FTMO_TF=$STEP2_TF|" "$ENV_FILE"
-echo "  (backup at ${ENV_FILE}.bak)"
+sed -i -E "s|^FTMO_TF=.*|FTMO_TF=$STEP2_TF|" "$ENV_FILE"
+echo "  (backup at $BACKUP_FILE, mode 600)"
 
 upsert_env() {
   # 2026-05-18 Bug-Audit fix: previously crashed on values containing sed
   # special chars (& | \), and missed whitespace-prefixed lines.
   local key="$1"
   local value="$2"
-  # Escape sed special chars in replacement value
+  # 2026-05-18 Bug-Audit (HOCH): include backslash in escape charclass.
+  # `[\\&|]` matches literal \, &, and |. Without backslash escape, a value
+  # containing `\` (rare but possible) would crash sed.
   local esc_value
-  esc_value=$(printf '%s\n' "$value" | sed -e 's/[\&|]/\\&/g')
+  esc_value=$(printf '%s\n' "$value" | sed -e 's/[\\&|]/\\&/g')
   # Match both bare and whitespace-prefixed lines (but NOT commented #)
   if grep -qE "^[[:space:]]*${key}=" "$ENV_FILE"; then
     sed -i -E "s|^[[:space:]]*${key}=.*|${key}=${esc_value}|" "$ENV_FILE"
@@ -251,4 +262,10 @@ echo "  Target:     +5% in 60 days (5% DL, 10% TL, minDays 4)"
 echo "  Backtest:   77.86% pass-rate (R28_STEP2 honest, V4-Sim)"
 echo "  Joint Step-1+Step-2 with PASSLOCK: 64.77% × 77.86% ≈ 50% Funded"
 echo "  3-Strategy: ~94% × 78% ≈ 73% Funded"
+echo ""
+echo "  ⚠️  HONEST NOTE: Step-2 will idle until breadth+majors gate goes"
+echo "      green again. Median wait ~13 days (memory phase33). The 50%/"
+echo "      73% Funded numbers assume the gate triggers in time — if it"
+echo "      doesn't, the 60d Step-2 frist starts ticking before the bot"
+echo "      can trade. Monitor state/timing-gate.json + watch Telegram."
 echo "═══════════════════════════════════════════════════════"

@@ -56,23 +56,42 @@ def fetch_klines(symbol, start_ms):
     raise FetchError(f"{symbol}: {last_err}")
 
 def atomic_write_json(path: Path, data) -> None:
-    """Atomic write to prevent reader (ftmo-sweep) from seeing truncated file."""
+    """Atomic write: tmp + fsync + rename + parent-dir-fsync.
+
+    2026-05-18 Bug-Audit (HOCH): single open() for write+flush+fsync, then
+    fsync the parent directory so the rename is durable across power loss.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
-    tmp.write_text(json.dumps(data))
-    with open(tmp, "rb+") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+        f.flush()
         os.fsync(f.fileno())
     tmp.replace(path)
+    try:
+        dirfd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
+    except (OSError, AttributeError):
+        pass
 
 
 def update_symbol(symbol):
+    """Returns (bars_added, last_open_ms).
+
+    2026-05-18 Bug-Audit (HOCH): early-return `(0, 0)` for missing/empty cache
+    files would have main()'s staleness-check silently skip them (`if last_open`
+    filters them out). Raise FetchError so they surface as a real failure.
+    """
     path = CACHE_DIR / f"{symbol}_{INTERVAL}.json"
     if not path.exists():
-        print(f"  [skip] no cache file for {symbol}", file=sys.stderr)
-        return (0, 0)
+        raise FetchError(f"no cache file for {symbol} (run initial bake first)")
     with open(path) as f:
         existing = json.load(f)
     if not existing:
-        return (0, 0)
+        raise FetchError(f"empty cache file for {symbol}")
     # Existing is sorted by openTime, get last bar
     last_open = max(c["openTime"] for c in existing)
     # Fetch from last_open + 30min (avoid duplicates)
@@ -109,12 +128,16 @@ def update_symbol(symbol):
                 "takerBuyVolume": float(row[9]) if len(row) > 9 else 0.0,
             })
             added_in_batch += 1
-        if added_in_batch == 0:
+        # 2026-05-18 Bug-Audit (HOCH): unified loop-exit logic. Previously
+        # had 3 separate break conditions; now: if we didn't add anything OR
+        # got a short batch, we're done. Advance cursor from the LAST kept
+        # bar's open_time + 1 interval (not batch[-1] which could be a
+        # rejected non-final bar).
+        last_kept = new_bars[-1]["openTime"] if added_in_batch > 0 else None
+        if last_kept is None or len(batch) < LIMIT:
             break
-        cursor = int(batch[-1][0]) + 30 * 60 * 1000
+        cursor = last_kept + 30 * 60 * 1000
         time.sleep(0.1)  # rate-limit
-        if len(batch) < LIMIT:
-            break
 
     if not new_bars:
         print(f"  [{symbol}] no new bars")

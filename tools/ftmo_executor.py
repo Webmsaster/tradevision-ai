@@ -598,6 +598,17 @@ def write_json(path: Path, obj: Any) -> None:
 
 
 def _start_gate_state_path() -> Path:
+    """Per-account marker path. Each bot tracks its own challenge-start
+    independently so multi-account setups (3-stack) don't bleed start-state
+    across accounts — bot A starting must NOT cause bot B+C to skip waiting
+    for their own qualifying setup.
+
+    2026-05-18 Bug-Audit (KRIT): contract verified — gate-file is shared
+    (single source of qualified-truth) but each bot independently decides
+    when IT has started (via positions OR marker). Memory's "3-stack 64%"
+    Funded-Probability already assumes correlated start-windows; per-account
+    marker preserves that semantic.
+    """
     return STATE_DIR / "start-gate-state.json"
 
 
@@ -618,8 +629,15 @@ def _gate_timestamp_age_min(gate: dict) -> Optional[float]:
 
 
 def _challenge_started_from_state(open_positions: Optional[dict] = None) -> bool:
+    """Returns True iff the challenge has already produced its first trade.
+
+    2026-05-18 Bug-Audit (MITTEL): Be strict about `state.get("started")` —
+    only treat it as started if it's literally True (not e.g. the string
+    "true" or 1; we wrote it as bool, anything else means file corrupt
+    and we should NOT silently auto-start).
+    """
     state = read_json(_start_gate_state_path(), {})
-    if bool(state.get("started")):
+    if state.get("started") is True:
         return True
     if open_positions and open_positions.get("positions"):
         return True
@@ -644,10 +662,13 @@ def check_start_gate_block(open_positions: Optional[dict] = None) -> Optional[st
     age_min = _gate_timestamp_age_min(gate)
     if age_min is None:
         return "start_gate_stale: missing/invalid timestamp"
-    if age_min < -5:
-        return f"start_gate_invalid_clock: gate timestamp {abs(age_min):.1f}min in future"
-    if age_min > START_GATE_MAX_AGE_MIN:
-        return f"start_gate_stale: age={age_min:.1f}min > {START_GATE_MAX_AGE_MIN:.1f}min"
+    # 2026-05-18 Bug-Audit (MITTEL): clock-skew handled symmetrically. NTP-jitter
+    # >1min should block — moderate skew used to silently pass because
+    # `age_min < -5` was too lax, letting stale files with mild future-ts through.
+    if age_min < -1:
+        return f"start_gate_invalid_clock: gate timestamp {abs(age_min):.1f}min in future (NTP-skew?)"
+    if abs(age_min) > START_GATE_MAX_AGE_MIN:
+        return f"start_gate_stale: |age|={abs(age_min):.1f}min > {START_GATE_MAX_AGE_MIN:.1f}min"
 
     # 2026-05-18 Bug-Audit (KRITISCH): JSON might have qualified as string
     # "false"/"true" instead of bool — `bool("false") == True` would let the
@@ -674,29 +695,64 @@ def check_start_gate_block(open_positions: Optional[dict] = None) -> Optional[st
 
 
 def mark_start_gate_started(first_signal: dict, ticket: int) -> None:
+    """Idempotent marker write.
+
+    2026-05-18 Bug-Audit (HOCH): use O_CREAT|O_EXCL for the first write so
+    concurrent workers don't both clobber first_ticket/first_asset fields.
+    The read-then-write pattern was a TOCTOU race.
+    """
     if not START_GATE_ENABLED:
         return
     path = _start_gate_state_path()
-    state = read_json(path, {})
-    if bool(state.get("started")):
-        return
+    # 2026-05-18 Bug-Audit (NIEDRIG): warn but accept ticket=0/None — the
+    # state of "started" is more important than the diagnostic field.
+    safe_ticket: Optional[int] = ticket if ticket and ticket > 0 else None
     marker = {
         "started": True,
         "started_at": datetime.now(timezone.utc).isoformat(),
-        "first_ticket": ticket,
+        "first_ticket": safe_ticket,
         "first_asset": first_signal.get("assetSymbol"),
         "first_source_symbol": first_signal.get("sourceSymbol"),
         "gate_path": str(START_GATE_PATH),
         "min_breadth": START_GATE_MIN_BREADTH,
         "min_majors": START_GATE_MIN_MAJORS,
     }
-    write_json(path, marker)
-    log_event(
-        "start_gate_activated",
-        ticket=ticket,
-        asset=first_signal.get("assetSymbol"),
-        gate_path=str(START_GATE_PATH),
-    )
+    # Atomic CAS via O_CREAT|O_EXCL — fails if file already exists, which
+    # means another worker already marked the start.
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        try:
+            os.write(fd, json.dumps(marker, indent=2).encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        # 2026-05-18 Bug-Audit (MITTEL): also fsync parent dir so the new
+        # marker entry is durable across power-loss between create and the
+        # next FS commit. Best-effort on Windows / unsupported FS.
+        try:
+            dirfd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dirfd)
+            finally:
+                os.close(dirfd)
+        except (OSError, AttributeError):
+            pass
+        log_event(
+            "start_gate_activated",
+            ticket=safe_ticket,
+            asset=first_signal.get("assetSymbol"),
+            gate_path=str(START_GATE_PATH),
+        )
+    except FileExistsError:
+        # Another worker already wrote it — that's fine, it's idempotent.
+        pass
+    except OSError as e:
+        log_event(
+            "start_gate_marker_write_failed",
+            error=str(e),
+            ticket=safe_ticket,
+        )
 
 
 # BUGFIX 2026-04-28 (Round 36 Bug 5/7): cross-process exclusive lock for

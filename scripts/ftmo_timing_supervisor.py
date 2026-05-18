@@ -45,12 +45,30 @@ SYMBOLS = "AAVEUSDT,ADAUSDT,ALGOUSDT,ARBUSDT,ATOMUSDT,AVAXUSDT,BCHUSDT,BNBUSDT,B
 SWEEP_BIN = PROJ_ROOT / "engine-rust" / "target" / "release" / "ftmo-sweep"
 
 def atomic_write(path: Path, content: str) -> None:
-    """Atomic write: tmp file + fsync + rename. Prevents partial-read races."""
+    """Atomic write: tmp file + fsync + rename + parent-dir-fsync.
+
+    2026-05-18 Bug-Audit (HOCH): the previous version reopened the file
+    after write_text to call fsync — `rb+` on a closed-then-reopened FD
+    doesn't durably flush. Use a single open() for write+fsync, and
+    fsync the parent directory so the rename itself is durable.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
-    tmp.write_text(content)
-    with open(tmp, "rb+") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(content)
+        f.flush()
         os.fsync(f.fileno())
     tmp.replace(path)
+    # POSIX: fsync parent dir to durably commit the rename. Best-effort on
+    # systems that don't support dir-fsync.
+    try:
+        dirfd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
+    except (OSError, AttributeError):
+        pass
 
 
 def update_cache():
@@ -59,10 +77,18 @@ def update_cache():
         ["python3", "scripts/cache_updater.py"],
         cwd=str(PROJ_ROOT), capture_output=True, text=True, timeout=300
     )
+    # 2026-05-18 Bug-Audit (HOCH): cache_updater exit 1 = fetch fail, exit 2
+    # = stale cache (>2h old). Both must surface to Telegram so the operator
+    # knows the gate state is untrustworthy and can re-trigger manually.
     if r.returncode != 0:
-        print(f"  [cache-err] {r.stderr}", file=sys.stderr)
+        last_lines = "\n".join(r.stderr.splitlines()[-5:])
+        print(f"  [cache-err exit={r.returncode}] {last_lines}", file=sys.stderr)
+        emit_telegram(
+            f"⚠️ FTMO cache_updater failed (exit {r.returncode}):\n"
+            f"{last_lines}\n\n"
+            f"Gate state will be stale until next cron tick."
+        )
         return False
-    # Print last 2 lines of output for visibility
     for line in r.stdout.splitlines()[-3:]:
         print(f"  {line}")
     return True
@@ -75,12 +101,17 @@ def run_sweep():
     TMP_OUT.unlink(missing_ok=True)
     now_ms = int(time.time() * 1000)
     start_after = now_ms - 32 * 24 * 3600 * 1000  # latest 30d window
+    # 2026-05-18 Bug-Audit (KRIT): --windows 700 with start-after-ts NOW-32d
+    # is a mismatch — at step-days=3 only ~10 windows fit in a 32-day slice,
+    # leaving ~690 windows unused (engine returns qualified_total=1 currently).
+    # Use --windows 12 to actually look at the latest ~36d worth of windows
+    # at step-days=3, which gives enough samples for a stable qualified-rate.
     cmd = [
         str(SWEEP_BIN),
         "--candles-dir", "scripts/cache_bakeoff",
         "--funding-dir", "scripts/cache_bakeoff",
         "--symbols", SYMBOLS,
-        "--windows", "700", "--step-days", "3", "--threads", "8",
+        "--windows", "12", "--step-days", "3", "--threads", "8",
         "--start-after-ts", str(start_after),
         "--profit-target", "0.10", "--max-days", "30",
         "--signals", "regime", "--regime-min-votes", "2",
@@ -122,24 +153,43 @@ def parse_sweep_output(stdout):
     return qualified_count, qualified_total, passed_of_qualified
 
 def parse_latest_window(out_path):
-    """Read the per-window jsonl + return the LATEST window's qualified flag."""
+    """Read per-window jsonl + return the window with the HIGHEST win_idx.
+
+    2026-05-18 Bug-Audit (KRIT): sweep.rs uses Arc<Mutex<BufWriter>> with
+    threaded fan-out — JSONL line order reflects COMPLETION-order, not
+    window-order. The last line may be the first window that finished, not
+    the most recent in time. Sort explicitly by win_idx (which is
+    monotonic in time-order from the engine's `windows` loop).
+    """
     if not out_path.exists():
         return None
     lines = out_path.read_text().splitlines()
     if not lines:
         return None
-    # Take last entry — sweep writes in window order
-    last = json.loads(lines[-1])
-    return last
+    rows = []
+    for line in lines:
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    if not rows:
+        return None
+    rows.sort(key=lambda r: r.get("win_idx", 0))
+    return rows[-1]
 
 def emit_telegram(msg):
+    """Send a Telegram message in plain text (no Markdown parsing).
+
+    2026-05-18 Bug-Audit (MITTEL): MarkdownV1 was deprecated and would 400
+    on legitimate underscores/asterisks in symbol names. Drop parse_mode.
+    """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = json.dumps({
         "chat_id": TELEGRAM_CHAT_ID,
         "text": msg,
-        "parse_mode": "Markdown",
+        # No parse_mode → plain text, no escape required.
     }).encode("utf-8")
     try:
         urllib.request.urlopen(
@@ -175,6 +225,18 @@ def main():
 
     if latest is None:
         print("[3/3] No window data — state unknown.")
+        return 1
+
+    # 2026-05-18 Bug-Audit (KRIT): need >= 3 windows for a stable qualified
+    # rate. With qtotal=1 the gate flips on a single window's noise (n=1
+    # qualified_count means either 0% or 100%). Refuse to write the gate
+    # below that threshold and alert operator.
+    if qtotal < 3:
+        msg = (f"⚠️ Engine returned only {qtotal} window(s) — refusing to update "
+               f"gate (need ≥3 for stable signal). Check cache freshness + "
+               f"--start-after-ts unit-mismatch.")
+        print(f"❌ {msg}")
+        emit_telegram(msg)
         return 1
 
     qualified = latest.get("qualified_at_start", False)

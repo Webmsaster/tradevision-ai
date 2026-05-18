@@ -1773,6 +1773,13 @@ fn main() -> Result<()> {
         if also_fire_ofi_persistent {
             unsupported.push("--also-fire-ofi-persistent");
         }
+        // 2026-05-18 Bug-Audit (HOCH): breadth-gate is multi-asset only.
+        // Silently ignoring it on the single-asset path would let users run
+        // validation sweeps that look qualified=0/N (all false) and conclude
+        // "the gate is broken" when it's just not applicable.
+        if min_initial_signal_breadth > 0 || min_initial_majors > 0 {
+            unsupported.push("--min-initial-signal-breadth / --min-initial-majors");
+        }
         if regime_use_vol_confirm
             || regime_use_vwap_trend
             || regime_use_stop_hunt
@@ -2408,6 +2415,27 @@ fn run_multi_asset(
             "post-override symbol set is empty (cfg.assets vs --symbols intersection); \
              check --drop-symbols / --keep-symbols vs --symbols"
         ));
+    }
+
+    // 2026-05-18 Bug-Audit (MITTEL): warn loudly if --majors-list prefixes
+    // don't appear in any cfg-asset. Without this, a user typing
+    // `--majors-list BTCUSDT,ETHUSDT` against assets named `BTC-TREND`
+    // would silently get majors=0 every window → falsely concludes the
+    // gate doesn't work or the strategy can never qualify.
+    if multi_signal.min_initial_majors > 0 {
+        let cfg_symbols: Vec<&str> = cfg.assets.iter().map(|a| a.symbol.as_str()).collect();
+        for prefix in multi_signal.majors_prefixes.iter() {
+            let any_match = cfg_symbols.iter().any(|s| {
+                *s == prefix.as_str() || s.starts_with(&format!("{prefix}-"))
+            });
+            if !any_match {
+                eprintln!(
+                    "[sweep] WARN: --majors-list prefix '{}' does not match any cfg.assets \
+                     (have: {:?}). Gate will likely report majors=0 for all windows.",
+                    prefix, cfg_symbols
+                );
+            }
+        }
     }
 
     // Load candles per symbol.
