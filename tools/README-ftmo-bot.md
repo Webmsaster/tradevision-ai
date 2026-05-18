@@ -94,6 +94,12 @@ FTMO_SOL_SYMBOL=SOLUSD
 FTMO_START_BALANCE=100000
 FTMO_START_DATE=2026-04-23
 
+# Challenge-Start-Gate: Account bleibt idle bis Breadth/Majors grün sind
+FTMO_START_GATE_ENABLED=1
+FTMO_START_GATE_PATH=C:\tradevision-ai\state\timing-gate.json
+FTMO_START_GATE_MIN_BREADTH=4
+FTMO_START_GATE_MIN_MAJORS=3
+
 # State-Verzeichnis (absolut!)
 FTMO_STATE_DIR=C:\tradevision-ai\ftmo-state
 ```
@@ -132,6 +138,27 @@ python tools\ftmo_executor.py
 ```
 
 Pollt alle 30 Sekunden pending-signals.json, platziert Orders, schreibt account.json zurück.
+
+Mit `FTMO_START_GATE_ENABLED=1` platziert der Executor keine neuen Entry-Orders,
+solange `state\timing-gate.json` fehlt, veraltet ist oder `qualified=false`
+meldet. Nach dem ersten echten Order-Fill schreibt er
+`start-gate-state.json` in das Account-State-Verzeichnis; ab dann läuft die
+Challenge normal weiter, auch wenn das Start-Gate später wieder rot wird.
+
+### 90%-Modus für Step 2
+
+Step 2 muss denselben Start-Gate-Ablauf verwenden. Der Unterschied ist nur das
+Profit-Target:
+
+```powershell
+$env:FTMO_TF="2h-trend-v5-amber-max-passlock-step2"
+$env:FTMO_PROFIT_TARGET="0.05"
+$env:FTMO_START_GATE_ENABLED="1"
+$env:FTMO_START_GATE_PATH="C:\tradevision-ai\state\timing-gate.json"
+```
+
+Alternativ `tools\promote_to_step2.sh` verwenden; das Script archiviert den
+Step-1-State und setzt `FTMO_PROFIT_TARGET=0.05` plus Start-Gate automatisch.
 
 ## Monitoring
 

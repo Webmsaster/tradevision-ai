@@ -57,7 +57,7 @@ except Exception:
 # Algorithm matches `tools/ftmo_executor.py::_compute_magic_id`:
 #   - FTMO_ACCOUNT_ID unset           → 231
 #   - numeric account_id              → 231 + 10 + (num * 10)   [10-wide slots]
-#   - non-numeric account_id          → 231 + 1000 + (sha256[:8] % 9000)
+#   - non-numeric account_id          → 231 + 11000 + (sha256[:8] % 9000)
 #   - PING_MAGIC = MAGIC + 7  (NOT +1; +1 overlapped with next slot's MAGIC)
 def _compute_magic_id() -> int:
     base = 231
@@ -74,7 +74,7 @@ def _compute_magic_id() -> int:
 
         digest = hashlib.sha256(account_id.encode("utf-8")).hexdigest()[:8]
         offset = int(digest, 16) % 9000
-        return base + 1000 + offset
+        return base + 11000 + offset
 
 
 MAGIC = _compute_magic_id()

@@ -34,11 +34,7 @@ const TF = process.env.FTMO_TF || "2h-trend-v5-amber-max-passlock";
 // trades. Per-account state-dirs via FTMO_ACCOUNT_ID env, matching
 // ftmo_executor.py and ftmo_kill.py conventions.
 const ACCT = process.env.FTMO_ACCOUNT_ID || "default";
-const STATE_DIR = path.resolve(
-  __dirname,
-  "..",
-  `ftmo-state-${TF}-${ACCT}`,
-);
+const STATE_DIR = path.resolve(__dirname, "..", `ftmo-state-${TF}-${ACCT}`);
 const REPO_ROOT = path.resolve(__dirname, "..");
 
 // 2026-05-16 Round 9 WARN FIX: PM2 opens out_file/error_file immediately.
@@ -72,6 +68,11 @@ const sharedEnv = {
   FTMO_TF: TF,
   FTMO_STATE_DIR: STATE_DIR,
   FTMO_START_BALANCE: "100000",
+  FTMO_START_GATE_ENABLED: "1",
+  FTMO_START_GATE_PATH: path.join(REPO_ROOT, "state", "timing-gate.json"),
+  FTMO_START_GATE_MIN_BREADTH: "4",
+  FTMO_START_GATE_MIN_MAJORS: "3",
+  FTMO_START_GATE_MAX_AGE_MIN: "180",
   TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHAT_ID,
 };

@@ -571,6 +571,10 @@ const CFG_REGISTRY: Record<string, CfgRegistryEntry> = {
     cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK,
     label: "V5_AMBER_MAX_PASSLOCK (2026-05-15 champion, 24 assets)",
   },
+  "2h-trend-v5-amber-max-passlock-step2": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_STEP2,
+    label: "V5_AMBER_MAX_PASSLOCK_STEP2 (5% target, start-gated)",
+  },
   "2h-trend-v5-obsidian-passlock": {
     cfg: CFGS.FTMO_DAYTRADE_24H_V5_OBSIDIAN_PASSLOCK,
     label: "V5_OBSIDIAN_PASSLOCK (closeAllOnTargetReached)",

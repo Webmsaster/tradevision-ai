@@ -10,8 +10,9 @@
 #   1. Verify Step-1 was passed (read state file's `passed` flag)
 #   2. Stop the bot (pm2 stop)
 #   3. Archive state-dir to <state-dir>.step1.archive.<timestamp>
-#   4. Update .env-file: FTMO_TF=<step1>-step2 (e.g. r28-v6-passlock-step2)
-#   5. Restart bot — fresh state, Step-2 rules (5% target, 60d, holdBars 1200)
+#   4. Update .env-file: FTMO_TF=<step2-selector>, FTMO_PROFIT_TARGET=0.05,
+#      and keep the challenge-start gate enabled.
+#   5. Restart bot — fresh state, Step-2 rules with idle-until-green timing.
 #
 # Safety:
 #   - Requires manual confirmation before stop/restart
@@ -89,7 +90,9 @@ sd = os.environ['STATE_DIR']
 try:
     with open(os.path.join(sd, 'pause-state.json')) as f:
         data = json.load(f)
-    print('yes' if data.get('passed') else 'no')
+    # 2026-05-18 Bug-Audit fix: strict bool check. data.get('passed')==True
+    # avoids treating the string 'false' (truthy in Python!) as pass.
+    print('yes' if data.get('passed') is True else 'no')
 except Exception as e:
     print(f'error: {e}', file=sys.stderr)
     sys.exit(1)
@@ -103,9 +106,21 @@ if [[ "$PASSED" != "yes" ]]; then
   exit 1
 fi
 
+# 2026-05-18 Bug-Audit fix: refuse double-promotion. If FTMO_TF already ends
+# in -step2, the script would re-archive the live Step-2 state (data loss).
+if [[ "$FTMO_TF" == *-step2 ]]; then
+  echo "[promote] ERROR: FTMO_TF is already a step2 selector ($FTMO_TF)."
+  echo "  Refusing to promote — would wipe live Step-2 state."
+  exit 1
+fi
+
 # Determine step-2 selector. Map known champions to their step2 variants.
 STEP2_TF=""
 case "$FTMO_TF" in
+  *amber-max-passlock*)
+    STEP2_TF="2h-trend-v5-amber-max-passlock-step2"
+    echo "[promote] Mapped amber-max-passlock → amber-max-passlock-step2 (5% target, start-gated)"
+    ;;
   *r28-v6-passlock*)
     STEP2_TF="2h-trend-v5-quartz-lite-r28-step2"
     echo "[promote] Mapped passlock → r28-step2 (77.86% backtest)"
@@ -136,21 +151,43 @@ echo "  State-dir:     $STATE_DIR"
 echo "  Will archive:  ${STATE_DIR}.step1.archive.<timestamp>"
 echo "═══════════════════════════════════════════════════════"
 echo ""
+# 2026-05-18 Bug-Audit fix: detect non-interactive (cron/CI) early. Avoids
+# `read` hanging forever in a non-tty context.
+if [[ ! -t 0 ]]; then
+  echo "[promote] ERROR: stdin is not a tty — refusing to run non-interactively."
+  echo "  Promotion mutates live state. Run from a real shell."
+  exit 1
+fi
 read -rp "Proceed? (yes/NO): " confirm
 if [[ "$confirm" != "yes" ]]; then
   echo "[promote] aborted"
   exit 0
 fi
 
-# Stop matching pm2 processes for this account.
+# 2026-05-18 Bug-Audit fix: pm2 delete (NOT stop) — pm2 stop leaves zombie
+# processes that pm2 start later restarts with OLD script/cwd. Plus: use
+# pm2 jlist + jq (stable JSON) instead of awk on text format (column index
+# changes between pm2 versions).
 PM2_PATTERN="ftmo-(signal|executor)-${ACCOUNT_LABEL}"
-echo "[promote] Stopping pm2 processes matching: $PM2_PATTERN"
-pm2 list | grep -E "$PM2_PATTERN" | awk '{print $4}' | while read -r name; do
-  if [[ -n "$name" && "$name" != "name" ]]; then
-    echo "  pm2 stop $name"
-    pm2 stop "$name" || true
-  fi
-done
+echo "[promote] Deleting pm2 processes matching: $PM2_PATTERN"
+if command -v jq >/dev/null 2>&1; then
+  pm2 jlist 2>/dev/null \
+    | jq -r --arg p "$PM2_PATTERN" '.[] | select(.name | test($p)) | .name' \
+    | while read -r name; do
+        if [[ -n "$name" ]]; then
+          echo "  pm2 delete $name"
+          pm2 delete "$name" || true
+        fi
+      done
+else
+  # Fallback if jq missing — less robust but works
+  pm2 list 2>/dev/null | grep -E "$PM2_PATTERN" | awk '{print $4}' | while read -r name; do
+    if [[ -n "$name" && "$name" != "name" ]]; then
+      echo "  pm2 delete $name"
+      pm2 delete "$name" || true
+    fi
+  done
+fi
 
 # Archive state-dir. Use mv -n to refuse overwriting on timestamp collision
 # (e.g. retried promotion within the same second).
@@ -170,6 +207,32 @@ chmod -R go-rwx "$ARCHIVE_DIR" 2>/dev/null || true
 echo "[promote] Updating $ENV_FILE: FTMO_TF=$STEP2_TF"
 sed -i.bak -E "s|^FTMO_TF=.*|FTMO_TF=$STEP2_TF|" "$ENV_FILE"
 echo "  (backup at ${ENV_FILE}.bak)"
+
+upsert_env() {
+  # 2026-05-18 Bug-Audit fix: previously crashed on values containing sed
+  # special chars (& | \), and missed whitespace-prefixed lines.
+  local key="$1"
+  local value="$2"
+  # Escape sed special chars in replacement value
+  local esc_value
+  esc_value=$(printf '%s\n' "$value" | sed -e 's/[\&|]/\\&/g')
+  # Match both bare and whitespace-prefixed lines (but NOT commented #)
+  if grep -qE "^[[:space:]]*${key}=" "$ENV_FILE"; then
+    sed -i -E "s|^[[:space:]]*${key}=.*|${key}=${esc_value}|" "$ENV_FILE"
+  else
+    # Ensure trailing newline before append
+    [[ -n "$(tail -c1 "$ENV_FILE" 2>/dev/null)" ]] && printf '\n' >> "$ENV_FILE"
+    printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+  fi
+}
+
+echo "[promote] Enforcing Step-2 + 90-mode start-gate env"
+upsert_env "FTMO_PROFIT_TARGET" "0.05"
+upsert_env "FTMO_START_GATE_ENABLED" "1"
+upsert_env "FTMO_START_GATE_PATH" "state/timing-gate.json"
+upsert_env "FTMO_START_GATE_MIN_BREADTH" "4"
+upsert_env "FTMO_START_GATE_MIN_MAJORS" "3"
+upsert_env "FTMO_START_GATE_MAX_AGE_MIN" "180"
 
 # Restart pm2 processes via ecosystem-multi.config.js
 echo "[promote] Restarting via ecosystem-multi.config.js"

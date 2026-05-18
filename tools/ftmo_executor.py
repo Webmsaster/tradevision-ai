@@ -89,6 +89,24 @@ MAX_DAILY_LOSS_PCT = 0.05
 MAX_TOTAL_LOSS_PCT = 0.10
 CHALLENGE_START_DATE = os.environ.get("FTMO_START_DATE")
 
+# Challenge start timing gate. When enabled, the executor refuses to place
+# new entry orders until the timing supervisor says the current market setup
+# qualifies. Once the first real order is placed, a per-account start marker
+# is written and the strategy is allowed to continue normally for that
+# challenge even if the timing gate later turns red.
+START_GATE_ENABLED = os.environ.get("FTMO_START_GATE_ENABLED", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+_START_GATE_RAW_PATH = os.environ.get("FTMO_START_GATE_PATH", "state/timing-gate.json")
+START_GATE_PATH = Path(_START_GATE_RAW_PATH)
+if not START_GATE_PATH.is_absolute():
+    START_GATE_PATH = (_TOOLS_DIR.parent / START_GATE_PATH).resolve()
+START_GATE_MIN_BREADTH = int(os.environ.get("FTMO_START_GATE_MIN_BREADTH", "4"))
+START_GATE_MIN_MAJORS = int(os.environ.get("FTMO_START_GATE_MIN_MAJORS", "3"))
+START_GATE_MAX_AGE_MIN = float(os.environ.get("FTMO_START_GATE_MAX_AGE_MIN", "180"))
+
 # iter236+: Profit target & pause-after-target behavior
 # 2026-05-15 (Audit-Round-4 / Agent #12 KRIT, commit 65a4181 follow-up):
 # pt=0.08 was an IMAGINARY FTMO product — real FTMO Standard 2-Step Challenge
@@ -280,7 +298,7 @@ SYMBOL_MAP = {
 #     ...  Each account occupies a 10-wide slot so PING_MAGIC = MAGIC + 7
 #     can NEVER collide with the next account's MAGIC.
 #   - Non-numeric FTMO_ACCOUNT_ID (rare, legacy alias-style): widen the
-#     hash space to sha256 mod 9000 + 1000 offset → range [1231, 10230].
+#     hash space to sha256 mod 9000 + 11000 offset → range [11231, 20230].
 #     With 9000 slots, collision probability over 100 IDs is < 0.6% (vs
 #     ~30% under the broken sha1%100 scheme).
 #   - FTMO_ACCOUNT_ID unset → MAGIC = 231, PING_MAGIC = 238 (legacy single-
@@ -296,8 +314,8 @@ def _compute_magic_id() -> int:
     Returns 231 when FTMO_ACCOUNT_ID is unset (backwards-compatible base).
     Numeric account_id: 231 + 10 + (num * 10) → slots are 10-wide, no
     collisions between adjacent accounts even with PING_MAGIC = MAGIC + 7.
-    Non-numeric account_id: 231 + 1000 + (sha256[:8] % 9000) →
-    range [1231, 10230], collision prob < 0.6% per 100 IDs.
+    Non-numeric account_id: 231 + 11000 + (sha256[:8] % 9000) →
+    range [11231, 20230], collision prob < 0.6% per 100 IDs.
     """
     base = 231
     account_id = os.environ.get("FTMO_ACCOUNT_ID", "").strip()
@@ -368,6 +386,13 @@ def _validate_config() -> None:
         errs.append(f"FTMO_START_BALANCE={CHALLENGE_START_BALANCE} out of [1000, 5M]")
     if not 1 <= NEWS_CLOSE_MINUTES_BEFORE <= 240:
         errs.append(f"FTMO_NEWS_CLOSE_MINUTES={NEWS_CLOSE_MINUTES_BEFORE} out of [1, 240]")
+    if START_GATE_ENABLED:
+        if START_GATE_MIN_BREADTH < 0:
+            errs.append(f"FTMO_START_GATE_MIN_BREADTH={START_GATE_MIN_BREADTH} must be >= 0")
+        if START_GATE_MIN_MAJORS < 0:
+            errs.append(f"FTMO_START_GATE_MIN_MAJORS={START_GATE_MIN_MAJORS} must be >= 0")
+        if START_GATE_MAX_AGE_MIN <= 0:
+            errs.append(f"FTMO_START_GATE_MAX_AGE_MIN={START_GATE_MAX_AGE_MIN} must be > 0")
     if errs:
         msg = "Invalid config — refusing to start:\n" + "\n".join("  - " + e for e in errs)
         print(f"[executor] FATAL: {msg}", file=sys.stderr)
@@ -570,6 +595,108 @@ def write_json(path: Path, obj: Any) -> None:
             os.close(dirfd)
     except (OSError, AttributeError):
         pass  # Windows or unsupported FS — best-effort
+
+
+def _start_gate_state_path() -> Path:
+    return STATE_DIR / "start-gate-state.json"
+
+
+def _gate_timestamp_age_min(gate: dict) -> Optional[float]:
+    ts = gate.get("ts")
+    if isinstance(ts, (int, float)) and ts > 0:
+        return (time.time() * 1000 - float(ts)) / 60000
+    ts_iso = gate.get("ts_iso")
+    if isinstance(ts_iso, str) and ts_iso:
+        try:
+            parsed = datetime.fromisoformat(ts_iso.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() / 60
+        except ValueError:
+            return None
+    return None
+
+
+def _challenge_started_from_state(open_positions: Optional[dict] = None) -> bool:
+    state = read_json(_start_gate_state_path(), {})
+    if bool(state.get("started")):
+        return True
+    if open_positions and open_positions.get("positions"):
+        return True
+    return False
+
+
+def check_start_gate_block(open_positions: Optional[dict] = None) -> Optional[str]:
+    """Return a block reason while a fresh challenge is waiting for start gate.
+
+    This is intentionally a start-only gate. The backtest filter selects the
+    beginning of a challenge; it does not require the market to remain
+    qualified for every later entry.
+    """
+    if not START_GATE_ENABLED:
+        return None
+    if _challenge_started_from_state(open_positions):
+        return None
+    if not START_GATE_PATH.exists():
+        return f"start_gate_missing: {START_GATE_PATH}"
+
+    gate = read_json(START_GATE_PATH, {})
+    age_min = _gate_timestamp_age_min(gate)
+    if age_min is None:
+        return "start_gate_stale: missing/invalid timestamp"
+    if age_min < -5:
+        return f"start_gate_invalid_clock: gate timestamp {abs(age_min):.1f}min in future"
+    if age_min > START_GATE_MAX_AGE_MIN:
+        return f"start_gate_stale: age={age_min:.1f}min > {START_GATE_MAX_AGE_MIN:.1f}min"
+
+    # 2026-05-18 Bug-Audit (KRITISCH): JSON might have qualified as string
+    # "false"/"true" instead of bool — `bool("false") == True` would let the
+    # bot trade at red gate. Strictly require `is True`. Also coerce numeric
+    # fields defensively (string "4" → 4, None → 0, float → int).
+    def _to_int(v: Any, default: int = 0) -> int:
+        try:
+            if v is None or v == "":
+                return default
+            return int(float(v))
+        except (TypeError, ValueError):
+            return default
+
+    breadth = _to_int(gate.get("breadth"))
+    majors = _to_int(gate.get("majors"))
+    qualified = gate.get("qualified") is True
+    if not qualified or breadth < START_GATE_MIN_BREADTH or majors < START_GATE_MIN_MAJORS:
+        return (
+            "start_gate_red: "
+            f"qualified={qualified} breadth={breadth}/{START_GATE_MIN_BREADTH} "
+            f"majors={majors}/{START_GATE_MIN_MAJORS}"
+        )
+    return None
+
+
+def mark_start_gate_started(first_signal: dict, ticket: int) -> None:
+    if not START_GATE_ENABLED:
+        return
+    path = _start_gate_state_path()
+    state = read_json(path, {})
+    if bool(state.get("started")):
+        return
+    marker = {
+        "started": True,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "first_ticket": ticket,
+        "first_asset": first_signal.get("assetSymbol"),
+        "first_source_symbol": first_signal.get("sourceSymbol"),
+        "gate_path": str(START_GATE_PATH),
+        "min_breadth": START_GATE_MIN_BREADTH,
+        "min_majors": START_GATE_MIN_MAJORS,
+    }
+    write_json(path, marker)
+    log_event(
+        "start_gate_activated",
+        ticket=ticket,
+        asset=first_signal.get("assetSymbol"),
+        gate_path=str(START_GATE_PATH),
+    )
 
 
 # BUGFIX 2026-04-28 (Round 36 Bug 5/7): cross-process exclusive lock for
@@ -2506,6 +2633,28 @@ def _process_signals_unlocked(
             "placed_markers": [],
         }
 
+    start_gate_block = check_start_gate_block(open_positions)
+    if start_gate_block:
+        log_event(
+            "start_gate_block",
+            count=len(pending),
+            reason=start_gate_block,
+            gate_path=str(START_GATE_PATH),
+        )
+        for sig in pending:
+            executed["executions"].append({
+                "signal": sig,
+                "result": "start_gate_blocked",
+                "reason": start_gate_block,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+        return {
+            "remaining": [],
+            "executed": executed,
+            "open_positions": open_positions,
+            "placed_markers": [],
+        }
+
     remaining: list[dict] = []
     # BUGFIX 2026-04-28: signal staleness check — drop signals older than 5min
     # to prevent trading on stale data after crash/restart/long pause.
@@ -2780,6 +2929,13 @@ def _process_signals_unlocked(
         #     loop succeed. Boot-reconcile keeps its "marker + no MT5 deal
         #     + no open-position" inference intact.
         if result.ok:
+            # 2026-05-18 Bug-Audit (KRITISCH): mark_start_gate_started BEFORE
+            # placed_markers.append. If we crash between the two writes, recovery
+            # is cleaner: open_positions will surface the live trade on the
+            # next poll → _challenge_started_from_state returns True → gate
+            # check passes. With reversed order a crash mid-window could leave
+            # boot-reconcile orphan markers while gate-state stayed False.
+            mark_start_gate_started(sig, int(result.ticket or 0))
             placed_markers.append(order_marker)
             _reset_order_fail_counter()
             in_batch_placed += 1
@@ -5002,9 +5158,16 @@ def main_loop() -> None:
         f"Start balance: ${CHALLENGE_START_BALANCE:,.0f}\n"
         f"Daily-loss cap: -{MAX_DAILY_LOSS_PCT:.0%}\n"
         f"Total-loss cap: -{MAX_TOTAL_LOSS_PCT:.0%}\n"
+        f"Start gate: {'ON' if START_GATE_ENABLED else 'OFF'}\n"
         f"Poll interval: {POLL_INTERVAL_SEC}s"
     )
-    log_event("executor_started", mode=mode, state_dir=str(STATE_DIR))
+    log_event(
+        "executor_started",
+        mode=mode,
+        state_dir=str(STATE_DIR),
+        start_gate=START_GATE_ENABLED,
+        start_gate_path=str(START_GATE_PATH),
+    )
 
     try:
         while True:

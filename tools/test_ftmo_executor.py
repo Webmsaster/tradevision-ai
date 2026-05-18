@@ -1042,6 +1042,7 @@ def test_process_pending_signals_holds_lock_through_critical_section(monkeypatch
     exe.EXECUTOR_LOG_PATH = tmp_path / "executor-log.jsonl"
     exe.PAUSE_STATE_PATH = tmp_path / "pause-state.json"
     exe.CHALLENGE_PEAK_PATH = tmp_path / "challenge-peak.json"
+    exe.DAY_PEAK_PATH = tmp_path / "day-peak.json"
     exe.DRY_RUN = True  # avoid placing real orders
 
     # Fresh signal so the staleness check (5min) doesn't drop it.
@@ -1099,6 +1100,82 @@ def test_process_pending_signals_holds_lock_through_critical_section(monkeypatch
         f"merge-write lost sig_b: {assets}. The post-loop merge re-read "
         f"must run INSIDE the lock so it sees Node's late writes."
     )
+
+
+def test_start_gate_blocks_pending_before_challenge_start(monkeypatch, tmp_path):
+    import ftmo_executor as exe
+    import time as _time
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "DAILY_STATE_PATH", tmp_path / "daily-reset.json")
+    monkeypatch.setattr(exe, "PAUSE_STATE_PATH", tmp_path / "pause-state.json")
+    monkeypatch.setattr(exe, "EXECUTOR_LOG_PATH", tmp_path / "executor-log.jsonl")
+    monkeypatch.setattr(exe, "START_GATE_PATH", tmp_path / "timing-gate.json")
+    monkeypatch.setattr(exe, "START_GATE_ENABLED", True)
+    monkeypatch.setattr(exe, "START_GATE_MIN_BREADTH", 4)
+    monkeypatch.setattr(exe, "START_GATE_MIN_MAJORS", 3)
+    monkeypatch.setattr(exe, "START_GATE_MAX_AGE_MIN", 180.0)
+
+    exe.write_json(exe.START_GATE_PATH, {
+        "ts": int(_time.time() * 1000),
+        "qualified": False,
+        "breadth": 3,
+        "majors": 0,
+    })
+
+    proc = exe._process_signals_unlocked(
+        pending=[{"assetSymbol": "BTC"}],
+        executed={"executions": []},
+        open_positions={"positions": []},
+    )
+
+    assert proc["remaining"] == []
+    assert proc["placed_markers"] == []
+    assert proc["executed"]["executions"][0]["result"] == "start_gate_blocked"
+    assert "start_gate_red" in proc["executed"]["executions"][0]["reason"]
+
+
+def test_start_gate_allows_after_start_marker(monkeypatch, tmp_path):
+    import ftmo_executor as exe
+    import time as _time
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "START_GATE_PATH", tmp_path / "timing-gate.json")
+    monkeypatch.setattr(exe, "START_GATE_ENABLED", True)
+    monkeypatch.setattr(exe, "START_GATE_MIN_BREADTH", 4)
+    monkeypatch.setattr(exe, "START_GATE_MIN_MAJORS", 3)
+    monkeypatch.setattr(exe, "START_GATE_MAX_AGE_MIN", 180.0)
+
+    exe.write_json(exe.START_GATE_PATH, {
+        "ts": int(_time.time() * 1000),
+        "qualified": False,
+        "breadth": 0,
+        "majors": 0,
+    })
+    exe.write_json(tmp_path / "start-gate-state.json", {"started": True})
+
+    assert exe.check_start_gate_block({"positions": []}) is None
+
+
+def test_start_gate_requires_fresh_green_gate(monkeypatch, tmp_path):
+    import ftmo_executor as exe
+    import time as _time
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "START_GATE_PATH", tmp_path / "timing-gate.json")
+    monkeypatch.setattr(exe, "START_GATE_ENABLED", True)
+    monkeypatch.setattr(exe, "START_GATE_MIN_BREADTH", 4)
+    monkeypatch.setattr(exe, "START_GATE_MIN_MAJORS", 3)
+    monkeypatch.setattr(exe, "START_GATE_MAX_AGE_MIN", 180.0)
+
+    exe.write_json(exe.START_GATE_PATH, {
+        "ts": int(_time.time() * 1000),
+        "qualified": True,
+        "breadth": 4,
+        "majors": 3,
+    })
+
+    assert exe.check_start_gate_block({"positions": []}) is None
 
 
 # ============================================================================
@@ -2098,7 +2175,7 @@ def test_passlock_race_check_target_idempotent(monkeypatch, tmp_path):
     monkeypatch.setattr(exe, "tg_send", lambda msg, **kw: tg_calls.append(msg))
     # Mock the broker-equity refresh to return the equity we pass — keeps
     # the post-close target-confirmation branch deterministic.
-    monkeypatch.setattr(exe, "_get_broker_equity_now", lambda: None)
+    monkeypatch.setattr(exe, "_get_broker_equity_now", lambda **kw: None)
     monkeypatch.setattr(exe, "PAUSE_AT_TARGET", True)
     monkeypatch.setattr(exe, "PROFIT_TARGET_PCT", 0.10)
     monkeypatch.setattr(exe, "CHALLENGE_START_BALANCE", 100_000.0)
@@ -2492,7 +2569,7 @@ def test_codex_r4_passlock_target_hit_defers_when_post_close_equity_below_target
     monkeypatch.setenv("FTMO_PASSLOCK", "1")
     # MTM equity at-target BUT after partial close residual positions drag
     # back down to +8% (still profit, but below 10% target).
-    monkeypatch.setattr(exe, "_get_broker_equity_now", lambda: 108_000.0)
+    monkeypatch.setattr(exe, "_get_broker_equity_now", lambda **kw: 108_000.0)
 
     paused = exe.check_target_and_pause(110_500.0)
     assert paused is False, "MUST NOT latch target_hit when post-close equity < target"
@@ -3111,14 +3188,14 @@ def test_codex_bug1_old_collision_pairs_now_distinct(monkeypatch):
 
 def test_codex_bug1_non_numeric_account_uses_sha256_fallback(monkeypatch):
     """Non-numeric account_ids should hit the sha256 fallback path,
-    yielding values in [1231, 10230].
+    yielding values in [11231, 20230].
     """
     import ftmo_executor as exe
 
     monkeypatch.setenv("FTMO_ACCOUNT_ID", "alias-prod-01")
     m_alias = exe._compute_magic_id()
-    assert 1231 <= m_alias <= 10230, (
-        f"non-numeric account_id should hash into [1231, 10230], got {m_alias}"
+    assert 11231 <= m_alias <= 20230, (
+        f"non-numeric account_id should hash into [11231, 20230], got {m_alias}"
     )
     # Deterministic across calls.
     m_alias_again = exe._compute_magic_id()
@@ -3139,7 +3216,7 @@ def test_codex_bug1_negative_account_id_falls_through_to_sha256(monkeypatch):
 
     monkeypatch.setenv("FTMO_ACCOUNT_ID", "-1")
     m = exe._compute_magic_id()
-    assert 1231 <= m <= 10230
+    assert 11231 <= m <= 20230
 
 
 def test_codex_bug1_kill_module_no_collisions(monkeypatch):

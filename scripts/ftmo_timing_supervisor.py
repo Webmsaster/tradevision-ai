@@ -44,6 +44,15 @@ SYMBOLS = "AAVEUSDT,ADAUSDT,ALGOUSDT,ARBUSDT,ATOMUSDT,AVAXUSDT,BCHUSDT,BNBUSDT,B
 
 SWEEP_BIN = PROJ_ROOT / "engine-rust" / "target" / "release" / "ftmo-sweep"
 
+def atomic_write(path: Path, content: str) -> None:
+    """Atomic write: tmp file + fsync + rename. Prevents partial-read races."""
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+    tmp.write_text(content)
+    with open(tmp, "rb+") as f:
+        os.fsync(f.fileno())
+    tmp.replace(path)
+
+
 def update_cache():
     print("[1/3] Updating candle cache from Binance...")
     r = subprocess.run(
@@ -60,6 +69,10 @@ def update_cache():
 
 def run_sweep():
     print("[2/3] Running ftmo-sweep for latest qualifying check...")
+    # 2026-05-18 Bug-Audit (KRITISCH): delete stale TMP_OUT before run.
+    # If a previous crash left an old jsonl behind and the new sweep fails
+    # early, parse_latest_window would read STALE data from the previous run.
+    TMP_OUT.unlink(missing_ok=True)
     now_ms = int(time.time() * 1000)
     start_after = now_ms - 32 * 24 * 3600 * 1000  # latest 30d window
     cmd = [
@@ -199,8 +212,16 @@ def main():
         except Exception:
             prev = None
 
-    # Write state
-    GATE_FILE.write_text(json.dumps(state, indent=2))
+    # 2026-05-18 Bug-Audit (KRITISCH): atomic write — bot polls this file
+    # concurrently. Without tmp+rename, the reader can hit an empty/partial
+    # JSON during writer truncate-and-write, crash, and end up with corrupt
+    # gate state.
+    atomic_write(GATE_FILE, json.dumps(state, indent=2))
+    # History is append-only — line-write with flush is fine, but rotate
+    # if file > 10MB (memory R67-r9 lesson).
+    if HIST_FILE.exists() and HIST_FILE.stat().st_size > 10 * 1024 * 1024:
+        lines = HIST_FILE.read_text().splitlines()
+        atomic_write(HIST_FILE, "\n".join(lines[-5000:]) + "\n")
     with HIST_FILE.open("a") as f:
         f.write(json.dumps(state) + "\n")
 

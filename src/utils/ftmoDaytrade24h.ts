@@ -8739,6 +8739,12 @@ export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK: FtmoDaytrade24hConfig = {
   closeAllOnTargetReached: true,
   atrStop: { period: 56, stopMult: 2 },
 };
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_STEP2: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK,
+    profitTarget: 0.05,
+    maxDays: 60,
+  };
 export const FTMO_DAYTRADE_24H_V5_OBSIDIAN_PASSLOCK: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN,
   closeAllOnTargetReached: true,

@@ -513,6 +513,17 @@ pub fn v5_amber_max_passlock() -> EngineConfig {
     cfg
 }
 
+/// Step-2/Verification selector for the start-gated single-account flow.
+/// Same strategy surface as AMBER_MAX_PASSLOCK, but with the real FTMO
+/// Verification target of +5%.
+pub fn v5_amber_max_passlock_step2() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_STEP2".into();
+    cfg.profit_target = 0.05;
+    cfg.max_days = 60;
+    cfg
+}
+
 /// 2026-05-17 Bidirectional variant — enable shorts to address the long-only
 /// fail mode discovered in failure_pattern_analysis: in non-qualifying setups
 /// (bearish/sideways first 24h) the bot's 100% long bias means all entries
@@ -1204,6 +1215,7 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-amber-ext-passlock" => v5_amber_ext_passlock(),
         "2h-trend-v5-amber-max" => v5_amber_max(),
         "2h-trend-v5-amber-max-passlock" => v5_amber_max_passlock(),
+        "2h-trend-v5-amber-max-passlock-step2" => v5_amber_max_passlock_step2(),
         "2h-trend-v5-amber-max-passlock-bidir" => v5_amber_max_passlock_bidir(),
         "2h-trend-v5-amber-max-passlock-mptp-v04a" => v5_amber_max_passlock_mptp_v04a(),
         "2h-trend-v5-amber-max-passlock-sharpe-tight" => v5_amber_max_passlock_sharpe_tight(),
