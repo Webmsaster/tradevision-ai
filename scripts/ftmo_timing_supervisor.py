@@ -103,21 +103,22 @@ def run_sweep():
     # If a previous crash left an old jsonl behind and the new sweep fails
     # early, parse_latest_window would read STALE data from the previous run.
     TMP_OUT.unlink(missing_ok=True)
-    # 2026-05-18 Bug-Hunt-Recovery: switched from step=3d to step=1d.
-    # Reason: at step=3d, autocorrelation between adjacent windows is only
-    # 1.11× → supervisor signal is effectively random.
-    # At step=1d (overlap 29/30 days = 96% share), lag-1 autocorrelation
-    # is 1.50× and conditional pass-rate jumps from 50% → 70%.
-    # The "latest window" (started ~1d ago) has its first 24h ≈ yesterday,
-    # which is a strong proxy for today's first 24h cluster.
-    # Use 60 windows × 1d step = 60d sample, latest = ~1d old.
+    # 2026-05-18 v3 LIVE-CLUSTER-DETECTOR mode:
+    # The KEY fix — with max_days=30, the engine's latest simulatable window
+    # started 30 days ago. Its "first 24h cluster" = 30-day-old data → useless
+    # for live signal.
+    # With max_days=2, the engine can simulate windows extending only 2 days
+    # past their start. Latest window starts ~24h before cache_end → its
+    # "first 24h" = the actual most recent 24h of live data.
+    # Pass-rate stats are meaningless in this mode (can't reach +10% in 2d).
+    # We only use the latest window's qualified_at_start flag as the live gate.
     cmd = [
         str(SWEEP_BIN),
         "--candles-dir", "scripts/cache_bakeoff",
         "--funding-dir", "scripts/cache_bakeoff",
         "--symbols", SYMBOLS,
-        "--windows", "60", "--step-days", "1", "--threads", "8",
-        "--profit-target", "0.10", "--max-days", "30",
+        "--windows", "2000", "--step-days", "1", "--threads", "8",
+        "--profit-target", "0.10", "--max-days", "2",
         "--signals", "regime", "--regime-min-votes", "2",
         "--regime-poc-z", "--regime-bb-z-mr", "--regime-use-supertrend",
         "--regime-use-hmm", "--regime-use-ad-line",
@@ -157,13 +158,17 @@ def parse_sweep_output(stdout):
     return qualified_count, qualified_total, passed_of_qualified
 
 def parse_latest_window(out_path):
-    """Read per-window jsonl + return the window with the HIGHEST win_idx.
+    """Read per-window jsonl + return the most recent COMPLETE window.
 
     2026-05-18 Bug-Audit (KRIT): sweep.rs uses Arc<Mutex<BufWriter>> with
     threaded fan-out — JSONL line order reflects COMPLETION-order, not
-    window-order. The last line may be the first window that finished, not
-    the most recent in time. Sort explicitly by win_idx (which is
-    monotonic in time-order from the engine's `windows` loop).
+    window-order. The last line may be the first window that finished.
+    Sort explicitly by win_idx.
+
+    2026-05-18 v3 LIVE-CLUSTER fix: with max_days=2, the engine produces
+    PARTIAL windows at cache-end (extending into future, breadth=0). Skip
+    those and use the most recent window with trades > 0 (i.e. actually
+    simulated). This is the real "yesterday's first 24h" signal.
     """
     if not out_path.exists():
         return None
@@ -179,6 +184,12 @@ def parse_latest_window(out_path):
     if not rows:
         return None
     rows.sort(key=lambda r: r.get("win_idx", 0))
+    # Find the most recent window with actual trade activity (non-empty).
+    # Partial/future-extending windows have trades=0 + breadth=0.
+    for r in reversed(rows):
+        if r.get("trades", 0) > 0 or (r.get("first_cluster_size") or 0) > 0:
+            return r
+    # Fallback: highest win_idx even if empty
     return rows[-1]
 
 def emit_telegram(msg):
@@ -231,14 +242,15 @@ def main():
         print("[3/3] No window data — state unknown.")
         return 1
 
-    # 2026-05-18 Bug-Audit (KRIT): need >= 3 windows for a stable qualified
-    # rate. With qtotal=1 the gate flips on a single window's noise (n=1
-    # qualified_count means either 0% or 100%). Refuse to write the gate
-    # below that threshold and alert operator.
-    if qtotal < 3:
+    # 2026-05-18 Bug-Audit (KRIT): need >= 100 windows for stable cluster-detect
+    # mode (we measure latest window's first 24h). Below that = empty cache or
+    # unit-mismatch on --start-after-ts.
+    # NOTE: pass_pct/pass_of_qualified are MEANINGLESS in cluster-detect mode
+    # (max_days=2 → no challenge can reach +10% target). Only qualified_at_start
+    # of the latest window matters.
+    if qtotal < 100:
         msg = (f"⚠️ Engine returned only {qtotal} window(s) — refusing to update "
-               f"gate (need ≥3 for stable signal). Check cache freshness + "
-               f"--start-after-ts unit-mismatch.")
+               f"gate (need ≥100 for cluster-detect mode). Check cache freshness.")
         print(f"❌ {msg}")
         emit_telegram(msg)
         return 1
@@ -259,8 +271,8 @@ def main():
         "engine_pass_of_qualified_pct": pass_pct,
         "min_breadth": 4,
         "min_majors": 3,
-        "source": "ftmo-sweep --windows 60 --step-days 1 (latest window ~1d old)",
-        "validation": "v3: step=1d for high-autocorrelation predictor (1.50× lift)",
+        "source": "ftmo-sweep --windows 2000 --max-days 2 (LIVE 24h cluster detector)",
+        "validation": "v3 LIVE-CLUSTER: latest window's first 24h = real last 24h of cache",
     }
 
     print(f"\n[3/3] Engine result:")

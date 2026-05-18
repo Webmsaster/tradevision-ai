@@ -1258,6 +1258,53 @@ def test_live_cluster_gate_red_when_only_2_majors(monkeypatch, tmp_path):
     assert "start_gate_red_live" in block
 
 
+def test_cluster_only_blocks_new_entries_after_start_marker(monkeypatch, tmp_path):
+    """Cluster-only mode keeps gating fresh entries even after the challenge
+    has started. This is separate from start-gate, which is intentionally
+    cleared by start-gate-state.json."""
+    import ftmo_executor as exe
+    import time as _time
+    import json as _json
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "DAILY_STATE_PATH", tmp_path / "daily-reset.json")
+    monkeypatch.setattr(exe, "PAUSE_STATE_PATH", tmp_path / "pause-state.json")
+    monkeypatch.setattr(exe, "EXECUTOR_LOG_PATH", tmp_path / "executor-log.jsonl")
+    monkeypatch.setattr(exe, "START_GATE_PATH", tmp_path / "timing-gate.json")
+    monkeypatch.setattr(exe, "SIGNAL_HISTORY_PATH", tmp_path / "signal-history.jsonl")
+    monkeypatch.setattr(exe, "START_GATE_ENABLED", True)
+    monkeypatch.setattr(exe, "CLUSTER_ONLY_ENABLED", True)
+    monkeypatch.setattr(exe, "START_GATE_MIN_BREADTH", 4)
+    monkeypatch.setattr(exe, "START_GATE_MIN_MAJORS", 3)
+    monkeypatch.setattr(exe, "START_GATE_MAX_AGE_MIN", 180.0)
+    monkeypatch.setattr(exe, "CLUSTER_ONLY_MIN_HISTORY_HOURS", 23.0)
+
+    exe.write_json(tmp_path / "start-gate-state.json", {"started": True})
+    base_ms = int(_time.time() * 1000) - int(23.5 * 3600 * 1000)
+    entries = [
+        {"ts_ms": base_ms,            "asset": "BTC-TREND", "direction": "long"},
+        {"ts_ms": base_ms + 3600000,  "asset": "ETH-TREND", "direction": "long"},
+        {"ts_ms": base_ms + 7200000,  "asset": "AAVE-TREND","direction": "long"},
+        {"ts_ms": base_ms + 10800000, "asset": "ARB-TREND", "direction": "long"},
+    ]
+    with open(tmp_path / "signal-history.jsonl", "w") as f:
+        for e in entries:
+            f.write(_json.dumps(e) + "\n")
+
+    assert exe.check_start_gate_block({"positions": []}) is None
+    block = exe.check_cluster_entry_block()
+    assert block is not None
+    assert "cluster_only_red_live" in block
+
+    proc = exe._process_signals_unlocked(
+        pending=[{"assetSymbol": "BTC"}],
+        executed={"executions": []},
+        open_positions={"positions": []},
+    )
+    assert proc["remaining"] == []
+    assert proc["executed"]["executions"][0]["result"] == "cluster_entry_blocked"
+
+
 # ============================================================================
 # Round 56 audit fixes: Prague-TZ ping dates + UTC-aware history_deals_get
 #                       + invalid-fill-price rejection

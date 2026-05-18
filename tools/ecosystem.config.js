@@ -8,14 +8,15 @@
  *   pm2-startup install   # auto-start on boot
  *
  * To switch timeframe between deploys, edit FTMO_TF in the env block
- * for both processes (must match), then `pm2 reload ecosystem.config.js`.
+ * for all processes (must match), then `pm2 reload ecosystem.config.js`.
  *
  * Common commands:
  *   pm2 list                # show running services
  *   pm2 logs ftmo-signal    # tail Node service log
+ *   pm2 logs ftmo-tracker   # tail warm-up tracker log
  *   pm2 logs ftmo-executor  # tail Python executor log
- *   pm2 restart all         # restart both
- *   pm2 stop all            # stop both
+ *   pm2 restart all         # restart services
+ *   pm2 stop all            # stop services
  *   pm2 delete all          # remove from PM2
  */
 const path = require("path");
@@ -73,6 +74,8 @@ const sharedEnv = {
   FTMO_START_GATE_MIN_BREADTH: "4",
   FTMO_START_GATE_MIN_MAJORS: "3",
   FTMO_START_GATE_MAX_AGE_MIN: "180",
+  FTMO_CLUSTER_ONLY_ENABLED: "0",
+  FTMO_CLUSTER_ONLY_MIN_HISTORY_HOURS: "23",
   TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHAT_ID,
 };
@@ -92,6 +95,28 @@ module.exports = {
       out_file: path.join(STATE_DIR, "pm2-signal.out.log"),
       error_file: path.join(STATE_DIR, "pm2-signal.err.log"),
       time: true, // prefix timestamps to log lines
+    },
+    {
+      name: "ftmo-tracker",
+      cwd: REPO_ROOT,
+      script: "python",
+      args: "-u tools/signal_tracker_mode.py",
+      interpreter: "none",
+      env: {
+        ...sharedEnv,
+        PYTHONUNBUFFERED: "1",
+        PYTHONIOENCODING: "utf-8",
+        FTMO_MOCK: "1",
+        SIGNAL_TRACKER_INTERVAL: "30",
+        SIGNAL_TRACKER_ALERTS: "1",
+      },
+      autorestart: true,
+      max_restarts: 50,
+      restart_delay: 5000,
+      max_memory_restart: "150M",
+      out_file: path.join(STATE_DIR, "pm2-tracker.out.log"),
+      error_file: path.join(STATE_DIR, "pm2-tracker.err.log"),
+      time: true,
     },
     {
       name: "ftmo-executor",

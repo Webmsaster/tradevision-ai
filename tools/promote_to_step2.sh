@@ -244,6 +244,8 @@ upsert_env "FTMO_START_GATE_PATH" "state/timing-gate.json"
 upsert_env "FTMO_START_GATE_MIN_BREADTH" "4"
 upsert_env "FTMO_START_GATE_MIN_MAJORS" "3"
 upsert_env "FTMO_START_GATE_MAX_AGE_MIN" "180"
+upsert_env "FTMO_CLUSTER_ONLY_ENABLED" "0"
+upsert_env "FTMO_CLUSTER_ONLY_MIN_HISTORY_HOURS" "23"
 
 # Restart pm2 processes via ecosystem-multi.config.js
 echo "[promote] Restarting via ecosystem-multi.config.js"

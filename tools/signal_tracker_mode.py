@@ -37,6 +37,15 @@ if str(_TOOLS_DIR) not in sys.path:
 import ftmo_executor as exe  # noqa: E402
 
 
+def cluster_ready(cluster: dict) -> tuple[bool, float]:
+    """Return (ready_to_buy, oldest_history_hours)."""
+    oldest = cluster.get("oldest_log_ms")
+    age_h = 0.0
+    if oldest is not None:
+        age_h = (cluster["ts_ms"] - oldest) / 3_600_000
+    return bool(cluster.get("qualified")) and age_h >= 23.0, age_h
+
+
 def poll_once() -> int:
     """Poll pending-signals.json, log new signals to history, return count."""
     if not exe.PENDING_PATH.exists():
@@ -56,29 +65,54 @@ def poll_once() -> int:
 
 def main():
     interval_s = int(os.environ.get("SIGNAL_TRACKER_INTERVAL", "30"))
+    alerts_enabled = os.environ.get("SIGNAL_TRACKER_ALERTS", "1").lower() in (
+        "1", "true", "yes"
+    )
     print(f"[tracker] Signal-Tracker Mode started.")
     print(f"  STATE_DIR={exe.STATE_DIR}")
     print(f"  SIGNAL_HISTORY_PATH={exe.SIGNAL_HISTORY_PATH}")
     print(f"  Poll interval: {interval_s}s")
+    print(f"  Telegram alerts: {'ON' if alerts_enabled else 'OFF'}")
     print(f"  Ctrl-C to stop. Run for 24-48h before purchasing challenge.")
     print()
     total = 0
     iter_count = 0
     start_ts = time.time()
+    last_ready = False
     try:
         while True:
             n = poll_once()
             total += n
             iter_count += 1
+            cluster = exe.compute_live_cluster()
+            ready, history_age_h = cluster_ready(cluster)
+            if alerts_enabled and ready and not last_ready:
+                exe.tg_send(
+                    "🟢 <b>FTMO CLUSTER GREEN — BUY WINDOW</b>\n"
+                    "Fast-pass setup is ready.\n"
+                    f"breadth={cluster['breadth']}/{exe.START_GATE_MIN_BREADTH} "
+                    f"majors={cluster['majors']}/{exe.START_GATE_MIN_MAJORS}\n"
+                    f"history={history_age_h:.1f}h signals={cluster['history_count']}\n"
+                    "Action: buy/start challenge now, then start executor."
+                )
+            elif alerts_enabled and last_ready and not ready:
+                exe.tg_send(
+                    "🔴 <b>FTMO CLUSTER NO LONGER GREEN</b>\n"
+                    f"breadth={cluster['breadth']}/{exe.START_GATE_MIN_BREADTH} "
+                    f"majors={cluster['majors']}/{exe.START_GATE_MIN_MAJORS}\n"
+                    f"history={history_age_h:.1f}h signals={cluster['history_count']}"
+                )
+            last_ready = ready
             if iter_count % 60 == 0 or n > 0:
                 # Every 30min OR when signal arrives: status
-                cluster = exe.compute_live_cluster()
                 hours_running = (time.time() - start_ts) / 3600
                 print(f"[tracker] running {hours_running:.1f}h, "
                       f"total signals={total}, live cluster: "
                       f"breadth={cluster['breadth']}/{exe.START_GATE_MIN_BREADTH} "
                       f"majors={cluster['majors']}/{exe.START_GATE_MIN_MAJORS} "
                       f"qualified={cluster['qualified']} "
+                      f"ready={ready} "
+                      f"history_age={history_age_h:.1f}h "
                       f"history_24h={cluster['history_count']}")
             time.sleep(interval_s)
     except KeyboardInterrupt:

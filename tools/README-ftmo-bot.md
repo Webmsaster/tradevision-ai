@@ -145,7 +145,22 @@ meldet. Nach dem ersten echten Order-Fill schreibt er
 `start-gate-state.json` in das Account-State-Verzeichnis; ab dann läuft die
 Challenge normal weiter, auch wenn das Start-Gate später wieder rot wird.
 
-### 90%-Modus für Step 2
+Fast-Pass Default: `FTMO_CLUSTER_ONLY_ENABLED=0`. Der Bot wartet vor dem ersten
+echten Entry auf ein grünes Cluster und tradet danach die Challenge normal mit
+Passlock fertig. Das ist der schnellere Modus.
+
+Der PM2-Tracker sendet bei `SIGNAL_TRACKER_ALERTS=1` eine Telegram-Meldung,
+sobald der Live-Cluster nach mindestens 23h History grün wird. Das ist das
+Kaufsignal für den schnellen Ablauf.
+
+Optionaler Sicherheitsmodus: Mit `FTMO_CLUSTER_ONLY_ENABLED=1` gilt der
+Cluster-Check zusätzlich für jeden späteren neuen Entry. Offene Positionen
+werden weiter gemanagt, aber frische Signale werden nur ausgeführt, wenn die
+letzten 24h Signal-History mindestens `FTMO_START_GATE_MIN_BREADTH` Assets und
+`FTMO_START_GATE_MIN_MAJORS` Majors enthält. Dieser Modus ist langsamer und kann
+das Profit-Target verfehlen, wenn zu wenig Cluster-Trades kommen.
+
+### Start-gated Step 2
 
 Step 2 muss denselben Start-Gate-Ablauf verwenden. Der Unterschied ist nur das
 Profit-Target:
@@ -155,10 +170,17 @@ $env:FTMO_TF="2h-trend-v5-amber-max-passlock-step2"
 $env:FTMO_PROFIT_TARGET="0.05"
 $env:FTMO_START_GATE_ENABLED="1"
 $env:FTMO_START_GATE_PATH="C:\tradevision-ai\state\timing-gate.json"
+$env:FTMO_CLUSTER_ONLY_ENABLED="0"
 ```
 
 Alternativ `tools\promote_to_step2.sh` verwenden; das Script archiviert den
 Step-1-State und setzt `FTMO_PROFIT_TARGET=0.05` plus Start-Gate automatisch.
+
+Wichtig: Das Start-Gate ist ein Pre-Trade-Filter, kein Zukunftsblick. Die hohe
+historische Pass-Rate gilt nur conditional auf Challenges, die bei bereits
+grünem Gate gestartet werden. Bei zufälligem Challenge-Kauf und anschließendem
+Warten sinkt die unbedingte Single-Account-Quote deutlich, weil viele
+30-Tage-Fenster nie rechtzeitig ein qualifizierendes Cluster bilden.
 
 ## Monitoring
 
@@ -472,11 +494,11 @@ welche Regeln dein konkreter Plan hat.
 
 ## PM2 Auto-Restart (empfohlen für Production)
 
-PM2 hält beide Services (Node Signal + Python Executor) am Leben durch:
+PM2 hält die Services (Node Signal + Warm-up Tracker + Python Executor) am Leben durch:
 
 - Auto-restart bei Crash (max 50 retries, 5-10s delay)
 - Restart-on-boot (Windows Service via `pm2-windows-startup`)
-- Memory-Limit-Restart (500M / 300M)
+- Memory-Limit-Restart (500M / 150M / 300M)
 - Persistente Logs in `ftmo-state-{tf}/pm2-*.log`
 
 ### Setup auf Windows VPS
@@ -492,7 +514,10 @@ cd C:\tradevision-ai
 $env:TELEGRAM_BOT_TOKEN = "<YOUR_BOT_TOKEN>"
 $env:TELEGRAM_CHAT_ID = "<YOUR_CHAT_ID>"
 
-# 4. Beide Services starten (default: 1h Variante = V7_1H_OPT)
+# 4a. Vor Challenge-Kauf: nur Signal + Tracker warm laufen lassen
+pm2 start tools/ecosystem.config.js --only ftmo-signal,ftmo-tracker
+
+# 4b. Nach Challenge-Kauf: Executor dazuschalten
 pm2 start tools/ecosystem.config.js
 
 # 5. Konfiguration speichern
@@ -519,6 +544,7 @@ pm2 save
 ```powershell
 pm2 list                  # Status check
 pm2 logs ftmo-signal      # Live Signal-Service Logs
+pm2 logs ftmo-tracker     # Warm-up / signal-history Logs
 pm2 logs ftmo-executor    # Live Executor Logs
 pm2 monit                 # Interactive monitor (CPU/RAM)
 pm2 restart all           # Force restart beider Services

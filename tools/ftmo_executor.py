@@ -106,6 +106,15 @@ if not START_GATE_PATH.is_absolute():
 START_GATE_MIN_BREADTH = int(os.environ.get("FTMO_START_GATE_MIN_BREADTH", "4"))
 START_GATE_MIN_MAJORS = int(os.environ.get("FTMO_START_GATE_MIN_MAJORS", "3"))
 START_GATE_MAX_AGE_MIN = float(os.environ.get("FTMO_START_GATE_MAX_AGE_MIN", "180"))
+# Cluster-only mode gates every new entry, not only the first challenge trade.
+# This is the honest random-buy fallback: the bot can sit inside a challenge and
+# only add risk while the currently visible 24h signal cluster is green.
+CLUSTER_ONLY_ENABLED = os.environ.get("FTMO_CLUSTER_ONLY_ENABLED", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+CLUSTER_ONLY_MIN_HISTORY_HOURS = float(os.environ.get("FTMO_CLUSTER_ONLY_MIN_HISTORY_HOURS", "23"))
 # 2026-05-18 Bug-Audit Round-3 (MITTEL): track whether we've already warned
 # about env vs gate threshold mismatch (avoid Telegram spam on every poll).
 _START_GATE_ENV_WARNED = False
@@ -402,6 +411,11 @@ def _validate_config() -> None:
             errs.append(f"FTMO_START_GATE_MIN_MAJORS={START_GATE_MIN_MAJORS} must be >= 0")
         if START_GATE_MAX_AGE_MIN <= 0:
             errs.append(f"FTMO_START_GATE_MAX_AGE_MIN={START_GATE_MAX_AGE_MIN} must be > 0")
+    if CLUSTER_ONLY_ENABLED and not 0 <= CLUSTER_ONLY_MIN_HISTORY_HOURS <= 24:
+        errs.append(
+            "FTMO_CLUSTER_ONLY_MIN_HISTORY_HOURS="
+            f"{CLUSTER_ONLY_MIN_HISTORY_HOURS} out of [0, 24]"
+        )
     if errs:
         msg = "Invalid config — refusing to start:\n" + "\n".join("  - " + e for e in errs)
         print(f"[executor] FATAL: {msg}", file=sys.stderr)
@@ -893,6 +907,40 @@ def check_start_gate_block(open_positions: Optional[dict] = None) -> Optional[st
             f"breadth={breadth} majors={majors} (engine inconsistency)"
         )
     return None
+
+
+def check_cluster_entry_block() -> Optional[str]:
+    """Return a block reason when cluster-only mode should skip new entries.
+
+    Unlike `check_start_gate_block`, this is NOT cleared by
+    `start-gate-state.json`. It is evaluated before every new pending-signal
+    batch so the bot can keep managing open trades while refusing to add fresh
+    risk during red cluster regimes.
+    """
+    if not CLUSTER_ONLY_ENABLED:
+        return None
+
+    live = compute_live_cluster()
+    if live["history_count"] == 0:
+        return "cluster_only_warmup: no signal-history yet"
+
+    oldest = live.get("oldest_log_ms")
+    if oldest is not None:
+        age_h = (live["ts_ms"] - oldest) / 3_600_000
+        if age_h < CLUSTER_ONLY_MIN_HISTORY_HOURS:
+            return (
+                f"cluster_only_warmup: signal-history only {age_h:.1f}h old "
+                f"(need >={CLUSTER_ONLY_MIN_HISTORY_HOURS:.1f}h)"
+            )
+
+    if live["qualified"]:
+        return None
+    return (
+        "cluster_only_red_live: "
+        f"breadth={live['breadth']}/{START_GATE_MIN_BREADTH} "
+        f"majors={live['majors']}/{START_GATE_MIN_MAJORS} "
+        f"(live last 24h, {live['history_count']} signals)"
+    )
 
 
 def mark_start_gate_started(first_signal: dict, ticket: int) -> None:
@@ -2913,6 +2961,27 @@ def _process_signals_unlocked(
                 "signal": sig,
                 "result": "start_gate_blocked",
                 "reason": start_gate_block,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+        return {
+            "remaining": [],
+            "executed": executed,
+            "open_positions": open_positions,
+            "placed_markers": [],
+        }
+
+    cluster_entry_block = check_cluster_entry_block()
+    if cluster_entry_block:
+        log_event(
+            "cluster_entry_block",
+            count=len(pending),
+            reason=cluster_entry_block,
+        )
+        for sig in pending:
+            executed["executions"].append({
+                "signal": sig,
+                "result": "cluster_entry_blocked",
+                "reason": cluster_entry_block,
                 "ts": datetime.now(timezone.utc).isoformat(),
             })
         return {
@@ -5428,6 +5497,7 @@ def main_loop() -> None:
         f"Daily-loss cap: -{MAX_DAILY_LOSS_PCT:.0%}\n"
         f"Total-loss cap: -{MAX_TOTAL_LOSS_PCT:.0%}\n"
         f"Start gate: {'ON' if START_GATE_ENABLED else 'OFF'}\n"
+        f"Cluster-only entries: {'ON' if CLUSTER_ONLY_ENABLED else 'OFF'}\n"
         f"Poll interval: {POLL_INTERVAL_SEC}s"
     )
     log_event(
@@ -5435,6 +5505,7 @@ def main_loop() -> None:
         mode=mode,
         state_dir=str(STATE_DIR),
         start_gate=START_GATE_ENABLED,
+        cluster_only=CLUSTER_ONLY_ENABLED,
         start_gate_path=str(START_GATE_PATH),
     )
 
