@@ -1,143 +1,125 @@
 #!/usr/bin/env python3
 """
-2026-05-17 FTMO Timing-Supervisor (Codex Interpretation B).
+2026-05-18 FTMO Timing-Supervisor v2 — bug-fixed version.
 
-USER-GOAL: 90% Passrate single-account "blind buy" - reframed by codex as
-"Kauf blind, wenn der Bot BUY sagt". Bot scans the market continuously and
-emits BUY_ALLOWED only when the qualifying-cluster (breadth >= 4 assets +
-majors >= 3 in last 24h) is active.
+v1 used an EMA-9/21 cross PROXY which delivered only 54.8% pass-rate
+(equivalent to baseline, NOT 92%). Bug confirmed against 324-window
+backtest: precision=42.6%, supervisor was misleading.
 
-Pass-rate on gekauften challenges: 92.31% AND (memory phase33).
-Buy frequency: ~44% retention (56% idle).
+v2 uses the REAL Rust voter engine via ftmo-sweep with windows>=N filtered
+by --start-after-ts. The qualified_at_start flag from WindowResult is the
+authoritative buy signal — same flag used to compute the 92.42% backtest
+pass-rate.
 
-This supervisor:
-1. Polls the last 24h of 30m candles per asset (free Binance kline API).
-2. For each asset: tests simple EMA-crossover (proxy for "signal active").
-   Real production should integrate the actual Rust voter via sweep with
-   windows=1 — this is a lightweight stand-alone gate.
-3. Aggregates: distinct symbols where signal active + majors count.
-4. Emits state/timing-gate.json + Telegram (if configured) when qualifying.
+Pipeline:
+  1. cache_updater.py: fetch latest 30m bars for all 19 assets
+  2. ftmo-sweep --windows N --start-after-ts (NOW - 32d): get LATEST window
+  3. Parse qualified= from stdout + per-window jsonl
+  4. Write state/timing-gate.json
+  5. Telegram BUY_ALLOWED on qualifying-state transition
 
 Run modes:
-  python3 scripts/ftmo_timing_supervisor.py          # one-shot
-  python3 scripts/ftmo_timing_supervisor.py --watch  # loop every 30min
+  python3 scripts/ftmo_timing_supervisor_v2.py            # one-shot
+  python3 scripts/ftmo_timing_supervisor_v2.py --skip-cache  # skip cache update
 """
 import json
 import os
+import re
+import subprocess
 import sys
 import time
 import urllib.request
 from pathlib import Path
 from datetime import datetime, timezone
 
-STATE_DIR = Path("state")
+PROJ_ROOT = Path(__file__).resolve().parent.parent
+STATE_DIR = PROJ_ROOT / "state"
 GATE_FILE = STATE_DIR / "timing-gate.json"
 HIST_FILE = STATE_DIR / "timing-history.jsonl"
+TMP_OUT = Path("/tmp/timing_supervisor_p1.jsonl")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "AVAXUSDT", "XRPUSDT",
-           "BCHUSDT", "LTCUSDT", "ADAUSDT", "DOTUSDT", "ETCUSDT", "LINKUSDT",
-           "ALGOUSDT", "ATOMUSDT", "ARBUSDT", "NEARUSDT", "TRXUSDT", "UNIUSDT",
-           "AAVEUSDT"]
-MAJORS = {"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"}
+SYMBOLS = "AAVEUSDT,ADAUSDT,ALGOUSDT,ARBUSDT,ATOMUSDT,AVAXUSDT,BCHUSDT,BNBUSDT,BTCUSDT,DOTUSDT,ETCUSDT,ETHUSDT,LINKUSDT,LTCUSDT,NEARUSDT,SOLUSDT,TRXUSDT,UNIUSDT,XRPUSDT"
 
-# Gate thresholds (matches memory phase33 best config)
-MIN_BREADTH = 4
-MIN_MAJORS = 3
-LOOKBACK_HOURS = 24
-BARS_30M_IN_24H = 48
-# EMA periods for signal proxy
-EMA_FAST = 9
-EMA_SLOW = 21
+SWEEP_BIN = PROJ_ROOT / "engine-rust" / "target" / "release" / "ftmo-sweep"
 
-def fetch_klines(symbol, interval="30m", limit=60):
-    """Last `limit` bars from Binance public API."""
-    url = (f"https://api.binance.com/api/v3/klines"
-           f"?symbol={symbol}&interval={interval}&limit={limit}")
-    try:
-        with urllib.request.urlopen(url, timeout=15) as r:
-            data = json.load(r)
-        return [{"t": int(b[0]), "close": float(b[4])} for b in data]
-    except Exception as e:
-        print(f"  [fetch-err] {symbol}: {e}", file=sys.stderr)
-        return []
-
-def ema(values, period):
-    if len(values) < period:
-        return None
-    alpha = 2 / (period + 1)
-    ema_val = sum(values[:period]) / period
-    for v in values[period:]:
-        ema_val = alpha * v + (1 - alpha) * ema_val
-    return ema_val
-
-def signal_active_in_last_24h(closes):
-    """Returns True if EMA-fast crossed ABOVE EMA-slow at any 30m bar
-    in the last 48 bars (= 24h)."""
-    if len(closes) < EMA_SLOW + BARS_30M_IN_24H + 2:
+def update_cache():
+    print("[1/3] Updating candle cache from Binance...")
+    r = subprocess.run(
+        ["python3", "scripts/cache_updater.py"],
+        cwd=str(PROJ_ROOT), capture_output=True, text=True, timeout=300
+    )
+    if r.returncode != 0:
+        print(f"  [cache-err] {r.stderr}", file=sys.stderr)
         return False
-    # Compute EMA series for the tail
-    prev_diff = None
-    crossed = False
-    # Walk forward from earliest computable EMA position
-    start = EMA_SLOW
-    end = len(closes)
-    # Only look at last 48+1 bars for "in 24h" semantic
-    bar_start = max(start, end - BARS_30M_IN_24H - 1)
-    for i in range(bar_start, end):
-        sub = closes[: i + 1]
-        ef = ema(sub, EMA_FAST)
-        es = ema(sub, EMA_SLOW)
-        if ef is None or es is None:
-            continue
-        diff = ef - es
-        if prev_diff is not None and prev_diff <= 0 and diff > 0:
-            crossed = True
-            break
-        prev_diff = diff
-    return crossed
+    # Print last 2 lines of output for visibility
+    for line in r.stdout.splitlines()[-3:]:
+        print(f"  {line}")
+    return True
 
-def check_gate():
-    """One pass: scan all symbols, compute breadth+majors."""
-    active_symbols = set()
-    active_majors = set()
-    for sym in SYMBOLS:
-        klines = fetch_klines(sym, "30m", limit=EMA_SLOW + BARS_30M_IN_24H + 4)
-        if not klines:
-            continue
-        closes = [k["close"] for k in klines]
-        if signal_active_in_last_24h(closes):
-            active_symbols.add(sym)
-            if sym in MAJORS:
-                active_majors.add(sym)
-        time.sleep(0.1)  # rate-limit polite
-
-    breadth = len(active_symbols)
-    majors = len(active_majors)
-    qualified = breadth >= MIN_BREADTH and majors >= MIN_MAJORS
+def run_sweep():
+    print("[2/3] Running ftmo-sweep for latest qualifying check...")
     now_ms = int(time.time() * 1000)
+    start_after = now_ms - 32 * 24 * 3600 * 1000  # latest 30d window
+    cmd = [
+        str(SWEEP_BIN),
+        "--candles-dir", "scripts/cache_bakeoff",
+        "--funding-dir", "scripts/cache_bakeoff",
+        "--symbols", SYMBOLS,
+        "--windows", "700", "--step-days", "3", "--threads", "8",
+        "--start-after-ts", str(start_after),
+        "--profit-target", "0.10", "--max-days", "30",
+        "--signals", "regime", "--regime-min-votes", "2",
+        "--regime-poc-z", "--regime-bb-z-mr", "--regime-use-supertrend",
+        "--regime-use-hmm", "--regime-use-ad-line",
+        "--cross-asset-sym", "BTCUSDT",
+        "--cross-asset-fast", "9", "--cross-asset-slow", "21",
+        "--config", "2h-trend-v5-amber-max-passlock",
+        "--override-tp-mult", "1.14",
+        "--kelly-sizing", "--kelly-fraction", "0.5",
+        "--kelly-window", "60", "--kelly-min-trades", "20",
+        "--ptp-levels", "0.08:0.25",
+        "--min-initial-signal-breadth", "4",
+        "--min-initial-majors", "3",
+        "--out", str(TMP_OUT),
+    ]
+    r = subprocess.run(cmd, cwd=str(PROJ_ROOT), capture_output=True, text=True, timeout=300)
+    if r.returncode != 0:
+        print(f"  [sweep-err] {r.stderr[:500]}", file=sys.stderr)
+        return None
+    return r.stdout
 
-    return {
-        "ts": now_ms,
-        "ts_iso": datetime.now(timezone.utc).isoformat(),
-        "breadth": breadth,
-        "majors": majors,
-        "symbols": sorted(active_symbols),
-        "majors_list": sorted(active_majors),
-        "min_breadth": MIN_BREADTH,
-        "min_majors": MIN_MAJORS,
-        "qualified": qualified,
-        "valid_until_ms": now_ms + LOOKBACK_HOURS * 3600 * 1000,
-    }
+def parse_sweep_output(stdout):
+    """Parse 'qualified=X/Y' line from sweep stdout."""
+    # Lines we expect:
+    #   "passed=X / Y (Z%)"
+    #   "qualified=A / Y (B%) — passed_of_qualified=..."
+    qualified_count = 0
+    qualified_total = 0
+    passed_of_qualified = None
+    for line in stdout.splitlines():
+        m = re.search(r"qualified=(\d+)\s*/\s*(\d+)", line)
+        if m:
+            qualified_count = int(m.group(1))
+            qualified_total = int(m.group(2))
+        m2 = re.search(r"passed_of_qualified=(\d+)\s*/\s*\d+\s*\(([0-9.]+)%\)", line)
+        if m2:
+            passed_of_qualified = float(m2.group(2))
+    return qualified_count, qualified_total, passed_of_qualified
 
-def write_gate(state):
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    GATE_FILE.write_text(json.dumps(state, indent=2))
-    with HIST_FILE.open("a") as f:
-        f.write(json.dumps(state) + "\n")
+def parse_latest_window(out_path):
+    """Read the per-window jsonl + return the LATEST window's qualified flag."""
+    if not out_path.exists():
+        return None
+    lines = out_path.read_text().splitlines()
+    if not lines:
+        return None
+    # Take last entry — sweep writes in window order
+    last = json.loads(lines[-1])
+    return last
 
-def send_telegram(msg):
+def emit_telegram(msg):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -146,66 +128,104 @@ def send_telegram(msg):
         "text": msg,
         "parse_mode": "Markdown",
     }).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=payload,
-        headers={"Content-Type": "application/json"}
-    )
     try:
-        urllib.request.urlopen(req, timeout=10).read()
+        urllib.request.urlopen(
+            urllib.request.Request(url, data=payload,
+                                   headers={"Content-Type": "application/json"}),
+            timeout=10
+        ).read()
     except Exception as e:
         print(f"  [telegram-err] {e}", file=sys.stderr)
 
-def emit_signal(state, prev_state):
-    """Send Telegram + log if state transitioned to qualified."""
-    if state["qualified"] and not (prev_state and prev_state.get("qualified")):
-        msg = (
-            f"🎯 *FTMO BUY ALLOWED* ({state['ts_iso']})\n\n"
-            f"Breadth: {state['breadth']} ≥ {state['min_breadth']}\n"
-            f"Majors: {state['majors']} ≥ {state['min_majors']}\n"
-            f"Symbols: {', '.join(state['symbols'])}\n\n"
-            f"Smart-Timing-Gate qualifying — buy challenge now.\n"
-            f"Expected pass-rate: ~92% (memory phase33 conditional).\n"
-            f"Valid until: ~+24h"
-        )
-        print(msg)
-        send_telegram(msg)
-    elif not state["qualified"] and prev_state and prev_state.get("qualified"):
-        msg = f"⏸ FTMO gate DEACTIVATED ({state['ts_iso']}) — breadth {state['breadth']}/{state['min_breadth']}"
-        print(msg)
-        send_telegram(msg)
+def main():
+    skip_cache = "--skip-cache" in sys.argv
 
-def run_once():
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not skip_cache:
+        if not update_cache():
+            print("❌ Cache update failed — abort.")
+            return 1
+    else:
+        print("[1/3] Skipping cache update (per --skip-cache)")
+
+    sweep_out = run_sweep()
+    if sweep_out is None:
+        print("❌ Sweep failed — abort.")
+        return 1
+    # Print sweep lines for visibility
+    for line in sweep_out.splitlines()[-3:]:
+        print(f"  {line}")
+
+    qcount, qtotal, pass_pct = parse_sweep_output(sweep_out)
+    latest = parse_latest_window(TMP_OUT)
+
+    if latest is None:
+        print("[3/3] No window data — state unknown.")
+        return 1
+
+    qualified = latest.get("qualified_at_start", False)
+    breadth = latest.get("first_cluster_size", 0)
+    majors = latest.get("first_cluster_majors", 0)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    state = {
+        "ts": int(time.time() * 1000),
+        "ts_iso": now_iso,
+        "qualified": qualified,
+        "breadth": breadth,
+        "majors": majors,
+        "engine_qualified_count": qcount,
+        "engine_qualified_total": qtotal,
+        "engine_pass_of_qualified_pct": pass_pct,
+        "min_breadth": 4,
+        "min_majors": 3,
+        "source": "ftmo-sweep --windows 700 --start-after-ts (NOW-32d)",
+        "validation": "v2: real Rust engine with V02 voters (NOT EMA proxy)",
+    }
+
+    print(f"\n[3/3] Engine result:")
+    print(f"  qualified_at_start: {qualified}")
+    print(f"  breadth: {breadth}/{state['min_breadth']}")
+    print(f"  majors: {majors}/{state['min_majors']}")
+    if pass_pct is not None:
+        print(f"  Pass-of-qualified rate (forward window): {pass_pct:.2f}%")
+
+    # Load prev state for transition detection
     prev = None
     if GATE_FILE.exists():
         try:
             prev = json.loads(GATE_FILE.read_text())
         except Exception:
             prev = None
-    state = check_gate()
-    write_gate(state)
-    print(f"[{state['ts_iso']}] breadth={state['breadth']}/{state['min_breadth']} "
-          f"majors={state['majors']}/{state['min_majors']} "
-          f"qualified={state['qualified']}")
-    if state["qualified"]:
-        print(f"  Active symbols: {state['symbols']}")
-    emit_signal(state, prev)
-    return state
 
-def main():
-    watch = "--watch" in sys.argv
-    if watch:
-        print("[watch] polling every 30 min, Ctrl-C to stop")
-        while True:
-            try:
-                run_once()
-            except KeyboardInterrupt:
-                print("\n[watch] interrupted")
-                return
-            except Exception as e:
-                print(f"  [tick-err] {e}", file=sys.stderr)
-            time.sleep(1800)
+    # Write state
+    GATE_FILE.write_text(json.dumps(state, indent=2))
+    with HIST_FILE.open("a") as f:
+        f.write(json.dumps(state) + "\n")
+
+    # Transition detection
+    prev_qualified = prev.get("qualified", False) if prev else False
+    if qualified and not prev_qualified:
+        msg = (f"🎯 *FTMO BUY ALLOWED* ({now_iso})\n\n"
+               f"Engine V02-voters QUALIFIED for current setup:\n"
+               f"  Breadth: {breadth} >= {state['min_breadth']}\n"
+               f"  Majors: {majors} >= {state['min_majors']}\n\n"
+               f"Smart-Timing-Gate (real engine, NOT proxy) qualifying.\n"
+               f"Expected pass-rate: ~92% (memory phase33 backtest).\n"
+               f"Buy challenge now.")
+        print(f"\n{msg}")
+        emit_telegram(msg)
+    elif not qualified and prev_qualified:
+        msg = (f"⏸ FTMO gate DEACTIVATED ({now_iso})\n"
+               f"Breadth {breadth}/{state['min_breadth']}, "
+               f"majors {majors}/{state['min_majors']}")
+        print(f"\n{msg}")
+        emit_telegram(msg)
     else:
-        run_once()
+        print(f"\n  No state change (qualified={qualified}, prev={prev_qualified})")
+
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
