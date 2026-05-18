@@ -275,13 +275,18 @@ def main():
     # JSON during writer truncate-and-write, crash, and end up with corrupt
     # gate state.
     atomic_write(GATE_FILE, json.dumps(state, indent=2))
-    # History is append-only — line-write with flush is fine, but rotate
-    # if file > 10MB (memory R67-r9 lesson).
+    # 2026-05-18 Bug-Audit (MITTEL): rotation + append in ONE atomic step
+    # to avoid race-window where a parallel reader sees the rotated file
+    # before the latest entry is appended.
+    new_line = json.dumps(state)
     if HIST_FILE.exists() and HIST_FILE.stat().st_size > 10 * 1024 * 1024:
         lines = HIST_FILE.read_text().splitlines()
-        atomic_write(HIST_FILE, "\n".join(lines[-5000:]) + "\n")
-    with HIST_FILE.open("a") as f:
-        f.write(json.dumps(state) + "\n")
+        atomic_write(HIST_FILE, "\n".join(lines[-5000:] + [new_line]) + "\n")
+    else:
+        # Append is atomic for single-line writes < PIPE_BUF (4KB) on POSIX
+        # — our state lines are ~300 bytes, well under the limit.
+        with HIST_FILE.open("a") as f:
+            f.write(new_line + "\n")
 
     # Transition detection
     prev_qualified = prev.get("qualified", False) if prev else False

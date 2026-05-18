@@ -3648,30 +3648,16 @@ fn run_one_window(
     let (qualified_at_start, first_cluster_size, first_cluster_majors) = if breadth_gate_active
         && !state.closed_trades.is_empty()
     {
-        let mut sorted_trades: Vec<&ftmo_engine_core::trade::ClosedTrade> =
-            state.closed_trades.iter().collect();
-        sorted_trades.sort_by_key(|t| t.entry_time);
-        let first_entry = sorted_trades[0].entry_time;
-        let cutoff_ms = first_entry + (multi_signal.initial_window_hours as i64) * 3_600_000;
-        let mut symbols_in_cluster: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        let mut majors_in_cluster: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        for t in sorted_trades.iter() {
-            if t.entry_time > cutoff_ms {
-                break;
-            }
-            symbols_in_cluster.insert(t.symbol.clone());
-            for prefix in multi_signal.majors_prefixes.iter() {
-                let starts_dashed = t.symbol.starts_with(&format!("{prefix}-"));
-                if starts_dashed || t.symbol == *prefix {
-                    majors_in_cluster.insert(prefix.clone());
-                    break;
-                }
-            }
-        }
-        let breadth = symbols_in_cluster.len();
-        let majors = majors_in_cluster.len();
+        let trade_pairs: Vec<(i64, String)> = state
+            .closed_trades
+            .iter()
+            .map(|t| (t.entry_time, t.symbol.clone()))
+            .collect();
+        let (breadth, majors) = compute_first_cluster_counts(
+            &trade_pairs,
+            multi_signal.initial_window_hours,
+            &multi_signal.majors_prefixes,
+        );
         let qualified = breadth >= multi_signal.min_initial_signal_breadth
             && majors >= multi_signal.min_initial_majors;
         (Some(qualified), Some(breadth), Some(majors))
@@ -3732,4 +3718,132 @@ fn run_one_window(
         }
     }
     report
+}
+
+/// 2026-05-18 Bug-Audit (Round 2): pure function for first-cluster
+/// breadth + majors counting, extracted from run_one_window so it can be
+/// unit-tested. Given closed trades (entry_time, symbol) and the initial
+/// window in hours, returns (distinct_symbols, distinct_majors) within
+/// the first cluster (from first trade's entry_time to +window_hours).
+///
+/// Major-match rule: a symbol matches a prefix if the symbol equals the
+/// prefix exactly OR starts with `<prefix>-` (dash-delimited).
+pub fn compute_first_cluster_counts(
+    trades: &[(i64, String)],
+    initial_window_hours: u32,
+    majors_prefixes: &[String],
+) -> (usize, usize) {
+    if trades.is_empty() {
+        return (0, 0);
+    }
+    let mut sorted: Vec<&(i64, String)> = trades.iter().collect();
+    sorted.sort_by_key(|t| t.0);
+    let first_entry = sorted[0].0;
+    let cutoff_ms = first_entry + (initial_window_hours as i64) * 3_600_000;
+    let mut symbols_in_cluster: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    let mut majors_in_cluster: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for (entry_time, symbol) in sorted.iter() {
+        if *entry_time > cutoff_ms {
+            break;
+        }
+        symbols_in_cluster.insert(symbol.clone());
+        for prefix in majors_prefixes.iter() {
+            let starts_dashed = symbol.starts_with(&format!("{prefix}-"));
+            if starts_dashed || *symbol == *prefix {
+                majors_in_cluster.insert(prefix.clone());
+                break;
+            }
+        }
+    }
+    (symbols_in_cluster.len(), majors_in_cluster.len())
+}
+
+#[cfg(test)]
+mod breadth_gate_tests {
+    use super::compute_first_cluster_counts;
+
+    fn s(x: &str) -> String { x.to_string() }
+    fn t(time: i64, sym: &str) -> (i64, String) { (time, s(sym)) }
+
+    #[test]
+    fn empty_trades_returns_zero_zero() {
+        let res = compute_first_cluster_counts(&[], 24, &[s("BTC")]);
+        assert_eq!(res, (0, 0));
+    }
+
+    #[test]
+    fn four_distinct_within_24h_with_three_majors() {
+        let trades = vec![
+            t(0, "BTC-TREND"),
+            t(1_000, "ETH-TREND"),
+            t(2_000, "BNB-TREND"),
+            t(3_000, "AAVE-TREND"),
+            t(24 * 3_600_000 + 1, "SOL-TREND"),
+        ];
+        let majors = vec![s("BTC"), s("ETH"), s("BNB"), s("SOL")];
+        let (breadth, majors_count) = compute_first_cluster_counts(&trades, 24, &majors);
+        assert_eq!(breadth, 4, "4 distinct (BTC,ETH,BNB,AAVE)");
+        assert_eq!(majors_count, 3, "3 majors (BTC,ETH,BNB) — SOL outside window");
+    }
+
+    #[test]
+    fn trade_at_exact_cutoff_is_included() {
+        let trades = vec![
+            t(0, "BTC-TREND"),
+            t(24 * 3_600_000, "ETH-TREND"),
+        ];
+        let majors = vec![s("BTC"), s("ETH")];
+        let (breadth, _) = compute_first_cluster_counts(&trades, 24, &majors);
+        assert_eq!(breadth, 2, "trade at exact cutoff must be included");
+    }
+
+    #[test]
+    fn major_match_prefix_dashed_only_not_substring() {
+        let trades = vec![
+            t(0, "BTC-TREND"),
+            t(1_000, "BTCDOM"),
+            t(2_000, "BTC"),
+        ];
+        let majors = vec![s("BTC")];
+        let (breadth, majors_count) = compute_first_cluster_counts(&trades, 24, &majors);
+        assert_eq!(breadth, 3, "3 distinct symbols counted");
+        assert_eq!(majors_count, 1, "BTC matched once (HashSet dedups)");
+    }
+
+    #[test]
+    fn duplicate_symbol_counted_once() {
+        let trades = vec![
+            t(0, "BTC-TREND"),
+            t(1_000, "BTC-TREND"),
+            t(2_000, "BTC-TREND"),
+        ];
+        let majors = vec![s("BTC")];
+        let (breadth, majors_count) = compute_first_cluster_counts(&trades, 24, &majors);
+        assert_eq!(breadth, 1, "same symbol 3× = breadth 1");
+        assert_eq!(majors_count, 1);
+    }
+
+    #[test]
+    fn trades_out_of_order_still_anchored_to_min_entry_time() {
+        let trades = vec![
+            t(5_000, "ETH-TREND"),
+            t(0, "BTC-TREND"),
+            t(24 * 3_600_000 - 1, "SOL-TREND"),
+            t(24 * 3_600_000 + 1, "BNB-TREND"),
+        ];
+        let majors = vec![s("BTC"), s("ETH"), s("BNB"), s("SOL")];
+        let (breadth, majors_count) = compute_first_cluster_counts(&trades, 24, &majors);
+        assert_eq!(breadth, 3, "BTC,ETH,SOL inside; BNB outside");
+        assert_eq!(majors_count, 3);
+    }
+
+    #[test]
+    fn no_majors_list_returns_zero_majors() {
+        let trades = vec![t(0, "BTC-TREND"), t(1, "ETH-TREND")];
+        let (breadth, majors_count) = compute_first_cluster_counts(&trades, 24, &[]);
+        assert_eq!(breadth, 2);
+        assert_eq!(majors_count, 0);
+    }
 }

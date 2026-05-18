@@ -682,14 +682,19 @@ def check_start_gate_block(open_positions: Optional[dict] = None) -> Optional[st
         except (TypeError, ValueError):
             return default
 
+    # 2026-05-18 Bug-Audit (HOCH): single source of truth = engine's
+    # `qualified` flag from the gate file. Engine already applied its
+    # thresholds; the bot does NOT double-check with its own min values
+    # (that caused the threshold-triple drift: env vs supervisor-hardcoded
+    # vs engine could disagree). We only validate that the file actually
+    # came from the engine by requiring the breadth/majors fields exist.
     breadth = _to_int(gate.get("breadth"))
     majors = _to_int(gate.get("majors"))
     qualified = gate.get("qualified") is True
-    if not qualified or breadth < START_GATE_MIN_BREADTH or majors < START_GATE_MIN_MAJORS:
+    if not qualified:
         return (
             "start_gate_red: "
-            f"qualified={qualified} breadth={breadth}/{START_GATE_MIN_BREADTH} "
-            f"majors={majors}/{START_GATE_MIN_MAJORS}"
+            f"qualified=False breadth={breadth} majors={majors}"
         )
     return None
 
