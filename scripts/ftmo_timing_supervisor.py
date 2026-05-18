@@ -99,20 +99,16 @@ def run_sweep():
     # If a previous crash left an old jsonl behind and the new sweep fails
     # early, parse_latest_window would read STALE data from the previous run.
     TMP_OUT.unlink(missing_ok=True)
-    now_ms = int(time.time() * 1000)
-    start_after = now_ms - 32 * 24 * 3600 * 1000  # latest 30d window
-    # 2026-05-18 Bug-Audit (KRIT): --windows 700 with start-after-ts NOW-32d
-    # is a mismatch — at step-days=3 only ~10 windows fit in a 32-day slice,
-    # leaving ~690 windows unused (engine returns qualified_total=1 currently).
-    # Use --windows 12 to actually look at the latest ~36d worth of windows
-    # at step-days=3, which gives enough samples for a stable qualified-rate.
+    # 2026-05-18 Smoke-test: --start-after-ts filter collapsed engine to 0
+    # windows ("ZERO survived planning"). Engine's `--windows N --step-days K`
+    # already picks the N most-recent windows that fit the cache; explicit
+    # ts-filter not needed. 20 windows × 3d = 60d recency horizon.
     cmd = [
         str(SWEEP_BIN),
         "--candles-dir", "scripts/cache_bakeoff",
         "--funding-dir", "scripts/cache_bakeoff",
         "--symbols", SYMBOLS,
-        "--windows", "12", "--step-days", "3", "--threads", "8",
-        "--start-after-ts", str(start_after),
+        "--windows", "20", "--step-days", "3", "--threads", "8",
         "--profit-target", "0.10", "--max-days", "30",
         "--signals", "regime", "--regime-min-votes", "2",
         "--regime-poc-z", "--regime-bb-z-mr", "--regime-use-supertrend",
@@ -255,7 +251,7 @@ def main():
         "engine_pass_of_qualified_pct": pass_pct,
         "min_breadth": 4,
         "min_majors": 3,
-        "source": "ftmo-sweep --windows 700 --start-after-ts (NOW-32d)",
+        "source": "ftmo-sweep --windows 20 --step-days 3 (60d recency horizon)",
         "validation": "v2: real Rust engine with V02 voters (NOT EMA proxy)",
     }
 
