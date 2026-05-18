@@ -106,6 +106,9 @@ if not START_GATE_PATH.is_absolute():
 START_GATE_MIN_BREADTH = int(os.environ.get("FTMO_START_GATE_MIN_BREADTH", "4"))
 START_GATE_MIN_MAJORS = int(os.environ.get("FTMO_START_GATE_MIN_MAJORS", "3"))
 START_GATE_MAX_AGE_MIN = float(os.environ.get("FTMO_START_GATE_MAX_AGE_MIN", "180"))
+# 2026-05-18 Bug-Audit Round-3 (MITTEL): track whether we've already warned
+# about env vs gate threshold mismatch (avoid Telegram spam on every poll).
+_START_GATE_ENV_WARNED = False
 
 # iter236+: Profit target & pause-after-target behavior
 # 2026-05-15 (Audit-Round-4 / Agent #12 KRIT, commit 65a4181 follow-up):
@@ -659,6 +662,26 @@ def check_start_gate_block(open_positions: Optional[dict] = None) -> Optional[st
         return f"start_gate_missing: {START_GATE_PATH}"
 
     gate = read_json(START_GATE_PATH, {})
+    # 2026-05-18 Bug-Audit Round-3 (MITTEL): warn ONCE if operator's env-vars
+    # disagree with the engine's thresholds embedded in the gate file. Bot
+    # uses engine's `qualified` flag (single source of truth), so env-vars
+    # don't actually change behavior — but operator might think they do.
+    global _START_GATE_ENV_WARNED
+    if not _START_GATE_ENV_WARNED:
+        gate_min_breadth = gate.get("min_breadth")
+        gate_min_majors = gate.get("min_majors")
+        if (gate_min_breadth is not None and gate_min_breadth != START_GATE_MIN_BREADTH) or (
+            gate_min_majors is not None and gate_min_majors != START_GATE_MIN_MAJORS
+        ):
+            log_event(
+                "start_gate_env_mismatch",
+                env_breadth=START_GATE_MIN_BREADTH,
+                env_majors=START_GATE_MIN_MAJORS,
+                gate_breadth=gate_min_breadth,
+                gate_majors=gate_min_majors,
+                note="bot uses gate.qualified flag — env vars are informational only",
+            )
+        _START_GATE_ENV_WARNED = True
     age_min = _gate_timestamp_age_min(gate)
     if age_min is None:
         return "start_gate_stale: missing/invalid timestamp"
@@ -696,6 +719,16 @@ def check_start_gate_block(open_positions: Optional[dict] = None) -> Optional[st
             "start_gate_red: "
             f"qualified=False breadth={breadth} majors={majors}"
         )
+    # 2026-05-18 Bug-Audit Round-3 (MITTEL): defense-in-depth — if engine
+    # writes qualified=true but breadth/majors=0 (engine bug, uninit bool),
+    # refuse to trade. Memory documents 6× champion-debunk-cases from
+    # engine bugs; this is a cheap sanity-check that closes a future bug
+    # class without re-introducing threshold-drift.
+    if breadth <= 0 or majors <= 0:
+        return (
+            "start_gate_sanity_fail: qualified=True but "
+            f"breadth={breadth} majors={majors} (engine inconsistency)"
+        )
     return None
 
 
@@ -726,7 +759,10 @@ def mark_start_gate_started(first_signal: dict, ticket: int) -> None:
     # means another worker already marked the start.
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        # 2026-05-18 Bug-Audit Round-3 (MITTEL): 0o600 not 0o644. Marker
+        # contains first_ticket + account-mapping data — shared VPS users
+        # should not be able to read it.
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
             os.write(fd, json.dumps(marker, indent=2).encode("utf-8"))
             os.fsync(fd)

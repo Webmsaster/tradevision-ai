@@ -60,9 +60,11 @@ def atomic_write_json(path: Path, data) -> None:
 
     2026-05-18 Bug-Audit (HOCH): single open() for write+flush+fsync, then
     fsync the parent directory so the rename is durable across power loss.
+    Round-3 (NIEDRIG): tmp suffix includes uuid in addition to pid.
     """
+    import uuid
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f)
         f.flush()

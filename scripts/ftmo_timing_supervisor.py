@@ -51,9 +51,13 @@ def atomic_write(path: Path, content: str) -> None:
     after write_text to call fsync — `rb+` on a closed-then-reopened FD
     doesn't durably flush. Use a single open() for write+fsync, and
     fsync the parent directory so the rename itself is durable.
+
+    Round-3 (NIEDRIG): tmp suffix includes uuid in addition to pid, so
+    PID-recycling across instances cannot collide on the tmp file.
     """
+    import uuid
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}")
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(content)
         f.flush()
@@ -283,10 +287,17 @@ def main():
         lines = HIST_FILE.read_text().splitlines()
         atomic_write(HIST_FILE, "\n".join(lines[-5000:] + [new_line]) + "\n")
     else:
-        # Append is atomic for single-line writes < PIPE_BUF (4KB) on POSIX
-        # — our state lines are ~300 bytes, well under the limit.
-        with HIST_FILE.open("a") as f:
-            f.write(new_line + "\n")
+        # 2026-05-18 Bug-Audit Round-3 (NIEDRIG): explicit O_APPEND for POSIX
+        # atomicity guarantee. `open("a")` in CPython doesn't guarantee
+        # O_APPEND on all platforms (notably WSL2 has had drift). Single-line
+        # writes <PIPE_BUF (4KB) under O_APPEND are atomic on POSIX even
+        # with concurrent appenders. Our state lines are ~300 bytes.
+        fd = os.open(str(HIST_FILE),
+                     os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, (new_line + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
 
     # Transition detection
     prev_qualified = prev.get("qualified", False) if prev else False
