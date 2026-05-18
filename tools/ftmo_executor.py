@@ -362,6 +362,12 @@ PAUSE_STATE_PATH = STATE_DIR / "pause-state.json"  # iter236+ pause-after-target
 EXECUTOR_LOG_PATH = STATE_DIR / "executor-log.jsonl"
 DAILY_STATE_PATH = STATE_DIR / "daily-reset.json"
 DAY_PEAK_PATH = STATE_DIR / "day-peak.json"  # R28: dailyPeakTrailingStop state
+# 2026-05-18 Live-Cluster-Detector (replaces supervisor's 30-day-old gate proxy).
+# Every signal Node generates lands in pending-signals.json, the executor logs
+# each new arrival here with {ts_ms, asset, direction}. The gate check reads
+# the last 24h of this log to compute distinct symbols + majors live.
+SIGNAL_HISTORY_PATH = STATE_DIR / "signal-history.jsonl"
+MAJORS_LIST = ("BTC", "ETH", "BNB", "SOL")
 CONTROLS_PATH = STATE_DIR / "bot-controls.json"
 EQUITY_HISTORY_PATH = STATE_DIR / "equity-history.jsonl"
 NEWS_PATH = STATE_DIR / "news-events.json"
@@ -615,6 +621,129 @@ def _start_gate_state_path() -> Path:
     return STATE_DIR / "start-gate-state.json"
 
 
+def _log_signals_to_history(signals: list) -> None:
+    """Append each new signal to signal-history.jsonl with timestamp.
+
+    2026-05-18 LIVE-CLUSTER-DETECTOR: Node generates signals via the same
+    engine logic as the backtest. By logging each here as it arrives, we
+    build a real-time signal-firing log that's IDENTICAL in semantics to
+    the backtest's `state.closed_trades` first-24h count. The gate check
+    reads back the last 24h to compute live cluster status.
+
+    Idempotent: each call appends ALL signals passed in. Caller should only
+    pass NEW signals (not yet logged). We dedupe by (signalBarClose, asset).
+    """
+    if not signals:
+        return
+    try:
+        # Dedup against existing history (only check last ~200 entries)
+        existing_keys: set = set()
+        if SIGNAL_HISTORY_PATH.exists():
+            try:
+                lines = SIGNAL_HISTORY_PATH.read_text().splitlines()[-200:]
+                for line in lines:
+                    try:
+                        r = json.loads(line)
+                        existing_keys.add((r.get("signalBarClose"), r.get("asset")))
+                    except json.JSONDecodeError:
+                        continue
+            except OSError:
+                pass
+
+        now_ms = int(time.time() * 1000)
+        new_entries: list = []
+        for s in signals:
+            key = (s.get("signalBarClose"), s.get("assetSymbol"))
+            if key in existing_keys:
+                continue
+            new_entries.append({
+                "ts_ms": now_ms,
+                "asset": s.get("assetSymbol"),
+                "signalBarClose": s.get("signalBarClose"),
+                "direction": s.get("direction"),
+                "sourceSymbol": s.get("sourceSymbol"),
+            })
+            existing_keys.add(key)
+
+        if not new_entries:
+            return
+        SIGNAL_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        # 2026-05-18 Bug-Audit Round-3 lesson: explicit O_APPEND for atomicity.
+        fd = os.open(str(SIGNAL_HISTORY_PATH),
+                     os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            for entry in new_entries:
+                os.write(fd, (json.dumps(entry) + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
+    except Exception as e:
+        log_event("signal_history_log_failed", error=str(e))
+
+
+def compute_live_cluster() -> dict:
+    """Read signal-history.jsonl, count distinct symbols + majors in last 24h.
+
+    Returns a dict with:
+      - breadth: int (distinct symbols)
+      - majors: int (distinct majors among BTC/ETH/BNB/SOL)
+      - qualified: bool (breadth >= MIN_BREADTH AND majors >= MIN_MAJORS)
+      - ts_ms: current evaluation timestamp
+      - history_count: total entries in last 24h
+      - oldest_log_ms: ts_ms of oldest entry in 24h window (or None)
+
+    This is the LIVE-AUTHORITATIVE cluster status. Identical semantic to
+    backtest's `qualified_at_start` but measured on real live signals.
+    """
+    now_ms = int(time.time() * 1000)
+    cutoff_ms = now_ms - 24 * 3600 * 1000
+    symbols: set = set()
+    majors: set = set()
+    count = 0
+    oldest: Optional[int] = None
+    if SIGNAL_HISTORY_PATH.exists():
+        try:
+            for line in SIGNAL_HISTORY_PATH.read_text().splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = r.get("ts_ms")
+                if not isinstance(ts, (int, float)):
+                    continue
+                if ts < cutoff_ms:
+                    continue
+                asset = r.get("asset")
+                if not isinstance(asset, str):
+                    continue
+                # Strip suffixes for major matching (BTC-TREND → BTC, BTCUSDT → BTC)
+                base = asset.split("-")[0].upper()
+                base = base.removesuffix("USDT") if base.endswith("USDT") else base
+                symbols.add(base)
+                if base in MAJORS_LIST:
+                    majors.add(base)
+                count += 1
+                ts_i = int(ts)
+                oldest = ts_i if oldest is None else min(oldest, ts_i)
+        except OSError:
+            pass
+    qualified = (
+        len(symbols) >= START_GATE_MIN_BREADTH
+        and len(majors) >= START_GATE_MIN_MAJORS
+    )
+    return {
+        "ts_ms": now_ms,
+        "breadth": len(symbols),
+        "majors": len(majors),
+        "qualified": qualified,
+        "history_count": count,
+        "oldest_log_ms": oldest,
+        "symbols": sorted(symbols),
+        "majors_seen": sorted(majors),
+    }
+
+
 def _gate_timestamp_age_min(gate: dict) -> Optional[float]:
     ts = gate.get("ts")
     if isinstance(ts, (int, float)) and ts > 0:
@@ -650,17 +779,51 @@ def _challenge_started_from_state(open_positions: Optional[dict] = None) -> bool
 def check_start_gate_block(open_positions: Optional[dict] = None) -> Optional[str]:
     """Return a block reason while a fresh challenge is waiting for start gate.
 
-    This is intentionally a start-only gate. The backtest filter selects the
-    beginning of a challenge; it does not require the market to remain
-    qualified for every later entry.
+    2026-05-18 LIVE-CLUSTER-DETECTOR: signal-history-based gate replaces the
+    supervisor's 30-day-old window proxy. Logic:
+      1. If challenge already started (marker or open positions) → no block.
+      2. Compute live cluster from signal-history.jsonl (last 24h).
+      3. Need: >=24h history (warm-up), breadth >= MIN, majors >= MIN.
+      4. Otherwise: block with reason describing what's missing.
+
+    This is intentionally a start-only gate. After first fill the marker
+    persists qualifying status — no need to re-check.
+
+    Fallback: if signal-history is missing/empty (bot just started), we
+    still consult the legacy supervisor gate file (START_GATE_PATH) so
+    operators with the old supervisor still get some signal.
     """
     if not START_GATE_ENABLED:
         return None
     if _challenge_started_from_state(open_positions):
         return None
-    if not START_GATE_PATH.exists():
-        return f"start_gate_missing: {START_GATE_PATH}"
 
+    # Primary: live cluster from signal-history.
+    live = compute_live_cluster()
+    if live["history_count"] == 0:
+        # No signal history yet — fallback to legacy supervisor gate.
+        if not START_GATE_PATH.exists():
+            return "start_gate_warmup: no signal-history yet, supervisor gate also missing"
+    else:
+        # Verify warm-up: need at least 23h of history (close to 24h).
+        oldest = live.get("oldest_log_ms")
+        if oldest is not None:
+            age_h = (live["ts_ms"] - oldest) / 3_600_000
+            if age_h < 23.0:
+                return (
+                    f"start_gate_warmup: signal-history only {age_h:.1f}h old "
+                    f"(need >=23h)"
+                )
+        if live["qualified"]:
+            return None  # green via live cluster
+        return (
+            "start_gate_red_live: "
+            f"breadth={live['breadth']}/{START_GATE_MIN_BREADTH} "
+            f"majors={live['majors']}/{START_GATE_MIN_MAJORS} "
+            f"(live last 24h, {live['history_count']} signals)"
+        )
+
+    # === Legacy supervisor fallback (only when signal-history is empty) ===
     gate = read_json(START_GATE_PATH, {})
     # 2026-05-18 Bug-Audit Round-3 (MITTEL): warn ONCE if operator's env-vars
     # disagree with the engine's thresholds embedded in the gate file. Bot
@@ -2632,6 +2795,11 @@ def process_pending_signals() -> None:
             return
         executed = read_json(EXECUTED_PATH, {"executions": []})
         open_positions = read_json(OPEN_POS_PATH, {"positions": []})
+        # 2026-05-18 LIVE-CLUSTER-DETECTOR: log all new signals BEFORE we
+        # decide whether to execute. The gate-check downstream reads this
+        # history to compute live cluster — needs ALL signal arrivals
+        # regardless of whether they end up executed/blocked.
+        _log_signals_to_history(snapshot_pending)
         # Atomically remove the snapshot from the queue so Node treats it
         # as consumed. Any new signals Node appends from here on land in a
         # fresh `{"signals": []}` and will be merged back in Phase C.
@@ -2659,6 +2827,8 @@ def process_pending_signals() -> None:
         ]
         if new_signals:
             log_event("merged_late_signals", count=len(new_signals))
+            # 2026-05-18 LIVE-CLUSTER: also log late arrivals to history.
+            _log_signals_to_history(new_signals)
         merged_pending = proc["remaining"] + new_signals
         # Cap executed entries at 500 (same as Round 12 fix).
         executed_out = proc["executed"]
@@ -3254,6 +3424,8 @@ def _process_pending_signals_locked() -> None:
         ]
         if new_signals:
             log_event("merged_late_signals", count=len(new_signals))
+            # 2026-05-18 LIVE-CLUSTER: also log late arrivals to history.
+            _log_signals_to_history(new_signals)
     except Exception as e:
         log_event("merge_check_failed", error=str(e))
         new_signals = []

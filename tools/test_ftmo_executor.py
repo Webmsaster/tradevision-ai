@@ -1103,6 +1103,10 @@ def test_process_pending_signals_holds_lock_through_critical_section(monkeypatch
 
 
 def test_start_gate_blocks_pending_before_challenge_start(monkeypatch, tmp_path):
+    """2026-05-18 LIVE-CLUSTER-DETECTOR: gate now uses live signal-history
+    instead of supervisor's stale 30-day-old window proxy. First poll has
+    empty history → fallback to legacy supervisor gate (which we configure
+    as red here)."""
     import ftmo_executor as exe
     import time as _time
 
@@ -1111,6 +1115,7 @@ def test_start_gate_blocks_pending_before_challenge_start(monkeypatch, tmp_path)
     monkeypatch.setattr(exe, "PAUSE_STATE_PATH", tmp_path / "pause-state.json")
     monkeypatch.setattr(exe, "EXECUTOR_LOG_PATH", tmp_path / "executor-log.jsonl")
     monkeypatch.setattr(exe, "START_GATE_PATH", tmp_path / "timing-gate.json")
+    monkeypatch.setattr(exe, "SIGNAL_HISTORY_PATH", tmp_path / "signal-history.jsonl")
     monkeypatch.setattr(exe, "START_GATE_ENABLED", True)
     monkeypatch.setattr(exe, "START_GATE_MIN_BREADTH", 4)
     monkeypatch.setattr(exe, "START_GATE_MIN_MAJORS", 3)
@@ -1132,7 +1137,11 @@ def test_start_gate_blocks_pending_before_challenge_start(monkeypatch, tmp_path)
     assert proc["remaining"] == []
     assert proc["placed_markers"] == []
     assert proc["executed"]["executions"][0]["result"] == "start_gate_blocked"
-    assert "start_gate_red" in proc["executed"]["executions"][0]["reason"]
+    # New: live-cluster takes priority; just-logged BTC signal = 0h history
+    # → warmup block, OR legacy red gate (depending on order of evaluation)
+    reason = proc["executed"]["executions"][0]["reason"]
+    assert ("start_gate_warmup" in reason or "start_gate_red" in reason), \
+        f"unexpected block reason: {reason}"
 
 
 def test_start_gate_allows_after_start_marker(monkeypatch, tmp_path):
@@ -1158,11 +1167,13 @@ def test_start_gate_allows_after_start_marker(monkeypatch, tmp_path):
 
 
 def test_start_gate_requires_fresh_green_gate(monkeypatch, tmp_path):
+    """Legacy supervisor green-gate fallback (when signal-history is empty)."""
     import ftmo_executor as exe
     import time as _time
 
     monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
     monkeypatch.setattr(exe, "START_GATE_PATH", tmp_path / "timing-gate.json")
+    monkeypatch.setattr(exe, "SIGNAL_HISTORY_PATH", tmp_path / "signal-history.jsonl")
     monkeypatch.setattr(exe, "START_GATE_ENABLED", True)
     monkeypatch.setattr(exe, "START_GATE_MIN_BREADTH", 4)
     monkeypatch.setattr(exe, "START_GATE_MIN_MAJORS", 3)
@@ -1175,7 +1186,76 @@ def test_start_gate_requires_fresh_green_gate(monkeypatch, tmp_path):
         "majors": 3,
     })
 
+    # Empty signal-history → falls back to legacy supervisor gate
     assert exe.check_start_gate_block({"positions": []}) is None
+
+
+def test_live_cluster_gate_green_with_24h_history(monkeypatch, tmp_path):
+    """NEW: live-cluster gate goes green when 24h history has >=4 distinct
+    symbols and >=3 majors."""
+    import ftmo_executor as exe
+    import time as _time
+    import json as _json
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "START_GATE_PATH", tmp_path / "timing-gate.json")
+    monkeypatch.setattr(exe, "SIGNAL_HISTORY_PATH", tmp_path / "signal-history.jsonl")
+    monkeypatch.setattr(exe, "START_GATE_ENABLED", True)
+    monkeypatch.setattr(exe, "START_GATE_MIN_BREADTH", 4)
+    monkeypatch.setattr(exe, "START_GATE_MIN_MAJORS", 3)
+    monkeypatch.setattr(exe, "START_GATE_MAX_AGE_MIN", 180.0)
+
+    # 23.5h ago: first signal
+    base_ms = int(_time.time() * 1000) - int(23.5 * 3600 * 1000)
+    entries = [
+        {"ts_ms": base_ms,            "asset": "BTC-TREND", "direction": "long"},
+        {"ts_ms": base_ms + 3600000,  "asset": "ETH-TREND", "direction": "long"},
+        {"ts_ms": base_ms + 7200000,  "asset": "BNB-TREND", "direction": "long"},
+        {"ts_ms": base_ms + 10800000, "asset": "AAVE-TREND","direction": "long"},
+    ]
+    with open(tmp_path / "signal-history.jsonl", "w") as f:
+        for e in entries:
+            f.write(_json.dumps(e) + "\n")
+
+    live = exe.compute_live_cluster()
+    assert live["breadth"] == 4
+    assert live["majors"] == 3
+    assert live["qualified"] is True
+    assert exe.check_start_gate_block({"positions": []}) is None
+
+
+def test_live_cluster_gate_red_when_only_2_majors(monkeypatch, tmp_path):
+    """LIVE-cluster: only BTC + ETH (2 majors) in 24h → red."""
+    import ftmo_executor as exe
+    import time as _time
+    import json as _json
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "START_GATE_PATH", tmp_path / "timing-gate.json")
+    monkeypatch.setattr(exe, "SIGNAL_HISTORY_PATH", tmp_path / "signal-history.jsonl")
+    monkeypatch.setattr(exe, "START_GATE_ENABLED", True)
+    monkeypatch.setattr(exe, "START_GATE_MIN_BREADTH", 4)
+    monkeypatch.setattr(exe, "START_GATE_MIN_MAJORS", 3)
+    monkeypatch.setattr(exe, "START_GATE_MAX_AGE_MIN", 180.0)
+
+    base_ms = int(_time.time() * 1000) - int(23.5 * 3600 * 1000)
+    entries = [
+        {"ts_ms": base_ms,         "asset": "BTC-TREND", "direction": "long"},
+        {"ts_ms": base_ms + 3600000,  "asset": "ETH-TREND", "direction": "long"},
+        {"ts_ms": base_ms + 7200000,  "asset": "AAVE-TREND","direction": "long"},
+        {"ts_ms": base_ms + 10800000, "asset": "ARB-TREND", "direction": "long"},
+    ]
+    with open(tmp_path / "signal-history.jsonl", "w") as f:
+        for e in entries:
+            f.write(_json.dumps(e) + "\n")
+
+    live = exe.compute_live_cluster()
+    assert live["breadth"] == 4
+    assert live["majors"] == 2  # BTC, ETH only
+    assert live["qualified"] is False
+    block = exe.check_start_gate_block({"positions": []})
+    assert block is not None
+    assert "start_gate_red_live" in block
 
 
 # ============================================================================
