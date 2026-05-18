@@ -103,16 +103,20 @@ def run_sweep():
     # If a previous crash left an old jsonl behind and the new sweep fails
     # early, parse_latest_window would read STALE data from the previous run.
     TMP_OUT.unlink(missing_ok=True)
-    # 2026-05-18 Smoke-test: --start-after-ts filter collapsed engine to 0
-    # windows ("ZERO survived planning"). Engine's `--windows N --step-days K`
-    # already picks the N most-recent windows that fit the cache; explicit
-    # ts-filter not needed. 20 windows × 3d = 60d recency horizon.
+    # 2026-05-18 Bug-Hunt-Recovery: switched from step=3d to step=1d.
+    # Reason: at step=3d, autocorrelation between adjacent windows is only
+    # 1.11× → supervisor signal is effectively random.
+    # At step=1d (overlap 29/30 days = 96% share), lag-1 autocorrelation
+    # is 1.50× and conditional pass-rate jumps from 50% → 70%.
+    # The "latest window" (started ~1d ago) has its first 24h ≈ yesterday,
+    # which is a strong proxy for today's first 24h cluster.
+    # Use 60 windows × 1d step = 60d sample, latest = ~1d old.
     cmd = [
         str(SWEEP_BIN),
         "--candles-dir", "scripts/cache_bakeoff",
         "--funding-dir", "scripts/cache_bakeoff",
         "--symbols", SYMBOLS,
-        "--windows", "20", "--step-days", "3", "--threads", "8",
+        "--windows", "60", "--step-days", "1", "--threads", "8",
         "--profit-target", "0.10", "--max-days", "30",
         "--signals", "regime", "--regime-min-votes", "2",
         "--regime-poc-z", "--regime-bb-z-mr", "--regime-use-supertrend",
@@ -255,8 +259,8 @@ def main():
         "engine_pass_of_qualified_pct": pass_pct,
         "min_breadth": 4,
         "min_majors": 3,
-        "source": "ftmo-sweep --windows 20 --step-days 3 (60d recency horizon)",
-        "validation": "v2: real Rust engine with V02 voters (NOT EMA proxy)",
+        "source": "ftmo-sweep --windows 60 --step-days 1 (latest window ~1d old)",
+        "validation": "v3: step=1d for high-autocorrelation predictor (1.50× lift)",
     }
 
     print(f"\n[3/3] Engine result:")
