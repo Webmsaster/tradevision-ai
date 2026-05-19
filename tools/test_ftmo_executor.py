@@ -1720,6 +1720,94 @@ def test_signal_history_rotates_when_oversize(monkeypatch, tmp_path):
 
 
 # ============================================================================
+# HOCH-2 (2026-05-19): time-based dedup window in _log_signals_to_history
+# ============================================================================
+def test_dedup_window_holds_for_burst_larger_than_200(monkeypatch, tmp_path):
+    """HOCH-2: a single batch of >200 fresh signals must NOT cause the
+    earliest entries of the same batch to slip through dedup. The old
+    `[-200:]` tail-slice was overwritten by the burst's own tail, so a
+    same-bar/same-asset repeat could pass through. Time-based dedup
+    holds all entries within `2 × START_GATE_WINDOW_HOURS`."""
+    import ftmo_executor as exe
+    import time as _time
+    import json as _json
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "SIGNAL_HISTORY_PATH", tmp_path / "signal-history.jsonl")
+    monkeypatch.setattr(exe, "EXECUTOR_LOG_PATH", tmp_path / "executor-log.jsonl")
+    monkeypatch.setattr(exe, "START_GATE_WINDOW_HOURS", 24.0)
+
+    # Pre-log 250 distinct signals all timestamped NOW (= inside dedup window).
+    base_ms = int(_time.time() * 1000)
+    sig_path = tmp_path / "signal-history.jsonl"
+    with open(sig_path, "w") as fh:
+        for i in range(250):
+            fh.write(_json.dumps({
+                "ts_ms": base_ms,
+                "asset": f"ASSET{i}-TREND",
+                "signalBarClose": 10000 + i,
+                "direction": "long",
+            }) + "\n")
+
+    # Attempt to re-log entry #5 (well outside the OLD [-200:] window
+    # since lines 0..49 are dropped by tail slice). With the OLD bug this
+    # would be re-appended; with the time-based dedup it's recognised as
+    # already-known.
+    exe._log_signals_to_history([
+        {"assetSymbol": "ASSET5-TREND", "signalBarClose": 10005,
+         "direction": "long", "sourceSymbol": "ASSET5USDT"},
+    ])
+
+    lines = sig_path.read_text().strip().splitlines()
+    asset5_lines = [li for li in lines
+                    if '"ASSET5-TREND"' in li and '10005' in li]
+    assert len(asset5_lines) == 1, (
+        f"dedup window allowed duplicate ASSET5/10005 re-log "
+        f"(got {len(asset5_lines)} copies): old [-200:] tail-slice bug"
+    )
+
+
+def test_dedup_window_drops_entries_older_than_double_gate_window(monkeypatch, tmp_path):
+    """HOCH-2 corollary: entries older than 2 × START_GATE_WINDOW_HOURS
+    SHOULD fall outside the dedup window — they can no longer collide
+    with a fresh signal (since Node only re-emits on a new bar)."""
+    import ftmo_executor as exe
+    import time as _time
+    import json as _json
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "SIGNAL_HISTORY_PATH", tmp_path / "signal-history.jsonl")
+    monkeypatch.setattr(exe, "EXECUTOR_LOG_PATH", tmp_path / "executor-log.jsonl")
+    monkeypatch.setattr(exe, "START_GATE_WINDOW_HOURS", 2.0)  # → dedup = 4h
+
+    # Old entry timestamped 6h ago — outside the 4h dedup window.
+    sig_path = tmp_path / "signal-history.jsonl"
+    old_ms = int(_time.time() * 1000) - int(6 * 3600 * 1000)
+    with open(sig_path, "w") as fh:
+        fh.write(_json.dumps({
+            "ts_ms": old_ms,
+            "asset": "BTC-TREND",
+            "signalBarClose": 99999,
+            "direction": "long",
+        }) + "\n")
+
+    # Same (signalBarClose, asset) key but the old log entry is now
+    # outside the dedup window → fresh write SHOULD be accepted.
+    exe._log_signals_to_history([
+        {"assetSymbol": "BTC-TREND", "signalBarClose": 99999,
+         "direction": "long", "sourceSymbol": "BTCUSDT"},
+    ])
+
+    lines = sig_path.read_text().strip().splitlines()
+    btc_lines = [li for li in lines
+                 if '"BTC-TREND"' in li and '99999' in li]
+    assert len(btc_lines) == 2, (
+        f"entries older than 2× gate-window should fall outside dedup; "
+        f"expected re-log but got {len(btc_lines)} copies"
+    )
+
+
+# ============================================================================
 # Round 56 audit fixes: Prague-TZ ping dates + UTC-aware history_deals_get
 #                       + invalid-fill-price rejection
 # ============================================================================

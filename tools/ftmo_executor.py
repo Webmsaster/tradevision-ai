@@ -732,21 +732,45 @@ def _log_signals_to_history(signals: list) -> None:
     if not signals:
         return
     try:
-        # Dedup against existing history (only check last ~200 entries)
+        # 2026-05-19 HOCH-2 fix: dedup window must be TIME-based, not a fixed
+        # tail of 200 lines. Previous `splitlines()[-200:]` was unsafe in two
+        # ways:
+        #   (a) a single burst of >200 fresh signals overwrites the dedup
+        #       buffer with its own tail, allowing same-bar signals from the
+        #       same burst to slip through.
+        #   (b) on bot restart reading days-old data, the most-recent 200
+        #       lines might predate the current evaluation window entirely,
+        #       so any signal whose `(signalBarClose, asset)` matched an
+        #       entry just OUTSIDE that 200-line slice would be re-logged.
+        # New rule: dedup against every entry written within `2 ×
+        # START_GATE_WINDOW_HOURS` (covers the full evaluation window plus a
+        # safety overlap so just-rotated signals can't be replayed). This
+        # cost is bounded — signal-history.jsonl rotates at 10MB (HOCH-1)
+        # and the rolling read is already done by compute_live_cluster.
+        now_ms = int(time.time() * 1000)
+        dedup_window_ms = int(2 * START_GATE_WINDOW_HOURS * 3600 * 1000)
+        dedup_cutoff_ms = now_ms - dedup_window_ms
         existing_keys: set = set()
         if SIGNAL_HISTORY_PATH.exists():
             try:
-                lines = SIGNAL_HISTORY_PATH.read_text().splitlines()[-200:]
-                for line in lines:
+                for line in SIGNAL_HISTORY_PATH.read_text().splitlines():
+                    if not line.strip():
+                        continue
                     try:
                         r = json.loads(line)
-                        existing_keys.add((r.get("signalBarClose"), r.get("asset")))
                     except json.JSONDecodeError:
                         continue
+                    # Skip entries older than the dedup window — they're
+                    # safely outside any possible re-emit horizon (and any
+                    # genuine collision against them is already prevented
+                    # by Node, since signals only re-fire on a NEW bar).
+                    ts = r.get("ts_ms")
+                    if isinstance(ts, (int, float)) and ts < dedup_cutoff_ms:
+                        continue
+                    existing_keys.add((r.get("signalBarClose"), r.get("asset")))
             except OSError:
                 pass
 
-        now_ms = int(time.time() * 1000)
         new_entries: list = []
         for s in signals:
             key = (s.get("signalBarClose"), s.get("assetSymbol"))
