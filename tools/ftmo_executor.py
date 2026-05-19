@@ -103,12 +103,38 @@ _START_GATE_RAW_PATH = os.environ.get("FTMO_START_GATE_PATH", "state/timing-gate
 START_GATE_PATH = Path(_START_GATE_RAW_PATH)
 if not START_GATE_PATH.is_absolute():
     START_GATE_PATH = (_TOOLS_DIR.parent / START_GATE_PATH).resolve()
-START_GATE_MIN_BREADTH = int(os.environ.get("FTMO_START_GATE_MIN_BREADTH", "4"))
-START_GATE_MIN_MAJORS = int(os.environ.get("FTMO_START_GATE_MIN_MAJORS", "3"))
+# 2026-05-19 Multi-Tier Cluster Detector — engine-validated thresholds
+# (sweep on 146 windows × 19 cryptos, OOS-split). Each tier defines an
+# alternative "qualifying setup": ANY tier matching → gate is open. The
+# default (DEFAULT_*) is the loosest active tier; TIER_S / TIER_A are
+# tighter, higher-confidence variants surfaced for logging + optional
+# risk-multiplier use.
+#
+#   TIER-S (b>=6 m>=4):  100.00% cond / 6.85% freq — both halves OOS
+#   TIER-A (b>=10 m>=3): 94.74% cond / 39.04% freq
+#   TIER-B (b>=10 m>=2): 93.94% cond / 45.21% freq  ← new default
+#   Legacy (b>=4 m>=3):  93.22% cond / 40.41% freq  ← old default
+#
+# Hard-default raised from 4/3 → 10/2: same conditional pass-rate ceiling
+# (~94%) but +4.8pp unconditional pass-rate AND robust on OOS test-half
+# (92.11% worst-case vs. 89.19% baseline worst-case).
+START_GATE_MIN_BREADTH = int(os.environ.get("FTMO_START_GATE_MIN_BREADTH", "10"))
+START_GATE_MIN_MAJORS = int(os.environ.get("FTMO_START_GATE_MIN_MAJORS", "2"))
+# Tier-S premium cluster — OOS 100% pass-rate. Optional risk boost when
+# matched (`FTMO_TIER_S_RISK_MULT=1.5` etc.). Off by default; only the
+# qualification signal is logged.
+TIER_S_MIN_BREADTH = int(os.environ.get("FTMO_TIER_S_MIN_BREADTH", "6"))
+TIER_S_MIN_MAJORS = int(os.environ.get("FTMO_TIER_S_MIN_MAJORS", "4"))
+TIER_A_MIN_BREADTH = int(os.environ.get("FTMO_TIER_A_MIN_BREADTH", "10"))
+TIER_A_MIN_MAJORS = int(os.environ.get("FTMO_TIER_A_MIN_MAJORS", "3"))
+TIER_S_RISK_MULT = float(os.environ.get("FTMO_TIER_S_RISK_MULT", "1.0"))
+TIER_A_RISK_MULT = float(os.environ.get("FTMO_TIER_A_RISK_MULT", "1.0"))
+START_GATE_WINDOW_HOURS = float(os.environ.get("FTMO_START_GATE_WINDOW_HOURS", "24"))
+START_GATE_MIN_HISTORY_HOURS = float(os.environ.get("FTMO_START_GATE_MIN_HISTORY_HOURS", "23"))
 START_GATE_MAX_AGE_MIN = float(os.environ.get("FTMO_START_GATE_MAX_AGE_MIN", "180"))
 # Cluster-only mode gates every new entry, not only the first challenge trade.
 # This is the honest random-buy fallback: the bot can sit inside a challenge and
-# only add risk while the currently visible 24h signal cluster is green.
+# only add risk while the currently visible signal cluster is green.
 CLUSTER_ONLY_ENABLED = os.environ.get("FTMO_CLUSTER_ONLY_ENABLED", "").lower() in (
     "1",
     "true",
@@ -374,7 +400,7 @@ DAY_PEAK_PATH = STATE_DIR / "day-peak.json"  # R28: dailyPeakTrailingStop state
 # 2026-05-18 Live-Cluster-Detector (replaces supervisor's 30-day-old gate proxy).
 # Every signal Node generates lands in pending-signals.json, the executor logs
 # each new arrival here with {ts_ms, asset, direction}. The gate check reads
-# the last 24h of this log to compute distinct symbols + majors live.
+# the configured recent window of this log to compute distinct symbols + majors.
 SIGNAL_HISTORY_PATH = STATE_DIR / "signal-history.jsonl"
 MAJORS_LIST = ("BTC", "ETH", "BNB", "SOL")
 CONTROLS_PATH = STATE_DIR / "bot-controls.json"
@@ -409,12 +435,35 @@ def _validate_config() -> None:
             errs.append(f"FTMO_START_GATE_MIN_BREADTH={START_GATE_MIN_BREADTH} must be >= 0")
         if START_GATE_MIN_MAJORS < 0:
             errs.append(f"FTMO_START_GATE_MIN_MAJORS={START_GATE_MIN_MAJORS} must be >= 0")
+        if TIER_S_MIN_BREADTH < 0 or TIER_S_MIN_MAJORS < 0:
+            errs.append(
+                f"FTMO_TIER_S thresholds ({TIER_S_MIN_BREADTH}/{TIER_S_MIN_MAJORS}) "
+                "must be >= 0"
+            )
+        if TIER_A_MIN_BREADTH < 0 or TIER_A_MIN_MAJORS < 0:
+            errs.append(
+                f"FTMO_TIER_A thresholds ({TIER_A_MIN_BREADTH}/{TIER_A_MIN_MAJORS}) "
+                "must be >= 0"
+            )
+        if TIER_S_RISK_MULT <= 0 or TIER_S_RISK_MULT > 3.0:
+            errs.append(f"FTMO_TIER_S_RISK_MULT={TIER_S_RISK_MULT} out of (0, 3]")
+        if TIER_A_RISK_MULT <= 0 or TIER_A_RISK_MULT > 3.0:
+            errs.append(f"FTMO_TIER_A_RISK_MULT={TIER_A_RISK_MULT} out of (0, 3]")
+        if not 0 < START_GATE_WINDOW_HOURS <= 72:
+            errs.append(
+                f"FTMO_START_GATE_WINDOW_HOURS={START_GATE_WINDOW_HOURS} out of (0, 72]"
+            )
+        if not 0 <= START_GATE_MIN_HISTORY_HOURS <= START_GATE_WINDOW_HOURS:
+            errs.append(
+                "FTMO_START_GATE_MIN_HISTORY_HOURS="
+                f"{START_GATE_MIN_HISTORY_HOURS} out of [0, {START_GATE_WINDOW_HOURS}]"
+            )
         if START_GATE_MAX_AGE_MIN <= 0:
             errs.append(f"FTMO_START_GATE_MAX_AGE_MIN={START_GATE_MAX_AGE_MIN} must be > 0")
-    if CLUSTER_ONLY_ENABLED and not 0 <= CLUSTER_ONLY_MIN_HISTORY_HOURS <= 24:
+    if CLUSTER_ONLY_ENABLED and not 0 <= CLUSTER_ONLY_MIN_HISTORY_HOURS <= START_GATE_WINDOW_HOURS:
         errs.append(
             "FTMO_CLUSTER_ONLY_MIN_HISTORY_HOURS="
-            f"{CLUSTER_ONLY_MIN_HISTORY_HOURS} out of [0, 24]"
+            f"{CLUSTER_ONLY_MIN_HISTORY_HOURS} out of [0, {START_GATE_WINDOW_HOURS}]"
         )
     if errs:
         msg = "Invalid config — refusing to start:\n" + "\n".join("  - " + e for e in errs)
@@ -641,8 +690,8 @@ def _log_signals_to_history(signals: list) -> None:
     2026-05-18 LIVE-CLUSTER-DETECTOR: Node generates signals via the same
     engine logic as the backtest. By logging each here as it arrives, we
     build a real-time signal-firing log that's IDENTICAL in semantics to
-    the backtest's `state.closed_trades` first-24h count. The gate check
-    reads back the last 24h to compute live cluster status.
+    the backtest's `state.closed_trades` cluster count. The gate check
+    reads back the configured recent window to compute live cluster status.
 
     Idempotent: each call appends ALL signals passed in. Caller should only
     pass NEW signals (not yet logged). We dedupe by (signalBarClose, asset).
@@ -695,21 +744,21 @@ def _log_signals_to_history(signals: list) -> None:
 
 
 def compute_live_cluster() -> dict:
-    """Read signal-history.jsonl, count distinct symbols + majors in last 24h.
+    """Read signal-history.jsonl, count distinct symbols + majors in the gate window.
 
     Returns a dict with:
       - breadth: int (distinct symbols)
       - majors: int (distinct majors among BTC/ETH/BNB/SOL)
       - qualified: bool (breadth >= MIN_BREADTH AND majors >= MIN_MAJORS)
       - ts_ms: current evaluation timestamp
-      - history_count: total entries in last 24h
-      - oldest_log_ms: ts_ms of oldest entry in 24h window (or None)
+      - history_count: total entries in the gate window
+      - oldest_log_ms: ts_ms of oldest entry in the gate window (or None)
 
     This is the LIVE-AUTHORITATIVE cluster status. Identical semantic to
     backtest's `qualified_at_start` but measured on real live signals.
     """
     now_ms = int(time.time() * 1000)
-    cutoff_ms = now_ms - 24 * 3600 * 1000
+    cutoff_ms = now_ms - int(START_GATE_WINDOW_HOURS * 3600 * 1000)
     symbols: set = set()
     majors: set = set()
     count = 0
@@ -742,17 +791,34 @@ def compute_live_cluster() -> dict:
                 oldest = ts_i if oldest is None else min(oldest, ts_i)
         except OSError:
             pass
-    qualified = (
-        len(symbols) >= START_GATE_MIN_BREADTH
-        and len(majors) >= START_GATE_MIN_MAJORS
-    )
+    b, m = len(symbols), len(majors)
+    # 2026-05-19 Multi-tier cluster classification. Tier names are surfaced
+    # for logging + optional per-tier risk multiplier. `qualified` is True
+    # when ANY tier matches (S > A > default = B); empty string means no
+    # qualifying cluster.
+    if b >= TIER_S_MIN_BREADTH and m >= TIER_S_MIN_MAJORS:
+        tier = "S"
+        risk_mult = TIER_S_RISK_MULT
+    elif b >= TIER_A_MIN_BREADTH and m >= TIER_A_MIN_MAJORS:
+        tier = "A"
+        risk_mult = TIER_A_RISK_MULT
+    elif b >= START_GATE_MIN_BREADTH and m >= START_GATE_MIN_MAJORS:
+        tier = "B"
+        risk_mult = 1.0
+    else:
+        tier = ""
+        risk_mult = 0.0
+    qualified = tier != ""
     return {
         "ts_ms": now_ms,
-        "breadth": len(symbols),
-        "majors": len(majors),
+        "breadth": b,
+        "majors": m,
         "qualified": qualified,
+        "tier": tier,
+        "risk_mult": risk_mult,
         "history_count": count,
         "oldest_log_ms": oldest,
+        "window_hours": START_GATE_WINDOW_HOURS,
         "symbols": sorted(symbols),
         "majors_seen": sorted(majors),
     }
@@ -796,8 +862,8 @@ def check_start_gate_block(open_positions: Optional[dict] = None) -> Optional[st
     2026-05-18 LIVE-CLUSTER-DETECTOR: signal-history-based gate replaces the
     supervisor's 30-day-old window proxy. Logic:
       1. If challenge already started (marker or open positions) → no block.
-      2. Compute live cluster from signal-history.jsonl (last 24h).
-      3. Need: >=24h history (warm-up), breadth >= MIN, majors >= MIN.
+      2. Compute live cluster from signal-history.jsonl (configured window).
+      3. Need optional warm-up, breadth >= MIN, majors >= MIN.
       4. Otherwise: block with reason describing what's missing.
 
     This is intentionally a start-only gate. After first fill the marker
@@ -819,14 +885,15 @@ def check_start_gate_block(open_positions: Optional[dict] = None) -> Optional[st
         if not START_GATE_PATH.exists():
             return "start_gate_warmup: no signal-history yet, supervisor gate also missing"
     else:
-        # Verify warm-up: need at least 23h of history (close to 24h).
+        # Optional warm-up. Fast-cluster mode sets this to 0 because the
+        # signal-count condition itself is the early confirmation.
         oldest = live.get("oldest_log_ms")
         if oldest is not None:
             age_h = (live["ts_ms"] - oldest) / 3_600_000
-            if age_h < 23.0:
+            if age_h < START_GATE_MIN_HISTORY_HOURS:
                 return (
                     f"start_gate_warmup: signal-history only {age_h:.1f}h old "
-                    f"(need >=23h)"
+                    f"(need >={START_GATE_MIN_HISTORY_HOURS:.1f}h)"
                 )
         if live["qualified"]:
             return None  # green via live cluster
@@ -834,7 +901,7 @@ def check_start_gate_block(open_positions: Optional[dict] = None) -> Optional[st
             "start_gate_red_live: "
             f"breadth={live['breadth']}/{START_GATE_MIN_BREADTH} "
             f"majors={live['majors']}/{START_GATE_MIN_MAJORS} "
-            f"(live last 24h, {live['history_count']} signals)"
+            f"(live last {START_GATE_WINDOW_HOURS:g}h, {live['history_count']} signals)"
         )
 
     # === Legacy supervisor fallback (only when signal-history is empty) ===
@@ -939,7 +1006,8 @@ def check_cluster_entry_block() -> Optional[str]:
         "cluster_only_red_live: "
         f"breadth={live['breadth']}/{START_GATE_MIN_BREADTH} "
         f"majors={live['majors']}/{START_GATE_MIN_MAJORS} "
-        f"(live last 24h, {live['history_count']} signals)"
+        f"tier={live.get('tier', '') or '-'} "
+        f"(live last {START_GATE_WINDOW_HOURS:g}h, {live['history_count']} signals)"
     )
 
 
@@ -5497,6 +5565,8 @@ def main_loop() -> None:
         f"Daily-loss cap: -{MAX_DAILY_LOSS_PCT:.0%}\n"
         f"Total-loss cap: -{MAX_TOTAL_LOSS_PCT:.0%}\n"
         f"Start gate: {'ON' if START_GATE_ENABLED else 'OFF'}\n"
+        f"Start gate rule: {START_GATE_WINDOW_HOURS:g}h "
+        f"breadth>={START_GATE_MIN_BREADTH} majors>={START_GATE_MIN_MAJORS}\n"
         f"Cluster-only entries: {'ON' if CLUSTER_ONLY_ENABLED else 'OFF'}\n"
         f"Poll interval: {POLL_INTERVAL_SEC}s"
     )
@@ -5507,6 +5577,10 @@ def main_loop() -> None:
         start_gate=START_GATE_ENABLED,
         cluster_only=CLUSTER_ONLY_ENABLED,
         start_gate_path=str(START_GATE_PATH),
+        start_gate_window_hours=START_GATE_WINDOW_HOURS,
+        start_gate_min_breadth=START_GATE_MIN_BREADTH,
+        start_gate_min_majors=START_GATE_MIN_MAJORS,
+        start_gate_min_history_hours=START_GATE_MIN_HISTORY_HOURS,
     )
 
     try:

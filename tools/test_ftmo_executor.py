@@ -1224,6 +1224,41 @@ def test_live_cluster_gate_green_with_24h_history(monkeypatch, tmp_path):
     assert exe.check_start_gate_block({"positions": []}) is None
 
 
+def test_fast_cluster_gate_green_without_24h_warmup(monkeypatch, tmp_path):
+    """12h fast-cluster mode can green-light once the b>=7/m>=3 pattern is
+    visible; it must not wait for the legacy 23h warm-up."""
+    import ftmo_executor as exe
+    import time as _time
+    import json as _json
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "START_GATE_PATH", tmp_path / "timing-gate.json")
+    monkeypatch.setattr(exe, "SIGNAL_HISTORY_PATH", tmp_path / "signal-history.jsonl")
+    monkeypatch.setattr(exe, "START_GATE_ENABLED", True)
+    monkeypatch.setattr(exe, "START_GATE_WINDOW_HOURS", 12.0)
+    monkeypatch.setattr(exe, "START_GATE_MIN_BREADTH", 7)
+    monkeypatch.setattr(exe, "START_GATE_MIN_MAJORS", 3)
+    monkeypatch.setattr(exe, "START_GATE_MIN_HISTORY_HOURS", 0.0)
+    monkeypatch.setattr(exe, "START_GATE_MAX_AGE_MIN", 180.0)
+
+    base_ms = int(_time.time() * 1000) - int(3.0 * 3600 * 1000)
+    assets = ["BTC", "ETH", "BNB", "AAVE", "ARB", "LINK", "XRP"]
+    with open(tmp_path / "signal-history.jsonl", "w") as f:
+        for i, asset in enumerate(assets):
+            f.write(_json.dumps({
+                "ts_ms": base_ms + i * 10_000,
+                "asset": f"{asset}-TREND",
+                "direction": "long",
+            }) + "\n")
+
+    live = exe.compute_live_cluster()
+    assert live["window_hours"] == 12.0
+    assert live["breadth"] == 7
+    assert live["majors"] == 3
+    assert live["qualified"] is True
+    assert exe.check_start_gate_block({"positions": []}) is None
+
+
 def test_live_cluster_gate_red_when_only_2_majors(monkeypatch, tmp_path):
     """LIVE-cluster: only BTC + ETH (2 majors) in 24h → red."""
     import ftmo_executor as exe
@@ -1303,6 +1338,101 @@ def test_cluster_only_blocks_new_entries_after_start_marker(monkeypatch, tmp_pat
     )
     assert proc["remaining"] == []
     assert proc["executed"]["executions"][0]["result"] == "cluster_entry_blocked"
+
+
+# ============================================================================
+# 2026-05-19 Multi-tier cluster classification
+# ============================================================================
+def _seed_cluster_history(tmp_path, monkeypatch, assets: list, exe):
+    """Helper: write a fresh 23.5h-old signal-history with given assets."""
+    import time as _time
+    import json as _json
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "START_GATE_PATH", tmp_path / "timing-gate.json")
+    monkeypatch.setattr(exe, "SIGNAL_HISTORY_PATH", tmp_path / "signal-history.jsonl")
+    monkeypatch.setattr(exe, "START_GATE_ENABLED", True)
+    monkeypatch.setattr(exe, "START_GATE_MAX_AGE_MIN", 180.0)
+    base_ms = int(_time.time() * 1000) - int(23.5 * 3600 * 1000)
+    with open(tmp_path / "signal-history.jsonl", "w") as f:
+        for i, asset in enumerate(assets):
+            f.write(_json.dumps({
+                "ts_ms": base_ms + i * 60_000,
+                "asset": f"{asset}-TREND",
+                "direction": "long",
+            }) + "\n")
+
+
+def test_tier_S_classification_when_4_majors_and_6_breadth(monkeypatch, tmp_path):
+    """All 4 majors + 6+ symbols → TIER-S (premium, 100% pass-rate in
+    backtest)."""
+    import ftmo_executor as exe
+    _seed_cluster_history(
+        tmp_path, monkeypatch,
+        ["BTC", "ETH", "BNB", "SOL", "AAVE", "ARB"], exe,
+    )
+    live = exe.compute_live_cluster()
+    assert live["breadth"] == 6
+    assert live["majors"] == 4
+    assert live["tier"] == "S"
+    assert live["qualified"] is True
+
+
+def test_tier_A_classification_when_3_majors_and_10_breadth(monkeypatch, tmp_path):
+    """3 majors + 10+ symbols → TIER-A."""
+    import ftmo_executor as exe
+    _seed_cluster_history(
+        tmp_path, monkeypatch,
+        ["BTC", "ETH", "BNB", "AAVE", "ARB", "LINK",
+         "XRP", "ADA", "DOT", "AVAX"], exe,
+    )
+    live = exe.compute_live_cluster()
+    assert live["breadth"] == 10
+    assert live["majors"] == 3
+    assert live["tier"] == "A"
+    assert live["qualified"] is True
+
+
+def test_tier_B_classification_when_2_majors_and_10_breadth(monkeypatch, tmp_path):
+    """2 majors + 10 symbols → TIER-B (new default qualifier b>=10 m>=2)."""
+    import ftmo_executor as exe
+    _seed_cluster_history(
+        tmp_path, monkeypatch,
+        ["BTC", "ETH", "AAVE", "ARB", "LINK", "XRP",
+         "ADA", "DOT", "AVAX", "ATOM"], exe,
+    )
+    live = exe.compute_live_cluster()
+    assert live["breadth"] == 10
+    assert live["majors"] == 2
+    assert live["tier"] == "B"
+    assert live["qualified"] is True
+
+
+def test_no_tier_when_majors_below_b_default_floor(monkeypatch, tmp_path):
+    """1 major or breadth<10 must not qualify with new defaults."""
+    import ftmo_executor as exe
+    _seed_cluster_history(
+        tmp_path, monkeypatch,
+        ["BTC", "AAVE", "ARB", "LINK", "XRP", "ADA"], exe,
+    )
+    live = exe.compute_live_cluster()
+    assert live["breadth"] == 6
+    assert live["majors"] == 1
+    assert live["tier"] == ""
+    assert live["qualified"] is False
+
+
+def test_tier_risk_mult_fields_are_set(monkeypatch, tmp_path):
+    """risk_mult must reflect the matched tier (1.0 default since boost
+    multipliers env-defaults to 1.0)."""
+    import ftmo_executor as exe
+    _seed_cluster_history(
+        tmp_path, monkeypatch,
+        ["BTC", "ETH", "BNB", "SOL", "AAVE", "ARB"], exe,
+    )
+    monkeypatch.setattr(exe, "TIER_S_RISK_MULT", 1.5)
+    live = exe.compute_live_cluster()
+    assert live["tier"] == "S"
+    assert live["risk_mult"] == 1.5
 
 
 # ============================================================================
