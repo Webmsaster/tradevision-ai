@@ -1117,6 +1117,7 @@ def test_start_gate_blocks_pending_before_challenge_start(monkeypatch, tmp_path)
     monkeypatch.setattr(exe, "START_GATE_PATH", tmp_path / "timing-gate.json")
     monkeypatch.setattr(exe, "SIGNAL_HISTORY_PATH", tmp_path / "signal-history.jsonl")
     monkeypatch.setattr(exe, "START_GATE_ENABLED", True)
+    monkeypatch.setattr(exe, "START_GATE_WINDOW_HOURS", 24.0)
     monkeypatch.setattr(exe, "START_GATE_MIN_BREADTH", 4)
     monkeypatch.setattr(exe, "START_GATE_MIN_MAJORS", 3)
     monkeypatch.setattr(exe, "START_GATE_MAX_AGE_MIN", 180.0)
@@ -1151,6 +1152,7 @@ def test_start_gate_allows_after_start_marker(monkeypatch, tmp_path):
     monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
     monkeypatch.setattr(exe, "START_GATE_PATH", tmp_path / "timing-gate.json")
     monkeypatch.setattr(exe, "START_GATE_ENABLED", True)
+    monkeypatch.setattr(exe, "START_GATE_WINDOW_HOURS", 24.0)
     monkeypatch.setattr(exe, "START_GATE_MIN_BREADTH", 4)
     monkeypatch.setattr(exe, "START_GATE_MIN_MAJORS", 3)
     monkeypatch.setattr(exe, "START_GATE_MAX_AGE_MIN", 180.0)
@@ -1175,6 +1177,7 @@ def test_start_gate_requires_fresh_green_gate(monkeypatch, tmp_path):
     monkeypatch.setattr(exe, "START_GATE_PATH", tmp_path / "timing-gate.json")
     monkeypatch.setattr(exe, "SIGNAL_HISTORY_PATH", tmp_path / "signal-history.jsonl")
     monkeypatch.setattr(exe, "START_GATE_ENABLED", True)
+    monkeypatch.setattr(exe, "START_GATE_WINDOW_HOURS", 24.0)
     monkeypatch.setattr(exe, "START_GATE_MIN_BREADTH", 4)
     monkeypatch.setattr(exe, "START_GATE_MIN_MAJORS", 3)
     monkeypatch.setattr(exe, "START_GATE_MAX_AGE_MIN", 180.0)
@@ -1201,6 +1204,7 @@ def test_live_cluster_gate_green_with_24h_history(monkeypatch, tmp_path):
     monkeypatch.setattr(exe, "START_GATE_PATH", tmp_path / "timing-gate.json")
     monkeypatch.setattr(exe, "SIGNAL_HISTORY_PATH", tmp_path / "signal-history.jsonl")
     monkeypatch.setattr(exe, "START_GATE_ENABLED", True)
+    monkeypatch.setattr(exe, "START_GATE_WINDOW_HOURS", 24.0)
     monkeypatch.setattr(exe, "START_GATE_MIN_BREADTH", 4)
     monkeypatch.setattr(exe, "START_GATE_MIN_MAJORS", 3)
     monkeypatch.setattr(exe, "START_GATE_MAX_AGE_MIN", 180.0)
@@ -1269,6 +1273,7 @@ def test_live_cluster_gate_red_when_only_2_majors(monkeypatch, tmp_path):
     monkeypatch.setattr(exe, "START_GATE_PATH", tmp_path / "timing-gate.json")
     monkeypatch.setattr(exe, "SIGNAL_HISTORY_PATH", tmp_path / "signal-history.jsonl")
     monkeypatch.setattr(exe, "START_GATE_ENABLED", True)
+    monkeypatch.setattr(exe, "START_GATE_WINDOW_HOURS", 24.0)
     monkeypatch.setattr(exe, "START_GATE_MIN_BREADTH", 4)
     monkeypatch.setattr(exe, "START_GATE_MIN_MAJORS", 3)
     monkeypatch.setattr(exe, "START_GATE_MAX_AGE_MIN", 180.0)
@@ -1309,6 +1314,7 @@ def test_cluster_only_blocks_new_entries_after_start_marker(monkeypatch, tmp_pat
     monkeypatch.setattr(exe, "SIGNAL_HISTORY_PATH", tmp_path / "signal-history.jsonl")
     monkeypatch.setattr(exe, "START_GATE_ENABLED", True)
     monkeypatch.setattr(exe, "CLUSTER_ONLY_ENABLED", True)
+    monkeypatch.setattr(exe, "START_GATE_WINDOW_HOURS", 24.0)
     monkeypatch.setattr(exe, "START_GATE_MIN_BREADTH", 4)
     monkeypatch.setattr(exe, "START_GATE_MIN_MAJORS", 3)
     monkeypatch.setattr(exe, "START_GATE_MAX_AGE_MIN", 180.0)
@@ -1344,15 +1350,17 @@ def test_cluster_only_blocks_new_entries_after_start_marker(monkeypatch, tmp_pat
 # 2026-05-19 Multi-tier cluster classification
 # ============================================================================
 def _seed_cluster_history(tmp_path, monkeypatch, assets: list, exe):
-    """Helper: write a fresh 23.5h-old signal-history with given assets."""
+    """Helper: write fresh signal-history with given assets in the 2h gate."""
     import time as _time
     import json as _json
     monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
     monkeypatch.setattr(exe, "START_GATE_PATH", tmp_path / "timing-gate.json")
     monkeypatch.setattr(exe, "SIGNAL_HISTORY_PATH", tmp_path / "signal-history.jsonl")
     monkeypatch.setattr(exe, "START_GATE_ENABLED", True)
+    monkeypatch.setattr(exe, "START_GATE_WINDOW_HOURS", 2.0)
+    monkeypatch.setattr(exe, "START_GATE_MIN_HISTORY_HOURS", 0.0)
     monkeypatch.setattr(exe, "START_GATE_MAX_AGE_MIN", 180.0)
-    base_ms = int(_time.time() * 1000) - int(23.5 * 3600 * 1000)
+    base_ms = int(_time.time() * 1000) - int(0.5 * 3600 * 1000)
     with open(tmp_path / "signal-history.jsonl", "w") as f:
         for i, asset in enumerate(assets):
             f.write(_json.dumps({
@@ -1362,16 +1370,22 @@ def _seed_cluster_history(tmp_path, monkeypatch, assets: list, exe):
             }) + "\n")
 
 
-def test_tier_S_classification_when_4_majors_and_6_breadth(monkeypatch, tmp_path):
-    """All 4 majors + 6+ symbols → TIER-S (premium, 100% pass-rate in
-    backtest)."""
+def test_tier_S_classification_when_4_majors_and_10_breadth(monkeypatch, tmp_path):
+    """All 4 majors + 10+ symbols → TIER-S (premium, 100% pass-rate in
+    backtest).
+
+    2026-05-19 KRIT-2 update: tightened the TIER-S breadth floor from 6
+    to 10 so the tier hierarchy is strictly nested (S ⊂ A on every axis).
+    See `_validate_config` per-axis monotonie checks.
+    """
     import ftmo_executor as exe
     _seed_cluster_history(
         tmp_path, monkeypatch,
-        ["BTC", "ETH", "BNB", "SOL", "AAVE", "ARB"], exe,
+        ["BTC", "ETH", "BNB", "SOL", "AAVE", "ARB",
+         "LINK", "XRP", "ADA", "DOT"], exe,
     )
     live = exe.compute_live_cluster()
-    assert live["breadth"] == 6
+    assert live["breadth"] == 10
     assert live["majors"] == 4
     assert live["tier"] == "S"
     assert live["qualified"] is True
@@ -1392,30 +1406,30 @@ def test_tier_A_classification_when_3_majors_and_10_breadth(monkeypatch, tmp_pat
     assert live["qualified"] is True
 
 
-def test_tier_B_classification_when_2_majors_and_10_breadth(monkeypatch, tmp_path):
-    """2 majors + 10 symbols → TIER-B (new default qualifier b>=10 m>=2)."""
+def test_tier_B_classification_when_1_major_and_10_breadth(monkeypatch, tmp_path):
+    """1 major + 10 symbols → TIER-B (default qualifier b>=10 m>=1)."""
     import ftmo_executor as exe
     _seed_cluster_history(
         tmp_path, monkeypatch,
-        ["BTC", "ETH", "AAVE", "ARB", "LINK", "XRP",
+        ["BTC", "AAVE", "ARB", "LINK", "XRP", "UNI",
          "ADA", "DOT", "AVAX", "ATOM"], exe,
     )
     live = exe.compute_live_cluster()
     assert live["breadth"] == 10
-    assert live["majors"] == 2
+    assert live["majors"] == 1
     assert live["tier"] == "B"
     assert live["qualified"] is True
 
 
-def test_no_tier_when_majors_below_b_default_floor(monkeypatch, tmp_path):
-    """1 major or breadth<10 must not qualify with new defaults."""
+def test_no_tier_when_breadth_below_b_default_floor(monkeypatch, tmp_path):
+    """Breadth<10 must not qualify with broad-cluster defaults."""
     import ftmo_executor as exe
     _seed_cluster_history(
         tmp_path, monkeypatch,
-        ["BTC", "AAVE", "ARB", "LINK", "XRP", "ADA"], exe,
+        ["BTC", "AAVE", "ARB", "LINK", "XRP", "ADA", "DOT", "AVAX", "ATOM"], exe,
     )
     live = exe.compute_live_cluster()
-    assert live["breadth"] == 6
+    assert live["breadth"] == 9
     assert live["majors"] == 1
     assert live["tier"] == ""
     assert live["qualified"] is False
@@ -1427,12 +1441,114 @@ def test_tier_risk_mult_fields_are_set(monkeypatch, tmp_path):
     import ftmo_executor as exe
     _seed_cluster_history(
         tmp_path, monkeypatch,
-        ["BTC", "ETH", "BNB", "SOL", "AAVE", "ARB"], exe,
+        ["BTC", "ETH", "BNB", "SOL", "AAVE", "ARB",
+         "LINK", "XRP", "ADA", "DOT"], exe,
     )
     monkeypatch.setattr(exe, "TIER_S_RISK_MULT", 1.5)
     live = exe.compute_live_cluster()
     assert live["tier"] == "S"
     assert live["risk_mult"] == 1.5
+
+
+# ============================================================================
+# KRIT-2 (2026-05-19): per-axis tier-monotonie validator
+# ============================================================================
+def _exec_validate_with(monkeypatch, **overrides):
+    """Run `_validate_config` in-process with the given module-level
+    overrides; return the list of errors that WOULD have been raised
+    (so tests can assert without needing to actually sys.exit()).
+    """
+    import ftmo_executor as exe
+    # Capture errors instead of sys.exit
+    captured: list[str] = []
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(exe.sys, "exit", fake_exit)
+    for key, value in overrides.items():
+        monkeypatch.setattr(exe, key, value)
+    # Force START_GATE_ENABLED so tier-monotonie path runs.
+    monkeypatch.setattr(exe, "START_GATE_ENABLED", True)
+
+    # Patch print to capture FATAL output → parse errors back out.
+    orig_print = print
+
+    def fake_print(*args, **kwargs):
+        if args and "FATAL" in str(args[0]):
+            captured.append(str(args[0]))
+        else:
+            orig_print(*args, **kwargs)
+
+    import builtins as _b
+    monkeypatch.setattr(_b, "print", fake_print)
+
+    try:
+        exe._validate_config()
+    except SystemExit:
+        pass
+    return captured
+
+
+def test_tier_monotonie_validator_rejects_breadth_inversion(monkeypatch):
+    """KRIT-2: TIER_S_MIN_BREADTH < TIER_A_MIN_BREADTH must trigger
+    a FATAL config error. Per-axis check, not SUM-based — so an
+    inversion on the breadth axis is caught even if S has more majors.
+    Example: S=(2, 20) is weaker on breadth than A=(20, 3); SUM check
+    would give 22 vs 23 (look similar), but breadth axis is dramatically
+    inverted (S=2 vs A=20). Per-axis check catches it."""
+    out = _exec_validate_with(
+        monkeypatch,
+        TIER_S_MIN_BREADTH=2,   # WEAKER than A
+        TIER_S_MIN_MAJORS=20,   # tighter than A
+        TIER_A_MIN_BREADTH=20,
+        TIER_A_MIN_MAJORS=3,
+    )
+    joined = "\n".join(out)
+    assert "FTMO_TIER_S_MIN_BREADTH=2" in joined, f"no breadth-inversion error: {joined!r}"
+    assert "FTMO_TIER_A_MIN_BREADTH=20" in joined, joined
+
+
+def test_tier_monotonie_validator_rejects_majors_inversion(monkeypatch):
+    """KRIT-2: TIER_S_MIN_MAJORS < TIER_A_MIN_MAJORS must trigger
+    a FATAL config error."""
+    out = _exec_validate_with(
+        monkeypatch,
+        TIER_S_MIN_BREADTH=20,
+        TIER_S_MIN_MAJORS=1,    # WEAKER than A
+        TIER_A_MIN_BREADTH=10,
+        TIER_A_MIN_MAJORS=3,
+    )
+    joined = "\n".join(out)
+    assert "FTMO_TIER_S_MIN_MAJORS=1" in joined, f"no majors-inversion error: {joined!r}"
+
+
+def test_tier_monotonie_validator_passes_for_default_thresholds(monkeypatch):
+    """The shipped defaults (S=(10,4), A=(10,3)) must pass the
+    validator — S is tighter than A on majors, equal on breadth.
+    """
+    out = _exec_validate_with(
+        monkeypatch,
+        TIER_S_MIN_BREADTH=10,
+        TIER_S_MIN_MAJORS=4,
+        TIER_A_MIN_BREADTH=10,
+        TIER_A_MIN_MAJORS=3,
+    )
+    assert out == [], f"defaults should not error: {out!r}"
+
+
+def test_tier_monotonie_validator_rejects_both_axis_inversion(monkeypatch):
+    """KRIT-2: when S is weaker on BOTH axes, BOTH errors fire."""
+    out = _exec_validate_with(
+        monkeypatch,
+        TIER_S_MIN_BREADTH=5,
+        TIER_S_MIN_MAJORS=2,
+        TIER_A_MIN_BREADTH=10,
+        TIER_A_MIN_MAJORS=3,
+    )
+    joined = "\n".join(out)
+    assert "FTMO_TIER_S_MIN_BREADTH=5" in joined, joined
+    assert "FTMO_TIER_S_MIN_MAJORS=2" in joined, joined
 
 
 def test_tier_risk_mult_is_actually_applied_to_lot_sizing(monkeypatch, tmp_path):
@@ -1447,7 +1563,8 @@ def test_tier_risk_mult_is_actually_applied_to_lot_sizing(monkeypatch, tmp_path)
     # Seed a TIER-S cluster (6 symbols, all 4 majors → tier S match).
     _seed_cluster_history(
         tmp_path, monkeypatch,
-        ["BTC", "ETH", "BNB", "SOL", "AAVE", "ARB"], exe,
+        ["BTC", "ETH", "BNB", "SOL", "AAVE", "ARB",
+         "LINK", "XRP", "ADA", "DOT"], exe,
     )
     monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
     monkeypatch.setattr(exe, "START_GATE_ENABLED", False)
@@ -1509,7 +1626,8 @@ def test_tier_risk_mult_capped_at_hard_cap(monkeypatch, tmp_path):
 
     _seed_cluster_history(
         tmp_path, monkeypatch,
-        ["BTC", "ETH", "BNB", "SOL", "AAVE", "ARB"], exe,
+        ["BTC", "ETH", "BNB", "SOL", "AAVE", "ARB",
+         "LINK", "XRP", "ADA", "DOT"], exe,
     )
     monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
     monkeypatch.setattr(exe, "START_GATE_ENABLED", False)

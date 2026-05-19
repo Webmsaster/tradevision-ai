@@ -112,25 +112,32 @@ if not START_GATE_PATH.is_absolute():
 #
 #   TIER-S (b>=6 m>=4):  100.00% cond / 6.85% freq — both halves OOS
 #   TIER-A (b>=10 m>=3): 94.74% cond / 39.04% freq
-#   TIER-B (b>=10 m>=2): 93.94% cond / 45.21% freq  ← new default
+#   TIER-B (2h b>=10 m>=1): 94%+ random-buy wait-to-green  ← new default
 #   Legacy (b>=4 m>=3):  93.22% cond / 40.41% freq  ← old default
 #
-# Hard-default raised from 4/3 → 10/2: same conditional pass-rate ceiling
-# (~94%) but +4.8pp unconditional pass-rate AND robust on OOS test-half
-# (92.11% worst-case vs. 89.19% baseline worst-case).
+# Hard-default raised from 4/3 → fast broad-cluster 2h 10/1: higher
+# purchase-weighted random-buy pass-rate (~94%) while still requiring one
+# major so purely alt-only bursts do not open the start gate.
 START_GATE_MIN_BREADTH = int(os.environ.get("FTMO_START_GATE_MIN_BREADTH", "10"))
-START_GATE_MIN_MAJORS = int(os.environ.get("FTMO_START_GATE_MIN_MAJORS", "2"))
+START_GATE_MIN_MAJORS = int(os.environ.get("FTMO_START_GATE_MIN_MAJORS", "1"))
 # Tier-S premium cluster — OOS 100% pass-rate. Optional risk boost when
 # matched (`FTMO_TIER_S_RISK_MULT=1.5` etc.). Off by default; only the
 # qualification signal is logged.
-TIER_S_MIN_BREADTH = int(os.environ.get("FTMO_TIER_S_MIN_BREADTH", "6"))
+#
+# 2026-05-19 KRIT-2 fix: TIER-S defaults tightened from (b>=6, m>=4) to
+# (b>=10, m>=4) so the tier hierarchy is strictly nested (S ⊂ A on every
+# axis). Previously S required only 6 breadth — strictly LOOSER than A's
+# 10 breadth — so a noisy alt-majors-light cluster could match S but not
+# A, contradicting the "S = premium" semantic. The new strict-monotonie
+# validator below now enforces this invariant for all custom env-overrides.
+TIER_S_MIN_BREADTH = int(os.environ.get("FTMO_TIER_S_MIN_BREADTH", "10"))
 TIER_S_MIN_MAJORS = int(os.environ.get("FTMO_TIER_S_MIN_MAJORS", "4"))
 TIER_A_MIN_BREADTH = int(os.environ.get("FTMO_TIER_A_MIN_BREADTH", "10"))
 TIER_A_MIN_MAJORS = int(os.environ.get("FTMO_TIER_A_MIN_MAJORS", "3"))
 TIER_S_RISK_MULT = float(os.environ.get("FTMO_TIER_S_RISK_MULT", "1.0"))
 TIER_A_RISK_MULT = float(os.environ.get("FTMO_TIER_A_RISK_MULT", "1.0"))
-START_GATE_WINDOW_HOURS = float(os.environ.get("FTMO_START_GATE_WINDOW_HOURS", "24"))
-START_GATE_MIN_HISTORY_HOURS = float(os.environ.get("FTMO_START_GATE_MIN_HISTORY_HOURS", "23"))
+START_GATE_WINDOW_HOURS = float(os.environ.get("FTMO_START_GATE_WINDOW_HOURS", "2"))
+START_GATE_MIN_HISTORY_HOURS = float(os.environ.get("FTMO_START_GATE_MIN_HISTORY_HOURS", "0"))
 START_GATE_MAX_AGE_MIN = float(os.environ.get("FTMO_START_GATE_MAX_AGE_MIN", "180"))
 # Cluster-only mode gates every new entry, not only the first challenge trade.
 # This is the honest random-buy fallback: the bot can sit inside a challenge and
@@ -140,7 +147,7 @@ CLUSTER_ONLY_ENABLED = os.environ.get("FTMO_CLUSTER_ONLY_ENABLED", "").lower() i
     "true",
     "yes",
 )
-CLUSTER_ONLY_MIN_HISTORY_HOURS = float(os.environ.get("FTMO_CLUSTER_ONLY_MIN_HISTORY_HOURS", "23"))
+CLUSTER_ONLY_MIN_HISTORY_HOURS = float(os.environ.get("FTMO_CLUSTER_ONLY_MIN_HISTORY_HOURS", "0"))
 # 2026-05-18 Bug-Audit Round-3 (MITTEL): track whether we've already warned
 # about env vs gate threshold mismatch (avoid Telegram spam on every poll).
 _START_GATE_ENV_WARNED = False
@@ -444,6 +451,32 @@ def _validate_config() -> None:
             errs.append(
                 f"FTMO_TIER_A thresholds ({TIER_A_MIN_BREADTH}/{TIER_A_MIN_MAJORS}) "
                 "must be >= 0"
+            )
+        # 2026-05-19 KRIT-2 fix: tier-monotonie validator.
+        #
+        # Previous design relied on docstring-claimed hierarchy (S premium
+        # > A > B) but had NO programmatic check. A user setting e.g.
+        # `FTMO_TIER_S_MIN_BREADTH=2 FTMO_TIER_S_MIN_MAJORS=20` with the
+        # default `TIER_A=10/3` would silently invert the hierarchy: an
+        # alt-burst cluster (b=15, m=2) could fail TIER-S (m<20) but still
+        # match TIER-A (b>=10, m>=3 — wait, m=2 < 3 too), but a cluster
+        # (b=15, m=5) matches both — and S's lower-breadth threshold means
+        # a noisier (lower-breadth) cluster qualifies as "premium" S over
+        # the stricter A. A naive `SUM(S) >= SUM(A)` check would miss
+        # axis-specific inversions: e.g. S=(2, 20) sums to 22 and A=(20, 3)
+        # sums to 23, looking similar even though S is dramatically weaker
+        # on breadth. Enforce per-axis monotonie instead.
+        if TIER_S_MIN_BREADTH < TIER_A_MIN_BREADTH:
+            errs.append(
+                f"FTMO_TIER_S_MIN_BREADTH={TIER_S_MIN_BREADTH} must be >= "
+                f"FTMO_TIER_A_MIN_BREADTH={TIER_A_MIN_BREADTH} "
+                "(S is premium → must be at least as tight as A on breadth)"
+            )
+        if TIER_S_MIN_MAJORS < TIER_A_MIN_MAJORS:
+            errs.append(
+                f"FTMO_TIER_S_MIN_MAJORS={TIER_S_MIN_MAJORS} must be >= "
+                f"FTMO_TIER_A_MIN_MAJORS={TIER_A_MIN_MAJORS} "
+                "(S is premium → must be at least as tight as A on majors)"
             )
         if TIER_S_RISK_MULT <= 0 or TIER_S_RISK_MULT > 3.0:
             errs.append(f"FTMO_TIER_S_RISK_MULT={TIER_S_RISK_MULT} out of (0, 3]")
