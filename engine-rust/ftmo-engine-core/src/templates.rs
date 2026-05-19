@@ -545,6 +545,46 @@ pub fn v5_amber_max_passlock_bidir() -> EngineConfig {
     cfg
 }
 
+/// 2026-05-19 V5_AMBER_MAX_MR_PASSLOCK — mean-revert (range-bound) variant
+/// of V5_AMBER_MAX_PASSLOCK. Hypothesis: trend-following V5 plateaus at ~50%
+/// uncond pass-rate because chop/range windows (the ~50% fail-bucket) are
+/// structurally hostile to trend signals. A complementary RSI-MR signal on
+/// the same engine stack should pass a *different* subset of windows,
+/// enabling a 2-strategy ensemble with combined uncond ≥60%.
+///
+/// Changes vs `v5_amber_max_passlock()`:
+///   - per-asset `invert_direction: false`  (vanilla MR signal direction)
+///   - per-asset `disable_short: false`     (allow MR shorts on overbought)
+///   - cfg `mean_reversion_source`: RSI(14), oversold 25 / overbought 75,
+///     cooldown 8 bars, size_mult 0.5 — engine-default-equivalent so the
+///     `--signals meanrev` path picks it up without CLI overrides.
+///
+/// All other AMBER_MAX stack (basket, per-asset TP, PASSLOCK, mct=10, hours,
+/// risk caps) is preserved so the only experimental variable is signal type.
+pub fn v5_amber_max_mr_passlock() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock();
+    cfg.label = "V5_AMBER_MAX_MR_PASSLOCK".into();
+    // Flip every asset out of the V5_TREND short-disabled / inverted layout
+    // (set by `make_assets`) so MR longs/shorts pass through unmodified.
+    for asset in cfg.assets.iter_mut() {
+        asset.invert_direction = false;
+        asset.disable_short = false;
+    }
+    // Engine-level fallback already off — keep it explicit.
+    cfg.invert_direction = false;
+    // Engine-default MR source. Matches the literal used in `sweep.rs`
+    // (SignalSrc::MeanRev fallback) so passing `--signals meanrev` without
+    // overrides reproduces this template's intent.
+    cfg.mean_reversion_source = Some(crate::config::MeanReversionSource {
+        period: 14,
+        oversold: 25.0,
+        overbought: 75.0,
+        cooldown_bars: 8,
+        size_mult: 0.5,
+    });
+    cfg
+}
+
 /// 2026-05-13 V5_AMBER_QUARTZ — AMBER assets + Quartz engine stack:
 /// atrStop p56m2, chandelierExit p56m2 min_move_r=0.5, breakEven 3%,
 /// PTP trigger=0.012 closeFraction=0.7. Hypothesis: AMBER's 15-asset basket
@@ -1219,6 +1259,7 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-amber-max-passlock-bidir" => v5_amber_max_passlock_bidir(),
         "2h-trend-v5-amber-max-passlock-mptp-v04a" => v5_amber_max_passlock_mptp_v04a(),
         "2h-trend-v5-amber-max-passlock-sharpe-tight" => v5_amber_max_passlock_sharpe_tight(),
+        "2h-trend-v5-amber-max-mr-passlock" => v5_amber_max_mr_passlock(),
         "2h-trend-v5-amber-quartz" => v5_amber_quartz(),
         "2h-trend-v5-amber-quartz-passlock" => v5_amber_quartz_passlock(),
         "2h-trend-v5-amber-be-passlock" => v5_amber_be_passlock(),
@@ -1263,6 +1304,7 @@ pub fn known_selectors() -> &'static [&'static str] {
         "2h-trend-v5-amber-max",
         "2h-trend-v5-amber-max-passlock",
         "2h-trend-v5-amber-max-passlock-bidir",
+        "2h-trend-v5-amber-max-mr-passlock",
         "2h-trend-v5-amber-quartz",
         "2h-trend-v5-amber-quartz-passlock",
         "2h-trend-v5-amber-be-passlock",
