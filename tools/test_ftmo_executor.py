@@ -1677,6 +1677,49 @@ def test_tier_risk_mult_capped_at_hard_cap(monkeypatch, tmp_path):
 
 
 # ============================================================================
+# HOCH-1 (2026-05-19): signal-history.jsonl rotation
+# ============================================================================
+def test_signal_history_rotates_when_oversize(monkeypatch, tmp_path):
+    """HOCH-1: `_log_signals_to_history` must rotate signal-history.jsonl
+    when it grows past max_mb. Without rotation the file grows unbounded
+    over a long live-deploy and eventually exhausts disk / slows reads."""
+    import ftmo_executor as exe
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "SIGNAL_HISTORY_PATH", tmp_path / "signal-history.jsonl")
+    monkeypatch.setattr(exe, "EXECUTOR_LOG_PATH", tmp_path / "executor-log.jsonl")
+
+    # Pre-seed the history file with ~11MB of dummy lines (just above the
+    # 10MB rotation threshold).
+    sig_path = tmp_path / "signal-history.jsonl"
+    payload = ("X" * 1024 + "\n")  # ~1KB per line
+    with open(sig_path, "w") as fh:
+        for _ in range(11 * 1024):  # 11K lines × 1KB ≈ 11MB
+            fh.write(payload)
+    pre_size = sig_path.stat().st_size
+    assert pre_size > 10 * 1024 * 1024, f"seed file too small: {pre_size}"
+
+    # Append a fresh signal → must trigger rotation.
+    exe._log_signals_to_history([
+        {"assetSymbol": "BTC-TREND", "signalBarClose": 1234567,
+         "direction": "long", "sourceSymbol": "BTCUSDT"},
+    ])
+
+    # New signal-history.jsonl should now contain only the freshly-logged
+    # entry — far smaller than the pre-rotation file.
+    post_size = sig_path.stat().st_size
+    assert post_size < pre_size, (
+        f"signal-history did not shrink post-rotation: pre={pre_size} post={post_size}"
+    )
+    # And an archive `signal-history.<TS>.jsonl` should exist with the bulk.
+    archives = list(tmp_path.glob("signal-history.*.jsonl"))
+    assert archives, "no archive file created on rotation"
+    assert any(a.stat().st_size >= 10 * 1024 * 1024 for a in archives), (
+        f"no archive holds the rotated data: {[(a.name, a.stat().st_size) for a in archives]}"
+    )
+
+
+# ============================================================================
 # Round 56 audit fixes: Prague-TZ ping dates + UTC-aware history_deals_get
 #                       + invalid-fill-price rejection
 # ============================================================================

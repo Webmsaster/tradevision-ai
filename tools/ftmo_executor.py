@@ -764,6 +764,13 @@ def _log_signals_to_history(signals: list) -> None:
         if not new_entries:
             return
         SIGNAL_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        # 2026-05-19 HOCH-1 fix: rotate signal-history.jsonl when it grows
+        # past 10MB; keep last 7 daily archives. Without rotation the file
+        # grows unbounded over a long live-deploy (every Node-emitted
+        # signal appends), eventually slowing the per-poll
+        # `compute_live_cluster()` read-loop and exhausting disk on long
+        # runs. Mirrors the equity-history rotation pattern (R67-r9).
+        _rotate_jsonl_if_needed(SIGNAL_HISTORY_PATH, max_mb=10, keep=7)
         # 2026-05-18 Bug-Audit Round-3 lesson: explicit O_APPEND for atomicity.
         fd = os.open(str(SIGNAL_HISTORY_PATH),
                      os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
