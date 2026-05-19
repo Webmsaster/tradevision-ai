@@ -1,0 +1,32 @@
+pt010 finished at Tue May 19 21:15:46 CEST 2026
+Starting pt=0.05 at Tue May 19 21:15:46 CEST 2026
+[sweep] WARN: only 1019/9999 windows survived planning. Check --max-days / --start-after-ts vs cache extent.
+132453 bars / 12052 trades across 1019 windows in 628.998s — 211 bars/sec
+passed=610 / 1019 (59.86%)
+Done pt=0.05 at Tue May 19 21:27:28 CEST 2026 -- lines=1019
+Starting pt=0.06 at Tue May 19 21:27:28 CEST 2026
+[sweep] WARN: only 1019/9999 windows survived planning. Check --max-days / --start-after-ts vs cache extent.
+131692 bars / 12408 trades across 1019 windows in 470.681s — 280 bars/sec
+passed=595 / 1019 (58.39%)
+Done pt=0.06 at Tue May 19 21:35:53 CEST 2026 -- lines=1019
+Starting pt=0.07 at Tue May 19 21:35:53 CEST 2026
+[sweep] WARN: only 1019/9999 windows survived planning. Check --max-days / --start-after-ts vs cache extent.
+132304 bars / 12468 trades across 1019 windows in 395.349s — 335 bars/sec
+passed=578 / 1019 (56.72%)
+Done pt=0.07 at Tue May 19 21:43:02 CEST 2026 -- lines=1019
+Starting pt=0.08 at Tue May 19 21:43:03 CEST 2026
+[sweep] WARN: only 1019/9999 windows survived planning. Check --max-days / --start-after-ts vs cache extent.
+133029 bars / 13120 trades across 1019 windows in 402.415s — 331 bars/sec
+passed=571 / 1019 (56.04%)
+Done pt=0.08 at Tue May 19 21:50:21 CEST 2026 -- lines=1019
+Starting pt=0.12 at Tue May 19 21:50:21 CEST 2026
+[sweep] WARN: only 1019/9999 windows survived planning. Check --max-days / --start-after-ts vs cache extent.
+134313 bars / 14143 trades across 1019 windows in 429.482s — 313 bars/sec
+passed=495 / 1019 (48.58%)
+Done pt=0.12 at Tue May 19 21:58:08 CEST 2026 -- lines=1019
+Starting pt=0.15 at Tue May 19 21:58:08 CEST 2026
+[sweep] WARN: only 1019/9999 windows survived planning. Check --max-days / --start-after-ts vs cache extent.
+133409 bars / 14388 trades across 1019 windows in 398.858s — 334 bars/sec
+passed=448 / 1019 (43.96%)
+Done pt=0.15 at Tue May 19 22:05:27 CEST 2026 -- lines=1019
+ALL PT SWEEPS DONE at Tue May 19 22:05:28 CEST 2026

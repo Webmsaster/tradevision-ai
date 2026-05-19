@@ -1,0 +1,5 @@
+{"win_idx":0,"config_label":"V5_AMBER_MAX_PASSLOCK","bars":101,"trades":14,"final_equity_pct":0.14700888619089403,"final_day":3,"passed":true,"fail_reason":null,"elapsed_ms":4169.719991}
+{"win_idx":2,"config_label":"V5_AMBER_MAX_PASSLOCK","bars":105,"trades":11,"final_equity_pct":-0.07110255548837652,"final_day":3,"passed":false,"fail_reason":"DailyLoss","elapsed_ms":5445.025125}
+{"win_idx":4,"config_label":"V5_AMBER_MAX_PASSLOCK","bars":183,"trades":31,"final_equity_pct":0.10567533486435132,"final_day":4,"passed":true,"fail_reason":null,"elapsed_ms":6054.896216}
+{"win_idx":1,"config_label":"V5_AMBER_MAX_PASSLOCK","bars":153,"trades":13,"final_equity_pct":-0.0984222079200513,"final_day":4,"passed":false,"fail_reason":"DailyLoss","elapsed_ms":6922.701385}
+{"win_idx":3,"config_label":"V5_AMBER_MAX_PASSLOCK","bars":232,"trades":34,"final_equity_pct":0.13503755302958598,"final_day":5,"passed":true,"fail_reason":null,"elapsed_ms":7818.004375}

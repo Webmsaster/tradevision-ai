@@ -1,0 +1,8 @@
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ARBUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ATOMUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/NEARUSDT_30m.json
+ftmo-sweep (multi-asset): 18 symbols × 55349 bars; cfg=V5_AMBER_MAX_PASSLOCK; 14 threads; funding=yes; cb_premium=no
+[sweep] WARN: only 1019/9999 windows survived planning. Check --max-days / --start-after-ts vs cache extent.
+131606 bars / 12935 trades across 1019 windows in 469.668s — 280 bars/sec
+passed=533 / 1019 (52.31%)
+qualified=585 / 1019 (57.41%) — passed_of_qualified=513 / 585 (87.69%)

@@ -1,0 +1,56 @@
+ML Trade Filter — Research Report
+============================================================
+Test N: 785  AUC: 0.6581  Acc: 0.6713
+Test winrate (base): 65.99%
+Precision: 0.6964  Recall: 0.8900  F1: 0.7814
+
+Window pass-rate vs skip-rate (test-half, target=+10%):
+  skip=  0.0%  pass= 41.67%  (35/84)
+  skip=  5.0%  pass= 39.29%  (33/84)
+  skip= 10.0%  pass= 36.90%  (31/84)
+  skip= 15.0%  pass= 37.35%  (31/83)
+  skip= 20.0%  pass= 33.73%  (28/83)
+  skip= 25.0%  pass= 33.33%  (27/81)
+  skip= 30.0%  pass= 32.50%  (26/80)
+  skip= 40.0%  pass= 29.87%  (23/77)
+  skip= 50.0%  pass= 27.78%  (20/72)
+
+Alt strategy A — absolute probability threshold:
+  thresh=0.30  kept=748  pass= 39.29%  (33/84)
+  thresh=0.40  kept=715  pass= 39.29%  (33/84)
+  thresh=0.50  kept=662  pass= 37.35%  (31/83)
+  thresh=0.55  kept=624  pass= 33.73%  (28/83)
+  thresh=0.60  kept=582  pass= 33.33%  (27/81)
+  thresh=0.65  kept=532  pass= 32.91%  (26/79)
+  thresh=0.70  kept=463  pass= 30.67%  (23/75)
+  thresh=0.75  kept=388  pass= 27.78%  (20/72)
+  thresh=0.80  kept=290  pass= 17.39%  (12/69)
+
+Alt strategy B — per-window bottom-K skip:
+  k_per_window=0  pass= 41.67%  (35/84)
+  k_per_window=1  pass= 42.86%  (36/84)
+  k_per_window=2  pass= 43.06%  (31/72)
+  k_per_window=3  pass= 44.44%  (28/63)
+
+Oracle ceiling (perfect loss-skip, test half): 46.43% (39/84)
+=> 50% target is structurally unreachable via trade-skipping.
+
+Feature importance (sorted):
+  prior_cum_pnl             0.1252
+  sym_pos_24h               0.0953
+  prior_losses              0.0786
+  sym_ret_4h                0.0751
+  btc_vol_24h               0.0713
+  sym_vol_24h               0.0690
+  sym_slope_48              0.0686
+  btc_ret_4h                0.0629
+  day_in_challenge          0.0587
+  btc_ret_24h               0.0528
+  sym_ret_24h               0.0461
+  sym_ret_48h               0.0445
+  hour_of_day               0.0373
+  prior_wins                0.0362
+  trade_idx_in_window       0.0332
+  sym_btc_ret_diff_24h      0.0324
+  day_of_week               0.0129
+  direction                 0.0000

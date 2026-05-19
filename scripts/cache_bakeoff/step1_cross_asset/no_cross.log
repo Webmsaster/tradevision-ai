@@ -1,0 +1,8 @@
+[loader] dropped 1 non-final tail bar(s) from /home/flooe/projects/tradevision-ai/scripts/cache_bakeoff/ALGOUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from /home/flooe/projects/tradevision-ai/scripts/cache_bakeoff/ARBUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from /home/flooe/projects/tradevision-ai/scripts/cache_bakeoff/ATOMUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from /home/flooe/projects/tradevision-ai/scripts/cache_bakeoff/NEARUSDT_30m.json
+ftmo-sweep (multi-asset): 18 symbols × 55348 bars; cfg=V5_AMBER_MAX_PASSLOCK; 8 threads; funding=yes; cb_premium=no
+[sweep] WARN: only 1019/9999 windows survived planning. Check --max-days / --start-after-ts vs cache extent.
+90148 bars / 12887 trades across 1019 windows in 1405.341s — 64 bars/sec
+passed=523 / 1019 (51.32%)
