@@ -372,6 +372,19 @@ struct MultiSignalCfg {
     /// quality, not trade-count reduction.
     random_gate_keep: Option<f64>,
     random_gate_seed: u64,
+    /// 2026-05-19 Damage-Limitation Early-Abort.
+    /// `early_abort_after_losses N` (default 0 = disabled): if the FIRST N
+    /// trades of the window are ALL losers (eff_pnl ≤ 0), force-close every
+    /// remaining open position and stop the window (StoppedReason::EarlyAbort).
+    /// `early_abort_after_trades N` + `early_abort_min_cum X` (default 0 / 0.0
+    /// = disabled): if after the FIRST N trades the cumulative final_equity_pct
+    /// (state.equity - 1.0) is at or below X (X is negative, e.g. -0.02 for
+    /// -2%), force-close + abort. Motivation: backtest shows windows with 2
+    /// initial losers pass at 0/31 = 0% and windows below -2% after 5 trades
+    /// pass at 0/30 = 0% — aborting saves -2pp average-loss per fail.
+    early_abort_after_losses: u32,
+    early_abort_after_trades: u32,
+    early_abort_min_cum: f64,
 }
 
 /// 2026-05-13 65%-hunt: apply CLI-flag overrides for the secondary R28V6
@@ -1244,6 +1257,10 @@ fn main() -> Result<()> {
     let mut phase2_risk_mult: Option<f64> = None;
     // 2026-05-16 Phase 3 — News-Blackout opt-in (default OFF).
     let mut news_blackout_enable: bool = false;
+    // 2026-05-19 Damage-Limitation Early-Abort. Defaults disabled (0).
+    let mut early_abort_after_losses: u32 = 0;
+    let mut early_abort_after_trades: u32 = 0;
+    let mut early_abort_min_cum: f64 = 0.0;
 
     // R67 audit (Round 2): replace `args.next().unwrap()` with `ok_or_else`
     // — `ftmo-sweep --candles` (no path follows) panics with the usual Rust
@@ -1624,6 +1641,22 @@ fn main() -> Result<()> {
             }
             // 2026-05-16 Phase 3 — News-Blackout opt-in (FOMC 2026 ±60min).
             "--news-blackout" => news_blackout_enable = true,
+            // 2026-05-19 Damage-Limitation Early-Abort.
+            "--early-abort-after-losses" => {
+                let v: u32 = need!("--early-abort-after-losses").parse()?;
+                early_abort_after_losses = v;
+            }
+            "--early-abort-after-trades" => {
+                let v: u32 = need!("--early-abort-after-trades").parse()?;
+                early_abort_after_trades = v;
+            }
+            "--early-abort-min-cum" => {
+                let v: f64 = need!("--early-abort-min-cum").parse()?;
+                if !v.is_finite() {
+                    anyhow::bail!("--early-abort-min-cum must be finite (got {v})");
+                }
+                early_abort_min_cum = v;
+            }
             other => return Err(anyhow!("unknown arg: {other}")),
         }
     }
@@ -2009,6 +2042,10 @@ fn main() -> Result<()> {
                 majors_prefixes,
                 random_gate_keep,
                 random_gate_seed,
+                // 2026-05-19 Damage-Limitation Early-Abort knobs.
+                early_abort_after_losses,
+                early_abort_after_trades,
+                early_abort_min_cum,
             },
         );
     }
@@ -3572,6 +3609,65 @@ fn run_one_window(
             cfg,
         );
         bars += 1;
+        // 2026-05-19 Damage-Limitation Early-Abort. Two independent rules:
+        //   (a) `early_abort_after_losses N` — first N closed trades all losers
+        //       (eff_pnl ≤ 0) ⇒ force-close + StoppedReason::EarlyAbort.
+        //   (b) `early_abort_after_trades N` + `early_abort_min_cum X` — after
+        //       N closed trades, if cumulative realised equity_pct ≤ X (X is
+        //       negative, e.g. -0.02) ⇒ force-close + abort.
+        // Both rules consult `state.closed_trades` (post step_bar) and only
+        // trip when the engine isn't already stopped — we don't double-abort
+        // a TotalLoss/DailyLoss/Time-out window. Rules trigger at most once
+        // per window via the `state.stopped_reason.is_none()` guard.
+        if !r.challenge_ended && state.stopped_reason.is_none() {
+            let nt = state.closed_trades.len();
+            let mut should_abort = false;
+            if multi_signal.early_abort_after_losses > 0
+                && nt >= multi_signal.early_abort_after_losses as usize
+            {
+                let n = multi_signal.early_abort_after_losses as usize;
+                let first_n_all_losers = state
+                    .closed_trades
+                    .iter()
+                    .take(n)
+                    .all(|t| t.eff_pnl <= 0.0);
+                if first_n_all_losers {
+                    should_abort = true;
+                }
+            }
+            if !should_abort
+                && multi_signal.early_abort_after_trades > 0
+                && nt >= multi_signal.early_abort_after_trades as usize
+            {
+                let cum = state.equity - 1.0;
+                if cum <= multi_signal.early_abort_min_cum {
+                    should_abort = true;
+                }
+            }
+            if should_abort {
+                // Use the bar's open_time (already stamped by step_bar) as
+                // the close timestamp. force_close_all_external also resets
+                // mtm_equity = equity (no remaining unrealised tail).
+                let last_bar_time = state.last_bar_open_time;
+                let bar_input = BarInput {
+                    candles_by_source: &feed,
+                    atr_series_by_source: &atr_feed,
+                    funding_by_source: Some(&funding_feed),
+                    signals: vec![],
+                };
+                let _ = ftmo_engine_core::harness::force_close_all_external(
+                    &mut state,
+                    &bar_input,
+                    cfg,
+                    last_bar_time,
+                );
+                state.stopped_reason =
+                    Some(ftmo_engine_core::state::StoppedReason::EarlyAbort);
+                last_passed = false;
+                last_fail = Some("EarlyAbort".to_string());
+                break;
+            }
+        }
         // 2026-05-13 Codex HIGH FIX (Fix 4): HTF push deferred to AFTER
         // step_bar so the NEXT bar's detector pass sees this bar's close
         // (now closed and safe). Pushing BEFORE detector at the same i

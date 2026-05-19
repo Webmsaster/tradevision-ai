@@ -28,6 +28,14 @@ pub enum StoppedReason {
     TotalLoss,
     DailyLoss,
     Time,
+    /// 2026-05-19 Damage-Limitation Early-Abort: window aborted by the
+    /// `--early-abort-after-losses N` or `--early-abort-after-trades N
+    /// --early-abort-min-cum X` CLI rules. Surfaces as a normal stop so the
+    /// pass-rate counter treats the window as a fail, but every remaining
+    /// open position is force-closed so the equity tail no longer accrues
+    /// further losses (motivation: 0/31 = 0% pass-rate on windows with 2
+    /// initial losers — saving the give-back is pure equity preservation).
+    EarlyAbort,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

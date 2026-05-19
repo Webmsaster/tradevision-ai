@@ -92,6 +92,10 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
             StoppedReason::TotalLoss => FailReason::TotalLoss,
             StoppedReason::DailyLoss => FailReason::DailyLoss,
             StoppedReason::Time => FailReason::Time,
+            // 2026-05-19 Early-Abort surfaces as a benign Time fail so the
+            // pass-rate counter classifies it as "did not pass" without
+            // pretending it was a margin event.
+            StoppedReason::EarlyAbort => FailReason::Time,
         });
         return result;
     }
@@ -1068,6 +1072,33 @@ fn apply_exits(
             exit_reason: out.reason,
         });
     }
+}
+
+/// Public wrapper around the internal `force_close_all` used by sweep-level
+/// abort rules (e.g. `--early-abort-after-losses`). Closes every open
+/// position at the current bar's close (or the most-recent-at-or-before
+/// candle when feed gaps) using `ExitReason::Manual`. Mirrors the engine's
+/// internal max-days force-close path. Returns a `StepResult` so the caller
+/// can inspect any feed-loss fail surfaced during close.
+pub fn force_close_all_external(
+    state: &mut EngineState,
+    input: &BarInput<'_>,
+    cfg: &EngineConfig,
+    last_bar_time: i64,
+) -> StepResult {
+    let mut result = StepResult {
+        decision: PollDecision::default(),
+        notes: vec![],
+        skipped: vec![],
+        challenge_ended: true,
+        passed: false,
+        fail_reason: None,
+        target_hit: false,
+    };
+    force_close_all(state, input, cfg, last_bar_time, &mut result);
+    // After all positions close, realised equity has caught up to MTM.
+    state.mtm_equity = state.equity;
+    result
 }
 
 fn force_close_all(
