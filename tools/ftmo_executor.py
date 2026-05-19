@@ -3301,10 +3301,43 @@ def _process_signals_unlocked(
         marker_short = marker_id[:8]
         # Total length: 8 (marker) + 1 + ~22 = ≤31; remaining truncation safely
         # affects the asset/tag suffix only, not the marker prefix.
+
+        # 2026-05-19 KRIT-1 fix: wire TIER risk-multiplier into sizing.
+        # Previously TIER_S/A_RISK_MULT were env-vars + surfaced in
+        # compute_live_cluster()['risk_mult'] but NEVER applied to the
+        # actual `riskFrac` passed to `place_market_order`. So a user
+        # setting `FTMO_TIER_S_RISK_MULT=1.5` saw the dict field but
+        # got identical lot sizes vs. multiplier=1.0 — silent no-op.
+        # Fix: read the current live-cluster tier classification, multiply
+        # `riskFrac` by the matched tier's multiplier, then cap at
+        # RISK_FRAC_HARD_CAP (defense-in-depth, place_market_order already
+        # caps but we want a transparent log line at the boost site).
+        sig_risk_frac = float(sig["riskFrac"])
+        try:
+            _live_cluster_now = compute_live_cluster()
+            _tier_risk_mult = float(_live_cluster_now.get("risk_mult", 1.0) or 1.0)
+        except Exception:
+            _tier_risk_mult = 1.0
+        if _tier_risk_mult and _tier_risk_mult != 1.0:
+            boosted = sig_risk_frac * _tier_risk_mult
+            capped = min(boosted, RISK_FRAC_HARD_CAP)
+            if abs(capped - sig_risk_frac) > 1e-9:
+                log_event(
+                    "tier_risk_mult_applied",
+                    asset=sig["assetSymbol"],
+                    tier=_live_cluster_now.get("tier", ""),
+                    risk_mult=_tier_risk_mult,
+                    original_risk_frac=round(sig_risk_frac, 6),
+                    boosted_risk_frac=round(boosted, 6),
+                    final_risk_frac=round(capped, 6),
+                    capped=(capped < boosted),
+                )
+                sig_risk_frac = capped
+
         result = place_market_order(
             binance_symbol=sig["sourceSymbol"],
             direction=direction,
-            risk_frac=sig["riskFrac"],
+            risk_frac=sig_risk_frac,
             stop_pct=sig["stopPct"],
             tp_pct=sig["tpPct"],
             account_equity=account_equity,
@@ -3373,7 +3406,11 @@ def _process_signals_unlocked(
                 signal_stop=sig.get("stopPrice"),
                 signal_tp=sig.get("tpPrice"),
                 direction=sig.get("direction"),
+                # 2026-05-19 KRIT-1 fix: also log effective risk_frac (post
+                # TIER risk-multiplier) so the audit trail captures both the
+                # signal-emitted nominal and the actually-sized value.
                 risk_frac=sig.get("riskFrac"),
+                effective_risk_frac=round(sig_risk_frac, 6),
                 stop_pct=sig.get("stopPct"),
                 tp_pct=sig.get("tpPct"),
                 slippage_bps=slippage_bps,
@@ -3384,7 +3421,7 @@ def _process_signals_unlocked(
                 f"{html_escape(sig['assetSymbol'])} {direction.upper()}\n"
                 f"Ticket: <code>{result.ticket}</code>\n"
                 f"Lot: {result.lot} @ ${result.entry_price:.4f}\n"
-                f"Risk: {sig['riskFrac']*100:.3f}% of equity"
+                f"Risk: {sig_risk_frac*100:.3f}% of equity"
             )
             open_positions["positions"].append({
                 "ticket": result.ticket,

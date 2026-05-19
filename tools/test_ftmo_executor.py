@@ -1435,6 +1435,129 @@ def test_tier_risk_mult_fields_are_set(monkeypatch, tmp_path):
     assert live["risk_mult"] == 1.5
 
 
+def test_tier_risk_mult_is_actually_applied_to_lot_sizing(monkeypatch, tmp_path):
+    """KRIT-1 (2026-05-19): TIER_S_RISK_MULT must boost the actual
+    `risk_frac` passed into place_market_order — not just appear in the
+    compute_live_cluster() dict. Regression for the phantom-env-var bug
+    where boost was set but never wired to sizing.
+    """
+    import ftmo_executor as exe
+    import time as _time
+
+    # Seed a TIER-S cluster (6 symbols, all 4 majors → tier S match).
+    _seed_cluster_history(
+        tmp_path, monkeypatch,
+        ["BTC", "ETH", "BNB", "SOL", "AAVE", "ARB"], exe,
+    )
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "START_GATE_ENABLED", False)
+    monkeypatch.setattr(exe, "CLUSTER_ONLY_ENABLED", False)
+    monkeypatch.setattr(exe, "DPT_ENABLED", False)
+    monkeypatch.setattr(exe, "DRY_RUN", False)
+    monkeypatch.setattr(exe, "MOCK_MODE", True)
+    monkeypatch.setattr(exe, "TIER_S_RISK_MULT", 2.0)
+    monkeypatch.setattr(exe, "RISK_FRAC_HARD_CAP", 0.10)
+    monkeypatch.setattr(exe, "EXECUTOR_LOG_PATH", tmp_path / "executor-log.jsonl")
+    monkeypatch.setattr(exe, "DAILY_STATE_PATH", tmp_path / "daily-reset.json")
+    monkeypatch.setattr(exe, "PAUSE_STATE_PATH", tmp_path / "pause-state.json")
+    monkeypatch.setattr(exe.mt5, "positions_get", lambda *a, **kw: [])
+
+    captured = {}
+
+    def fake_place_market_order(**kwargs):
+        captured.update(kwargs)
+        return exe.OrderResult(False, None, "test-stop-after-capture", None, None)
+
+    monkeypatch.setattr(exe, "place_market_order", fake_place_market_order)
+
+    sig = {
+        "assetSymbol": "BTC-TREND",
+        "sourceSymbol": "BTCUSDT",
+        "direction": "long",
+        "riskFrac": 0.02,
+        "stopPct": 0.01,
+        "tpPct": 0.02,
+        "stopPrice": 49500.0,
+        "tpPrice": 51000.0,
+        "entryPrice": 50000.0,
+        "signalBarClose": int(_time.time() * 1000),
+        "maxHoldUntil": int(_time.time() * 1000) + 24 * 3600_000,
+    }
+
+    exe._process_signals_unlocked(
+        pending=[sig],
+        executed={"executions": []},
+        open_positions={"positions": []},
+    )
+
+    # TIER-S match × 2.0 multiplier → risk_frac doubled from 0.02 → 0.04.
+    assert "risk_frac" in captured, f"place_market_order not called: {captured}"
+    assert abs(captured["risk_frac"] - 0.04) < 1e-9, (
+        f"risk_mult NOT applied to lot sizing: place_market_order got "
+        f"risk_frac={captured['risk_frac']}, expected 0.04 (= 0.02 × 2.0)"
+    )
+
+
+def test_tier_risk_mult_capped_at_hard_cap(monkeypatch, tmp_path):
+    """KRIT-1 follow-on: boost × signal risk must not exceed
+    RISK_FRAC_HARD_CAP. If a TIER-S boost would push risk above the cap,
+    cap kicks in BEFORE place_market_order receives the value (so the
+    cap line in place_market_order is a redundant safety net, not the
+    only enforcement)."""
+    import ftmo_executor as exe
+    import time as _time
+
+    _seed_cluster_history(
+        tmp_path, monkeypatch,
+        ["BTC", "ETH", "BNB", "SOL", "AAVE", "ARB"], exe,
+    )
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "START_GATE_ENABLED", False)
+    monkeypatch.setattr(exe, "CLUSTER_ONLY_ENABLED", False)
+    monkeypatch.setattr(exe, "DPT_ENABLED", False)
+    monkeypatch.setattr(exe, "DRY_RUN", False)
+    monkeypatch.setattr(exe, "MOCK_MODE", True)
+    monkeypatch.setattr(exe, "TIER_S_RISK_MULT", 3.0)      # aggressive boost
+    monkeypatch.setattr(exe, "RISK_FRAC_HARD_CAP", 0.05)   # firm 5% cap
+    monkeypatch.setattr(exe, "EXECUTOR_LOG_PATH", tmp_path / "executor-log.jsonl")
+    monkeypatch.setattr(exe, "DAILY_STATE_PATH", tmp_path / "daily-reset.json")
+    monkeypatch.setattr(exe, "PAUSE_STATE_PATH", tmp_path / "pause-state.json")
+    monkeypatch.setattr(exe.mt5, "positions_get", lambda *a, **kw: [])
+
+    captured = {}
+
+    def fake_place_market_order(**kwargs):
+        captured.update(kwargs)
+        return exe.OrderResult(False, None, "test-stop-after-capture", None, None)
+
+    monkeypatch.setattr(exe, "place_market_order", fake_place_market_order)
+
+    sig = {
+        "assetSymbol": "BTC-TREND",
+        "sourceSymbol": "BTCUSDT",
+        "direction": "long",
+        "riskFrac": 0.02,         # 2% × 3.0 = 6% raw; cap = 5%.
+        "stopPct": 0.01,
+        "tpPct": 0.02,
+        "stopPrice": 49500.0,
+        "tpPrice": 51000.0,
+        "entryPrice": 50000.0,
+        "signalBarClose": int(_time.time() * 1000),
+        "maxHoldUntil": int(_time.time() * 1000) + 24 * 3600_000,
+    }
+
+    exe._process_signals_unlocked(
+        pending=[sig],
+        executed={"executions": []},
+        open_positions={"positions": []},
+    )
+
+    assert "risk_frac" in captured, "place_market_order not called"
+    assert abs(captured["risk_frac"] - 0.05) < 1e-9, (
+        f"boost×risk must be capped at hard cap 0.05, got {captured['risk_frac']}"
+    )
+
+
 # ============================================================================
 # Round 56 audit fixes: Prague-TZ ping dates + UTC-aware history_deals_get
 #                       + invalid-fill-price rejection
