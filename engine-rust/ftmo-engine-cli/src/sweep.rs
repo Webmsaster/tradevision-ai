@@ -546,6 +546,12 @@ struct CfgOverrides {
     min_trading_days: Option<u32>,
     profit_target: Option<f64>,
     max_days: Option<u32>,
+    /// 2026-05-19 Pattern-D fix: max consecutive stop-loss exits per day
+    /// before pausing new entries until next day rollover. 0 = disabled.
+    max_consec_stops_per_day: Option<u32>,
+    /// 2026-05-19 Pattern-C fix: trailing-DD-lock trigger + floor (realized).
+    trail_dd_lock_trigger: Option<f64>,
+    trail_dd_lock_floor: Option<f64>,
     lscool_after: Option<u32>,
     lscool_bars: Option<u64>,
     /// 2026-05-13 Hebel 2: cross-asset stress filter (e.g. BTC trend gate
@@ -783,6 +789,15 @@ fn apply_overrides(
     }
     if let Some(d) = ov.max_days {
         cfg.max_days = d;
+    }
+    if let Some(n) = ov.max_consec_stops_per_day {
+        cfg.max_consec_stops_per_day = n;
+    }
+    if let Some(t) = ov.trail_dd_lock_trigger {
+        cfg.trail_dd_lock_trigger = t;
+    }
+    if let Some(f) = ov.trail_dd_lock_floor {
+        cfg.trail_dd_lock_floor = f;
     }
     if let Some(sym) = ov.cross_asset_sym.as_ref() {
         cfg.cross_asset_filter = Some(ftmo_engine_core::config::CrossAssetFilter {
@@ -1089,6 +1104,11 @@ fn main() -> Result<()> {
     // All overrides are post-template (applied after `template_by_selector`).
     let mut override_tp_mult: Option<f64> = None;
     let mut override_stop_pct: Option<f64> = None;
+    // 2026-05-19 Pattern-D fix CLI: 0 = disabled.
+    let mut max_consec_stops_per_day: u32 = 0;
+    // 2026-05-19 Pattern-C trailing-DD-lock CLI flags.
+    let mut trail_dd_lock_trigger: f64 = 0.0;
+    let mut trail_dd_lock_floor: f64 = 0.0;
     let mut override_mct: Option<u32> = None;
     let mut override_trail_activate: Option<f64> = None;
     let mut override_trail_pct: Option<f64> = None;
@@ -1331,6 +1351,15 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             // R29-PassrateHunt overrides
+            "--max-consec-stops-per-day" => {
+                max_consec_stops_per_day = need!("--max-consec-stops-per-day").parse()?;
+            }
+            "--trail-dd-lock-trigger-pct" => {
+                trail_dd_lock_trigger = need!("--trail-dd-lock-trigger-pct").parse()?;
+            }
+            "--trail-dd-lock-floor-pct" => {
+                trail_dd_lock_floor = need!("--trail-dd-lock-floor-pct").parse()?;
+            }
             "--override-tp-mult" => override_tp_mult = Some(need!("--override-tp-mult").parse()?),
             "--override-stop-pct" => {
                 override_stop_pct = Some(need!("--override-stop-pct").parse()?)
@@ -1889,6 +1918,21 @@ fn main() -> Result<()> {
         min_trading_days,
         profit_target,
         max_days,
+        max_consec_stops_per_day: if max_consec_stops_per_day > 0 {
+            Some(max_consec_stops_per_day)
+        } else {
+            None
+        },
+        trail_dd_lock_trigger: if trail_dd_lock_trigger > 0.0 {
+            Some(trail_dd_lock_trigger)
+        } else {
+            None
+        },
+        trail_dd_lock_floor: if trail_dd_lock_floor > 0.0 {
+            Some(trail_dd_lock_floor)
+        } else {
+            None
+        },
         cross_asset_sym,
         cross_asset_dir,
         cross_asset_fast,

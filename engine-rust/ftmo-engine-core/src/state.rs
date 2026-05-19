@@ -135,6 +135,21 @@ pub struct EngineState {
     /// V5R re-entry slots, keyed by `ls_key(symbol, direction)`.
     #[serde(rename = "pendingReentries", default)]
     pub pending_reentries: HashMap<String, ReentryState>,
+    /// 2026-05-19 Pattern-D fix — consecutive stop-loss counter (resets at
+    /// day boundary OR after a non-stop exit). When ≥ cfg.max_consec_stops_per_day,
+    /// `consec_stops_paused` is set, blocking new entries until next day.
+    #[serde(rename = "dayConsecStops", default)]
+    pub day_consec_stops: u32,
+    #[serde(rename = "consecStopsPaused", default)]
+    pub consec_stops_paused: bool,
+    /// 2026-05-19 Pattern-C fix — trailing-DD-lock state. Armed when
+    /// realized equity reaches `cfg.trail_dd_lock_trigger`. Tracks peak
+    /// realized equity post-arm. If equity drops by `trail_dd_lock_floor`
+    /// from peak → force-close + halt.
+    #[serde(rename = "trailDdArmed", default)]
+    pub trail_dd_armed: bool,
+    #[serde(rename = "trailDdPeak", default)]
+    pub trail_dd_peak: f64,
 }
 
 impl EngineState {
@@ -164,6 +179,10 @@ impl EngineState {
             bars_seen: 0,
             stopped_reason: None,
             pending_reentries: HashMap::new(),
+            day_consec_stops: 0,
+            consec_stops_paused: false,
+            trail_dd_armed: false,
+            trail_dd_peak: 0.0,
         }
     }
 

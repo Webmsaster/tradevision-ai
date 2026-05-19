@@ -151,6 +151,10 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
         state.day = new_day as u32;
         state.day_start = state.equity;
         state.day_peak = state.equity;
+        // 2026-05-19 Pattern-D fix — reset consec-stops counter + pause at
+        // day boundary so a fresh trading day is unrestricted.
+        state.day_consec_stops = 0;
+        state.consec_stops_paused = false;
     }
 
     // 3. Force-close at max_days.
@@ -598,6 +602,17 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                 block_reason = Some(msg);
             }
         }
+    }
+    // 2026-05-19 Pattern-D fix — consecutive-stops pause blocks new entries
+    // until the next day rollover (where consec_stops_paused is cleared).
+    if entries_allowed && state.consec_stops_paused {
+        entries_allowed = false;
+        let msg = format!(
+            "consecStopsPaused: {} consec stops hit threshold {}",
+            state.day_consec_stops, cfg.max_consec_stops_per_day
+        );
+        result.notes.push(msg.clone());
+        block_reason = Some(msg);
     }
     if entries_allowed {
         if let Some(cpts) = cfg.challenge_peak_trailing_stop {
@@ -1071,6 +1086,37 @@ fn apply_exits(
             exit_price: out.exit_price,
             exit_reason: out.reason,
         });
+        // 2026-05-19 Pattern-D fix — track consecutive stop-loss exits per day.
+        // Reset on any non-Stop exit; increment on Stop; arm pause when threshold hit.
+        if out.reason == ExitReason::Stop {
+            state.day_consec_stops = state.day_consec_stops.saturating_add(1);
+            if cfg.max_consec_stops_per_day > 0
+                && state.day_consec_stops >= cfg.max_consec_stops_per_day
+            {
+                state.consec_stops_paused = true;
+            }
+        } else {
+            state.day_consec_stops = 0;
+        }
+        // 2026-05-19 Pattern-C fix — trailing-DD-lock tracking on realized
+        // equity (NOT mtm — avoids anti-reversal-style fighting PASSLOCK).
+        if cfg.trail_dd_lock_trigger > 0.0 {
+            if !state.trail_dd_armed && state.equity >= 1.0 + cfg.trail_dd_lock_trigger {
+                state.trail_dd_armed = true;
+                state.trail_dd_peak = state.equity;
+            }
+            if state.trail_dd_armed && state.equity > state.trail_dd_peak {
+                state.trail_dd_peak = state.equity;
+            }
+            if state.trail_dd_armed
+                && state.equity < state.trail_dd_peak - cfg.trail_dd_lock_floor
+            {
+                // Mirror PASSLOCK's paused-at-target latch — blocks new
+                // entries and lets the bar's existing apply_exits flow
+                // close remaining positions naturally on next step.
+                state.paused_at_target = true;
+            }
+        }
     }
 }
 

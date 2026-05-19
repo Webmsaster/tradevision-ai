@@ -647,6 +647,25 @@ pub struct EngineConfig {
     #[serde(default, rename = "closeAllOnTargetReached")]
     pub close_all_on_target_reached: bool,
 
+    /// 2026-05-19 Pattern-D fix — when this many consecutive stop-loss
+    /// exits occur within a single trading day, pause all new entries
+    /// until the next day boundary. 0 = disabled (default). Typical
+    /// effective values: 3-4 for V5_AMBER_MAX_PASSLOCK (per Round-2 deep-dive).
+    /// Converts "early TL fast disaster" windows (Pattern D, 18 of 80
+    /// fails) from terminal -10% TL into recoverable -5% DL-only.
+    #[serde(default, rename = "maxConsecStopsPerDay")]
+    pub max_consec_stops_per_day: u32,
+
+    /// 2026-05-19 Pattern-C fix — trailing-DD-lock trigger. When realized
+    /// equity reaches +X% (e.g. 0.05), arm a trailing DD floor. Floor =
+    /// peak - floor_pct. If equity falls below floor, force-close all and
+    /// stop trading. 0.0 = disabled. Uses state.equity (REALIZED), NOT
+    /// state.mtm_equity (avoids fighting PASSLOCK like anti-reversal did).
+    #[serde(default, rename = "trailDdLockTrigger")]
+    pub trail_dd_lock_trigger: f64,
+    #[serde(default, rename = "trailDdLockFloor")]
+    pub trail_dd_lock_floor: f64,
+
     /// Run-config-level invert fallback. Mirrors `cfg.invertDirection ?? false`
     /// in `ftmoDaytrade24h.ts:3609` — per-asset `invertDirection` overrides
     /// this; templates that set every asset explicitly leave this `false`.
@@ -769,6 +788,9 @@ impl EngineConfig {
             time_exit_enabled: false,
             pause_at_target_reached: true,
             close_all_on_target_reached: true,
+            max_consec_stops_per_day: 0,
+            trail_dd_lock_trigger: 0.0,
+            trail_dd_lock_floor: 0.0,
             invert_direction: false,
             bar_minutes: 30,
             daily_equity_guardian: None,
