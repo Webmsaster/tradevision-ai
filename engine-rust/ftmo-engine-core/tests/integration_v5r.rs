@@ -53,6 +53,8 @@ fn v5r_guardian_closes_on_intraday_drawdown() {
         last_known_price: None,
         trail_active: false,
         trail_peak: 0.0,
+        original_eff_risk: 0.4,
+        pyramid_adds_done: 0,
     });
 
     let mut feed: HashMap<String, Vec<Candle>> = HashMap::new();
@@ -145,6 +147,8 @@ fn v5r_reentry_after_stop_with_mean_rev_size_mult() {
         last_known_price: None,
         trail_active: false,
         trail_peak: 0.0,
+        original_eff_risk: 0.4,
+        pyramid_adds_done: 0,
     });
 
     let mut feed: HashMap<String, Vec<Candle>> = HashMap::new();

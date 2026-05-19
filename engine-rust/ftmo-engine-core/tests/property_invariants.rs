@@ -368,6 +368,8 @@ proptest! {
             last_known_price: None,
             trail_active: false,
             trail_peak: 0.0,
+            original_eff_risk: 0.4,
+            pyramid_adds_done: 0,
         };
         let bar_high = open.max(close).max(low);
         let candle = Candle::new(0, open, bar_high, low, close, 0.0);

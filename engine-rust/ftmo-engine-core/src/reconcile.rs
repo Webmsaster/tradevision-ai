@@ -233,6 +233,8 @@ mod tests {
             last_known_price: None,
             trail_active: false,
             trail_peak: 0.0,
+            original_eff_risk: 0.4,
+            pyramid_adds_done: 0,
         });
         let closures = vec![OfflineClosure {
             ticket_id: "t1".into(),
@@ -292,6 +294,8 @@ mod tests {
             last_known_price: None,
             trail_active: false,
             trail_peak: 0.0,
+            original_eff_risk: 0.4,
+            pyramid_adds_done: 0,
         });
         let mut funding = vec![Some(0.0_f64); 100];
         funding[16] = Some(0.0001);
@@ -346,6 +350,8 @@ mod tests {
             last_known_price: None,
             trail_active: false,
             trail_peak: 0.0,
+            original_eff_risk: 0.4,
+            pyramid_adds_done: 0,
         });
         let closures = vec![OfflineClosure {
             ticket_id: "tB".into(),
@@ -376,6 +382,8 @@ mod tests {
             last_known_price: None,
             trail_active: false,
             trail_peak: 0.0,
+            original_eff_risk: 0.4,
+            pyramid_adds_done: 0,
         });
         let fund_by_sym: HashMap<String, Vec<Option<f64>>> = HashMap::new();
         let bar0_by_sym: HashMap<String, i64> = HashMap::new();

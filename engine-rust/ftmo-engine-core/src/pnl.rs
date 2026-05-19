@@ -336,6 +336,8 @@ mod tests {
             last_known_price: None,
             trail_active: false,
             trail_peak: 0.0,
+            original_eff_risk: 0.4,
+            pyramid_adds_done: 0,
         }
     }
 

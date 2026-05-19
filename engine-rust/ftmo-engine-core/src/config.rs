@@ -231,6 +231,30 @@ pub struct PartialTakeProfit {
     pub close_fraction: f64,
 }
 
+/// 2026-05-19: Pyramiding (add-to-winners). When an open position reaches
+/// `trigger_pct` unrealised raw PnL, scale up `eff_risk` by
+/// `add_frac × original_eff_risk` (capped by LiveCaps.max_risk_frac).
+/// Repeats up to `max_adds` times, each at the same incremental trigger
+/// (i.e. trigger × N for the Nth add).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Pyramid {
+    /// Unrealised raw_pnl threshold to trigger the next add (e.g. 0.01 = +1%).
+    #[serde(rename = "triggerPct")]
+    pub trigger_pct: f64,
+    /// Fraction of ORIGINAL eff_risk to add per trigger (e.g. 0.5 = +50%).
+    #[serde(rename = "addFrac")]
+    pub add_frac: f64,
+    /// Maximum number of adds per position. 0 disables.
+    #[serde(rename = "maxAdds")]
+    pub max_adds: u32,
+    /// 2026-05-19: if `true`, pyramid is allowed to scale `eff_risk` past
+    /// `LiveCaps.max_risk_frac`. NOT FTMO-compliant — only useful for
+    /// research/hypothesis-testing whether pyramiding *would* help if the
+    /// strategy were not already capped at max risk.
+    #[serde(default, rename = "bypassCap")]
+    pub bypass_cap: bool,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct PartialTakeProfitLevel {
     #[serde(rename = "triggerPct")]
@@ -600,6 +624,9 @@ pub struct EngineConfig {
     pub partial_take_profit: Option<PartialTakeProfit>,
     #[serde(default, rename = "partialTakeProfitLevels")]
     pub partial_take_profit_levels: Option<Vec<PartialTakeProfitLevel>>,
+    /// 2026-05-19 Pyramid (add-to-winners). See `Pyramid` doc.
+    #[serde(default, rename = "pyramid")]
+    pub pyramid: Option<Pyramid>,
     #[serde(default, rename = "adaptiveSizing")]
     pub adaptive_sizing: Option<Vec<AdaptiveSizingTier>>,
     #[serde(default, rename = "timeBoost")]
@@ -765,6 +792,7 @@ impl EngineConfig {
             break_even: None,
             partial_take_profit: None,
             partial_take_profit_levels: None,
+            pyramid: None,
             adaptive_sizing: None,
             time_boost: None,
             kelly_sizing: None,

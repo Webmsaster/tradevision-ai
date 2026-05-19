@@ -630,6 +630,11 @@ struct CfgOverrides {
     // EngineConfig.news_events with the hardcoded 2026 FOMC list. Default
     // OFF so prior behaviour is untouched.
     news_blackout_enable: bool,
+    /// 2026-05-19 Pyramid (add-to-winners) overrides.
+    pyramid_trigger_pct: Option<f64>,
+    pyramid_add_frac: Option<f64>,
+    pyramid_max_adds: Option<u32>,
+    pyramid_bypass_cap: bool,
 }
 
 fn apply_overrides(
@@ -914,6 +919,20 @@ fn apply_overrides(
             min_factor: ov.funding_sizing_min_factor.unwrap_or(cur.min_factor),
         });
     }
+    // 2026-05-19 Pyramid override — activate if ANY of the three sub-flags
+    // is supplied. Missing values fall back to sensible defaults.
+    if ov.pyramid_trigger_pct.is_some()
+        || ov.pyramid_add_frac.is_some()
+        || ov.pyramid_max_adds.is_some()
+        || ov.pyramid_bypass_cap
+    {
+        cfg.pyramid = Some(ftmo_engine_core::config::Pyramid {
+            trigger_pct: ov.pyramid_trigger_pct.unwrap_or(0.01),
+            add_frac: ov.pyramid_add_frac.unwrap_or(0.5),
+            max_adds: ov.pyramid_max_adds.unwrap_or(2),
+            bypass_cap: ov.pyramid_bypass_cap,
+        });
+    }
     if let Some(csv) = &ov.adaptive_tp {
         // Format: "BTC:0.025,ETH:0.030,..."
         for pair in csv.split(',') {
@@ -1168,6 +1187,11 @@ fn main() -> Result<()> {
     let mut rsi_period: Option<usize> = None;
     let mut lscool_after: Option<u32> = None;
     let mut lscool_bars: Option<u64> = None;
+    // 2026-05-19 Pyramid (add-to-winners) CLI overrides.
+    let mut pyramid_trigger_pct: Option<f64> = None;
+    let mut pyramid_add_frac: Option<f64> = None;
+    let mut pyramid_max_adds: Option<u32> = None;
+    let mut pyramid_bypass_cap: bool = false;
     let mut ml_model_path: Option<PathBuf> = None;
     let mut hmm_model_path: Option<PathBuf> = None;
     let mut regime_hmm_p_bull: f64 = f64::NAN;
@@ -1429,6 +1453,16 @@ fn main() -> Result<()> {
             "--td-start-day" => td_start_day = Some(need!("--td-start-day").parse()?),
             "--td-min-factor" => td_min_factor = Some(need!("--td-min-factor").parse()?),
             "--td-mode" => td_mode = Some(need!("--td-mode")),
+            "--pyramid-trigger-pct" => {
+                pyramid_trigger_pct = Some(need!("--pyramid-trigger-pct").parse()?)
+            }
+            "--pyramid-add-frac" => {
+                pyramid_add_frac = Some(need!("--pyramid-add-frac").parse()?)
+            }
+            "--pyramid-max-adds" => {
+                pyramid_max_adds = Some(need!("--pyramid-max-adds").parse()?)
+            }
+            "--pyramid-bypass-cap" => pyramid_bypass_cap = true,
             "--trades-out" => trades_out = Some(PathBuf::from(need!("--trades-out"))),
             "--debug-window" => debug_window = Some(need!("--debug-window").parse()?),
             // R29-Audit-2026-05-12: --phantom-suppress flag removed.
@@ -1967,6 +2001,10 @@ fn main() -> Result<()> {
         tp_mult_per_asset,
         phase2_risk_mult,
         news_blackout_enable,
+        pyramid_trigger_pct,
+        pyramid_add_frac,
+        pyramid_max_adds,
+        pyramid_bypass_cap,
     };
 
     if candles_dir.is_some() || symbols_arg.is_some() {

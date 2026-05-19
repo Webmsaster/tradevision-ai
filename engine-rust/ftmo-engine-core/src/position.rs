@@ -81,6 +81,15 @@ pub struct OpenPosition {
     /// short: min close). Defaults to `entry_price` to mirror TS init.
     #[serde(default, rename = "trailPeak")]
     pub trail_peak: f64,
+    /// 2026-05-19 Pyramid: ORIGINAL eff_risk at entry (before any adds).
+    /// Pyramid scales by `add_frac × original_eff_risk` so cumulative size
+    /// is deterministic regardless of prior adds. Defaults to `eff_risk`
+    /// (no-pyramid backwards compat).
+    #[serde(default, rename = "originalEffRisk")]
+    pub original_eff_risk: f64,
+    /// Count of pyramid adds applied so far. Capped at `Pyramid.max_adds`.
+    #[serde(default, rename = "pyramidAddsDone")]
+    pub pyramid_adds_done: u32,
 }
 
 impl OpenPosition {
@@ -151,6 +160,8 @@ mod tests {
             last_known_price: None,
             trail_active: false,
             trail_peak: 100.0,
+            original_eff_risk: 0.4,
+            pyramid_adds_done: 0,
         }
     }
 
