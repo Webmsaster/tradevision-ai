@@ -1,0 +1,66 @@
+=== Running: baseline_no_gate ===
+Flags (extras): 
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ALGOUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ARBUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ATOMUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/NEARUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/TRXUSDT_30m.json
+ftmo-sweep (multi-asset): 19 symbols × 55333 bars; cfg=V5_AMBER_MAX_PASSLOCK; 8 threads; funding=yes; cb_premium=no
+22954 bars / 2189 trades across 200 windows in 74.828s — 307 bars/sec
+passed=104 / 200 (52.00%)
+[baseline_no_gate] passed=104 total=200 pass_rate=52.00%
+=== Running: baseline_startgate_b4_m3 ===
+Flags (extras): --min-initial-signal-breadth 4 --min-initial-majors 3
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ALGOUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ARBUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ATOMUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/NEARUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/TRXUSDT_30m.json
+ftmo-sweep (multi-asset): 19 symbols × 55333 bars; cfg=V5_AMBER_MAX_PASSLOCK; 8 threads; funding=yes; cb_premium=no
+22954 bars / 2189 trades across 200 windows in 62.923s — 365 bars/sec
+passed=104 / 200 (52.00%)
+qualified=81 / 200 (40.50%) — passed_of_qualified=78 / 81 (96.30%)
+[baseline_startgate_b4_m3] passed=104 total=200 pass_rate=52.00%
+=== Running: cluster_only_b10_m2 ===
+Flags (extras): --cluster-only-mode --min-initial-signal-breadth 10 --min-initial-majors 2
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ALGOUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ARBUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ATOMUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/NEARUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/TRXUSDT_30m.json
+ftmo-sweep (multi-asset): 19 symbols × 55333 bars; cfg=V5_AMBER_MAX_PASSLOCK; 8 threads; funding=yes; cb_premium=no
+24638 bars / 2145 trades across 200 windows in 71.945s — 342 bars/sec
+passed=105 / 200 (52.50%)
+qualified=104 / 200 (52.00%) — passed_of_qualified=101 / 104 (97.12%)
+[cluster_only_b10_m2] passed=105 total=200 pass_rate=52.50%
+=== Running: cluster_only_b9_m2 ===
+Flags (extras): --cluster-only-mode --min-initial-signal-breadth 9 --min-initial-majors 2
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ALGOUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ARBUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ATOMUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/NEARUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/TRXUSDT_30m.json
+ftmo-sweep (multi-asset): 19 symbols × 55333 bars; cfg=V5_AMBER_MAX_PASSLOCK; 8 threads; funding=yes; cb_premium=no
+23835 bars / 2131 trades across 200 windows in 66.393s — 359 bars/sec
+passed=106 / 200 (53.00%)
+qualified=105 / 200 (52.50%) — passed_of_qualified=102 / 105 (97.14%)
+[cluster_only_b9_m2] passed=106 total=200 pass_rate=53.00%
+=== Running: cluster_only_b6_m4_tier_s ===
+Flags (extras): --cluster-only-mode --min-initial-signal-breadth 6 --min-initial-majors 4
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ALGOUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ARBUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ATOMUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/NEARUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/TRXUSDT_30m.json
+ftmo-sweep (multi-asset): 19 symbols × 55333 bars; cfg=V5_AMBER_MAX_PASSLOCK; 8 threads; funding=yes; cb_premium=no
+26293 bars / 2094 trades across 200 windows in 44.357s — 593 bars/sec
+passed=101 / 200 (50.50%)
+qualified=12 / 200 (6.00%) — passed_of_qualified=11 / 12 (91.67%)
+[cluster_only_b6_m4_tier_s] passed=101 total=200 pass_rate=50.50%
+=== Summary ===
+label                                   	passed	total	pass_rate
+baseline_no_gate                        	104	200	52.00%
+baseline_startgate_b4_m3                	104	200	52.00%
+cluster_only_b10_m2                     	105	200	52.50%
+cluster_only_b9_m2                      	106	200	53.00%
+cluster_only_b6_m4_tier_s               	101	200	50.50%

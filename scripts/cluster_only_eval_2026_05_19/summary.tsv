@@ -1,0 +1,6 @@
+label                                   	passed	total	pass_rate
+baseline_no_gate                        	104	200	52.00%
+baseline_startgate_b4_m3                	104	200	52.00%
+cluster_only_b10_m2                     	105	200	52.50%
+cluster_only_b9_m2                      	106	200	53.00%
+cluster_only_b6_m4_tier_s               	101	200	50.50%

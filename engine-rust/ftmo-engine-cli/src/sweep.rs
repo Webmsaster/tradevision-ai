@@ -73,6 +73,16 @@ struct WindowResult {
     first_cluster_size: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     first_cluster_majors: Option<usize>,
+    /// 2026-05-19 cluster-only-mode runtime stats. None when the gate is off.
+    /// `cluster_blocked_bars` = bars where >=1 candidate signal was suppressed
+    /// because the rolling cluster was red. `cluster_blocked_signals` = total
+    /// dropped signal count across the window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cluster_blocked_bars: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cluster_passed_bars: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cluster_blocked_signals: Option<u32>,
 }
 
 fn ml_features_for_signal(
@@ -366,6 +376,18 @@ struct MultiSignalCfg {
     /// Short symbol prefixes (e.g. "BTC,ETH,BNB,SOL") — a trade symbol matches
     /// when it starts with `"<prefix>-"` or equals the prefix exactly.
     majors_prefixes: Vec<String>,
+    /// 2026-05-19 — cluster-only intra-challenge gate. When true, the engine
+    /// computes a sliding-window cluster (breadth + majors) at every bar and
+    /// drops all candidate signals when the cluster is currently red. Mirrors
+    /// live `check_cluster_entry_block` (ftmo_executor.py) semantics: signals
+    /// only fire when, in the past `initial_window_hours`, the union of
+    /// already-detected signals satisfies
+    ///   breadth >= min_initial_signal_breadth AND
+    ///   majors  >= min_initial_majors.
+    /// Reuses the same thresholds & majors_prefixes as the start-gate. Default
+    /// off so existing sweeps keep their behaviour; activate with the CLI flag
+    /// `--cluster-only-mode`.
+    cluster_only_mode: bool,
     /// R29-Audit: random-gate sanity check. When set to Some(f), each signal
     /// is kept with probability f (deterministic per `random_gate_seed +
     /// entry_time + symbol_hash`). Used to confirm ML "wins" come from signal
@@ -1141,6 +1163,10 @@ fn main() -> Result<()> {
         "BNB".to_string(),
         "SOL".to_string(),
     ];
+    // 2026-05-19 — cluster-only intra-challenge gate (mirrors live executor's
+    // CLUSTER_ONLY_ENABLED behaviour). Off by default; activate with
+    // `--cluster-only-mode`. Re-uses the same thresholds as the start-gate.
+    let mut cluster_only_mode: bool = false;
     // R29-Audit-Round3 2026-05-12 (Bug-1 fix): default sentinel `NaN` lets us
     // detect "user passed `--ml-model` but forgot `--ml-threshold`" and
     // fail-loud below instead of silently keeping every signal (threshold=0
@@ -1412,6 +1438,7 @@ fn main() -> Result<()> {
                     return Err(anyhow!("--majors-list must contain at least one prefix"));
                 }
             }
+            "--cluster-only-mode" => cluster_only_mode = true,
             "--start-after-ts" => start_after_ts = Some(need!("--start-after-ts").parse()?),
             "--random-gate-keep" => {
                 random_gate_keep = Some(need!("--random-gate-keep").parse()?);
@@ -2040,6 +2067,7 @@ fn main() -> Result<()> {
                 min_initial_majors,
                 initial_window_hours,
                 majors_prefixes,
+                cluster_only_mode,
                 random_gate_keep,
                 random_gate_seed,
                 // 2026-05-19 Damage-Limitation Early-Abort knobs.
@@ -2276,6 +2304,9 @@ fn run_single_asset(
                 qualified_at_start: None,
                 first_cluster_size: None,
                 first_cluster_majors: None,
+                cluster_blocked_bars: None,
+                cluster_passed_bars: None,
+                cluster_blocked_signals: None,
             };
             if let Ok(mut g) = writer.lock() {
                 if let Some(w) = g.as_mut() {
@@ -2981,6 +3012,18 @@ fn run_one_window(
     let mut last_passed = false;
     let mut last_fail: Option<String> = None;
 
+    // 2026-05-19 — cluster-only-mode: rolling buffer of (entry_time_ms, symbol)
+    // for every signal detected after gates in this window. Used to compute
+    // the live-cluster (breadth + distinct majors) inside the past
+    // `initial_window_hours` whenever a new candidate signal is about to be
+    // pushed. Mirrors live `compute_live_cluster` / `check_cluster_entry_block`
+    // semantics. Stays empty when `cluster_only_mode` is off.
+    let mut cluster_signal_log: Vec<(i64, String)> = Vec::new();
+    // Cluster runtime stats — surfaced in WindowResult for sweep aggregation.
+    let mut cluster_blocked_bars: u32 = 0;
+    let mut cluster_passed_bars: u32 = 0;
+    let mut cluster_blocked_signals: u32 = 0;
+
     // R29-Rust-Phase2: pre-fill feed with WARMUP bars BEFORE the challenge
     // window. The TS shard test (`scripts/_r28V6Round60Shard.ts:112`) runs
     // simulate(slice, cfg, WARMUP, WARMUP+winBars) with WARMUP=5000, giving
@@ -3593,6 +3636,69 @@ fn run_one_window(
             }
         }
 
+        // 2026-05-19 cluster-only intra-challenge gate. Off by default;
+        // activated by --cluster-only-mode. The gate counts distinct symbols
+        // and majors among signals detected in the past
+        // `initial_window_hours` (current candidate signals included). If the
+        // resulting cluster is RED (breadth < min_breadth OR majors < min_majors)
+        // we drop ALL candidate signals for this bar. Open positions keep
+        // running — only NEW entries are blocked. Mirrors the live executor's
+        // `check_cluster_entry_block` semantics.
+        if multi_signal.cluster_only_mode && !signals_for_bar.is_empty() {
+            let window_ms = (multi_signal.initial_window_hours as i64) * 3_600_000;
+            // Use the first candidate's entry_time as the "now" anchor (all
+            // signals on the same bar share the same entry_time).
+            let now_ms = signals_for_bar[0].entry_time;
+            let cutoff_ms = now_ms - window_ms;
+            // Drop stale entries from the front of the buffer to keep memory
+            // bounded across a 30-day challenge.
+            while cluster_signal_log
+                .first()
+                .map(|(t, _)| *t < cutoff_ms)
+                .unwrap_or(false)
+            {
+                cluster_signal_log.remove(0);
+            }
+            // Build cluster from BOTH past entries and current candidates so
+            // the gate can self-bootstrap (a wide opening burst on bar lo
+            // qualifies immediately, just like the live signal-history).
+            let mut symbols_set: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            let mut majors_set: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            let count_one = |sym: &str,
+                             symbols_set: &mut std::collections::HashSet<String>,
+                             majors_set: &mut std::collections::HashSet<String>| {
+                symbols_set.insert(sym.to_string());
+                for prefix in multi_signal.majors_prefixes.iter() {
+                    if sym == prefix || sym.starts_with(&format!("{prefix}-")) {
+                        majors_set.insert(prefix.clone());
+                        break;
+                    }
+                }
+            };
+            for (_t, sym) in cluster_signal_log.iter() {
+                count_one(sym, &mut symbols_set, &mut majors_set);
+            }
+            for s in signals_for_bar.iter() {
+                count_one(&s.symbol, &mut symbols_set, &mut majors_set);
+            }
+            let qualified = symbols_set.len() >= multi_signal.min_initial_signal_breadth
+                && majors_set.len() >= multi_signal.min_initial_majors;
+            if !qualified {
+                cluster_blocked_signals = cluster_blocked_signals.saturating_add(
+                    signals_for_bar.len() as u32,
+                );
+                cluster_blocked_bars = cluster_blocked_bars.saturating_add(1);
+                signals_for_bar.clear();
+            } else {
+                cluster_passed_bars = cluster_passed_bars.saturating_add(1);
+                for s in signals_for_bar.iter() {
+                    cluster_signal_log.push((s.entry_time, s.symbol.clone()));
+                }
+            }
+        }
+
         let r = step_bar(
             &mut state,
             &BarInput {
@@ -3777,6 +3883,21 @@ fn run_one_window(
         qualified_at_start,
         first_cluster_size,
         first_cluster_majors,
+        cluster_blocked_bars: if multi_signal.cluster_only_mode {
+            Some(cluster_blocked_bars)
+        } else {
+            None
+        },
+        cluster_passed_bars: if multi_signal.cluster_only_mode {
+            Some(cluster_passed_bars)
+        } else {
+            None
+        },
+        cluster_blocked_signals: if multi_signal.cluster_only_mode {
+            Some(cluster_blocked_signals)
+        } else {
+            None
+        },
     };
     if let Ok(mut g) = writer.lock() {
         if let Some(w) = g.as_mut() {
@@ -3814,6 +3935,39 @@ fn run_one_window(
         }
     }
     report
+}
+
+/// 2026-05-19 cluster-only-mode helper. Counts distinct symbols + majors
+/// among `(entry_time, symbol)` pairs whose `entry_time` lies inside the
+/// rolling window `(now_ms - window_hours * 3.6M, now_ms]`. Used by the
+/// intra-challenge `--cluster-only-mode` gate to decide whether the live
+/// cluster is currently RED before letting fresh entries through. Pure
+/// function so tests can exercise it without spinning up `run_one_window`.
+pub fn compute_rolling_cluster_counts(
+    entries: &[(i64, String)],
+    now_ms: i64,
+    window_hours: u32,
+    majors_prefixes: &[String],
+) -> (usize, usize) {
+    if entries.is_empty() {
+        return (0, 0);
+    }
+    let cutoff_ms = now_ms.saturating_sub((window_hours as i64) * 3_600_000);
+    let mut symbols_set: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut majors_set: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for (t, sym) in entries.iter() {
+        if *t <= cutoff_ms || *t > now_ms {
+            continue;
+        }
+        symbols_set.insert(sym.as_str());
+        for prefix in majors_prefixes.iter() {
+            if sym == prefix || sym.starts_with(&format!("{prefix}-")) {
+                majors_set.insert(prefix.as_str());
+                break;
+            }
+        }
+    }
+    (symbols_set.len(), majors_set.len())
 }
 
 /// 2026-05-18 Bug-Audit (Round 2): pure function for first-cluster
@@ -3941,5 +4095,111 @@ mod breadth_gate_tests {
         let (breadth, majors_count) = compute_first_cluster_counts(&trades, 24, &[]);
         assert_eq!(breadth, 2);
         assert_eq!(majors_count, 0);
+    }
+}
+
+#[cfg(test)]
+mod cluster_only_mode_tests {
+    use super::compute_rolling_cluster_counts;
+
+    fn s(x: &str) -> String { x.to_string() }
+    fn t(time: i64, sym: &str) -> (i64, String) { (time, s(sym)) }
+    const H: i64 = 3_600_000;
+
+    #[test]
+    fn empty_entries_returns_zero_zero() {
+        let res = compute_rolling_cluster_counts(&[], 24 * H, 24, &[s("BTC")]);
+        assert_eq!(res, (0, 0));
+    }
+
+    #[test]
+    fn rolling_window_excludes_older_entries() {
+        // now=48h, window=24h → only entries in (24h, 48h] count.
+        let entries = vec![
+            t(0, "BTC-TREND"),         // outside (too old)
+            t(20 * H, "ETH-TREND"),    // outside (too old)
+            t(30 * H, "BNB-TREND"),    // inside
+            t(45 * H, "SOL-TREND"),    // inside
+            t(48 * H, "AAVE-TREND"),   // inside (== now)
+        ];
+        let majors = vec![s("BTC"), s("ETH"), s("BNB"), s("SOL")];
+        let (breadth, majors_count) =
+            compute_rolling_cluster_counts(&entries, 48 * H, 24, &majors);
+        assert_eq!(breadth, 3, "BNB,SOL,AAVE within rolling 24h");
+        assert_eq!(majors_count, 2, "BNB + SOL are majors; AAVE is not");
+    }
+
+    #[test]
+    fn future_entries_are_excluded() {
+        // Defensive: entry_time > now_ms should never contribute.
+        let entries = vec![
+            t(10 * H, "BTC-TREND"),
+            t(100 * H, "ETH-TREND"), // far future
+        ];
+        let majors = vec![s("BTC"), s("ETH")];
+        let (breadth, majors_count) =
+            compute_rolling_cluster_counts(&entries, 12 * H, 24, &majors);
+        assert_eq!(breadth, 1);
+        assert_eq!(majors_count, 1);
+    }
+
+    #[test]
+    fn cutoff_is_strict_left_exclusive() {
+        // entry exactly at cutoff (now - window) must NOT count (strict >).
+        let entries = vec![
+            t(0, "BTC-TREND"),         // cutoff
+            t(1, "ETH-TREND"),         // just inside
+        ];
+        let majors = vec![s("BTC"), s("ETH")];
+        let (breadth, majors_count) =
+            compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
+        assert_eq!(breadth, 1, "BTC at cutoff excluded; only ETH counts");
+        assert_eq!(majors_count, 1);
+    }
+
+    #[test]
+    fn duplicates_are_deduplicated() {
+        let entries = vec![
+            t(10 * H, "BTC-TREND"),
+            t(11 * H, "BTC-TREND"),
+            t(12 * H, "BTC-TREND"),
+        ];
+        let majors = vec![s("BTC")];
+        let (breadth, majors_count) =
+            compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
+        assert_eq!(breadth, 1);
+        assert_eq!(majors_count, 1);
+    }
+
+    #[test]
+    fn majors_count_caps_at_majors_list_size() {
+        let entries = vec![
+            t(1 * H, "BTC-TREND"),
+            t(2 * H, "ETH-TREND"),
+            t(3 * H, "BNB-TREND"),
+            t(4 * H, "SOL-TREND"),
+            t(5 * H, "AAVE-TREND"),
+            t(6 * H, "LINK-TREND"),
+        ];
+        let majors = vec![s("BTC"), s("ETH"), s("BNB"), s("SOL")];
+        let (breadth, majors_count) =
+            compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
+        assert_eq!(breadth, 6, "all 6 symbols counted toward breadth");
+        assert_eq!(majors_count, 4, "majors clamped at 4 (BTC,ETH,BNB,SOL)");
+    }
+
+    #[test]
+    fn red_cluster_when_under_threshold() {
+        // Simulates the gate decision: breadth >= 4 AND majors >= 2 required.
+        let entries = vec![
+            t(1 * H, "BTC-TREND"),
+            t(2 * H, "ETH-TREND"),
+            t(3 * H, "AAVE-TREND"),
+        ];
+        let majors = vec![s("BTC"), s("ETH"), s("BNB"), s("SOL")];
+        let (breadth, majors_count) =
+            compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
+        let qualified = breadth >= 4 && majors_count >= 2;
+        assert!(!qualified, "3 distinct < 4 needed → cluster RED");
     }
 }
