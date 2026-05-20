@@ -136,7 +136,12 @@ TIER_A_MIN_BREADTH = int(os.environ.get("FTMO_TIER_A_MIN_BREADTH", "10"))
 TIER_A_MIN_MAJORS = int(os.environ.get("FTMO_TIER_A_MIN_MAJORS", "3"))
 TIER_S_RISK_MULT = float(os.environ.get("FTMO_TIER_S_RISK_MULT", "1.0"))
 TIER_A_RISK_MULT = float(os.environ.get("FTMO_TIER_A_RISK_MULT", "1.0"))
-START_GATE_WINDOW_HOURS = float(os.environ.get("FTMO_START_GATE_WINDOW_HOURS", "2"))
+# 2026-05-20 bug-find round fix (#2b): default 2h diverged from the backtest's
+# initial_window_hours=24 — the live gate measured a 2h trailing window vs the
+# validated 24h cluster, so it qualified far less often than the backtest. Now
+# defaults to 24 to mirror the backtest's first-24h-cluster population. Override
+# via FTMO_START_GATE_WINDOW_HOURS only if the backtest used a different window.
+START_GATE_WINDOW_HOURS = float(os.environ.get("FTMO_START_GATE_WINDOW_HOURS", "24"))
 START_GATE_MIN_HISTORY_HOURS = float(os.environ.get("FTMO_START_GATE_MIN_HISTORY_HOURS", "0"))
 START_GATE_MAX_AGE_MIN = float(os.environ.get("FTMO_START_GATE_MAX_AGE_MIN", "180"))
 # Cluster-only mode gates every new entry, not only the first challenge trade.
@@ -190,6 +195,12 @@ MAX_ENTRY_SLIPPAGE_PCT = float(os.environ.get("FTMO_MAX_ENTRY_SLIPPAGE", "0.005"
 # any order whose effective stop distance is below this floor. Default 0.1% — far
 # below any legitimate crypto stop (1-5%), so it only catches degenerate payloads.
 MIN_EFFECTIVE_STOP_PCT = float(os.environ.get("FTMO_MIN_EFFECTIVE_STOP", "0.001"))
+
+# Signal staleness cap — drop/never-execute signals older than this after a
+# crash/restart/long pause (avoids trading on stale data). Used by both the
+# pending-signal processor and the boot order-marker reconcile (so a stale
+# orphan marker is alerted, not silently dropped or double-executed).
+MAX_SIGNAL_AGE_MS = 5 * 60_000
 
 # ---------------------------------------------------------------------------
 # FTMO_STRICT_PARITY (R3-B Drift-3, 2026-05-15)
@@ -851,12 +862,25 @@ def compute_live_cluster() -> dict:
                 asset = r.get("asset")
                 if not isinstance(asset, str):
                     continue
-                # Strip suffixes for major matching (BTC-TREND → BTC, BTCUSDT → BTC)
-                base = asset.split("-")[0].upper()
-                base = base.removesuffix("USDT") if base.endswith("USDT") else base
-                symbols.add(base)
-                if base in MAJORS_LIST:
-                    majors.add(base)
+                # 2026-05-20 bug-find round fix (#2a): mirror the backtest's
+                # `cluster_symbol_key` exactly. Breadth must count distinct FULL
+                # strategy-labels — `ETH-MR` and `ETH-TREND` are 2 symbols, NOT
+                # 1. The old `split("-")[0]` collapsed every ETH-variant to a
+                # single `ETH`, systematically UNDER-counting breadth vs the
+                # backtest → live gate qualified far less often. Fold only
+                # `-PYRAMID`→`-TREND` (backtest parity); strip `USDT` only for
+                # raw no-dash exchange symbols.
+                key = asset.upper()
+                if key.endswith("-PYRAMID"):
+                    key = key[: -len("-PYRAMID")] + "-TREND"
+                if "-" not in key and key.endswith("USDT"):
+                    key = key[:-4]
+                symbols.add(key)
+                # Majors: prefix match (key == major OR key starts "major-").
+                for mj in MAJORS_LIST:
+                    if key == mj or key.startswith(mj + "-"):
+                        majors.add(mj)
+                        break
                 count += 1
                 ts_i = int(ts)
                 oldest = ts_i if oldest is None else min(oldest, ts_i)
@@ -3208,7 +3232,8 @@ def _process_signals_unlocked(
     remaining: list[dict] = []
     # BUGFIX 2026-04-28: signal staleness check — drop signals older than 5min
     # to prevent trading on stale data after crash/restart/long pause.
-    MAX_SIGNAL_AGE_MS = 5 * 60_000
+    # 2026-05-20: MAX_SIGNAL_AGE_MS is now a module constant (shared with the
+    # boot reconcile so the orphan-marker staleness rule matches exactly).
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     # MCT counter — tracks orders placed during THIS batch run so back-to-back
     # signals can't bypass the cap before MT5's positions_get sees them.
@@ -4395,12 +4420,24 @@ def reconcile_pending_order_markers() -> None:
     # already SL/TP'd before the reconcile runs. Without this we'd re-queue
     # signals that already filled-and-exited → duplicate trade on next pickup.
     ping_history_comments: set[str] = set()
+    # 2026-05-20 bug-find round fix (#3a): the fixed 60-min history window was
+    # too short. After a long downtime/reboot, a trade that filled AND closed
+    # more than 60 min ago is absent from BOTH live positions and the 60-min
+    # deal history → wrongly judged "never placed" → re-queued → DOUBLE ORDER.
+    # Look back to the oldest surviving marker's mtime (so any filled+closed
+    # trade whose marker still exists is reliably found), floored at 60 min and
+    # capped at 14 days.
+    try:
+        oldest_marker_s = min((m.stat().st_mtime for m in markers), default=time.time())
+    except OSError:
+        oldest_marker_s = time.time()
+    lookback_s = min(max(60 * 60, time.time() - oldest_marker_s + 3600), 14 * 24 * 3600)
     try:
         # R56 audit fix: use UTC-aware datetimes — naive datetime triggers
         # broker-TZ ambiguity (MT5 interprets naive as broker-local on
         # Windows, causing window misalignment when broker-TZ != system-TZ).
         recent_deals = mt5.history_deals_get(
-            datetime.fromtimestamp(time.time() - 60 * 60, tz=timezone.utc),
+            datetime.fromtimestamp(time.time() - lookback_s, tz=timezone.utc),
             datetime.now(timezone.utc),
         ) or []
         for d in recent_deals:
@@ -4416,6 +4453,7 @@ def reconcile_pending_order_markers() -> None:
     cleaned = 0
     ping_orphans_closed = 0
     ping_cleaned = 0
+    stale_orphans = 0
     for marker in markers:
         try:
             data = read_json(marker, {})
@@ -4491,8 +4529,25 @@ def reconcile_pending_order_markers() -> None:
                 # carries an actual signal payload. Empty `sig` could come
                 # from a corrupt/legacy file; re-queueing {} previously
                 # filled pending-signals.json with no-op blanks.
+                # 2026-05-20 bug-find round fix (#3b): only re-queue if the
+                # signal is still fresh. A stale orphan (older than the
+                # staleness cap) would be silently dropped by the pending
+                # processor → missed position with no trace. Re-queue fresh
+                # ones; ALERT on stale ones so the operator can decide.
                 if sig:
-                    requeued.append(sig)
+                    sig_ts = sig.get("signalBarClose") or sig.get("ts_ms")
+                    age_ms = (
+                        int(time.time() * 1000) - int(sig_ts)
+                        if isinstance(sig_ts, (int, float)) else None
+                    )
+                    if age_ms is not None and age_ms > MAX_SIGNAL_AGE_MS:
+                        log_event(
+                            "stale_orphan_marker_not_requeued", level="warn",
+                            asset=sig.get("assetSymbol"), age_ms=age_ms,
+                        )
+                        stale_orphans += 1
+                    else:
+                        requeued.append(sig)
                 marker.unlink(missing_ok=True)
         except Exception as e:
             log_event("marker_reconcile_failed", marker=str(marker), error=str(e), level="warn")
@@ -4511,12 +4566,20 @@ def reconcile_pending_order_markers() -> None:
         tg_send(f"🔄 <b>Recovery</b>\nRe-queued {len(requeued)} orphan signal(s) from previous crash")
     if ping_orphans_closed > 0:
         tg_send(f"🧹 <b>Ping-Recovery</b>\nClosed {ping_orphans_closed} orphan ping position(s) from previous crash")
+    if stale_orphans > 0:
+        tg_send(
+            f"⚠️ <b>Stale orphan markers</b>\n{stale_orphans} crash-orphan signal(s) "
+            f"too old to safely re-execute (>{MAX_SIGNAL_AGE_MS // 60000}min). Cleaned, "
+            f"NOT re-queued — manual check if a position is missing."
+        )
     log_event(
         "order_marker_reconcile_done",
         cleaned=cleaned,
         requeued=len(requeued),
+        stale_orphans=stale_orphans,
         ping_cleaned=ping_cleaned,
         ping_orphans_closed=ping_orphans_closed,
+        lookback_s=int(lookback_s),
     )
 
 

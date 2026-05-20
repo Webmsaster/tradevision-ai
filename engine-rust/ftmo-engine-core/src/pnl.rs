@@ -211,9 +211,13 @@ pub fn compute_eff_pnl_with_funding(
     if sum_funding != 0.0 {
         base.raw_pnl -= sign * sum_funding;
         // Recompute eff_pnl with same GAP_TAIL floor.
-        let risk_for_floor = pos.eff_risk.max(0.0);
+        // 2026-05-20 bug-find round: multiply by the CLAMPED risk, matching the
+        // base path (line 143-144, Round-8 KRIT fix). Using raw `pos.eff_risk`
+        // here reverted that clamp on the funding code path (the production
+        // crypto path) — a negative eff_risk would sign-flip the PnL.
+        let risk_eff = pos.eff_risk.max(0.0);
         base.eff_pnl =
-            (base.raw_pnl * cfg.leverage * pos.eff_risk).max(GAP_TAIL_MULT * risk_for_floor);
+            (base.raw_pnl * cfg.leverage * risk_eff).max(GAP_TAIL_MULT * risk_eff);
     }
     base
 }

@@ -878,6 +878,36 @@ def test_place_market_order_rejects_stop_collapsed_by_rounding(monkeypatch):
     assert "wrong side after rounding" in (res.error or "")
 
 
+def test_reconcile_does_not_requeue_stale_orphan_marker(monkeypatch, tmp_path):
+    """B3b fix: a crash-orphan marker whose signal is older than the staleness
+    cap must NOT be re-queued (it would be silently dropped downstream → missed
+    position); a fresh orphan IS re-queued."""
+    import ftmo_executor as exe
+    import time as _time
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "PENDING_ORDERS_DIR", tmp_path / "pending-orders")
+    monkeypatch.setattr(exe, "PENDING_PATH", tmp_path / "pending-signals.json")
+    monkeypatch.setattr(exe, "tg_send", lambda *a, **k: True)
+    monkeypatch.setattr(exe.mt5, "positions_get", lambda *a, **k: [])
+    monkeypatch.setattr(exe.mt5, "history_deals_get", lambda *a, **k: [])
+    now_ms = int(_time.time() * 1000)
+    fresh = {"assetSymbol": "BTC-TREND", "signalBarClose": now_ms - 60_000,
+             "direction": "long", "sourceSymbol": "BTCUSDT", "stopPct": 0.01}
+    stale = {"assetSymbol": "ETH-TREND", "signalBarClose": now_ms - 20 * 60_000,
+             "direction": "long", "sourceSymbol": "ETHUSDT", "stopPct": 0.01}
+    exe._write_pending_order_marker(fresh)
+    exe._write_pending_order_marker(stale)
+
+    exe.reconcile_pending_order_markers()
+
+    pend = json.loads(exe.PENDING_PATH.read_text()) if exe.PENDING_PATH.exists() else {"signals": []}
+    requeued = {s["assetSymbol"] for s in pend.get("signals", [])}
+    assert "BTC-TREND" in requeued       # fresh orphan re-queued
+    assert "ETH-TREND" not in requeued   # stale orphan NOT re-queued (alerted)
+    # both markers cleaned up regardless
+    assert list((tmp_path / "pending-orders").glob("*.json")) == []
+
+
 # ============================================================================
 # News-Blackout (Round 53)
 # ============================================================================
@@ -1482,6 +1512,37 @@ def test_live_cluster_gate_green_with_24h_history(monkeypatch, tmp_path):
     assert live["majors"] == 3
     assert live["qualified"] is True
     assert exe.check_start_gate_block({"positions": []}) is None
+
+
+def test_live_cluster_breadth_counts_full_strategy_labels(monkeypatch, tmp_path):
+    """B2a fix: ETH-MR and ETH-TREND are TWO distinct symbols (backtest
+    cluster_symbol_key parity), not one collapsed `ETH`. The old split('-')[0]
+    under-counted breadth → live gate qualified less often than the backtest."""
+    import ftmo_executor as exe
+    import time as _time
+    import json as _json
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "SIGNAL_HISTORY_PATH", tmp_path / "signal-history.jsonl")
+    monkeypatch.setattr(exe, "START_GATE_WINDOW_HOURS", 24.0)
+    monkeypatch.setattr(exe, "START_GATE_MIN_BREADTH", 4)
+    monkeypatch.setattr(exe, "START_GATE_MIN_MAJORS", 3)
+    monkeypatch.setattr(exe, "START_GATE_MAX_AGE_MIN", 180.0)
+    base_ms = int(_time.time() * 1000) - int(12 * 3600 * 1000)
+    entries = [
+        {"ts_ms": base_ms,            "asset": "ETH-MR",    "direction": "long"},
+        {"ts_ms": base_ms + 3600000,  "asset": "ETH-TREND", "direction": "long"},
+        {"ts_ms": base_ms + 7200000,  "asset": "BTC-TREND", "direction": "long"},
+        {"ts_ms": base_ms + 10800000, "asset": "SOL-MR",    "direction": "long"},
+    ]
+    with open(tmp_path / "signal-history.jsonl", "w") as f:
+        for e in entries:
+            f.write(_json.dumps(e) + "\n")
+    live = exe.compute_live_cluster()
+    # 4 distinct full labels (ETH-MR, ETH-TREND, BTC-TREND, SOL-MR) — NOT 3.
+    assert live["breadth"] == 4, f"breadth={live['breadth']} (collapsed?) must be 4 full-key"
+    # majors via prefix match on full key: BTC, ETH, SOL = 3.
+    assert live["majors"] == 3
+    assert live["qualified"] is True
 
 
 def test_fast_cluster_gate_green_without_24h_warmup(monkeypatch, tmp_path):
