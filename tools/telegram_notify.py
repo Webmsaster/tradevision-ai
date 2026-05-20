@@ -86,13 +86,16 @@ def _account_prefix() -> str:
     return f"[acct:{acct}] " if acct else ""
 
 
-def tg_send(text: str) -> bool:
+def tg_send(text: str, critical: bool = False) -> bool:
     token = _resolve_account_env("BOT_TOKEN")
     chat_id = _resolve_account_env("CHAT_ID")
     if not token or not chat_id:
         return False
-    # Suppression-active → skip without hitting urlopen.
-    if time.time() < _suppress_until_ts:
+    # 2026-05-20 bug-find round: critical alerts (breach, emergency-close,
+    # wrong-account, target-latch) BYPASS the 429/backoff suppression window —
+    # a routine burst (e.g. 18 order placements) must never silence a breach
+    # notification for 60s. Non-critical sends still respect suppression.
+    if not critical and time.time() < _suppress_until_ts:
         return False
     # Round 57: prefix with account id for multi-account chats. Prefix counts
     # toward the 4000-char Telegram budget so we apply it before truncation.

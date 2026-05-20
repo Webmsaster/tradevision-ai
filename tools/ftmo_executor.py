@@ -610,7 +610,10 @@ def log_event(event: str, level: str = "info", **kwargs: Any) -> None:
         "event": event,
         **kwargs,
     }
-    line = json.dumps(entry) + "\n"
+    # 2026-05-20 bug-find round: default=str so a non-JSON-serializable kwarg
+    # (raw exception, Decimal, datetime, MT5 named-tuple) can never raise inside
+    # the trade loop's logging path — logging must never crash trading.
+    line = json.dumps(entry, default=str) + "\n"
     lock_path = STATE_DIR / "executor-log.lock"
     with _file_lock(lock_path, timeout_sec=2.0, stale_sec=2.0):
         _rotate_jsonl_if_needed(EXECUTOR_LOG_PATH)
@@ -1276,7 +1279,8 @@ def mt5_init_with_retry() -> bool:
                         level="error",
                     )
                     tg_send(
-                        f"🔴 <b>MT5 wrong account!</b>\nGot login <code>{int(info.login)}</code> but FTMO_EXPECTED_LOGIN=<code>{expected}</code>.\nProcess will exit (will NOT trade on wrong account)."
+                        f"🔴 <b>MT5 wrong account!</b>\nGot login <code>{int(info.login)}</code> but FTMO_EXPECTED_LOGIN=<code>{expected}</code>.\nProcess will exit (will NOT trade on wrong account).",
+        critical=True,
                     )
                     try:
                         mt5.shutdown()
@@ -1319,7 +1323,8 @@ def mt5_ensure_connected() -> bool:
                 level="error",
             )
             tg_send(
-                f"🔴 <b>MT5 account drift mid-session!</b>\nGot login <code>{int(info.login)}</code>, expected <code>{_EXPECTED_LOGIN_INT}</code>.\nExecutor exiting — will NOT trade on wrong account."
+                f"🔴 <b>MT5 account drift mid-session!</b>\nGot login <code>{int(info.login)}</code>, expected <code>{_EXPECTED_LOGIN_INT}</code>.\nExecutor exiting — will NOT trade on wrong account.",
+                critical=True,
             )
             try:
                 mt5.shutdown()
@@ -1600,6 +1605,14 @@ def check_regime_gate_block() -> Optional[str]:
 NEWS_BLACKOUT_ENABLED = os.getenv("NEWS_BLACKOUT_ENABLED", "false").lower() == "true"
 NEWS_BLACKOUT_MIN_BEFORE = int(os.getenv("NEWS_BLACKOUT_MIN_BEFORE", "30"))
 NEWS_BLACKOUT_MIN_AFTER = int(os.getenv("NEWS_BLACKOUT_MIN_AFTER", "60"))
+# 2026-05-20 bug-find round: the news auto-close (position flattening before
+# high-impact events) was NOT gated by any flag — it flattened positions even
+# when NEWS_BLACKOUT_ENABLED=false (surprising "disabled" behaviour). Now gated
+# by its own flag that DEFAULTS to the blackout flag, so disabling blackout is a
+# clean no-op while still allowing auto-close to be controlled independently.
+NEWS_AUTO_CLOSE_ENABLED = (
+    os.getenv("NEWS_AUTO_CLOSE_ENABLED", str(NEWS_BLACKOUT_ENABLED)).lower() == "true"
+)
 
 
 def check_news_blackout() -> Optional[str]:
@@ -4736,7 +4749,7 @@ def _emergency_close_all_positions(reason: str) -> dict:
             continue
     if closed > 0:
         log_event("emergency_close", reason=reason, closed=closed, failed=len(failed_positions))
-        tg_send(f"🚨 <b>Emergency Close {closed} positions</b>\nReason: {html_escape(reason)}")
+        tg_send(f"🚨 <b>Emergency Close {closed} positions</b>\nReason: {html_escape(reason)}", critical=True)
     if failed_positions:
         log_event("emergency_close_partial", reason=reason, failed=len(failed_positions),
                   tickets=[p["ticket"] for p in failed_positions])
@@ -5056,7 +5069,7 @@ def handle_kill_request() -> bool:
     if not controls.get("killRequested"):
         return False
     log_event("kill_requested", from_controls=True)
-    tg_send("🛑 <b>Kill-request received</b> — closing all bot positions...")
+    tg_send("🛑 <b>Kill-request received</b> — closing all bot positions...", critical=True)
     # Bug-Audit Round 1: parity with _emergency_close_all_positions — distinguish
     # MT5 disconnect (None) from "no positions" (empty list). Previously `or []`
     # collapsed both → kill silently no-op'd on disconnect AND the killRequested
@@ -5320,6 +5333,10 @@ def check_news_auto_close() -> None:
     event is within NEWS_CLOSE_MINUTES_BEFORE minutes, close all bot
     positions and pause new entries briefly.
     """
+    # 2026-05-20 bug-find round: respect the enable flag so a disabled
+    # blackout config does not silently flatten positions.
+    if not NEWS_AUTO_CLOSE_ENABLED:
+        return
     data = read_json(NEWS_PATH, {"events": []})
     raw_events = data.get("events", [])
     if not raw_events:

@@ -177,14 +177,13 @@ describe("normalizeDateToUTC", () => {
     expect(r.warning).toBe("mt4-date-assumed-utc");
   });
 
-  it("parses epoch timestamps (13-digit ms and 10-digit s) instead of dropping them", () => {
+  it("parses 13-digit epoch-ms timestamps; does NOT auto-detect 10-digit (account-number collision)", () => {
     const expectedIso = new Date(1713187800000).toISOString();
-    const ms = normalizeDateToUTC("1713187800000"); // ms
+    const ms = normalizeDateToUTC("1713187800000"); // 13-digit ms
     expect(ms.iso).toBe(expectedIso);
     expect(ms.warning).toBe("epoch-assumed-utc");
-    const s = normalizeDateToUTC("1713187800"); // same instant in seconds
-    expect(s.iso).toBe(expectedIso);
-    expect(s.warning).toBe("epoch-assumed-utc");
+    // 10-digit values collide with account numbers / order IDs → NOT parsed.
+    expect(normalizeDateToUTC("1713187800").iso).toBeNull();
     // A 4-digit year alone is NOT an epoch (no false match).
     expect(normalizeDateToUTC("2026").iso).toBeNull();
   });

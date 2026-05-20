@@ -111,12 +111,13 @@ export function normalizeDateToUTC(raw: unknown): DateNormalizeResult {
   const trimmed = raw.trim();
   if (!trimmed) return { iso: null };
 
-  // 2026-05-20 bug-find round (H4): pure-numeric epoch timestamps (Binance/
-  // Bybit raw API exports). 13 digits = milliseconds, 10 digits = seconds.
-  // Previously these matched no regex and were silently dropped.
-  if (/^\d{13}$/.test(trimmed) || /^\d{10}$/.test(trimmed)) {
-    const ms = trimmed.length === 13 ? Number(trimmed) : Number(trimmed) * 1000;
-    const d = new Date(ms);
+  // 2026-05-20 bug-find round (H4): pure-numeric epoch-millisecond timestamps
+  // (Binance/Bybit raw API exports = 13 digits). Previously dropped silently.
+  // Only 13-digit ms is accepted — 10-digit values collide with account
+  // numbers / order IDs (a mis-mapped numeric column would parse as a bogus
+  // 2001-2009 date), so seconds-epoch is intentionally NOT auto-detected.
+  if (/^\d{13}$/.test(trimmed)) {
+    const d = new Date(Number(trimmed));
     if (Number.isNaN(d.getTime())) return { iso: null };
     return { iso: d.toISOString(), warning: "epoch-assumed-utc" };
   }
