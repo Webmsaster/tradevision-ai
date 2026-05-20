@@ -908,6 +908,43 @@ def test_reconcile_does_not_requeue_stale_orphan_marker(monkeypatch, tmp_path):
     assert list((tmp_path / "pending-orders").glob("*.json")) == []
 
 
+def test_ptp_levels_track_live_volume_across_multi_level_poll(monkeypatch):
+    """Bug-round 3 fix: when several PTP levels trigger in one poll, each close
+    must be capped against the SHRINKING live volume (not the stale pre-loop
+    volume) and reduce `held` by the ACTUAL closed amount."""
+    import ftmo_executor as exe
+    from types import SimpleNamespace
+    pos = {
+        "ticket": 42, "direction": "long", "entry_price": 100.0,
+        "original_lot": 1.0,
+        "partial_tp_levels": [
+            {"triggerPct": 0.01, "closeFraction": 0.4},
+            {"triggerPct": 0.02, "closeFraction": 0.4},
+        ],
+        "partial_tp_levels_done": [False, False],
+        "peak_price_seen": 103.0,  # +3% → both levels trigger this poll
+    }
+    # Live position holds 1.0 lot; price_current well past both triggers.
+    live = SimpleNamespace(ticket=42, volume=1.0, price_open=100.0, price_current=103.0,
+                           symbol="BTCUSD", sl=0.0, tp=0.0, type=exe.mt5.POSITION_TYPE_BUY)
+    monkeypatch.setattr(exe.mt5, "positions_get", lambda *a, **k: [live])
+    monkeypatch.setattr(exe.mt5, "symbol_info",
+                        lambda s: SimpleNamespace(volume_min=0.01, volume_step=0.01))
+    closes: list = []
+    def fake_close(ticket, close_lot, reason):
+        closes.append(close_lot)
+        return close_lot  # broker fills the full requested amount
+    monkeypatch.setattr(exe, "_close_partial_lot", fake_close)
+
+    exe._apply_partial_tp_levels(pos)
+
+    # Both levels fired; each closed 0.4 of ORIGINAL (1.0) = 0.4, 0.4.
+    assert pos["partial_tp_levels_done"] == [True, True]
+    assert abs(closes[0] - 0.4) < 1e-9
+    # 2nd leg capped against held (1.0-0.4=0.6) → 0.4 fits, not stranded.
+    assert abs(closes[1] - 0.4) < 1e-9
+
+
 def test_favorable_extreme_tracks_wick_not_reverting_close():
     """H2 fix: BE/trail/chandelier arm on the favorable intrabar extreme
     (peak for long, trough for short), not the reverting tick close — mirrors

@@ -3998,30 +3998,35 @@ def _apply_trailing_stop(pos: dict) -> dict:
     return pos
 
 
-def _close_partial_lot(ticket: int, close_lot: float, reason: str) -> bool:
+def _close_partial_lot(ticket: int, close_lot: float, reason: str) -> float:
     """
     Close `close_lot` of an open position via opposite-direction market order.
     Used by partialTakeProfit and partialTakeProfitLevels. Floors to broker
-    volume_step. Returns True on success.
+    volume_step.
+
+    2026-05-20 bug-find round: returns the ACTUALLY-closed volume (0.0 on
+    failure), not a bool. The broker may partially fill the close; callers must
+    track the real reduction so multi-level PTP doesn't mismark a level done
+    while a larger-than-intended remainder stays open (risk drift).
     """
     live = mt5.positions_get(ticket=ticket)
     if not live:
-        return False
+        return 0.0
     pos = live[0]
     info = mt5.symbol_info(pos.symbol)
     if info is None:
-        return False
+        return 0.0
     step = info.volume_step or 0.01
     vol_min = info.volume_min or 0.01
     # Floor partial-close lot down to step grid; refuse if below min
     close_lot = math.floor(close_lot / step) * step
     if close_lot < vol_min or close_lot >= pos.volume:
-        return False  # too small or would close everything
+        return 0.0  # too small or would close everything
     # R67-r12: live-tick price (same fix as close_position_at_market).
     tick = mt5.symbol_info_tick(pos.symbol)
     if tick is None or tick.bid <= 0 or tick.ask <= 0:
         log_event("partial_close_no_tick", ticket=ticket, symbol=pos.symbol)
-        return False
+        return 0.0
     price = tick.ask if pos.type == mt5.POSITION_TYPE_SELL else tick.bid
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
@@ -4039,10 +4044,17 @@ def _close_partial_lot(ticket: int, close_lot: float, reason: str) -> bool:
     result = mt5.order_send(request)
     ok = result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
     if ok and result is not None:
-        log_event("partial_close", ticket=ticket, lot=close_lot, reason=reason, price=result.price)
-    else:
-        log_event("partial_close_failed", ticket=ticket, lot=close_lot, retcode=getattr(result, "retcode", None))
-    return ok
+        # Use the broker-reported filled volume — a partial fill closes less
+        # than requested; the caller must see the real reduction.
+        actual = float(getattr(result, "volume", 0.0) or close_lot)
+        if actual < close_lot * 0.99:
+            log_event("partial_close_partial_fill", level="warn", ticket=ticket,
+                      requested=close_lot, filled=actual, reason=reason)
+        else:
+            log_event("partial_close", ticket=ticket, lot=actual, reason=reason, price=result.price)
+        return actual
+    log_event("partial_close_failed", ticket=ticket, lot=close_lot, retcode=getattr(result, "retcode", None))
+    return 0.0
 
 
 def _unrealized_pct(pos: dict, current_price: float) -> float:
@@ -4100,7 +4112,7 @@ def _apply_partial_tp(pos: dict) -> dict:
         log_event("ptp_skipped_tiny_lot",
                   ticket=pos["ticket"], close_lot=close_lot, vol_min=vol_min_check)
         return pos
-    if _close_partial_lot(pos["ticket"], close_lot, "ptp"):
+    if _close_partial_lot(pos["ticket"], close_lot, "ptp") > 0:
         pos["partial_tp_done"] = True
         log_event("partial_tp_fired", ticket=pos["ticket"],
                   trigger=trigger, fraction=frac, unrealized=unrealized,
@@ -4162,6 +4174,16 @@ def _apply_partial_tp_levels(pos: dict) -> dict:
     # 40% level would close 0.7×40%=28% of the *current* volume = 19.6%
     # of original, instead of the engine's 40% of original.
     original_lot = float(pos.get("original_lot") or p.volume)
+    # 2026-05-20 bug-find round: track the LIVE remaining volume across levels.
+    # When several levels trigger in one poll (price gapped), each close shrinks
+    # the position; the old code capped every level against the stale pre-loop
+    # p.volume and ignored partial fills, so a later leg's close was refused and
+    # silently dropped (under-close / residual). Now cap against `held`, reduce
+    # `held` by the ACTUAL closed volume, and treat the final triggered leg as
+    # the remainder so no sub-step residual is stranded.
+    info = mt5.symbol_info(p.symbol)
+    vol_min = float(getattr(info, "volume_min", 0.01) or 0.01) if info else 0.01
+    held = float(p.volume)
     for idx, lv in enumerate(levels):
         if done[idx]:
             continue
@@ -4169,16 +4191,21 @@ def _apply_partial_tp_levels(pos: dict) -> dict:
         frac = float(lv.get("closeFraction", 0))
         if unrealized < trigger or frac <= 0:
             continue
-        close_lot = original_lot * frac
-        # Cap at currently-held volume — broker rejects close > position.
-        close_lot = min(close_lot, float(p.volume))
+        close_lot = min(original_lot * frac, held)
+        # If closing this leg would strand a sub-min remainder, close it all.
+        if held - close_lot < vol_min:
+            close_lot = held
         if close_lot <= 0:
             continue
-        if _close_partial_lot(pos["ticket"], close_lot, f"ptpL{idx}"):
+        actual = _close_partial_lot(pos["ticket"], close_lot, f"ptpL{idx}")
+        if actual > 0:
             done[idx] = True
+            held = max(0.0, held - actual)
             log_event("partial_tp_level_fired", ticket=pos["ticket"],
                       tier=idx, trigger=trigger, fraction=frac,
-                      unrealized=unrealized, closed_lot=close_lot)
+                      unrealized=unrealized, closed_lot=actual, held_after=held)
+        if held <= 0:
+            break
     pos["partial_tp_levels_done"] = done
     return pos
 
