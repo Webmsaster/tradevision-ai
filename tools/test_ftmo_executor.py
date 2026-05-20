@@ -622,6 +622,82 @@ def test_place_market_order_long_fill_price_includes_slippage(monkeypatch):
     assert abs(captured["request"]["tp"] - 2001.0 * 1.02) < 1e-6
 
 
+def test_place_market_order_uses_payload_absolute_levels(monkeypatch):
+    """Codex #5 final fix: when signal_stop_price/signal_tp_price are given,
+    place THOSE exact levels — not the relative re-derivation off the tick."""
+    import ftmo_executor as exe
+    exe.SLIPPAGE_DISABLED = True  # isolate level-source from slippage math
+    exe._SYMBOL_CACHE.clear()
+
+    info = FakeSpreadSymbolInfo(
+        ask=2001.0, bid=1999.0, spread=20, point=0.01,
+        tick_size=0.01, tick_value=0.01,
+        volume_min=0.01, volume_max=100.0, volume_step=0.01,
+    )
+    monkeypatch.setattr(exe.mt5, "symbol_info", lambda s: info)
+    monkeypatch.setattr(exe.mt5, "symbol_select", lambda s, e: True)
+
+    captured = {}
+
+    class FakeRes:
+        def __init__(self):
+            self.retcode = exe.mt5.TRADE_RETCODE_DONE
+            self.order = 999
+            self.price = 0.0
+            self.comment = ""
+            self.volume = 0.0
+
+    def fake_send(req):
+        captured["request"] = req
+        return FakeRes()
+
+    monkeypatch.setattr(exe.mt5, "order_send", fake_send)
+
+    # Long: payload SL=1975 (≈1.3% below ask, distinct from relative 1980.99)
+    # and TP=2050 (distinct from relative 2041.02). stop<entry<tp → valid.
+    res = exe.place_market_order(
+        binance_symbol="BTCUSDT", direction="long", risk_frac=0.01,
+        stop_pct=0.01, tp_pct=0.02, account_equity=100000.0,
+        comment="payload_test",
+        signal_stop_price=1975.0, signal_tp_price=2050.0,
+    )
+    assert res.ok, f"order failed: {res.error}"
+    # The placed SL/TP MUST be the payload absolutes, NOT 2001*0.99 / 2001*1.02.
+    assert abs(captured["request"]["sl"] - 1975.0) < 1e-6, captured["request"]["sl"]
+    assert abs(captured["request"]["tp"] - 2050.0) < 1e-6, captured["request"]["tp"]
+    # And the persisted OrderResult levels reflect those payload levels.
+    assert res.stop_price is not None and abs(res.stop_price - 1975.0) < 1e-6
+    assert res.tp_price is not None and abs(res.tp_price - 2050.0) < 1e-6
+
+
+def test_place_market_order_rejects_payload_levels_on_wrong_side(monkeypatch):
+    """Codex #5 fix: a malformed payload with SL on the wrong side of entry
+    must be rejected, not placed as an instantly-invalid order."""
+    import ftmo_executor as exe
+    exe.SLIPPAGE_DISABLED = True
+    exe._SYMBOL_CACHE.clear()
+
+    info = FakeSpreadSymbolInfo(
+        ask=2001.0, bid=1999.0, spread=20, point=0.01,
+        tick_size=0.01, tick_value=0.01,
+        volume_min=0.01, volume_max=100.0, volume_step=0.01,
+    )
+    monkeypatch.setattr(exe.mt5, "symbol_info", lambda s: info)
+    monkeypatch.setattr(exe.mt5, "symbol_select", lambda s, e: True)
+    monkeypatch.setattr(exe.mt5, "order_send", lambda req: (_ for _ in ()).throw(
+        AssertionError("order_send must NOT be called when payload levels invalid")))
+
+    # Long with SL=2050 ABOVE the entry (2001) — invalid (stop must be below).
+    res = exe.place_market_order(
+        binance_symbol="BTCUSDT", direction="long", risk_frac=0.01,
+        stop_pct=0.01, tp_pct=0.02, account_equity=100000.0,
+        comment="bad_payload",
+        signal_stop_price=2050.0, signal_tp_price=2100.0,
+    )
+    assert not res.ok
+    assert "wrong side" in (res.error or "")
+
+
 # ============================================================================
 # News-Blackout (Round 53)
 # ============================================================================

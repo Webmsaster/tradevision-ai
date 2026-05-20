@@ -2213,11 +2213,24 @@ def place_market_order(
     tp_pct: float,
     account_equity: float,
     comment: str,
+    signal_stop_price: Optional[float] = None,
+    signal_tp_price: Optional[float] = None,
 ) -> OrderResult:
     """
     Place a LONG or SHORT market order.
     direction="short": sell at bid, SL above, TP below.
     direction="long": buy at ask, SL below, TP above.
+
+    2026-05-20 Codex Round 4 Python #5 FIX (final part): when the signal
+    payload carries absolute `signal_stop_price`/`signal_tp_price`, place
+    THOSE exact levels instead of recomputing relative SL/TP off the live
+    tick. The engine's backtest exits at those absolute prices, so placing
+    the relative re-derivation drifts every exit by the entry-slippage delta.
+    The entry-slippage REJECT (caller, MAX_ENTRY_SLIPPAGE_PCT) already bounds
+    that drift; this aligns the held levels with the backtest plan exactly.
+    Lot is still sized on the EFFECTIVE stop distance (R55 fix) so realized
+    risk stays = risk_frac regardless of which level source is used. Falls
+    back to relative recompute when payload levels are absent (tests/legacy).
     """
     ftmo_symbol = _resolve_broker_symbol(binance_symbol)
     if not ftmo_symbol:
@@ -2243,18 +2256,50 @@ def place_market_order(
         )
         risk_frac = RISK_FRAC_HARD_CAP
 
+    # Use payload absolute levels only if BOTH are present + positive (all-or-
+    # nothing keeps SL/TP from mixing absolute + relative sources). Narrow into
+    # local non-None floats so the ternaries below stay type-clean.
+    _sl: Optional[float] = signal_stop_price if (signal_stop_price is not None and signal_stop_price > 0) else None
+    _tp: Optional[float] = signal_tp_price if (signal_tp_price is not None and signal_tp_price > 0) else None
+    if _sl is None or _tp is None:
+        _sl = None
+        _tp = None
+    use_payload_levels = _sl is not None and _tp is not None
     if direction == "short":
         entry_price = tick.bid
-        stop_price = entry_price * (1 + stop_pct)
-        tp_price = entry_price * (1 - tp_pct)
+        stop_price = _sl if _sl is not None else entry_price * (1 + stop_pct)
+        tp_price = _tp if _tp is not None else entry_price * (1 - tp_pct)
         order_type = mt5.ORDER_TYPE_SELL
     elif direction == "long":
         entry_price = tick.ask
-        stop_price = entry_price * (1 - stop_pct)
-        tp_price = entry_price * (1 + tp_pct)
+        stop_price = _sl if _sl is not None else entry_price * (1 - stop_pct)
+        tp_price = _tp if _tp is not None else entry_price * (1 + tp_pct)
         order_type = mt5.ORDER_TYPE_BUY
     else:
         return OrderResult(False, None, f"unknown direction {direction}", None, None)
+
+    # Sanity-guard payload levels against the live entry. Even after the
+    # caller's entry-slippage reject, a malformed payload (stop on the wrong
+    # side, or entry already past the level) would place an instantly-invalid
+    # order. Require SL/TP on the correct side of the entry; reject otherwise.
+    if use_payload_levels:
+        long_ok = direction == "long" and stop_price < entry_price < tp_price
+        short_ok = direction == "short" and tp_price < entry_price < stop_price
+        if not (long_ok or short_ok):
+            log_event(
+                "payload_levels_invalid",
+                level="warn",
+                asset=binance_symbol,
+                direction=direction,
+                entry=entry_price,
+                stop=stop_price,
+                tp=tp_price,
+            )
+            return OrderResult(
+                False, None,
+                f"payload SL/TP on wrong side (entry={entry_price} sl={stop_price} tp={tp_price})",
+                None, None,
+            )
 
     # R67-r10: round SL/TP to broker tick grid + declared digits to avoid
     # retcode 10016 "Invalid stops" on symbols with non-trivial tick size
@@ -3406,6 +3451,11 @@ def _process_signals_unlocked(
             tp_pct=sig["tpPct"],
             account_equity=account_equity,
             comment=f"{marker_short} {tag} {sig['assetSymbol']}",
+            # 2026-05-20 Codex #5 final fix: place the engine's absolute SL/TP
+            # so live exits match the backtest plan exactly (entry-slippage
+            # already bounded by the reject above). None → relative fallback.
+            signal_stop_price=sig.get("stopPrice"),
+            signal_tp_price=sig.get("tpPrice"),
         )
         # 2026-05-15 Codex-Audit Wave-2 Bug 1 (KRITISCH): strict WAL pattern.
         #
