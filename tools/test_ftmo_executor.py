@@ -908,6 +908,43 @@ def test_reconcile_does_not_requeue_stale_orphan_marker(monkeypatch, tmp_path):
     assert list((tmp_path / "pending-orders").glob("*.json")) == []
 
 
+def test_favorable_extreme_tracks_wick_not_reverting_close():
+    """H2 fix: BE/trail/chandelier arm on the favorable intrabar extreme
+    (peak for long, trough for short), not the reverting tick close — mirrors
+    the engine's bar high/low semantics."""
+    import ftmo_executor as exe
+    pos = {}
+    assert exe._favorable_extreme(pos, "long", 105.0) == 105.0
+    assert exe._favorable_extreme(pos, "long", 110.0) == 110.0
+    assert exe._favorable_extreme(pos, "long", 101.0) == 110.0  # wick reverts, peak holds
+    assert pos["peak_price_seen"] == 110.0
+    pos2 = {}
+    assert exe._favorable_extreme(pos2, "short", 95.0) == 95.0
+    assert exe._favorable_extreme(pos2, "short", 90.0) == 90.0
+    assert exe._favorable_extreme(pos2, "short", 99.0) == 90.0   # trough holds
+    assert pos2["peak_price_seen"] == 90.0
+
+
+def test_resolve_broker_symbol_rejects_base_mismatch(monkeypatch):
+    """H1 fix: a generated candidate matching a DIFFERENT instrument's base is
+    rejected (only base-consistent or curated-map symbols accepted)."""
+    import ftmo_executor as exe
+    exe._SYMBOL_CACHE.clear()
+    exe._SYMBOL_CACHE_NEG_TS.clear()
+    # Broker only exposes a wrong-base instrument for the generated variants.
+    monkeypatch.setattr(exe, "SYMBOL_MAP", {})
+    monkeypatch.setattr(exe.mt5, "symbol_info",
+                        lambda s: object() if s == "XRPUSD" else None)
+    # Resolving BTCUSDT must NOT accept XRPUSD (base mismatch) → None.
+    assert exe._resolve_broker_symbol("BTCUSDT") is None
+    exe._SYMBOL_CACHE.clear()
+    exe._SYMBOL_CACHE_NEG_TS.clear()
+    # A base-consistent broker symbol IS accepted.
+    monkeypatch.setattr(exe.mt5, "symbol_info",
+                        lambda s: object() if s == "BTCUSD" else None)
+    assert exe._resolve_broker_symbol("BTCUSDT") == "BTCUSD"
+
+
 # ============================================================================
 # News-Blackout (Round 53)
 # ============================================================================

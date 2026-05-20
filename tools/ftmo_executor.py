@@ -2046,19 +2046,41 @@ def _resolve_broker_symbol(binance_symbol: str) -> Optional[str]:
     seen: set[str] = set()
     unique = [c for c in candidates if not (c in seen or seen.add(c))]
 
+    # 2026-05-20 bug-find round (H1): verify a GENERATED candidate's base asset
+    # before accepting it — a separator/suffix/drop-E variant could otherwise
+    # match a DIFFERENT broker instrument and place an order on the wrong symbol.
+    # The explicit SYMBOL_MAP override is curated → trusted as-is. Generated
+    # candidates must share the first 3 base chars (covers BTC/BTCUSD/BTC.x and
+    # legit shortenings like AAVE→AAV, but rejects wild collisions).
+    expected_base = binance_symbol.upper().replace("USDT", "").replace("USD", "")
+    base_prefix = expected_base[:2]  # 2 chars: tolerant of AAVE→AAV shortenings
     for candidate in unique:
         try:
             info = mt5.symbol_info(candidate)
-            if info is not None:
-                _SYMBOL_CACHE[binance_symbol] = candidate
-                if mapped is None or candidate != mapped:
-                    log_event(
-                        "symbol_map_resolved",
-                        binance=binance_symbol,
-                        broker=candidate,
-                        level="info",
-                    )
-                return candidate
+            if info is None:
+                continue
+            is_curated = mapped is not None and candidate == mapped
+            cand_base = (
+                candidate.upper()
+                .replace("USDT", "").replace("USD", "")
+                .lstrip("/.-_").rstrip("/.-_")
+                .split(".")[0]
+            )
+            if not is_curated and base_prefix and not cand_base.startswith(base_prefix):
+                log_event(
+                    "symbol_candidate_base_mismatch", level="warn",
+                    binance=binance_symbol, candidate=candidate, expected_base=expected_base,
+                )
+                continue
+            _SYMBOL_CACHE[binance_symbol] = candidate
+            if mapped is None or candidate != mapped:
+                log_event(
+                    "symbol_map_resolved",
+                    binance=binance_symbol,
+                    broker=candidate,
+                    level="info",
+                )
+            return candidate
         except Exception:
             continue
 
@@ -3247,7 +3269,11 @@ def _process_signals_unlocked(
         # BUGFIX 2026-04-28 (Round 24): validate required fields up-front to
         # prevent KeyError crashes from malformed signals (schema drift, manual
         # JSON edits, corruption). Skip + log signal if any required field missing.
-        required_fields = ["assetSymbol", "riskFrac", "stopPct", "tpPct", "stopPrice", "tpPrice", "maxHoldUntil", "entryPrice"]
+        # 2026-05-20 bug-find round: signalBarClose is required — without it the
+        # marker-ID hash collapses to a constant for same-asset/direction signals
+        # (overwrites the WAL marker → boot-reconcile can only recover one of two
+        # crashed orders) and the dedup key collapses (lost trade).
+        required_fields = ["assetSymbol", "riskFrac", "stopPct", "tpPct", "stopPrice", "tpPrice", "maxHoldUntil", "entryPrice", "signalBarClose"]
         missing = [f for f in required_fields if f not in sig]
         if missing:
             log_event("signal_invalid_schema", missing=missing, sig_keys=list(sig.keys()))
@@ -3853,6 +3879,26 @@ def _modify_position_sl(ticket: int, new_sl: float) -> bool:
     return False
 
 
+def _favorable_extreme(pos: dict, direction: str, current_price: float) -> float:
+    """2026-05-20 bug-find round (H2): live approximation of the engine's bar
+    high/low. The Rust/TS engine arms break-even / trailing / chandelier on the
+    bar's HIGH (long) or LOW (short) — the favorable intrabar extreme. The
+    30s-poll live bot only sees ticks, so it tracks the running peak/trough in
+    `peak_price_seen`. Using the raw `price_current` (≈ close) instead made the
+    live mirrors arm LATER than the backtest and miss ratchets on reverting
+    wicks → systematic live < backtest. Updates pos['peak_price_seen'] in place
+    and returns the favorable extreme. (PTP already used peak; this brings
+    BE/trail/chandelier into the same wick-touch semantics.)
+    """
+    prev = pos.get("peak_price_seen")
+    if direction == "short":
+        ext = min(prev, current_price) if prev is not None else current_price
+    else:
+        ext = max(prev, current_price) if prev is not None else current_price
+    pos["peak_price_seen"] = ext
+    return ext
+
+
 def _apply_trailing_stop(pos: dict) -> dict:
     """
     Update SL based on trailing-stop config.
@@ -3876,7 +3922,8 @@ def _apply_trailing_stop(pos: dict) -> dict:
     p = live[0]
     direction = pos.get("direction", "long")
     entry = float(pos.get("entry_price", p.price_open))
-    current_price = float(p.price_current)
+    # H2 fix: trail off the favorable intrabar extreme (wick), like the engine.
+    current_price = _favorable_extreme(pos, direction, float(p.price_current))
     current_sl = float(p.sl) if p.sl else None
 
     activated = pos.get("trailing_activated", False)
@@ -4180,8 +4227,10 @@ def _apply_chandelier_stop(pos: dict) -> dict:
         return pos
     p = live[0]
     direction = pos.get("direction", "long")
-    current_price = float(p.price_current)
-    current_close = current_price  # tick-level close approximation
+    # H2 fix: chandelier arms + anchors on the favorable intrabar extreme (wick),
+    # mirroring the engine's high_watermark, not the tick close.
+    current_price = _favorable_extreme(pos, direction, float(p.price_current))
+    current_close = current_price  # favorable-extreme as the close approximation
     current_sl = float(p.sl) if p.sl else None
 
     unrealized = _unrealized_pct(pos, current_price)
@@ -4232,12 +4281,15 @@ def _apply_break_even(pos: dict) -> dict:
     if not live:
         return pos
     p = live[0]
-    unrealized = _unrealized_pct(pos, float(p.price_current))
+    direction = pos.get("direction", "long")
+    # H2 fix: BE arms on the favorable intrabar extreme (wick), like the engine —
+    # so a profit wick that reverts before the next poll still arms break-even.
+    favorable = _favorable_extreme(pos, direction, float(p.price_current))
+    unrealized = _unrealized_pct(pos, favorable)
     if unrealized < threshold:
         return pos
     entry = float(pos.get("entry_price", p.price_open))
     current_sl = float(p.sl) if p.sl else None
-    direction = pos.get("direction", "long")
     # Only move SL if it's currently worse than entry (long: below; short: above)
     if direction == "long":
         if current_sl is not None and current_sl >= entry:
