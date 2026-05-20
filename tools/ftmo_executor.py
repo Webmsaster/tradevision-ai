@@ -5465,47 +5465,122 @@ def rebuild_open_positions_from_mt5() -> None:
     existing = read_json(OPEN_POS_PATH, {"positions": []})
     by_ticket = {p["ticket"]: p for p in existing.get("positions", [])}
 
+    # 2026-05-20 Codex Round 4 Python #9 FIX: when on-disk open-positions state
+    # is lost (crash/wipe) but the position is still live, recover the FULL
+    # management config (PTP / chandelier / trailing / break-even / time-exit /
+    # max-hold) from the executed-signals audit log keyed by MT5 ticket — each
+    # "placed" execution persists the whole signal payload + ticket. Without
+    # this the rebuilt stub had all modifiers None → positions silently lost
+    # PTP/trail/chandelier and ran naked to broker SL/TP.
+    executed_by_ticket: dict[int, dict] = {}
+    try:
+        _ex = read_json(EXECUTED_PATH, {"executions": []})
+        for _e in _ex.get("executions", []):
+            if _e.get("result") == "placed" and _e.get("ticket") is not None and _e.get("signal"):
+                # Last write wins (most recent placement for this ticket).
+                executed_by_ticket[int(_e["ticket"])] = _e
+    except Exception as e:
+        log_event("rebuild_executed_log_read_failed", error=str(e), level="warn")
+
     rebuilt: list[dict] = []
     added = 0
     kept = 0
+    recovered = 0
     for live in bot_positions:
         ticket = live.ticket
         if ticket in by_ticket:
             # Preserve trailing/PTP/chandelier state from on-disk record.
             rebuilt.append(by_ticket[ticket])
             kept += 1
-        else:
-            # Minimal stub — allows time-exit + max-hold to fire even on
-            # tickets we lost state for. Trailing-stop / PTP / chandelier
-            # cannot be resumed (no entry config), so we leave them None.
-            direction = "long" if live.type == mt5.POSITION_TYPE_BUY else "short"
+            continue
+
+        direction = "long" if live.type == mt5.POSITION_TYPE_BUY else "short"
+        ex_rec = executed_by_ticket.get(ticket)
+        if ex_rec is not None:
+            # Recover full config from the persisted signal payload. Broker
+            # position is source-of-truth for live lot/entry/SL/TP; the signal
+            # supplies the management config that the stub could not.
+            sig = ex_rec["signal"]
+            orig_lot = float(ex_rec.get("lot") or live.volume)
+            # If the live volume is below the original, ≥1 partial-TP already
+            # fired before the state loss. We cannot know WHICH levels, so mark
+            # all PTP levels done (prevents a double scale-out on the now-smaller
+            # position — the safe direction). Trailing/chandelier/break-even
+            # re-arm naturally on the next manage cycle, so they default to
+            # not-yet-fired and re-evaluate against current price.
+            ptp_already_fired = live.volume < orig_lot * 0.99
+            ptp_levels = sig.get("partialTakeProfitLevels")
+            n_levels = len(ptp_levels) if ptp_levels else 0
+            mhu = sig.get("maxHoldUntil")
             rebuilt.append({
                 "ticket": ticket,
-                "signalAsset": live.symbol,
-                "sourceSymbol": live.symbol,
+                "engine_ticket_id": sig.get(
+                    "engineTicketId",
+                    f"{sig.get('assetSymbol', live.symbol)}@{sig.get('entryTime', sig.get('signalBarClose', 0))}@{direction}",
+                ),
+                "engine_entry_time": sig.get("entryTime"),
+                "signalAsset": sig.get("assetSymbol", live.symbol),
+                "sourceSymbol": sig.get("sourceSymbol", live.symbol),
                 "direction": direction,
                 "lot": live.volume,
+                "original_lot": orig_lot,
                 "entry_price": live.price_open,
                 "stop_price": live.sl or 0.0,
                 "tp_price": live.tp or 0.0,
-                "max_hold_until": 0,  # 0 disables time exit on rebuilt stubs
+                "signal_stop_price": sig.get("stopPrice"),
+                "signal_tp_price": sig.get("tpPrice"),
+                "original_stop_pct": sig.get("stopPct"),
+                "peak_price_seen": live.price_open,
+                "max_hold_until": mhu if isinstance(mhu, (int, float)) else 0,
                 "opened_at": datetime.fromtimestamp(live.time, tz=timezone.utc).isoformat(),
-                "trailing_stop": None,
+                "trailing_stop": sig.get("trailingStop"),
                 "trailing_activated": False,
-                "partial_tp": None,
-                "partial_tp_done": False,
-                "partial_tp_levels": None,
-                "partial_tp_levels_done": [],
-                "chandelier": None,
+                "partial_tp": sig.get("partialTakeProfit"),
+                "partial_tp_done": ptp_already_fired,
+                "partial_tp_levels": ptp_levels,
+                "partial_tp_levels_done": [ptp_already_fired] * n_levels,
+                "chandelier": sig.get("chandelierExit"),
                 "chandelier_armed": False,
                 "chandelier_best_close": None,
-                "break_even": None,
+                "break_even": sig.get("breakEvenAtProfit"),
                 "break_even_done": False,
-                "time_exit": None,
+                "time_exit": sig.get("timeExit"),
                 "time_exit_reached_min_gain": False,
-                "_rebuilt_from_mt5": True,
+                "_rebuilt_from_executed_log": True,
             })
-            added += 1
+            recovered += 1
+            continue
+
+        # Minimal stub — no executed-log record for this ticket (e.g. opened by
+        # a different bot version / log pruned). Allows time-exit + max-hold to
+        # fire; trailing-stop / PTP / chandelier cannot be resumed → left None.
+        rebuilt.append({
+            "ticket": ticket,
+            "signalAsset": live.symbol,
+            "sourceSymbol": live.symbol,
+            "direction": direction,
+            "lot": live.volume,
+            "entry_price": live.price_open,
+            "stop_price": live.sl or 0.0,
+            "tp_price": live.tp or 0.0,
+            "max_hold_until": 0,  # 0 disables time exit on rebuilt stubs
+            "opened_at": datetime.fromtimestamp(live.time, tz=timezone.utc).isoformat(),
+            "trailing_stop": None,
+            "trailing_activated": False,
+            "partial_tp": None,
+            "partial_tp_done": False,
+            "partial_tp_levels": None,
+            "partial_tp_levels_done": [],
+            "chandelier": None,
+            "chandelier_armed": False,
+            "chandelier_best_close": None,
+            "break_even": None,
+            "break_even_done": False,
+            "time_exit": None,
+            "time_exit_reached_min_gain": False,
+            "_rebuilt_from_mt5": True,
+        })
+        added += 1
 
     # Drop on-disk records whose tickets are no longer live (already closed).
     dropped = len(by_ticket) - kept
@@ -5514,6 +5589,7 @@ def rebuild_open_positions_from_mt5() -> None:
         "rebuild_open_positions_complete",
         live_total=len(bot_positions),
         kept=kept,
+        recovered_from_log=recovered,
         added_stubs=added,
         dropped_stale=dropped,
     )

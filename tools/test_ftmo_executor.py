@@ -698,6 +698,110 @@ def test_place_market_order_rejects_payload_levels_on_wrong_side(monkeypatch):
     assert "wrong side" in (res.error or "")
 
 
+def _fake_live_pos(exe, ticket, volume=1.0):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        ticket=ticket,
+        type=exe.mt5.POSITION_TYPE_BUY,
+        volume=volume,
+        price_open=2000.0,
+        sl=1975.0,
+        tp=2050.0,
+        time=1700000000,
+        symbol="BTCUSD",
+        magic=exe.MAGIC,
+    )
+
+
+def test_rebuild_recovers_config_from_executed_log(monkeypatch, tmp_path):
+    """Codex #9 fix: a live position whose on-disk state was lost recovers its
+    full management config (PTP/chandelier/trailing/break-even/time/max-hold)
+    from the executed-signals audit log, not a naked stub."""
+    import ftmo_executor as exe
+    exe.STATE_DIR = tmp_path
+    exe.EXECUTED_PATH = tmp_path / "executed-signals.json"
+    exe.OPEN_POS_PATH = tmp_path / "open-positions.json"
+    exe.OPEN_POS_PATH.write_text(json.dumps({"positions": []}))  # state lost
+    sig = {
+        "assetSymbol": "BTC", "sourceSymbol": "BTCUSDT", "direction": "long",
+        "stopPrice": 1975.0, "tpPrice": 2050.0, "stopPct": 0.01,
+        "maxHoldUntil": 1234567890,
+        "chandelierExit": {"atrMult": 3.0, "atrPeriod": 22},
+        "partialTakeProfitLevels": [{"trigger": 0.5, "frac": 0.3}],
+        "breakEvenAtProfit": {"threshold": 0.5},
+        "timeExit": {"maxBarsWithoutGain": 10, "minGainR": 1.0},
+        "trailingStop": {"activatePct": 0.02, "trailPct": 0.01},
+        "engineTicketId": "BTC@111@long", "entryTime": 111,
+    }
+    exe.EXECUTED_PATH.write_text(json.dumps({"executions": [
+        {"result": "placed", "ticket": 555, "signal": sig, "lot": 1.0}
+    ]}))
+    monkeypatch.setattr(exe.mt5, "positions_get", lambda *a, **k: [_fake_live_pos(exe, 555)])
+
+    exe.rebuild_open_positions_from_mt5()
+
+    out = json.loads(exe.OPEN_POS_PATH.read_text())
+    assert len(out["positions"]) == 1
+    p = out["positions"][0]
+    assert p.get("_rebuilt_from_executed_log") is True
+    assert p["chandelier"] == {"atrMult": 3.0, "atrPeriod": 22}
+    assert p["partial_tp_levels"] == [{"trigger": 0.5, "frac": 0.3}]
+    assert p["max_hold_until"] == 1234567890
+    assert p["break_even"] == {"threshold": 0.5}
+    assert p["time_exit"] is not None
+    assert p["trailing_stop"] == {"activatePct": 0.02, "trailPct": 0.01}
+    assert p["engine_ticket_id"] == "BTC@111@long"
+    # Full live volume → no partial fired → levels not marked done.
+    assert p["partial_tp_levels_done"] == [False]
+    assert p["partial_tp_done"] is False
+
+
+def test_rebuild_marks_ptp_done_when_volume_reduced(monkeypatch, tmp_path):
+    """If live volume < original, ≥1 PTP fired pre-loss → mark all levels done
+    so the smaller position can't double-scale-out."""
+    import ftmo_executor as exe
+    exe.STATE_DIR = tmp_path
+    exe.EXECUTED_PATH = tmp_path / "executed-signals.json"
+    exe.OPEN_POS_PATH = tmp_path / "open-positions.json"
+    exe.OPEN_POS_PATH.write_text(json.dumps({"positions": []}))
+    sig = {
+        "assetSymbol": "BTC", "sourceSymbol": "BTCUSDT", "direction": "long",
+        "stopPrice": 1975.0, "tpPrice": 2050.0, "stopPct": 0.01,
+        "maxHoldUntil": 0,
+        "partialTakeProfitLevels": [{"trigger": 0.5, "frac": 0.3}],
+    }
+    exe.EXECUTED_PATH.write_text(json.dumps({"executions": [
+        {"result": "placed", "ticket": 556, "signal": sig, "lot": 1.0}
+    ]}))
+    # live volume 0.5 < original 1.0 → partial already fired.
+    monkeypatch.setattr(exe.mt5, "positions_get", lambda *a, **k: [_fake_live_pos(exe, 556, volume=0.5)])
+
+    exe.rebuild_open_positions_from_mt5()
+    p = json.loads(exe.OPEN_POS_PATH.read_text())["positions"][0]
+    assert p["partial_tp_levels_done"] == [True]
+    assert p["partial_tp_done"] is True
+    assert p["original_lot"] == 1.0
+
+
+def test_rebuild_falls_back_to_stub_without_executed_record(monkeypatch, tmp_path):
+    """No executed-log record (log pruned / different bot version) → minimal
+    stub with modifiers None, exactly the prior behaviour."""
+    import ftmo_executor as exe
+    exe.STATE_DIR = tmp_path
+    exe.EXECUTED_PATH = tmp_path / "executed-signals.json"
+    exe.OPEN_POS_PATH = tmp_path / "open-positions.json"
+    exe.OPEN_POS_PATH.write_text(json.dumps({"positions": []}))
+    exe.EXECUTED_PATH.write_text(json.dumps({"executions": []}))
+    monkeypatch.setattr(exe.mt5, "positions_get", lambda *a, **k: [_fake_live_pos(exe, 777)])
+
+    exe.rebuild_open_positions_from_mt5()
+    p = json.loads(exe.OPEN_POS_PATH.read_text())["positions"][0]
+    assert p.get("_rebuilt_from_mt5") is True
+    assert p["chandelier"] is None
+    assert p["partial_tp_levels"] is None
+    assert p["max_hold_until"] == 0
+
+
 # ============================================================================
 # News-Blackout (Round 53)
 # ============================================================================
