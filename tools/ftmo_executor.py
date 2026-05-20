@@ -99,7 +99,16 @@ START_GATE_ENABLED = os.environ.get("FTMO_START_GATE_ENABLED", "").lower() in (
     "true",
     "yes",
 )
-_START_GATE_RAW_PATH = os.environ.get("FTMO_START_GATE_PATH", "state/timing-gate.json")
+# 2026-05-20 bug-find round: in multi-account mode (FTMO_ACCOUNT_ID set) the
+# supervisor fallback gate must be PER-ACCOUNT — a shared global state/timing-
+# gate.json correlated fresh-boot start decisions across the 3-stack, undermining
+# the multi-account independence the deploy plan relies on. Single-account keeps
+# the legacy global path (supervisor-compatible). Explicit FTMO_START_GATE_PATH
+# always wins.
+_START_GATE_DEFAULT = (
+    str(STATE_DIR / "timing-gate.json") if _FTMO_ACCOUNT_ID else "state/timing-gate.json"
+)
+_START_GATE_RAW_PATH = os.environ.get("FTMO_START_GATE_PATH", _START_GATE_DEFAULT)
 START_GATE_PATH = Path(_START_GATE_RAW_PATH)
 if not START_GATE_PATH.is_absolute():
     START_GATE_PATH = (_TOOLS_DIR.parent / START_GATE_PATH).resolve()
@@ -195,6 +204,10 @@ MAX_ENTRY_SLIPPAGE_PCT = float(os.environ.get("FTMO_MAX_ENTRY_SLIPPAGE", "0.005"
 # any order whose effective stop distance is below this floor. Default 0.1% — far
 # below any legitimate crypto stop (1-5%), so it only catches degenerate payloads.
 MIN_EFFECTIVE_STOP_PCT = float(os.environ.get("FTMO_MIN_EFFECTIVE_STOP", "0.001"))
+
+# Max age (seconds) of an MT5 quote before it's treated as stale and orders are
+# refused — guards against a frozen-but-positive feed (stall / weekend gap).
+MAX_TICK_AGE_SEC = float(os.environ.get("FTMO_MAX_TICK_AGE_SEC", "120"))
 
 # Signal staleness cap — drop/never-execute signals older than this after a
 # crash/restart/long pause (avoids trading on stale data). Used by both the
@@ -2300,6 +2313,15 @@ def place_market_order(
     tick = mt5.symbol_info_tick(ftmo_symbol)
     if tick is None or tick.bid <= 0 or tick.ask <= 0:
         return OrderResult(False, None, f"no live tick for {ftmo_symbol}", None, None)
+    # 2026-05-20 bug-find round: reject a STALE-but-positive quote (broker feed
+    # stall, weekend gap on a crypto-CFD). A frozen quote passes the bid/ask>0
+    # check but sizing/placing against it is dangerous. tick.time is epoch
+    # seconds; skip the check in mock mode or when time is unavailable (0).
+    if not MOCK_MODE:
+        tick_age = time.time() - float(getattr(tick, "time", 0) or 0)
+        if getattr(tick, "time", 0) and tick_age > MAX_TICK_AGE_SEC:
+            log_event("stale_tick_rejected", level="warn", symbol=ftmo_symbol, age_s=round(tick_age, 1))
+            return OrderResult(False, None, f"stale tick for {ftmo_symbol} (age {tick_age:.0f}s)", None, None)
 
     # Hard-cap risk_frac before sizing — defends against legacy 200% formula.
     if risk_frac > RISK_FRAC_HARD_CAP:
@@ -3510,6 +3532,7 @@ def _process_signals_unlocked(
         # RISK_FRAC_HARD_CAP (defense-in-depth, place_market_order already
         # caps but we want a transparent log line at the boost site).
         sig_risk_frac = float(sig["riskFrac"])
+        _live_cluster_now: dict = {}
         try:
             _live_cluster_now = compute_live_cluster()
             _tier_risk_mult = float(_live_cluster_now.get("risk_mult", 1.0) or 1.0)
