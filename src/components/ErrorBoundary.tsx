@@ -1,5 +1,6 @@
 "use client";
 import React from "react";
+import { usePathname } from "next/navigation";
 import { captureException } from "@/lib/errorReporter";
 
 interface ErrorBoundaryProps {
@@ -11,7 +12,7 @@ interface ErrorBoundaryState {
   error: Error | null;
 }
 
-export class ErrorBoundary extends React.Component<
+export class ErrorBoundaryInner extends React.Component<
   ErrorBoundaryProps,
   ErrorBoundaryState
 > {
@@ -90,4 +91,11 @@ export class ErrorBoundary extends React.Component<
   }
 }
 
-export default ErrorBoundary;
+// 2026-05-20 bug-find round (H5): remount the boundary on route change so a
+// render error on one page does not leave the WHOLE app stuck on the error
+// screen after the user navigates elsewhere. The class boundary has no route
+// awareness; keying it by pathname resets hasError on every client navigation.
+export default function ErrorBoundary({ children }: ErrorBoundaryProps) {
+  const pathname = usePathname();
+  return <ErrorBoundaryInner key={pathname}>{children}</ErrorBoundaryInner>;
+}

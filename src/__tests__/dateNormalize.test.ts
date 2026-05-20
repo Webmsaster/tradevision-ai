@@ -176,4 +176,16 @@ describe("normalizeDateToUTC", () => {
     expect(r.iso).toBe("2026-04-15T14:30:45.000Z");
     expect(r.warning).toBe("mt4-date-assumed-utc");
   });
+
+  it("parses epoch timestamps (13-digit ms and 10-digit s) instead of dropping them", () => {
+    const expectedIso = new Date(1713187800000).toISOString();
+    const ms = normalizeDateToUTC("1713187800000"); // ms
+    expect(ms.iso).toBe(expectedIso);
+    expect(ms.warning).toBe("epoch-assumed-utc");
+    const s = normalizeDateToUTC("1713187800"); // same instant in seconds
+    expect(s.iso).toBe(expectedIso);
+    expect(s.warning).toBe("epoch-assumed-utc");
+    // A 4-digit year alone is NOT an epoch (no false match).
+    expect(normalizeDateToUTC("2026").iso).toBeNull();
+  });
 });
