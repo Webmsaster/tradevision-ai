@@ -665,11 +665,6 @@ struct CfgOverrides {
     // 2026-05-19 Agent-21-repro: native pre-window skip filter thresholds.
     skip_sol30d_gt: Option<f64>,
     skip_bnb7d_gt: Option<f64>,
-    /// Duplicate each active asset behind an equity-progress gate. The clone
-    /// keeps the source symbol and exits but uses a unique synthetic symbol so
-    /// the normal same-asset trade-exclusivity gate does not block it.
-    pyramid_min_equity: Option<f64>,
-    pyramid_risk_mult: Option<f64>,
 }
 
 fn apply_overrides(
@@ -813,26 +808,6 @@ fn apply_overrides(
                 .replace("USDT", "");
             keep.contains(&bare) || keep.contains(&src)
         });
-    }
-    if let Some(min_equity) = ov.pyramid_min_equity {
-        let risk_mult = ov.pyramid_risk_mult.unwrap_or(1.0);
-        let originals = cfg.assets.clone();
-        let mut pyramids: Vec<AssetConfig> = originals
-            .into_iter()
-            .map(|mut a| {
-                let base = a
-                    .symbol
-                    .split('-')
-                    .next()
-                    .unwrap_or(a.symbol.as_str())
-                    .to_string();
-                a.symbol = format!("{base}-PYRAMID");
-                a.risk_frac *= risk_mult;
-                a.min_equity_gain = Some(min_equity);
-                a
-            })
-            .collect();
-        cfg.assets.append(&mut pyramids);
     }
     if ov.funding_max_long.is_some() || ov.funding_min_short.is_some() {
         cfg.funding_rate_filter = Some(FundingRateFilter {
@@ -1204,8 +1179,6 @@ fn main() -> Result<()> {
     // start (lookahead-safe). Skipped windows excluded from num+denom.
     let mut skip_sol30d_gt: Option<f64> = None;
     let mut skip_bnb7d_gt: Option<f64> = None;
-    let mut pyramid_min_equity: Option<f64> = None;
-    let mut pyramid_risk_mult: Option<f64> = None;
     // Detector #20 — 3-phase day-stage sizing + equity-progress trigger.
     let mut ds_aggressive_until: Option<u32> = None;
     let mut ds_aggressive_factor: Option<f64> = None;
@@ -1481,12 +1454,6 @@ fn main() -> Result<()> {
             // 2026-05-19 Agent-21-repro pre-window skip filter.
             "--skip-sol30d-gt" => skip_sol30d_gt = Some(need!("--skip-sol30d-gt").parse()?),
             "--skip-bnb7d-gt" => skip_bnb7d_gt = Some(need!("--skip-bnb7d-gt").parse()?),
-            "--pyramid-min-equity" => {
-                pyramid_min_equity = Some(need!("--pyramid-min-equity").parse()?)
-            }
-            "--pyramid-risk-mult" => {
-                pyramid_risk_mult = Some(need!("--pyramid-risk-mult").parse()?)
-            }
             // 2026-05-14 (detector-41): boolean flag — presence enables inverse
             // correlation (DXY ↔ crypto). Defaults to false (direct-correlation).
             "--cross-asset-inverse" => cross_asset_inverse = true,
@@ -1893,21 +1860,6 @@ fn main() -> Result<()> {
             anyhow::bail!("--risk-frac-mult must be finite and > 0 (got {m})");
         }
     }
-    if let Some(m) = pyramid_risk_mult {
-        if !(m.is_finite() && m > 0.0) {
-            anyhow::bail!("--pyramid-risk-mult must be finite and > 0 (got {m})");
-        }
-    }
-    if let Some(min_eq) = pyramid_min_equity {
-        if !(min_eq.is_finite() && min_eq >= 0.0 && min_eq < 1.0) {
-            anyhow::bail!(
-                "--pyramid-min-equity must be finite and in [0, 1) (got {min_eq})"
-            );
-        }
-    }
-    if pyramid_risk_mult.is_some() && pyramid_min_equity.is_none() {
-        anyhow::bail!("--pyramid-risk-mult requires --pyramid-min-equity");
-    }
     if let Some(sp) = override_stop_pct {
         if !(sp > 0.0 && sp < 1.0) {
             anyhow::bail!("--override-stop-pct must be in (0, 1) (got {sp})");
@@ -2074,9 +2026,6 @@ fn main() -> Result<()> {
         }
         if risk_frac_mult.is_some() {
             unsupported.push("--risk-frac-mult");
-        }
-        if pyramid_min_equity.is_some() || pyramid_risk_mult.is_some() {
-            unsupported.push("--pyramid-min-equity / --pyramid-risk-mult");
         }
         if override_tp_mult.is_some()
             || override_stop_pct.is_some()
@@ -2274,8 +2223,6 @@ fn main() -> Result<()> {
         news_blackout_enable,
         skip_sol30d_gt,
         skip_bnb7d_gt,
-        pyramid_min_equity,
-        pyramid_risk_mult,
     };
 
     if candles_dir.is_some() || symbols_arg.is_some() {
