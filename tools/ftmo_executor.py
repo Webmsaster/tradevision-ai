@@ -320,6 +320,13 @@ ORDER_FAIL_AUTO_PAUSE = int(os.environ.get("FTMO_ORDER_FAIL_PAUSE", "3"))
 # 8 = safe upper bound for all current configs (V5 family ≤ 12). User can
 # tune via FTMO_MAX_CONCURRENT.
 MAX_CONCURRENT_TRADES = int(os.environ.get("FTMO_MAX_CONCURRENT", "8"))
+# 2026-05-20 bug-find round: optional aggregate portfolio-risk cap. The MCT count
+# cap + per-order RISK_FRAC_HARD_CAP allow up to MAX_CONCURRENT × hard-cap (e.g.
+# 8 × 0.05 = 40%) concurrent equity-at-risk — a correlated crypto crash could
+# breach the FTMO DL before stops fire. Set FTMO_PORTFOLIO_MAX_RISK (e.g. 0.20)
+# to block new entries once the summed effective risk_frac of open + in-batch
+# positions would exceed it. Default 0 = disabled (no behaviour change).
+PORTFOLIO_MAX_RISK = float(os.environ.get("FTMO_PORTFOLIO_MAX_RISK", "0"))
 
 # Dry-run mode: log planned orders but never call mt5.order_send.
 DRY_RUN = os.environ.get("FTMO_DRY_RUN", "").lower() in ("1", "true", "yes")
@@ -3302,6 +3309,7 @@ def _process_signals_unlocked(
     # MCT counter — tracks orders placed during THIS batch run so back-to-back
     # signals can't bypass the cap before MT5's positions_get sees them.
     in_batch_placed = 0
+    in_batch_risk = 0.0  # summed effective risk_frac placed this batch (portfolio cap)
     # 2026-05-15 Codex-Audit Wave-2 Bug 1 (KRITISCH): markers of successfully
     # placed orders are held until after pending/executed/open-positions are
     # durably written. Then bulk-deleted. A crash in that window leaves the
@@ -3594,6 +3602,28 @@ def _process_signals_unlocked(
                 )
                 sig_risk_frac = capped
 
+        # 2026-05-20 bug-find round: aggregate portfolio-risk cap (opt-in via
+        # FTMO_PORTFOLIO_MAX_RISK). Blocks a new entry once the summed effective
+        # risk_frac of open + in-batch positions + this signal would exceed the
+        # ceiling — defends against MCT×hard-cap concurrent-risk stacking that a
+        # correlated crash could breach before stops fire.
+        if PORTFOLIO_MAX_RISK > 0:
+            _open_risk = sum(
+                float(p.get("effective_risk_frac", 0) or 0)
+                for p in read_json(OPEN_POS_PATH, {"positions": []}).get("positions", [])
+            )
+            if _open_risk + in_batch_risk + sig_risk_frac > PORTFOLIO_MAX_RISK:
+                log_event(
+                    "portfolio_risk_block", asset=sig["assetSymbol"],
+                    open_risk=round(_open_risk, 4), in_batch=round(in_batch_risk, 4),
+                    this=round(sig_risk_frac, 4), cap=PORTFOLIO_MAX_RISK,
+                )
+                executed["executions"].append({
+                    "signal": sig, "result": "portfolio_risk_block",
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                })
+                continue
+
         result = place_market_order(
             binance_symbol=sig["sourceSymbol"],
             direction=direction,
@@ -3641,6 +3671,7 @@ def _process_signals_unlocked(
             placed_markers.append(order_marker)
             _reset_order_fail_counter()
             in_batch_placed += 1
+            in_batch_risk += sig_risk_frac  # portfolio-risk cap accounting
             # Drift-monitor fields: capture signal-side prediction + MT5
             # actual fill so the daily report can attribute live drift to
             # entry slippage, spread cost, or stop_pct slippage. Read the
@@ -3711,6 +3742,9 @@ def _process_signals_unlocked(
                 # applied to the SHRINKING current volume, so 30% + 40% closed
                 # 30% + 0.7×40% = 58% instead of the engine's 70%.
                 "original_lot": result.lot,
+                # 2026-05-20 bug-find round: persist effective risk_frac so the
+                # aggregate portfolio-risk cap can sum exposure across positions.
+                "effective_risk_frac": round(sig_risk_frac, 6),
                 "entry_price": result.entry_price,
                 # 2026-05-13 Codex Round 4 Python #5 FIX: persist BROKER-
                 # confirmed SL/TP (from mt5.positions_get on the new ticket,
