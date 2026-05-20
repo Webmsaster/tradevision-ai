@@ -2458,13 +2458,21 @@ fn run_single_asset(
                     || a.symbol == format!("{}-TREND", symbol.as_str())
             }) {
                 a.clone()
-            } else if !cfg.assets.is_empty() {
-                cfg.assets[0].clone()
             } else {
+                // 2026-05-20 bug-find round: a symbol absent from the template
+                // previously cloned cfg.assets[0] (= BTC-TREND's tp/stop/cost
+                // config) and ran the symbol under BTC's per-asset params —
+                // silently wrong. Now build a config with the CORRECT symbol and
+                // empty per-asset overrides, so `from_cfg` inherits the cfg-level
+                // defaults instead of another asset's tuning.
+                eprintln!(
+                    "[sweep] WARN: symbol '{symbol}' not in template; using cfg-default \
+                     per-asset params (no per-asset tuning)."
+                );
                 AssetConfig {
                     symbol: format!("{symbol}-TREND"),
                     source_symbol: Some(symbol.to_string()),
-                    risk_frac: 0.4,
+                    risk_frac: cfg.assets.first().map(|a| a.risk_frac).unwrap_or(0.4),
                     ..Default::default()
                 }
             };

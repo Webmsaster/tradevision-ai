@@ -3470,6 +3470,26 @@ def _process_signals_unlocked(
                 "ts": datetime.now(timezone.utc).isoformat(),
             })
             continue
+
+        # 2026-05-20 bug-find round: same-asset same-direction exclusivity. The
+        # engine permits a long+short straddle on one asset but NEVER two
+        # same-direction positions; without this guard a re-emitted signal (new
+        # bar) stacks a 2nd same-side position → concentration / doubled risk on
+        # one asset. (live_positions is re-fetched per signal above, so a fill
+        # from earlier in this batch is already visible here.)
+        _sig_broker = _resolve_broker_symbol(sig["sourceSymbol"])
+        _want_type = mt5.POSITION_TYPE_BUY if direction == "long" else mt5.POSITION_TYPE_SELL
+        if _sig_broker and any(
+            getattr(p, "symbol", "") == _sig_broker and getattr(p, "type", None) == _want_type
+            for p in live_positions
+        ):
+            log_event("same_asset_same_dir_block", asset=sig["assetSymbol"], direction=direction)
+            executed["executions"].append({
+                "signal": sig, "result": "same_asset_open", "direction": direction,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+            continue
+
         regime = sig.get("regime", "BEAR_CHOP")
         tag = "iter213-bull" if regime == "BULL" else "iter231"
 
