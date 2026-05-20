@@ -494,6 +494,27 @@ fn parse_ptp_levels(
     Ok(out)
 }
 
+fn parse_u32_csv_flag(csv: &str, flag: &str, min: u32, max: u32) -> Result<Vec<u32>> {
+    let mut out = Vec::new();
+    for raw in csv.split(',') {
+        let tok = raw.trim();
+        if tok.is_empty() {
+            continue;
+        }
+        let v: u32 = tok
+            .parse()
+            .map_err(|_| anyhow!("{flag}: invalid integer token '{tok}'"))?;
+        if v < min || v > max {
+            anyhow::bail!("{flag}: value {v} outside [{min}, {max}]");
+        }
+        out.push(v);
+    }
+    if out.is_empty() {
+        anyhow::bail!("{flag}: list must contain at least one value");
+    }
+    Ok(out)
+}
+
 fn apply_r28v6_param_overrides(
     params: &mut ftmo_engine_core::signals_r28v6::R28V6Params,
     cfg: &MultiSignalCfg,
@@ -750,17 +771,11 @@ fn apply_overrides(
         cfg.break_even = Some(BreakEven { threshold: t });
     }
     if let Some(csv) = &ov.hours {
-        let v: Vec<u32> = csv
-            .split(',')
-            .filter_map(|s| s.trim().parse().ok())
-            .collect();
+        let v = parse_u32_csv_flag(csv, "--override-hours", 0, 23)?;
         cfg.allowed_hours_utc = Some(v);
     }
     if let Some(csv) = &ov.dows {
-        let v: Vec<u32> = csv
-            .split(',')
-            .filter_map(|s| s.trim().parse().ok())
-            .collect();
+        let v = parse_u32_csv_flag(csv, "--override-dows", 0, 6)?;
         cfg.allowed_dows_utc = Some(v);
     }
     if let Some(csv) = &ov.drop_symbols {
@@ -849,6 +864,7 @@ fn apply_overrides(
             direction: ov
                 .cross_asset_dir
                 .clone()
+                .map(|d| d.to_ascii_lowercase())
                 .unwrap_or_else(|| "any".to_string()),
             fast_period: ov.cross_asset_fast.unwrap_or(9),
             slow_period: ov.cross_asset_slow.unwrap_or(21),
@@ -1857,6 +1873,21 @@ fn main() -> Result<()> {
             );
         }
     }
+    if let Some(sd) = step_days {
+        if sd == 0 {
+            anyhow::bail!("--step-days must be > 0 (got 0)");
+        }
+    }
+    if let Some(mct) = override_mct {
+        if mct == 0 {
+            anyhow::bail!("--override-mct must be > 0 (got 0)");
+        }
+    }
+    if let Some(max_days) = max_days {
+        if max_days == 0 {
+            anyhow::bail!("--max-days must be > 0 (got 0)");
+        }
+    }
     if let Some(m) = risk_frac_mult {
         if !(m.is_finite() && m > 0.0) {
             anyhow::bail!("--risk-frac-mult must be finite and > 0 (got {m})");
@@ -1866,6 +1897,16 @@ fn main() -> Result<()> {
         if !(m.is_finite() && m > 0.0) {
             anyhow::bail!("--pyramid-risk-mult must be finite and > 0 (got {m})");
         }
+    }
+    if let Some(min_eq) = pyramid_min_equity {
+        if !(min_eq.is_finite() && min_eq >= 0.0 && min_eq < 1.0) {
+            anyhow::bail!(
+                "--pyramid-min-equity must be finite and in [0, 1) (got {min_eq})"
+            );
+        }
+    }
+    if pyramid_risk_mult.is_some() && pyramid_min_equity.is_none() {
+        anyhow::bail!("--pyramid-risk-mult requires --pyramid-min-equity");
     }
     if let Some(sp) = override_stop_pct {
         if !(sp > 0.0 && sp < 1.0) {
@@ -1885,6 +1926,55 @@ fn main() -> Result<()> {
     if let Some(hb) = override_hold_bars {
         if hb == 0 {
             anyhow::bail!("--override-hold-bars must be > 0 (got 0)");
+        }
+    }
+    if let Some(act) = override_trail_activate {
+        if !(act.is_finite() && act > 0.0 && act < 1.0) {
+            anyhow::bail!("--override-trail-activate must be finite and in (0, 1) (got {act})");
+        }
+    }
+    if let Some(pct) = override_trail_pct {
+        if !(pct.is_finite() && pct > 0.0 && pct < 1.0) {
+            anyhow::bail!("--override-trail-pct must be finite and in (0, 1) (got {pct})");
+        }
+    }
+    if let Some(t) = be_threshold {
+        if !(t.is_finite() && t > 0.0 && t < 1.0) {
+            anyhow::bail!("--be-threshold must be finite and in (0, 1) (got {t})");
+        }
+    }
+    if let Some(keep) = random_gate_keep {
+        if !(keep.is_finite() && (0.0..=1.0).contains(&keep)) {
+            anyhow::bail!("--random-gate-keep must be finite and in [0, 1] (got {keep})");
+        }
+    }
+    if htf_stride == 0 {
+        anyhow::bail!("--htf-stride must be > 0 (got 0)");
+    }
+    if let Some(fast) = cross_asset_fast {
+        if fast == 0 {
+            anyhow::bail!("--cross-asset-fast must be > 0 (got 0)");
+        }
+    }
+    if let Some(slow) = cross_asset_slow {
+        if slow == 0 {
+            anyhow::bail!("--cross-asset-slow must be > 0 (got 0)");
+        }
+    }
+    if let Some(dir) = cross_asset_dir.as_deref() {
+        let d = dir.to_ascii_lowercase();
+        if !matches!(d.as_str(), "long" | "short" | "any") {
+            anyhow::bail!("--cross-asset-dir must be one of long, short, any (got {dir})");
+        }
+    }
+    if let Some(v) = funding_max_long {
+        if !v.is_finite() {
+            anyhow::bail!("--funding-max-long must be finite (got {v})");
+        }
+    }
+    if let Some(v) = funding_min_short {
+        if !v.is_finite() {
+            anyhow::bail!("--funding-min-short must be finite (got {v})");
         }
     }
     if let Some(t) = threads {
@@ -1941,11 +2031,30 @@ fn main() -> Result<()> {
         if random_gate_keep.is_some() {
             unsupported.push("--random-gate-keep");
         }
+        if step_days.is_some()
+            || funding_dir.is_some()
+            || cb_premium_dir.is_some()
+            || trades_out.is_some()
+            || debug_window.is_some()
+            || start_after_ts.is_some()
+            || timeframe.is_some()
+            || hmm_model_path.is_some()
+        {
+            unsupported.push("--step-days / external feeds / debug dumps / HMM model");
+        }
+        if matches!(signals, SignalSrc::PerAssetCfg | SignalSrc::RegimeConfluence) {
+            unsupported.push("--signals per-asset / regime");
+        }
         if use_htf_confirm {
             unsupported.push("--use-htf-confirm");
         }
-        if cross_asset_sym.is_some() {
-            unsupported.push("--cross-asset-sym");
+        if cross_asset_sym.is_some()
+            || cross_asset_dir.is_some()
+            || cross_asset_fast.is_some()
+            || cross_asset_slow.is_some()
+            || cross_asset_inverse
+        {
+            unsupported.push("--cross-asset-*");
         }
         if also_fire_meanrev {
             unsupported.push("--also-fire-meanrev");
@@ -1962,6 +2071,107 @@ fn main() -> Result<()> {
         // "the gate is broken" when it's just not applicable.
         if min_initial_signal_breadth > 0 || min_initial_majors > 0 {
             unsupported.push("--min-initial-signal-breadth / --min-initial-majors");
+        }
+        if risk_frac_mult.is_some() {
+            unsupported.push("--risk-frac-mult");
+        }
+        if pyramid_min_equity.is_some() || pyramid_risk_mult.is_some() {
+            unsupported.push("--pyramid-min-equity / --pyramid-risk-mult");
+        }
+        if override_tp_mult.is_some()
+            || override_stop_pct.is_some()
+            || override_mct.is_some()
+            || override_leverage.is_some()
+            || override_hold_bars.is_some()
+            || override_hours.is_some()
+            || override_dows.is_some()
+            || min_trading_days.is_some()
+            || profit_target.is_some()
+            || max_days.is_some()
+        {
+            unsupported.push(
+                "--override-* config knobs / --profit-target / --min-trading-days / --max-days",
+            );
+        }
+        if drop_symbols.is_some()
+            || keep_symbols.is_some()
+            || funding_max_long.is_some()
+            || funding_min_short.is_some()
+        {
+            unsupported.push("--keep-symbols / --drop-symbols / --funding-*");
+        }
+        if disable_trail
+            || override_trail_activate.is_some()
+            || override_trail_pct.is_some()
+            || disable_passlock
+            || enable_passlock
+            || be_threshold.is_some()
+            || adaptive_tp_per_asset.is_some()
+            || pdd_from_peak.is_some()
+            || pdd_factor.is_some()
+            || dpts_trail.is_some()
+            || cpts_trail.is_some()
+            || idl_threshold.is_some()
+            || idl_factor.is_some()
+            || max_consec_stops_per_day > 0
+            || trail_dd_lock_trigger > 0.0
+            || trail_dd_lock_floor > 0.0
+            || lscool_after.is_some()
+            || lscool_bars.is_some()
+            || ptp_levels.is_some()
+        {
+            unsupported.push(
+                "trail/passlock/BE/PTP/DD/loss-cooldown override flags",
+            );
+        }
+        if ds_aggressive_until.is_some()
+            || ds_aggressive_factor.is_some()
+            || ds_neutral_until.is_some()
+            || ds_neutral_factor.is_some()
+            || ds_defensive_factor.is_some()
+            || ds_progress_frac.is_some()
+            || ds_progress_factor.is_some()
+            || disable_day_stage
+            || funding_sizing_alpha.is_some()
+            || funding_sizing_window.is_some()
+            || funding_sizing_min_factor.is_some()
+            || td_enable
+            || td_decay.is_some()
+            || td_start_day.is_some()
+            || td_min_factor.is_some()
+            || td_mode.is_some()
+            || sharpe_sizing_enable
+            || sharpe_window.is_some()
+            || sharpe_min_trades.is_some()
+            || kelly_sizing_enable
+            || kelly_window.is_some()
+            || kelly_min_trades.is_some()
+            || kelly_fraction.is_some()
+            || tp_mult_per_asset.is_some()
+            || phase2_risk_mult.is_some()
+            || news_blackout_enable
+            || skip_sol30d_gt.is_some()
+            || skip_bnb7d_gt.is_some()
+        {
+            unsupported.push("sizing/day-stage/phase/news/skip override flags");
+        }
+        if cluster_only_mode
+            || early_abort_after_losses > 0
+            || early_abort_after_trades > 0
+            || early_abort_min_cum != 0.0
+            || kill_switch_hour > 0
+            || kill_switch_min_trades != 6
+            || kill_switch_min_equity != -0.02
+        {
+            unsupported.push("cluster-only/early-abort/kill-switch flags");
+        }
+        if mr_period.is_some()
+            || mr_oversold.is_some()
+            || mr_overbought.is_some()
+            || mr_cooldown.is_some()
+            || mr_size_mult.is_some()
+        {
+            unsupported.push("--mr-* overrides");
         }
         if regime_use_vol_confirm
             || regime_use_vwap_trend
@@ -2957,27 +3167,38 @@ fn run_multi_asset(
         win_plans
     };
     // 2026-05-19 Agent-21-repro: NATIVE pre-window skip filter. Skip a window
-    // when SOLUSDT 30d-return > X OR BNBUSDT 7d-return > Y, both measured at
-    // window-start bar `lo` using ONLY bars at/before `lo` (lookahead-safe).
-    // 30d @ 30m = 30*48 = 1440 bars; 7d = 7*48 = 336 bars. Skipped windows are
-    // excluded from numerator AND denominator (= "not taken"). When the
-    // lookback would predate data start, the feature is unavailable → take the
-    // window (conservative; do NOT skip).
+    // when SOLUSDT 30d-return > X OR BNBUSDT 7d-return > Y.
+    // 2026-05-20 LOOKAHEAD FIX (bug-find round): the return is measured from the
+    // last CLOSED bar before the first entry — `lo-1` — NOT `lo`. The first
+    // trade at bar `lo` is triggered by the close of bar `lo-1` (engine
+    // convention, sweep.rs entry path), so bar `lo`'s close is not yet known at
+    // the decision point. Window N+1 of a basket should be decided from data
+    // ending at its start, which is bar `lo-1`. 30d @ 30m = 1440 bars; 7d = 336.
+    // Skipped windows are excluded from numerator AND denominator (= "not
+    // taken"). When the lookback predates data start the feature is unavailable
+    // → take the window (conservative). Missing SOL/BNB in the basket warns once
+    // and disables that leg (no silent dormancy).
     let total_before_skip = win_plans.len();
     let win_plans: Vec<(usize, usize)> = if skip_sol30d_gt.is_some() || skip_bnb7d_gt.is_some() {
         const SOL_LB: usize = 30 * 48; // 1440 bars
         const BNB_LB: usize = 7 * 48; // 336 bars
         let sol = aligned.get("SOLUSDT");
         let bnb = aligned.get("BNBUSDT");
+        if skip_sol30d_gt.is_some() && sol.is_none() {
+            eprintln!("[sweep] WARN: --skip-sol30d-gt set but SOLUSDT not in basket → SOL skip-leg disabled.");
+        }
+        if skip_bnb7d_gt.is_some() && bnb.is_none() {
+            eprintln!("[sweep] WARN: --skip-bnb7d-gt set but BNBUSDT not in basket → BNB skip-leg disabled.");
+        }
         win_plans
             .into_iter()
             .filter(|(lo, _)| {
                 let lo = *lo;
-                // SOL 30d gate
+                // SOL 30d gate — measured at last closed bar `lo-1` (lookahead-safe).
                 if let (Some(thr), Some(cs)) = (skip_sol30d_gt, sol) {
-                    if lo >= SOL_LB {
-                        let now = cs[lo].close;
-                        let past = cs[lo - SOL_LB].close;
+                    if lo >= SOL_LB + 1 {
+                        let now = cs[lo - 1].close;
+                        let past = cs[lo - 1 - SOL_LB].close;
                         if past > 0.0 {
                             let ret = now / past - 1.0;
                             if ret > thr {
@@ -2986,11 +3207,11 @@ fn run_multi_asset(
                         }
                     }
                 }
-                // BNB 7d gate
+                // BNB 7d gate — measured at last closed bar `lo-1` (lookahead-safe).
                 if let (Some(thr), Some(cs)) = (skip_bnb7d_gt, bnb) {
-                    if lo >= BNB_LB {
-                        let now = cs[lo].close;
-                        let past = cs[lo - BNB_LB].close;
+                    if lo >= BNB_LB + 1 {
+                        let now = cs[lo - 1].close;
+                        let past = cs[lo - 1 - BNB_LB].close;
                         if past > 0.0 {
                             let ret = now / past - 1.0;
                             if ret > thr {
@@ -3035,6 +3256,7 @@ fn run_multi_asset(
              (b) --start-after-ts cuts past the cache end, \
              (c) step_days × windows exceeds cache range."
         );
+        anyhow::bail!("no windows survived planning; refusing to report passed=0 / 0");
     } else if actual_windows < (windows / 2).max(1) && windows > 0 {
         eprintln!(
             "[sweep] WARN: only {actual_windows}/{windows} windows survived planning. \
@@ -3884,9 +4106,10 @@ fn run_one_window(
             let count_one = |sym: &str,
                              symbols_set: &mut std::collections::HashSet<String>,
                              majors_set: &mut std::collections::HashSet<String>| {
-                symbols_set.insert(sym.to_string());
+                let key = cluster_symbol_key(sym);
+                symbols_set.insert(key.clone());
                 for prefix in multi_signal.majors_prefixes.iter() {
-                    if sym == prefix || sym.starts_with(&format!("{prefix}-")) {
+                    if key == *prefix || key.starts_with(&format!("{prefix}-")) {
                         majors_set.insert(prefix.clone());
                         break;
                     }
@@ -3900,6 +4123,15 @@ fn run_one_window(
             }
             let qualified = symbols_set.len() >= multi_signal.min_initial_signal_breadth
                 && majors_set.len() >= multi_signal.min_initial_majors;
+            let current_candidates: Vec<(i64, String)> = signals_for_bar
+                .iter()
+                .map(|s| (s.entry_time, s.symbol.clone()))
+                .collect();
+            // Live ftmo_executor logs signal arrivals before checking
+            // cluster-only entry blocking. Mirror that: a red cluster's
+            // blocked candidates still become signal-history, so breadth can
+            // form across multiple bars instead of only via same-bar bursts.
+            cluster_signal_log.extend(current_candidates);
             if !qualified {
                 cluster_blocked_signals = cluster_blocked_signals.saturating_add(
                     signals_for_bar.len() as u32,
@@ -3908,9 +4140,6 @@ fn run_one_window(
                 signals_for_bar.clear();
             } else {
                 cluster_passed_bars = cluster_passed_bars.saturating_add(1);
-                for s in signals_for_bar.iter() {
-                    cluster_signal_log.push((s.entry_time, s.symbol.clone()));
-                }
             }
         }
 
@@ -4203,6 +4432,12 @@ fn run_one_window(
 /// intra-challenge `--cluster-only-mode` gate to decide whether the live
 /// cluster is currently RED before letting fresh entries through. Pure
 /// function so tests can exercise it without spinning up `run_one_window`.
+fn cluster_symbol_key(sym: &str) -> String {
+    sym.strip_suffix("-PYRAMID")
+        .map(|base| format!("{base}-TREND"))
+        .unwrap_or_else(|| sym.to_string())
+}
+
 pub fn compute_rolling_cluster_counts(
     entries: &[(i64, String)],
     now_ms: i64,
@@ -4213,16 +4448,17 @@ pub fn compute_rolling_cluster_counts(
         return (0, 0);
     }
     let cutoff_ms = now_ms.saturating_sub((window_hours as i64) * 3_600_000);
-    let mut symbols_set: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    let mut majors_set: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut symbols_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut majors_set: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (t, sym) in entries.iter() {
         if *t <= cutoff_ms || *t > now_ms {
             continue;
         }
-        symbols_set.insert(sym.as_str());
+        let key = cluster_symbol_key(sym);
+        symbols_set.insert(key.clone());
         for prefix in majors_prefixes.iter() {
-            if sym == prefix || sym.starts_with(&format!("{prefix}-")) {
-                majors_set.insert(prefix.as_str());
+            if key == *prefix || key.starts_with(&format!("{prefix}-")) {
+                majors_set.insert(prefix.clone());
                 break;
             }
         }
@@ -4258,16 +4494,40 @@ pub fn compute_first_cluster_counts(
         if *entry_time > cutoff_ms {
             break;
         }
-        symbols_in_cluster.insert(symbol.clone());
+        let key = cluster_symbol_key(symbol);
+        symbols_in_cluster.insert(key.clone());
         for prefix in majors_prefixes.iter() {
-            let starts_dashed = symbol.starts_with(&format!("{prefix}-"));
-            if starts_dashed || *symbol == *prefix {
+            let starts_dashed = key.starts_with(&format!("{prefix}-"));
+            if starts_dashed || key == *prefix {
                 majors_in_cluster.insert(prefix.clone());
                 break;
             }
         }
     }
     (symbols_in_cluster.len(), majors_in_cluster.len())
+}
+
+#[cfg(test)]
+mod cli_parse_tests {
+    use super::parse_u32_csv_flag;
+
+    #[test]
+    fn parse_u32_csv_flag_rejects_invalid_token() {
+        let err = parse_u32_csv_flag("4,wat", "--override-hours", 0, 23).unwrap_err();
+        assert!(err.to_string().contains("invalid integer token"));
+    }
+
+    #[test]
+    fn parse_u32_csv_flag_rejects_out_of_range() {
+        let err = parse_u32_csv_flag("1,24", "--override-hours", 0, 23).unwrap_err();
+        assert!(err.to_string().contains("outside [0, 23]"));
+    }
+
+    #[test]
+    fn parse_u32_csv_flag_accepts_valid_values() {
+        let values = parse_u32_csv_flag("4, 10,22", "--override-hours", 0, 23).unwrap();
+        assert_eq!(values, vec![4, 10, 22]);
+    }
 }
 
 #[cfg(test)]
@@ -4333,6 +4593,19 @@ mod breadth_gate_tests {
         let (breadth, majors_count) = compute_first_cluster_counts(&trades, 24, &majors);
         assert_eq!(breadth, 1, "same symbol 3× = breadth 1");
         assert_eq!(majors_count, 1);
+    }
+
+    #[test]
+    fn pyramid_clone_does_not_inflate_first_cluster_breadth() {
+        let trades = vec![
+            t(0, "BTC-TREND"),
+            t(1_000, "BTC-PYRAMID"),
+            t(2_000, "ETH-TREND"),
+        ];
+        let majors = vec![s("BTC"), s("ETH")];
+        let (breadth, majors_count) = compute_first_cluster_counts(&trades, 24, &majors);
+        assert_eq!(breadth, 2, "BTC pyramid clone must count as BTC-TREND");
+        assert_eq!(majors_count, 2);
     }
 
     #[test]
@@ -4429,6 +4702,20 @@ mod cluster_only_mode_tests {
             compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
         assert_eq!(breadth, 1);
         assert_eq!(majors_count, 1);
+    }
+
+    #[test]
+    fn pyramid_clone_does_not_inflate_rolling_cluster_breadth() {
+        let entries = vec![
+            t(10 * H, "BTC-TREND"),
+            t(11 * H, "BTC-PYRAMID"),
+            t(12 * H, "ETH-TREND"),
+        ];
+        let majors = vec![s("BTC"), s("ETH")];
+        let (breadth, majors_count) =
+            compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
+        assert_eq!(breadth, 2);
+        assert_eq!(majors_count, 2);
     }
 
     #[test]

@@ -734,7 +734,7 @@ def test_rebuild_recovers_config_from_executed_log(monkeypatch, tmp_path):
         "engineTicketId": "BTC@111@long", "entryTime": 111,
     }
     exe.EXECUTED_PATH.write_text(json.dumps({"executions": [
-        {"result": "placed", "ticket": 555, "signal": sig, "lot": 1.0}
+        {"result": "placed", "ticket": 555, "signal": sig, "lot": 1.0, "actual_entry": 2000.0}
     ]}))
     monkeypatch.setattr(exe.mt5, "positions_get", lambda *a, **k: [_fake_live_pos(exe, 555)])
 
@@ -771,7 +771,7 @@ def test_rebuild_marks_ptp_done_when_volume_reduced(monkeypatch, tmp_path):
         "partialTakeProfitLevels": [{"trigger": 0.5, "frac": 0.3}],
     }
     exe.EXECUTED_PATH.write_text(json.dumps({"executions": [
-        {"result": "placed", "ticket": 556, "signal": sig, "lot": 1.0}
+        {"result": "placed", "ticket": 556, "signal": sig, "lot": 1.0, "actual_entry": 2000.0}
     ]}))
     # live volume 0.5 < original 1.0 → partial already fired.
     monkeypatch.setattr(exe.mt5, "positions_get", lambda *a, **k: [_fake_live_pos(exe, 556, volume=0.5)])
@@ -800,6 +800,82 @@ def test_rebuild_falls_back_to_stub_without_executed_record(monkeypatch, tmp_pat
     assert p["chandelier"] is None
     assert p["partial_tp_levels"] is None
     assert p["max_hold_until"] == 0
+
+
+def test_rebuild_rejects_stale_record_on_ticket_reuse(monkeypatch, tmp_path):
+    """B2 fix: a stale executed record from an OLD challenge sharing a reused
+    ticket int must NOT graft its config onto a NEW live position. Mismatched
+    entry price → fall back to safe stub."""
+    import ftmo_executor as exe
+    exe.STATE_DIR = tmp_path
+    exe.EXECUTED_PATH = tmp_path / "executed-signals.json"
+    exe.OPEN_POS_PATH = tmp_path / "open-positions.json"
+    exe.OPEN_POS_PATH.write_text(json.dumps({"positions": []}))
+    stale_sig = {
+        "assetSymbol": "BTC", "sourceSymbol": "BTCUSDT", "direction": "long",
+        "chandelierExit": {"atrMult": 3.0}, "maxHoldUntil": 999,
+    }
+    # Stale record entry 1000 vs live position open 2000 → reused-ticket mismatch.
+    exe.EXECUTED_PATH.write_text(json.dumps({"executions": [
+        {"result": "placed", "ticket": 555, "signal": stale_sig, "lot": 1.0, "actual_entry": 1000.0}
+    ]}))
+    monkeypatch.setattr(exe.mt5, "positions_get", lambda *a, **k: [_fake_live_pos(exe, 555)])
+
+    exe.rebuild_open_positions_from_mt5()
+    p = json.loads(exe.OPEN_POS_PATH.read_text())["positions"][0]
+    assert p.get("_rebuilt_from_mt5") is True   # stub, NOT grafted config
+    assert p["chandelier"] is None
+    assert p["max_hold_until"] == 0
+
+
+def test_place_market_order_rejects_tiny_payload_stop(monkeypatch):
+    """B3 fix: a near-zero payload stop distance is rejected, not sized into an
+    enormous lot."""
+    import ftmo_executor as exe
+    exe.SLIPPAGE_DISABLED = True
+    exe._SYMBOL_CACHE.clear()
+    info = FakeSpreadSymbolInfo(
+        ask=2000.0, bid=2000.0, spread=0, point=0.01,
+        tick_size=0.01, tick_value=0.01,
+        volume_min=0.01, volume_max=100.0, volume_step=0.01,
+    )
+    monkeypatch.setattr(exe.mt5, "symbol_info", lambda s: info)
+    monkeypatch.setattr(exe.mt5, "symbol_select", lambda s, e: True)
+    monkeypatch.setattr(exe.mt5, "order_send", lambda req: (_ for _ in ()).throw(
+        AssertionError("order_send must NOT fire on tiny stop")))
+    # SL only 0.01% below entry → eff_stop < MIN_EFFECTIVE_STOP_PCT (0.1%).
+    res = exe.place_market_order(
+        binance_symbol="BTCUSDT", direction="long", risk_frac=0.01,
+        stop_pct=0.01, tp_pct=0.02, account_equity=100000.0, comment="tiny",
+        signal_stop_price=1999.8, signal_tp_price=2050.0,
+    )
+    assert not res.ok
+    assert "too tight" in (res.error or "")
+
+
+def test_place_market_order_rejects_stop_collapsed_by_rounding(monkeypatch):
+    """B4 fix: a payload SL that rounds onto the entry (coarse tick grid) is
+    rejected by the post-round side check, not sent as SL==entry."""
+    import ftmo_executor as exe
+    exe.SLIPPAGE_DISABLED = True
+    exe._SYMBOL_CACHE.clear()
+    # Coarse tick grid 10.0: payload SL 1996 rounds to 2000 == entry.
+    info = FakeSpreadSymbolInfo(
+        ask=2000.0, bid=2000.0, spread=0, point=10.0,
+        tick_size=10.0, tick_value=0.01,
+        volume_min=0.01, volume_max=100.0, volume_step=0.01,
+    )
+    monkeypatch.setattr(exe.mt5, "symbol_info", lambda s: info)
+    monkeypatch.setattr(exe.mt5, "symbol_select", lambda s, e: True)
+    monkeypatch.setattr(exe.mt5, "order_send", lambda req: (_ for _ in ()).throw(
+        AssertionError("order_send must NOT fire when SL collapses to entry")))
+    res = exe.place_market_order(
+        binance_symbol="BTCUSDT", direction="long", risk_frac=0.01,
+        stop_pct=0.01, tp_pct=0.02, account_equity=100000.0, comment="round",
+        signal_stop_price=1996.0, signal_tp_price=2050.0,
+    )
+    assert not res.ok
+    assert "wrong side after rounding" in (res.error or "")
 
 
 # ============================================================================

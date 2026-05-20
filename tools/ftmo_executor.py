@@ -184,6 +184,13 @@ RISK_FRAC_HARD_CAP = float(os.environ.get("FTMO_RISK_HARD_CAP", "0.05"))
 # matches typical crypto-tick latency budget.
 MAX_ENTRY_SLIPPAGE_PCT = float(os.environ.get("FTMO_MAX_ENTRY_SLIPPAGE", "0.005"))
 
+# 2026-05-20 bug-find round: floor on the effective stop distance. With absolute
+# payload SL/TP (Codex #5), a pathologically tiny stop would make compute_lot_size
+# produce an enormous lot (real risk >> risk_frac, bounded only by margin). Reject
+# any order whose effective stop distance is below this floor. Default 0.1% — far
+# below any legitimate crypto stop (1-5%), so it only catches degenerate payloads.
+MIN_EFFECTIVE_STOP_PCT = float(os.environ.get("FTMO_MIN_EFFECTIVE_STOP", "0.001"))
+
 # ---------------------------------------------------------------------------
 # FTMO_STRICT_PARITY (R3-B Drift-3, 2026-05-15)
 #
@@ -2310,6 +2317,23 @@ def place_market_order(
     stop_price = _round_to_tick(stop_price, tick_size, digits)
     tp_price = _round_to_tick(tp_price, tick_size, digits)
 
+    # 2026-05-20 bug-find round fix (B4): re-validate SL/TP side AFTER tick
+    # rounding. _round_to_tick can snap a sub-tick stop onto/past the entry,
+    # so the pre-round side guard is not sufficient. Applies to BOTH payload
+    # and relative levels (a tiny relative stop_pct can collapse on rounding too).
+    long_side_ok = direction == "long" and stop_price < entry_price < tp_price
+    short_side_ok = direction == "short" and tp_price < entry_price < stop_price
+    if not (long_side_ok or short_side_ok):
+        log_event(
+            "levels_wrong_side_after_round", level="warn", asset=binance_symbol,
+            direction=direction, entry=entry_price, stop=stop_price, tp=tp_price,
+        )
+        return OrderResult(
+            False, None,
+            f"SL/TP collapsed to wrong side after rounding (entry={entry_price} sl={stop_price} tp={tp_price})",
+            None, None,
+        )
+
     # Round 53: realistic slippage on entry. SL/TP stay relative to the
     # theoretical mid (engine planned them that way) — only the order
     # `price` and the reported fill move. This mirrors real MT5 behavior:
@@ -2331,6 +2355,19 @@ def place_market_order(
     if fill_price <= 0:
         return OrderResult(False, None, f"invalid fill_price={fill_price}", None, None)
     effective_stop_pct = abs(fill_price - stop_price) / fill_price
+    # 2026-05-20 bug-find round fix (B3): floor on effective stop distance.
+    # A near-zero distance (e.g. malformed tiny payload SL) would size an
+    # enormous lot — real risk far exceeding risk_frac, capped only by margin.
+    if effective_stop_pct < MIN_EFFECTIVE_STOP_PCT:
+        log_event(
+            "stop_too_tight", level="warn", asset=binance_symbol,
+            effective=round(effective_stop_pct, 6), floor=MIN_EFFECTIVE_STOP_PCT,
+        )
+        return OrderResult(
+            False, None,
+            f"effective stop too tight ({effective_stop_pct:.5f} < floor {MIN_EFFECTIVE_STOP_PCT})",
+            None, None,
+        )
     if effective_stop_pct > stop_pct * 3:
         log_event("slippage_excessive", level="warn", planned=stop_pct, effective=effective_stop_pct)
         return OrderResult(
@@ -5496,6 +5533,28 @@ def rebuild_open_positions_from_mt5() -> None:
 
         direction = "long" if live.type == mt5.POSITION_TYPE_BUY else "short"
         ex_rec = executed_by_ticket.get(ticket)
+        # 2026-05-20 bug-find round fix (B2): guard against cross-challenge
+        # ticket REUSE. FTMO assigns a fresh low ticket counter per challenge
+        # but reuses the same STATE_DIR/FTMO_TF, so a stale "placed" record from
+        # an old challenge can share a ticket int with a NEW live position. State
+        # files are not challenge-scoped, so verify the executed record actually
+        # describes THIS live position: same direction AND entry price within
+        # entry-slippage tolerance. On mismatch, treat as no record → safe stub.
+        if ex_rec is not None:
+            _rec_dir = ex_rec.get("signal", {}).get("direction")
+            _rec_entry = ex_rec.get("actual_entry") or ex_rec.get("signal", {}).get("entryPrice")
+            _dir_ok = _rec_dir == direction
+            _entry_ok = (
+                isinstance(_rec_entry, (int, float)) and _rec_entry > 0
+                and abs(live.price_open - _rec_entry) / _rec_entry <= MAX_ENTRY_SLIPPAGE_PCT * 4
+            )
+            if not (_dir_ok and _entry_ok):
+                log_event(
+                    "rebuild_stale_record_rejected", level="warn", ticket=ticket,
+                    rec_dir=_rec_dir, live_dir=direction,
+                    rec_entry=_rec_entry, live_entry=live.price_open,
+                )
+                ex_rec = None  # fall through to minimal stub
         if ex_rec is not None:
             # Recover full config from the persisted signal payload. Broker
             # position is source-of-truth for live lot/entry/SL/TP; the signal
