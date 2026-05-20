@@ -334,6 +334,13 @@ EQUITY_HISTORY_INTERVAL_SEC = 300  # 5 minutes
 # Rate-limit duplicate loop-error Telegram alerts (avoid spam during restart loops).
 # Maps error message prefix → last sent timestamp.
 _loop_error_last_sent: dict[str, float] = {}
+# 2026-05-20 bug-find round: consecutive poll-loop errors auto-pause the bot.
+# A throw in sync_account_state BEFORE the breach-close was a fail-OPEN — equity
+# could bleed toward the -5%/-10% limit while the loop just logged + re-polled.
+# After N consecutive errors we PAUSE (fail-closed) so the operator is forced to
+# investigate rather than the bot silently churning through a broken cycle.
+_consecutive_loop_errors = 0
+LOOP_ERROR_AUTO_PAUSE = int(os.environ.get("FTMO_LOOP_ERROR_AUTO_PAUSE", "5"))
 # FTMO Consistency Rule — warn when largest single trade approaches 45% of total profit
 CONSISTENCY_WARN_RATIO = float(os.environ.get("FTMO_CONSISTENCY_WARN_RATIO", "0.35"))
 CONSISTENCY_HARD_RATIO = float(os.environ.get("FTMO_CONSISTENCY_HARD_RATIO", "0.42"))
@@ -5994,6 +6001,7 @@ def acquire_singleton_or_exit() -> None:
 
 
 def main_loop() -> None:
+    global _consecutive_loop_errors
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     acquire_singleton_or_exit()
 
@@ -6115,8 +6123,32 @@ def main_loop() -> None:
 
                 # iter236+: place daily ping trade if target was hit (for FTMO 5-day rule)
                 maybe_place_ping_trade()
+                # 2026-05-20 bug-find round: a fully clean cycle resets the
+                # consecutive-error counter (fail-closed auto-pause below).
+                _consecutive_loop_errors = 0
             except Exception as e:
                 log_event("loop_error", error=str(e))
+                # 2026-05-20 bug-find round: fail-CLOSED on repeated errors. If a
+                # cycle keeps throwing (e.g. before the breach-close in
+                # sync_account_state), pause so equity can't silently bleed while
+                # the loop just logs + re-polls. Critical alert bypasses backoff.
+                _consecutive_loop_errors += 1
+                if (
+                    LOOP_ERROR_AUTO_PAUSE > 0
+                    and _consecutive_loop_errors >= LOOP_ERROR_AUTO_PAUSE
+                    and not is_paused()
+                ):
+                    update_controls(lambda c: {**c, "paused": True, "lastCommand": {
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "cmd": "/auto-pause",
+                        "reason": f"{_consecutive_loop_errors} consecutive loop errors",
+                    }})
+                    tg_send(
+                        f"🛑 <b>BOT AUTO-PAUSED</b>\n{_consecutive_loop_errors} consecutive "
+                        f"loop errors — equity protection may be impaired.\n"
+                        f"Last: <code>{html_escape(str(e)[:120])}</code>\nInvestigate + /resume.",
+                        critical=True,
+                    )
                 # Rate-limit Telegram alerts: only send once per 30min per unique error message
                 err_key = str(e)[:120]
                 now_ts = time.time()
