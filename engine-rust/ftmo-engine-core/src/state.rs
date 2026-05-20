@@ -150,6 +150,17 @@ pub struct EngineState {
     pub trail_dd_armed: bool,
     #[serde(rename = "trailDdPeak", default)]
     pub trail_dd_peak: f64,
+    /// 2026-05-20 Intra-Window Kill-Switch (Agent 6 design). One-shot flag: set
+    /// `true` once the kill-switch hour boundary has been evaluated for this
+    /// window so the predicate cannot re-fire on subsequent bars. AND'd
+    /// predicate at first bar where `(state.last_bar_open_time -
+    /// state.challenge_start_ts) / 3_600_000 >= kill_switch_hour`:
+    ///   closed_trades.len() < kill_switch_min_trades
+    ///   AND
+    ///   (state.equity - 1.0) < kill_switch_min_equity
+    /// → force_close_all_external + StoppedReason::EarlyAbort.
+    #[serde(rename = "killSwitchEvaluated", default)]
+    pub kill_switch_evaluated: bool,
 }
 
 impl EngineState {
@@ -183,6 +194,7 @@ impl EngineState {
             consec_stops_paused: false,
             trail_dd_armed: false,
             trail_dd_peak: 0.0,
+            kill_switch_evaluated: false,
         }
     }
 

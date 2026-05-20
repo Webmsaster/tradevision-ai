@@ -585,27 +585,6 @@ pub fn v5_amber_max_mr_passlock() -> EngineConfig {
     cfg
 }
 
-/// 2026-05-19 V5_AMBER_MAX_HALFRISK_PASSLOCK — V5_AMBER_MAX + PASSLOCK + every
-/// asset's `risk_frac` halved from 0.4 → 0.2 (initial sizing).
-///
-/// Motivation: Round 1 Agent 11 found a `pyramid` flag (add-to-winners) lifted
-/// pass-rate by ~+11pp, but only when the live-caps `maxRiskFrac=0.4` was
-/// bypassed. Bypass violates FTMO. Instead we halve the *initial* per-asset
-/// risk_frac so the engine has slack to scale up later via pyramiding without
-/// ever exceeding the live cap. This template provides the smaller starting
-/// position; pyramid flag (when wired) layers on top.
-///
-/// Standalone (no pyramid): smaller positions → smaller wins → expected to
-/// HURT pass-rate. Measured here as a calibration baseline.
-pub fn v5_amber_max_halfrisk_passlock() -> EngineConfig {
-    let mut cfg = v5_amber_max_passlock();
-    cfg.label = "V5_AMBER_MAX_HALFRISK_PASSLOCK".into();
-    for asset in cfg.assets.iter_mut() {
-        asset.risk_frac *= 0.5;
-    }
-    cfg
-}
-
 /// 2026-05-13 V5_AMBER_QUARTZ — AMBER assets + Quartz engine stack:
 /// atrStop p56m2, chandelierExit p56m2 min_move_r=0.5, breakEven 3%,
 /// PTP trigger=0.012 closeFraction=0.7. Hypothesis: AMBER's 15-asset basket
@@ -1281,7 +1260,6 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-amber-max-passlock-mptp-v04a" => v5_amber_max_passlock_mptp_v04a(),
         "2h-trend-v5-amber-max-passlock-sharpe-tight" => v5_amber_max_passlock_sharpe_tight(),
         "2h-trend-v5-amber-max-mr-passlock" => v5_amber_max_mr_passlock(),
-        "2h-trend-v5-amber-max-halfrisk-passlock" => v5_amber_max_halfrisk_passlock(),
         "2h-trend-v5-amber-quartz" => v5_amber_quartz(),
         "2h-trend-v5-amber-quartz-passlock" => v5_amber_quartz_passlock(),
         "2h-trend-v5-amber-be-passlock" => v5_amber_be_passlock(),
@@ -1327,7 +1305,6 @@ pub fn known_selectors() -> &'static [&'static str] {
         "2h-trend-v5-amber-max-passlock",
         "2h-trend-v5-amber-max-passlock-bidir",
         "2h-trend-v5-amber-max-mr-passlock",
-        "2h-trend-v5-amber-max-halfrisk-passlock",
         "2h-trend-v5-amber-quartz",
         "2h-trend-v5-amber-quartz-passlock",
         "2h-trend-v5-amber-be-passlock",

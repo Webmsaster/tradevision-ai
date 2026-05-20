@@ -407,6 +407,16 @@ struct MultiSignalCfg {
     early_abort_after_losses: u32,
     early_abort_after_trades: u32,
     early_abort_min_cum: f64,
+    /// 2026-05-20 Intra-Window Kill-Switch (Agent 6). Evaluated ONCE at the
+    /// first bar whose `elapsed_hours >= kill_switch_hour`. Predicate:
+    ///   closed_trades.len() < kill_switch_min_trades
+    ///   AND
+    ///   (state.equity - 1.0) < kill_switch_min_equity
+    /// fires → force-close + StoppedReason::EarlyAbort. Defaults disabled
+    /// (`kill_switch_hour == 0`).
+    kill_switch_hour: u32,
+    kill_switch_min_trades: u32,
+    kill_switch_min_equity: f64,
 }
 
 /// 2026-05-13 65%-hunt: apply CLI-flag overrides for the secondary R28V6
@@ -525,6 +535,7 @@ struct CfgOverrides {
     trail_activate: Option<f64>,
     trail_pct: Option<f64>,
     leverage: Option<f64>,
+    risk_frac_mult: Option<f64>,
     hold_bars: Option<u32>,
     hours: Option<String>,
     dows: Option<String>,
@@ -630,11 +641,14 @@ struct CfgOverrides {
     // EngineConfig.news_events with the hardcoded 2026 FOMC list. Default
     // OFF so prior behaviour is untouched.
     news_blackout_enable: bool,
-    /// 2026-05-19 Pyramid (add-to-winners) overrides.
-    pyramid_trigger_pct: Option<f64>,
-    pyramid_add_frac: Option<f64>,
-    pyramid_max_adds: Option<u32>,
-    pyramid_bypass_cap: bool,
+    // 2026-05-19 Agent-21-repro: native pre-window skip filter thresholds.
+    skip_sol30d_gt: Option<f64>,
+    skip_bnb7d_gt: Option<f64>,
+    /// Duplicate each active asset behind an equity-progress gate. The clone
+    /// keeps the source symbol and exits but uses a unique synthetic symbol so
+    /// the normal same-asset trade-exclusivity gate does not block it.
+    pyramid_min_equity: Option<f64>,
+    pyramid_risk_mult: Option<f64>,
 }
 
 fn apply_overrides(
@@ -698,6 +712,11 @@ fn apply_overrides(
     }
     if let Some(l) = ov.leverage {
         cfg.leverage = l;
+    }
+    if let Some(m) = ov.risk_frac_mult {
+        for a in cfg.assets.iter_mut() {
+            a.risk_frac *= m;
+        }
     }
     if let Some(h) = ov.hold_bars {
         cfg.hold_bars = h;
@@ -779,6 +798,26 @@ fn apply_overrides(
                 .replace("USDT", "");
             keep.contains(&bare) || keep.contains(&src)
         });
+    }
+    if let Some(min_equity) = ov.pyramid_min_equity {
+        let risk_mult = ov.pyramid_risk_mult.unwrap_or(1.0);
+        let originals = cfg.assets.clone();
+        let mut pyramids: Vec<AssetConfig> = originals
+            .into_iter()
+            .map(|mut a| {
+                let base = a
+                    .symbol
+                    .split('-')
+                    .next()
+                    .unwrap_or(a.symbol.as_str())
+                    .to_string();
+                a.symbol = format!("{base}-PYRAMID");
+                a.risk_frac *= risk_mult;
+                a.min_equity_gain = Some(min_equity);
+                a
+            })
+            .collect();
+        cfg.assets.append(&mut pyramids);
     }
     if ov.funding_max_long.is_some() || ov.funding_min_short.is_some() {
         cfg.funding_rate_filter = Some(FundingRateFilter {
@@ -917,20 +956,6 @@ fn apply_overrides(
             alpha: ov.funding_sizing_alpha.unwrap_or(cur.alpha),
             norm_window_buckets: ov.funding_sizing_window.unwrap_or(cur.norm_window_buckets),
             min_factor: ov.funding_sizing_min_factor.unwrap_or(cur.min_factor),
-        });
-    }
-    // 2026-05-19 Pyramid override — activate if ANY of the three sub-flags
-    // is supplied. Missing values fall back to sensible defaults.
-    if ov.pyramid_trigger_pct.is_some()
-        || ov.pyramid_add_frac.is_some()
-        || ov.pyramid_max_adds.is_some()
-        || ov.pyramid_bypass_cap
-    {
-        cfg.pyramid = Some(ftmo_engine_core::config::Pyramid {
-            trigger_pct: ov.pyramid_trigger_pct.unwrap_or(0.01),
-            add_frac: ov.pyramid_add_frac.unwrap_or(0.5),
-            max_adds: ov.pyramid_max_adds.unwrap_or(2),
-            bypass_cap: ov.pyramid_bypass_cap,
         });
     }
     if let Some(csv) = &ov.adaptive_tp {
@@ -1132,6 +1157,7 @@ fn main() -> Result<()> {
     let mut override_trail_activate: Option<f64> = None;
     let mut override_trail_pct: Option<f64> = None;
     let mut override_leverage: Option<f64> = None;
+    let mut risk_frac_mult: Option<f64> = None;
     let mut override_hold_bars: Option<u32> = None;
     let mut override_hours: Option<String> = None; // CSV "2,4,6,..."
     let mut override_dows: Option<String> = None; // CSV "1,2,3,4,5"
@@ -1157,6 +1183,13 @@ fn main() -> Result<()> {
     let mut cross_asset_dir: Option<String> = None;
     let mut cross_asset_fast: Option<u32> = None;
     let mut cross_asset_slow: Option<u32> = None;
+    // 2026-05-19 Agent-21-repro: native pre-window skip filter. Skip a window
+    // if SOLUSDT 30d return > X OR BNBUSDT 7d return > Y, measured at window
+    // start (lookahead-safe). Skipped windows excluded from num+denom.
+    let mut skip_sol30d_gt: Option<f64> = None;
+    let mut skip_bnb7d_gt: Option<f64> = None;
+    let mut pyramid_min_equity: Option<f64> = None;
+    let mut pyramid_risk_mult: Option<f64> = None;
     // Detector #20 — 3-phase day-stage sizing + equity-progress trigger.
     let mut ds_aggressive_until: Option<u32> = None;
     let mut ds_aggressive_factor: Option<f64> = None;
@@ -1187,11 +1220,6 @@ fn main() -> Result<()> {
     let mut rsi_period: Option<usize> = None;
     let mut lscool_after: Option<u32> = None;
     let mut lscool_bars: Option<u64> = None;
-    // 2026-05-19 Pyramid (add-to-winners) CLI overrides.
-    let mut pyramid_trigger_pct: Option<f64> = None;
-    let mut pyramid_add_frac: Option<f64> = None;
-    let mut pyramid_max_adds: Option<u32> = None;
-    let mut pyramid_bypass_cap: bool = false;
     let mut ml_model_path: Option<PathBuf> = None;
     let mut hmm_model_path: Option<PathBuf> = None;
     let mut regime_hmm_p_bull: f64 = f64::NAN;
@@ -1331,6 +1359,12 @@ fn main() -> Result<()> {
     let mut early_abort_after_losses: u32 = 0;
     let mut early_abort_after_trades: u32 = 0;
     let mut early_abort_min_cum: f64 = 0.0;
+    // 2026-05-20 Intra-Window Kill-Switch (Agent 6). Defaults disabled
+    // (`kill_switch_hour == 0`). Typical activation: --kill-switch-hour 24
+    // --kill-switch-min-trades 6 --kill-switch-min-equity -0.02.
+    let mut kill_switch_hour: u32 = 0;
+    let mut kill_switch_min_trades: u32 = 6;
+    let mut kill_switch_min_equity: f64 = -0.02;
 
     // R67 audit (Round 2): replace `args.next().unwrap()` with `ok_or_else`
     // — `ftmo-sweep --candles` (no path follows) panics with the usual Rust
@@ -1398,6 +1432,7 @@ fn main() -> Result<()> {
             "--override-leverage" => {
                 override_leverage = Some(need!("--override-leverage").parse()?)
             }
+            "--risk-frac-mult" => risk_frac_mult = Some(need!("--risk-frac-mult").parse()?),
             "--override-hold-bars" => {
                 override_hold_bars = Some(need!("--override-hold-bars").parse()?)
             }
@@ -1427,6 +1462,15 @@ fn main() -> Result<()> {
             "--cross-asset-dir" => cross_asset_dir = Some(need!("--cross-asset-dir")),
             "--cross-asset-fast" => cross_asset_fast = Some(need!("--cross-asset-fast").parse()?),
             "--cross-asset-slow" => cross_asset_slow = Some(need!("--cross-asset-slow").parse()?),
+            // 2026-05-19 Agent-21-repro pre-window skip filter.
+            "--skip-sol30d-gt" => skip_sol30d_gt = Some(need!("--skip-sol30d-gt").parse()?),
+            "--skip-bnb7d-gt" => skip_bnb7d_gt = Some(need!("--skip-bnb7d-gt").parse()?),
+            "--pyramid-min-equity" => {
+                pyramid_min_equity = Some(need!("--pyramid-min-equity").parse()?)
+            }
+            "--pyramid-risk-mult" => {
+                pyramid_risk_mult = Some(need!("--pyramid-risk-mult").parse()?)
+            }
             // 2026-05-14 (detector-41): boolean flag — presence enables inverse
             // correlation (DXY ↔ crypto). Defaults to false (direct-correlation).
             "--cross-asset-inverse" => cross_asset_inverse = true,
@@ -1453,16 +1497,6 @@ fn main() -> Result<()> {
             "--td-start-day" => td_start_day = Some(need!("--td-start-day").parse()?),
             "--td-min-factor" => td_min_factor = Some(need!("--td-min-factor").parse()?),
             "--td-mode" => td_mode = Some(need!("--td-mode")),
-            "--pyramid-trigger-pct" => {
-                pyramid_trigger_pct = Some(need!("--pyramid-trigger-pct").parse()?)
-            }
-            "--pyramid-add-frac" => {
-                pyramid_add_frac = Some(need!("--pyramid-add-frac").parse()?)
-            }
-            "--pyramid-max-adds" => {
-                pyramid_max_adds = Some(need!("--pyramid-max-adds").parse()?)
-            }
-            "--pyramid-bypass-cap" => pyramid_bypass_cap = true,
             "--trades-out" => trades_out = Some(PathBuf::from(need!("--trades-out"))),
             "--debug-window" => debug_window = Some(need!("--debug-window").parse()?),
             // R29-Audit-2026-05-12: --phantom-suppress flag removed.
@@ -1747,6 +1781,22 @@ fn main() -> Result<()> {
                 }
                 early_abort_min_cum = v;
             }
+            // 2026-05-20 Intra-Window Kill-Switch (Agent 6). Defaults disabled.
+            "--kill-switch-hour" => {
+                let v: u32 = need!("--kill-switch-hour").parse()?;
+                kill_switch_hour = v;
+            }
+            "--kill-switch-min-trades" => {
+                let v: u32 = need!("--kill-switch-min-trades").parse()?;
+                kill_switch_min_trades = v;
+            }
+            "--kill-switch-min-equity" => {
+                let v: f64 = need!("--kill-switch-min-equity").parse()?;
+                if !v.is_finite() {
+                    anyhow::bail!("--kill-switch-min-equity must be finite (got {v})");
+                }
+                kill_switch_min_equity = v;
+            }
             other => return Err(anyhow!("unknown arg: {other}")),
         }
     }
@@ -1805,6 +1855,16 @@ fn main() -> Result<()> {
             anyhow::bail!(
                 "--profit-target must be in (0, 1) (got {pt}); 0.10 = FTMO Phase 1, 0.05 = Phase 2"
             );
+        }
+    }
+    if let Some(m) = risk_frac_mult {
+        if !(m.is_finite() && m > 0.0) {
+            anyhow::bail!("--risk-frac-mult must be finite and > 0 (got {m})");
+        }
+    }
+    if let Some(m) = pyramid_risk_mult {
+        if !(m.is_finite() && m > 0.0) {
+            anyhow::bail!("--pyramid-risk-mult must be finite and > 0 (got {m})");
         }
     }
     if let Some(sp) = override_stop_pct {
@@ -1931,6 +1991,7 @@ fn main() -> Result<()> {
         trail_activate: override_trail_activate,
         trail_pct: override_trail_pct,
         leverage: override_leverage,
+        risk_frac_mult,
         hold_bars: override_hold_bars,
         hours: override_hours,
         dows: override_dows,
@@ -2001,10 +2062,10 @@ fn main() -> Result<()> {
         tp_mult_per_asset,
         phase2_risk_mult,
         news_blackout_enable,
-        pyramid_trigger_pct,
-        pyramid_add_frac,
-        pyramid_max_adds,
-        pyramid_bypass_cap,
+        skip_sol30d_gt,
+        skip_bnb7d_gt,
+        pyramid_min_equity,
+        pyramid_risk_mult,
     };
 
     if candles_dir.is_some() || symbols_arg.is_some() {
@@ -2156,6 +2217,10 @@ fn main() -> Result<()> {
                 early_abort_after_losses,
                 early_abort_after_trades,
                 early_abort_min_cum,
+                // 2026-05-20 Intra-Window Kill-Switch (Agent 6) knobs.
+                kill_switch_hour,
+                kill_switch_min_trades,
+                kill_switch_min_equity,
             },
         );
     }
@@ -2499,6 +2564,9 @@ fn run_multi_asset(
     multi_signal: MultiSignalCfg,
 ) -> Result<()> {
     let dir = candles_dir.ok_or_else(|| anyhow!("--candles-dir is required for multi-asset"))?;
+    // 2026-05-19 Agent-21-repro: pull pre-window skip thresholds out of overrides.
+    let skip_sol30d_gt = overrides.skip_sol30d_gt;
+    let skip_bnb7d_gt = overrides.skip_bnb7d_gt;
     // 2026-05-16 Phase 3 — pre-build the FOMC blackout list once. Lifetime
     // outlives the per-symbol loops; `news_evts.as_deref()` plugs into each
     // R28V6Inputs entry below.
@@ -2888,6 +2956,71 @@ fn run_multi_asset(
     } else {
         win_plans
     };
+    // 2026-05-19 Agent-21-repro: NATIVE pre-window skip filter. Skip a window
+    // when SOLUSDT 30d-return > X OR BNBUSDT 7d-return > Y, both measured at
+    // window-start bar `lo` using ONLY bars at/before `lo` (lookahead-safe).
+    // 30d @ 30m = 30*48 = 1440 bars; 7d = 7*48 = 336 bars. Skipped windows are
+    // excluded from numerator AND denominator (= "not taken"). When the
+    // lookback would predate data start, the feature is unavailable → take the
+    // window (conservative; do NOT skip).
+    let total_before_skip = win_plans.len();
+    let win_plans: Vec<(usize, usize)> = if skip_sol30d_gt.is_some() || skip_bnb7d_gt.is_some() {
+        const SOL_LB: usize = 30 * 48; // 1440 bars
+        const BNB_LB: usize = 7 * 48; // 336 bars
+        let sol = aligned.get("SOLUSDT");
+        let bnb = aligned.get("BNBUSDT");
+        win_plans
+            .into_iter()
+            .filter(|(lo, _)| {
+                let lo = *lo;
+                // SOL 30d gate
+                if let (Some(thr), Some(cs)) = (skip_sol30d_gt, sol) {
+                    if lo >= SOL_LB {
+                        let now = cs[lo].close;
+                        let past = cs[lo - SOL_LB].close;
+                        if past > 0.0 {
+                            let ret = now / past - 1.0;
+                            if ret > thr {
+                                return false; // skip
+                            }
+                        }
+                    }
+                }
+                // BNB 7d gate
+                if let (Some(thr), Some(cs)) = (skip_bnb7d_gt, bnb) {
+                    if lo >= BNB_LB {
+                        let now = cs[lo].close;
+                        let past = cs[lo - BNB_LB].close;
+                        if past > 0.0 {
+                            let ret = now / past - 1.0;
+                            if ret > thr {
+                                return false; // skip
+                            }
+                        }
+                    }
+                }
+                true // take
+            })
+            .collect()
+    } else {
+        win_plans
+    };
+    if skip_sol30d_gt.is_some() || skip_bnb7d_gt.is_some() {
+        let accepted = win_plans.len();
+        let accept_rate = if total_before_skip > 0 {
+            100.0 * accepted as f64 / total_before_skip as f64
+        } else {
+            0.0
+        };
+        eprintln!(
+            "[sweep] pre-window skip-filter: accepted {accepted}/{total_before_skip} \
+             ({accept_rate:.2}% accept-rate); skipped {} \
+             (sol30d_gt={:?}, bnb7d_gt={:?})",
+            total_before_skip - accepted,
+            skip_sol30d_gt,
+            skip_bnb7d_gt
+        );
+    }
     let actual_windows = win_plans.len();
     // 2026-05-13 Codex Round 7 #B9 FIX: warn loudly when window-plan
     // construction drops everything (cache too short for requested
@@ -3854,6 +3987,51 @@ fn run_one_window(
                 last_passed = false;
                 last_fail = Some("EarlyAbort".to_string());
                 break;
+            }
+        }
+        // 2026-05-20 Intra-Window Kill-Switch (Agent 6). Evaluated ONCE per
+        // window at the first bar whose `elapsed_hours >= kill_switch_hour`.
+        // AND'd predicate: (closed_trades.len() < min_trades) AND
+        // (equity - 1.0 < min_equity). Goal: kill the failure-tail where a
+        // window has had too few trades AND is already underwater after the
+        // initial cluster — historical 0/N pass-rate on those windows so any
+        // give-back is pure equity waste.
+        if multi_signal.kill_switch_hour > 0
+            && !state.kill_switch_evaluated
+            && !r.challenge_ended
+            && state.stopped_reason.is_none()
+            && state.challenge_start_ts > 0
+        {
+            let elapsed_ms = state.last_bar_open_time - state.challenge_start_ts;
+            if elapsed_ms >= 0 {
+                let elapsed_hours = (elapsed_ms / 3_600_000) as u32;
+                if elapsed_hours >= multi_signal.kill_switch_hour {
+                    state.kill_switch_evaluated = true;
+                    let trade_count = state.closed_trades.len() as u32;
+                    let cum_pct = state.equity - 1.0;
+                    let too_few_trades = trade_count < multi_signal.kill_switch_min_trades;
+                    let underwater = cum_pct < multi_signal.kill_switch_min_equity;
+                    if too_few_trades && underwater {
+                        let last_bar_time = state.last_bar_open_time;
+                        let bar_input = BarInput {
+                            candles_by_source: &feed,
+                            atr_series_by_source: &atr_feed,
+                            funding_by_source: Some(&funding_feed),
+                            signals: vec![],
+                        };
+                        let _ = ftmo_engine_core::harness::force_close_all_external(
+                            &mut state,
+                            &bar_input,
+                            cfg,
+                            last_bar_time,
+                        );
+                        state.stopped_reason =
+                            Some(ftmo_engine_core::state::StoppedReason::EarlyAbort);
+                        last_passed = false;
+                        last_fail = Some("KillSwitch".to_string());
+                        break;
+                    }
+                }
             }
         }
         // 2026-05-13 Codex HIGH FIX (Fix 4): HTF push deferred to AFTER

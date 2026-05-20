@@ -323,77 +323,6 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
         }
     }
 
-    // 4b. Pyramid (add-to-winners) — 2026-05-19.
-    //
-    // When an open position's unrealised raw_pnl exceeds the configured
-    // trigger threshold (scaled by N for the Nth add), scale up eff_risk by
-    // `add_frac × original_eff_risk`, subject to LiveCaps.max_risk_frac cap.
-    // Fires BEFORE the exit loop so a pyramid-add on this bar takes effect
-    // for any exit-PnL realised at this bar's close (e.g. same-bar TP).
-    //
-    // Note: this is the "scale-up eff_risk on the existing position" form
-    // of pyramiding — mathematically equivalent to opening N parallel
-    // mini-positions with identical SL/TP, but keeps the SL/TP/PTP/BE
-    // bookkeeping single-position-clean. Tradeoff: a single SL hit takes
-    // the WHOLE pyramided risk through GAP_TAIL (the canonical "DL-breach
-    // on adverse reversal" failure mode of pyramiding).
-    if let Some(py) = cfg.pyramid {
-        if py.max_adds > 0 && py.add_frac > 0.0 && py.trigger_pct > 0.0 {
-            let max_risk_frac = if py.bypass_cap {
-                f64::INFINITY
-            } else {
-                cfg.live_caps
-                    .as_ref()
-                    .map(|c| c.max_risk_frac)
-                    .unwrap_or(f64::INFINITY)
-            };
-            for pos in state.open_positions.iter_mut() {
-                if pos.pyramid_adds_done >= py.max_adds {
-                    continue;
-                }
-                let price = match prices_by_source.get(&pos.source_symbol).copied() {
-                    Some(p) if p.is_finite() && p > 0.0 => p,
-                    _ => continue,
-                };
-                if !(pos.entry_price.is_finite()) || pos.entry_price <= 0.0 {
-                    continue;
-                }
-                let raw_pnl = match pos.direction {
-                    crate::position::PositionSide::Long => {
-                        (price - pos.entry_price) / pos.entry_price
-                    }
-                    crate::position::PositionSide::Short => {
-                        (pos.entry_price - price) / pos.entry_price
-                    }
-                };
-                // Each add requires the position to reach the next
-                // multiple of `trigger_pct` (1×, 2×, 3× …). Loop in case
-                // multiple thresholds were crossed on the same bar.
-                loop {
-                    if pos.pyramid_adds_done >= py.max_adds {
-                        break;
-                    }
-                    let needed = py.trigger_pct * (pos.pyramid_adds_done as f64 + 1.0);
-                    if raw_pnl < needed {
-                        break;
-                    }
-                    let base = if pos.original_eff_risk > 0.0 {
-                        pos.original_eff_risk
-                    } else {
-                        pos.eff_risk
-                    };
-                    let new_risk = (pos.eff_risk + py.add_frac * base).min(max_risk_frac);
-                    if new_risk <= pos.eff_risk {
-                        // Cap binding — no further adds will help.
-                        break;
-                    }
-                    pos.eff_risk = new_risk;
-                    pos.pyramid_adds_done += 1;
-                }
-            }
-        }
-    }
-
     // 5. Exit-check loop. Per TS pollLive line 1264-1353 — exits run
     //    BEFORE the per-bar MTM recompute so post-exit state.mtm_equity
     //    accurately reflects only the still-open positions. Earlier Rust
@@ -1039,8 +968,6 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                 last_known_price: Some(sig.entry_price),
                 trail_active: false,
                 trail_peak: sig.entry_price,
-                original_eff_risk: final_eff_risk,
-                pyramid_adds_done: 0,
             };
             result.decision.opens.push(sig.clone());
             state.open_positions.push(pos);
@@ -1608,8 +1535,6 @@ mod tests {
                 last_known_price: None,
                 trail_active: false,
                 trail_peak: 0.0,
-                original_eff_risk: 0.4,
-                pyramid_adds_done: 0,
             });
         }
         let mut candles = HashMap::new();
@@ -1669,8 +1594,6 @@ mod tests {
             last_known_price: None,
             trail_active: false,
             trail_peak: 0.0,
-            original_eff_risk: 0.4,
-            pyramid_adds_done: 0,
         });
         let mut candles = HashMap::new();
         // Close at 96 → unrealised raw=-4%, eff=-0.032 → MTM = 0.968 → day_pnl=-3.2% < -2%.
@@ -1726,8 +1649,6 @@ mod tests {
             last_known_price: None,
             trail_active: false,
             trail_peak: 0.0,
-            original_eff_risk: 0.4,
-            pyramid_adds_done: 0,
         });
         let mut candles = HashMap::new();
         candles.insert(
@@ -1810,8 +1731,6 @@ mod tests {
             last_known_price: None,
             trail_active: false,
             trail_peak: 0.0,
-            original_eff_risk: 0.4,
-            pyramid_adds_done: 0,
         });
         // Equity already at exactly target after the position closes: realised=1.0,
         // unrealised at +3% gives MTM = 1.03 (won't trigger realised target, but
@@ -1844,171 +1763,4 @@ mod tests {
         assert!(state.open_positions.is_empty());
     }
 
-    // ─── 2026-05-19 Pyramid (add-to-winners) tests ──────────────────────
-    #[test]
-    fn pyramid_scales_eff_risk_when_position_reaches_trigger() {
-        let mut cfg = cfg_basic();
-        cfg.live_caps = Some(crate::config::LiveCaps {
-            max_stop_pct: 1.0,
-            max_risk_frac: 5.0, // permissive — let pyramid stack freely
-        });
-        cfg.pyramid = Some(crate::config::Pyramid {
-            trigger_pct: 0.01,
-            add_frac: 0.5,
-            max_adds: 2,
-            bypass_cap: false,
-        });
-        let mut state = EngineState::initial("x");
-        state.challenge_start_ts = 1;
-        state.last_bar_open_time = 0;
-        state.day_start = 1.0;
-        state.open_positions.push(OpenPosition {
-            ticket_id: "t".into(),
-            symbol: "BTC-TREND".into(),
-            source_symbol: "BTCUSDT".into(),
-            direction: PositionSide::Long,
-            entry_time: 0,
-            entry_price: 100.0,
-            initial_stop_pct: 0.05,
-            stop_price: 95.0,
-            tp_price: 200.0, // far away so no exit fires on test bar
-            eff_risk: 0.4,
-            entry_bar_idx: 0,
-            high_watermark: 100.0,
-            be_active: false,
-            ptp_triggered: false,
-            ptp_realized_pct: 0.0,
-            ptp_level_idx: 0,
-            ptp_levels_realized: 0.0,
-            last_known_price: None,
-            trail_active: false,
-            trail_peak: 100.0,
-            original_eff_risk: 0.4,
-            pyramid_adds_done: 0,
-        });
-        // Close at 102.5 → raw_pnl = +2.5% → crosses BOTH trigger lvls (1%, 2%).
-        let mut candles = HashMap::new();
-        candles.insert(
-            "BTCUSDT".into(),
-            vec![make_candle(1_000, 100.0, 102.5, 100.0, 102.5)],
-        );
-        let atr = HashMap::new();
-        let _r = step_bar(&mut state, &make_input(&candles, &atr, vec![]), &cfg);
-        assert_eq!(state.open_positions.len(), 1);
-        let pos = &state.open_positions[0];
-        // 2 adds × 0.5 × 0.4 = +0.4 → eff_risk = 0.8.
-        assert_eq!(pos.pyramid_adds_done, 2);
-        assert!(
-            (pos.eff_risk - 0.8).abs() < 1e-9,
-            "eff_risk={}",
-            pos.eff_risk
-        );
-        assert!((pos.original_eff_risk - 0.4).abs() < 1e-9);
-    }
-
-    #[test]
-    fn pyramid_respects_max_risk_frac_cap() {
-        let mut cfg = cfg_basic();
-        cfg.live_caps = Some(crate::config::LiveCaps {
-            max_stop_pct: 1.0,
-            max_risk_frac: 0.5, // tight cap
-        });
-        cfg.pyramid = Some(crate::config::Pyramid {
-            trigger_pct: 0.01,
-            add_frac: 0.5, // would add 0.2 per pyramid (0.5×0.4)
-            max_adds: 3,
-            bypass_cap: false,
-        });
-        let mut state = EngineState::initial("x");
-        state.challenge_start_ts = 1;
-        state.last_bar_open_time = 0;
-        state.day_start = 1.0;
-        state.open_positions.push(OpenPosition {
-            ticket_id: "t".into(),
-            symbol: "BTC-TREND".into(),
-            source_symbol: "BTCUSDT".into(),
-            direction: PositionSide::Long,
-            entry_time: 0,
-            entry_price: 100.0,
-            initial_stop_pct: 0.05,
-            stop_price: 95.0,
-            tp_price: 200.0,
-            eff_risk: 0.4,
-            entry_bar_idx: 0,
-            high_watermark: 100.0,
-            be_active: false,
-            ptp_triggered: false,
-            ptp_realized_pct: 0.0,
-            ptp_level_idx: 0,
-            ptp_levels_realized: 0.0,
-            last_known_price: None,
-            trail_active: false,
-            trail_peak: 100.0,
-            original_eff_risk: 0.4,
-            pyramid_adds_done: 0,
-        });
-        let mut candles = HashMap::new();
-        candles.insert(
-            "BTCUSDT".into(),
-            vec![make_candle(1_000, 100.0, 105.0, 100.0, 105.0)],
-        );
-        let atr = HashMap::new();
-        let _r = step_bar(&mut state, &make_input(&candles, &atr, vec![]), &cfg);
-        let pos = &state.open_positions[0];
-        // Cap is 0.5; first add would push 0.4 → 0.6 (capped to 0.5). Second
-        // add would attempt 0.5 → 0.7 (still capped) → break-loop.
-        assert!(
-            (pos.eff_risk - 0.5).abs() < 1e-9,
-            "eff_risk={}",
-            pos.eff_risk
-        );
-        assert_eq!(
-            pos.pyramid_adds_done, 1,
-            "second add should break-loop on no-op cap"
-        );
-    }
-
-    #[test]
-    fn pyramid_disabled_by_default() {
-        let cfg = cfg_basic();
-        assert!(cfg.pyramid.is_none());
-        let mut state = EngineState::initial("x");
-        state.challenge_start_ts = 1;
-        state.last_bar_open_time = 0;
-        state.day_start = 1.0;
-        state.open_positions.push(OpenPosition {
-            ticket_id: "t".into(),
-            symbol: "BTC-TREND".into(),
-            source_symbol: "BTCUSDT".into(),
-            direction: PositionSide::Long,
-            entry_time: 0,
-            entry_price: 100.0,
-            initial_stop_pct: 0.05,
-            stop_price: 95.0,
-            tp_price: 200.0,
-            eff_risk: 0.4,
-            entry_bar_idx: 0,
-            high_watermark: 100.0,
-            be_active: false,
-            ptp_triggered: false,
-            ptp_realized_pct: 0.0,
-            ptp_level_idx: 0,
-            ptp_levels_realized: 0.0,
-            last_known_price: None,
-            trail_active: false,
-            trail_peak: 100.0,
-            original_eff_risk: 0.4,
-            pyramid_adds_done: 0,
-        });
-        let mut candles = HashMap::new();
-        candles.insert(
-            "BTCUSDT".into(),
-            vec![make_candle(1_000, 100.0, 105.0, 100.0, 105.0)],
-        );
-        let atr = HashMap::new();
-        let _r = step_bar(&mut state, &make_input(&candles, &atr, vec![]), &cfg);
-        let pos = &state.open_positions[0];
-        assert_eq!(pos.eff_risk, 0.4); // unchanged
-        assert_eq!(pos.pyramid_adds_done, 0);
-    }
 }
