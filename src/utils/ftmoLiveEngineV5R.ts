@@ -1063,9 +1063,25 @@ function computeEffPnl(
   const slipBp = assetCfg?.slippageBp ?? 0;
   const swapBpPerDay = assetCfg?.swapBpPerDay ?? 0;
 
-  // 1) Round-trip commission cost (entry + exit).
+  // 1) Round-trip commission cost (entry + exit). Only on the fraction NOT
+  //    already closed via PTP — the partial leg already paid its cost at
+  //    PTP-fire (line 856/897: ptpRealizedPct = closeFraction × (triggerPct −
+  //    cost)). 2026-05-21 bug-find round: previously the FULL cost was
+  //    subtracted from the blended rawPnl, double-charging the closed fraction
+  //    by closeFraction×cost (≈15bp at 30bp cost / 50% close) and understating
+  //    PnL on every PTP exit. Mirror the remainingFraction scaling already
+  //    applied to slippage just below so total cost = exactly one round-trip.
   if (costBp > 0) {
-    rawPnl -= costBp / 10000;
+    let remainingFraction = 1;
+    if (pos.ptpTriggered && cfg.partialTakeProfit) {
+      remainingFraction = 1 - cfg.partialTakeProfit.closeFraction;
+    } else if (pos.ptpLevelsRealized > 0 && cfg.partialTakeProfitLevels) {
+      const totalClosed = cfg.partialTakeProfitLevels
+        .slice(0, pos.ptpLevelIdx)
+        .reduce((s, l) => s + l.closeFraction, 0);
+      remainingFraction = Math.max(0, 1 - totalClosed);
+    }
+    rawPnl -= (costBp / 10000) * remainingFraction;
   }
 
   // 2) Slippage on remainder. Backtest applies only to the fraction NOT
