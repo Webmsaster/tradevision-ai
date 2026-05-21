@@ -1578,8 +1578,17 @@ function detectBullSignals(
   const tpPrice = entryPrice * (1 + tpPct); // long: TP above
   const maxHoldHours = (BULL.holdBars + 1) * tfHours; // bugfix 2026-04-28: backtest parity
   const baseAsset = BULL.assets[0];
-  // Live risk = baseRisk × factor, capped at LIVE_MAX_RISK_FRAC (no leverage multiplier).
-  const rawRiskFrac = baseAsset!.riskFrac * factor;
+  // 2026-05-21 bug-round: convert engine POSITION-fraction riskFrac to an
+  // equity-LOSS fraction BEFORE capping — the same unit fix already applied to
+  // the main/MR detector (line 1402-1411). BULL.assets riskFrac is a position
+  // fraction (ETH-BULL 1.0, pyramid 4.0), but the Python executor's
+  // compute_lot_size treats riskFrac as a direct loss-at-stop fraction. The
+  // prior `baseRisk × factor` (then clamp to LIVE_MAX_RISK_FRAC) emitted the
+  // raw position fraction → it pinned every BULL trade to the LIVE_MAX_RISK_FRAC
+  // cap (~4% loss) instead of the backtested positionFrac × stopPct × leverage
+  // (1.0 × 0.015 × 2 = 3%, ×factor), over-sizing BULL by ~1.3-1.8× vs backtest.
+  const enginePositionFrac = baseAsset!.riskFrac * factor;
+  const rawRiskFrac = enginePositionFrac * stopPct * BULL.leverage;
   const effectiveRiskFrac = Math.min(rawRiskFrac, LIVE_MAX_RISK_FRAC);
 
   // Long-stop safety cap.
