@@ -1943,6 +1943,20 @@ def handle_daily_reset(current_equity_usd: float) -> float:
             f"Falling back to current equity ${current_equity_usd:,.2f}. "
             "Daily-loss check may be understated until next Prague midnight."
         )
+        # 2026-05-21 bug-round: PERSIST the recovered anchor so it cannot slide
+        # upward on subsequent polls. Previously every poll re-hit this corrupt
+        # branch and re-anchored to the (moving) current equity, so the
+        # daily-loss baseline drifted toward current → daily_pct trended to 0
+        # and could MASK a real breach. Lock the anchor once; the loud alert
+        # above already flags that today's DL may be understated.
+        recovered = {
+            "date": last_date,
+            "equity_at_day_start_usd": float(current_equity_usd),
+            "snapped_at": datetime.now(timezone.utc).isoformat(),
+            "tz": "Europe/Prague",
+            "recovered_from_corrupt": True,
+        }
+        write_json(DAILY_STATE_PATH, recovered)
         return float(current_equity_usd)
     return float(raw)
 

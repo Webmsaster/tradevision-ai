@@ -5153,11 +5153,30 @@ export function detectAsset(
   return out;
 }
 
+// 2026-05-21 bug-round: `closeAllOnTargetReached` (PASSLOCK force-close of all
+// open positions at first target-hit) is implemented in the RUST engine
+// (force_close_all) but is NOT read by this TS engine — it only honors the
+// weaker `pauseAtTargetReached` (pauses NEW entries, but lets already-open
+// positions ride). So PASSLOCK pass-rates from this TS engine are NOT
+// equity-locked and diverge from Rust. Warn once per process so TS sweeps
+// don't silently present un-locked numbers as PASSLOCK. Use the Rust ftmo-sweep
+// binary for honest PASSLOCK baselines.
+let _warnedCloseAllUnsupportedTs = false;
+
 export function runFtmoDaytrade24h(
   candlesBySymbol: Record<string, Candle[]>,
   cfg: FtmoDaytrade24hConfig = FTMO_DAYTRADE_24H_CONFIG,
   fundingBySymbol?: Record<string, (number | null)[]>,
 ): FtmoDaytrade24hResult {
+  if (cfg.closeAllOnTargetReached && !_warnedCloseAllUnsupportedTs) {
+    _warnedCloseAllUnsupportedTs = true;
+    console.warn(
+      "[ftmoDaytrade24h] closeAllOnTargetReached is NOT enforced by the TS " +
+        "engine (Rust-only; this engine only applies pauseAtTargetReached). " +
+        "PASSLOCK equity-locking is NOT applied here — use the Rust ftmo-sweep " +
+        "binary for honest PASSLOCK pass-rates.",
+    );
+  }
   // Round-15 audit B5/B6: validate critical optional flags eagerly so that
   // a typo in a new config (omitting `pauseAtTargetReached` or omitting
   // `htfTrendFilter.threshold`) fails LOUDLY rather than silently producing
