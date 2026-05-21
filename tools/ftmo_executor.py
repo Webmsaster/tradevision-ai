@@ -3364,7 +3364,12 @@ def _process_signals_unlocked(
         # marker-ID hash collapses to a constant for same-asset/direction signals
         # (overwrites the WAL marker → boot-reconcile can only recover one of two
         # crashed orders) and the dedup key collapses (lost trade).
-        required_fields = ["assetSymbol", "riskFrac", "stopPct", "tpPct", "stopPrice", "tpPrice", "maxHoldUntil", "entryPrice", "signalBarClose"]
+        # 2026-05-21 bug-round: sourceSymbol is accessed via direct sig["sourceSymbol"]
+        # at the same-asset-exclusivity check, order placement, and open-position
+        # write (no .get fallback) — a malformed signal missing it would raise an
+        # uncaught KeyError that trips the fail-CLOSED loop guard and pauses the bot.
+        # Validate it up-front like the other unconditionally-used fields.
+        required_fields = ["assetSymbol", "sourceSymbol", "riskFrac", "stopPct", "tpPct", "stopPrice", "tpPrice", "maxHoldUntil", "entryPrice", "signalBarClose"]
         missing = [f for f in required_fields if f not in sig]
         if missing:
             log_event("signal_invalid_schema", missing=missing, sig_keys=list(sig.keys()))
@@ -5890,6 +5895,17 @@ def rebuild_open_positions_from_mt5() -> None:
                 "direction": direction,
                 "lot": live.volume,
                 "original_lot": orig_lot,
+                # 2026-05-21 bug-round: persist effective_risk_frac on crash-
+                # recovery rebuild. Normal placement stores it (used by the
+                # aggregate portfolio-risk cap, which reads
+                # p.get("effective_risk_frac", 0)). Without it, rebuilt positions
+                # contributed 0 → the cap UNDER-counted open exposure after a
+                # restart and could admit entries that breach PORTFOLIO_MAX_RISK.
+                # Reconstruct from the signal's riskFrac clamped to the hard cap
+                # (exact for the common tier_mult==1 path; conservative-ish else).
+                "effective_risk_frac": round(
+                    min(float(sig.get("riskFrac", 0) or 0), RISK_FRAC_HARD_CAP), 6
+                ),
                 "entry_price": live.price_open,
                 "stop_price": live.sl or 0.0,
                 "tp_price": live.tp or 0.0,

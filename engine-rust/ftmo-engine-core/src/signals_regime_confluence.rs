@@ -1,5 +1,13 @@
 // 2026-05-13 Phase B — Regime-Confluence multi-detector consensus signal.
 //
+// 2026-05-21 PARITY NOTE: `disagreement_bonus` and `use_poc_zone_gate` exist
+// only in this Rust module — the TS regimeVoters orchestrator has no equivalent.
+// This divergence is DORMANT and safe: both flags default OFF, are exposed only
+// via backtest-sweep CLI (--regime-disagreement-bonus / --regime-poc-zone-gate),
+// and no production/champion config (R28V6 / V5_AMBER trend) uses
+// SignalSrc::RegimeConfluence at all. If RegimeConfluence is ever promoted to a
+// live config, port these two features to TS (or gate them) for engine parity.
+//
 // Background: 13 systematic 65%-hunt waves on the standalone R28V6 detector
 // + V5_AMBER engine + 30m TF + 19-asset basket plateau at 58.3% s1 single-
 // account pass-rate. Knob-tuning (mct, pt, tp×, drop-symbols, hours, DOWs,
