@@ -273,9 +273,16 @@ pub fn compute_mtm_equity(
         }
         // R29-R3.C: same defensive clamp as compute_eff_pnl_with_time —
         // negative eff_risk must not invert the unrealised-loss floor.
+        // 2026-05-21 bug-find round: multiply by the CLAMPED risk, matching
+        // compute_eff_pnl_with_time (line 143-144) and the funding path
+        // (line 218-220). Using raw `pos.eff_risk` here re-introduced the
+        // sign-flip the Round-8 KRIT fix removed: a negative eff_risk turns a
+        // positive raw_pnl into a positive unrealised "gain" (floor uses the
+        // clamped value, so it never catches it) → inflated MTM equity / peak
+        // → false target-hits and entry-gate corruption.
         let risk_for_floor = pos.eff_risk.max(0.0);
         let unrealised =
-            (raw_pnl * cfg.leverage * pos.eff_risk).max(GAP_TAIL_MULT * risk_for_floor);
+            (raw_pnl * cfg.leverage * risk_for_floor).max(GAP_TAIL_MULT * risk_for_floor);
         mtm *= 1.0 + unrealised;
     }
     mtm

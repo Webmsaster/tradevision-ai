@@ -115,12 +115,28 @@ impl CbPremiumParams {
     }
 }
 
-/// True if the asset symbol matches any allowlist entry (case-sensitive).
-/// Used by `compute_cb_premium_vote` to short-circuit non-BTC assets. The
-/// match is exact-equals — no prefix/substring fallback so a fat-finger
-/// in the allowlist fails closed.
-fn allowlist_permits(symbol: &str, allowlist: &[String]) -> bool {
-    allowlist.iter().any(|s| s == symbol)
+/// True if the asset matches any allowlist entry. Checks BOTH the raw asset
+/// symbol (e.g. "BTC-TREND") and the source_symbol (e.g. "BTCUSDT"), after
+/// stripping the "-TREND"/"USDT" suffixes. The production basket carries
+/// symbols like "BTC-TREND" while the natural allowlist entry is "BTCUSDT";
+/// the prior exact-equals match on `asset.symbol` therefore NEVER matched and
+/// silently abstained on every real asset (only the "BTCUSDT" test fixtures
+/// matched). 2026-05-21 bug-find round — mirror `signals_cme_basis::
+/// asset_in_allowlist`, which already handled both forms.
+fn allowlist_permits(asset: &AssetConfig, allowlist: &[String]) -> bool {
+    let bare = asset.symbol.replace("-TREND", "").to_uppercase();
+    let src = asset
+        .source_symbol
+        .clone()
+        .unwrap_or_default()
+        .to_uppercase();
+    let bare_no_usdt = bare.replace("USDT", "");
+    let src_no_usdt = src.replace("USDT", "");
+    allowlist.iter().any(|s| {
+        let a = s.to_uppercase();
+        let a_no_usdt = a.replace("USDT", "");
+        a == bare || a == src || a_no_usdt == bare_no_usdt || a_no_usdt == src_no_usdt
+    })
 }
 
 /// Pure helper — computes the Coinbase-Binance Premium directional vote
@@ -151,7 +167,7 @@ pub fn compute_cb_premium_vote(
     if params.symbol_allowlist.is_empty() {
         return None;
     }
-    if !allowlist_permits(&asset.symbol, &params.symbol_allowlist) {
+    if !allowlist_permits(asset, &params.symbol_allowlist) {
         return None;
     }
     let series = cb_premium_series?;
@@ -344,6 +360,30 @@ mod tests {
         assert!(
             v.is_none(),
             "ETH must NOT receive a vote regardless of premium strength"
+        );
+    }
+
+    /// 1b. REGRESSION (2026-05-21 bug-find round): production basket symbols
+    ///     use the "BTC-TREND" form, not "BTCUSDT". The old exact-equals
+    ///     allowlist match on `asset.symbol` never matched and the voter
+    ///     silently abstained on every real asset. With the source_symbol-aware
+    ///     match a BTC-TREND asset (source "BTCUSDT") must now vote on the
+    ///     default ["BTCUSDT"] allowlist.
+    #[test]
+    fn vote_fires_for_production_btc_trend_symbol() {
+        let candles = rising_candles(10);
+        let premium = uniform_premium(10, 30.0);
+        let asset = AssetConfig {
+            symbol: "BTC-TREND".to_string(),
+            source_symbol: Some("BTCUSDT".to_string()),
+            ..Default::default()
+        };
+        let p = CbPremiumParams::default(); // allowlist = ["BTCUSDT"]
+        let v = compute_cb_premium_vote(&candles, Some(&premium), &asset, &p);
+        assert_eq!(
+            v,
+            Some(PositionSide::Long),
+            "BTC-TREND (source BTCUSDT) must match the BTCUSDT allowlist"
         );
     }
 

@@ -105,6 +105,26 @@ impl Default for TopTraderLsParams {
     }
 }
 
+/// Match an asset against the allowlist, checking BOTH the raw asset symbol
+/// ("BTC-TREND") and the source_symbol ("BTCUSDT") after stripping the
+/// "-TREND"/"USDT" suffixes. Caller guarantees the allowlist is non-empty.
+/// Mirrors `signals_cme_basis::asset_in_allowlist`.
+fn top_trader_allowlist_permits(asset: &AssetConfig, allowlist: &[String]) -> bool {
+    let bare = asset.symbol.replace("-TREND", "").to_uppercase();
+    let src = asset
+        .source_symbol
+        .clone()
+        .unwrap_or_default()
+        .to_uppercase();
+    let bare_no_usdt = bare.replace("USDT", "");
+    let src_no_usdt = src.replace("USDT", "");
+    allowlist.iter().any(|s| {
+        let a = s.to_uppercase();
+        let a_no_usdt = a.replace("USDT", "");
+        a == bare || a == src || a_no_usdt == bare_no_usdt || a_no_usdt == src_no_usdt
+    })
+}
+
 /// Returns a directional vote when the top-trader L/S persistence + divergence
 /// + SMA confirmation contract is satisfied. Returns `None` when the contract
 /// fails, any input is missing, the asset is not on the allowlist, or any
@@ -125,8 +145,14 @@ pub fn compute_top_trader_ls_vote(
     // ─── Symbol allowlist gate — short-circuit BEFORE any series math.
     // Empty allowlist intentionally treated as "all allowed" so the voter
     // can be re-purposed for backtest sweeps without editing config.
+    // 2026-05-21 bug-find round: match BOTH asset.symbol ("BTC-TREND") and
+    // source_symbol ("BTCUSDT") after suffix-strip. The prior exact-equals
+    // on `asset.symbol` never matched the production basket (which uses the
+    // "-TREND" form) so the voter silently abstained on every real asset —
+    // only the "BTCUSDT" test fixtures matched. Mirror
+    // `signals_cme_basis::asset_in_allowlist`.
     if !params.symbol_allowlist.is_empty()
-        && !params.symbol_allowlist.iter().any(|s| s == &asset.symbol)
+        && !top_trader_allowlist_permits(asset, &params.symbol_allowlist)
     {
         return None;
     }
