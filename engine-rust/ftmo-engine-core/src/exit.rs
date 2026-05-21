@@ -116,13 +116,16 @@ pub fn process_position_exit_with_held(
             // R54-V4-3: stop wins same-bar tie unless the bar GAPPED past PTP.
             if ptp_hit && (!stop_hit || gap_past_ptp) {
                 pos.ptp_triggered = true;
-                // 2026-05-13 Codex Round 6 #P3 FIX: PTP realized net of
-                // partial-fill cost (round-trip cost on the closed
-                // fraction). Mirrors TS V4 commit a6a411c.
-                let asset = cfg.assets.iter().find(|a| a.symbol == pos.symbol);
-                let cost = asset.and_then(|a| a.cost_bp).unwrap_or(0.0) / 10_000.0;
-                pos.ptp_realized_pct =
-                    ptp.close_fraction * (ptp.trigger_pct - cost);
+                // PTP realized = closeFraction × triggerPct (GROSS, no cost).
+                // 2026-05-21 bug-round: the prior `(trigger_pct - cost)` here
+                // double-charged the closed fraction — pnl.rs:97 ALREADY
+                // subtracts the FULL round-trip cost on the blended PnL, so
+                // netting cost here too charged cf×cost twice, diverging from
+                // the parity reference TS computeEffPnl (ftmoLiveEngineV4.ts:843
+                // sets ptpRealizedPct = closeFraction×triggerPct gross; cost is
+                // applied once at line 1065). Understated pass-rates on every
+                // PTP exit.
+                pos.ptp_realized_pct = ptp.close_fraction * ptp.trigger_pct;
                 // Auto-BE — cost-adjusted (Codex Round 6 #P3).
                 let be_stop = cost_adjusted_be(pos, cfg);
                 match pos.direction {
@@ -180,11 +183,12 @@ pub fn process_position_exit_with_held(
             if stop_hit_multi && !gap_past_lvl {
                 break;
             }
-            // 2026-05-13 Codex Round 6 #P3: cost-net per level.
-            let asset = cfg.assets.iter().find(|a| a.symbol == pos.symbol);
-            let cost = asset.and_then(|a| a.cost_bp).unwrap_or(0.0) / 10_000.0;
-            pos.ptp_levels_realized +=
-                lvl.close_fraction * (lvl.trigger_pct - cost);
+            // PTP-level realized = closeFraction × triggerPct (GROSS, no cost).
+            // 2026-05-21 bug-round: removed the `- cost` netting here — pnl.rs:97
+            // already subtracts the FULL round-trip cost once on the blended
+            // PnL, so this double-charged cf×cost per level. Matches TS
+            // computeEffPnl (ftmoLiveEngineV4.ts:898 gross + 1065 single cost).
+            pos.ptp_levels_realized += lvl.close_fraction * lvl.trigger_pct;
             pos.ptp_level_idx += 1;
             realised_any = true;
         }
@@ -707,9 +711,11 @@ mod tests {
         let r2 = process_position_exit(&mut p, &bar2, &cfg, None);
         assert!(r2.is_none(), "bar2 must not exit");
         assert_eq!(p.ptp_level_idx, 2, "tier 2 realised");
-        // tier 1 + tier 2 cost-net sum.
-        let expected_realised =
-            0.25 * (0.01 - cost) + 0.25 * (0.02 - cost);
+        // tier 1 + tier 2 GROSS realised (closeFraction × triggerPct, no cost).
+        // 2026-05-21 bug-round: was cost-netted (0.006) which double-charged
+        // cf×cost vs pnl.rs:97's full-cost subtraction. Cost is applied once on
+        // the blended PnL (TS V4 parity), so the per-level realised is gross.
+        let expected_realised = 0.25 * 0.01 + 0.25 * 0.02; // = 0.0075
         assert!(
             (p.ptp_levels_realized - expected_realised).abs() < 1e-12,
             "ptp_levels_realized = {expected_realised}, got {}",
