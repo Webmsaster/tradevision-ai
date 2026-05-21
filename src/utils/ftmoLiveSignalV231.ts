@@ -1623,7 +1623,12 @@ function detectBullSignals(
   // Bull pyramid (ETH-BULL-PYRAMID) when equity ahead by 1.5%+
   if (account.equity - 1 >= 0.015) {
     const pyr = BULL.assets[1];
-    const pyrRawRisk = pyr!.riskFrac * factor;
+    // 2026-05-21 bug-round: same POSITION-fraction → equity-LOSS conversion as
+    // the base BULL signal above (pyramid riskFrac is 4.0, a position fraction,
+    // NOT a loss fraction). Without it the pyramid pinned to the LIVE_MAX_RISK_FRAC
+    // cap instead of the backtested 4.0 × stopPct × leverage (×factor).
+    const pyrEnginePositionFrac = pyr!.riskFrac * factor;
+    const pyrRawRisk = pyrEnginePositionFrac * stopPct * BULL.leverage;
     const pyrEffRisk = Math.min(pyrRawRisk, LIVE_MAX_RISK_FRAC);
     result.signals.push({
       assetSymbol: "ETH-BULL-PYRAMID",
