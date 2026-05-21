@@ -67,8 +67,12 @@ def cfg_qualified_and_passed(cfg, w):
     """The bot bought this config AND it passed."""
     p1d = data[cfg]["p1"].get(w, {})
     p2d = data[cfg]["p2"].get(w, {})
-    # Note: P2 may not have qualified_at_start aligned, use P1 as gate
-    bought = p1d.get("qualified_at_start", False) and p2d.get("qualified_at_start", False)
+    # Note: P2 may not have qualified_at_start aligned, use P1 as gate.
+    # 2026-05-21 bug-find round: was `p1 AND p2 qualified`, contradicting the
+    # comment and diverging from cfg_buys() (P1-only). The mismatched gate made
+    # the `passed` numerator use a stricter buy-condition than the `bought`
+    # denominator (cfg_buys), corrupting the "Pass-of-Bought%" stat.
+    bought = p1d.get("qualified_at_start", False)
     passed = p1d.get("passed", False) and p2d.get("passed", False)
     return bought and passed
 
