@@ -850,10 +850,13 @@ function processPositionExit(
     // the priority logic is identical.
     if (ptpHit && (!stopHit || gapPastPtp)) {
       pos.ptpTriggered = true;
-      // 2026-05-13 Codex Round 7 V5R backport: cost-net PTP realized.
-      const assetCfgPtp = cfg.assets.find((a) => a.symbol === pos.symbol);
-      const costPtp = (assetCfgPtp?.costBp ?? 0) / 10000;
-      pos.ptpRealizedPct = ptp.closeFraction * (ptp.triggerPct - costPtp);
+      // 2026-05-21 bug-round: GROSS PTP realized (closeFraction × triggerPct),
+      // matching the parity reference V4 computeEffPnl (ftmoLiveEngineV4.ts:843)
+      // and the Rust engine (exit.rs). Round-trip cost is applied ONCE on the
+      // blended PnL in computeEffPnl below. The prior `(triggerPct − cost)`
+      // netting baked cost into the realized field, which also leaked into the
+      // unrealised MTM path (gross there in V4/Rust) — a parity divergence.
+      pos.ptpRealizedPct = ptp.closeFraction * ptp.triggerPct;
       // Cost-adjusted BE (V5R backport).
       const beStop = computeBeStopV5R(pos, cfg);
       if (pos.direction === "long") {
@@ -892,9 +895,9 @@ function processPositionExit(
           ? candle.open >= triggerPrice
           : candle.open <= triggerPrice;
       if (stopHitMulti && !gapPastLvl) break;
-      const assetCfgLvl = cfg.assets.find((a) => a.symbol === pos.symbol);
-      const costLvl = (assetCfgLvl?.costBp ?? 0) / 10000;
-      pos.ptpLevelsRealized += lvl!.closeFraction * (lvl!.triggerPct - costLvl);
+      // 2026-05-21 bug-round: GROSS per-level realized (cost applied once on the
+      // blended PnL below; matches V4 ftmoLiveEngineV4.ts:898 + Rust exit.rs).
+      pos.ptpLevelsRealized += lvl!.closeFraction * lvl!.triggerPct;
       pos.ptpLevelIdx++;
       multiRealised = true;
     }
@@ -1063,25 +1066,16 @@ function computeEffPnl(
   const slipBp = assetCfg?.slippageBp ?? 0;
   const swapBpPerDay = assetCfg?.swapBpPerDay ?? 0;
 
-  // 1) Round-trip commission cost (entry + exit). Only on the fraction NOT
-  //    already closed via PTP — the partial leg already paid its cost at
-  //    PTP-fire (line 856/897: ptpRealizedPct = closeFraction × (triggerPct −
-  //    cost)). 2026-05-21 bug-find round: previously the FULL cost was
-  //    subtracted from the blended rawPnl, double-charging the closed fraction
-  //    by closeFraction×cost (≈15bp at 30bp cost / 50% close) and understating
-  //    PnL on every PTP exit. Mirror the remainingFraction scaling already
-  //    applied to slippage just below so total cost = exactly one round-trip.
+  // 1) Round-trip commission cost (entry + exit) — applied ONCE on the full
+  //    blended PnL. 2026-05-21 bug-round: now that ptpRealizedPct/
+  //    ptpLevelsRealized are GROSS (cost no longer netted at PTP-fire, lines
+  //    856/897), the single full-cost subtraction here charges the round-trip
+  //    exactly once across both the closed and remaining fractions — matching
+  //    V4 computeEffPnl (ftmoLiveEngineV4.ts:1065) and the Rust engine
+  //    (pnl.rs:97). Slippage below stays scaled by remainingFraction because
+  //    the partial leg already paid its slippage at fill.
   if (costBp > 0) {
-    let remainingFraction = 1;
-    if (pos.ptpTriggered && cfg.partialTakeProfit) {
-      remainingFraction = 1 - cfg.partialTakeProfit.closeFraction;
-    } else if (pos.ptpLevelsRealized > 0 && cfg.partialTakeProfitLevels) {
-      const totalClosed = cfg.partialTakeProfitLevels
-        .slice(0, pos.ptpLevelIdx)
-        .reduce((s, l) => s + l.closeFraction, 0);
-      remainingFraction = Math.max(0, 1 - totalClosed);
-    }
-    rawPnl -= (costBp / 10000) * remainingFraction;
+    rawPnl -= costBp / 10000;
   }
 
   // 2) Slippage on remainder. Backtest applies only to the fraction NOT
