@@ -667,11 +667,25 @@ def simulate_trade(
         if ptp_hit and cfg.partial_take_profit:
             ptp_cfg = cfg.partial_take_profit
             ptp_state.triggered = True
-            # Phase 16 (Bug 2): ptpFillCost = cost/2 (no slippage in SimConfig).
-            ptp_fill_cost = cost / 2
-            ptp_state.realized_pct = ptp_cfg["closeFraction"] * (
-                ptp_cfg["triggerPct"] - ptp_fill_cost
+            # 2026-05-21 bug-find round — parity FIX with ftmoDaytrade24h.ts
+            # Codex Round 6 #S3 (lines 4626-4642). The old formula
+            # `closeFraction × (triggerPct − cost/2)` UNDERCHARGED: `triggerPct`
+            # is a raw price-move, not entry-eff adjusted, so only the exit-half
+            # cost was applied. The closed fraction must carry the FULL
+            # round-trip cost via entry_eff (entry-half) AND ptp_exit
+            # (exit-half), exactly like the final-close leg (line 731-735).
+            # No slippage term — SimConfig carries no slippage (Phase 16 Bug 2).
+            ptp_exit = (
+                ptp_trigger_price * (1 - cost / 2)
+                if direction == "long"
+                else ptp_trigger_price * (1 + cost / 2)
             )
+            partial_raw = (
+                (ptp_exit - entry_eff) / entry_eff
+                if direction == "long"
+                else (entry_eff - ptp_exit) / entry_eff
+            )
+            ptp_state.realized_pct = ptp_cfg["closeFraction"] * partial_raw
             # Phase 16 (Bug 1): auto-move dyn_stop to BE+cost on the remainder
             be_stop = entry * (1 + cost) if direction == "long" else entry * (1 - cost)
             if direction == "long":

@@ -487,12 +487,38 @@ def test_regime_gate_passes_trend_up():
     exe.REGIME_GATE_ENABLED = False
 
 
-def test_regime_gate_classification_returns_known_label():
+def test_regime_gate_classification_specific_labels():
+    """2026-05-21: was a vacuous membership assert (regime in {all-values, None})
+    that could never fail. Now feeds deterministic 7-day H1 series and asserts
+    the SPECIFIC classification, exercising the trend/vol math + thresholds so a
+    regression in the formula or cutoffs is actually caught."""
     import ftmo_executor as exe
-    exe._REGIME_CACHE["ts"] = 0
-    exe._REGIME_CACHE["regime"] = None
-    regime = exe.classify_btc_regime()
-    assert regime in {"trend-up", "trend-down", "chop", "high-vol", "calm", None}
+
+    orig_sym = exe.REGIME_GATE_BTC_SYMBOL
+    orig_rates = exe.mt5.copy_rates_from_pos
+    exe.REGIME_GATE_BTC_SYMBOL = "BTCUSDT"
+
+    def feed(closes):
+        bars = [{"close": c, "open": c, "high": c, "low": c} for c in closes]
+        exe.mt5.copy_rates_from_pos = lambda *a, **k: bars
+        exe._REGIME_CACHE["ts"] = 0
+        exe._REGIME_CACHE["regime"] = None
+        return exe.classify_btc_regime()
+
+    try:
+        # +12% smooth ramp → trend 0.12 (>0.05), negligible vol → trend-up
+        assert feed([100.0 + 12.0 * i / 167 for i in range(168)]) == "trend-up"
+        # -12% smooth ramp → trend < -0.05 → trend-down
+        assert feed([100.0 - 12.0 * i / 167 for i in range(168)]) == "trend-down"
+        # flat (trend ~0, near-zero vol) → calm
+        assert feed([100.0 for _ in range(168)]) == "calm"
+        # alternating ±1.5% per bar → annual_vol >= 0.6 → high-vol
+        assert feed([100.0 * (1.015 if i % 2 else 0.985) for i in range(168)]) == "high-vol"
+    finally:
+        exe.mt5.copy_rates_from_pos = orig_rates
+        exe.REGIME_GATE_BTC_SYMBOL = orig_sym
+        exe._REGIME_CACHE["ts"] = 0
+        exe._REGIME_CACHE["regime"] = None
 
 
 def test_regime_gate_fails_open_when_classifier_returns_none():

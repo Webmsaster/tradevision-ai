@@ -1451,6 +1451,36 @@ def get_day_peak_state() -> dict:
     return read_json(DAY_PEAK_PATH, {"date": None, "peak_equity_usd": 0.0})
 
 
+def _eu_prague_fallback_tz() -> timezone:
+    """DST-aware fixed-offset fallback for Europe/Prague used ONLY when
+    zoneinfo/tzdata is unavailable (degraded Windows deploy).
+
+    2026-05-21 bug-find round: the previous hard-coded ``timezone(timedelta(
+    hours=1))`` (CET, +1) was wrong by a full hour for ~7 months of the year —
+    EU summer time (CEST, +2) runs from the last Sunday of March 01:00 UTC to
+    the last Sunday of October 01:00 UTC. A +1 offset during that window
+    shifts the FTMO daily-loss / day-peak reset boundary one hour off Prague
+    midnight, which can fire the reset mid-session and corrupt intraday
+    tracking. This computes the correct CET/CEST offset from the EU DST rule
+    so the fallback is right year-round without needing tzdata.
+    """
+    from datetime import timedelta as _td
+
+    now = datetime.now(timezone.utc)
+    year = now.year
+
+    def _last_sunday_0100(month: int) -> datetime:
+        d = datetime(year, month, 31, 1, 0, tzinfo=timezone.utc)
+        while d.weekday() != 6:  # Mon=0 .. Sun=6
+            d -= _td(days=1)
+        return d
+
+    dst_start = _last_sunday_0100(3)
+    dst_end = _last_sunday_0100(10)
+    offset_hours = 2 if dst_start <= now < dst_end else 1
+    return timezone(_td(hours=offset_hours))
+
+
 def update_day_peak(current_equity_usd: float) -> float:
     """
     R28: Update intraday peak equity. Resets at Prague midnight (matching
@@ -1469,8 +1499,7 @@ def update_day_peak(current_equity_usd: float) -> float:
         from zoneinfo import ZoneInfo  # type: ignore
         prague_tz = ZoneInfo("Europe/Prague")
     except (ImportError, KeyError):
-        from datetime import timedelta
-        prague_tz = timezone(timedelta(hours=1))
+        prague_tz = _eu_prague_fallback_tz()
     today_prague = datetime.now(prague_tz).strftime("%Y-%m-%d")
     state = get_day_peak_state()
     if state.get("date") != today_prague:
@@ -1834,7 +1863,7 @@ def get_challenge_day() -> int:
             from zoneinfo import ZoneInfo
             prague_tz = ZoneInfo("Europe/Prague")
         except ImportError:
-            prague_tz = timezone(timedelta(hours=1))
+            prague_tz = _eu_prague_fallback_tz()
         # Accept either bare date "YYYY-MM-DD" or ISO timestamp with time.
         # `datetime.fromisoformat` parses both.
         parsed = datetime.fromisoformat(CHALLENGE_START_DATE)
@@ -1872,8 +1901,7 @@ def handle_daily_reset(current_equity_usd: float) -> float:
         prague_tz = ZoneInfo("Europe/Prague")
     except (ImportError, KeyError):
         # Python <3.9 fallback — use fixed CET offset
-        from datetime import timedelta
-        prague_tz = timezone(timedelta(hours=1))  # CET, ignores DST
+        prague_tz = _eu_prague_fallback_tz()  # DST-aware CET/CEST
     today_prague = datetime.now(prague_tz).strftime("%Y-%m-%d")
     state = read_json(DAILY_STATE_PATH, {})
     last_date = state.get("date")
@@ -1993,8 +2021,7 @@ def _get_yesterday_trade_stats(date_str: str) -> tuple[float, float, float, floa
         from zoneinfo import ZoneInfo  # type: ignore
         prague_tz = ZoneInfo("Europe/Prague")
     except (ImportError, KeyError):
-        from datetime import timedelta
-        prague_tz = timezone(timedelta(hours=1))  # CET, ignores DST
+        prague_tz = _eu_prague_fallback_tz()  # DST-aware CET/CEST
     try:
         # date_str is "YYYY-MM-DD"
         y, m, d = (int(x) for x in date_str.split("-"))
@@ -2831,7 +2858,7 @@ def _prague_today_str() -> str:
         prague_tz = ZoneInfo("Europe/Prague")
     except (ImportError, KeyError):
         # Python <3.9 fallback — fixed CET offset (ignores DST).
-        prague_tz = timezone(timedelta(hours=1))
+        prague_tz = _eu_prague_fallback_tz()
     return datetime.now(prague_tz).strftime("%Y-%m-%d")
 
 
@@ -3602,6 +3629,16 @@ def _process_signals_unlocked(
                 )
                 sig_risk_frac = capped
 
+        # 2026-05-21 bug-find round: clamp to the hard cap UNCONDITIONALLY, not
+        # only inside the tier-mult branch above. place_market_order already
+        # caps the ORDER itself, but the portfolio-risk accounting below (and
+        # `in_batch_risk`) used the raw `sig["riskFrac"]` when tier_mult == 1.0.
+        # If a signal-service bug emits riskFrac > hard cap, the accounting then
+        # over-counted batch exposure (open positions store the CAPPED
+        # effective_risk_frac) and spuriously blocked legit entries. Make the
+        # accounted value match what actually gets placed.
+        sig_risk_frac = min(sig_risk_frac, RISK_FRAC_HARD_CAP)
+
         # 2026-05-20 bug-find round: aggregate portfolio-risk cap (opt-in via
         # FTMO_PORTFOLIO_MAX_RISK). Blocks a new entry once the summed effective
         # risk_frac of open + in-batch positions + this signal would exceed the
@@ -4253,9 +4290,22 @@ def _apply_partial_tp_levels(pos: dict) -> dict:
         if unrealized < trigger or frac <= 0:
             continue
         close_lot = min(original_lot * frac, held)
-        # If closing this leg would strand a sub-min remainder, close it all.
+        # If closing this leg would strand a sub-min remainder, close the whole
+        # remaining position instead.
+        # 2026-05-21 bug-find round: the old `close_lot = held` path was always
+        # silently dropped — `_close_partial_lot` REFUSES `close_lot >= pos.volume`
+        # (it must never flatten a position), so the final PTP leg never fired and
+        # the full remainder kept riding (risk drift). Route the full-remainder
+        # exit through close_position(), the proper flatten path.
         if held - close_lot < vol_min:
-            close_lot = held
+            if close_position(pos["ticket"], exit_reason_override=f"ptpL{idx}_final"):
+                done[idx] = True
+                held = 0.0
+                log_event("partial_tp_level_fired", ticket=pos["ticket"],
+                          tier=idx, trigger=trigger, fraction=frac,
+                          unrealized=unrealized, closed_lot=close_lot,
+                          held_after=0.0, full_close=True)
+            break
         if close_lot <= 0:
             continue
         actual = _close_partial_lot(pos["ticket"], close_lot, f"ptpL{idx}")
