@@ -1,154 +1,48 @@
-# Session Handoff — 2026-05-09
+# Session Handoff - 2026-05-22
 
 ## What was done
 
-### R9 TITANIUM Funding-Filter — final & DEBUNKED
+Branch `feature/r28-deploy` (continuation after the 2026-05-21 bug-round). Focus this session: **verify the bug-fixes, get honest numbers, then hunt for improvements.**
 
-- Resumed missing FRLONG variant (interrupted from previous session)
-- All 3 funding variants identical at **55.56%** (35/63 step=28d): r9titPL = r9titFRMED = r9titFRLONG
-- Per-shard pass-counts byte-identical → funding-filter completely **inert** on TITANIUM 14-asset basket
-- TITANIUM 14-asset basket alone = **+10.71pp** vs PASSLOCK 9-asset 44.85% honest (the real R9 hebel)
-
-### Rust Engine Port — Phases 1+2+3 shipped
-
-User mandate: "rust soll backbone werden" + "rust soll fertig werden ohne bugs und fehler".
-
-**Phase 1+2 (commit `aa28d7a`)** — manual fixes + 1st background-agent (28min wall-clock):
-
-- `disable_short` field added to `AssetConfig`; profit_target 0.10 → 0.08 (FTMO Step-1 actual, was bug)
-- `make_assets` defaults: invert_direction=true, disable_short=true, trigger_bars=Some(1), costs (30/8/4)
-- `detect_r28_v6` iterates both directions like TS detectAsset (instead of SMA-slope filtering)
-- Entry shifted to bar `i+1.open` (TS convention; was `i.close`)
-- `quartz_lite_base()` rebuilt to mirror real R28_V4 chain (removed phantom lossStreakCool + kellySizing inheritance, fixed dailyPeakTrailingStop, added peakDrawdownThrottle)
-- `sweep.rs`: PerAssetCfg fallback to R28V6 unconditional (was gated on funding_rate_filter — root cause for 0% baseline); WARMUP=5000 bar pre-fill; end-of-window pass-check; chandelier ATR period reads from cfg
-- **R28_V6_PASSLOCK Rust 0% → 47.10%** (138w step=14d) vs TS 55.88% — drift -8.78pp
-
-**Phase 3 (commit `78aaa05`)** — 2 parallel background-agents (~16min wall-clock):
-
-- TITANIUM/AMBER/TOPAZ baskets corrected (SOL/LINK was wrong, now INJ/SAND etc.)
-- Per-asset tp_pct rewritten with TS-correct values for all 3 V5 variants
-- New `v5_titanium_base()` decouples TITANIUM/AMBER from QUARTZ engine stack
-- 8 new R10 stacking templates: titanium-passlock + norune + obsidian + lscool-tight/loose + mct5 + corrcap2 + todcut18
-- `pnl.rs` audited bit-precise vs TS `computeEffPnl` — confirmed parity; 1 real bug fixed (MTM `last_known_price` fallback that TS doesn't have)
-- 154 lib tests pass (was 141)
-
-### R29 Round 10 Stacking Variants — staged
-
-- 7 new TS configs in `src/utils/ftmoDaytrade24h.ts`
-- `_r29Round10Shard.ts` — generic shard runner (reads asset list from cfg.assets)
-- `_r29Round10Sweep.sh` — 7-config sequential sweep
-- `_r29RustBackboneValidate.ts` — Rust↔TS drift validation harness for 5 hot configs
+1. **PTP-fix verification (HANDOFF step 2):** Rebuilt `ftmo-sweep` with the `exit.rs` PTP-cost fix (was stale). A/B vs pre-fix binary on the AMBER_MAX_PASSLOCK champion → **pass-rate-NEUTRAL** (52.35% both; equity higher in 43/1022 windows but 0 pass/fail flips). Fix is correct, just doesn't move aggregate pass-rate.
+2. **Full E2E run (HANDOFF step 3):** 23 failures → fixed to **60/60 green, 0 skip**. Found **1 real app bug** (`import/page.tsx` sample-trade UUIDs missing `sample-` prefix → "Sample data loaded" indicator never showed) + 3 stale-test classes + un-fixme'd 2 widget tests (false-alarm, was a test-timing race). TS unit 1257 ✓, tsc 0 ✓.
+3. **Pushed + PR (HANDOFF step 1):** branch pushed to origin; PR #71 (→ main) retitled + status comment.
+4. **Honest pass-rate measurements (fresh, bug-free engine):** single-account combined-funded (P1∧P2 **true sequential**) = **33.1%** (the same-window proxy's 50.3% was misleading — P2|P1=96.5% was a same-window artifact; real sequential P2|P1=63%). Cluster-gate gives **0 uplift** (the 91.8% `qualified_at_start` is lookahead). 2-stack AMBER+RUBIN only 39.5% (corr +0.48, not orthogonal).
+5. **Funded-phase + profit economics:** continuous funded trading busts **99%** over 90-180d (edge is front-loaded, ~4-day cluster). Burst-withdrawal model (+5% take-profit → bank → repeat) → full pipeline net **~$6,550/mo (6.55%) on $100k** (backtest).
+6. **8-agent improvement hunt** — found 2 real wins + 5 confirmed dead-ends (see Next steps / memory).
 
 ## Current state
 
-### Working
+- **All test suites green:** Rust workspace ✓, TS unit 1257 ✓, E2E 60/60 ✓, tsc 0. Python pytest unchanged (not touched this session).
+- **Branch fully pushed**, PR #71 open (NOT merged — user's merge call, 157 commits / 487 files vs main).
+- **2 verified improvements found:**
+  1. **Funded profit-take +8% instead of +5%** → full-pipeline net **~$10,800/mo (10.8%) on $100k backtest** (+65% vs +5%). ⚠️ IN-SAMPLE — needs walk-forward before live.
+  2. **Orthogonal 3-stack AMBER + BIDIR + MR = 47.4% combined-funded** (vs 33% single / 39.5% old correlated). Decorrelation via different SIGNAL CLASSES (trend-long / long-short / mean-revert), corr ≈ 0.
 
-- **Rust Backbone OPERATIONAL** for R28_V6 + TITANIUM family (active Champion)
-  - 22 selectors via `--list-configs` (was 14)
-  - cargo build --release clean, 154 lib tests pass
-  - Wall-clock 1.4-7s per 127-138w sweep (was 28min TS sharded) = **~250-300× speedup**
-- TITANIUM_PASSLOCK 58.27% / TS 55.56% step=28d → drift +2.71pp (well within usable range)
-- R10 stacking effects verified working: MCT5 -7pp, CORRCAP2 -9pp, TODCUT18 -5.5pp impact
-- 2 commits shipped this session, working tree clean
+## Next steps (priority-ordered)
 
-### Drifting (not fully closed)
-
-- R28_V6_PASSLOCK: -8.78pp drift (Rust 47.10% / TS 55.88%) — acceptable, ranking robust
-- V5_AMBER: -15.21pp drift (modest +2pp closing from Phase 3a)
-- V5_TOPAZ: -24pp drift
-- Root cause for AMBER/TOPAZ: `trailing_stop {activatePct:0.03, trailPct:0.005}` from V3-inheritance NOT yet ported to Rust harness
-
-### Champion still-active
-
-- **R28_V6_PASSLOCK 55.88%** (TS honest, post-R9 bugfix `46d9bb3`) — single-account
-- 3-Strategy multi-account ~91% min-1-pass (PASSLOCK + TITANIUM + AMBER)
-- TITANIUM_PASSLOCK 55.56% step=28d honest = **+10.71pp** vs 9-asset PASSLOCK
-
-## Next steps
-
-### Priority 1 — Use the Rust backbone
-
-- Run R29-R10 sweep via Rust (seconds vs hours): `./engine-rust/target/release/ftmo-sweep --candles-dir scripts/cache_bakeoff --symbols <list> --config 2h-trend-v5-titanium-passlock-<variant> --windows 200 --step-days 14 --signals per-asset`
-- Compare 7 R10 variants to find new +1-3pp hebel on TITANIUM 55.56% baseline
-- Cross-check final picks via `_r29RustBackboneValidate.ts` (~10-15min)
-
-### Priority 2 — Phase 4 Rust port (deferred)
-
-1. Port `trailing_stop {activatePct, trailPct}` from V3-cfg to harness.rs (closes AMBER drift)
-2. Audit `harness.rs:close_all_on_target` candle resolution (TS scan-backwards fallback at L1604-1610 missing in Rust)
-3. Audit `exit.rs` ordering edge cases (PTP-fill semantics on volatile bars)
-4. Re-validate AMBER target: ≤5pp drift
-
-### Priority 3 — Live deploy track
-
-- PASSLOCK Live-Deploy plan in `memory/project_passlock_live_deploy_plan.md`
-- Phase 1 single-account → Phase 2 3-strategy → Phase 3 step-2 promotion
-- Math: 73% Funded mit 3-Strategy multi-account
-
-### Priority 4 — Backlog (deferred-forever per memory)
-
-- Round 61 total_loss attack — engine cap blocks Day-Risk multiplier
-- Round 62 Mean-Reversion — only AFTER PASSLOCK 2-week stable
-- Round 63 forex diversification — only AFTER 3-strategy stable
+1. **Walk-forward-validate the +8% funded target** (split in-sample/out-of-sample). The $10.8k/mo is a single in-sample number; the +8% reach may be regime-specific. This is the #1 thing to confirm before trusting the new profit figure.
+2. **Decide on PR #71 merge** to main (user's call).
+3. If deploying: follow `tools/PASSLOCK_DEPLOY_RUNBOOK.md` — run `signal_tracker_mode.py` warmup, deploy the 3 orthogonal strategies as separate MT5 accounts, set funded take-profit to +8%, withdraw + pause after each bank (NEVER trade funded continuously → 99% bust).
+4. Optional engine TODO: add a window-start-timestamp field to sweep JSONL so cross-config stacks with different window grids (TITANIUM etc.) can be date-joined honestly.
 
 ## Open issues / blockers
 
-- **AMBER/TOPAZ Rust ranking inversion**: Don't trust Rust for AMBER vs other-config rankings until Phase 4. Use TS for that family.
-- **Funding-filter is inert on TITANIUM 14-asset**: confirmed via 3× identical pass-counts. Funding gives +2.21pp on R28_V6 9-asset but 0pp on TITANIUM 14-asset. Different asset distribution.
-- **Memory-claim deflation post-R67**: Pre-R67 cache pass-rates are systematically ~10-15pp inflated (cost-deduction fix R56-R58 + multi-level PTP fix R67). Trust the post-R67 honest numbers.
-- **Auto-Continue hook**: User has a Stop-Hook active. Remember to write `TASK_COMPLETE` only when truly done, `STOP_NOW` for emergencies, and don't ask intermediate questions.
+- **No blockers.** Honest deploy reality (bug-free, fresh): single-account ~33% funded / ~4-6%/mo at +5% or ~7-8%/mo live at +8%; orthogonal 3-stack 47% funded-prob. **Far below the old memory headlines (75-90%)** — those were lookahead/proxy/grid-misalignment artifacts, all corrected this session.
+- **+8% funded target is in-sample** — do not trust the $10.8k/mo until walk-forward.
+- **Pre-existing WIP NOT from this session** (left untouched, were M/?? before): `.env.ftmo.*.example`, `scripts/ftmo_timing_supervisor.py`, `scripts/macro_regime_audit.py`, `scripts/real_funded_prob.py`, `tools/ecosystem.config.js`, `tools/promote_to_step2.sh`, `tools/signal_tracker_mode.py`, various `scripts/_hunt2026_05_19/20_*.sh`, `state/*`.
 
-## Key files changed
+## Key files changed (this session, committed)
 
-### Engine (Rust)
+- `src/app/import/page.tsx` — sample-trade UUID `sample-` prefix fix (real app bug).
+- `e2e/helpers.ts` — `canonicalPair()` helper; `createTestTrade` returns canonical pair.
+- `e2e/trade-crud.spec.ts`, `e2e/trade-form.spec.ts` — canonical-pair assertions + exact Delete button.
+- `e2e/multi-account.spec.ts` — account-remove by exact aria-label (AccountSwitcher collision fix).
+- `e2e/settings.spec.ts` — un-fixme'd 2 widget tests, auto-retrying assertions.
+- Analysis sweep scripts (committed): `scripts/_ptp_fix_ab_`, `_combined_p1p2_`, `_combined_clustergate_`, `_stack3_funded_`, `_funded_phase_`, `_funded_burst_2026_05_22.sh`.
+- `scripts/_hunt_p1_knobs_/_parallel_2026_05_22.sh` — P1-knob hunt (agent-created).
 
-- `engine-rust/ftmo-engine-core/src/config.rs` — added `disable_short` field; profit_target 0.10→0.08
-- `engine-rust/ftmo-engine-core/src/templates.rs` — corrected V5*TITANIUM/AMBER/TOPAZ baskets + per-asset TPs; 8 R10 stacking templates added (`v5_titanium_passlock`, `v5_titanium_passlock_norune`, `v5_obsidian_passlock`, `v5_titanium_passlock_lscool*{tight,loose}`, `v5*titanium_passlock*{mct5,corrcap2,todcut18}`)
-- `engine-rust/ftmo-engine-core/src/signals_r28v6.rs` — bidirectional iteration, entry-bar shift, secondary-gate read at trigger bar
-- `engine-rust/ftmo-engine-core/src/pnl.rs` — MTM `last_known_price` fallback removed (TS parity); confirmed bit-precise cost/slippage/swap deduction
-- `engine-rust/ftmo-engine-cli/src/sweep.rs` — PerAssetCfg fallback unconditional; WARMUP=5000 pre-fill; end-of-window pass-check; chandelier ATR period from cfg
+## Resume
 
-### Configs / scripts
-
-- `src/utils/ftmoDaytrade24h.ts` — added 7 R10 stacking variants (TITANIUM_PASSLOCK_NORUNE/LSCOOL_TIGHT/LSCOOL_LOOSE/MCT5/CORRCAP2/TODCUT18; OBSIDIAN_PASSLOCK reused existing const)
-- `scripts/_r29Round9FrlongOnly.sh` — resume-only script for missing FRLONG variant
-- `scripts/_r29Round10Shard.ts` — generic shard runner (reads asset list from cfg.assets)
-- `scripts/_r29Round10Sweep.sh` — 7-config sequential R10 sweep
-- `scripts/_r29RustBackboneValidate.ts` — Rust↔TS drift validation harness, exits 0 iff all 5 configs ≤5pp drift
-
-### Memory updates
-
-- `memory/project_round29_passrate_search.md` — R9 TITANIUM final results, Phase 1 Rust shipped, R10 staging
-- `memory/project_round29_rust_audit.md` — Phase 1+2+3 detailed roadmap, drift sources, final state, Phase 4 deferred items
-- `memory/project_rust_engine_backbone.md` — User mandate (NEW)
-- `memory/MEMORY.md` — index updated with backbone-mandate link
-
-## Recent commits
-
-```
-78aaa05 feat(R29-R10/Rust-Phase3): correct V5 baskets + R10 templates + MTM parity
-aa28d7a feat(R29-R10/Rust): port R28_V6 detector to parity + R10 stacking variants
-b901358 feat(R29-R9/Rust): TITANIUM funding configs + Rust port WIP
-```
-
-Branch: `feature/r28-deploy` (29+ commits ahead of `origin/feature/r28-deploy`).
-
-## Quick-start für nächste Session
-
-```bash
-# Sweep Rust (seconds):
-./engine-rust/target/release/ftmo-sweep \
-  --candles-dir scripts/cache_bakeoff \
-  --symbols ETHUSDT,BTCUSDT,BNBUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LTCUSDT,BCHUSDT,AAVEUSDT,XRPUSDT,INJUSDT,RUNEUSDT,ETCUSDT,SANDUSDT \
-  --config 2h-trend-v5-titanium-passlock-todcut18 \
-  --windows 200 --step-days 14 --signals per-asset
-
-# List all 22 selectors:
-./engine-rust/target/release/ftmo-sweep --list-configs
-
-# Validate Rust↔TS drift on 5 hot configs (~10-15min):
-node ./node_modules/tsx/dist/cli.mjs scripts/_r29RustBackboneValidate.ts
-
-# R10 sweep via TS sharded (fallback, 3-4h):
-bash scripts/_r29Round10Sweep.sh
-```
+- Full detail: memory `project_session_2026_05_21_50agent_bug_round.md` (all 2026-05-22 addenda).
+- Branch: `feature/r28-deploy`. PR #71. Hunt data in `scripts/cache_bakeoff/hunt_*` (gitignored).
