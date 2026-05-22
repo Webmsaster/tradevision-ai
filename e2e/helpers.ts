@@ -20,8 +20,27 @@ export async function loadSampleData(page: Page) {
   });
 }
 
-/** Open the Add Trade form, fill fields, and submit */
-export async function createTestTrade(page: Page, pair: string = "TEST/USDT") {
+/**
+ * Canonicalise a pair the way the app does on every write-path
+ * (see src/utils/symbol.ts `normaliseSymbol`): trim, uppercase, strip
+ * spaces / dashes / underscores / slashes. The table renders this canonical
+ * form (display-side `/` re-insertion is deferred), so tests must assert on it.
+ */
+export function canonicalPair(raw: string): string {
+  return raw
+    .trim()
+    .toUpperCase()
+    .replace(/[\s\-_/]+/g, "");
+}
+
+/**
+ * Open the Add Trade form, fill fields, and submit.
+ * Returns the canonical pair string the app actually stores/renders.
+ */
+export async function createTestTrade(
+  page: Page,
+  pair: string = "TEST/USDT",
+): Promise<string> {
   await page.getByRole("button", { name: "+ Add Trade" }).click();
 
   const modal = page.getByRole("dialog");
@@ -46,5 +65,7 @@ export async function createTestTrade(page: Page, pair: string = "TEST/USDT") {
   await dateInputs.nth(1).fill(`${day}T15:00`);
 
   await page.getByRole("button", { name: "Add Trade", exact: true }).click();
-  await expect(page.getByText(pair)).toBeVisible({ timeout: 5000 });
+  const canonical = canonicalPair(pair);
+  await expect(page.getByText(canonical)).toBeVisible({ timeout: 5000 });
+  return canonical;
 }

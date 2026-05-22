@@ -39,89 +39,69 @@ test.describe("Settings Page", () => {
     await expect(page).toHaveURL(/\/settings/);
   });
 
-  test.fixme("should toggle dashboard widget and persist state", async ({
-    page,
-  }) => {
-    // R8 Task H: was test.skip — converted to test.fixme so the failing
-    // app-bug is tracked, not silently hidden. Bug claim: settings
-    // validation (settings/page.tsx) resets unchecked boolean widgets to
-    // `true` on reload. Re-investigate before re-enabling.
-    // Verify it's initially checked
-    const weeklySummaryLabel = page
+  test("should toggle dashboard widget and persist state", async ({ page }) => {
+    // R8 Task H / 2026-05-22: the prior "validation resets widgets to true"
+    // bug claim was a false alarm — save/load preserves `false` correctly.
+    // The real cause of the failure was the assertion: `await isChecked()` is
+    // a ONE-SHOT read taken right after reload, before the mount effect
+    // re-hydrates `settings` from localStorage (initial state is the
+    // all-true DEFAULT_SETTINGS). Auto-retrying `expect(...).not.toBeChecked()`
+    // waits for hydration. Widgets default to checked, so toggling = uncheck.
+    const weeklySummaryCheckbox = page
       .locator("label")
-      .filter({ hasText: "Weekly Summary" });
-    const weeklySummaryCheckbox = weeklySummaryLabel.locator(
-      'input[type="checkbox"]',
-    );
-    const isChecked = await weeklySummaryCheckbox.isChecked();
+      .filter({ hasText: "Weekly Summary" })
+      .locator('input[type="checkbox"]');
+    await expect(weeklySummaryCheckbox).toBeChecked();
 
-    // Toggle the checkbox
     await weeklySummaryCheckbox.click();
-    const afterToggle = await weeklySummaryCheckbox.isChecked();
-    expect(afterToggle).not.toBe(isChecked);
+    await expect(weeklySummaryCheckbox).not.toBeChecked();
 
-    // Save settings
     await page.getByRole("button", { name: "Save Settings" }).click();
     await expect(page.getByText("Settings saved!")).toBeVisible();
 
-    // Reload and verify persistence
     await page.reload({ waitUntil: "domcontentloaded" });
     await waitForAppReady(page);
 
-    const reloadedWeeklySummaryLabel = page
-      .locator("label")
-      .filter({ hasText: "Weekly Summary" });
-    const reloadedCheckbox = reloadedWeeklySummaryLabel.locator(
-      'input[type="checkbox"]',
-    );
-    const reloadedState = await reloadedCheckbox.isChecked();
-    expect(reloadedState).toBe(afterToggle);
+    // Auto-retrying assertion tolerates the async re-hydration after reload.
+    await expect(
+      page
+        .locator("label")
+        .filter({ hasText: "Weekly Summary" })
+        .locator('input[type="checkbox"]'),
+    ).not.toBeChecked();
   });
 
-  test.fixme("should toggle all dashboard widgets", async ({ page }) => {
-    // R8 Task H: see test.fixme above — same pending bug.
+  test("should toggle all dashboard widgets", async ({ page }) => {
+    // 2026-05-22: see note above — auto-retrying assertions instead of
+    // one-shot isChecked() reads. All widgets default to checked.
     const widgetLabels = [
       "Equity Curve",
       "Weekly Summary",
       "Recent Trades",
       "AI Insights",
     ];
-    const initialStates: boolean[] = [];
-
-    // Get initial states of dashboard widget checkboxes
-    for (const label of widgetLabels) {
-      const checkbox = page
+    const checkboxFor = (label: string) =>
+      page
         .locator("label")
         .filter({ hasText: label })
         .locator('input[type="checkbox"]');
-      initialStates.push(await checkbox.isChecked());
-    }
 
-    // Toggle all 4 widgets
+    // All start checked, toggle each off.
     for (const label of widgetLabels) {
-      const checkbox = page
-        .locator("label")
-        .filter({ hasText: label })
-        .locator('input[type="checkbox"]');
-      await checkbox.click();
+      await expect(checkboxFor(label)).toBeChecked();
+      await checkboxFor(label).click();
+      await expect(checkboxFor(label)).not.toBeChecked();
     }
 
-    // Save
     await page.getByRole("button", { name: "Save Settings" }).click();
     await expect(page.getByText("Settings saved!")).toBeVisible();
 
-    // Reload and verify all are toggled
     await page.reload({ waitUntil: "domcontentloaded" });
     await waitForAppReady(page);
 
-    for (let i = 0; i < widgetLabels.length; i++) {
-      const label = widgetLabels[i];
-      const checkbox = page
-        .locator("label")
-        .filter({ hasText: label })
-        .locator('input[type="checkbox"]');
-      const reloadedState = await checkbox.isChecked();
-      expect(reloadedState).toBe(!initialStates[i]);
+    // After re-hydration, all four stay unchecked.
+    for (const label of widgetLabels) {
+      await expect(checkboxFor(label)).not.toBeChecked();
     }
   });
 
