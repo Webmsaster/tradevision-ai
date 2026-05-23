@@ -6,24 +6,28 @@
  *   Account 1: V5_AMBER_MAX_PASSLOCK        + Basket-18 + BNB 18/50 → 32.90% combined-funded (TRUE-SEQUENTIAL)
  *   Account 5: V5_AMBER_MAX_PASSLOCK_BIDIR  + Basket-18 + BNB 18/50 → 29.79% combined-funded
  *   Account 4: V5_AMBER_MAX_MR_PASSLOCK     + Basket-18 + BNB 18/50 → 16.15% combined-funded
- *   Account 2: V5_RUBIN_PASSLOCK            + Basket-18 + BNB 18/50 → 29.29% combined-funded
+ *   Account 3: V5_TITANIUM_PASSLOCK         + Basket-18 + BNB 18/50 → 21.20% combined-funded
  *
- * 4-Stack OR-aggregation (per-window min-1-funded, n=997 valid windows):
- *   AMBER + BIDIR + MR + RUBIN = 57.17%   (+5.21pp over the orthogonal 3-stack 51.96%)
+ * 4-Stack OR-aggregation (per-window min-1-funded, 2026-05-23 measured):
+ *   AMBER + BIDIR + MR + TITANIUM = 62.08% (offset=0, comparable to legacy numbers)
+ *                                 = 59.10% (offset=1, honest, no P1/P2 join-day overlap)
  *
- * Why RUBIN adds value despite high AMBER↔RUBIN correlation:
- *   AMBER  <-> BIDIR  +0.300
- *   AMBER  <-> MR     +0.081
- *   AMBER  <-> RUBIN  +0.600  (HIGH — same trend-family)
- *   BIDIR  <-> MR     +0.209
- *   BIDIR  <-> RUBIN  +0.174
- *   MR     <-> RUBIN  +0.041  (NEAR-ORTHOGONAL — RUBIN's secret weapon)
+ * Why TITANIUM as 4th instead of RUBIN: TITANIUM is essentially orthogonal
+ *   to all 3 other stack members despite lower single-rate (21% vs RUBIN 29%).
+ *   Diversification > raw pass-rate in OR-aggregation.
  *
- *   RUBIN passes windows that MR (+0.041 corr) and BIDIR (+0.174 corr) miss,
- *   even though it overlaps heavily with AMBER. The cross-class diversification
- *   with MR is what drives the +5.21pp uplift.
+ *   AMBER  <-> BIDIR     +0.300
+ *   AMBER  <-> MR        +0.081
+ *   AMBER  <-> TITANIUM  +0.004  ← essentially zero!
+ *   BIDIR  <-> MR        +0.209
+ *   BIDIR  <-> TITANIUM  +0.028  ← zero!
+ *   MR     <-> TITANIUM  -0.078  ← NEGATIVE
  *
- *   Independence-bound OR: 72.07%   Achieved: 57.17%   Efficiency: 79.3%
+ *   Stack-4 with RUBIN:    57.17% offset=0, 55.52% honest (+5.21pp vs Stack-3)
+ *   Stack-4 with TITANIUM: 62.08% offset=0, 59.10% honest (+10.12pp vs Stack-3)
+ *
+ *   TITANIUM trades a 14-asset basket (vs AMBER's 18) with TOPAZ-family
+ *   per-asset TPs — genuinely different signal cluster.
  *
  * Cross-signal-class diversification:
  *   AMBER  = trend-long  (invertDirection + disableShort=true)
@@ -46,7 +50,7 @@
  *
  * Stop all 4:
  *   pm2 stop ftmo-signal-amber-max ftmo-executor-amber-max \
- *            ftmo-signal-rubin     ftmo-executor-rubin     \
+ *            ftmo-signal-titanium  ftmo-executor-titanium  \
  *            ftmo-signal-amber-mr  ftmo-executor-amber-mr  \
  *            ftmo-signal-bidir     ftmo-executor-bidir
  *
@@ -170,14 +174,14 @@ function buildAppPair(envFile, accountLabel) {
 
 const apps = [
   ...buildAppPair(path.join(REPO_ROOT, ".env.ftmo.account-1"), "amber-max"),
-  ...buildAppPair(path.join(REPO_ROOT, ".env.ftmo.account-2"), "rubin"),
+  ...buildAppPair(path.join(REPO_ROOT, ".env.ftmo.account-3"), "titanium"),
   ...buildAppPair(path.join(REPO_ROOT, ".env.ftmo.account-4"), "amber-mr"),
   ...buildAppPair(path.join(REPO_ROOT, ".env.ftmo.account-5"), "bidir"),
 ];
 
 if (apps.length === 0) {
   console.error(
-    "[pm2-4stack-orth] FATAL: no env files loaded. Copy .env.ftmo.account-{1,2,4,5}.example → .env.ftmo.account-{1,2,4,5} and fill in.",
+    "[pm2-4stack-orth] FATAL: no env files loaded. Copy .env.ftmo.account-{1,3,4,5}.example → .env.ftmo.account-{1,3,4,5} and fill in.",
   );
   process.exit(1);
 }
