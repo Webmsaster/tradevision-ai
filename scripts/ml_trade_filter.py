@@ -191,12 +191,12 @@ def build_dataset() -> tuple[np.ndarray, np.ndarray, list[dict], list[str]]:
 
     # sort trades chronologically; precompute trade-order within window
     trades.sort(key=lambda t: t["entryTime"])
-    # within-window index
-    win_seen: dict[int, int] = defaultdict(int)
-    # cumulative prior-trade effPnl per window (causally clean — sorted by entryTime)
-    win_cum_pnl: dict[int, float] = defaultdict(float)
-    win_cum_wins: dict[int, int] = defaultdict(int)
-    win_cum_losses: dict[int, int] = defaultdict(int)
+    # group by window so we can compute prior_* on demand using exitTime (leak-free):
+    # a "prior" trade is only counted if its exitTime < current entryTime — otherwise
+    # it was still open at entry and its effPnl is future-information.
+    trades_by_win: dict[int, list[dict]] = defaultdict(list)
+    for _t in trades:
+        trades_by_win[_t["winIdx"]].append(_t)
 
     print("[2/4] feature engineering ...", flush=True)
     feature_rows: list[list[float]] = []
@@ -245,10 +245,25 @@ def build_dataset() -> tuple[np.ndarray, np.ndarray, list[dict], list[str]]:
         btc_feats = compute_btc_features(btc_before, et)
         direction = 1.0 if t["direction"] == "long" else -1.0
         widx = t["winIdx"]
-        trade_order = win_seen[widx]
-        prior_cum = win_cum_pnl[widx]
-        prior_w = win_cum_wins[widx]
-        prior_l = win_cum_losses[widx]
+        # leak-free prior_* aggregates: only count window-mates that already EXITED
+        # before this trade's entryTime. Using entryTime-order would leak ~60% of
+        # cases where a prior trade is still open (its effPnl is unknown at et).
+        prior_cum = 0.0
+        prior_w = 0
+        prior_l = 0
+        trade_order = 0
+        for p in trades_by_win[widx]:
+            if p is t:
+                continue
+            if p["entryTime"] < et:
+                trade_order += 1
+            if p["exitTime"] < et:
+                pnl = float(p["effPnl"])
+                prior_cum += pnl
+                if pnl > 0:
+                    prior_w += 1
+                else:
+                    prior_l += 1
 
         row = [
             btc_feats["btc_ret_24h"],
@@ -282,13 +297,6 @@ def build_dataset() -> tuple[np.ndarray, np.ndarray, list[dict], list[str]]:
                 "trade_order": trade_order,
             }
         )
-        # update per-window state with THIS trade's outcome — only AFTER row is built
-        win_seen[widx] += 1
-        win_cum_pnl[widx] += float(t["effPnl"])
-        if t["effPnl"] > 0:
-            win_cum_wins[widx] += 1
-        else:
-            win_cum_losses[widx] += 1
 
     X = np.asarray(feature_rows, dtype=np.float32)
     y = np.asarray(labels, dtype=np.int32)
