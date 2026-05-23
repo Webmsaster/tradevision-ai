@@ -1444,7 +1444,12 @@ export function detectLiveSignalsV231(
         atrSeries.length >= 2 ? atrSeries[atrSeries.length - 2] : undefined;
       const cur = atrSeries[atrSeries.length - 1];
       const atrVal = prev ?? cur;
-      if (atrVal !== null && atrVal !== undefined) {
+      // 2026-05-24 Wave3 HIGH FIX: `null/undefined` check let through NaN
+      // values (which atr() can produce on flat candles or NaN-input feeds).
+      // `Math.max(stopPct, NaN) === NaN` then propagated NaN into stopPct →
+      // MT5 received `stop_loss = NaN`, either crashing the order or
+      // silently sending it with a default stop. Add isFinite guard.
+      if (atrVal !== null && atrVal !== undefined && Number.isFinite(atrVal)) {
         const atrFrac = (CFG.atrStop.stopMult * atrVal) / entryPrice;
         stopPct = Math.max(stopPct, atrFrac);
       }
