@@ -8744,6 +8744,18 @@ const _AMBER_MAX_EXTRA_ASSETS: Daytrade24hAssetCfg[] = [
   tpPct: 0.02,
   holdBars: 240,
 }));
+// 2026-05-23 BNB 18/50 cross-asset filter — mirrors the Rust backtest CLI
+// override (--cross-asset-sym BNBUSDT --cross-asset-fast 18 --cross-asset-slow 50).
+// Both skip flags set → bilateral "any" semantics matching detector_filters.rs:
+// long needs BNB in uptrend, short needs BNB in downtrend, sideways blocks both.
+// Worth 5-10pp vs backtest when wired (was previously dropped on live path).
+const _CROSS_BNB_18_50 = {
+  symbol: "BNBUSDT",
+  emaFastPeriod: 18,
+  emaSlowPeriod: 50,
+  skipShortsIfSecondaryUptrend: true,
+  skipLongsIfSecondaryDowntrend: true,
+};
 export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER,
   assets: [
@@ -8757,6 +8769,7 @@ export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK: FtmoDaytrade24hConfig = {
   ],
   closeAllOnTargetReached: true,
   atrStop: { period: 56, stopMult: 2 },
+  crossAssetFiltersExtra: [_CROSS_BNB_18_50],
 };
 export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_STEP2: FtmoDaytrade24hConfig =
   {
@@ -8775,6 +8788,7 @@ export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_BIDIR: FtmoDaytrade24hConfi
       ...a,
       disableShort: false,
     })),
+    crossAssetFiltersExtra: [_CROSS_BNB_18_50],
   };
 // 2026-05-19 MR variant — same engine stack, but mean-revert signal class.
 // Flips `invertDirection` and `disableShort` off per asset so RSI MR
@@ -8796,6 +8810,7 @@ export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_MR_PASSLOCK: FtmoDaytrade24hConfig =
       cooldownBars: 8,
       sizeMult: 0.5,
     },
+    crossAssetFiltersExtra: [_CROSS_BNB_18_50],
   };
 // 2026-05-13 RUBIN + PASSLOCK — closeAllOnTargetReached. Mirrors engine-rust
 // v5_rubin_passlock().
@@ -8803,6 +8818,7 @@ export const FTMO_DAYTRADE_24H_V5_RUBIN_PASSLOCK: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_RUBIN,
   closeAllOnTargetReached: true,
   atrStop: { period: 56, stopMult: 2 },
+  crossAssetFiltersExtra: [_CROSS_BNB_18_50],
 };
 export const FTMO_DAYTRADE_24H_V5_OBSIDIAN_PASSLOCK: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN,
