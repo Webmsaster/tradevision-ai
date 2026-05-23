@@ -66,8 +66,29 @@ def load_existing(path):
         return []
     try:
         return json.loads(path.read_text())
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        # 2026-05-23 Wave2 fix (B5 LOW): back up corrupt cache before
+        # returning empty. Without this, the next merge would silently
+        # overwrite the file with new data only and the history is gone.
+        try:
+            ts = int(time.time())
+            backup_path = path.with_suffix(path.suffix + f".corrupt.{ts}")
+            path.rename(backup_path)
+            print(f"  [lsr-load] CORRUPT JSON in {path.name} → backed up to "
+                  f"{backup_path.name} ({e})", file=sys.stderr)
+        except OSError:
+            pass
         return []
+
+# 2026-05-23 Wave2 fix (B3 MED): TF-aware rotation cap. The hardcoded magic
+# number 100k assumed 30m period. Switching PERIOD to "5m" would silently
+# truncate to ~347 days. Express cap as years-coverage instead.
+_BARS_PER_DAY = {"5m": 288, "15m": 96, "30m": 48, "1h": 24, "2h": 12, "4h": 6}
+_MAX_YEARS = 6
+
+def _max_records() -> int:
+    bars_per_day = _BARS_PER_DAY.get(PERIOD, 48)
+    return int(bars_per_day * 365 * _MAX_YEARS)
 
 def merge_and_save(path, existing, new_records):
     """Merge by timestamp (newest wins), sort, save."""
@@ -75,7 +96,17 @@ def merge_and_save(path, existing, new_records):
     for r in new_records:
         by_t[r["t"]] = r  # overwrite if same ts (latest from API wins)
     merged = sorted(by_t.values(), key=lambda r: r["t"])
-    path.write_text(json.dumps(merged))
+    # 2026-05-23 Wave2 fix (B2 HIGH): rotation cap. LSR cache had ZERO bound
+    # → daemon-mode growth was linear forever, and full re-read+re-write
+    # every 30min became O(n²) over time.
+    cap = _max_records()
+    if len(merged) > cap:
+        merged = merged[-cap:]
+    # 2026-05-23 Wave2 fix (B6 LOW): atomic write via tmp+rename so a
+    # SIGKILL / power-loss mid-write can't corrupt the file.
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(merged))
+    tmp.replace(path)
     return len(merged), len(new_records)
 
 def collect_once():

@@ -150,7 +150,14 @@ def _write_pause_marker(
             )
             return
         target = state_dir / "bot-controls.json"
-        payload = {
+        # 2026-05-23 Wave2 fix (B3 HOCH): RMW instead of full overwrite. The
+        # previous payload-only write wiped sibling fields the executor and
+        # Telegram bot maintain (orderFailStreak, lastOrderFailError, lastCommand,
+        # etc.). Wave1 added the lock acquisition but kept the overwrite — that
+        # protected the kill flag from being clobbered by the executor's RMW,
+        # but inverted the problem by clobbering everything else WE didn't set.
+        # Read-merge-write now preserves any state we don't explicitly touch.
+        kill_fields = {
             "paused": True,
             "killRequested": not all_closed,
             "killAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -166,12 +173,19 @@ def _write_pause_marker(
         # 2026-05-23 Wave1 audit fix (KRIT): acquire bot-controls.lock so
         # the executor's update_controls() RMW cycle can't read-old + write-back
         # the stale payload AFTER our atomic rename, defeating the pause-marker.
-        # The executor's _file_lock wraps its RMW around the same lock file.
-        # Without this lock, manual /kill could be silently undone by the very
-        # next executor cycle (~30s) — the kill-switch becomes ineffective.
         from process_lock import file_lock as _ctl_lock  # type: ignore
         lock_path = state_dir / "bot-controls.lock"
         with _ctl_lock(lock_path, timeout_sec=10.0):
+            # Read existing controls inside the lock for atomic RMW.
+            existing = {}
+            try:
+                if target.exists():
+                    existing = json.loads(target.read_text(encoding="utf-8"))
+                    if not isinstance(existing, dict):
+                        existing = {}
+            except (OSError, json.JSONDecodeError):
+                existing = {}
+            payload = {**existing, **kill_fields}
             # PID-suffixed tmp avoids race with executor's parallel write_json.
             tmp = target.with_suffix(target.suffix + f".tmp.{os.getpid()}")
             # Use open()+fsync rather than write_text so we durably flush before

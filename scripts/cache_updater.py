@@ -215,6 +215,12 @@ def update_funding_symbol(symbol: str) -> tuple[int, int]:
     for e in new_events:
         by_t[e["t"]] = e
     merged = sorted(by_t.values(), key=lambda c: int(c["t"]))
+    # 2026-05-23 Wave2 fix (B1 HIGH): rotation cap. Funding events fire every
+    # 8h → ~1095/year/symbol × 19 symbols = unbounded growth. JSON re-serialize
+    # cost grows linearly. 50000 records = ~45 years of headroom; well past
+    # any realistic backtest window.
+    if len(merged) > 50000:
+        merged = merged[-50000:]
     atomic_write_json(path, merged)
     print(f"  [{symbol}_funding] +{len(new_events)} events (total={len(merged)})")
     return len(new_events), int(merged[-1]["t"])

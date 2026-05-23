@@ -2622,7 +2622,12 @@ def test_reconcile_missing_positions_logs_offline_close(monkeypatch):
         assert t0["ticket"] == 7777
         assert t0["exit_price"] == 51500.0
         assert t0["profit_usd"] == 150.0
-        assert t0["reason"] == "offline_close"
+        # 2026-05-23 Wave2 fix: reason now maps from MT5 DEAL_REASON to a Rust
+        # ExitReason-known string (tp|stop|manual) so the offline-log file
+        # deserializes correctly. The legacy "offline_close" literal is moved
+        # to `recovery_source` for diagnostics only.
+        assert t0["reason"] in {"tp", "stop", "manual"}
+        assert t0.get("recovery_source") == "offline_reconcile"
 
 
 # Round 58 (Critical Fix #3): reconcile_missing_positions must also pick up

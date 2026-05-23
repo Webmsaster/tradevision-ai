@@ -115,6 +115,27 @@ pub const EXPECTED_FEATURES: &[&str] = &[
     "funding_rate",
 ];
 
+/// 2026-05-23 Wave2 helper: strip a template suffix from a basket symbol.
+/// Order matters: longer suffixes first to prevent `-AMBER_MAX` being
+/// matched by the shorter `-AMBER` rule. Returns the unmodified slice when
+/// nothing matches. Public so `sweep.rs::bare_source()` can reuse it.
+pub fn strip_template_suffix(s: &str) -> &str {
+    for suf in [
+        "-AMBER_MAX",
+        "-AMBER",
+        "-BIDIR",
+        "-SHORTS",
+        "-PYRAMID",
+        "-TREND",
+        "-MR",
+    ] {
+        if let Some(b) = s.strip_suffix(suf) {
+            return b;
+        }
+    }
+    s
+}
+
 impl MlModel {
     pub fn load_from_path(path: &str) -> std::io::Result<Self> {
         let bytes = std::fs::read(path)?;
@@ -221,22 +242,27 @@ impl MlModel {
         if let Some(&id) = self.asset_id_map.get(symbol) {
             return Some(id);
         }
-        // 2026-05-23 BUG FIX (ML audit Round 11): strip ALL template-suffixes,
-        // not just -TREND. Templates v5_amber_max_passlock_bidir/shorts_only/
-        // mr_passlock/hybrid emit asset symbols with -AMBER/-SHORTS/-MR/-BIDIR
-        // suffix. Without normalisation, asset_id lookup fails silently → ML
-        // training-vs-inference asset_id mismatch.
-        let bare = symbol
-            .replace("-TREND", "")
-            .replace("-AMBER", "")
-            .replace("-SHORTS", "")
-            .replace("-MR", "")
-            .replace("-BIDIR", "");
-        if let Some(&id) = self.asset_id_map.get(&bare) {
+        // 2026-05-23 Wave2 fix (HIGH latent + MEDIUM real): suffix-strip helper
+        // replaces broken `.replace()` chain. `.replace()` is substring-based
+        // (e.g. `XMRUSDT`.replace("-MR", "") = `XMRUSDT` is safe today only
+        // because XMR isn't in the basket — but `XYZ-MR-foo`.replace("-MR","")
+        // mutates internal occurrences too). Use `strip_suffix` with
+        // longest-first ordering. Forex pairs (already 6-char *USD) must NOT
+        // get a `USDT` fallback appended — that produces permanent miss
+        // (e.g. `EURUSDUSDT`). Mirror in sweep.rs::bare_source().
+        let bare = strip_template_suffix(symbol);
+        if let Some(&id) = self.asset_id_map.get(bare) {
             return Some(id);
         }
-        let with_usdt = format!("{bare}USDT");
-        self.asset_id_map.get(&with_usdt).copied()
+        // Skip USDT-suffix fallback for forex tickers (already 6-char USD).
+        let looks_forex = bare.len() == 6 && bare.ends_with("USD");
+        if !looks_forex {
+            let with_usdt = format!("{bare}USDT");
+            if let Some(&id) = self.asset_id_map.get(&with_usdt) {
+                return Some(id);
+            }
+        }
+        None
     }
 
     /// Average P(win=1) across all trees in the forest.

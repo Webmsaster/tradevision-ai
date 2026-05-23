@@ -132,9 +132,25 @@ def tg_send(text: str, critical: bool = False) -> bool:
             print(f"[telegram] auth/bot error {status}: {msg}")
             _enter_suppression(float("inf"), f"HTTP {status}")
         elif status == 429 or 500 <= status < 600:
-            # Rate-limited or server error → 60s cooldown.
-            print(f"[telegram] backoff {status}: {msg}")
-            _enter_suppression(60.0, f"HTTP {status}")
+            # 2026-05-23 Wave2 fix (BUG-1 HIGH): honor `parameters.retry_after`
+            # from the Telegram 429 response body. Previously hardcoded 60s
+            # could be SHORTER than the server-requested cooldown → repeat-429
+            # ban-spam loop. Clamp to [1, 600] seconds. 5xx still gets the
+            # 60s default since there's no retry-after for server errors.
+            cooldown = 60.0
+            if status == 429:
+                try:
+                    body_bytes = e.read() if hasattr(e, "read") else b""
+                    if body_bytes:
+                        body = json.loads(body_bytes.decode("utf-8", errors="ignore"))
+                        params = body.get("parameters") or {}
+                        ra = params.get("retry_after")
+                        if isinstance(ra, (int, float)) and ra > 0:
+                            cooldown = max(1.0, min(600.0, float(ra)))
+                except (json.JSONDecodeError, ValueError, OSError):
+                    pass
+            print(f"[telegram] backoff {status}: {msg} (cooldown {cooldown:.0f}s)")
+            _enter_suppression(cooldown, f"HTTP {status}")
         else:
             print(f"[telegram] send error {status}: {msg}")
         return False

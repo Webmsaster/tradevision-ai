@@ -373,6 +373,15 @@ SYMBOL_MAP = {
     "XRPUSDT": os.environ.get("FTMO_XRP_SYMBOL", "XRPUSD"),
     # FTMO-spezifisch: AAVUSD (ohne E) — nicht AAVEUSD wie bei Binance.
     "AAVEUSDT": os.environ.get("FTMO_AAVE_SYMBOL", "AAVUSD"),
+    # 2026-05-23 Wave2 fix (MED — defensive): V5_TITANIUM/OBSIDIAN baskets
+    # depend on these 4 tickers and were previously relying on the
+    # USDT→USD fallback heuristic + broker symbol_info() validation. If FTMO
+    # ever rebrands one (e.g. SAND→SANDBOX) the signal silently skips.
+    # Pin explicit mapping; env overrides remain for per-broker tweaks.
+    "INJUSDT": os.environ.get("FTMO_INJ_SYMBOL", "INJUSD"),
+    "RUNEUSDT": os.environ.get("FTMO_RUNE_SYMBOL", "RUNUSD"),
+    "SANDUSDT": os.environ.get("FTMO_SAND_SYMBOL", "SANDUSD"),
+    "ARBUSDT": os.environ.get("FTMO_ARB_SYMBOL", "ARBUSD"),
     # 2026-05-23 Wave2 fix: V5_FOREX_MR_PASSLOCK template emits 6 forex
     # symbols (EURUSD/GBPUSD/USDJPY/USDCAD/AUDUSD/NZDUSD). Without explicit
     # mapping the resolve fell through to USDT-stripping logic that turned
@@ -416,27 +425,48 @@ SYMBOL_MAP = {
 # Deterministic across process restarts (never uses Python's randomised
 # `hash()` — PYTHONHASHSEED is per-process and would orphan yesterday's
 # tickets on a restart).
+def _tf_magic_offset() -> int:
+    """2026-05-23 Wave2 fix (CRITICAL — multi-TF collision audit): mix the
+    FTMO_TF into the magic so two strategies on the SAME MT5 login (same
+    FTMO_ACCOUNT_ID, different FTMO_TF) get distinct MAGICs. Previously, both
+    strategies shared MAGIC → magic-filtered iteration in close-all / SL-
+    management / reconcile treated each other's positions as their own.
+    Each TF gets a fixed 1-of-6 slot inside the existing 10-wide account
+    slot, leaving slot 7 free for PING_MAGIC (= MAGIC + 7 across all TFs).
+    """
+    tf = os.environ.get("FTMO_TF", "").strip()
+    if not tf:
+        return 0
+    import hashlib
+    digest = hashlib.sha256(tf.encode("utf-8")).hexdigest()[:8]
+    # Slots 0..5 reserved for TF disambiguation; 6 is unused; 7 is PING_MAGIC.
+    return int(digest, 16) % 6
+
+
 def _compute_magic_id() -> int:
-    """Derive a per-account magic number from FTMO_ACCOUNT_ID.
+    """Derive a per-account magic number from FTMO_ACCOUNT_ID + FTMO_TF.
 
     Returns 231 when FTMO_ACCOUNT_ID is unset (backwards-compatible base).
-    Numeric account_id: 231 + 10 + (num * 10) → slots are 10-wide, no
-    collisions between adjacent accounts even with PING_MAGIC = MAGIC + 7.
+    Numeric account_id: 231 + 10 + (num * 10) + tf_offset(0..5) → slots are
+    10-wide, PING_MAGIC = MAGIC + 7 still safe across any TF combination.
     Non-numeric account_id: 231 + 11000 + (sha256[:8] % 9000) →
     range [11231, 20230], collision prob < 0.6% per 100 IDs.
+    Multi-TF on non-numeric account also disambiguated via tf_offset.
     """
     base = 231
     account_id = os.environ.get("FTMO_ACCOUNT_ID", "").strip()
+    tf_off = _tf_magic_offset()
     if not account_id:
-        return base
+        return base + tf_off
     # Numeric path — preferred, NO collisions.
     try:
         num = int(account_id)
         if num < 0:
             raise ValueError("negative account_id")
         # base + 10 + num*10 → account 1=251, account 2=261, ...
-        # PING_MAGIC = MAGIC + 7 → 258, 268, ... never overlaps next slot.
-        return base + 10 + (num * 10)
+        # + tf_off (0..5) → distinct MAGIC per FTMO_TF on the same login.
+        # PING_MAGIC = MAGIC + 7 stays within slot regardless of tf_off.
+        return base + 10 + (num * 10) + tf_off
     except ValueError:
         # 2026-05-16 Round 9 MED FIX (ftmo_executor agent): non-numeric
         # fallback range [1231, 10230] previously overlapped numeric range
@@ -448,7 +478,9 @@ def _compute_magic_id() -> int:
 
         digest = hashlib.sha256(account_id.encode("utf-8")).hexdigest()[:8]
         offset = int(digest, 16) % 9000
-        return base + 11000 + offset  # range [11231, 20230]
+        # Mix tf_off into the LOWEST decade so the [11231,20230] range still
+        # disambiguates per-TF without leaving the non-numeric band.
+        return base + 11000 + offset + tf_off  # range [11231, 20235]
 
 
 # PING_MAGIC offset chosen as 7 (not 1) so that adjacent numeric accounts
@@ -3508,6 +3540,35 @@ def _process_signals_unlocked(
     # markers in place so boot-reconcile can detect the orphan broker fill.
     placed_markers: list[Path] = []
     for i, sig in enumerate(pending):
+        # 2026-05-23 Wave2 fix (KRIT — /pause race): main-loop pre-gate only
+        # catches pause BEFORE the cycle starts. A multi-signal batch can take
+        # 30s+ to fire (5-30s per place_market_order). Without this check, a
+        # /pause landed mid-batch would still execute every remaining order.
+        # Re-check AFTER first iteration (i > 0) — the pre-gate handles i=0;
+        # checking again on i=0 would create a double-evaluation that breaks
+        # tests using the default state dir's bot-controls.json.
+        if i > 0 and is_paused():
+            log_event("signals_paused_mid_batch", remaining=len(pending) - i)
+            # Re-queue the remaining un-placed signals so they're not lost.
+            pending_rest = pending[i:]
+            if pending_rest:
+                try:
+                    existing_pending = read_json(PENDING_PATH, {"signals": []})
+                    existing_pending["signals"] = existing_pending.get("signals", []) + pending_rest
+                    write_json(PENDING_PATH, existing_pending)
+                except Exception as e:
+                    log_event("signals_paused_requeue_failed", error=str(e), level="warn")
+            break
+        # 2026-05-23 Wave2 fix (KRIT-1): emit a `signal_received` event so
+        # health_monitor.check_real_liveness can detect the signals-but-zero-
+        # orders cascade. Was missing → the entire 24h-rejection-cascade
+        # branch was dead code.
+        log_event(
+            "signal_received",
+            asset=sig.get("assetSymbol"),
+            direction=sig.get("direction"),
+            source=sig.get("sourceSymbol"),
+        )
         # BUGFIX 2026-04-28 (Round 24): validate required fields up-front to
         # prevent KeyError crashes from malformed signals (schema drift, manual
         # JSON edits, corruption). Skip + log signal if any required field missing.
@@ -4743,9 +4804,22 @@ def _apply_time_exit(pos: dict, now_ms: int) -> bool:
 
 
 def _signal_marker_id(sig: dict) -> str:
-    """Deterministic ID for write-ahead log: same signal → same ID."""
+    """Deterministic ID for write-ahead log: same signal → same ID.
+
+    2026-05-23 Wave2 fix (HIGH #1): collision-safe across multi-strategy
+    setups. Previous key was `(assetSymbol, signalBarClose, direction)`.
+    Two strategies (e.g. AMBER + TITANIUM) running in the same process and
+    emitting `BTC-TREND long` at the same close produced IDENTICAL marker
+    paths → silent overwrite of one of the two WAL records. Adding
+    `sourceSymbol` + the optional `strategyTag`/`templateName` field
+    disambiguates without breaking single-strategy idempotency.
+    """
     import hashlib
-    key = f"{sig.get('assetSymbol','')}|{sig.get('signalBarClose','')}|{sig.get('direction','')}"
+    tag = sig.get("strategyTag") or sig.get("templateName") or ""
+    key = (
+        f"{sig.get('assetSymbol','')}|{sig.get('sourceSymbol','')}|"
+        f"{sig.get('signalBarClose','')}|{sig.get('direction','')}|{tag}"
+    )
     return hashlib.sha1(key.encode()).hexdigest()[:16]
 
 
@@ -5859,8 +5933,10 @@ def reconcile_missing_positions() -> None:
         return
 
     log_event("reconcile_missing_start", count=len(missing))
-    # R57 audit fix: tz-aware UTC range for history_deals_get (broker-TZ safe).
-    since = datetime.now(timezone.utc) - timedelta(days=7)
+    # 2026-05-23 Wave2 fix (KRIT-2): widen lookback 7d → 14d to match the
+    # WAL-marker reconcile path (reconcile_pending_order_markers) and survive
+    # multi-day VPS outages that drove the Wave1 hunt.
+    since = datetime.now(timezone.utc) - timedelta(days=14)
     until = datetime.now(timezone.utc)
     reconciled: list[dict] = []
     unreconciled: list[dict] = []
@@ -5870,7 +5946,18 @@ def reconcile_missing_positions() -> None:
         if not ticket:
             continue
         try:
-            deals = mt5.history_deals_get(since, until) or []
+            # 2026-05-23 Wave2 fix (KRIT-3): query MT5 with `position=ticket`
+            # instead of pulling all-deals-in-range and filtering in Python.
+            # Avoids ~100k deal hard-limit + O(N²) cost across all missing
+            # tickets. Fall back to time-range query if the broker MT5 build
+            # lacks the kwarg (rare).
+            deals = None
+            try:
+                deals = mt5.history_deals_get(position=ticket) or []
+            except TypeError:
+                deals = mt5.history_deals_get(since, until) or []
+            if not deals:
+                deals = mt5.history_deals_get(since, until) or []
             # Filter to this position's closing deal. MT5 deal has
             # `position_id` linking to the original open ticket; the
             # closing deal has entry in (DEAL_ENTRY_OUT, DEAL_ENTRY_INOUT,
@@ -5902,7 +5989,27 @@ def reconcile_missing_positions() -> None:
             close_deals.sort(key=lambda d: getattr(d, "time", 0))
             final = close_deals[-1]
             exit_price = float(getattr(final, "price", 0.0))
-            exit_time_ms = int(getattr(final, "time", 0)) * 1000
+            # 2026-05-23 Wave2 fix (KRIT-1): Rust ExitReason enum only accepts
+            # tp|stop|time|manual (lowercase serde). Wave1 wrote "offline_close"
+            # which made the Rust deserializer reject the WHOLE offline-log
+            # file → all recovered trades silently lost. Map MT5 DEAL_REASON
+            # to a Rust-known string; fall back to "manual" for everything else.
+            mt5_reason = getattr(final, "reason", None)
+            REASON_SL = getattr(mt5, "DEAL_REASON_SL", 4)
+            REASON_TP = getattr(mt5, "DEAL_REASON_TP", 5)
+            REASON_SO = getattr(mt5, "DEAL_REASON_SO", 6)  # Stop-Out (margin)
+            if mt5_reason == REASON_TP:
+                mapped_reason = "tp"
+            elif mt5_reason in (REASON_SL, REASON_SO):
+                mapped_reason = "stop"
+            else:
+                mapped_reason = "manual"
+            # Prefer time_msc (millisecond precision) when MT5 provides it.
+            time_msc = getattr(final, "time_msc", None)
+            if isinstance(time_msc, (int, float)) and time_msc > 0:
+                exit_time_ms = int(time_msc)
+            else:
+                exit_time_ms = int(getattr(final, "time", 0)) * 1000
             profit = float(getattr(final, "profit", 0.0))
             reconciled.append({
                 "ticket": ticket,
@@ -5913,7 +6020,8 @@ def reconcile_missing_positions() -> None:
                 "exit_time_ms": exit_time_ms,
                 "profit_usd": profit,
                 "reconciled_at": datetime.now(timezone.utc).isoformat(),
-                "reason": "offline_close",
+                "reason": mapped_reason,
+                "recovery_source": "offline_reconcile",  # diagnostic-only
             })
             log_event(
                 "reconcile_missing_position",

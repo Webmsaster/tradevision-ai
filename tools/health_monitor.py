@@ -284,26 +284,62 @@ def check_real_liveness() -> str | None:
         ts = e.get("ts") or e.get("timestamp")
         if ev == "mt5_disconnected":
             last_disconnect_ts = ts
-        elif ev in ("mt5_connected", "mt5_ensure_connected_ok"):
+        # 2026-05-23 Wave2 fix (KRIT-2): add "mt5_reconnected" to the
+        # accepted set. The Python executor's reconnect path emits exactly
+        # that string (ftmo_executor.py:1471) — without it, a real
+        # disconnect→reconnect cycle produced a false-positive "no reconnect
+        # since" alert.
+        elif ev in ("mt5_connected", "mt5_ensure_connected_ok", "mt5_reconnected"):
             last_reconnect_ts = ts
-    if last_disconnect_ts and (
-        last_reconnect_ts is None or last_reconnect_ts < last_disconnect_ts
-    ):
+    # 2026-05-23 Wave2 fix (HIGH-3): parse ISO timestamps before comparison.
+    # Lexicographic compare breaks across mixed offsets (`+00:00` vs `Z`).
+    def _parse_iso(ts: str | None) -> float | None:
+        if not isinstance(ts, str):
+            return None
+        try:
+            from datetime import datetime as _dt
+            return _dt.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+        except (ValueError, TypeError):
+            return None
+    ld = _parse_iso(last_disconnect_ts)
+    lr = _parse_iso(last_reconnect_ts)
+    if ld is not None and (lr is None or lr < ld):
         return f"MT5 disconnected at {last_disconnect_ts} — no reconnect since"
     # (b) Signal-rejection cascade — 24h with signals but zero orders placed.
+    # 2026-05-23 Wave2 fix (KRIT-1): the executor never emitted
+    # `signal_received`/`signal_validated`/`signal_passed_gates` — those
+    # event names were aspirational. The real intake/validation events
+    # are: signal_invalid_schema (rejected), signal_missing_ts,
+    # signal_stale_drop, signal_future_drop, signals_paused_mid_batch,
+    # signals_skipped_post_target. Accept ANY of these as "signal-was-seen".
     now = time.time()
     twentyfour_h = 24 * 3600
     signals = [
         e for e in events
         if (e.get("event") or e.get("ev")) in (
-            "signal_received", "signal_validated", "signal_passed_gates"
+            "signal_received", "signal_validated", "signal_passed_gates",
+            "signal_invalid_schema", "signal_missing_ts",
+            "signal_stale_drop", "signal_future_drop",
         )
     ]
     orders = [
         e for e in events
         if (e.get("event") or e.get("ev")) in ("order_placed", "order_filled")
     ]
-    if len(signals) >= 3 and len(orders) == 0:
+    # 2026-05-23 Wave2 fix (MEDIUM-4): skip the cascade check entirely when
+    # the bot is in a legitimate idle window (post-target pause, news
+    # blackout). Otherwise a 12h news window with 3 stale rejected signals
+    # = false alarm.
+    legitimate_idle = any(
+        (e.get("event") or e.get("ev")) in (
+            "signals_skipped_post_target", "news_blackout_block",
+            "signals_paused_mid_batch",
+        )
+        for e in events
+    )
+    # 2026-05-23 Wave2 fix (MEDIUM-5): lower threshold from 3→1 so low-volume
+    # days with a single rejected signal can still trigger the cascade alert.
+    if not legitimate_idle and len(signals) >= 1 and len(orders) == 0:
         # No fresh orders despite signals — try to find oldest signal age.
         sig_ages = []
         for e in signals:

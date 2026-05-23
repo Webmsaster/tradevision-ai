@@ -394,11 +394,16 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                     arr.iter().take(end).map(|c| c.close).collect()
                 })
                 .unwrap_or_default();
-            // Compute 3-way trend (same logic as cross_asset_filter_allows)
-            let fast = crate::indicators::ema(&cross_closes, filter.fast_period as usize);
-            let slow = crate::indicators::ema(&cross_closes, filter.slow_period as usize);
-            let last_fast = fast.last().copied().flatten();
-            let last_slow = slow.last().copied().flatten();
+            // Compute 3-way trend (same logic as cross_asset_filter_allows).
+            // 2026-05-23 Wave2 fix (BUG-1 HIGH): hoist EMA computation. Previous
+            // impl computed EMA twice — once for current-bar `trend` AND again
+            // inside `lookback_ok` block (L428-429). 2× allocation per bar AND
+            // a code-rot risk (drift between the two calls would silently make
+            // `trend` and `trend_b[0]` disagree). Compute ONCE up front.
+            let fast_series = crate::indicators::ema(&cross_closes, filter.fast_period as usize);
+            let slow_series = crate::indicators::ema(&cross_closes, filter.slow_period as usize);
+            let last_fast = fast_series.last().copied().flatten();
+            let last_slow = slow_series.last().copied().flatten();
             let last_close = cross_closes.last().copied();
             let trend = match (last_fast, last_slow, last_close) {
                 (Some(f), Some(s), Some(c)) if c > f && f > s => {
@@ -415,18 +420,12 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
             // whipsaw-kills on bar-level BNB noise.
             //
             // 2026-05-23 Round 11.3 BUG FIX (Wave1 agent #2 BUG-2 HIGH):
-            // Previous impl re-computed EMA from scratch on a truncated slice
-            // per-bar — EMA re-warms each call so values at the same logical
-            // index were NOT comparable across iterations (different warmup
-            // depth → different seed → different value). Compute full EMA
-            // series ONCE then index into it for stable comparison.
+            // Reuse the same EMA series computed above — no re-computation.
             if let Some(t) = trend {
                 let stable_bars: usize = 12;
                 let lookback_ok = cross_closes.len() >= stable_bars + filter.slow_period as usize;
                 let mut stable_opposite = lookback_ok;
                 if lookback_ok {
-                    let fast_series = crate::indicators::ema(&cross_closes, filter.fast_period as usize);
-                    let slow_series = crate::indicators::ema(&cross_closes, filter.slow_period as usize);
                     let n = cross_closes.len();
                     for back in 1..=stable_bars {
                         let idx_back = n - 1 - back;

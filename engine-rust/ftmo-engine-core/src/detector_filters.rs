@@ -181,8 +181,18 @@ pub fn cross_asset_filter_allows(
     side: PositionSide,
     cross_closes: &[f64],
 ) -> bool {
+    // 2026-05-23 Wave2 fix (KRIT — semantic contradiction with the EMA-warmup
+    // gate at L198-200). Previously: empty `cross_closes` → return `true` =
+    // "no data, don't gate". But the warmup branch below already returns
+    // `false` on incomplete EMAs. So a missing/late-loaded driver symbol
+    // (e.g. DXY before its first candle aligns) silently let EVERY signal
+    // through, while a 1-bar slice (also "no usable data") blocked them all.
+    // Asymmetric → exploitable gate-bypass that inflates measured pass-rates.
+    // Fix: empty feed is also "no usable data" → fail closed like the warmup
+    // branch. Production runs should never operate without a configured
+    // cross-asset feed; if `cross_asset_filter` is set, the feed MUST be wired.
     if cross_closes.is_empty() {
-        return true; // no data = don't gate
+        return false;
     }
     // 2026-05-13 Codex Round 7 #B3 FIX: TS source `ftmoDaytrade24h.ts:4282`
     // uses 3-way trend test (price > fast AND fast > slow). Rust previously

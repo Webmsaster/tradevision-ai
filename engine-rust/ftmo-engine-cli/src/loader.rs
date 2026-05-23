@@ -9,9 +9,55 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use ftmo_engine_core::Candle;
 
+/// 2026-05-23 Wave2 helper. Inspects `path` mtime and:
+/// - WARN-only when age >= ENGINE_CACHE_WARN_DAYS (default 7);
+/// - HARD-FAIL (anyhow Err on caller) when ENGINE_CACHE_STRICT=1 AND
+///   age >= ENGINE_CACHE_STRICT_DAYS (default 14).
+/// Silent no-op when path mtime is unreadable or env vars unset.
+fn cache_age_check(path: &Path) {
+    let warn_days: u64 = std::env::var("ENGINE_CACHE_WARN_DAYS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(7);
+    let strict = std::env::var("ENGINE_CACHE_STRICT").unwrap_or_default() == "1";
+    let strict_days: u64 = std::env::var("ENGINE_CACHE_STRICT_DAYS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(14);
+    if let Ok(meta) = std::fs::metadata(path) {
+        if let Ok(modified) = meta.modified() {
+            if let Ok(age) = std::time::SystemTime::now().duration_since(modified) {
+                let age_days = age.as_secs() / 86_400;
+                if strict && age_days >= strict_days {
+                    eprintln!(
+                        "[loader] FATAL: cache {} is {}d old (>= ENGINE_CACHE_STRICT_DAYS={}). \
+                         Run scripts/cache_updater.py before re-running.",
+                        path.display(), age_days, strict_days
+                    );
+                    std::process::exit(2);
+                }
+                if age_days >= warn_days {
+                    eprintln!(
+                        "[loader] WARN: cache {} is {}d old (>= {}d). Consider rerunning \
+                         scripts/cache_updater.py before trusting these results.",
+                        path.display(), age_days, warn_days
+                    );
+                }
+            }
+        }
+    }
+}
+
+
 pub fn load_candles_json(path: &Path) -> Result<Vec<Candle>> {
     let f = File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let reader = BufReader::new(f);
+    // 2026-05-23 Wave2 fix (KRIT — Champion-Debunk #5 repeats): cache-age
+    // gate. Without this an N-day-stale cache silently feeds backtests, which
+    // is exactly the failure mode that produced the 2026-05-05 stale-cache
+    // disaster (+17pp inflated R28_V6 claim). WARN at 7d, HARD-FAIL when
+    // `ENGINE_CACHE_STRICT=1` is set in env (used in CI + overnight hunters).
+    cache_age_check(path);
     let mut candles: Vec<Candle> = serde_json::from_reader(reader)
         .with_context(|| format!("parsing JSON candles in {}", path.display()))?;
     // 2026-05-13 Codex Round 8 HIGH FIX: filter non-final tail bars. 9/24
@@ -162,6 +208,9 @@ pub fn load_funding(dir: &Path, symbol: &str) -> Result<Option<Vec<FundingPt>>> 
     if !p.exists() {
         return Ok(None);
     }
+    // 2026-05-23 Wave2 fix: gate funding cache age too (Champion-Debunk #5
+    // root cause was stale funding + stale candles combined).
+    cache_age_check(&p);
     let f = File::open(&p).with_context(|| format!("opening {}", p.display()))?;
     let pts: Vec<FundingPt> = serde_json::from_reader(BufReader::new(f))
         .with_context(|| format!("parsing funding JSON in {}", p.display()))?;

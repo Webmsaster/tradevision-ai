@@ -142,6 +142,35 @@ impl StablecoinFlowParams {
     pub fn default_30m_crypto() -> Self {
         Self::default()
     }
+
+    /// 2026-05-23 Wave2 fix (KRIT — Daily-TF blow-up): TF-aware defaults.
+    /// The `Default` impl bakes in `publishing_lag_bars: 48` assuming a 30m
+    /// feed (= 1 day lag). On a DAILY bar feed (e.g. forex-MR template),
+    /// `bars_per_day = 1` → 48 bars = 48 *days* of lag, plus the z-window
+    /// 30-day samples become 48-bar = 48-DAY samples covering ~2.5 months
+    /// instead of 30 days. Use this constructor when feeding daily candles.
+    pub fn default_daily() -> Self {
+        Self {
+            publishing_lag_bars: 1, // 1 daily bar = 1 day lag
+            cooldown_bars: 1,
+            ..Self::default()
+        }
+    }
+
+    /// 2026-05-23 Wave2 helper: derive a TF-aware default from explicit
+    /// `bars_per_day`. Callers in sweep.rs already know the bar duration
+    /// (via `--timeframe`); this avoids re-deriving by inspection. Daily
+    /// (bars_per_day == 1) maps to `default_daily()`; everything else uses
+    /// the legacy 30m-tuned defaults scaled by bars_per_day for the lag.
+    pub fn default_for_bars_per_day(bars_per_day: usize) -> Self {
+        if bars_per_day <= 1 {
+            return Self::default_daily();
+        }
+        let mut p = Self::default();
+        // 1 day publishing lag, expressed in bars.
+        p.publishing_lag_bars = bars_per_day;
+        p
+    }
 }
 
 /// Compute a directional macro-regime vote from the aggregated USDT supply
