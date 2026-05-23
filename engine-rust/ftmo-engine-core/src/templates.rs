@@ -80,9 +80,16 @@ const V5_OBSIDIAN_BASKET: &[&str] = &[
 /// V2→V3→V4→V5→QUARTZ→QUARTZ_LITE→R28_V4→R28_V6) carries the same fixed
 /// per-asset stack:
 ///
-///   costBp=30, slippageBp=8, swapBpPerDay=4
 ///   triggerBars=1, invertDirection=true, disableShort=true
 ///   stopPct=0.05, tpPct=0.07 (overridden later by R28_V6 multipliers)
+///
+/// 2026-05-23 NOTE: per-asset cost scaffolding (`cost_bp_for` etc.) added
+/// then reverted in same session — A/B vs uniform 30/8/4 measured -3.24pp
+/// on V5_AMBER_MAX_PASSLOCK P1 (49.07% vs 52.31%). Net regression because
+/// alts dominate trade count and got HIGHER cost (35 vs 30 bp). Per-asset
+/// lookup remains as helpers below but is bypassed — see uniform `make_assets`
+/// risk_frac arg. Re-enable only after live drift-monitor data calibrates
+/// real costs. Source: prior agent's Scenario B "REALISTIC mid".
 ///
 /// Pre-2026-05-09 the Rust port set `invert_direction=false` and left
 /// costs at None, which made the engine reproduce the *wrong* strategy
@@ -116,6 +123,36 @@ fn make_assets(symbols: &[&str], risk_frac: f64) -> Vec<AssetConfig> {
             min_funding_for_short: None,
         })
         .collect()
+}
+
+/// Per-asset round-trip cost in basis points (commission + spread).
+/// Source: `scripts/ftmoRealCostsResearch.test.ts` Scenario B (mid-realistic).
+/// FTMO commission = 6.5 bp RT (0.0325% × 2). Spread varies per asset.
+fn cost_bp_for(symbol: &str) -> f64 {
+    match symbol {
+        "BTC-TREND" => 15.0,
+        "ETH-TREND" => 25.0,
+        // alts: SOL/AVAX/XRP/ADA/LTC/BCH/BNB/AAVE/LINK/DOT/UNI/ATOM/ALGO/NEAR/ARB/TRX/ETC/DOGE/RUNE/SAND/INJ
+        _ => 35.0,
+    }
+}
+
+/// Per-asset slippage in basis points per fill (estimate; live-only).
+fn slippage_bp_for(symbol: &str) -> f64 {
+    match symbol {
+        "BTC-TREND" => 10.0,
+        "ETH-TREND" => 10.0,
+        _ => 12.0,
+    }
+}
+
+/// Per-asset overnight swap in basis points per day held.
+fn swap_bp_per_day_for(symbol: &str) -> f64 {
+    match symbol {
+        "BTC-TREND" => 5.0,
+        "ETH-TREND" => 5.0,
+        _ => 7.0,
+    }
 }
 
 /// Per-asset tp_pct overrides for the R28_V6 family (from
@@ -542,6 +579,153 @@ pub fn v5_amber_max_passlock_bidir() -> EngineConfig {
     for asset in cfg.assets.iter_mut() {
         asset.disable_short = false;
     }
+    cfg
+}
+
+/// 2026-05-23 V5_FOREX_MR_PASSLOCK — Bollinger-band mean-reversion on Forex
+/// majors (EURUSD/GBPUSD/USDJPY/USDCAD/AUDUSD/NZDUSD). Cross-asset-class
+/// diversification candidate vs crypto stack (corr ≈ 0 with crypto-trend).
+///
+/// Daily-tuned params (10-bar BB, cooldown 2d, 7-period RSI) — defaults in
+/// signals_forex_mr.rs are 30m-zugeschnitten and would yield max 2-3 trades
+/// per 30d-window on daily bars. CLI override via `--mr-period/--mr-cooldown`
+/// at sweep-time (signals_forex_mr.rs:38 reads from cfg.tp_pct/stop_pct).
+///
+/// USDJPY + USDCAD have `invert_direction: true` (reverse-MR character).
+/// liveCaps 0.05/0.4 inherited from PASSLOCK_DEFAULT. PASSLOCK active.
+pub fn v5_forex_mr_passlock() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock();
+    cfg.label = "V5_FOREX_MR_PASSLOCK".into();
+    cfg.assets = vec![
+        AssetConfig {
+            symbol: "EURUSD-MR".into(),
+            source_symbol: Some("EURUSD".into()),
+            tp_pct: Some(0.015),
+            stop_pct: Some(0.012),
+            risk_frac: 0.4,
+            invert_direction: false,
+            disable_short: false,
+            disable_long: false,
+            trigger_bars: Some(1),
+            cost_bp: Some(2.0),
+            slippage_bp: Some(1.0),
+            swap_bp_per_day: Some(1.0),
+            ..AssetConfig::default()
+        },
+        AssetConfig {
+            symbol: "GBPUSD-MR".into(),
+            source_symbol: Some("GBPUSD".into()),
+            tp_pct: Some(0.018),
+            stop_pct: Some(0.014),
+            risk_frac: 0.4,
+            invert_direction: false,
+            disable_short: false,
+            disable_long: false,
+            trigger_bars: Some(1),
+            cost_bp: Some(2.0),
+            slippage_bp: Some(1.0),
+            swap_bp_per_day: Some(1.0),
+            ..AssetConfig::default()
+        },
+        AssetConfig {
+            symbol: "USDJPY-MR".into(),
+            source_symbol: Some("USDJPY".into()),
+            tp_pct: Some(0.020),
+            stop_pct: Some(0.015),
+            risk_frac: 0.4,
+            invert_direction: true,
+            disable_short: false,
+            disable_long: false,
+            trigger_bars: Some(1),
+            cost_bp: Some(2.0),
+            slippage_bp: Some(1.0),
+            swap_bp_per_day: Some(1.5),
+            ..AssetConfig::default()
+        },
+        AssetConfig {
+            symbol: "USDCAD-MR".into(),
+            source_symbol: Some("USDCAD".into()),
+            tp_pct: Some(0.018),
+            stop_pct: Some(0.014),
+            risk_frac: 0.4,
+            invert_direction: true,
+            disable_short: false,
+            disable_long: false,
+            trigger_bars: Some(1),
+            cost_bp: Some(2.0),
+            slippage_bp: Some(1.0),
+            swap_bp_per_day: Some(1.0),
+            ..AssetConfig::default()
+        },
+        AssetConfig {
+            symbol: "AUDUSD-MR".into(),
+            source_symbol: Some("AUDUSD".into()),
+            tp_pct: Some(0.018),
+            stop_pct: Some(0.014),
+            risk_frac: 0.4,
+            invert_direction: false,
+            disable_short: false,
+            disable_long: false,
+            trigger_bars: Some(1),
+            cost_bp: Some(2.0),
+            slippage_bp: Some(1.0),
+            swap_bp_per_day: Some(1.0),
+            ..AssetConfig::default()
+        },
+        AssetConfig {
+            symbol: "NZDUSD-MR".into(),
+            source_symbol: Some("NZDUSD".into()),
+            tp_pct: Some(0.020),
+            stop_pct: Some(0.015),
+            risk_frac: 0.4,
+            invert_direction: false,
+            disable_short: false,
+            disable_long: false,
+            trigger_bars: Some(1),
+            cost_bp: Some(2.0),
+            slippage_bp: Some(1.0),
+            swap_bp_per_day: Some(1.0),
+            ..AssetConfig::default()
+        },
+    ];
+    cfg.invert_direction = false;
+    cfg.bar_minutes = 1440; // daily
+    cfg.hold_bars = 10; // 10 days max hold
+    cfg.allowed_hours_utc = None; // forex 24/5
+    cfg.mean_reversion_source = Some(crate::config::MeanReversionSource {
+        period: 10,
+        oversold: 20.0,
+        overbought: 80.0,
+        cooldown_bars: 2,
+        size_mult: 0.5,
+    });
+    cfg
+}
+
+/// 2026-05-23 V5_AMBER_MAX_PASSLOCK_SHORTS_ONLY — short-only variant
+/// of V5_AMBER_MAX_PASSLOCK. Hypothesis: AMBER trades long-pullback-recovery
+/// (invert_direction=true → engine longs when voters fire SHORT, in bearish
+/// windows). BIDIR opens both sides. A pure SHORTS-only template removes
+/// invert and only allows SHORT trades — projected corr -0.05 to -0.15 with
+/// AMBER (Stack-5 uplift +4.5 to +5.5pp honest based on n=997 sister sweep).
+///
+/// Changes vs `v5_amber_max_passlock()`:
+///   - per-asset `invert_direction: false`  (trade native voter direction)
+///   - per-asset `disable_long: true`       (block longs)
+///   - per-asset `disable_short: false`     (allow shorts)
+///   - cfg `invert_direction: false`        (engine-level fallback)
+///
+/// All other AMBER_MAX stack (basket, per-asset TP, PASSLOCK, mct=10, hours,
+/// risk caps, voters) is preserved so the only experimental variable is direction.
+pub fn v5_amber_max_passlock_shorts_only() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_SHORTS_ONLY".into();
+    for asset in cfg.assets.iter_mut() {
+        asset.invert_direction = false;
+        asset.disable_long = true;
+        asset.disable_short = false;
+    }
+    cfg.invert_direction = false;
     cfg
 }
 
@@ -1257,6 +1441,8 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-amber-max-passlock" => v5_amber_max_passlock(),
         "2h-trend-v5-amber-max-passlock-step2" => v5_amber_max_passlock_step2(),
         "2h-trend-v5-amber-max-passlock-bidir" => v5_amber_max_passlock_bidir(),
+        "2h-trend-v5-amber-max-passlock-shorts-only" => v5_amber_max_passlock_shorts_only(),
+        "v5-forex-mr-passlock" => v5_forex_mr_passlock(),
         "2h-trend-v5-amber-max-passlock-mptp-v04a" => v5_amber_max_passlock_mptp_v04a(),
         "2h-trend-v5-amber-max-passlock-sharpe-tight" => v5_amber_max_passlock_sharpe_tight(),
         "2h-trend-v5-amber-max-mr-passlock" => v5_amber_max_mr_passlock(),
@@ -1304,6 +1490,7 @@ pub fn known_selectors() -> &'static [&'static str] {
         "2h-trend-v5-amber-max",
         "2h-trend-v5-amber-max-passlock",
         "2h-trend-v5-amber-max-passlock-bidir",
+        "2h-trend-v5-amber-max-passlock-shorts-only",
         "2h-trend-v5-amber-max-mr-passlock",
         "2h-trend-v5-amber-quartz",
         "2h-trend-v5-amber-quartz-passlock",

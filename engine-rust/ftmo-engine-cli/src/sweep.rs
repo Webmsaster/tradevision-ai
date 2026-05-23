@@ -37,6 +37,7 @@ use ftmo_engine_core::harness::{step_bar, BarInput};
 use ftmo_engine_core::indicators::atr;
 use ftmo_engine_core::signal::PollSignal;
 use ftmo_engine_core::signals_breakout::{detect_breakout, BreakoutParams};
+use ftmo_engine_core::signals_forex_mr::{detect_forex_mr, ForexMrParams};
 use ftmo_engine_core::signals_meanrev::detect_mean_reversion;
 use ftmo_engine_core::signals_r28v6::{detect_r28_v6, R28V6Inputs, R28V6Params};
 use ftmo_engine_core::signals_r29r5::{
@@ -1118,6 +1119,10 @@ enum SignalSrc {
     /// when `min_votes` detectors agree on direction. See
     /// `signals_regime_confluence.rs`.
     RegimeConfluence,
+    /// 2026-05-23 — Forex Bollinger-Band mean-reversion detector with RSI
+    /// confluence + per-direction cooldown. See `signals_forex_mr.rs`.
+    /// Cross-asset-class diversification candidate vs crypto trend stack.
+    ForexMr,
 }
 
 fn main() -> Result<()> {
@@ -1388,6 +1393,7 @@ fn main() -> Result<()> {
                     "r28v6" => SignalSrc::R28V6,
                     "per-asset" => SignalSrc::PerAssetCfg,
                     "regime" | "regime-confluence" => SignalSrc::RegimeConfluence,
+                    "forex_mr" | "forex-mr" => SignalSrc::ForexMr,
                     other => return Err(anyhow!("unknown --signals: {other}")),
                 };
             }
@@ -2494,6 +2500,21 @@ fn run_single_asset(
                     SignalSrc::None | SignalSrc::PerAssetCfg | SignalSrc::RegimeConfluence => {
                         vec![]
                     }
+                    SignalSrc::ForexMr => {
+                        let arr = feed.get(symbol.as_str()).unwrap();
+                        let params = ForexMrParams::default_for(&asset, cfg.as_ref());
+                        match detect_forex_mr(
+                            &mut state,
+                            cfg.as_ref(),
+                            &asset,
+                            symbol.as_str(),
+                            arr,
+                            &params,
+                        ) {
+                            Some(s) => vec![s],
+                            None => vec![],
+                        }
+                    }
                     SignalSrc::Breakout => {
                         let arr = feed.get(symbol.as_str()).unwrap();
                         match detect_breakout(
@@ -2657,6 +2678,7 @@ fn signal_label(s: SignalSrc) -> &'static str {
         SignalSrc::R28V6 => "r28v6",
         SignalSrc::PerAssetCfg => "per-asset",
         SignalSrc::RegimeConfluence => "regime",
+        SignalSrc::ForexMr => "forex_mr",
     }
 }
 
@@ -3059,7 +3081,16 @@ fn run_multi_asset(
     // Match TS shard plan: windows start at bar `WARMUP + w*stride` and run
     // for `max_days*48` bars. The detector consumes the WARMUP bars before
     // the window-start to seed indicators (mirrors `_r28V6Round60Shard.ts`).
-    const WIN_PLAN_WARMUP: usize = 5000;
+    // 2026-05-23: scale warmup with bar_minutes so daily forex (sparse bars)
+    // isn't blanket-rejected. 5000 bars on 30m ≈ 104d warmup; same chrono
+    // window on daily ≈ 100 bars; on 1h ≈ 208 bars.
+    let win_plan_warmup: usize = match timeframe.as_deref() {
+        Some("1d") | Some("daily") => 100,
+        Some("4h") => 600,
+        Some("2h") => 1200,
+        Some("1h") => 2500,
+        _ => 5000,
+    };
     // R29-Audit-2026-05-10: bars_per_day was hardcoded to 48 (30m). For 5m
     // it's 288, for 1h 24, for 2h 12, for 4h 6. Derive from --timeframe
     // flag; default 30m to preserve back-compat.
@@ -3070,6 +3101,7 @@ fn run_multi_asset(
         Some("1h") => 24,
         Some("2h") => 12,
         Some("4h") => 6,
+        Some("1d") | Some("daily") => 1,
         Some(other) => return Err(anyhow!("unknown --timeframe: {other}")),
     };
     let win_plans: Vec<(usize, usize)> = if let Some(sd) = step_days {
@@ -3077,7 +3109,7 @@ fn run_multi_asset(
         let max_w_bars = cfg.max_days as usize * bars_per_day;
         (0..windows)
             .map(|w| {
-                let lo = WIN_PLAN_WARMUP + w * stride;
+                let lo = win_plan_warmup + w * stride;
                 let hi = (lo + max_w_bars).min(total_bars);
                 (lo, hi)
             })
@@ -3298,7 +3330,15 @@ fn locate_candle_file_tf(dir: &Path, symbol: &str, timeframe: Option<&str>) -> R
         Some("1h") => &["_1h.json"],
         Some("2h") => &["_2h.json"],
         Some("4h") => &["_4h.json"],
-        _ => &["_30m.json", "_1h.json", "_2h.json", "_4h.json", "_15m.json"],
+        Some("1d") | Some("daily") => &["_daily.json", "_1d.json"],
+        _ => &[
+            "_30m.json",
+            "_1h.json",
+            "_2h.json",
+            "_4h.json",
+            "_15m.json",
+            "_daily.json",
+        ],
     };
     for ext in preferred {
         let p = dir.join(format!("{symbol}{ext}"));
@@ -3634,6 +3674,10 @@ fn run_one_window(
                         },
                     );
                     detect_mean_reversion(&mut state, cfg, asset, &source, arr, &src)
+                }
+                SignalSrc::ForexMr => {
+                    let params = ForexMrParams::default_for(asset, cfg);
+                    detect_forex_mr(&mut state, cfg, asset, &source, arr, &params)
                 }
                 SignalSrc::RegimeConfluence => {
                     let funding = funding_feed.get(&source).map(|v| v.as_slice());
