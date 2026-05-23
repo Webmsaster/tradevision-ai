@@ -244,6 +244,84 @@ def check_executor_log_freshness() -> str | None:
     return None
 
 
+def check_real_liveness() -> str | None:
+    """2026-05-23 Wave1 audit fix (HIGH): bot-liveness ≠ trading-liveness.
+    Previous checks (account.json mtime, executor-log.jsonl mtime) confirm
+    the process IS WRITING, not that it CAN TRADE. A bot stuck in an
+    MT5-reconnect loop updates account.json but emits zero `order_placed`
+    events — health stays green while no trades happen.
+
+    This check parses the last 200 executor-log entries and alerts when:
+      (a) Most recent event is `mt5_disconnected` without a follow-up
+          `mt5_connected` (broker connection wedged), OR
+      (b) `signal_received` events present but NO `order_placed` in last
+          24h (signal-rejection cascade — every signal stale-dropped,
+          news-blocked, or MCT-capped).
+    """
+    sd = _state_dir()
+    log = sd / "executor-log.jsonl"
+    if not log.exists():
+        return None  # already covered by check_executor_log_freshness
+    try:
+        lines = log.read_text(encoding="utf-8").splitlines()[-200:]
+    except OSError:
+        return None
+    events: list[dict] = []
+    for ln in lines:
+        if not ln.strip():
+            continue
+        try:
+            events.append(json.loads(ln))
+        except json.JSONDecodeError:
+            continue
+    if not events:
+        return None
+    # (a) MT5 disconnected without reconnect since.
+    last_disconnect_ts = None
+    last_reconnect_ts = None
+    for e in events:
+        ev = e.get("event") or e.get("ev")
+        ts = e.get("ts") or e.get("timestamp")
+        if ev == "mt5_disconnected":
+            last_disconnect_ts = ts
+        elif ev in ("mt5_connected", "mt5_ensure_connected_ok"):
+            last_reconnect_ts = ts
+    if last_disconnect_ts and (
+        last_reconnect_ts is None or last_reconnect_ts < last_disconnect_ts
+    ):
+        return f"MT5 disconnected at {last_disconnect_ts} — no reconnect since"
+    # (b) Signal-rejection cascade — 24h with signals but zero orders placed.
+    now = time.time()
+    twentyfour_h = 24 * 3600
+    signals = [
+        e for e in events
+        if (e.get("event") or e.get("ev")) in (
+            "signal_received", "signal_validated", "signal_passed_gates"
+        )
+    ]
+    orders = [
+        e for e in events
+        if (e.get("event") or e.get("ev")) in ("order_placed", "order_filled")
+    ]
+    if len(signals) >= 3 and len(orders) == 0:
+        # No fresh orders despite signals — try to find oldest signal age.
+        sig_ages = []
+        for e in signals:
+            ts = e.get("ts") or e.get("timestamp")
+            if isinstance(ts, str):
+                try:
+                    from datetime import datetime as _dt
+                    sig_ages.append(now - _dt.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+                except (ValueError, TypeError):
+                    continue
+        if sig_ages and max(sig_ages) > twentyfour_h:
+            return (
+                f"{len(signals)} signals in last 200 events but ZERO orders placed — "
+                f"signal-rejection cascade (oldest signal {max(sig_ages)/3600:.1f}h ago)"
+            )
+    return None
+
+
 def check_disk_space() -> str | None:
     import shutil
     free = shutil.disk_usage(Path.cwd()).free
@@ -278,6 +356,7 @@ def main() -> int:
         ("state_dir_missing", check_state_dir_exists),
         ("account_stale", check_account_freshness),
         ("log_stale", check_executor_log_freshness),
+        ("trading_dead", check_real_liveness),  # Wave1 audit HIGH fix
         ("disk_low", check_disk_space),
         ("signals_stuck", check_pending_signals_not_stuck),
     ]

@@ -80,6 +80,18 @@ pub struct MlModel {
     /// to 0.0 imputation (legacy v2 models).
     #[serde(default)]
     pub feature_medians: Vec<f64>,
+    /// 2026-05-23 ML Round 11.2/Wave1: git commit hash at training time.
+    /// Loader warns when model commit ≠ current engine commit (stale-cache
+    /// detection). Empty = legacy v2 model with no commit stamp.
+    #[serde(default)]
+    pub git_commit: String,
+    /// Unix-seconds of the training-data file mtime at training time.
+    #[serde(default)]
+    pub training_data_mtime: i64,
+    /// Unix-seconds when training completed. Loader warns if model is
+    /// >30 days old (stale-model detection).
+    #[serde(default)]
+    pub trained_at_utc: i64,
 }
 
 /// R29-Audit-Round2.5: expected feature ordering. Inference computes
@@ -138,6 +150,35 @@ impl MlModel {
                     model.features, EXPECTED_FEATURES
                 ),
             ));
+        }
+        // 2026-05-23 Wave1 audit fix: validate stale-cache metadata stamps
+        // (Round 11.2 wrote them but loader never checked). Warn — don't fail
+        // — since the engine-commit comparison would over-trigger on every
+        // benign engine update that doesn't actually invalidate the model.
+        if !model.git_commit.is_empty() {
+            if let Ok(cur_commit) = std::env::var("ML_ENGINE_COMMIT") {
+                if cur_commit.trim() != model.git_commit.trim() {
+                    eprintln!(
+                        "[ml_gate] WARN: model trained on commit {} != current engine commit {} — \
+                         consider retrain if engine changed feature pipeline",
+                        &model.git_commit[..model.git_commit.len().min(12)],
+                        &cur_commit[..cur_commit.len().min(12)],
+                    );
+                }
+            }
+        }
+        if model.trained_at_utc > 0 {
+            let now_s = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let age_days = (now_s - model.trained_at_utc) / 86_400;
+            if age_days > 30 {
+                eprintln!(
+                    "[ml_gate] WARN: model is {age_days}d old — retrain via \
+                     `scripts/_mlTrainClassifier.py` recommended"
+                );
+            }
         }
         Ok(model)
     }
@@ -325,6 +366,9 @@ mod tests {
             schema_version: EXPECTED_SCHEMA_VERSION,
             asset_id_map: HashMap::new(),
             feature_medians: vec![],
+            git_commit: String::new(),
+            training_data_mtime: 0,
+            trained_at_utc: 0,
         };
         // 2026-05-23: must pass full 14-feature vector (post-bug-fix #5).
         // Set atr_pct (idx 3) and rsi14 (idx 0) non-zero to bypass warmup guard.
@@ -348,6 +392,9 @@ mod tests {
             schema_version: EXPECTED_SCHEMA_VERSION,
             asset_id_map: map,
             feature_medians: vec![],
+            git_commit: String::new(),
+            training_data_mtime: 0,
+            trained_at_utc: 0,
         };
         assert_eq!(m.asset_id_for("ETHUSDT"), Some(3));
         // config symbol "ETH-TREND" normalises to "ETH" then "ETHUSDT".
@@ -381,6 +428,9 @@ mod tests {
             schema_version: EXPECTED_SCHEMA_VERSION,
             asset_id_map: HashMap::new(),
             feature_medians: vec![],
+            git_commit: String::new(),
+            training_data_mtime: 0,
+            trained_at_utc: 0,
         };
         let zeros = vec![0.0_f64; EXPECTED_FEATURES.len()];
         assert_eq!(m.predict_proba(&zeros), 0.42);
@@ -421,6 +471,9 @@ mod tests {
             schema_version: EXPECTED_SCHEMA_VERSION,
             asset_id_map: HashMap::new(),
             feature_medians: vec![],
+            git_commit: String::new(),
+            training_data_mtime: 0,
+            trained_at_utc: 0,
         };
         assert_eq!(m.asset_id_for("ANY"), None);
     }

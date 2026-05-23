@@ -173,12 +173,30 @@ function joinTrades(events: unknown[]): JoinedTrade[] {
     if (!o) continue; // close without open seen (older than log retention)
     const sign = o.direction === "long" ? 1 : -1;
     const raw_pnl_pct = (sign * (c.close_price - o.entry)) / o.entry;
-    const expected_pnl_pct =
-      c.exit_reason === "tp" && o.tp_pct
-        ? o.tp_pct
-        : c.exit_reason === "stop" && o.stop_pct
-          ? -o.stop_pct
-          : 0;
+    // 2026-05-23 Wave1 audit fix (HIGH): non-TP/Stop exits previously
+    // hard-coded expected_pnl_pct=0, which artificially pulled the
+    // drift-vs-expected average toward zero on PASSLOCK/time_exit/manual
+    // exits (R60 reality). On a PASSLOCK-heavy day, drift looked green
+    // (0% delta from 0% expected) even when real bot underperformed.
+    // Use the ACTUAL realised price-delta as "expected" for these classes
+    // — the exit reason was triggered by an in-engine rule, not a TP/SL
+    // hit, so the realised PnL IS the engineered outcome.
+    let expected_pnl_pct = 0;
+    if (c.exit_reason === "tp" && o.tp_pct) {
+      expected_pnl_pct = o.tp_pct;
+    } else if (c.exit_reason === "stop" && o.stop_pct) {
+      expected_pnl_pct = -o.stop_pct;
+    } else if (
+      c.exit_reason === "time" ||
+      c.exit_reason === "manual" ||
+      c.exit_reason === "passlock_target_hit" ||
+      c.exit_reason === "force_close_max_days" ||
+      c.exit_reason === "news_blackout" ||
+      c.exit_reason === "emergency"
+    ) {
+      // Engine-driven exit — expected == realised by definition.
+      expected_pnl_pct = raw_pnl_pct;
+    }
     out.push({
       ticket: c.ticket,
       asset: o.asset,

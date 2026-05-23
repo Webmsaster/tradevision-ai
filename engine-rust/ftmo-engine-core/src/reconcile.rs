@@ -204,6 +204,15 @@ fn ingest_offline_closures_inner(
 }
 
 /// Convenience: load + apply + remove the file.
+///
+/// 2026-05-23 Wave1 audit (KRIT-4): function is currently NOT called from
+/// the Rust sweep/backtest binary because sweep runs synthetic windows and
+/// has no concept of "offline-closure recovery." It's intended for a Rust
+/// LIVE engine path that doesn't yet exist; live trading runs through
+/// Python `tools/ftmo_executor.py` which has its own reconcile logic
+/// (`reconcile_missing_positions()`). Schema is now Python-compatible (R11
+/// + Wave1 serde aliases) so when a Rust live path is added, this function
+/// can be wired without further changes.
 pub fn reconcile_offline(
     state: &mut EngineState,
     cfg: &crate::config::EngineConfig,

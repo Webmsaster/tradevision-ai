@@ -367,7 +367,11 @@ pub fn process_position_exit_with_held(
             .find(|a| a.symbol == pos.symbol)
             .and_then(|a| a.hold_bars)
             .unwrap_or(cfg.hold_bars) as u64;
-        if hold_limit > 0 && bars_held >= hold_limit {
+        // 2026-05-23 Wave1 audit fix [HIGH-C1]: was `>=`, TS V4 reference
+        // uses strict `>` (position closes ONE bar after hold_limit). Off-by-
+        // one drove 1-3pp pass-rate drift on chandelier/time-exit-heavy
+        // configs vs TS parity. Strict `>` matches ftmoDaytrade24h.ts V4.
+        if hold_limit > 0 && bars_held > hold_limit {
             return Some(ExitOutcome {
                 exit_price: candle.close,
                 reason: ExitReason::Time,

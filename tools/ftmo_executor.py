@@ -673,7 +673,19 @@ def read_json(path: Path, fallback: Any) -> Any:
         if not path.exists():
             return fallback
         with open(path) as f:
-            return json.load(f)
+            data = json.load(f)
+        # 2026-05-23 Wave1 audit fix (HIGH): schema version mismatch warning.
+        # Bumping PYTHON_STATE_SCHEMA flags pre-bump state files; reader
+        # currently warns + returns the data so manual migration can run.
+        # In future bumps with breaking changes, add a migrate-or-fail path here.
+        if isinstance(data, dict):
+            sv = data.get("_schema_version")
+            if sv is not None and sv != PYTHON_STATE_SCHEMA:
+                print(
+                    f"[executor] WARN: {path.name} schema_version={sv} != "
+                    f"current {PYTHON_STATE_SCHEMA} — may need migration"
+                )
+        return data
     except json.JSONDecodeError as e:
         ts = int(time.time())
         corrupt_path = path.with_suffix(path.suffix + f".corrupt.{ts}")
@@ -706,8 +718,20 @@ def read_json(path: Path, fallback: Any) -> Any:
         return fallback
 
 
+# 2026-05-23 Wave1 audit fix (HIGH): Python state file schema versioning.
+# Previous state writes had no schema_version → silent stale-load risk on any
+# field rename (cdUntilBarIdx→cdUntilBarsSeen incident class). Bump
+# PYTHON_STATE_SCHEMA whenever a Python state file's structure changes; readers
+# can compare and migrate. Top-level dict payloads get the field auto-injected.
+PYTHON_STATE_SCHEMA = 1
+
+
 def write_json(path: Path, obj: Any) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    # Auto-inject schema_version on top-level dict payloads (idempotent).
+    # Lists / atomic values pass through unchanged.
+    if isinstance(obj, dict) and "_schema_version" not in obj:
+        obj = {**obj, "_schema_version": PYTHON_STATE_SCHEMA}
     # BUGFIX 2026-04-28: PID-suffixed tmp prevents cross-process race
     # (Node telegramBot and Python both write bot-controls.json).
     # Round 60 audit fix (2026-05-05): add f.flush() + os.fsync() to mirror
@@ -782,6 +806,26 @@ def _log_signals_to_history(signals: list) -> None:
     Idempotent: each call appends ALL signals passed in. Caller should only
     pass NEW signals (not yet logged). We dedupe by (signalBarClose, asset).
     """
+    if not signals:
+        return
+    try:
+        # 2026-05-23 Wave1 audit fix (HIGH): wrap dedup-read + rotate + append
+        # in signal-history.lock so tracker + executor + cluster-reader don't
+        # race. Without this lock: tracker and executor both compute the same
+        # dedup-set, both append → duplicate entries → compute_live_cluster()
+        # over-counts → false-positive cluster-green. Rotation is also non-
+        # atomic vs concurrent O_APPEND fds → writes can land in archived
+        # inode and be lost. Using context-manager keeps indentation flat.
+        with _file_lock(STATE_DIR / "signal-history.lock"):
+            _log_signals_to_history_locked(signals)
+        return
+    except Exception as e:
+        log_event("signal_history_log_failed", error=str(e))
+        return
+
+
+def _log_signals_to_history_locked(signals: list) -> None:
+    """Internal: caller MUST hold signal-history.lock."""
     if not signals:
         return
     try:
@@ -2569,6 +2613,27 @@ def place_market_order(
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": _pick_filling_mode(ftmo_symbol),
     }
+    # 2026-05-23 Wave1 audit fix (KRIT-deferred): news-blackout RE-CHECK
+    # immediately before order_send. The upstream check_news_blackout() at
+    # line 3513 runs ~10-30s before this order_send (signal validation +
+    # MCT counter + position cap + price calc + tick wait). If that gap
+    # straddles the blackout-start (e.g. signal received at FOMC-31min,
+    # order placed at FOMC-29min), the trade lands INSIDE the blackout
+    # window. This second check closes the race: O(1) lookup against the
+    # cached event list, ~50µs overhead per order.
+    news_block_recheck = check_news_blackout()
+    if news_block_recheck:
+        log_event(
+            "news_blackout_race_block",
+            asset=ftmo_symbol,
+            reason=news_block_recheck,
+            level="warn",
+        )
+        return OrderResult(
+            False, None,
+            f"news-blackout entered during order prep: {news_block_recheck}",
+            lot, None,
+        )
     result = mt5.order_send(request)
     if result is None:
         return OrderResult(False, None, "order_send returned None", lot, fill_price)
@@ -6330,6 +6395,42 @@ def main_loop() -> None:
         log_event("executor_stopped", reason="keyboard_interrupt")
         tg_send("🛑 <b>Executor Stopped</b> (Ctrl+C)")
     finally:
+        # 2026-05-23 Wave1 audit fix (HIGH): final state flush BEFORE mt5
+        # shutdown. SIGTERM mid-cycle previously left open positions only
+        # in the LAST committed write_json — if SIGTERM landed between
+        # mt5.order_send and the subsequent write_json, the ticket lived
+        # at broker but was missing from disk → orphan-rescue via WAL
+        # markers only. Final-flush all live MT5 positions to open-positions.json
+        # so reconciliation on restart starts from authoritative truth.
+        try:
+            live = mt5.positions_get() or []
+            mine = [
+                p for p in live
+                if getattr(p, "magic", 0) in (MAGIC, PING_MAGIC)
+            ]
+            snapshot = [
+                {
+                    "ticket": int(p.ticket),
+                    "symbol": p.symbol,
+                    "direction": "long" if p.type == mt5.POSITION_TYPE_BUY else "short",
+                    "lot": float(p.volume),
+                    "entry_price": float(p.price_open),
+                    "sl": float(p.sl) if p.sl else None,
+                    "tp": float(p.tp) if p.tp else None,
+                    "profit_usd": float(p.profit),
+                    "magic": int(p.magic),
+                    "time_msc": int(getattr(p, "time_msc", 0)),
+                    "comment": str(getattr(p, "comment", "")),
+                    "_snapshot_reason": "sigterm_cleanup",
+                    "_snapshot_at": datetime.now(timezone.utc).isoformat(),
+                }
+                for p in mine
+            ]
+            sigterm_snapshot_path = STATE_DIR / "positions-sigterm-snapshot.json"
+            write_json(sigterm_snapshot_path, {"snapshotAt": int(time.time()), "positions": snapshot})
+            log_event("sigterm_position_snapshot", count=len(snapshot))
+        except Exception as e:
+            log_event("sigterm_snapshot_failed", error=str(e), level="warn")
         try:
             mt5.shutdown()
         except Exception:
