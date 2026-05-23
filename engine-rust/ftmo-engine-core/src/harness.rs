@@ -184,6 +184,14 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                 pushed_force_close_ping = true;
             }
         }
+        // 2026-05-23 Round 11.3 BUG FIX (Wave1 agent #2 BUG-1 HIGH):
+        // force_close_all → apply_exits stamps ClosedTrade.day from
+        // state.day, but state.day was never advanced for this final bar
+        // (the L194 advance is only on the non-force-close path). Result:
+        // exit-bar closed-trades were attributed to the PREVIOUS day,
+        // under-counting losses for daily aggregation analytics
+        // (real_funded_prob.py, monthly-profit aggregators).
+        state.day = new_day as u32;
         force_close_all(state, input, cfg, last_bar_time, &mut result);
         result.challenge_ended = true;
         // After force-close: no unrealised PnL → mtm equals realised.
@@ -365,6 +373,102 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
         }
     }
     apply_exits(state, &mut exits, cfg, last_bar_time, &mut result, input);
+
+    // 2026-05-23 HYBRID-MUTEX: force-close positions whose direction opposes
+    // the current cross-asset trend (e.g. close longs when BNB EMA stack
+    // flips bearish). Runs once per bar, AFTER exits/SL/TP but BEFORE MTM
+    // recompute so equity reflects forced-closes. Requires both:
+    //   - `regime_flip_close_opposite` flag set in cfg
+    //   - `cross_asset_filter` configured (uses its symbol + fast/slow periods)
+    // Designed for v5_amber_max_passlock_hybrid which doubles the asset
+    // basket (AMBER-long + SHORTS-short) and needs true regime-mutex to
+    // prevent stale-side accumulation across BNB-trend flips.
+    if cfg.regime_flip_close_opposite && !state.open_positions.is_empty() {
+        if let Some(filter) = cfg.cross_asset_filter.as_ref() {
+            // Same lookahead-safe slice as line 743+: exclude current bar's close.
+            let cross_closes: Vec<f64> = input
+                .candles_by_source
+                .get(&filter.symbol)
+                .map(|arr| {
+                    let end = arr.len().saturating_sub(1);
+                    arr.iter().take(end).map(|c| c.close).collect()
+                })
+                .unwrap_or_default();
+            // Compute 3-way trend (same logic as cross_asset_filter_allows)
+            let fast = crate::indicators::ema(&cross_closes, filter.fast_period as usize);
+            let slow = crate::indicators::ema(&cross_closes, filter.slow_period as usize);
+            let last_fast = fast.last().copied().flatten();
+            let last_slow = slow.last().copied().flatten();
+            let last_close = cross_closes.last().copied();
+            let trend = match (last_fast, last_slow, last_close) {
+                (Some(f), Some(s), Some(c)) if c > f && f > s => {
+                    Some(crate::position::PositionSide::Long)
+                }
+                (Some(f), Some(s), Some(c)) if c < f && f < s => {
+                    Some(crate::position::PositionSide::Short)
+                }
+                _ => None,
+            };
+            // Only act on clear trends (not neutral) to avoid whipsaws.
+            // 2026-05-23 HYSTERESIS: only flip-close if opposite trend has
+            // been stable for at least 12 bars (6h on 30m). Prevents
+            // whipsaw-kills on bar-level BNB noise.
+            //
+            // 2026-05-23 Round 11.3 BUG FIX (Wave1 agent #2 BUG-2 HIGH):
+            // Previous impl re-computed EMA from scratch on a truncated slice
+            // per-bar — EMA re-warms each call so values at the same logical
+            // index were NOT comparable across iterations (different warmup
+            // depth → different seed → different value). Compute full EMA
+            // series ONCE then index into it for stable comparison.
+            if let Some(t) = trend {
+                let stable_bars: usize = 12;
+                let lookback_ok = cross_closes.len() >= stable_bars + filter.slow_period as usize;
+                let mut stable_opposite = lookback_ok;
+                if lookback_ok {
+                    let fast_series = crate::indicators::ema(&cross_closes, filter.fast_period as usize);
+                    let slow_series = crate::indicators::ema(&cross_closes, filter.slow_period as usize);
+                    let n = cross_closes.len();
+                    for back in 1..=stable_bars {
+                        let idx_back = n - 1 - back;
+                        let f_b = fast_series.get(idx_back).copied().flatten();
+                        let s_b = slow_series.get(idx_back).copied().flatten();
+                        let c_b = cross_closes.get(idx_back).copied();
+                        let trend_b = match (f_b, s_b, c_b) {
+                            (Some(f), Some(s), Some(c)) if c > f && f > s => Some(crate::position::PositionSide::Long),
+                            (Some(f), Some(s), Some(c)) if c < f && f < s => Some(crate::position::PositionSide::Short),
+                            _ => None,
+                        };
+                        if trend_b != Some(t) {
+                            stable_opposite = false;
+                            break;
+                        }
+                    }
+                }
+                let mut flip_close: Vec<(usize, crate::exit::ExitOutcome)> = vec![];
+                for (idx, pos) in state.open_positions.iter().enumerate() {
+                    if stable_opposite && pos.direction != t {
+                        let exit_price = input
+                            .candles_by_source
+                            .get(&pos.source_symbol)
+                            .and_then(|arr| find_candle_at_or_before(arr, last_bar_time))
+                            .map(|c| c.close)
+                            .or(pos.last_known_price)
+                            .unwrap_or(pos.entry_price);
+                        flip_close.push((
+                            idx,
+                            crate::exit::ExitOutcome {
+                                exit_price,
+                                reason: ExitReason::Manual,
+                            },
+                        ));
+                    }
+                }
+                if !flip_close.is_empty() {
+                    apply_exits(state, &mut flip_close, cfg, last_bar_time, &mut result, input);
+                }
+            }
+        }
+    }
 
     // POST-EXIT MTM update — matches TS pollLive line 1361-1382. After
     // exits update state.equity, recompute MTM over the REMAINING open
@@ -732,6 +836,25 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                         });
                         continue;
                     }
+                }
+            }
+            // 2026-05-23 MUTEX LONG/SHORT — true position-level mutex. If any
+            // open position has the opposite direction, block this entry.
+            // Forces sequential 1-side-at-a-time trading across all assets.
+            if cfg.mutex_long_short && !state.open_positions.is_empty() {
+                let has_opposite = state
+                    .open_positions
+                    .iter()
+                    .any(|p| p.direction != sig.direction);
+                if has_opposite {
+                    result.skipped.push(crate::signal::PollSkip {
+                        asset: sig.symbol.clone(),
+                        reason: format!(
+                            "mutex_long_short: {:?} blocked (opposite position open)",
+                            sig.direction
+                        ),
+                    });
+                    continue;
                 }
             }
             // CrossAssetFilter — only allow when reference symbol's trend matches.

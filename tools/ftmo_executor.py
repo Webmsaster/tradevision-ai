@@ -214,7 +214,11 @@ MAX_TICK_AGE_SEC = float(os.environ.get("FTMO_MAX_TICK_AGE_SEC", "120"))
 # crash/restart/long pause (avoids trading on stale data). Used by both the
 # pending-signal processor and the boot order-marker reconcile (so a stale
 # orphan marker is alerted, not silently dropped or double-executed).
-MAX_SIGNAL_AGE_MS = 5 * 60_000
+# 2026-05-23 ML audit Wave1 agent: 5min was at edge for 4h cron emitter
+# (signalBarClose at bar close + ~5min emit-latency + executor 30s poll +
+# place-order latency = 6-8min easily). Bump to 15min for safety margin.
+# Boot reconcile uses same constant (cleanup-orphaned-orders > 15min old).
+MAX_SIGNAL_AGE_MS = 15 * 60_000
 
 # ---------------------------------------------------------------------------
 # FTMO_STRICT_PARITY (R3-B Drift-3, 2026-05-15)
@@ -2402,6 +2406,19 @@ def place_market_order(
             f"{RISK_FRAC_HARD_CAP:.4f} — clamping for {ftmo_symbol}"
         )
         risk_frac = RISK_FRAC_HARD_CAP
+    # 2026-05-23 ML audit Wave1 agent: Engine enforces stop_pct ≤ 0.05 via
+    # liveCaps in 7 signal-modules; Python live-side was missing the mirror
+    # check. Signal-source bug with stop_pct=0.10 would have passed through
+    # unbounded to MT5 → 2× FTMO daily-loss exposure per trade. Skip rather
+    # than clip (signal-source bug → don't trade it).
+    LIVE_MAX_STOP_PCT = 0.05
+    if stop_pct > LIVE_MAX_STOP_PCT:
+        log_event("live_stop_pct_exceeded", asset=ftmo_symbol, stop_pct=stop_pct, level="warn")
+        return OrderResult(
+            False, None,
+            f"stop_pct={stop_pct:.4f} exceeds live cap {LIVE_MAX_STOP_PCT:.4f}",
+            None, None,
+        )
 
     # Use payload absolute levels only if BOTH are present + positive (all-or-
     # nothing keeps SL/TP from mixing absolute + relative sources). Narrow into
