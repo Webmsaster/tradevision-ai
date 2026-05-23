@@ -69,6 +69,7 @@ def _round_to_tick(price: float, tick_size: float, digits: int) -> float:
 # / news / preflight to resolve different state-dirs when env was unset.
 # Sibling import (tools/ is on sys.path via the block above).
 from _ftmo_defaults import DEFAULT_FTMO_TF  # type: ignore  # noqa: E402
+from direction_util import normalize_direction  # type: ignore  # noqa: E402
 
 _FTMO_TF = os.environ.get("FTMO_TF", DEFAULT_FTMO_TF)
 # Phase 73 (R44-V4-Bug 1): per-account state isolation. Two bots on the
@@ -824,11 +825,14 @@ def _log_signals_to_history(signals: list) -> None:
             key = (s.get("signalBarClose"), s.get("assetSymbol"))
             if key in existing_keys:
                 continue
+            # 2026-05-23 ML audit Round 11.2: normalize direction at write so
+            # downstream signal-history readers (cluster-gate, parity-check)
+            # never see "LONG"/"Long" case-drift from upstream emitters.
             new_entries.append({
                 "ts_ms": now_ms,
                 "asset": s.get("assetSymbol"),
                 "signalBarClose": s.get("signalBarClose"),
-                "direction": s.get("direction"),
+                "direction": normalize_direction(s.get("direction")),
                 "sourceSymbol": s.get("sourceSymbol"),
             })
             existing_keys.add(key)
@@ -3504,7 +3508,12 @@ def _process_signals_unlocked(
         # placement (SL below entry for a "long" derived from a short signal
         # is INSIDE the actual stop level → catastrophic). Skip + log explicit
         # rejection instead of guessing the trade side.
-        direction = sig.get("direction")
+        # 2026-05-23 ML audit Round 11.2: case-insensitive normalize before
+        # validation gate. Previous code rejected legitimate "LONG"/"Long"
+        # signals (case-drift from MT5/upstream) AND any downstream
+        # `direction == "long"` compare would have silently sign-flipped if
+        # the upstream casing slipped past validation.
+        direction = normalize_direction(sig.get("direction"))
         if direction not in ("long", "short"):
             log_event(
                 "signal_invalid_direction",
@@ -3739,7 +3748,10 @@ def _process_signals_unlocked(
                 # Long entries fill higher (positive slip = paid more).
                 # Short entries fill lower (negative slip = received less).
                 # Normalise so positive = adverse for the trader.
-                if sig.get("direction") == "short":
+                # Use already-normalized local `direction` (validated above
+                # via normalize_direction) — not raw sig["direction"] which
+                # may have upstream casing drift.
+                if direction == "short":
                     slip = -slip
                 slippage_bps = round(slip * 10_000, 2)
             # Re-resolve broker symbol (cached) to read the live spread at
@@ -3757,7 +3769,7 @@ def _process_signals_unlocked(
                 signal_entry=sig_entry,
                 signal_stop=sig.get("stopPrice"),
                 signal_tp=sig.get("tpPrice"),
-                direction=sig.get("direction"),
+                direction=direction,  # use normalized local, not raw sig
                 # 2026-05-19 KRIT-1 fix: also log effective risk_frac (post
                 # TIER risk-multiplier) so the audit trail captures both the
                 # signal-emitted nominal and the actually-sized value.
@@ -4073,7 +4085,7 @@ def _apply_trailing_stop(pos: dict) -> dict:
     if not live:
         return pos
     p = live[0]
-    direction = pos.get("direction", "long")
+    direction = normalize_direction(pos.get("direction")) or "long"
     entry = float(pos.get("entry_price", p.price_open))
     # H2 fix: trail off the favorable intrabar extreme (wick), like the engine.
     current_price = _favorable_extreme(pos, direction, float(p.price_current))
@@ -4200,7 +4212,7 @@ def _apply_partial_tp(pos: dict) -> dict:
     # (long) or bar.low (short) reaches triggerPrice — i.e., a wick TOUCH
     # within the bar. Live needs to mirror that, otherwise PTP misses if the
     # wick reverts before next poll. Track peak_price_seen per-position.
-    direction = pos.get("direction", "long")
+    direction = normalize_direction(pos.get("direction")) or "long"
     if direction == "long":
         peak = max(pos.get("peak_price_seen") or current_price, current_price)
     else:
@@ -4274,7 +4286,7 @@ def _apply_partial_tp_levels(pos: dict) -> dict:
     current_price = float(p.price_current)
     # BUGFIX 2026-04-29 (Agent 4 Bug 6 parity): mirror engine's wick-touch
     # semantics by using peak_price_seen since open (max for long, min short).
-    direction = pos.get("direction", "long")
+    direction = normalize_direction(pos.get("direction")) or "long"
     if direction == "long":
         peak = max(pos.get("peak_price_seen") or current_price, current_price)
     else:
@@ -4419,7 +4431,7 @@ def _apply_chandelier_stop(pos: dict) -> dict:
     if not live:
         return pos
     p = live[0]
-    direction = pos.get("direction", "long")
+    direction = normalize_direction(pos.get("direction")) or "long"
     # H2 fix: chandelier arms + anchors on the favorable intrabar extreme (wick),
     # mirroring the engine's high_watermark, not the tick close.
     current_price = _favorable_extreme(pos, direction, float(p.price_current))
@@ -4474,7 +4486,7 @@ def _apply_break_even(pos: dict) -> dict:
     if not live:
         return pos
     p = live[0]
-    direction = pos.get("direction", "long")
+    direction = normalize_direction(pos.get("direction")) or "long"
     # H2 fix: BE arms on the favorable intrabar extreme (wick), like the engine —
     # so a profit wick that reverts before the next poll still arms break-even.
     favorable = _favorable_extreme(pos, direction, float(p.price_current))
