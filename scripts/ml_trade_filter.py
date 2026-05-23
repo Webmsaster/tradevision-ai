@@ -191,6 +191,20 @@ def build_dataset() -> tuple[np.ndarray, np.ndarray, list[dict], list[str]]:
 
     # sort trades chronologically; precompute trade-order within window
     trades.sort(key=lambda t: t["entryTime"])
+    # 2026-05-23 BUG FIX (ML audit Round 11): dedup multi-shard duplicates by
+    # (symbol, entryTime, direction) — multi-shard sweeps can emit the same
+    # trade twice → trades_by_win double-counts prior_cum_pnl / prior_wins.
+    seen_keys: set[tuple] = set()
+    deduped: list[dict] = []
+    for _t in trades:
+        key = (_t.get("symbol"), _t.get("entryTime"), _t.get("direction"))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped.append(_t)
+    if len(deduped) < len(trades):
+        print(f"      dedup: dropped {len(trades) - len(deduped)} duplicate trades")
+        trades = deduped
     # group by window so we can compute prior_* on demand using exitTime (leak-free):
     # a "prior" trade is only counted if its exitTime < current entryTime — otherwise
     # it was still open at entry and its effPnl is future-information.
@@ -243,7 +257,17 @@ def build_dataset() -> tuple[np.ndarray, np.ndarray, list[dict], list[str]]:
 
         sym_feats = compute_symbol_features(before)
         btc_feats = compute_btc_features(btc_before, et)
-        direction = 1.0 if t["direction"] == "long" else -1.0
+        # 2026-05-23 BUG FIX (ML audit): case-insensitive direction parse.
+        # `t["direction"] == "long"` strict-compared would treat "LONG"/"Long"
+        # as SHORT → silent sign-flip. Also explicitly handle unknown values.
+        dir_raw = str(t.get("direction", "")).strip().lower()
+        if dir_raw == "long":
+            direction = 1.0
+        elif dir_raw == "short":
+            direction = -1.0
+        else:
+            skipped += 1
+            continue
         widx = t["winIdx"]
         # leak-free prior_* aggregates: only count window-mates that already EXITED
         # before this trade's entryTime. Using entryTime-order would leak ~60% of

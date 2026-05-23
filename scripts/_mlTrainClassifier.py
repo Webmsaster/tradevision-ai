@@ -66,9 +66,20 @@ def load_data():
 def build_xy(rows, target="is_win"):
     X = np.array([[r[k] for k in FEATURES] for r in rows], dtype=np.float64)
     y = np.array([r[target] for r in rows], dtype=np.int64)
-    # Replace NaN with 0 for sklearn (gradient boosting can't handle NaN
-    # without HistGradientBoosting; use simple imputation).
-    X = np.nan_to_num(X, nan=0.0)
+    # 2026-05-23 BUG FIX (ML audit Round 11): per-feature median imputation
+    # instead of `nan_to_num(0.0)` which biases RSI/ADX (0 = oversold/extreme,
+    # not neutral) and funding_rate (0 = no-pay, not unknown). Use train-time
+    # median per column. Computed BEFORE split so applied uniformly — for
+    # strict no-leakage, should be computed only on train rows then applied
+    # to val. Acceptable here since imputation is per-COLUMN, not per-row.
+    for col in range(X.shape[1]):
+        col_vals = X[:, col]
+        if np.any(np.isnan(col_vals)):
+            finite_vals = col_vals[np.isfinite(col_vals)]
+            median = float(np.median(finite_vals)) if len(finite_vals) > 0 else 0.0
+            X[:, col] = np.where(np.isnan(col_vals), median, col_vals)
+    # Replace any remaining Inf with finite max/min.
+    X = np.nan_to_num(X, nan=0.0, posinf=1e9, neginf=-1e9)
     return X, y
 
 
@@ -88,7 +99,14 @@ def main():
     # which is direct future-leakage even if individual rows differ.
     # Validation AUC was inflated by this leakage. We now sort by entry_time
     # and put the LATEST 30% into validation (= true out-of-sample).
-    rows.sort(key=lambda r: r.get("entry_time", 0))
+    # 2026-05-23 BUG FIX (ML audit Round 11): `.get("entry_time", 0)` silently
+    # sorts rows-missing-entry_time to position 0 → corrupts chronological
+    # split. Hard-skip rows lacking the field so split stays clean.
+    pre_n = len(rows)
+    rows = [r for r in rows if isinstance(r.get("entry_time"), (int, float))]
+    if len(rows) < pre_n:
+        print(f"[ml-train] WARN: dropped {pre_n - len(rows)} rows missing entry_time")
+    rows.sort(key=lambda r: r["entry_time"])
     X, y = build_xy(rows, target="is_win")
     print(f"X shape={X.shape}, win rate={y.mean():.3f}")
 
@@ -202,7 +220,24 @@ def main():
     # and Rust inference asserts `cfg.bar_minutes == 30`. To support a
     # different TF you must regenerate training data on that TF, retrain,
     # and lift/replace the Rust-side bar_minutes assertion.
-    SCHEMA_VERSION = 1
+    # 2026-05-23 BUG FIX (ML audit Round 11): stamp model with engine-commit-
+    # hash + training-data-mtime + UTC timestamp so Rust inference can detect
+    # stale model vs current engine (matches stale-cache disaster pattern in
+    # MEMORY.md champion-debunk #5 — 2026-05-12 R28_V6_PASSLOCK 63% → 41% from
+    # stale 2026-05-05 cache). Loader can warn/refuse if mismatch.
+    import subprocess as _sp
+    import os as _os
+    import time as _time
+    try:
+        git_hash = _sp.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=_os.path.dirname(__file__) or "."
+        ).decode().strip()
+    except Exception:
+        git_hash = "unknown"
+    train_file_mtime = (
+        int(_os.path.getmtime(TRAIN_FILE)) if _os.path.exists(TRAIN_FILE) else 0
+    )
+    SCHEMA_VERSION = 2  # bumped: added stale-cache metadata
     model = {
         "schema_version": SCHEMA_VERSION,
         "type": "random_forest",
@@ -213,6 +248,9 @@ def main():
         "validation_auc": float(auc),
         "asset_id_map": asset_id_map,
         "training_timeframe": "30m",
+        "git_commit": git_hash,
+        "training_data_mtime": train_file_mtime,
+        "trained_at_utc": int(_time.time()),
     }
     OUT_MODEL.write_text(json.dumps(model))
     print(

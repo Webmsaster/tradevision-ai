@@ -30,7 +30,12 @@ use std::collections::HashMap;
 /// `schema_version` and `asset_id_map` fields. Inference rejects models that
 /// were exported before the writer was updated; retrain via
 /// `scripts/_mlTrainClassifier.py` to refresh.
-pub const EXPECTED_SCHEMA_VERSION: u32 = 1;
+/// 2026-05-23 bumped to v2 with ML audit Round 11 fixes:
+///   - per-feature median imputation in trainer
+///   - case-insensitive direction parse
+///   - dedup multi-shard trades
+///   - git_commit / training_data_mtime / trained_at_utc metadata
+pub const EXPECTED_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
@@ -147,10 +152,17 @@ impl MlModel {
         if let Some(&id) = self.asset_id_map.get(symbol) {
             return Some(id);
         }
-        // Try common cache-key variants used across the TS / Rust split: the
-        // training writer emits e.g. "ETHUSDT" while runtime config asset
-        // symbols may be "ETH-TREND". Normalise both ends to share lookups.
-        let bare = symbol.replace("-TREND", "");
+        // 2026-05-23 BUG FIX (ML audit Round 11): strip ALL template-suffixes,
+        // not just -TREND. Templates v5_amber_max_passlock_bidir/shorts_only/
+        // mr_passlock/hybrid emit asset symbols with -AMBER/-SHORTS/-MR/-BIDIR
+        // suffix. Without normalisation, asset_id lookup fails silently → ML
+        // training-vs-inference asset_id mismatch.
+        let bare = symbol
+            .replace("-TREND", "")
+            .replace("-AMBER", "")
+            .replace("-SHORTS", "")
+            .replace("-MR", "")
+            .replace("-BIDIR", "");
         if let Some(&id) = self.asset_id_map.get(&bare) {
             return Some(id);
         }
@@ -180,21 +192,42 @@ impl MlModel {
         if self.trees.is_empty() {
             return self.win_rate_baseline;
         }
-        // R29-Audit-Round4 2026-05-12 (Bug-7 fix): heap-alloc-free
-        // cleaning. Previous implementation allocated a Vec<f64> per
-        // call; with ~2000 signals × 200 trees in a sweep that's 400k
-        // unnecessary allocations. EXPECTED_FEATURES.len() is fixed and
-        // small, so we stack-allocate.
-        let mut cleaned = [0.0_f64; EXPECTED_FEATURES.len()];
-        let n = features.len().min(cleaned.len());
-        let mut all_zero = true;
-        for (i, &v) in features.iter().take(n).enumerate() {
-            cleaned[i] = if v.is_finite() { v } else { 0.0 };
-            if cleaned[i] != 0.0 {
-                all_zero = false;
-            }
+        // 2026-05-23 BUG FIX (ML audit Round 11):
+        //   - Hard-check feature length (was silently truncating; missing
+        //     slots became 0 → false `all_zero` trigger).
+        //   - Replace `all_zero` heuristic with explicit warmup-detection
+        //     via `atr_pct`/`rsi14` finite-non-zero (volatility/RSI are
+        //     never legitimately exactly 0 in normal markets, but they ARE
+        //     0/NaN during warmup). This stops false-positive cold-starts
+        //     on legitimate SHORT signals at hour=0/dow=0/asset_id=0/funding=0.
+        //   - Caller MUST pass exactly EXPECTED_FEATURES.len() features.
+        if features.len() != EXPECTED_FEATURES.len() {
+            debug_assert!(
+                false,
+                "predict_proba: expected {} features, got {} — caller bug",
+                EXPECTED_FEATURES.len(),
+                features.len()
+            );
+            return self.win_rate_baseline;
         }
-        if all_zero {
+        let mut cleaned = [0.0_f64; EXPECTED_FEATURES.len()];
+        for (i, &v) in features.iter().enumerate() {
+            cleaned[i] = if v.is_finite() { v } else { 0.0 };
+        }
+        // Warmup detection: atr_pct (idx 3) and rsi14 (idx 0) are 0 only
+        // during indicator warmup. If BOTH are 0, treat as cold-start and
+        // return baseline. (Either alone may be 0 in extreme low-vol or
+        // exact midpoint conditions — but both 0 simultaneously is
+        // structurally warmup-only.)
+        let atr_idx = EXPECTED_FEATURES
+            .iter()
+            .position(|&f| f == "atr14_pct")
+            .unwrap_or(3);
+        let rsi_idx = EXPECTED_FEATURES
+            .iter()
+            .position(|&f| f == "rsi14")
+            .unwrap_or(0);
+        if cleaned[atr_idx] == 0.0 && cleaned[rsi_idx] == 0.0 {
             return self.win_rate_baseline;
         }
         let mut sum = 0.0_f64;
@@ -285,7 +318,12 @@ mod tests {
             schema_version: EXPECTED_SCHEMA_VERSION,
             asset_id_map: HashMap::new(),
         };
-        assert!((m.predict_proba(&[1.0]) - 0.5).abs() < 1e-9);
+        // 2026-05-23: must pass full 14-feature vector (post-bug-fix #5).
+        // Set atr_pct (idx 3) and rsi14 (idx 0) non-zero to bypass warmup guard.
+        let mut feats = [0.0; EXPECTED_FEATURES.len()];
+        feats[0] = 50.0; // rsi14
+        feats[3] = 0.01; // atr14_pct
+        assert!((m.predict_proba(&feats) - 0.5).abs() < 1e-9);
     }
 
     #[test]

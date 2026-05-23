@@ -60,6 +60,20 @@ auc = roc_auc_score(y_te, proba)
 print(f"OOS AUC (with SHUFFLED training labels): {auc:.4f}")
 print("Expected if no leak: ~0.50 (random predictor on test set)")
 
+# 2026-05-23 BUG FIX (ML audit Round 11): hard assertion. 2026-05-10 shuffle
+# test passed at 0.5646 but real model had close[i] lookahead → AUC 0.82
+# was bug-magic. Stricter threshold catches mild label-shuffle leakage and
+# forces a stop+investigation before deploying a leaky model. Industry rule:
+# shuffled AUC > 0.55 = SUSPICIOUS, > 0.60 = CONFIRMED leak.
+SHUFFLE_AUC_THRESHOLD = 0.55
+if auc > SHUFFLE_AUC_THRESHOLD:
+    raise SystemExit(
+        f"LEAKY: shuffle AUC {auc:.4f} > {SHUFFLE_AUC_THRESHOLD:.2f} threshold. "
+        f"Feature pipeline likely has leakage even with random labels. "
+        f"DO NOT deploy real model before fixing."
+    )
+print(f"PASS: shuffle AUC {auc:.4f} < {SHUFFLE_AUC_THRESHOLD:.2f}")
+
 print("\nThreshold sweep on TEST (real labels) using shuffle-trained model:")
 for t in [0.10, 0.15, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70]:
     keep = proba >= t
