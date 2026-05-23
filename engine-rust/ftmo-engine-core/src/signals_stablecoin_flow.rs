@@ -377,6 +377,40 @@ pub fn compute_stablecoin_flow_vote(
     None
 }
 
+/// 2026-05-23 Wave2 fix (MITTEL-5): per-asset cooldown state for the
+/// stablecoin-flow voter. Module-doc + `cooldown_bars` param previously
+/// claimed "the caller wires a stateful cooldown into its harness" — no
+/// such wiring existed for THIS voter, so cooldown was effectively 0 and
+/// the daily-cadence voter could re-fire every bar. Mirror the pattern
+/// used by signals_ofi / signals_cb_premium / signals_forex_mr.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StablecoinFlowState {
+    /// Bar index (`state.bars_seen`-style) at which the cooldown EXPIRES.
+    /// The voter abstains while `bars_seen < cd_until_bars_seen`.
+    pub cd_until_bars_seen: u64,
+}
+
+/// Stateful wrapper that honors `params.cooldown_bars`. Returns the same
+/// directional vote as `compute_stablecoin_flow_vote` but suppresses any
+/// vote while the per-asset cooldown is active. Caller is responsible for
+/// keeping `state` (one per asset) alive across bars.
+pub fn compute_stablecoin_flow_vote_stateful(
+    supply_series: Option<&[Option<f64>]>,
+    candles: &[Candle],
+    params: &StablecoinFlowParams,
+    state: &mut StablecoinFlowState,
+    bars_seen: u64,
+) -> Option<PositionSide> {
+    if bars_seen < state.cd_until_bars_seen {
+        return None;
+    }
+    let vote = compute_stablecoin_flow_vote(supply_series, candles, params);
+    if vote.is_some() {
+        state.cd_until_bars_seen = bars_seen + params.cooldown_bars;
+    }
+    vote
+}
+
 /// Internal helper enum — keeps the long/short price-confirm branch readable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SmaConfirm {

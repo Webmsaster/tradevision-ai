@@ -9,6 +9,31 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use ftmo_engine_core::Candle;
 
+/// 2026-05-23 Wave2 helper (forex weekend-gap fix): detect bar duration
+/// via min-delta over the first 20 candles. Robust to Friday→Monday gaps
+/// in forex daily caches and to occasional missing-candle holes in crypto
+/// caches. Falls back to 30min when the cache has fewer than 2 candles
+/// (sub-window slicing edge case).
+fn detect_bar_duration(candles: &[Candle]) -> i64 {
+    let n = candles.len();
+    if n < 2 {
+        return 30 * 60 * 1000;
+    }
+    let probe = n.min(21); // first 20 deltas
+    let mut min_delta: i64 = i64::MAX;
+    for w in candles[..probe].windows(2) {
+        let d = w[1].open_time - w[0].open_time;
+        if d > 0 && d < min_delta {
+            min_delta = d;
+        }
+    }
+    if min_delta == i64::MAX {
+        30 * 60 * 1000
+    } else {
+        min_delta.max(1)
+    }
+}
+
 /// 2026-05-23 Wave2 helper. Inspects `path` mtime and:
 /// - WARN-only when age >= ENGINE_CACHE_WARN_DAYS (default 7);
 /// - HARD-FAIL (anyhow Err on caller) when ENGINE_CACHE_STRICT=1 AND
@@ -238,11 +263,15 @@ pub fn align_funding(candles: &[Candle], funding: &[FundingPt]) -> Vec<Option<f6
     let mut out = Vec::with_capacity(candles.len());
     let mut f_idx = 0usize;
     let mut cur: Option<f64> = None;
-    let bar_dur_ms: i64 = if candles.len() >= 2 {
-        (candles[1].open_time - candles[0].open_time).max(1)
-    } else {
-        30 * 60 * 1000
-    };
+    // 2026-05-23 Wave2 fix (KRIT for forex): use min-delta over the first
+    // N candles instead of just `candles[1] - candles[0]`. Forex daily
+    // candles include weekend gaps (Friday close → Monday open = 3-day
+    // delta). If a cache happens to start on a Friday, the naive heuristic
+    // returns bar_dur=3d → align_* attributes events 3× the correct bin
+    // and silently corrupts funding/top-LS/cb_premium for the whole series.
+    // Min-delta is robust: even one regular Mon-Tue pair in the first 20
+    // candles yields the correct 1-day duration.
+    let bar_dur_ms: i64 = detect_bar_duration(candles);
     // 2026-05-23 Wave2 fix: funding cursor assumes monotone-increasing `t`.
     // An out-of-order entry would silently drop all later events
     // (`funding[f_idx].t < upper` fails on the spike, cursor stuck) →
@@ -252,6 +281,23 @@ pub fn align_funding(candles: &[Candle], funding: &[FundingPt]) -> Vec<Option<f6
         funding.windows(2).all(|w| w[0].t <= w[1].t),
         "align_funding: funding must be monotonically sorted by t"
     );
+    // 2026-05-23 Wave2 fix (KRIT for daily-crypto templates): on bar_dur
+    // >= 8h (i.e. daily bars), multiple Binance 8h-funding events fall
+    // into the same bar window. The default "last-wins" semantic returns
+    // ONE rate per bar, which the per-8h-bucket walker in pnl.rs then
+    // reads N× → reports `N * last_rate` instead of `sum(rates)`. Fail
+    // LOUD on this configuration so an operator who builds a Daily-Crypto
+    // template (currently no such template exists, see CLAUDE.md) is
+    // forced to use `align_funding_summed_per_bar` below instead.
+    if bar_dur_ms >= 8 * 3600 * 1000 {
+        eprintln!(
+            "[loader] WARN: align_funding called with bar_dur >= 8h ({}ms). \
+             Multiple Binance funding events collapse to last-rate-wins → \
+             pnl.rs lifetime walk will mis-count. Use align_funding_summed_per_bar() \
+             for Daily-TF crypto templates.",
+            bar_dur_ms
+        );
+    }
     for c in candles {
         let t = c.open_time;
         // Boundary-INCLUSIVE: events at [t, t + bar_dur) belong to THIS bar.
@@ -270,6 +316,45 @@ pub fn align_funding(candles: &[Candle], funding: &[FundingPt]) -> Vec<Option<f6
             f_idx += 1;
         }
         out.push(cur);
+    }
+    out
+}
+
+/// 2026-05-23 Wave2 (KRIT — Daily-TF funding aggregation). Sister to
+/// `align_funding` for bar durations ≥ 8h (currently only Daily-Crypto
+/// templates would hit this; no such template exists in production yet).
+/// Returns `Option<f64>` per candle representing the SUM of all funding
+/// rates falling in `[bar_open, bar_open + bar_dur)`. Callers using this
+/// helper MUST NOT also walk per-8h-buckets in `pnl.rs::compute_eff_pnl_
+/// with_funding` — that would double-count. Instead use a bar-step walker
+/// that reads each bar's summed rate ONCE per position lifetime.
+///
+/// For sub-8h bar durations (30m/1h/2h/4h) the sum collapses to "0 or 1
+/// rate" which matches `align_funding` exactly — function is safe to call
+/// on those TFs too but adds no value.
+#[allow(dead_code)]
+pub fn align_funding_summed_per_bar(
+    candles: &[Candle],
+    funding: &[FundingPt],
+) -> Vec<Option<f64>> {
+    let mut out = Vec::with_capacity(candles.len());
+    let mut f_idx = 0usize;
+    let bar_dur_ms = detect_bar_duration(candles);
+    debug_assert!(
+        funding.windows(2).all(|w| w[0].t <= w[1].t),
+        "align_funding_summed_per_bar: funding must be monotone-sorted by t"
+    );
+    for c in candles {
+        let t = c.open_time;
+        let upper = t + bar_dur_ms;
+        let mut accum: Option<f64> = None;
+        while f_idx < funding.len() && funding[f_idx].t < upper {
+            if funding[f_idx].r.is_finite() {
+                accum = Some(accum.unwrap_or(0.0) + funding[f_idx].r);
+            }
+            f_idx += 1;
+        }
+        out.push(accum);
     }
     out
 }
@@ -327,11 +412,7 @@ pub fn align_top_ls(candles: &[Candle], pts: &[TopLsPt]) -> Vec<Option<f64>> {
     let mut out = Vec::with_capacity(candles.len());
     let mut f_idx = 0usize;
     let mut cur: Option<f64> = None;
-    let bar_dur_ms: i64 = if candles.len() >= 2 {
-        (candles[1].open_time - candles[0].open_time).max(1)
-    } else {
-        30 * 60 * 1000
-    };
+    let bar_dur_ms: i64 = detect_bar_duration(candles);
     for c in candles {
         let t = c.open_time;
         let upper = t + bar_dur_ms;
@@ -393,11 +474,7 @@ pub fn align_cb_premium(candles: &[Candle], pts: &[CbPremiumPt]) -> Vec<Option<f
     let mut out = Vec::with_capacity(candles.len());
     let mut p_idx = 0usize;
     let mut cur: Option<f64> = None;
-    let bar_dur_ms: i64 = if candles.len() >= 2 {
-        (candles[1].open_time - candles[0].open_time).max(1)
-    } else {
-        30 * 60 * 1000
-    };
+    let bar_dur_ms: i64 = detect_bar_duration(candles);
     for c in candles {
         let t = c.open_time;
         let upper = t + bar_dur_ms;
@@ -493,11 +570,7 @@ pub fn align_stablecoin_supply(
     let mut out = Vec::with_capacity(candles.len());
     let mut p_idx = 0usize;
     let mut cur: Option<f64> = None;
-    let bar_dur_ms: i64 = if candles.len() >= 2 {
-        (candles[1].open_time - candles[0].open_time).max(1)
-    } else {
-        30 * 60 * 1000
-    };
+    let bar_dur_ms: i64 = detect_bar_duration(candles);
     for c in candles {
         let t = c.open_time;
         let upper = t + bar_dur_ms;

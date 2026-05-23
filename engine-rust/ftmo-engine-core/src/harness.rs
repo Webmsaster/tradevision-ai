@@ -1885,4 +1885,241 @@ mod tests {
         assert!(state.open_positions.is_empty());
     }
 
+    // ========================================================================
+    // 2026-05-23 Wave2 behavior tests for regime_flip_close_opposite +
+    // mutex_long_short. Audit a6e53c2 found ZERO behavioral coverage — only
+    // 2 "defaults-off" tests existed. These six tests cover the core
+    // contracts so a future template re-enabling either flag has guard rails.
+    // ========================================================================
+
+    fn cfg_with_cross_asset(symbol: &str) -> EngineConfig {
+        let mut c = cfg_basic();
+        c.cross_asset_filter = Some(crate::config::CrossAssetFilter {
+            symbol: symbol.into(),
+            direction: "any".into(),
+            fast_period: 3,
+            slow_period: 6,
+            skip_longs_if_secondary_downtrend: false,
+            skip_shorts_if_secondary_uptrend: false,
+            inverse_correlation: false,
+        });
+        c
+    }
+
+    fn long_sig() -> PollSignal {
+        PollSignal {
+            symbol: "BTC-TREND".into(),
+            source_symbol: "BTCUSDT".into(),
+            direction: PositionSide::Long,
+            entry_time: 1_000,
+            entry_price: 100.0,
+            stop_price: 98.0,
+            tp_price: 104.0,
+            stop_pct: 0.02,
+            tp_pct: 0.04,
+            eff_risk: 0.1,
+            chandelier_atr_at_entry: None,
+        }
+    }
+
+    fn short_sig() -> PollSignal {
+        PollSignal {
+            symbol: "BTC-TREND".into(),
+            source_symbol: "BTCUSDT".into(),
+            direction: PositionSide::Short,
+            entry_time: 1_000,
+            entry_price: 100.0,
+            stop_price: 102.0,
+            tp_price: 96.0,
+            stop_pct: 0.02,
+            tp_pct: 0.04,
+            eff_risk: 0.1,
+            chandelier_atr_at_entry: None,
+        }
+    }
+
+    /// Build a long-stable cross-asset feed: monotone-up closes with enough
+    /// history that the fast/slow EMAs are warmed AND `c > f > s` holds for
+    /// the lookback window.
+    fn build_uptrend_feed(n: usize) -> Vec<Candle> {
+        (0..n)
+            .map(|i| {
+                let p = 100.0 + i as f64 * 1.0;
+                make_candle(1_000 + i as i64, p, p + 0.5, p - 0.5, p)
+            })
+            .collect()
+    }
+
+    fn build_downtrend_feed(n: usize) -> Vec<Candle> {
+        (0..n)
+            .map(|i| {
+                let p = 200.0 - i as f64 * 1.0;
+                make_candle(1_000 + i as i64, p, p + 0.5, p - 0.5, p)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn regime_flip_flag_defaults_off_is_noop() {
+        // Even with positions open and a clear opposite trend, no flip-close
+        // should fire because cfg.regime_flip_close_opposite defaults to false.
+        // Open the position via a normal signal then advance bars with an
+        // opposite cross-asset trend — defaults-off must keep position alive.
+        let mut cfg = cfg_with_cross_asset("DXY");
+        cfg.max_concurrent_trades = Some(5);
+        assert!(!cfg.regime_flip_close_opposite);
+        let mut state = EngineState::initial("x");
+        let mut candles = HashMap::new();
+        // Bar 1 — open the long.
+        candles.insert("BTCUSDT".into(), vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)]);
+        candles.insert("DXY".into(), build_uptrend_feed(40));
+        let atr = HashMap::new();
+        step_bar(&mut state, &make_input(&candles, &atr, vec![long_sig()]), &cfg);
+        assert_eq!(state.open_positions.len(), 1);
+        // Bar 2 — DXY flips to clear downtrend.
+        candles.get_mut("BTCUSDT").unwrap()
+            .push(make_candle(1_001, 100.0, 101.0, 99.0, 100.0));
+        candles.insert("DXY".into(), build_downtrend_feed(40));
+        let r = step_bar(&mut state, &make_input(&candles, &atr, vec![]), &cfg);
+        assert_eq!(state.open_positions.len(), 1, "flag off → position kept across trend flip");
+        assert!(!r.challenge_ended);
+    }
+
+    #[test]
+    fn mutex_long_short_flag_defaults_off_allows_opposite() {
+        // With mutex off + long open, a short entry MUST still be allowed.
+        let cfg = cfg_basic();
+        assert!(!cfg.mutex_long_short);
+        let mut state = EngineState::initial("x");
+        // Open a long position first via signal.
+        let mut candles = HashMap::new();
+        candles.insert("BTCUSDT".into(), vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)]);
+        let atr = HashMap::new();
+        step_bar(&mut state, &make_input(&candles, &atr, vec![long_sig()]), &cfg);
+        assert_eq!(state.open_positions.len(), 1);
+        // Bar 2 — fire a short signal.
+        candles.get_mut("BTCUSDT").unwrap()
+            .push(make_candle(1_001, 100.0, 101.0, 99.0, 100.0));
+        let mut short = short_sig();
+        short.entry_time = 1_001;
+        let r2 = step_bar(&mut state, &make_input(&candles, &atr, vec![short]), &cfg);
+        assert_eq!(r2.decision.opens.len(), 1, "mutex off → opposite-side entry allowed");
+        assert_eq!(state.open_positions.len(), 2);
+    }
+
+    #[test]
+    fn mutex_blocks_opposite_direction_entry() {
+        let mut cfg = cfg_basic();
+        cfg.mutex_long_short = true;
+        cfg.max_concurrent_trades = Some(5);
+        let mut state = EngineState::initial("x");
+        let mut candles = HashMap::new();
+        candles.insert("BTCUSDT".into(), vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)]);
+        let atr = HashMap::new();
+        // Bar 1 — open long.
+        step_bar(&mut state, &make_input(&candles, &atr, vec![long_sig()]), &cfg);
+        assert_eq!(state.open_positions.len(), 1);
+        // Bar 2 — short signal must be BLOCKED.
+        candles.get_mut("BTCUSDT").unwrap()
+            .push(make_candle(1_001, 100.0, 101.0, 99.0, 100.0));
+        let mut short = short_sig();
+        short.entry_time = 1_001;
+        let r2 = step_bar(&mut state, &make_input(&candles, &atr, vec![short]), &cfg);
+        assert_eq!(r2.decision.opens.len(), 0, "mutex on → short blocked while long open");
+        assert_eq!(state.open_positions.len(), 1);
+        // Skip surfaces on result.skipped (BarStepResult.skipped, not PollDecision).
+        let skipped_for_mutex = r2.skipped.iter().any(|s| s.reason.contains("mutex"));
+        assert!(skipped_for_mutex, "skip reason should mention mutex: {:?}", r2.skipped);
+    }
+
+    #[test]
+    fn mutex_allows_same_direction_different_asset() {
+        // Mutex must NOT block a SECOND long on a DIFFERENT asset while
+        // the first long is open (engine separately enforces same-asset
+        // trade-exclusivity, so we test mutex-vs-multi-asset here).
+        let mut cfg = cfg_basic();
+        cfg.mutex_long_short = true;
+        cfg.max_concurrent_trades = Some(5);
+        let mut state = EngineState::initial("x");
+        let mut candles = HashMap::new();
+        candles.insert("BTCUSDT".into(), vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)]);
+        candles.insert("ETHUSDT".into(), vec![make_candle(1_000, 200.0, 202.0, 198.0, 200.0)]);
+        let atr = HashMap::new();
+        // Bar 1 — open long BTC.
+        step_bar(&mut state, &make_input(&candles, &atr, vec![long_sig()]), &cfg);
+        assert_eq!(state.open_positions.len(), 1);
+        // Bar 2 — long ETH signal must fire (same direction, different asset).
+        candles.get_mut("BTCUSDT").unwrap()
+            .push(make_candle(1_001, 100.0, 101.0, 99.0, 100.0));
+        candles.get_mut("ETHUSDT").unwrap()
+            .push(make_candle(1_001, 200.0, 202.0, 198.0, 200.0));
+        let eth_long = PollSignal {
+            symbol: "ETH-TREND".into(),
+            source_symbol: "ETHUSDT".into(),
+            direction: PositionSide::Long,
+            entry_time: 1_001,
+            entry_price: 200.0,
+            stop_price: 196.0,
+            tp_price: 208.0,
+            stop_pct: 0.02,
+            tp_pct: 0.04,
+            eff_risk: 0.1,
+            chandelier_atr_at_entry: None,
+        };
+        let r2 = step_bar(&mut state, &make_input(&candles, &atr, vec![eth_long]), &cfg);
+        assert_eq!(r2.decision.opens.len(), 1, "mutex must NOT block same-direction on different asset");
+        assert_eq!(state.open_positions.len(), 2);
+    }
+
+    #[test]
+    fn mutex_unblocks_after_position_closes() {
+        let mut cfg = cfg_basic();
+        cfg.mutex_long_short = true;
+        cfg.max_concurrent_trades = Some(5);
+        let mut state = EngineState::initial("x");
+        let mut candles = HashMap::new();
+        candles.insert("BTCUSDT".into(), vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)]);
+        let atr = HashMap::new();
+        // Bar 1 — open long.
+        step_bar(&mut state, &make_input(&candles, &atr, vec![long_sig()]), &cfg);
+        // Bar 2 — long stops out (price gap-down through 98 stop).
+        candles.get_mut("BTCUSDT").unwrap()
+            .push(make_candle(1_001, 100.0, 100.5, 97.0, 97.5));
+        step_bar(&mut state, &make_input(&candles, &atr, vec![]), &cfg);
+        assert_eq!(state.open_positions.len(), 0, "long stopped");
+        // Bar 3 — short signal must NOW be allowed.
+        candles.get_mut("BTCUSDT").unwrap()
+            .push(make_candle(1_002, 97.5, 98.0, 96.5, 97.0));
+        let mut short = short_sig();
+        short.entry_time = 1_002;
+        short.entry_price = 97.0;
+        short.stop_price = 99.0;
+        short.tp_price = 93.0;
+        let r3 = step_bar(&mut state, &make_input(&candles, &atr, vec![short]), &cfg);
+        assert_eq!(r3.decision.opens.len(), 1, "mutex re-allows opposite after close");
+        assert_eq!(state.open_positions.len(), 1);
+    }
+
+    #[test]
+    fn regime_flip_and_mutex_are_orthogonal_when_both_off() {
+        // Sanity: both flags default off + position open + opposite signal →
+        // signal is allowed, position is kept. Both branches must be dormant.
+        let cfg = cfg_basic();
+        assert!(!cfg.regime_flip_close_opposite);
+        assert!(!cfg.mutex_long_short);
+        let mut state = EngineState::initial("x");
+        let mut candles = HashMap::new();
+        candles.insert("BTCUSDT".into(), vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)]);
+        let atr = HashMap::new();
+        step_bar(&mut state, &make_input(&candles, &atr, vec![long_sig()]), &cfg);
+        candles.get_mut("BTCUSDT").unwrap()
+            .push(make_candle(1_001, 100.0, 101.0, 99.0, 100.0));
+        let mut short = short_sig();
+        short.entry_time = 1_001;
+        let r2 = step_bar(&mut state, &make_input(&candles, &atr, vec![short]), &cfg);
+        // Long kept (no flip-close) AND short allowed (no mutex).
+        assert_eq!(state.open_positions.len(), 2);
+        assert_eq!(r2.decision.opens.len(), 1);
+    }
+
 }

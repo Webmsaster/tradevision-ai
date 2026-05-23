@@ -14,6 +14,7 @@ pub mod exit;
 pub mod harness;
 pub mod indicators;
 pub mod ml_gate;
+pub mod multi_account_state;
 pub mod news;
 pub mod persist;
 pub mod pnl;
