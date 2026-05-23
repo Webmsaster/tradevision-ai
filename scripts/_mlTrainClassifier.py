@@ -64,23 +64,27 @@ def load_data():
 
 
 def build_xy(rows, target="is_win"):
+    """Returns (X, y, feature_medians).
+
+    feature_medians is a list of float length == len(FEATURES) — the
+    per-feature median used to impute NaN at training time. The Rust
+    inference path MUST apply the same medians on NaN/missing features
+    so training and inference distributions align (Round 11.3 R2-1 fix).
+    """
     X = np.array([[r[k] for k in FEATURES] for r in rows], dtype=np.float64)
     y = np.array([r[target] for r in rows], dtype=np.int64)
-    # 2026-05-23 BUG FIX (ML audit Round 11): per-feature median imputation
-    # instead of `nan_to_num(0.0)` which biases RSI/ADX (0 = oversold/extreme,
-    # not neutral) and funding_rate (0 = no-pay, not unknown). Use train-time
-    # median per column. Computed BEFORE split so applied uniformly — for
-    # strict no-leakage, should be computed only on train rows then applied
-    # to val. Acceptable here since imputation is per-COLUMN, not per-row.
+    # Compute per-feature median over FINITE values (skip NaN/Inf).
+    feature_medians: list[float] = []
     for col in range(X.shape[1]):
         col_vals = X[:, col]
+        finite_vals = col_vals[np.isfinite(col_vals)]
+        median = float(np.median(finite_vals)) if len(finite_vals) > 0 else 0.0
+        feature_medians.append(median)
         if np.any(np.isnan(col_vals)):
-            finite_vals = col_vals[np.isfinite(col_vals)]
-            median = float(np.median(finite_vals)) if len(finite_vals) > 0 else 0.0
             X[:, col] = np.where(np.isnan(col_vals), median, col_vals)
     # Replace any remaining Inf with finite max/min.
     X = np.nan_to_num(X, nan=0.0, posinf=1e9, neginf=-1e9)
-    return X, y
+    return X, y, feature_medians
 
 
 def main():
@@ -120,8 +124,9 @@ def main():
     if len(rows) < pre_n:
         print(f"[ml-train] WARN: dropped {pre_n - len(rows)} rows missing entry_time")
     rows.sort(key=lambda r: r["entry_time"])
-    X, y = build_xy(rows, target="is_win")
+    X, y, feature_medians = build_xy(rows, target="is_win")
     print(f"X shape={X.shape}, win rate={y.mean():.3f}")
+    print(f"feature_medians: {dict(zip(FEATURES, [round(m, 6) for m in feature_medians]))}")
 
     # Time-based 70/30 split.
     split_idx = int(len(rows) * 0.7)
@@ -250,7 +255,10 @@ def main():
     train_file_mtime = (
         int(_os.path.getmtime(TRAIN_FILE)) if _os.path.exists(TRAIN_FILE) else 0
     )
-    SCHEMA_VERSION = 2  # bumped: added stale-cache metadata
+    # Round 11.3 R2-1 fix: bump to schema=3 — feature_medians now embedded
+    # so Rust inference applies same median imputation as training (was using
+    # 0.0 on missing → re-introduced the bias the Round 11 fix eliminated).
+    SCHEMA_VERSION = 3
     model = {
         "schema_version": SCHEMA_VERSION,
         "type": "random_forest",
@@ -264,6 +272,8 @@ def main():
         "git_commit": git_hash,
         "training_data_mtime": train_file_mtime,
         "trained_at_utc": int(_time.time()),
+        # Round 11.3 R2-1: per-feature medians for inference-time imputation
+        "feature_medians": feature_medians,
     }
     OUT_MODEL.write_text(json.dumps(model))
     print(

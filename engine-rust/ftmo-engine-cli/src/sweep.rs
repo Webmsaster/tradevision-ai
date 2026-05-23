@@ -3488,7 +3488,13 @@ fn run_one_window(
                 .and_then(|s| s.get(i).copied())
                 .flatten();
             cb_premium_feed.get_mut(sym).unwrap().push(cb_p);
-            if multi_signal.use_htf_confirm && i % multi_signal.htf_stride == 0 {
+            // 2026-05-23 ML Round 11.3 R2-2: buffer-init at line 3422 already
+            // OR's both flags, but the push site here was gated on use_htf_confirm
+            // alone → MACD-gate-only runs allocated buffer but never filled it →
+            // detector saw empty slice → MACD-gate silent no-op. Match the init.
+            if (multi_signal.use_htf_confirm || multi_signal.use_htf_macd_gate)
+                && i % multi_signal.htf_stride == 0
+            {
                 if let Some(buf) = htf_closes_buf.get_mut(sym) {
                     buf.push(c.close);
                 }
@@ -4267,7 +4273,12 @@ fn run_one_window(
         // (now closed and safe). Pushing BEFORE detector at the same i
         // would make bar i's close visible via htf_closes_buf.last() →
         // lookahead through htf_trend_allows.
-        if multi_signal.use_htf_confirm && i % multi_signal.htf_stride == 0 {
+        // Round 11.3 R2-2: include use_htf_macd_gate in push-gate (mirror
+        // the buffer-init at 3422). Otherwise MACD-gate-only runs get empty
+        // buffer → silent dormant detector.
+        if (multi_signal.use_htf_confirm || multi_signal.use_htf_macd_gate)
+            && i % multi_signal.htf_stride == 0
+        {
             for sym in symbols.iter() {
                 let c = aligned.get(sym).expect("aligned missing sym")[i];
                 if let Some(buf) = htf_closes_buf.get_mut(sym) {

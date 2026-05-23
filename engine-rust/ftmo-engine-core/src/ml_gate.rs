@@ -30,12 +30,10 @@ use std::collections::HashMap;
 /// `schema_version` and `asset_id_map` fields. Inference rejects models that
 /// were exported before the writer was updated; retrain via
 /// `scripts/_mlTrainClassifier.py` to refresh.
-/// 2026-05-23 bumped to v2 with ML audit Round 11 fixes:
-///   - per-feature median imputation in trainer
-///   - case-insensitive direction parse
-///   - dedup multi-shard trades
-///   - git_commit / training_data_mtime / trained_at_utc metadata
-pub const EXPECTED_SCHEMA_VERSION: u32 = 2;
+/// 2026-05-23 v3 — Round 11.3 R2-1 fix: feature_medians now embedded in
+/// model JSON so inference applies same imputation as training (was 0.0,
+/// re-introduced the bias R11 was meant to remove).
+pub const EXPECTED_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
@@ -76,6 +74,12 @@ pub struct MlModel {
     /// when present, `asset_id_for(sym)` is the authoritative source.
     #[serde(default)]
     pub asset_id_map: HashMap<String, usize>,
+    /// 2026-05-23 ML Round 11.3 R2-1: per-feature medians used at training
+    /// for NaN imputation. Inference MUST apply the same imputation so
+    /// training-vs-inference feature distributions align. Empty → fall back
+    /// to 0.0 imputation (legacy v2 models).
+    #[serde(default)]
+    pub feature_medians: Vec<f64>,
 }
 
 /// R29-Audit-Round2.5: expected feature ordering. Inference computes
@@ -210,24 +214,27 @@ impl MlModel {
             );
             return self.win_rate_baseline;
         }
+        // Round 11.3 R2-1: use trainer-stamped feature_medians for NaN imputation
+        // (was 0.0 → re-introduced bias on funding_rate/RSI/ADX since median != 0).
+        // Empty feature_medians (legacy v2 models) → fall back to 0.0.
         let mut cleaned = [0.0_f64; EXPECTED_FEATURES.len()];
+        let use_medians = self.feature_medians.len() == EXPECTED_FEATURES.len();
         for (i, &v) in features.iter().enumerate() {
-            cleaned[i] = if v.is_finite() { v } else { 0.0 };
+            if v.is_finite() {
+                cleaned[i] = v;
+            } else if use_medians {
+                cleaned[i] = self.feature_medians[i];
+            } else {
+                cleaned[i] = 0.0;
+            }
         }
-        // Warmup detection: atr_pct (idx 3) and rsi14 (idx 0) are 0 only
-        // during indicator warmup. If BOTH are 0, treat as cold-start and
-        // return baseline. (Either alone may be 0 in extreme low-vol or
-        // exact midpoint conditions — but both 0 simultaneously is
-        // structurally warmup-only.)
-        let atr_idx = EXPECTED_FEATURES
-            .iter()
-            .position(|&f| f == "atr14_pct")
-            .unwrap_or(3);
-        let rsi_idx = EXPECTED_FEATURES
-            .iter()
-            .position(|&f| f == "rsi14")
-            .unwrap_or(0);
-        if cleaned[atr_idx] == 0.0 && cleaned[rsi_idx] == 0.0 {
+        // 2026-05-23 Round 11.3 R2-5 fix: replaced two-feature warmup
+        // heuristic (atr_pct == 0 AND rsi14 == 0) with strict ALL-zero
+        // check. Caller (ml_features_for_signal) already filters warmup
+        // via Option<None>; this is defensive-only for "caller passed
+        // zero-vec by accident" path. RSI=0 + atr_pct=0 + everything else
+        // simultaneously is structurally cold-start, not a real signal.
+        if cleaned.iter().all(|&v| v == 0.0) {
             return self.win_rate_baseline;
         }
         let mut sum = 0.0_f64;
@@ -317,6 +324,7 @@ mod tests {
             validation_auc: 0.0,
             schema_version: EXPECTED_SCHEMA_VERSION,
             asset_id_map: HashMap::new(),
+            feature_medians: vec![],
         };
         // 2026-05-23: must pass full 14-feature vector (post-bug-fix #5).
         // Set atr_pct (idx 3) and rsi14 (idx 0) non-zero to bypass warmup guard.
@@ -339,6 +347,7 @@ mod tests {
             validation_auc: 0.0,
             schema_version: EXPECTED_SCHEMA_VERSION,
             asset_id_map: map,
+            feature_medians: vec![],
         };
         assert_eq!(m.asset_id_for("ETHUSDT"), Some(3));
         // config symbol "ETH-TREND" normalises to "ETH" then "ETHUSDT".
@@ -371,6 +380,7 @@ mod tests {
             validation_auc: 0.0,
             schema_version: EXPECTED_SCHEMA_VERSION,
             asset_id_map: HashMap::new(),
+            feature_medians: vec![],
         };
         let zeros = vec![0.0_f64; EXPECTED_FEATURES.len()];
         assert_eq!(m.predict_proba(&zeros), 0.42);
@@ -410,6 +420,7 @@ mod tests {
             validation_auc: 0.0,
             schema_version: EXPECTED_SCHEMA_VERSION,
             asset_id_map: HashMap::new(),
+            feature_medians: vec![],
         };
         assert_eq!(m.asset_id_for("ANY"), None);
     }
