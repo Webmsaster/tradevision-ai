@@ -2975,7 +2975,12 @@ def test_write_json_fsyncs_parent_dir_on_posix(monkeypatch, tmp_path):
     assert len(fsync_calls) >= 2, (
         f"expected >=2 fsyncs (file + dir), got {len(fsync_calls)}"
     )
-    assert json.loads(target.read_text()) == {"ok": True}
+    # 2026-05-23 Wave2 fix: write_json now ALWAYS stamps _schema_version on
+    # top-level dicts (was: only-if-missing). Test asserts the user payload
+    # roundtripped through; the bookkeeping key is expected.
+    payload = json.loads(target.read_text())
+    payload.pop("_schema_version", None)
+    assert payload == {"ok": True}
 
 
 def test_write_json_dir_fsync_swallows_oserror(monkeypatch, tmp_path):
@@ -2998,7 +3003,10 @@ def test_write_json_dir_fsync_swallows_oserror(monkeypatch, tmp_path):
     target = tmp_path / "state.json"
     # Should not raise.
     exe.write_json(target, {"ok": True})
-    assert json.loads(target.read_text()) == {"ok": True}
+    # 2026-05-23 Wave2 fix: _schema_version always stamped on dict payloads.
+    payload = json.loads(target.read_text())
+    payload.pop("_schema_version", None)
+    assert payload == {"ok": True}
 
 
 def test_read_json_renames_corrupt_and_returns_fallback(monkeypatch, tmp_path):

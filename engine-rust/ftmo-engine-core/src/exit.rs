@@ -276,6 +276,12 @@ pub fn process_position_exit_with_held(
     }
 
     // 3. BreakEven shift — cost-adjusted (Codex Round 6 #P3). POST-CROSS.
+    // 2026-05-23 Wave2 fix: monotone guard. Standalone-BE was setting
+    // `pos.stop_price = be_stop` UNCONDITIONALLY, which would LOOSEN a stop
+    // already trailed by chandelier above entry (Long: trailed-stop > entry+cost
+    // → BE-shift drags it back down). R28_V6_PASSLOCK has both break_even AND
+    // chandelier_exit configured → real production exposure. Mirror the
+    // PTP-BE branches at L133-139 and L200-205 which already guard direction.
     if let Some(be) = cfg.break_even {
         if !pos.be_active {
             let fav = match pos.direction {
@@ -283,7 +289,19 @@ pub fn process_position_exit_with_held(
                 PositionSide::Short => (pos.entry_price - candle.close) / pos.entry_price,
             };
             if fav >= be.threshold {
-                pos.stop_price = cost_adjusted_be(pos, cfg);
+                let be_stop = cost_adjusted_be(pos, cfg);
+                match pos.direction {
+                    PositionSide::Long => {
+                        if be_stop > pos.stop_price {
+                            pos.stop_price = be_stop;
+                        }
+                    }
+                    PositionSide::Short => {
+                        if be_stop < pos.stop_price {
+                            pos.stop_price = be_stop;
+                        }
+                    }
+                }
                 pos.be_active = true;
             }
         }

@@ -151,6 +151,30 @@ impl MlModel {
                 ),
             ));
         }
+        // 2026-05-23 Wave2 fix: feature_medians MUST match feature count or be
+        // empty (legacy v2 fallback). A short/over-long vector would silently
+        // pad with 0.0 in predict_proba and quietly drift the inference toward
+        // origin-imputation on NaN inputs. v3+ models without proper medians
+        // are a build-time defect — fail loud rather than silent 0-drift.
+        if !model.feature_medians.is_empty()
+            && model.feature_medians.len() != EXPECTED_FEATURES.len()
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "ML model feature_medians length {} != expected {}",
+                    model.feature_medians.len(),
+                    EXPECTED_FEATURES.len()
+                ),
+            ));
+        }
+        if model.schema_version >= 3 && model.feature_medians.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "ML model schema_version >= 3 but feature_medians is empty — \
+                 retrain via `scripts/_mlTrainClassifier.py`".to_string(),
+            ));
+        }
         // 2026-05-23 Wave1 audit fix: validate stale-cache metadata stamps
         // (Round 11.2 wrote them but loader never checked). Warn — don't fail
         // — since the engine-commit comparison would over-trigger on every

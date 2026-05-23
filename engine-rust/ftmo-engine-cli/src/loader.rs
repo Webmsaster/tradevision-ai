@@ -194,6 +194,15 @@ pub fn align_funding(candles: &[Candle], funding: &[FundingPt]) -> Vec<Option<f6
     } else {
         30 * 60 * 1000
     };
+    // 2026-05-23 Wave2 fix: funding cursor assumes monotone-increasing `t`.
+    // An out-of-order entry would silently drop all later events
+    // (`funding[f_idx].t < upper` fails on the spike, cursor stuck) →
+    // ~all-bar-NaN funding for the rest of the series. debug_assert traps in
+    // tests + dev builds without runtime cost in release.
+    debug_assert!(
+        funding.windows(2).all(|w| w[0].t <= w[1].t),
+        "align_funding: funding must be monotonically sorted by t"
+    );
     for c in candles {
         let t = c.open_time;
         // Boundary-INCLUSIVE: events at [t, t + bar_dur) belong to THIS bar.

@@ -191,7 +191,10 @@ def _parse_events() -> list[tuple[datetime, str]]:
             dt = dt.replace(tzinfo=timezone.utc)
         out.append((dt, label))
     # Merge live events from news-events.json (Node writes from Finnhub).
-    # File format: [{"t": <unix_ms>|<iso_string>, "label": "<...>"}, ...]
+    # 2026-05-23 Wave2 fix: Node writes `{"events": [...]}` envelope, NOT a
+    # bare list (see scripts/ftmoLiveService.ts:611 writeJSON({events: ...})).
+    # Previous code's `isinstance(live_data, list)` check ALWAYS failed →
+    # Wave1's "live events merged" claim was dead. Accept either shape.
     try:
         state_dir_env = os.environ.get("FTMO_STATE_DIR")
         if state_dir_env:
@@ -199,12 +202,25 @@ def _parse_events() -> list[tuple[datetime, str]]:
             if live_path.exists():
                 live_raw = live_path.read_text(encoding="utf-8")
                 live_data = json.loads(live_raw)
-                if isinstance(live_data, list):
-                    for entry in live_data:
+                # Accept both shapes: bare list OR {"events": [...]} envelope.
+                if isinstance(live_data, dict) and isinstance(live_data.get("events"), list):
+                    live_entries = live_data["events"]
+                elif isinstance(live_data, list):
+                    live_entries = live_data
+                else:
+                    live_entries = []
+                if live_entries:
+                    for entry in live_entries:
                         if not isinstance(entry, dict):
                             continue
                         label = str(entry.get("label", entry.get("title", "live-event")))
-                        t = entry.get("t") or entry.get("ts_ms") or entry.get("iso")
+                        t = (
+                            entry.get("t")
+                            or entry.get("ts_ms")
+                            or entry.get("timestamp")
+                            or entry.get("iso")
+                            or entry.get("time")
+                        )
                         if t is None:
                             continue
                         try:
@@ -224,6 +240,32 @@ def _parse_events() -> list[tuple[datetime, str]]:
 
 
 _EVENTS_CACHE: list[tuple[datetime, str]] | None = None
+# 2026-05-23 Wave2 fix: track input file mtimes so cache invalidates when
+# Node rewrites news-events.json or refresh_from_api updates news-cache.json.
+# Previous behavior cached on first call and NEVER refreshed for the lifetime
+# of the process → live events written after process start were silently
+# ignored by the entry-gate blackout.
+_EVENTS_CACHE_MTIMES: dict[str, float] = {}
+
+
+def _current_mtimes() -> dict[str, float]:
+    """Snapshot mtimes of all files that contribute to _EVENTS_CACHE."""
+    m: dict[str, float] = {}
+    try:
+        state_dir_env = os.environ.get("FTMO_STATE_DIR")
+        if state_dir_env:
+            live_path = Path(state_dir_env) / "news-events.json"
+            if live_path.exists():
+                m[str(live_path)] = live_path.stat().st_mtime
+    except OSError:
+        pass
+    try:
+        cp = _default_cache_path()
+        if cp.exists():
+            m[str(cp)] = cp.stat().st_mtime
+    except OSError:
+        pass
+    return m
 
 
 # =============================================================================
@@ -467,9 +509,13 @@ def _events() -> list[tuple[datetime, str]]:
     refresh_from_api() itself short-circuits when the cache is fresh and
     never raises — so this is safe to call from a hot path.
     """
-    global _EVENTS_CACHE
-    if _EVENTS_CACHE is not None:
+    global _EVENTS_CACHE, _EVENTS_CACHE_MTIMES
+    # 2026-05-23 Wave2 fix: invalidate cache if any source file mtime changed.
+    current_m = _current_mtimes()
+    if _EVENTS_CACHE is not None and current_m == _EVENTS_CACHE_MTIMES:
         return _EVENTS_CACHE
+    if _EVENTS_CACHE is not None and current_m != _EVENTS_CACHE_MTIMES:
+        _EVENTS_CACHE = None  # force rebuild below
 
     if os.environ.get("NEWS_API_DISABLED", "").lower() != "true":
         try:
@@ -483,11 +529,13 @@ def _events() -> list[tuple[datetime, str]]:
             cached = _read_cache(cache_path)
             if cached:
                 _EVENTS_CACHE = cached
+                _EVENTS_CACHE_MTIMES = current_m
                 return _EVENTS_CACHE
         except Exception as exc:  # noqa: BLE001 — never break the bot
             _log(f"cache read fallback to hardcoded: {exc}")
 
     _EVENTS_CACHE = _parse_events()
+    _EVENTS_CACHE_MTIMES = current_m
     return _EVENTS_CACHE
 
 

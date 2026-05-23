@@ -373,6 +373,19 @@ SYMBOL_MAP = {
     "XRPUSDT": os.environ.get("FTMO_XRP_SYMBOL", "XRPUSD"),
     # FTMO-spezifisch: AAVUSD (ohne E) — nicht AAVEUSD wie bei Binance.
     "AAVEUSDT": os.environ.get("FTMO_AAVE_SYMBOL", "AAVUSD"),
+    # 2026-05-23 Wave2 fix: V5_FOREX_MR_PASSLOCK template emits 6 forex
+    # symbols (EURUSD/GBPUSD/USDJPY/USDCAD/AUDUSD/NZDUSD). Without explicit
+    # mapping the resolve fell through to USDT-stripping logic that turned
+    # `EURUSD` into `EUR` (no MT5 symbol) → live executor would silently
+    # produce 0 fills, defeating the entire template. Pass-through identity
+    # by default since most FTMO MT5 brokers expose forex with the same
+    # 6-char ticker; per-broker overrides via FTMO_<X>_SYMBOL env.
+    "EURUSD": os.environ.get("FTMO_EURUSD_SYMBOL", "EURUSD"),
+    "GBPUSD": os.environ.get("FTMO_GBPUSD_SYMBOL", "GBPUSD"),
+    "USDJPY": os.environ.get("FTMO_USDJPY_SYMBOL", "USDJPY"),
+    "USDCAD": os.environ.get("FTMO_USDCAD_SYMBOL", "USDCAD"),
+    "AUDUSD": os.environ.get("FTMO_AUDUSD_SYMBOL", "AUDUSD"),
+    "NZDUSD": os.environ.get("FTMO_NZDUSD_SYMBOL", "NZDUSD"),
 }
 
 
@@ -728,9 +741,12 @@ PYTHON_STATE_SCHEMA = 1
 
 def write_json(path: Path, obj: Any) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    # Auto-inject schema_version on top-level dict payloads (idempotent).
+    # Auto-inject/overwrite schema_version on top-level dict payloads.
     # Lists / atomic values pass through unchanged.
-    if isinstance(obj, dict) and "_schema_version" not in obj:
+    # 2026-05-23 Wave2 fix: ALWAYS overwrite (was: only-if-missing). Sticky
+    # old-version key would survive PYTHON_STATE_SCHEMA bumps and defeat the
+    # warning loop / future migrations on round-tripped state.
+    if isinstance(obj, dict):
         obj = {**obj, "_schema_version": PYTHON_STATE_SCHEMA}
     # BUGFIX 2026-04-28: PID-suffixed tmp prevents cross-process race
     # (Node telegramBot and Python both write bot-controls.json).
@@ -929,7 +945,15 @@ def compute_live_cluster() -> dict:
     oldest: Optional[int] = None
     if SIGNAL_HISTORY_PATH.exists():
         try:
-            for line in SIGNAL_HISTORY_PATH.read_text().splitlines():
+            # 2026-05-23 Wave2 fix: take the signal-history lock for the read.
+            # Writers hold this lock (see _log_signals_to_history at L822). A
+            # bare read here can observe a half-flushed appended line → JSON
+            # parse error or partial record + missed gate. Cluster gate is
+            # safety-critical (decides whether to send orders) — must be
+            # consistent with what writers atomically committed.
+            with _file_lock(STATE_DIR / "signal-history.lock"):
+                lines = SIGNAL_HISTORY_PATH.read_text().splitlines()
+            for line in lines:
                 if not line.strip():
                     continue
                 try:
@@ -2634,19 +2658,60 @@ def place_market_order(
             f"news-blackout entered during order prep: {news_block_recheck}",
             lot, None,
         )
-    result = mt5.order_send(request)
+    # 2026-05-23 Wave2 fix: retry transient retcodes (REQUOTE / PRICE_OFF /
+    # PRICE_CHANGED / CONNECTION). Previous code returned immediately on
+    # first failure, dropping a signal that the broker would have accepted
+    # 200ms later. Also: accept both DONE and DONE_PARTIAL (10009) — the
+    # post-send block already handles partial-fill volume reconciliation.
+    _DONE_OK = {mt5.TRADE_RETCODE_DONE, getattr(mt5, "TRADE_RETCODE_DONE_PARTIAL", -1)}
+    _RETRY_CODES = {
+        getattr(mt5, "TRADE_RETCODE_REQUOTE", 10004),
+        getattr(mt5, "TRADE_RETCODE_PRICE_CHANGED", 10020),
+        getattr(mt5, "TRADE_RETCODE_PRICE_OFF", 10021),
+        getattr(mt5, "TRADE_RETCODE_CONNECTION", 10031),
+    }
+    result = None
+    last_err = ""
+    for attempt in range(3):
+        result = mt5.order_send(request)
+        if result is None:
+            last_err = "order_send returned None"
+            time.sleep(0.2 * (attempt + 1))
+            continue
+        if result.retcode in _DONE_OK:
+            break
+        last_err = f"retcode={result.retcode} {getattr(result, 'comment', '')}"
+        if result.retcode in _RETRY_CODES and attempt < 2:
+            time.sleep(0.2 * (attempt + 1))
+            continue
+        break
     if result is None:
-        return OrderResult(False, None, "order_send returned None", lot, fill_price)
-    if result.retcode != mt5.TRADE_RETCODE_DONE:
-        return OrderResult(False, None, f"retcode={result.retcode} {getattr(result, 'comment', '')}", lot, fill_price)
+        return OrderResult(False, None, last_err or "order_send returned None", lot, fill_price)
+    if result.retcode not in _DONE_OK:
+        return OrderResult(False, None, last_err, lot, fill_price)
     # 2026-05-16 Round 9 HIGH FIX (ftmo_executor agent): MT5 also returns
-    # `TRADE_RETCODE_DONE_PARTIAL` (10009) on partial fills. Pre-fix code
-    # treated that as DONE while the broker filled only a fraction (e.g.
-    # 0.3 of 1.0 lot). Risk management assumed full lot → SL distance × lot
-    # ratio diverged from reality. Use `result.volume` (the broker-filled
-    # qty) as the authoritative size; pass it back so the caller stores
-    # the actual fill, not the requested size.
-    filled_lot = getattr(result, "volume", None) or lot
+    # `TRADE_RETCODE_DONE_PARTIAL` (10009) on partial fills. Use `result.volume`
+    # (the broker-filled qty) as the authoritative size; pass it back so the
+    # caller stores the actual fill, not the requested size.
+    # 2026-05-23 Wave2 fix: volume=0 on DONE_PARTIAL means nothing actually
+    # filled → treat as failure (do NOT fall back to requested `lot` — would
+    # create a phantom position with no broker counterpart). On full DONE,
+    # volume=0 typically means the broker/mock omitted the field; fall back
+    # to the requested lot (matches pre-Wave2 behavior for non-partial).
+    raw_volume = getattr(result, "volume", None)
+    done_partial = result.retcode == getattr(mt5, "TRADE_RETCODE_DONE_PARTIAL", -1)
+    if raw_volume is None:
+        filled_lot = lot
+    elif raw_volume <= 0.0:
+        if done_partial:
+            return OrderResult(
+                False, None,
+                f"zero-fill DONE_PARTIAL (no broker position created)",
+                lot, fill_price,
+            )
+        filled_lot = lot  # full DONE + 0 volume = mock omission, trust request
+    else:
+        filled_lot = raw_volume
     if filled_lot < lot * 0.99:
         # Partial fill — warn but accept (don't reject, position IS open).
         # Pass actual filled volume so risk-mgmt downstream uses correct size.

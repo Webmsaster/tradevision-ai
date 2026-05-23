@@ -81,6 +81,10 @@ interface ClosedEvent {
   // → tp/stop counts < total recent → winRate based on tpCount/recent
   // was systematically wrong, and expected_pnl_pct fell to 0 → drift
   // looked artificially green. Now treated as broker-driven realises.
+  // 2026-05-23 Wave2 fix: real Python emitters (close_position call-sites in
+  // tools/ftmo_executor.py). NOT `time`, `passlock_target_hit`, `force_close_max_days`,
+  // `emergency` (those Wave1 strings are fabricated). `emergency:<reason>` is a
+  // prefix; `ptpL<idx>_final` is a prefix too.
   exit_reason?:
     | "tp"
     | "stop"
@@ -89,7 +93,7 @@ interface ClosedEvent {
     | "hold_expired"
     | "news_blackout"
     | "kill_request"
-    | string; // "emergency:..." prefix from _emergency_close_all_positions
+    | string; // "emergency:..." + "ptpL<idx>_final" prefix forms
   slippage_bps?: number | null;
   symbol?: string;
   volume?: number;
@@ -181,18 +185,26 @@ function joinTrades(events: unknown[]): JoinedTrade[] {
     // Use the ACTUAL realised price-delta as "expected" for these classes
     // — the exit reason was triggered by an in-engine rule, not a TP/SL
     // hit, so the realised PnL IS the engineered outcome.
+    // 2026-05-23 Wave2 fix: Wave1's reason strings were FABRICATED — Python
+    // emits `time_exit` (not `time`), `emergency:<reason>` PREFIX (not literal
+    // `emergency`), `ptpL<idx>_final`, `hold_expired`, `kill_request`. The
+    // `passlock_target_hit` and `force_close_max_days` literals are never
+    // emitted at all. Resync to the real strings (grep'd from
+    // tools/ftmo_executor.py close_position call-sites + emergency_reason_tag).
     let expected_pnl_pct = 0;
-    if (c.exit_reason === "tp" && o.tp_pct) {
+    const reason = c.exit_reason ?? "";
+    if (reason === "tp" && o.tp_pct) {
       expected_pnl_pct = o.tp_pct;
-    } else if (c.exit_reason === "stop" && o.stop_pct) {
+    } else if (reason === "stop" && o.stop_pct) {
       expected_pnl_pct = -o.stop_pct;
     } else if (
-      c.exit_reason === "time" ||
-      c.exit_reason === "manual" ||
-      c.exit_reason === "passlock_target_hit" ||
-      c.exit_reason === "force_close_max_days" ||
-      c.exit_reason === "news_blackout" ||
-      c.exit_reason === "emergency"
+      reason === "time_exit" ||
+      reason === "hold_expired" ||
+      reason === "manual" ||
+      reason === "news_blackout" ||
+      reason === "kill_request" ||
+      reason.startsWith("emergency:") ||
+      reason.startsWith("ptpL")
     ) {
       // Engine-driven exit — expected == realised by definition.
       expected_pnl_pct = raw_pnl_pct;
