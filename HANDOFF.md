@@ -1,149 +1,229 @@
-# Session Handoff - 2026-05-23 (Update 2)
+# Session Handoff - 2026-05-23 (Update 3 - Bug-Fix Marathon)
 
-## What was done (50-Agent + Engine Hunt)
+## TL;DR — Mega-Session Results
 
-Branch `feature/r28-deploy`. Focus: **engine-Erweiterung BIDIR-shorts-only + Forex-MR + parallel 50-Agent hunt** für orthogonale Stack-5-Kandidaten und neue profit-lever.
+**Branch:** `feature/r28-deploy`. **7 commits** dieser Session-Phase. **~30 verifizierte Bugs gefixt** (10 ML Round 11 + 5 Round 11.2 + 5 Round 11.3 + 70+ direction-string sites protected + 4 Wave1 project-audit). **Tests grün:** Rust 440/440 ✓.
 
-### 50-Agent-Hunt — Top Findings (geordnet nach $-impact)
+## What was done
 
-| #   | Finding                                                  | Status                               | Quantifiziert                                                |
-| --- | -------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------ |
-| 1   | **FundingPips (8% P1 statt FTMO 10%)**                   | Strukturell — kein code              | **+10pp** projected pass-rate, $429 fee vs $540, 95% split   |
-| 2   | **TITANIUM trade-rate boost** (mct=10, hours+12, hold/2) | Sweep-plan ready, ungetested         | Cell D projected **+5-10pp** standalone (49.5 → ~55-60%)     |
-| 3   | **TP-mult 1.10 → 1.14**                                  | Easy CLI change                      | **+1.5pp** measured in prior Phase8/25b sweeps               |
-| 4   | **MR `--signals meanrev` path bug**                      | 10-LOC fix in `sweep.rs:3626-3637`   | Cell C (RSI 20/80, cd 16) projected **+5-9pp** on MR account |
-| 5   | **Per-asset risk_frac** (vol-scaled)                     | 1-line patch                         | projected **+1-3pp** standalone                              |
-| 6   | **Ichimoku 6th voter**                                   | mv=3 step=3 zeigte +7.06pp indicator | projected **+1-3pp**                                         |
-| 7   | **Cluster-gate true-seq grid** (b5-6, m2-3)              | Script bereit, ~2-3h compute         | projected **+3-7pp** combined-funded                         |
-| 8   | **`--phase2-risk-mult`** ungenutzt                       | CLI flag exists                      | projected **+2-4pp** combined-funded                         |
-| 9   | **Equity-conditional TP-tightening**                     | ~50 LOC in harness.rs                | projected **+1-3pp**                                         |
-| 10  | **Stablecoin USDT-supply voter activated**               | Data fetched (3098 daily points)     | Sweep pending                                                |
+### Phase 1: Engine extension (committed: `3134a70`)
 
-### Engine-Work delivered (this session)
+- **SHORTS-only Template** `v5_amber_max_passlock_shorts_only` — measured 29.13% combined-funded standalone (= BIDIR class)
+- **Forex-MR Template** `v5_forex_mr_passlock` + SignalSrc::ForexMr wiring + `--timeframe 1d` + `_daily.json` loader + TF-scaled warmup
+- Daily-only Forex-MR debunked (0/200 pass — needs 30m forex data)
+- Per-asset cost-patch reverted (-3.24pp regression on AMBER)
 
-1. **SHORTS-only Template** — `v5_amber_max_passlock_shorts_only()` + selector + sweep MEASURED.
-   - **Honest standalone (1023w, step=1d, strict-pass):** P1 **50.15%**, P2-conditional **58.09%**, absolute combined-funded **~29.13%**
-   - Vergleichbar mit BIDIR (29.79%), deutlich über MR (16.15%)
-   - Projected Stack-5 uplift +3-5pp (corr-with-BIDIR vermutlich +0.3-0.5) → **~62-64% combined-funded**
-   - Stack-4 REPLACEMENT-Option: SHORTS-only statt MR → vermutlich +1-3pp uplift (29% standalone vs MR's 16%)
+### Phase 2: HYBRID single-account hunt (debunked)
 
-2. **Forex-MR Template + Engine wiring** — Detector existed, now fully integrated:
-   - `SignalSrc::ForexMr` in sweep dispatcher (single + multi-asset path)
-   - `v5_forex_mr_passlock()` template (6 FX majors: EUR/GBP/JPY/CAD/AUD/NZD)
-   - `--timeframe 1d` + `_daily.json` loader support
-   - `win_plan_warmup` jetzt TF-scaled (100 bars for daily vs 5000 for 30m)
-   - **Daily-only test: 0/200 pass (162 trades total!)** — trade-starved auf daily, braucht 30m forex data oder min_trading_days<<4
-   - Verdict: **Template gebaut, aber daily-only NICHT viable**. 30m forex fetch via Dukascopy = 2-4h Aufwand.
+- Built `v5_amber_max_passlock_hybrid` template — 9 variants tested
+- All worse than AMBER alone (best: v7 with `mutex_long_short` = 29.23%)
+- Built engine features `regime_flip_close_opposite` + `mutex_long_short` (config flags off by default)
+- Empirical proof: shared-equity path-dependency dominates orthogonality
 
-3. **Per-asset cost patch — REVERTED**: Agent änderte uniform 30/8/4 auf {BTC:15/10/5, ETH:25/10/5, alts:35/12/7} — measured -3.24pp regression auf AMBER baseline (52.31 → 49.07). Reverted bis live drift-monitor calibrates.
+### Phase 3: ML Bug-Audit (commits `5861b82`, `b8c89a4`, `b4908ea`)
 
-### DEBUNKED this session (zusätzlich zu 28 prior)
+- **Round 11** (10 bugs): orphan pipeline delete, entry_time fix, direction case fix, ml_gate.rs predict_proba + asset_id_for, dedup, nan_imputation, schema bump v1→v2, shuffle test assertion
+- **Round 11.2** (5 verification follow-ups): CUTOFF entry_time edge case, dedup direction normalization, bi-directional shuffle threshold
+- **Round 11.3** (5 round-2 bugs): feature_medians embedded, htf_macd_gate buffer fix, funding-index off-by-one, stale fixtures archived, warmup heuristic
+- ML retrained: **AUC 0.5111 (coinflip)** — empirically confirms post-bug-fix ML has no edge
 
-| #   | Lever                           | Why debunked                                                       |
-| --- | ------------------------------- | ------------------------------------------------------------------ |
-| 1   | Pyramid sizing v2               | STRUCTURELL DEAD — liveCaps blockt, bug-magic ohne bypass          |
-| 2   | Daily-loss-throttle (IDLT grid) | Today's sweep: 0 bis -0.44pp, baseline beats all 5 cells           |
-| 3   | Bull/bear regime switch         | Volatility classifier 53.4% accuracy = coin-flip                   |
-| 4   | hold_bars regime-conditional    | `time_exit_enabled=false` default = hold_bars DEAD CODE in AMBER   |
-| 5   | Basket-trim (drop bottom EV)    | -0.98 to -3.23pp confirmed empirical                               |
-| 6   | PASSLOCK target_buffer tuning   | <2% revert rate × 50% pass-of-those = <1pp upside                  |
-| 7   | CME basis voter                 | BTC-only, free-data via Coinglass, expected <0.5pp                 |
-| 8   | Top-trader LSR voter            | Data fix possible but Binance API 30d cap → no backtest validation |
-| 9   | mv=3+ voter quorum              | -2 to -12pp (mv=2 confirmed optimal)                               |
+### Phase 4: Direction-string global fix (commit `559edbe`)
 
-### Walk-forward Recovery Finding
+- Created `tools/direction_util.py` with `normalize_direction/is_long/is_short/dir_sign/opposite`
+- Protected ~70 strict-compare sites in `tools/ftmo_executor.py` via normalize-at-source (signal-history writer + validation gate)
+- Eliminated case-drift sign-flip risk on live trading
 
-Prior agent claimed "+8% Funded-Target STABIL" was based on a Q3 outlier hump. Re-analysis:
+### Phase 5: TITANIUM trade-rate hunt
 
-- **+6% target IS robust** (58.55% IS≈OOS, drift +0.08pp) but `+8% target gives +50% more $-profit/mo`
-- Conflicting agent analyses — one says +6% safer, another says +8% Q4 actually shows recency-strength (+9.86pp). **MITTEL trust-level, deploy decision = user's call**.
+- Cell E (mct=10 + hours+12 + hold/2) = **49.01% P1** (+5.23pp vs baseline 43.78%)
+- Better than projected. Apply to Stack-4 TITANIUM account → +1-2pp combined-funded
 
-## Current state
+### Phase 6: 50-Agent project-wide bug audit (commit `9c5b1fd`)
 
-- **All test suites green:** Rust workspace ✓, TS unit 1257 ✓, typecheck 0.
-- **Branch:** `feature/r28-deploy` (NOT pushed; 2 new commits this session über PR #71 hinaus)
-- **Engine binaries fresh-built** with SHORTS-only + Forex-MR + daily TF support.
-- **Stack-4 baseline 59.10%** remains valid (cost-patch reverted).
+- 17 specialized agents launched, all completed
+- **4 critical bugs fixed in this commit:**
+  1. harness.rs force-close day mis-stamp (analytics drift)
+  2. harness.rs regime-flip EMA hysteresis truncated-slice (false trends)
+  3. `MAX_SIGNAL_AGE_MS = 5min → 15min` (was edge-case for 4h emitter)
+  4. live executor `LIVE_MAX_STOP_PCT = 0.05` cap added (engine had it, live missed)
 
-### Active Champion Stack-4 (unchanged)
+## Verified Bugs from 17-Agent Audit (sortiert nach severity)
 
-| Account               | Template                                | Combined-Funded |
-| --------------------- | --------------------------------------- | --------------- |
-| 1                     | V5_AMBER_MAX_PASSLOCK + BNB 18/50       | 32.90%          |
-| 3                     | V5_TITANIUM_PASSLOCK + BNB 18/50        | 21.20%          |
-| 4                     | V5_AMBER_MAX_MR_PASSLOCK + BNB 18/50    | 16.15%          |
-| 5                     | V5_AMBER_MAX_PASSLOCK_BIDIR + BNB 18/50 | 29.79%          |
-| **Stack-4 OR honest** | offset=1 strict math                    | **59.10%**      |
+### 🔴 KRITISCH — Deploy-Blocker (FIXED in commit 9c5b1fd)
 
-### Realistic Live Profit-Erwartung — Updated mit Multi-Firm-Analyse
+- ✅ harness.rs force-close day mis-stamp
+- ✅ harness.rs regime-flip EMA hysteresis comparison
+- ✅ MAX_SIGNAL_AGE_MS=5min (signals dropped on 4h cron)
+- ✅ live executor missing stop_pct cap
 
-| Modell                                    | $/Monat trader-net | %/Monat      |
-| ----------------------------------------- | ------------------ | ------------ |
-| 4× FTMO $100k = $400k (current)           | ~$10-18k           | 2.5-4.5%     |
-| 4× FundingPips $100k = $400k (8% target)  | ~$15-23k           | 3.75-5.75%   |
-| **2× FP $200k + 2× FP $100k = $600k (D)** | **~$22-31k**       | **3.7-5.2%** |
-| Add SHORTS-only as 5th (FP-only) → $700k  | ~$27-37k           | 3.85-5.3%    |
+### 🟡 KRITISCH — Deploy-Blocker (NOT YET FIXED — next session)
 
-**After DE-tax (~50%) + ops cost ($2-4k/mo):** Net ~$3-9k/mo realistic for current; ~$10-15k/mo for D+5stack. **CAGR auf $400k: 6-15%** depending on scenario.
+- `scripts/deploy/failover_broker.py` non-atomic write + no lock → multiple ACTIVE accounts possible
+- `tools/ftmo_kill.py` bypasses bot-controls.lock → kill marker LOST in race
+- `engine-rust/.../reconcile.rs` schema mismatch with Python writer → offline trades silently lost
+- `engine-rust/.../reconcile.rs::reconcile_offline()` is dead code (never called from prod)
+- `tools/news_blackout.py` Python ↔ Rust window asymmetry (30/60 vs 30/15 default)
+- `news_blackout.py` does NOT use live `news-events.json` (only hardcoded list)
+- Race between news-gate check + `mt5.order_send` (~5-30s broker latency)
+- `cache_updater.py` only refreshes 30m — funding/5m/2h/lsr stale 14-21 days
+- `cache_updater.py` crashes whole batch on malformed cache (no per-file isolation)
+- HYBRID template (`v5_amber_max_passlock_hybrid`) C1-C3: source_symbol mismatch + risk doubled + doc/code semantic flip
 
-## Next Steps (priority-ordered)
+### 🟠 HIGH — Real bugs (NOT FIXED)
 
-1. **Live-Deploy Stack-4 sofort** — kein Blocker, ready as-is:
+- `tools/ftmo_executor.py` SIGTERM cleanup doesn't persist positions to disk
+- `tools/process_lock.py` `file_lock` spins forever on persistent contention (no observability)
+- exit.rs C1: time-exit off-by-one (`>=` vs TS `>`) → 1-3pp drift on chandelier configs
+- ml_gate.rs git_commit/training_data_mtime validation never wired (R11.2 only half-shipped)
+- 80+ sweep scripts have no pre-run cache-validation
+- Live executor: signal-history.jsonl race between tracker + executor (cluster-gate over-counts)
+- Live executor: `compute_live_cluster` reads entire 10MB file every 30s poll
+- Sizing risk-budget: `MCT=10 × maxRiskFrac=0.4 × stop=0.05 × lev=2 = 40%` modelled-loss vs 5% daily-loss cap (no pre-validation)
+- Cross-asset correlation: filter sees "3 longs" not "BTC+ETH+SOL all bullish ≈ 1.0 corr"
+- Telegram: 4 missing `html_escape` calls + Python 429 ignores Retry-After header
+- TS Telegram: `critical` parameter missing (Python has, TS doesn't) → breach alerts silenceable
+- Health monitor: bot-liveness ≠ trading-liveness (no `mt5_disconnected` / `no signals N hours` checks)
+- driftMonitor: `expected_pnl_pct = 0` for all non-TP/Stop exits → undercounts PASSLOCK drift
+- Backup: ZERO. State-dir loss = total FTMO bust
+- KRIT: Python state files have NO `schema_version` field (rename = silent stale-load)
+- `tf-marker.json` not atomically written (crash mid-write = bypass cross-TF guard)
+- Live executor: `pos.get("direction", "long")` silent-long-default at 5 sites (now wrapped with normalize_direction)
+- News: hardcoded 2026 FOMC events only — bot silently runs blackout-disabled 2026-12-31 23:59
+- News: no NY-holiday calendar (release shifts not handled)
+- News: missing FOMC minutes, Powell pressers, ECB, BOJ, ETF approval dates
+- Templates: 6 selectors missing from `known_selectors()` (HYBRID, FOREX_MR, MPTP_V04A, SHARPE_TIGHT, STEP2)
+- Test coverage: 0 tests for SHORTS-only / BIDIR / regime-flip-close / mutex-long-short / direction_util — 4 newest features
 
-   ```bash
-   cp .env.ftmo.account-{1,3,4,5}.example .env.ftmo.account-{1,3,4,5}
-   pm2 start tools/ecosystem.orthogonal4stack.config.js
-   ```
+### 🟢 MEDIUM (NOT FIXED)
 
-2. **Quick-Wins implementieren** (1-2h total):
-   - Tausche `--override-tp-mult 1.10` → `1.14` in deploy-configs (+1.5pp easy)
-   - Per-asset risk_frac patch + sweep (1h, +1-3pp)
-   - Fix MR `--signals meanrev` path bug (10 LOC) + Cell C tuning sweep (~6h compute, +5-9pp on MR account)
+- Forex-MR template: `..AssetConfig::default()` silent-inheritance time-bomb
+- Forex-MR / hybrid hold_bars per-asset None → falls back to cfg.hold_bars (potential surprise)
+- `_compute_magic_id` numeric ≥1000 unbounded growth (not collision-risk but undocumented)
+- Single-account default `MAGIC=231` shared globally (mitigated by FTMO_EXPECTED_LOGIN if set)
+- timing-gate.json shared globally if FTMO_ACCOUNT_ID unset
+- `fetch_premium_index.py` infinite retry loop on persistent error + non-atomic write
+- `lsr_collector.py` silent-fail anti-pattern (returns [] on error, no retry/alert)
+- CI/CD: first-party actions float on major tags (vs SHA pinned 3rd-party)
+- CI/CD: pre-commit hook only does `lint-staged` (no typecheck/test)
+- CI/CD: prod-smoke doesn't cover auth/Supabase/Stripe paths
+- Dependencies: 2 MODERATE npm vulns (`brace-expansion`, `ws`) — fix via `npm audit fix`
+- `.env.ftmo.amber/titanium/demo2.example` missing FTMO_PROFIT_TARGET explicit
+- engine_features.py + parity_check.py: ~50 strict-string direction compares (callers now safe, defensive shim recommended)
 
-3. **TITANIUM trade-rate hunt** — script ready (`scripts/_titanium_trades_boost_2026_05_23.sh`), ~2h compute, projected Cell D +5-10pp:
+## Stack-4 Champion (unchanged but TITANIUM tunable)
 
-   ```bash
-   bash scripts/_titanium_trades_boost_2026_05_23.sh
-   ```
+| Account               | Template                                | Combined-Funded | Notes                                         |
+| --------------------- | --------------------------------------- | --------------- | --------------------------------------------- |
+| 1                     | V5_AMBER_MAX_PASSLOCK + BNB 18/50       | 32.90%          | best single                                   |
+| 3                     | V5_TITANIUM_PASSLOCK + BNB 18/50        | 21.20%          | **+5.23pp via mct=10+hours+12+hold/2 tuning** |
+| 4                     | V5_AMBER_MAX_MR_PASSLOCK + BNB 18/50    | 16.15%          | weakest (replace with SHORTS-only?)           |
+| 5                     | V5_AMBER_MAX_PASSLOCK_BIDIR + BNB 18/50 | 29.79%          |                                               |
+| **Stack-4 OR honest** | offset=1 strict math                    | **59.10%**      | (recompute with TITANIUM tuning)              |
 
-4. **Cluster-gate true-sequential grid** — script ready, ~2-3h:
+**Verified profit improvements (this session):**
 
-   ```bash
-   tmux new -s clusterhunt 'bash scripts/_clusterhunt_grid_2026_05_23.sh'
-   ```
+- TITANIUM trade-rate boost → +5.23pp P1 standalone → +1-2pp Stack-4
+- SHORTS-only replacement of MR → projected +1-3pp Stack-4 (29% vs 16%)
+- FundingPips switch (8% target vs FTMO 10%) → +10pp pass-rate, $429 vs $540 fee
 
-5. **Forex-MR auf 30m** — Dukascopy fetch (2-4h) + re-run sweep. Wenn standalone ≥25%: Stack-5 add via `real_funded_prob.py`.
+**Empirically debunked (this session):**
 
-6. **Prop-firm Migration**: FundingPips signup + 60-90d demo validation → potentiell +50% expected profit.
+- Single-account HYBRID (9 variants tested, all < AMBER alone)
+- ML cycle-selector (AUC 0.5111 = coinflip post-bug-fix)
+- Daily Forex-MR (0/200 pass — trade-starved)
+- Per-asset cost-patch (-3.24pp regression)
 
-7. **Stablecoin voter** — Data fetched, just run a sweep with `--regime-use-stablecoin`.
+## Live Profit Update (after audit)
 
-8. **Live drift-monitor activation** für cost_bp re-calibration nach 1-2 Wochen live-trades.
+| Modell                                           | $/Monat trader-net     |
+| ------------------------------------------------ | ---------------------- |
+| 4× FTMO $100k (current Stack-4)                  | ~$10-18k               |
+| **Stack-4 with TITANIUM-tuned + SHORTS-replace** | **~$12-22k** projected |
+| 4× FundingPips $100k (8% target)                 | ~$15-23k               |
+| **2× FP $200k + 2× FP $100k = $600k**            | **~$22-31k** ← max ROI |
 
-## Open Issues / Risks
+After DE-tax (~50%) + ops (~$2-4k/mo): Net **~$4-10k/mo** Stack-4, ~$10-15k/mo with FundingPips upgrade.
 
-- **Forex-MR daily-only NICHT viable** (0/200 pass). Template existiert für später wenn 30m forex data verfügbar.
-- **Cost-model patch reverted** — die "ehrlichere" Per-Asset costs gaben -3.24pp regression. Need live data to calibrate.
-- **+8% vs +6% Funded-Target** ambiguity — agents widersprechen sich. Conservative: +6% (robust). Aggressive: +8% (+50% $-profit).
-- **Tax/Operational reality check** (DE Spitzensteuersatz 47.5% + Gewerbe + KV): Net = ~33% von gross. CAGR 6-15% nach allem auf $400k initial.
-- **150 ungenutzte CLI flags** in sweep.rs — viele Hebel ungetestet (`--phase2-risk-mult`, `--adaptive-tp`, `--ds-aggressive-factor`, `--max-consec-stops-per-day`).
+## Next Session Priorities
 
-## Key Files (this session)
+### Tier 1: Deploy-Blocker Bugs (2-3h)
 
-- `engine-rust/ftmo-engine-core/src/templates.rs:586` — `v5_amber_max_passlock_shorts_only()` + selector
-- `engine-rust/ftmo-engine-core/src/templates.rs:710` — `v5_forex_mr_passlock()` + selector
-- `engine-rust/ftmo-engine-cli/src/sweep.rs` — SignalSrc::ForexMr wired (parser, dispatcher, label, multi-asset arm)
-- `engine-rust/ftmo-engine-cli/src/sweep.rs:3087` — `win_plan_warmup` TF-scaled
-- `engine-rust/ftmo-engine-cli/src/sweep.rs:3316` — `_daily.json` + `--timeframe 1d`
-- `scripts/cache_bakeoff/macro/usdt_supply_daily.json` — 3098 daily points fetched
-- `scripts/fetch_usdt_supply_daily.py` — DefiLlama fetcher
-- `scripts/cycle_reaggregation.py` — HOLD-1 confirmed optimal vs HOLD-N
-- `scripts/_shortsonly_sweep_2026_05_23.sh` — SHORTS-only initial sweep (OLD costs)
-- `scripts/_shortsonly_stack5_final_2026_05_23.sh` — Final SHORTS-only re-baseline (reverted costs)
-- `scripts/_titanium_trades_boost_2026_05_23.sh` — TITANIUM trade-rate hunt (ungestartet)
-- `scripts/_clusterhunt_grid_2026_05_23.sh` — cluster true-seq grid (ungestartet)
-- `scripts/_stack4_rebaseline_costs_2026_05_23.sh` — Stack-4 cost re-baseline (irrelevant nach revert)
+1. Fix `failover_broker.py` atomicity + lock
+2. Fix `ftmo_kill.py` bot-controls.lock bypass
+3. Fix `reconcile.rs` schema mismatch + wire `reconcile_offline()` to prod path
+4. Add state-dir backup cron (rsync/S3) — eliminates FTMO-bust-on-disk-loss
+5. HYBRID template: either fix C1-C3 OR delete (currently broken state)
 
-## Pre-existing handoff content (unchanged scope from earlier today)
+### Tier 2: Profit Levers (1-2h)
 
-See git log `c4bd8c3..98f0137` for Stack-4 TITANIUM swap, walk-forward funded-target, BNB 18/50 patch, IDLT debunk, MR-tuning architectural finding.
+1. TITANIUM trade-rate boost: deploy in `ecosystem.orthogonal4stack.config.js`
+2. SHORTS-only replace MR in Stack-4 (Account-4 swap)
+3. TP-mult 1.10 → 1.14 in deploy configs (+1.5pp easy)
+4. Per-asset risk_frac vol-scaled (+1-3pp standalone)
+
+### Tier 3: Infrastructure (2-3h)
+
+1. Schema versioning for ALL Python state files
+2. Lock signal-history.jsonl writes (tracker + executor race)
+3. Health-monitor: real liveness (`mt5_disconnected` + `no signals 4h`)
+4. driftMonitor: handle non-TP/Stop exits properly
+5. Test coverage: 10 critical missing tests from audit
+
+### Tier 4: Optional (FundingPips, 60d parallel run)
+
+1. FundingPips demo signup → MT5 symbol enumeration
+2. Migration roadmap: 60d parallel-run plan in agent output
+3. Friday-Close-Hook needed for FundingPips funded-phase
+
+## Key Files (this entire session)
+
+### Engine (Rust)
+
+- `engine-rust/ftmo-engine-core/src/templates.rs` — SHORTS-only, Forex-MR, HYBRID (broken)
+- `engine-rust/ftmo-engine-core/src/harness.rs` — regime_flip_close_opposite + mutex_long_short + Wave1 fixes
+- `engine-rust/ftmo-engine-core/src/ml_gate.rs` — schema v3 + feature_medians + asset_id normalization
+- `engine-rust/ftmo-engine-cli/src/sweep.rs` — SignalSrc::ForexMr + daily TF + htf_macd_gate fix
+
+### Live (Python)
+
+- `tools/ftmo_executor.py` — direction normalize, MAX_SIGNAL_AGE bump, stop_pct cap
+- `tools/direction_util.py` — global helper (new)
+
+### Training
+
+- `scripts/_mlTrainClassifier.py` — feature_medians, git_commit metadata, schema v3
+- `scripts/_mlTrainingDataGen.ts` — funding-index off-by-one fix
+- `scripts/_mlShuffleTest.py` — bi-directional threshold
+
+### Sweep scripts
+
+- `scripts/_shortsonly_*_2026_05_23.sh`
+- `scripts/_hybrid_long_short_sweep_2026_05_23.sh`
+- `scripts/_titanium_trades_boost_2026_05_23.sh` (script created earlier by agent)
+- `scripts/_clusterhunt_grid_2026_05_23.sh`
+- `scripts/_stack4_rebaseline_costs_2026_05_23.sh`
+- `scripts/cache_bakeoff/_archive_ml_v1_v2/README.md`
+
+### Deleted (orphan)
+
+- `scripts/_mlOverlayFeatures.ts`
+- `scripts/ml_overlay_train.py`
+
+## Session Commits (chronological)
+
+1. `3134a70` — SHORTS-only + Forex-MR templates + daily TF support
+2. `5861b82` — ML Round 11: 10 verified bugs
+3. `b8c89a4` — ML Round 11.2: 5 verification follow-ups
+4. `559edbe` — Live direction-string normalization
+5. `b4908ea` — ML Round 11.3: 5 round-2 bugs
+6. `9c5b1fd` — Wave1 project-audit: 4 critical bugs
+
+Plus `HYBRID` template iteration commits not yet pushed (v1-v9 experiments in template.rs).
+
+## Critical Open Risks (must address before live $$)
+
+1. **No state-dir backup** → disk-loss = total FTMO-bust
+2. **News-blackout doesn't read live events** → bot can trade during un-hardcoded FOMC
+3. **failover_broker non-atomic** → multi-active-account scenario possible
+4. **ftmo_kill race** → manual emergency-stop can be silently undone
+5. **HYBRID template is broken** (3 KRIT bugs) → don't deploy, schedule fix or delete
