@@ -8764,6 +8764,46 @@ export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_STEP2: FtmoDaytrade24hConfi
     profitTarget: 0.05,
     maxDays: 60,
   };
+// 2026-05-17 BIDIR: enable shorts on every asset for the long-only fail-mode
+// (88% of fails by Day 3 in bear/range first-24h windows). Voters already
+// vote both directions; only the asset-level `disableShort=true` upstream
+// filter is flipped. Mirrors engine-rust v5_amber_max_passlock_bidir().
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_BIDIR: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK,
+    assets: FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK.assets.map((a) => ({
+      ...a,
+      disableShort: false,
+    })),
+  };
+// 2026-05-19 MR variant — same engine stack, but mean-revert signal class.
+// Flips `invertDirection` and `disableShort` off per asset so RSI MR
+// longs/shorts pass unmodified, and adds `meanReversionSource` so the
+// `--signals meanrev` path uses the canonical thresholds. Mirrors engine-rust
+// v5_amber_max_mr_passlock().
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_MR_PASSLOCK: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK,
+    assets: FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK.assets.map((a) => ({
+      ...a,
+      invertDirection: false,
+      disableShort: false,
+    })),
+    meanReversionSource: {
+      period: 14,
+      oversold: 25,
+      overbought: 75,
+      cooldownBars: 8,
+      sizeMult: 0.5,
+    },
+  };
+// 2026-05-13 RUBIN + PASSLOCK — closeAllOnTargetReached. Mirrors engine-rust
+// v5_rubin_passlock().
+export const FTMO_DAYTRADE_24H_V5_RUBIN_PASSLOCK: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_RUBIN,
+  closeAllOnTargetReached: true,
+  atrStop: { period: 56, stopMult: 2 },
+};
 export const FTMO_DAYTRADE_24H_V5_OBSIDIAN_PASSLOCK: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN,
   closeAllOnTargetReached: true,

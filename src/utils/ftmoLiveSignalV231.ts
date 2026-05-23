@@ -575,6 +575,18 @@ const CFG_REGISTRY: Record<string, CfgRegistryEntry> = {
     cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_STEP2,
     label: "V5_AMBER_MAX_PASSLOCK_STEP2 (5% target, start-gated)",
   },
+  "2h-trend-v5-amber-max-passlock-bidir": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_BIDIR,
+    label: "V5_AMBER_MAX_PASSLOCK_BIDIR (long+short, anti-long-only-fail)",
+  },
+  "2h-trend-v5-amber-max-mr-passlock": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_MR_PASSLOCK,
+    label: "V5_AMBER_MAX_MR_PASSLOCK (RSI mean-revert signal class)",
+  },
+  "2h-trend-v5-rubin-passlock": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_RUBIN_PASSLOCK,
+    label: "V5_RUBIN_PASSLOCK (closeAllOnTargetReached)",
+  },
   "2h-trend-v5-obsidian-passlock": {
     cfg: CFGS.FTMO_DAYTRADE_24H_V5_OBSIDIAN_PASSLOCK,
     label: "V5_OBSIDIAN_PASSLOCK (closeAllOnTargetReached)",

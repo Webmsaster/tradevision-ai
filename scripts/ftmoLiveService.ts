@@ -115,6 +115,11 @@ const TF_DISPATCH: Record<string, TfTag> = {
   // missing → service crashed at boot with "not registered in TF_DISPATCH".
   "2h-trend-v5-amber-max-passlock": "30m",
   "2h-trend-v5-amber-max-passlock-step2": "30m",
+  // 2026-05-23 Orthogonal 3-stack deploy (AMBER + BIDIR + MR with corr~0).
+  // V5_RUBIN_PASSLOCK kept for legacy 4-stack ecosystem.4stack.config.js.
+  "2h-trend-v5-amber-max-passlock-bidir": "30m",
+  "2h-trend-v5-amber-max-mr-passlock": "30m",
+  "2h-trend-v5-rubin-passlock": "30m",
   "2h-trend-v5-obsidian-passlock": "30m",
   "2h-trend-v5-quartz-lite-r28-passlock": "30m",
   "2h-trend-v5-quartz-lite-r28-step2": "30m",
@@ -808,6 +813,9 @@ async function runOneCheck(): Promise<DetectionResult> {
     ftmoTf === "2h-trend-v5-amber-passlock" ||
     ftmoTf === "2h-trend-v5-amber-max-passlock" ||
     ftmoTf === "2h-trend-v5-amber-max-passlock-step2" ||
+    ftmoTf === "2h-trend-v5-amber-max-passlock-bidir" ||
+    ftmoTf === "2h-trend-v5-amber-max-mr-passlock" ||
+    ftmoTf === "2h-trend-v5-rubin-passlock" ||
     ftmoTf === "2h-trend-v5-obsidian-passlock" ||
     ftmoTf === "2h-trend-v5-quartz-lite-r28-passlock" ||
     ftmoTf === "2h-trend-v5-quartz-lite-r28-step2";
