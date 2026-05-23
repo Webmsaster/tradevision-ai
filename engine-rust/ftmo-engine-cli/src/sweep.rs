@@ -2615,8 +2615,18 @@ fn run_single_asset(
                 let target_hit = state.first_target_hit_day.is_some()
                     && state.trading_days.len() >= cfg.min_trading_days as usize;
                 let final_equity_floor = 1.0 + cfg.profit_target * 0.5;
-                let give_back_too_far =
-                    target_hit && state.equity.is_finite() && state.equity < final_equity_floor;
+                // 2026-05-24 Wave2 MED FIX (Agent 8): soft-pass tail only
+                // checked realized `state.equity`, ignoring `state.mtm_equity`.
+                // Window ending with open underwater positions (mtm < equity)
+                // would soft-pass, but force-close at next-bar would realize
+                // the loss and the bot would actually fail. Inflated soft-
+                // pass-rate by ~1-3pp on configs that hold positions through
+                // window-end. `--strict-pass` already AND'd both (see L4329-
+                // 4330); this brings the single-asset soft-pass to parity.
+                let give_back_too_far = target_hit
+                    && state.equity.is_finite()
+                    && state.mtm_equity.is_finite()
+                    && state.equity.min(state.mtm_equity) < final_equity_floor;
                 if target_hit && !give_back_too_far {
                     last_passed = true;
                 }

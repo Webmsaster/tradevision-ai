@@ -150,7 +150,15 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
     } else if new_day > cur_day {
         state.day = new_day as u32;
         state.day_start = state.equity;
-        state.day_peak = state.equity;
+        // 2026-05-24 Wave2 MED FIX (Agent 9): first-call branch L133 anchors
+        // day_peak from `state.mtm_equity.max(1.0)`, but day-rollover used
+        // `state.equity` (realized-only). When a position is open across the
+        // day boundary AND underwater (mtm < equity), day_peak is set above
+        // the actual MTM anchor. Subsequent L477 ratchet only fires when
+        // mtm > day_peak, so day_peak stays inflated for the rest of the
+        // day → `daily_peak_trailing_stop` measures drop from an unrealistic
+        // anchor and fires late (or never). Mirror first-call baseline.
+        state.day_peak = state.mtm_equity.max(1.0);
         // 2026-05-19 Pattern-D fix — reset consec-stops counter + pause at
         // day boundary so a fresh trading day is unrestricted.
         state.day_consec_stops = 0;
