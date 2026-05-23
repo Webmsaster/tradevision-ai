@@ -86,9 +86,22 @@ def build_xy(rows, target="is_win"):
 def main():
     rows = load_data()
     print(f"loaded {len(rows)} trades")
+    # 2026-05-23 BUG FIX Round 11.2 (verification agent): drop malformed rows
+    # FIRST, before CUTOFF compare. Previous code used .get("entry_time", 0)
+    # which (a) crashed on entry_time=None ("'<' not supported between
+    # NoneType and int") and (b) sorted missing rows to position 0 later.
+    # Also reject bool (isinstance(True, int)==True surprise).
+    pre_n = len(rows)
+    rows = [
+        r for r in rows
+        if isinstance(r.get("entry_time"), (int, float))
+        and not isinstance(r.get("entry_time"), bool)
+    ]
+    if len(rows) < pre_n:
+        print(f"[ml-train] dropped {pre_n - len(rows)} rows missing/invalid entry_time")
     if CUTOFF_TS is not None:
         before = len(rows)
-        rows = [r for r in rows if r.get("entry_time", 0) < CUTOFF_TS]
+        rows = [r for r in rows if r["entry_time"] < CUTOFF_TS]
         print(
             f"applied cutoff < {CUTOFF_TS} → kept {len(rows)} of {before} trades for training"
         )

@@ -65,14 +65,18 @@ print("Expected if no leak: ~0.50 (random predictor on test set)")
 # was bug-magic. Stricter threshold catches mild label-shuffle leakage and
 # forces a stop+investigation before deploying a leaky model. Industry rule:
 # shuffled AUC > 0.55 = SUSPICIOUS, > 0.60 = CONFIRMED leak.
-SHUFFLE_AUC_THRESHOLD = 0.55
-if auc > SHUFFLE_AUC_THRESHOLD:
+# 2026-05-23 BUG FIX Round 11.2 (verification): bi-directional threshold.
+# AUC < 0.45 indicates anti-pattern leak (model learns inverted signal from
+# leaked features) and is just as suspicious as AUC > 0.55. Symmetric gate.
+SHUFFLE_AUC_DEVIATION = 0.05  # ±5pp around 0.50 = acceptable random band
+if abs(auc - 0.5) > SHUFFLE_AUC_DEVIATION:
+    direction = "HIGH (forward-leak)" if auc > 0.5 else "LOW (anti-pattern leak)"
     raise SystemExit(
-        f"LEAKY: shuffle AUC {auc:.4f} > {SHUFFLE_AUC_THRESHOLD:.2f} threshold. "
-        f"Feature pipeline likely has leakage even with random labels. "
+        f"LEAKY ({direction}): shuffle AUC {auc:.4f} deviates >{SHUFFLE_AUC_DEVIATION:.2f} "
+        f"from 0.50. Feature pipeline has leakage even with random labels. "
         f"DO NOT deploy real model before fixing."
     )
-print(f"PASS: shuffle AUC {auc:.4f} < {SHUFFLE_AUC_THRESHOLD:.2f}")
+print(f"PASS: shuffle AUC {auc:.4f} within ±{SHUFFLE_AUC_DEVIATION:.2f} of 0.50")
 
 print("\nThreshold sweep on TEST (real labels) using shuffle-trained model:")
 for t in [0.10, 0.15, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70]:

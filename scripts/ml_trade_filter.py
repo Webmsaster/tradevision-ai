@@ -197,7 +197,11 @@ def build_dataset() -> tuple[np.ndarray, np.ndarray, list[dict], list[str]]:
     seen_keys: set[tuple] = set()
     deduped: list[dict] = []
     for _t in trades:
-        key = (_t.get("symbol"), _t.get("entryTime"), _t.get("direction"))
+        # 2026-05-23 BUG FIX Round 11.2 (verification): normalize direction
+        # in dedup key. Otherwise "long" + "LONG" + "Long" all unique → dedup
+        # fails when shards emit inconsistent casing.
+        dir_norm = str(_t.get("direction", "")).strip().lower()
+        key = (_t.get("symbol"), _t.get("entryTime"), dir_norm)
         if key in seen_keys:
             continue
         seen_keys.add(key)
