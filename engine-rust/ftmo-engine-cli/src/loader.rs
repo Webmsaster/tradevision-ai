@@ -439,11 +439,43 @@ pub struct StablecoinSupplyPt {
 pub fn load_stablecoin_supply(dir: &Path) -> Result<Option<Vec<StablecoinSupplyPt>>> {
     let p = dir.join("macro").join("usdt_supply_daily.json");
     if !p.exists() {
+        // 2026-05-23 Wave2 fix (HOCH-3): silent cache-miss dormancy
+        // diagnostic. Voter caller fed None silently abstained — operator
+        // had no signal that the feed was simply missing. WARN at load
+        // time so the operator sees "stablecoin voter dormant: cache
+        // missing" instead of inferring it from zero-vote backtest output.
+        if std::env::var("ENGINE_QUIET_LOADERS").unwrap_or_default() != "1" {
+            eprintln!(
+                "[loader] stablecoin-supply cache missing at {} — voter will abstain. \
+                 Run scripts/fetch_usdt_supply_daily.py to populate.",
+                p.display()
+            );
+        }
         return Ok(None);
     }
+    cache_age_check(&p);
     let f = File::open(&p).with_context(|| format!("opening {}", p.display()))?;
     let pts: Vec<StablecoinSupplyPt> = serde_json::from_reader(BufReader::new(f))
         .with_context(|| format!("parsing stablecoin-supply JSON in {}", p.display()))?;
+    // 2026-05-23 Wave2 fix (HOCH-4): staleness check on the cache's own
+    // last sample (vs system clock). Cache file mtime can be fresh (e.g.
+    // touched by an unrelated cron) while the actual data inside is from
+    // 2025. Without this, daily-cadence voter can pass gates with stale
+    // momentum echoes that mismatch current market regime.
+    if let Some(last_pt) = pts.last() {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let age_days = (now_ms - last_pt.t) / 86_400_000;
+        if age_days > 14 {
+            eprintln!(
+                "[loader] WARN: stablecoin-supply last sample is {}d old. Voter may \
+                 abstain on this run; rerun scripts/fetch_usdt_supply_daily.py.",
+                age_days
+            );
+        }
+    }
     Ok(Some(pts))
 }
 

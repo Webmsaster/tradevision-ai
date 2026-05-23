@@ -343,6 +343,18 @@ impl MlModel {
 /// min_samples_leaf=20 can produce paths far longer than the configured
 /// max_depth would suggest. Iteration eliminates both risks; the function
 /// stays inlineable.
+/// PRECONDITION: caller must pass a `features` slice containing only
+/// finite (non-NaN, non-Inf) values. `predict_proba` sanitises via
+/// `cleaned[i]` (median imputation) before reaching this function, so
+/// the production hot path is safe. Direct callers (unit tests, future
+/// inference call-sites) MUST mirror that sanitisation — `NaN <= threshold`
+/// is `false`, which silently routes RIGHT, diverging from sklearn's
+/// `nan_to_num` training-time behavior.
+///
+/// 2026-05-23 Wave2 fix (MEDIUM — predict_proba audit): debug_assert
+/// catches the precondition violation in dev/test without runtime cost
+/// in release. Future callers will see the failure immediately instead
+/// of inheriting silent inference drift.
 fn traverse(node: &TreeNode, features: &[f64]) -> f64 {
     let mut cur = node;
     loop {
@@ -355,6 +367,12 @@ fn traverse(node: &TreeNode, features: &[f64]) -> f64 {
                 right,
             } => {
                 let v = features.get(*feature).copied().unwrap_or(0.0);
+                debug_assert!(
+                    v.is_finite(),
+                    "traverse precondition: features[{}]={} must be finite",
+                    feature,
+                    v
+                );
                 // sklearn convention: go left if value <= threshold
                 cur = if v <= *threshold { left } else { right };
             }
