@@ -1072,6 +1072,44 @@ export function detectLiveSignalsV231(
 
   // BEAR/CHOP regime: use iter231 short-only mean-reversion (original logic).
   const blockedByBtcFilter = btcUptrend || btcMom24h > momThr;
+
+  // 2026-05-23 Cross-asset BNB 18/50 patch (and any other CFG.crossAssetFiltersExtra).
+  // The Rust backtest applies these as bilateral gates (`direction:"any"` semantics:
+  // long needs secondary in uptrend, short needs secondary in downtrend). The TS
+  // live engine previously hardcoded BTC + short-only; this block adds the missing
+  // bilateral secondary gates so PASSLOCK / BIDIR / MR sister CFGs see the same
+  // entry universe live as in backtest. Trend is computed ONCE here (not per asset)
+  // using the 3-way EMA test that matches detector_filters.rs:201-207.
+  type ExtraTrend = "long" | "short" | null;
+  const extraCrossTrends: Array<{
+    symbol: string;
+    trend: ExtraTrend;
+    skipShorts: boolean;
+    skipLongs: boolean;
+  }> = [];
+  if (CFG.crossAssetFiltersExtra && extraCandles) {
+    for (const f of CFG.crossAssetFiltersExtra) {
+      const secCandles = extraCandles[f.symbol];
+      if (!secCandles || secCandles.length === 0) continue;
+      const secCloses = secCandles.map((c) => c.close);
+      const fastArr = ema(secCloses, f.emaFastPeriod);
+      const slowArr = ema(secCloses, f.emaSlowPeriod);
+      const lastF = fastArr[fastArr.length - 1];
+      const lastS = slowArr[slowArr.length - 1];
+      const lastC = secCloses[secCloses.length - 1];
+      let trend: ExtraTrend = null;
+      if (lastF != null && lastS != null && lastC != null) {
+        if (lastC > lastF && lastF > lastS) trend = "long";
+        else if (lastC < lastF && lastF < lastS) trend = "short";
+      }
+      extraCrossTrends.push({
+        symbol: f.symbol,
+        trend,
+        skipShorts: f.skipShortsIfSecondaryUptrend ?? false,
+        skipLongs: f.skipLongsIfSecondaryDowntrend ?? false,
+      });
+    }
+  }
   if (blockedByBtcFilter) {
     result.notes.push(
       `BTC bullish (uptrend=${btcUptrend}, mom24h=${(btcMom24h * 100).toFixed(2)}%) — short signals blocked, longs OK`,
@@ -1353,6 +1391,30 @@ export function detectLiveSignalsV231(
       });
       continue;
     }
+    // 2026-05-23 Bilateral cross-asset filters (CFG.crossAssetFiltersExtra).
+    // skipShortsIfSecondaryUptrend blocks shorts when secondary in uptrend;
+    // skipLongsIfSecondaryDowntrend blocks longs when secondary in downtrend.
+    // Setting BOTH (BNB 18/50 setup) mirrors Rust's `direction:"any"` semantics.
+    let blockedByExtraCross = false;
+    for (const f of extraCrossTrends) {
+      if (direction === "short" && f.skipShorts && f.trend === "long") {
+        result.skipped.push({
+          asset: a.asset,
+          reason: `${f.symbol} uptrend blocks short signal`,
+        });
+        blockedByExtraCross = true;
+        break;
+      }
+      if (direction === "long" && f.skipLongs && f.trend === "short") {
+        result.skipped.push({
+          asset: a.asset,
+          reason: `${f.symbol} downtrend blocks long signal`,
+        });
+        blockedByExtraCross = true;
+        break;
+      }
+    }
+    if (blockedByExtraCross) continue;
     if (direction === "short" && a.disableShort) {
       result.skipped.push({
         asset: a.asset,
