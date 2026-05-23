@@ -1,11 +1,11 @@
 """Signal-Tracker Mode for Pre-Challenge Warm-up.
 
 Runs the same poll loop as ftmo_executor but WITHOUT MT5 connection.
-Purpose: build up signal-history.jsonl for 24h+ BEFORE user purchases
+Purpose: build up signal-history.jsonl BEFORE user purchases
 the FTMO challenge, so the start-gate has a real cluster signal at T0.
 
 Usage:
-    # Run for 24-48h before purchasing challenge
+    # Run before purchasing challenge
     FTMO_MOCK=1 FTMO_TF=2h-trend-v5-amber-max-passlock \\
         python3 tools/signal_tracker_mode.py
 
@@ -19,15 +19,20 @@ Behavior:
 When user purchases challenge:
     - Stop this tracker
     - Start real ftmo_executor.py — signal-history already populated
-    - Gate-check will use accumulated 24h+ history
+    - Gate-check will use accumulated signal history
 """
 import os
 import sys
 import time
 from pathlib import Path
 
-# Ensure FTMO_MOCK is set to bypass MT5 import
-os.environ.setdefault("FTMO_MOCK", "1")
+# 2026-05-24 Wave2 HIGH FIX: `setdefault` was a silent foot-gun — if the
+# operator's shell had `FTMO_MOCK=0` (leftover from a real-MT5 debug
+# session), this script kept that "0" and `import ftmo_executor` would
+# attempt a real MetaTrader5 connect on Linux/WSL → ImportError or worse, a
+# warmup tracker accidentally placing live orders if it ran on the Windows
+# VPS. This tracker NEVER trades; force-mock unconditionally.
+os.environ["FTMO_MOCK"] = "1"
 
 _TOOLS_DIR = Path(__file__).resolve().parent
 if str(_TOOLS_DIR) not in sys.path:
@@ -43,7 +48,8 @@ def cluster_ready(cluster: dict) -> tuple[bool, float]:
     age_h = 0.0
     if oldest is not None:
         age_h = (cluster["ts_ms"] - oldest) / 3_600_000
-    return bool(cluster.get("qualified")) and age_h >= 23.0, age_h
+    ready = bool(cluster.get("qualified")) and age_h >= exe.START_GATE_MIN_HISTORY_HOURS
+    return ready, age_h
 
 
 def poll_once() -> int:
@@ -73,7 +79,14 @@ def main():
     print(f"  SIGNAL_HISTORY_PATH={exe.SIGNAL_HISTORY_PATH}")
     print(f"  Poll interval: {interval_s}s")
     print(f"  Telegram alerts: {'ON' if alerts_enabled else 'OFF'}")
-    print(f"  Ctrl-C to stop. Run for 24-48h before purchasing challenge.")
+    print(
+        "  Gate rule: "
+        f"{exe.START_GATE_WINDOW_HOURS:g}h "
+        f"breadth>={exe.START_GATE_MIN_BREADTH} "
+        f"majors>={exe.START_GATE_MIN_MAJORS} "
+        f"min_history>={exe.START_GATE_MIN_HISTORY_HOURS:g}h"
+    )
+    print(f"  Ctrl-C to stop. Keep running until ready=True before first trade.")
     print()
     total = 0
     iter_count = 0
@@ -92,6 +105,7 @@ def main():
                     "Fast-pass setup is ready.\n"
                     f"breadth={cluster['breadth']}/{exe.START_GATE_MIN_BREADTH} "
                     f"majors={cluster['majors']}/{exe.START_GATE_MIN_MAJORS}\n"
+                    f"window={cluster.get('window_hours', exe.START_GATE_WINDOW_HOURS):g}h "
                     f"history={history_age_h:.1f}h signals={cluster['history_count']}\n"
                     "Action: buy/start challenge now, then start executor."
                 )
@@ -100,6 +114,7 @@ def main():
                     "🔴 <b>FTMO CLUSTER NO LONGER GREEN</b>\n"
                     f"breadth={cluster['breadth']}/{exe.START_GATE_MIN_BREADTH} "
                     f"majors={cluster['majors']}/{exe.START_GATE_MIN_MAJORS}\n"
+                    f"window={cluster.get('window_hours', exe.START_GATE_WINDOW_HOURS):g}h "
                     f"history={history_age_h:.1f}h signals={cluster['history_count']}"
                 )
             last_ready = ready
@@ -113,7 +128,8 @@ def main():
                       f"qualified={cluster['qualified']} "
                       f"ready={ready} "
                       f"history_age={history_age_h:.1f}h "
-                      f"history_24h={cluster['history_count']}")
+                      f"history_{cluster.get('window_hours', exe.START_GATE_WINDOW_HOURS):g}h="
+                      f"{cluster['history_count']}")
             time.sleep(interval_s)
     except KeyboardInterrupt:
         print(f"\n[tracker] Stopped. Ran {(time.time()-start_ts)/3600:.1f}h, "

@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::pnl::{compute_eff_pnl_with_funding, compute_eff_pnl_with_time};
 use crate::position::OpenPosition;
-use crate::state::{EngineState, KellyPnl};
-use crate::time_util::day_index;
+use crate::state::{EngineState, KellyPnl, LossStreakEntry, ReentryState};
+use crate::time_util::{day_index, ls_key};
 use crate::trade::{ClosedTrade, ExitReason};
 
 const RECONCILE_FILENAME: &str = "closed-during-offline.json";
@@ -195,6 +195,58 @@ fn ingest_offline_closures_inner(
                 close_time: c.exit_time,
                 eff_pnl: pnl.eff_pnl,
             });
+        }
+        // 2026-05-24 Wave2 HIGH FIX: prior code only mutated equity +
+        // closed_trades. Three live-engine invariants were silently broken
+        // when offline-recovered trades were ingested on a Rust live path:
+        //
+        //   (a) `challenge_peak` / `day_peak` were never ratcheted upward,
+        //       so the next live bar's `drawdown_from_peak()` understated
+        //       drawdown — peakDrawdownThrottle / trailingDD-lock would
+        //       fire late or not at all on offline-winning runs.
+        //   (b) `loss_streak_by_asset_dir[key].streak` was never bumped on
+        //       offline ExitReason::Stop, so the lossStreakCooldown gate
+        //       in harness step_bar L973 would let the bot re-enter the
+        //       same asset+direction immediately after a real stop-out.
+        //   (c) V5R `pending_reentries` slots were neither installed
+        //       (on Stop) nor cleared (on TP/Time win), so the next live
+        //       signal would either skip a legitimate re-entry or take a
+        //       stale slot for a position that already won.
+        //
+        // Mirrors apply_exits in harness.rs:1166-1196.
+        if state.equity > state.challenge_peak {
+            state.challenge_peak = state.equity;
+        }
+        if state.equity > state.day_peak {
+            state.day_peak = state.equity;
+        }
+        let key = ls_key(&pos.symbol, pos.direction);
+        let entry = state
+            .loss_streak_by_asset_dir
+            .entry(key.clone())
+            .or_insert(LossStreakEntry {
+                streak: 0,
+                cd_until_bars_seen: 0,
+            });
+        if pnl.eff_pnl > 0.0 {
+            entry.streak = 0;
+            state.pending_reentries.remove(&key);
+        } else {
+            entry.streak += 1;
+            if let Some(cd) = cfg.loss_streak_cooldown {
+                if entry.streak >= cd.after_losses {
+                    entry.cd_until_bars_seen = state.bars_seen + cd.cooldown_bars;
+                }
+            }
+            if cfg.reentry_after_stop.is_some() && c.exit_reason == ExitReason::Stop {
+                state.pending_reentries.insert(
+                    key,
+                    ReentryState {
+                        bars_seen_at_stop: state.bars_seen,
+                        original_eff_risk: pos.eff_risk,
+                    },
+                );
+            }
         }
         state.closed_trades.push(trade);
         applied += 1;

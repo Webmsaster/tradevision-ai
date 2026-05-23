@@ -107,10 +107,31 @@ pub fn load_state(state_dir: &Path) -> Result<EngineState> {
 /// `save_state` uses so a concurrent writer doesn't rename the final-path
 /// out from under us between `read_with_retry` and the migration logic.
 pub fn load_state_or_reset(state_dir: &Path, cfg_label: &str) -> LoadOutcome {
-    let _guard = match acquire_state_lock(state_dir) {
-        Ok(g) => Some(g),
-        Err(_) => None, // lock dir may not exist yet; continue best-effort
-    };
+    // 2026-05-24 Wave2 HIGH FIX: prior code silently fell through with
+    // `_guard = None` whenever `acquire_state_lock` returned Err (which
+    // happens when ANOTHER process actively holds the lock, not only when
+    // the lock dir is missing). Continuing lockless then risked calling
+    // `backup_corrupt()` — which RENAMES the state file — on data that
+    // was actually a valid-but-in-flight write from the concurrent writer
+    // we lost the race to. Result: live state could be moved to a
+    // `.bak.<ts>` file and replaced with fresh-initial state, wiping the
+    // bot's open positions, kelly history, trading-days, etc.
+    //
+    // Fix: retry the lock with bounded backoff (~2s total). On final
+    // failure we initialize but skip backup_corrupt — losing the load is
+    // recoverable on next poll, losing the file is not.
+    let mut guard = None;
+    for delay_ms in [10u64, 25, 50, 100, 250, 500, 1000].iter() {
+        match acquire_state_lock(state_dir) {
+            Ok(g) => {
+                guard = Some(g);
+                break;
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(*delay_ms)),
+        }
+    }
+    let have_lock = guard.is_some();
+    let _guard = guard;
     let path = state_path(state_dir);
     let raw = match read_with_retry(&path) {
         Ok(b) => b,
@@ -121,11 +142,21 @@ pub fn load_state_or_reset(state_dir: &Path, cfg_label: &str) -> LoadOutcome {
             }
         }
     };
+    // Only rename-on-corruption when we hold the lock — otherwise a concurrent
+    // writer's mid-rename state could be misread and the live file would be
+    // moved aside on a false-positive parse error.
+    let do_backup = |p: &Path| -> Option<PathBuf> {
+        if have_lock {
+            backup_corrupt(p).ok().flatten()
+        } else {
+            None
+        }
+    };
     // Step 1: parse as Value first so we can read the schema_version safely.
     let value: Value = match serde_json::from_slice(&raw) {
         Ok(v) => v,
         Err(_) => {
-            let bak = backup_corrupt(&path).ok().flatten();
+            let bak = do_backup(&path);
             return LoadOutcome::Reset {
                 backed_up_to: bak,
                 state: EngineState::initial(cfg_label),
@@ -142,7 +173,7 @@ pub fn load_state_or_reset(state_dir: &Path, cfg_label: &str) -> LoadOutcome {
     // current value, silently downgrading TS-written state with unknown
     // future fields. TS parity (ftmoLiveEngineV4.ts:455) → reset+backup.
     if from_version > SCHEMA_VERSION {
-        let bak = backup_corrupt(&path).ok().flatten();
+        let bak = do_backup(&path);
         return LoadOutcome::Reset {
             backed_up_to: bak,
             state: EngineState::initial(cfg_label),
@@ -159,7 +190,7 @@ pub fn load_state_or_reset(state_dir: &Path, cfg_label: &str) -> LoadOutcome {
         .and_then(Value::as_str)
         .unwrap_or("");
     if persisted_cfg_label != cfg_label {
-        let bak = backup_corrupt(&path).ok().flatten();
+        let bak = do_backup(&path);
         return LoadOutcome::Reset {
             backed_up_to: bak,
             state: EngineState::initial(cfg_label),
@@ -171,7 +202,7 @@ pub fn load_state_or_reset(state_dir: &Path, cfg_label: &str) -> LoadOutcome {
         match serde_json::from_value::<EngineState>(value.clone()) {
             Ok(state) => return LoadOutcome::Loaded(state),
             Err(_) => {
-                let bak = backup_corrupt(&path).ok().flatten();
+                let bak = do_backup(&path);
                 return LoadOutcome::Reset {
                     backed_up_to: bak,
                     state: EngineState::initial(cfg_label),
@@ -187,7 +218,7 @@ pub fn load_state_or_reset(state_dir: &Path, cfg_label: &str) -> LoadOutcome {
             state,
         },
         None => {
-            let bak = backup_corrupt(&path).ok().flatten();
+            let bak = do_backup(&path);
             LoadOutcome::Reset {
                 backed_up_to: bak,
                 state: EngineState::initial(cfg_label),

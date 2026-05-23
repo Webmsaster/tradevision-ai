@@ -105,7 +105,17 @@ def check_ftmo_tf() -> tuple[bool, str]:
     return True, f"{tf} (note: not R28_V6 family — verify intentional)"
 
 
-@check("FTMO_ACCOUNT_ID env var (multi-account)", blocking=False)
+# 2026-05-24 Wave2 KRIT FIX: the prior `@check("FTMO_ACCOUNT_ID …",
+# blocking=False)` decorator was on the wrong function (`check_live_mock_collision`)
+# AND marked non-blocking, so an operator who set BOTH FTMO_LIVE=1 and
+# FTMO_MOCK=1 (e.g. leftover shell env after switching from mock-test to
+# live) would see a yellow warning instead of refusal-to-start — the docstring
+# explicitly says "refuse to start", which the wrong decorator silently
+# downgraded. Below: the collision check is now blocking, and `check_account_id`
+# gets its own proper `@check` decorator (without it, the function returned a
+# bare tuple instead of a Result → AttributeError-crash inside main()'s
+# `r.render()` loop on every preflight run that included it).
+@check("FTMO_LIVE / FTMO_MOCK collision", blocking=True)
 def check_live_mock_collision() -> tuple[bool, str]:
     """2026-05-16 Round 9 KRIT FIX (preflight agent): FTMO_LIVE=1 AND
     FTMO_MOCK=1 are mutually exclusive — live trading on real MT5 vs mock
@@ -118,6 +128,7 @@ def check_live_mock_collision() -> tuple[bool, str]:
     return True, f"live={live} mock={mock} OK"
 
 
+@check("FTMO_ACCOUNT_ID env var (multi-account)", blocking=False)
 def check_account_id() -> tuple[bool, str]:
     aid = os.environ.get("FTMO_ACCOUNT_ID")
     if not aid:

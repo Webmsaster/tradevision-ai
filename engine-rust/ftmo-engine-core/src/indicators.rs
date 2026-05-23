@@ -228,7 +228,18 @@ pub fn atr(candles: &[Candle], period: usize) -> Vec<Option<f64>> {
         }
         sum += t;
     }
-    let mut prev = sum / period as f64;
+    // 2026-05-24 Wave2 HIGH FIX: when seed contains any NaN/Inf, prior code
+    // set `prev = sum / period` using the PARTIAL sum (skipping bad bars)
+    // and let the Wilder smoothing carry that biased anchor for the rest of
+    // the series — every downstream ATR value was permanently scaled too
+    // low (proportional to bad-bar fraction in seed). Match the EMA/RSI
+    // self-heal: mark prev as NaN on invalid seed so the loop's `if !prev.is_finite()`
+    // branch re-anchors prev = first valid TR when the bad bar slides out.
+    let mut prev = if seed_valid {
+        sum / period as f64
+    } else {
+        f64::NAN
+    };
     out[period] = if seed_valid && prev.is_finite() {
         Some(prev)
     } else {

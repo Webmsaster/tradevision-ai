@@ -71,11 +71,13 @@ const sharedEnv = {
   FTMO_START_BALANCE: "100000",
   FTMO_START_GATE_ENABLED: "1",
   FTMO_START_GATE_PATH: path.join(REPO_ROOT, "state", "timing-gate.json"),
-  FTMO_START_GATE_MIN_BREADTH: "4",
-  FTMO_START_GATE_MIN_MAJORS: "3",
+  FTMO_START_GATE_WINDOW_HOURS: "2",
+  FTMO_START_GATE_MIN_BREADTH: "10",
+  FTMO_START_GATE_MIN_MAJORS: "1",
+  FTMO_START_GATE_MIN_HISTORY_HOURS: "0",
   FTMO_START_GATE_MAX_AGE_MIN: "180",
   FTMO_CLUSTER_ONLY_ENABLED: "0",
-  FTMO_CLUSTER_ONLY_MIN_HISTORY_HOURS: "23",
+  FTMO_CLUSTER_ONLY_MIN_HISTORY_HOURS: "0",
   TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHAT_ID,
 };
@@ -91,7 +93,13 @@ module.exports = {
       autorestart: true,
       max_restarts: 50,
       restart_delay: 5000, // 5s between restarts
-      max_memory_restart: "500M",
+      // 2026-05-24 Wave2 HIGH FIX: PM2 default kill_timeout is 1600ms — too
+      // short for the Node signal service to finish its in-flight
+      // Binance fetch/cluster write + telegram long-poll graceful shutdown.
+      // Without this, `pm2 reload` SIGKILLs mid-write → partial
+      // signal-alerts.log lines + dropped getUpdates offset → duplicate
+      // /commands on restart.
+      kill_timeout: 20000,
       out_file: path.join(STATE_DIR, "pm2-signal.out.log"),
       error_file: path.join(STATE_DIR, "pm2-signal.err.log"),
       time: true, // prefix timestamps to log lines
@@ -113,6 +121,9 @@ module.exports = {
       autorestart: true,
       max_restarts: 50,
       restart_delay: 5000,
+      // Tracker is a fast poll loop with a 30s sleep — 15s kill_timeout
+      // is enough to drain the in-flight HTTP fetch + Telegram alert.
+      kill_timeout: 15000,
       max_memory_restart: "150M",
       out_file: path.join(STATE_DIR, "pm2-tracker.out.log"),
       error_file: path.join(STATE_DIR, "pm2-tracker.err.log"),
@@ -148,6 +159,11 @@ module.exports = {
       autorestart: true,
       max_restarts: 50,
       restart_delay: 10000, // 10s — give MT5 time to come back after disconnect
+      // Executor has the most critical cleanup path: state-file lock
+      // release, mt5.shutdown(), close-all-positions-on-SIGTERM. A premature
+      // SIGKILL here corrupts state-file locks (orphan .lock until next OS
+      // restart) and leaves open MT5 positions un-tracked. 30s budget.
+      kill_timeout: 30000,
       max_memory_restart: "300M",
       out_file: path.join(STATE_DIR, "pm2-executor.out.log"),
       error_file: path.join(STATE_DIR, "pm2-executor.err.log"),

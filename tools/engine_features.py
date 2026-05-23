@@ -95,6 +95,10 @@ def atr_smoothed_chandelier_exit(
     Returns (new_dyn_stop, updated_state). Only TIGHTENS dyn_stop, never
     loosens. Matches `applyChandelierExit` semantics in the TS engine.
     """
+    # 2026-05-24 Wave2 HIGH FIX: shim from line 55 imported _norm_dir but NEVER
+    # called it — strict `direction == "long"` compares below would silently
+    # sign-flip if caller passed "LONG"/"Buy"/etc. Normalize at every entry.
+    direction = _norm_dir(direction) or direction
     if atr_value <= 0 or chandelier_mult <= 0 or entry_price <= 0:
         return current_dyn_stop, state
 
@@ -277,6 +281,7 @@ def check_partial_take_profit(
 
     Returns (fired_this_bar, updated_state).
     """
+    direction = _norm_dir(direction) or direction
     if state.triggered or close_fraction <= 0 or trigger_pct <= 0:
         return False, state
 
@@ -337,6 +342,7 @@ def htf_trend_filter(
 
     TS anchor: search `if (cfg.htfTrendFilter)` in ftmoDaytrade24h.ts.
     """
+    direction = _norm_dir(direction) or direction
     if current_idx < lookback_bars:
         return False  # not enough history → don't gate
     base = closes[current_idx - lookback_bars]
@@ -457,6 +463,7 @@ def check_break_even(
     a small live-execution buffer (default +0.05%) used by the Python
     executor only. Set to 0 to match TS exactly (used by parity_check).
     """
+    direction = _norm_dir(direction) or direction
     if state.moved or threshold <= 0:
         return current_dyn_stop, state
     if direction == "long":
@@ -504,6 +511,7 @@ def check_time_exit(
     reached `min_gain_r × stopPct` favorable.
     TS anchor: search `if (cfg.timeExit` in ftmoDaytrade24h.ts.
     """
+    direction = _norm_dir(direction) or direction
     # Phase 10 (engine_features Bug 8): TS-Engine uses `barsHeld = j - ebIdx`,
     # so on entry-bar barsHeld=0. Python was incrementing BEFORE the check,
     # closing 1 bar earlier than TS → ~5-8% spurious 'time' exits, missing
@@ -601,6 +609,7 @@ def simulate_trade(
     This is the SHARED reference simulator used both for parity validation
     and for live in-memory replay if needed.
     """
+    direction = _norm_dir(direction) or direction
     if entry_idx >= len(bars):
         return None
     eb = bars[entry_idx]
