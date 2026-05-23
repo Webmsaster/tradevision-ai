@@ -112,14 +112,50 @@ HIGH_IMPACT_EVENTS_2026: list[tuple[str, str]] = [
 
 
 def _parse_events() -> list[tuple[datetime, str]]:
-    """Lazily parse the ISO event list once into tz-aware datetimes."""
+    """Lazily parse the ISO event list once into tz-aware datetimes.
+
+    2026-05-23 Wave1 audit fix (KRIT-6): also merge in live events from
+    <STATE_DIR>/news-events.json (written by the Node service from Finnhub
+    feed). Previously the Python entry-gate ONLY used the hardcoded 2026
+    list — any Finnhub-fed event silently bypassed the entry blackout
+    (live news-flatten ran but new entries weren't blocked).
+    """
     out: list[tuple[datetime, str]] = []
     for iso, label in HIGH_IMPACT_EVENTS_2026:
         dt = datetime.fromisoformat(iso)
-        # Defensive: enforce UTC even if the ISO had no offset
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         out.append((dt, label))
+    # Merge live events from news-events.json (Node writes from Finnhub).
+    # File format: [{"t": <unix_ms>|<iso_string>, "label": "<...>"}, ...]
+    try:
+        state_dir_env = os.environ.get("FTMO_STATE_DIR")
+        if state_dir_env:
+            live_path = Path(state_dir_env) / "news-events.json"
+            if live_path.exists():
+                live_raw = live_path.read_text(encoding="utf-8")
+                live_data = json.loads(live_raw)
+                if isinstance(live_data, list):
+                    for entry in live_data:
+                        if not isinstance(entry, dict):
+                            continue
+                        label = str(entry.get("label", entry.get("title", "live-event")))
+                        t = entry.get("t") or entry.get("ts_ms") or entry.get("iso")
+                        if t is None:
+                            continue
+                        try:
+                            if isinstance(t, (int, float)):
+                                dt = datetime.fromtimestamp(t / 1000.0, tz=timezone.utc)
+                            else:
+                                dt = datetime.fromisoformat(str(t))
+                                if dt.tzinfo is None:
+                                    dt = dt.replace(tzinfo=timezone.utc)
+                        except (ValueError, TypeError, OverflowError):
+                            continue
+                        out.append((dt, f"live: {label}"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        # Live feed failure must not block hardcoded blackout.
+        pass
     return out
 
 
@@ -396,9 +432,13 @@ def _events() -> list[tuple[datetime, str]]:
 # =============================================================================
 def is_blackout_window(
     now_utc: datetime,
-    blackout_minutes_before: int = 30,
+    blackout_minutes_before: int = 60,
     blackout_minutes_after: int = 60,
 ) -> tuple[bool, Optional[str]]:
+    # 2026-05-23 Wave1 audit fix (KRIT-5): defaults were 30/60, but Rust
+    # hardcoded events all use 60/60 (engine-rust/.../news.rs:62-65 etc.).
+    # Asymmetry meant backtest blackout footprint ≠ live blackout footprint
+    # → silent backtest-vs-live drift on event-day pass-rate. Unified to 60/60.
     """
     Check whether `now_utc` falls inside any high-impact event blackout.
 

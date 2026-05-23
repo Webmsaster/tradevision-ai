@@ -163,18 +163,27 @@ def _write_pause_marker(
                 else "ftmo_kill.py PARTIAL kill — executor will retry remaining closes"
             ),
         }
-        # PID-suffixed tmp avoids race with executor's parallel write_json.
-        tmp = target.with_suffix(target.suffix + f".tmp.{os.getpid()}")
-        # Use open()+fsync rather than write_text so we durably flush before
-        # rename (otherwise rename can promote a not-yet-flushed tmpfile).
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(json.dumps(payload, indent=2))
-            f.flush()
-            try:
-                os.fsync(f.fileno())
-            except OSError:
-                pass
-        tmp.replace(target)
+        # 2026-05-23 Wave1 audit fix (KRIT): acquire bot-controls.lock so
+        # the executor's update_controls() RMW cycle can't read-old + write-back
+        # the stale payload AFTER our atomic rename, defeating the pause-marker.
+        # The executor's _file_lock wraps its RMW around the same lock file.
+        # Without this lock, manual /kill could be silently undone by the very
+        # next executor cycle (~30s) — the kill-switch becomes ineffective.
+        from process_lock import file_lock as _ctl_lock  # type: ignore
+        lock_path = state_dir / "bot-controls.lock"
+        with _ctl_lock(lock_path, timeout_sec=10.0):
+            # PID-suffixed tmp avoids race with executor's parallel write_json.
+            tmp = target.with_suffix(target.suffix + f".tmp.{os.getpid()}")
+            # Use open()+fsync rather than write_text so we durably flush before
+            # rename (otherwise rename can promote a not-yet-flushed tmpfile).
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(json.dumps(payload, indent=2))
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+            tmp.replace(target)
         # POSIX dir fsync makes the rename itself durable. Best-effort on
         # Windows / unsupported FS — kill must proceed regardless.
         try:

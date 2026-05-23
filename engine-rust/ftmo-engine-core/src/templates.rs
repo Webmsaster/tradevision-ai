@@ -582,6 +582,17 @@ pub fn v5_amber_max_passlock_bidir() -> EngineConfig {
     cfg
 }
 
+// 2026-05-23 REMOVED: v5_amber_max_passlock_hybrid (single-account LONG+SHORT
+// fusion). Empirically debunked across 9 architectural variants (all worse
+// than AMBER alone) due to shared-equity path-dependency dominating
+// orthogonality. Additional Wave1 audit found 3 KRIT internal bugs in the
+// template itself (source_symbol mismatch breaks cache lookup, doubled risk
+// vs documented intent, doc/code semantic flip on equity-gating). Deleted
+// rather than fixed since the architecture is fundamentally non-viable.
+// See HANDOFF for empirical results: best variant (v7 mutex_long_short) =
+// 29.23% combined-funded vs AMBER alone = 32.10%. For orthogonality use
+// multi-account stacking (Stack-4 = 59.10%).
+
 /// 2026-05-23 V5_FOREX_MR_PASSLOCK — Bollinger-band mean-reversion on Forex
 /// majors (EURUSD/GBPUSD/USDJPY/USDCAD/AUDUSD/NZDUSD). Cross-asset-class
 /// diversification candidate vs crypto stack (corr ≈ 0 with crypto-trend).

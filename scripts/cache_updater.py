@@ -90,8 +90,16 @@ def update_symbol(symbol):
     path = CACHE_DIR / f"{symbol}_{INTERVAL}.json"
     if not path.exists():
         raise FetchError(f"no cache file for {symbol} (run initial bake first)")
-    with open(path) as f:
-        existing = json.load(f)
+    # 2026-05-23 Wave1 audit fix: per-file try/except around json.load. Previously
+    # a single corrupt cache file raised JSONDecodeError, propagated up through
+    # update_symbol → only `FetchError` was caught in main() → entire batch aborted,
+    # all subsequent symbols silently skipped. Now: corrupt cache = FetchError for
+    # this symbol only, batch continues.
+    try:
+        with open(path) as f:
+            existing = json.load(f)
+    except (json.JSONDecodeError, ValueError) as e:
+        raise FetchError(f"corrupt cache file for {symbol}: {e}")
     if not existing:
         raise FetchError(f"empty cache file for {symbol}")
     # Existing is sorted by openTime, get last bar
@@ -158,9 +166,66 @@ def update_symbol(symbol):
     print(f"  [{symbol}] +{len(new_bars)} bars (total={len(merged)})")
     return len(new_bars), merged[-1]["openTime"] if merged else 0
 
+def update_funding_symbol(symbol: str) -> tuple[int, int]:
+    """2026-05-23 Wave1 audit fix: refresh funding-rate cache (8h-aligned events).
+    Memory champion-debunk #5 disaster pattern: funding cache 14-21 days stale
+    silently invalidated regime-confluence sweeps. Now part of standard refresh.
+    """
+    path = CACHE_DIR / f"{symbol}_funding.json"
+    if not path.exists():
+        # No baseline funding cache — skip silently (some symbols have no funding)
+        return (0, 0)
+    try:
+        with open(path) as f:
+            existing = json.load(f)
+    except (json.JSONDecodeError, ValueError) as e:
+        raise FetchError(f"corrupt funding cache for {symbol}: {e}")
+    if not existing:
+        return (0, 0)
+    last_t = max(int(c["t"]) for c in existing)
+    # Binance funding endpoint: /fapi/v1/fundingRate
+    import urllib.request
+    cursor = last_t + 1
+    new_events = []
+    while True:
+        url = (
+            f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={symbol}"
+            f"&startTime={cursor}&limit=1000"
+        )
+        try:
+            with urllib.request.urlopen(url, timeout=10) as r:
+                batch = json.load(r)
+        except Exception as e:
+            raise FetchError(f"funding fetch failed: {e}")
+        if not batch:
+            break
+        for row in batch:
+            t = int(row["fundingTime"])
+            if t <= last_t:
+                continue
+            r_val = float(row["fundingRate"])
+            new_events.append({"t": t, "r": r_val})
+        if len(batch) < 1000:
+            break
+        cursor = int(batch[-1]["fundingTime"]) + 1
+        time.sleep(0.1)
+    if not new_events:
+        return (0, last_t)
+    by_t = {int(c["t"]): c for c in existing}
+    for e in new_events:
+        by_t[e["t"]] = e
+    merged = sorted(by_t.values(), key=lambda c: int(c["t"]))
+    atomic_write_json(path, merged)
+    print(f"  [{symbol}_funding] +{len(new_events)} events (total={len(merged)})")
+    return len(new_events), int(merged[-1]["t"])
+
+
 def main():
     """2026-05-18 Bug-Audit: failures are now LOUD (sys.exit(1)) so the
     supervisor knows the cache is stale.
+
+    2026-05-23 Wave1 audit fix: also refresh funding caches (was 14-21 days
+    stale, silently invalidated regime/funding-aware sweeps).
     """
     total = 0
     failures: list[str] = []
@@ -174,7 +239,15 @@ def main():
         except FetchError as e:
             failures.append(f"{sym}: {e}")
         time.sleep(0.1)
-    print(f"\n✅ Total bars added: {total}")
+    print(f"\n📊 Refreshing funding caches...")
+    for sym in SYMBOLS:
+        try:
+            added, _ = update_funding_symbol(sym)
+            total += added
+        except FetchError as e:
+            failures.append(f"{sym}_funding: {e}")
+        time.sleep(0.1)
+    print(f"\n✅ Total entries added: {total}")
     if failures:
         print(f"\n❌ {len(failures)} symbols failed:", file=sys.stderr)
         for f in failures:

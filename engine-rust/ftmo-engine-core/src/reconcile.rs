@@ -22,20 +22,37 @@ const RECONCILE_FILENAME: &str = "closed-during-offline.json";
 /// Wire-format entry for a position that closed while the bot was offline.
 /// Reads/writes `closed-during-offline.json` produced by the Python
 /// executor's `reconcile_missing_positions()`.
+///
+/// 2026-05-23 Wave1 audit fix (KRIT-1): Python writer uses snake_case keys
+/// (`ticket`, `exit_price`, `exit_time_ms`, `reason`) while Rust originally
+/// only accepted camelCase. Added serde `alias` so both wire formats parse.
+/// Without aliases, every offline-recovered trade was silently lost on load.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OfflineClosure {
     /// Stable position id (matches `OpenPosition.ticket_id`).
-    #[serde(rename = "ticketId")]
+    #[serde(rename = "ticketId", alias = "ticket")]
     pub ticket_id: String,
     /// Realised exit price from MT5 history.
-    #[serde(rename = "exitPrice")]
+    #[serde(rename = "exitPrice", alias = "exit_price")]
     pub exit_price: f64,
     /// Bar `openTime` at which MT5 history records the close.
-    #[serde(rename = "exitTime")]
+    #[serde(rename = "exitTime", alias = "exit_time_ms", alias = "exit_time")]
     pub exit_time: i64,
     /// Reason inferred by the executor (`tp` / `stop` / `time` / `manual`).
-    #[serde(rename = "exitReason")]
+    #[serde(rename = "exitReason", alias = "reason")]
     pub exit_reason: ExitReason,
+}
+
+/// 2026-05-23 Wave1 audit fix (KRIT-1): Python writer wraps closures in a
+/// `{"trades": [...]}` envelope; Rust originally expected a bare top-level
+/// `Vec`. Accept both by trying the wrapper first.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum OfflineClosureWire {
+    /// Python-style: `{"trades": [...], "reconciled_at": ..., ...}`
+    Envelope { trades: Vec<OfflineClosure> },
+    /// Rust-style: bare top-level array
+    Bare(Vec<OfflineClosure>),
 }
 
 /// Read offline-closures from `<state_dir>/closed-during-offline.json`.
@@ -46,8 +63,12 @@ pub fn load_offline_closures(state_dir: &Path) -> Result<Vec<OfflineClosure>> {
         return Ok(vec![]);
     }
     let raw = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-    let v: Vec<OfflineClosure> =
+    let wire: OfflineClosureWire =
         serde_json::from_slice(&raw).with_context(|| format!("parsing {}", path.display()))?;
+    let v = match wire {
+        OfflineClosureWire::Envelope { trades } => trades,
+        OfflineClosureWire::Bare(v) => v,
+    };
     Ok(v)
 }
 
