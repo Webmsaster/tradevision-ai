@@ -286,19 +286,36 @@ pub struct TopLsPt {
     pub r: f64,
 }
 
-/// Load `{dir}/{symbol}_top_ls.json` if present, else `Ok(None)`. Callers
+/// Load top-trader L/S samples if present, else `Ok(None)`. Callers
 /// treat None as "no top-trader L/S data for this asset" and the voter
 /// becomes dormant (mirrors `load_funding`).
+///
+/// 2026-05-23 Wave2 fix (KRIT-1): filename mismatch. `lsr_collector.py:62`
+/// writes `{SYMBOL}_lsr_top_accounts_30m.json` and `{SYMBOL}_lsr_global_30m.json`.
+/// Loader previously looked for `{SYMBOL}_top_ls.json` — file never exists →
+/// `Ok(None)` always returned → voter dormant forever. Now we also try the
+/// collector's actual filenames so the feature can finally fire.
 #[allow(dead_code)]
 pub fn load_top_ls(dir: &Path, symbol: &str) -> Result<Option<Vec<TopLsPt>>> {
-    let p = dir.join(format!("{symbol}_top_ls.json"));
-    if !p.exists() {
-        return Ok(None);
+    // Try the new collector-aligned filenames first; fall back to the
+    // legacy short name in case some operator already produced cache files
+    // under the old convention.
+    let candidates = [
+        format!("{symbol}_lsr_top_accounts_30m.json"),
+        format!("{symbol}_lsr_global_30m.json"),
+        format!("{symbol}_top_ls.json"),
+    ];
+    for fname in &candidates {
+        let p = dir.join(fname);
+        if !p.exists() {
+            continue;
+        }
+        let f = File::open(&p).with_context(|| format!("opening {}", p.display()))?;
+        let pts: Vec<TopLsPt> = serde_json::from_reader(BufReader::new(f))
+            .with_context(|| format!("parsing top-LS JSON in {}", p.display()))?;
+        return Ok(Some(pts));
     }
-    let f = File::open(&p).with_context(|| format!("opening {}", p.display()))?;
-    let pts: Vec<TopLsPt> = serde_json::from_reader(BufReader::new(f))
-        .with_context(|| format!("parsing top-LS JSON in {}", p.display()))?;
-    Ok(Some(pts))
+    Ok(None)
 }
 
 /// Forward-fill top-trader L/S samples onto candle openTimes. Boundary

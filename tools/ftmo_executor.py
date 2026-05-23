@@ -1338,7 +1338,13 @@ def update_controls(updater) -> dict:
     pre-Phase-38 behavior tuned for this resource.
     """
     lock_path = STATE_DIR / "bot-controls.lock"
-    with _file_lock(lock_path, timeout_sec=2.0, stale_sec=2.0):
+    # 2026-05-23 Wave2 fix (B5 MED — lock-timeout asymmetry): bump Python
+    # timeout 2s → 5s and stale 2s → 5s to match TS (`telegramBot.ts:704-708`
+    # uses timeoutMs:5000, staleMs:5000). The asymmetric 2s window let
+    # Python's stale-recovery unlink a TS-side lock that was legitimately
+    # held >2s during a Telegram 429 retry inside setControls. Lost /pause
+    # or /kill flags would result. Aligning both sides eliminates the race.
+    with _file_lock(lock_path, timeout_sec=5.0, stale_sec=5.0):
         controls = read_json(CONTROLS_PATH, {})
         result = updater(controls)
         if isinstance(result, dict):
@@ -1422,7 +1428,33 @@ def mt5_init_with_retry() -> bool:
                     note="no FTMO_EXPECTED_LOGIN configured — skipping account verification",
                     got=int(info.login),
                 )
-            log_event("mt5_connected", login=info.login, server=info.server, balance=info.balance, equity=info.equity, path=mt5_path or "default")
+            # 2026-05-23 Wave2 fix (KRIT — daily-loss currency check):
+            # CHALLENGE_START_BALANCE / MAX_DAILY_LOSS_PCT thresholds are
+            # USD-denominated. An EUR/GBP/CHF account would silently use
+            # EUR-equity against USD caps → ~10-15% mis-comparison and a
+            # real-breach risk in EUR-down-vs-USD weeks. Honor an explicit
+            # override via FTMO_EXPECTED_CURRENCY (FundingPips uses USD;
+            # FTMO Standard 2-Step is USD by default but EUR accounts exist).
+            acct_currency = (getattr(info, "currency", "") or "").upper()
+            expected_currency = os.environ.get("FTMO_EXPECTED_CURRENCY", "USD").upper()
+            if acct_currency and expected_currency and acct_currency != expected_currency:
+                log_event(
+                    "mt5_currency_mismatch",
+                    expected=expected_currency,
+                    got=acct_currency,
+                    level="error",
+                )
+                tg_send(
+                    f"🚨 <b>Currency mismatch</b>\n"
+                    f"MT5 account is in {acct_currency} but bot expects {expected_currency}. "
+                    f"All FTMO thresholds (DL/TL caps) are denominated in {expected_currency}. "
+                    f"Set FTMO_EXPECTED_CURRENCY={acct_currency} only if you've verified the "
+                    f"caps match your account's currency conversion."
+                )
+                # Hard-fail unless operator explicitly opted out via env var.
+                if os.environ.get("FTMO_ALLOW_CURRENCY_MISMATCH", "").lower() not in ("1", "true", "yes"):
+                    sys.exit(13)
+            log_event("mt5_connected", login=info.login, server=info.server, balance=info.balance, equity=info.equity, path=mt5_path or "default", currency=acct_currency or "?")
             return True
     err = mt5.last_error() if hasattr(mt5, "last_error") else ("?", "?")
     log_event("mt5_init_failed", error=str(err), path=mt5_path or "default")
@@ -1541,7 +1573,12 @@ def check_ftmo_rules(current_equity: float, day_start_equity: float) -> Optional
 # requote tolerance). Set FTMO_STRICT_PARITY=1 to zero them for exact-sim
 # drift-monitor runs — DO NOT use strict-parity for actual live trading,
 # only for backtest-comparison validation.
-DL_ENTRY_BLOCK_BUFFER = float(os.environ.get("FTMO_DL_ENTRY_BLOCK_BUFFER", "0.010"))
+# 2026-05-23 Wave2 fix (KRIT — daily-loss cap audit): bump DL entry-block
+# buffer 1.0% → 2.0%. Previous 1.0% was SMALLER than typical 30s-poll
+# crypto gap (BTC routinely gaps 1-2% in <30s). Bot could open a new
+# position at -4.0% intraday and a single-bar gap past -5% would breach.
+# 2.0% margin covers >95% of observed 30s gaps in the BTC/ETH basket.
+DL_ENTRY_BLOCK_BUFFER = float(os.environ.get("FTMO_DL_ENTRY_BLOCK_BUFFER", "0.020"))
 TL_ENTRY_BLOCK_BUFFER = float(os.environ.get("FTMO_TL_ENTRY_BLOCK_BUFFER", "0.015"))
 DL_EMERGENCY_BUFFER_DEFAULT = float(os.environ.get("FTMO_DL_EMERGENCY_BUFFER", "0.025"))
 TL_EMERGENCY_BUFFER_DEFAULT = float(os.environ.get("FTMO_TL_EMERGENCY_BUFFER", "0.025"))

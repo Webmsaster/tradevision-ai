@@ -39,15 +39,44 @@ ENDPOINTS = {
 }
 
 def fetch(endpoint_name, symbol, limit=500):
-    """Fetch up to `limit` records from Binance for this endpoint+symbol."""
+    """Fetch up to `limit` records from Binance for this endpoint+symbol.
+
+    2026-05-23 Wave2 fix (B4 LOW): silent-fail anti-pattern. Previously
+    returned [] on ANY exception (rate-limit 429, 418-IP-ban, network) →
+    daemon thought it was healthy while feeding empty caches for hours.
+    Same bug-class fixed in cache_updater.fetch_klines earlier (2026-05-18).
+    Now retry once on network errors and raise on 4xx/5xx so the operator
+    sees a real failure instead of a silent stale cache.
+    """
+    import urllib.error as _urllib_error
+    import urllib.request as _urllib_request
     url = (f"https://fapi.binance.com/futures/data/{endpoint_name}"
            f"?symbol={symbol}&period={PERIOD}&limit={limit}")
-    try:
-        with urllib.request.urlopen(url, timeout=20) as r:
-            return json.load(r)
-    except Exception as e:
-        print(f"  [fetch-err] {endpoint_name} {symbol}: {e}", file=sys.stderr)
-        return []
+    last_err = None
+    for attempt in range(2):
+        try:
+            with _urllib_request.urlopen(url, timeout=20) as r:
+                return json.load(r)
+        except _urllib_error.HTTPError as e:
+            # 4xx (rate-limit, banned IP) or 5xx — re-raise so caller sees it.
+            last_err = e
+            if e.code in (429, 418):
+                # IP-rate-limit / temporary ban: bubble up immediately so
+                # the daemon can back off; do NOT silently return [].
+                raise
+            if 500 <= e.code < 600 and attempt < 1:
+                time.sleep(1.0 + attempt)
+                continue
+            raise
+        except (_urllib_error.URLError, OSError) as e:
+            # Network hiccup — retry once, then raise.
+            last_err = e
+            if attempt < 1:
+                time.sleep(1.0)
+                continue
+            raise
+    # Unreachable but pleases the type-checker.
+    raise RuntimeError(f"lsr_collector.fetch exhausted retries: {last_err}")
 
 def normalize(record):
     """Convert API response to our schema."""

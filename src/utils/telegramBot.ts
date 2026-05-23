@@ -251,8 +251,15 @@ async function handleCommand(
       );
       break;
     case "/resume":
+      // 2026-05-23 Wave2 fix (B4 MED): also clear killRequested. Previously
+      // /resume only set paused=false → if a prior /kill had deferred (MT5
+      // disconnect → partial-fail) or set killRequested still true, the
+      // very next executor cycle re-ran handle_kill_request immediately,
+      // closing everything + re-pausing. Operator saw /resume followed by
+      // "🛑 Kill complete" with no idea why.
       setControls(ctx.stateDir, {
         paused: false,
+        killRequested: false,
         lastCommand: { from, cmd, ts: new Date().toISOString() },
       });
       await tgSend("▶️ <b>Bot RESUMED</b>\nNew signals will be executed.", cfg);
