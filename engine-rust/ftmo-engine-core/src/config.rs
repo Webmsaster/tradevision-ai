@@ -647,6 +647,25 @@ pub struct EngineConfig {
     #[serde(default, rename = "closeAllOnTargetReached")]
     pub close_all_on_target_reached: bool,
 
+    /// 2026-05-23 HYBRID-MUTEX flag — when `cross_asset_filter` is set, force-
+    /// close any open position whose direction opposes the current cross-asset
+    /// trend (e.g. close longs when BNB flips bearish). Only fires when the
+    /// cross-asset trend is non-neutral (clear bullish OR bearish via 3-way
+    /// EMA stack). Designed for HYBRID long+short single-account templates
+    /// that need true regime-mutex (else stale-side positions tank equity at
+    /// regime flips). Off by default to preserve existing template behaviour.
+    #[serde(default, rename = "regimeFlipCloseOpposite")]
+    pub regime_flip_close_opposite: bool,
+
+    /// 2026-05-23 POSITION-LEVEL MUTEX flag — block new entries whose
+    /// direction opposes ANY currently-open position. True 1-side-at-a-time
+    /// mutex across all assets (not just same asset). Designed for HYBRID
+    /// long+short single-account templates: when AMBER has any long open,
+    /// SHORTS entries skip; when SHORTS has any short open, AMBER entries
+    /// skip. Off by default.
+    #[serde(default, rename = "mutexLongShort")]
+    pub mutex_long_short: bool,
+
     /// 2026-05-19 Pattern-D fix — when this many consecutive stop-loss
     /// exits occur within a single trading day, pause all new entries
     /// until the next day boundary. 0 = disabled (default). Typical
@@ -788,6 +807,8 @@ impl EngineConfig {
             time_exit_enabled: false,
             pause_at_target_reached: true,
             close_all_on_target_reached: true,
+            regime_flip_close_opposite: false,
+            mutex_long_short: false,
             max_consec_stops_per_day: 0,
             trail_dd_lock_trigger: 0.0,
             trail_dd_lock_floor: 0.0,
