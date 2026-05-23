@@ -63,26 +63,35 @@ def load_data():
     return rows
 
 
-def build_xy(rows, target="is_win"):
+def build_xy(rows, target="is_win", precomputed_medians: list | None = None):
     """Returns (X, y, feature_medians).
 
     feature_medians is a list of float length == len(FEATURES) — the
     per-feature median used to impute NaN at training time. The Rust
     inference path MUST apply the same medians on NaN/missing features
     so training and inference distributions align (Round 11.3 R2-1 fix).
+
+    2026-05-23 Wave1 audit follow-up: when `precomputed_medians` is given,
+    use them instead of recomputing on this slice. Caller should pass the
+    TRAIN-set medians when imputing the TEST set so the test-imputation
+    doesn't leak test-distribution info backward into training.
     """
     X = np.array([[r[k] for k in FEATURES] for r in rows], dtype=np.float64)
     y = np.array([r[target] for r in rows], dtype=np.int64)
-    # Compute per-feature median over FINITE values (skip NaN/Inf).
-    feature_medians: list[float] = []
+    if precomputed_medians is not None:
+        feature_medians = list(precomputed_medians)
+    else:
+        feature_medians = []
+        for col in range(X.shape[1]):
+            col_vals = X[:, col]
+            finite_vals = col_vals[np.isfinite(col_vals)]
+            median = float(np.median(finite_vals)) if len(finite_vals) > 0 else 0.0
+            feature_medians.append(median)
+    # Apply imputation (medians may be from train or this slice).
     for col in range(X.shape[1]):
         col_vals = X[:, col]
-        finite_vals = col_vals[np.isfinite(col_vals)]
-        median = float(np.median(finite_vals)) if len(finite_vals) > 0 else 0.0
-        feature_medians.append(median)
         if np.any(np.isnan(col_vals)):
-            X[:, col] = np.where(np.isnan(col_vals), median, col_vals)
-    # Replace any remaining Inf with finite max/min.
+            X[:, col] = np.where(np.isnan(col_vals), feature_medians[col], col_vals)
     X = np.nan_to_num(X, nan=0.0, posinf=1e9, neginf=-1e9)
     return X, y, feature_medians
 
@@ -124,14 +133,24 @@ def main():
     if len(rows) < pre_n:
         print(f"[ml-train] WARN: dropped {pre_n - len(rows)} rows missing entry_time")
     rows.sort(key=lambda r: r["entry_time"])
-    X, y, feature_medians = build_xy(rows, target="is_win")
+    # 2026-05-23 Wave1 audit fix: compute medians on TRAIN slice only, then
+    # apply same medians to TEST. Previously medians were computed on full
+    # dataset → minor (~1-position-rank) leakage of test distribution into
+    # train imputation. Split FIRST, then build_xy(train) → medians,
+    # then build_xy(test, precomputed_medians=...).
+    rows_tr = rows[: int(len(rows) * 0.7)]
+    rows_va = rows[int(len(rows) * 0.7) :]
+    X_tr, y_tr, feature_medians = build_xy(rows_tr, target="is_win")
+    X_va, y_va, _ = build_xy(rows_va, target="is_win", precomputed_medians=feature_medians)
+    # Re-stack for downstream prints + final model fit on all rows (using
+    # train medians) — std sklearn pattern: train medians applied to deploy.
+    X = np.vstack([X_tr, X_va])
+    y = np.concatenate([y_tr, y_va])
     print(f"X shape={X.shape}, win rate={y.mean():.3f}")
-    print(f"feature_medians: {dict(zip(FEATURES, [round(m, 6) for m in feature_medians]))}")
+    print(f"feature_medians (TRAIN-only): {dict(zip(FEATURES, [round(m, 6) for m in feature_medians]))}")
 
     # Time-based 70/30 split.
-    split_idx = int(len(rows) * 0.7)
-    X_tr, X_va = X[:split_idx], X[split_idx:]
-    y_tr, y_va = y[:split_idx], y[split_idx:]
+    # X_tr/y_tr/X_va/y_va already split above (train-only-median fix).
     if len(y_tr) == 0 or len(y_va) == 0:
         raise RuntimeError("time-based split produced an empty side")
     if y_tr.sum() == 0 or y_tr.sum() == len(y_tr):

@@ -1964,4 +1964,79 @@ mod tests {
         assert_eq!(cfg.label, "R28_V6_PASSLOCK_FRMED");
         assert!(cfg.funding_rate_filter.is_some());
     }
+
+    // ========================================================================
+    // 2026-05-23 Wave1 audit fix: regression tests for 4 newest templates +
+    // 2 engine flags. Previously had ZERO coverage on this session's shipped
+    // features. Each test pins the structural invariants — anyone refactoring
+    // the templates later gets immediate signal if they break the intent.
+    // ========================================================================
+
+    #[test]
+    fn shorts_only_template_is_shorts_only() {
+        let cfg = v5_amber_max_passlock_shorts_only();
+        assert_eq!(cfg.label, "V5_AMBER_MAX_PASSLOCK_SHORTS_ONLY");
+        assert!(cfg.close_all_on_target_reached, "PASSLOCK lineage");
+        // All assets must reject longs + allow shorts + NOT invert direction
+        for a in cfg.assets.iter() {
+            assert!(a.disable_long, "{}: must disable_long", a.symbol);
+            assert!(!a.disable_short, "{}: must allow shorts", a.symbol);
+            assert!(!a.invert_direction, "{}: must NOT invert", a.symbol);
+        }
+        assert!(!cfg.invert_direction, "engine-level invert must be off");
+    }
+
+    #[test]
+    fn bidir_template_allows_both_sides() {
+        let cfg = v5_amber_max_passlock_bidir();
+        assert_eq!(cfg.label, "V5_AMBER_MAX_PASSLOCK_BIDIR");
+        assert!(cfg.close_all_on_target_reached);
+        // BIDIR keeps AMBER's invert=true but flips disable_short=false so
+        // both inverted-long AND inverted-short signals can fire.
+        for a in cfg.assets.iter() {
+            assert!(a.invert_direction, "{}: AMBER invert", a.symbol);
+            assert!(!a.disable_short, "{}: shorts enabled", a.symbol);
+            assert!(!a.disable_long, "{}: longs enabled", a.symbol);
+        }
+    }
+
+    #[test]
+    fn regime_flip_close_opposite_flag_defaults_off() {
+        // Default must be FALSE so existing templates unchanged. Flag is
+        // opt-in via template-mutator; activating in a fresh config is the
+        // whitelist check.
+        let cfg = v5_amber_max_passlock();
+        assert!(
+            !cfg.regime_flip_close_opposite,
+            "default-off; only opt-in templates may enable"
+        );
+    }
+
+    #[test]
+    fn mutex_long_short_flag_defaults_off() {
+        // Same default-off invariant for the position-level mutex flag.
+        let cfg = v5_amber_max_passlock();
+        assert!(
+            !cfg.mutex_long_short,
+            "default-off; only opt-in templates may enable"
+        );
+    }
+
+    #[test]
+    fn forex_mr_passlock_basket_and_invariants() {
+        let cfg = v5_forex_mr_passlock();
+        assert_eq!(cfg.label, "V5_FOREX_MR_PASSLOCK");
+        assert!(cfg.close_all_on_target_reached);
+        assert_eq!(cfg.assets.len(), 6, "EUR/GBP/JPY/CAD/AUD/NZD");
+        assert_eq!(cfg.bar_minutes, 1440, "daily TF");
+        // JPY/CAD pairs must invert (reverse-MR character documented in
+        // signals_forex_mr.rs).
+        let jpy = cfg.assets.iter().find(|a| a.symbol == "USDJPY-MR").unwrap();
+        assert!(jpy.invert_direction, "USDJPY must invert");
+        let cad = cfg.assets.iter().find(|a| a.symbol == "USDCAD-MR").unwrap();
+        assert!(cad.invert_direction, "USDCAD must invert");
+        // Pairs NOT in the invert list must trade native direction.
+        let eur = cfg.assets.iter().find(|a| a.symbol == "EURUSD-MR").unwrap();
+        assert!(!eur.invert_direction, "EURUSD must NOT invert");
+    }
 }

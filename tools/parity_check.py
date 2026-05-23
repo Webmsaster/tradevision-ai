@@ -60,6 +60,10 @@ def gen_bars(n: int, start: float = 100.0, drift: float = 0.0, vol: float = 0.01
 
 # ---- Reference P&L formulas (mirror ftmoDaytrade24h.ts:4120-4141) ----------
 def reference_raw_pnl(direction: str, entry: float, exit_price: float, cost_bp: float = 0) -> float:
+    # 2026-05-23 Wave1 audit defensive: normalize at entry so case-drift in
+    # callers doesn't silently sign-flip via strict `== "long"` compare.
+    from direction_util import normalize_direction as _nd
+    direction = _nd(direction) or direction
     cost = cost_bp / 10000
     entry_eff = entry * (1 + cost / 2) if direction == "long" else entry * (1 - cost / 2)
     exit_eff = exit_price * (1 - cost / 2) if direction == "long" else exit_price * (1 + cost / 2)

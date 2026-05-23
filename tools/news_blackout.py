@@ -108,6 +108,70 @@ HIGH_IMPACT_EVENTS_2026: list[tuple[str, str]] = [
     ("2026-04-29T12:30:00+00:00", "GDP"),
     ("2026-07-30T12:30:00+00:00", "GDP"),
     ("2026-10-29T12:30:00+00:00", "GDP"),
+
+    # ---- 2026-05-23 Wave1 audit extension: macro events outside US Fed ----
+    # FOMC press conferences fire ~30min after the FOMC statement; we cover
+    # ±60min in the gate so they fall inside the FOMC blackout. Explicit
+    # entries below for the press conferences that fire WITHOUT a same-day
+    # statement (semi-annual testimony, Jackson Hole, etc.).
+    ("2026-02-11T15:00:00+00:00", "Powell Senate testimony H1"),
+    ("2026-02-12T15:00:00+00:00", "Powell House testimony H1"),
+    ("2026-07-15T14:00:00+00:00", "Powell Senate testimony H2"),
+    ("2026-07-16T14:00:00+00:00", "Powell House testimony H2"),
+    ("2026-08-21T14:00:00+00:00", "Jackson Hole opening"),
+    ("2026-08-22T14:00:00+00:00", "Jackson Hole Powell speech"),
+
+    # ---- ECB rate decisions (8/year, ~12:15 UTC; presser 12:45) ----
+    ("2026-01-22T13:15:00+00:00", "ECB"),
+    ("2026-03-12T13:15:00+00:00", "ECB"),
+    ("2026-04-16T12:15:00+00:00", "ECB"),
+    ("2026-06-04T12:15:00+00:00", "ECB"),
+    ("2026-07-23T12:15:00+00:00", "ECB"),
+    ("2026-09-10T12:15:00+00:00", "ECB"),
+    ("2026-10-29T13:15:00+00:00", "ECB"),
+    ("2026-12-17T13:15:00+00:00", "ECB"),
+
+    # ---- BOJ rate decisions (8/year, ~03:00 UTC announcement, 06:30 presser) ----
+    ("2026-01-23T03:00:00+00:00", "BOJ"),
+    ("2026-03-19T03:00:00+00:00", "BOJ"),
+    ("2026-04-30T03:00:00+00:00", "BOJ"),
+    ("2026-06-17T03:00:00+00:00", "BOJ"),
+    ("2026-07-31T03:00:00+00:00", "BOJ"),
+    ("2026-09-19T03:00:00+00:00", "BOJ"),
+    ("2026-10-30T03:00:00+00:00", "BOJ"),
+    ("2026-12-18T03:00:00+00:00", "BOJ"),
+
+    # ---- Crypto-native: ETF flows announcement windows ----
+    # 13F filings deadline = 45 days after quarter end → typically reveal
+    # institutional crypto positions on these dates.
+    ("2026-02-14T21:00:00+00:00", "13F filings deadline (Q4 2025)"),
+    ("2026-05-15T20:00:00+00:00", "13F filings deadline (Q1 2026)"),
+    ("2026-08-14T20:00:00+00:00", "13F filings deadline (Q2 2026)"),
+    ("2026-11-13T21:00:00+00:00", "13F filings deadline (Q3 2026)"),
+
+    # ---- PCE (Fed's preferred inflation gauge, monthly) ----
+    ("2026-01-30T13:30:00+00:00", "PCE"),
+    ("2026-02-27T13:30:00+00:00", "PCE"),
+    ("2026-03-27T12:30:00+00:00", "PCE"),
+    ("2026-04-30T12:30:00+00:00", "PCE"),
+    ("2026-05-29T12:30:00+00:00", "PCE"),
+    ("2026-06-26T12:30:00+00:00", "PCE"),
+    ("2026-07-31T12:30:00+00:00", "PCE"),
+    ("2026-08-28T12:30:00+00:00", "PCE"),
+    ("2026-09-25T12:30:00+00:00", "PCE"),
+    ("2026-10-30T12:30:00+00:00", "PCE"),
+    ("2026-11-25T13:30:00+00:00", "PCE"),
+    ("2026-12-22T13:30:00+00:00", "PCE"),
+
+    # ---- FOMC minutes (3 weeks after each FOMC meeting, 18:00 UTC) ----
+    ("2026-02-18T19:00:00+00:00", "FOMC minutes Jan"),
+    ("2026-04-08T18:00:00+00:00", "FOMC minutes Mar"),
+    ("2026-05-20T18:00:00+00:00", "FOMC minutes Apr"),
+    ("2026-07-08T18:00:00+00:00", "FOMC minutes Jun"),
+    ("2026-08-19T18:00:00+00:00", "FOMC minutes Jul"),
+    ("2026-10-07T18:00:00+00:00", "FOMC minutes Sep"),
+    ("2026-11-18T19:00:00+00:00", "FOMC minutes Oct"),
+    ("2026-12-30T19:00:00+00:00", "FOMC minutes Dec"),
 ]
 
 

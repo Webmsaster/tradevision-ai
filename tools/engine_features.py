@@ -41,8 +41,28 @@ after any change here.
 """
 from __future__ import annotations
 
+import sys as _sys
 from dataclasses import dataclass, field
+from pathlib import Path as _Path
 from typing import List, Optional, Tuple
+
+# 2026-05-23 Wave1 audit defensive-shim: ~50 strict-string `direction == "long"`
+# compares in this file rely on callers passing exact-case "long"/"short".
+# After tools/direction_util.py landed, all known live-trading call sites
+# normalize at the boundary, but parity_check.py + future callers may not.
+# Import normalize_direction and add a helper used inside every function
+# entry to canonicalize the input so downstream `== "long"` stays correct.
+_DU = _Path(__file__).resolve().parent
+if str(_DU) not in _sys.path:
+    _sys.path.insert(0, str(_DU))
+try:
+    from direction_util import normalize_direction as _norm_dir  # type: ignore
+except ImportError:
+    def _norm_dir(d):  # type: ignore
+        if d is None:
+            return None
+        s = str(d).strip().lower()
+        return s if s in ("long", "short") else None
 
 
 # =============================================================================
