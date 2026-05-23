@@ -443,52 +443,53 @@ def _tf_magic_offset() -> int:
     return int(digest, 16) % 6
 
 
-def _compute_magic_id() -> int:
-    """Derive a per-account magic number from FTMO_ACCOUNT_ID + FTMO_TF.
-
-    Returns 231 when FTMO_ACCOUNT_ID is unset (backwards-compatible base).
-    Numeric account_id: 231 + 10 + (num * 10) + tf_offset(0..5) → slots are
-    10-wide, PING_MAGIC = MAGIC + 7 still safe across any TF combination.
-    Non-numeric account_id: 231 + 11000 + (sha256[:8] % 9000) →
-    range [11231, 20230], collision prob < 0.6% per 100 IDs.
-    Multi-TF on non-numeric account also disambiguated via tf_offset.
+def _compute_account_base() -> int:
+    """2026-05-24 Wave4 HIGH FIX (Agent 3): the prior single-function
+    `_compute_magic_id()` returned `account_base + tf_off`, and then
+    `PING_MAGIC = MAGIC + 7` was computed downstream. At tf_off=5 this
+    pushed PING (= base + tf_off + 7 = base + 12) PAST the 10-wide account
+    slot boundary — e.g. account 1 (base=251) PING at tf_off=5 = 263, which
+    is inside account 2's MAGIC range [261..270]. On a shared MT5 login with
+    multiple numeric accounts, mt5.positions_get(magic=PING) for account 1
+    would silently also match account 2's MAGIC trades and vice versa.
+    The comment in old code claimed "PING stays within slot regardless of
+    tf_off" — that was false.
+    Fix: compute the account_base separately from tf_off, then PING uses
+    base + 7 (fixed within the 10-wide slot, NOT shifted by tf_off).
     """
     base = 231
     account_id = os.environ.get("FTMO_ACCOUNT_ID", "").strip()
-    tf_off = _tf_magic_offset()
     if not account_id:
-        return base + tf_off
-    # Numeric path — preferred, NO collisions.
+        return base
     try:
         num = int(account_id)
         if num < 0:
             raise ValueError("negative account_id")
         # base + 10 + num*10 → account 1=251, account 2=261, ...
-        # + tf_off (0..5) → distinct MAGIC per FTMO_TF on the same login.
-        # PING_MAGIC = MAGIC + 7 stays within slot regardless of tf_off.
-        return base + 10 + (num * 10) + tf_off
+        return base + 10 + (num * 10)
     except ValueError:
-        # 2026-05-16 Round 9 MED FIX (ftmo_executor agent): non-numeric
-        # fallback range [1231, 10230] previously overlapped numeric range
-        # for num ∈ [100..999] (numeric: 1241..10241). On a shared VPS with
-        # one numeric and one non-numeric ACCOUNT_ID, MAGIC collision
-        # possible. Shift non-numeric to [11231, 20230] so numeric (num<1000)
-        # and non-numeric ranges are STRICTLY DISJOINT.
+        # Non-numeric: shift to [11231, 20230] so it's disjoint from
+        # numeric range [241, 10241]. tf_off is added at MAGIC compute,
+        # PING uses the base directly so it stays within the 10-wide slot.
         import hashlib
 
         digest = hashlib.sha256(account_id.encode("utf-8")).hexdigest()[:8]
         offset = int(digest, 16) % 9000
-        # Mix tf_off into the LOWEST decade so the [11231,20230] range still
-        # disambiguates per-TF without leaving the non-numeric band.
-        return base + 11000 + offset + tf_off  # range [11231, 20235]
+        return base + 11000 + offset
 
 
-# PING_MAGIC offset chosen as 7 (not 1) so that adjacent numeric accounts
-# never overlap: account 1 has PING=258, account 2 has MAGIC=261 — no
-# overlap because 261 - 258 = 3, but ALL 10 slots [251..260] belong to
-# account 1, and [261..270] belong to account 2.
+def _compute_magic_id() -> int:
+    """MAGIC = account_base + tf_off (slots 0..5 within the 10-wide block)."""
+    return _compute_account_base() + _tf_magic_offset()
+
+
+# 2026-05-24 Wave4 HIGH FIX: PING is now `account_base + 7`, NOT `MAGIC + 7`.
+# PING_MAGIC is fixed within the account slot regardless of which TF the bot
+# runs — preventing cross-account leakage on shared MT5 logins. Slots inside
+# the 10-wide account block: 0..5 = MAGIC per TF, 6 unused, 7 = PING, 8..9
+# reserved for future use.
 MAGIC = _compute_magic_id()
-PING_MAGIC = MAGIC + 7  # was MAGIC+1 — Codex audit found +1 caused next-account overlap
+PING_MAGIC = _compute_account_base() + 7
 
 
 PENDING_PATH = STATE_DIR / "pending-signals.json"

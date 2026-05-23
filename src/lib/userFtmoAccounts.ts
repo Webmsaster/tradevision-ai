@@ -27,8 +27,16 @@ import type { SupabaseClient } from "@supabase/supabase-js";
  * helper can defensively reject malformed slugs before going to the DB.
  * Belt-and-suspenders: the DB CHECK constraint enforces the same regex, but
  * rejecting client-side avoids a wasted round-trip.
+ *
+ * 2026-05-24 Wave4 HIGH FIX (Agent 4): prior regex `/^[a-z0-9][a-z0-9-]{0,63}$/`
+ * (lowercase + dash only) silently rejected slugs that the upstream
+ * `/api/drift-data` route accepts (`/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/` —
+ * uppercase + underscore allowed). Multi-tenant slugs like
+ * `Account_A_2h-trend-amber` passed drift-data's gate but failed here, so
+ * `getAllowedSlugsForUser()` returned `[]` and downstream callers got
+ * 403/empty data when they shouldn't. Aligned to drift-data exactly.
  */
-const TF_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const TF_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 /**
  * Read every slug the given user is mapped to. Returns `[]` when:
