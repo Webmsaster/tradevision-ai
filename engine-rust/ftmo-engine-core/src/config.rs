@@ -138,11 +138,19 @@ pub struct AssetConfig {
 }
 
 impl AssetConfig {
-    /// Resolves the effective invert flag, mirroring TS
-    /// `asset.invertDirection ?? cfg.invertDirection ?? false`
-    /// (`ftmoDaytrade24h.ts:3609`). Per-asset `true` always wins; if every
-    /// asset leaves the field at its `false` default, run-config-level
-    /// `cfg.invertDirection: true` flips the whole basket.
+    /// Resolves the effective invert flag.
+    ///
+    /// 2026-05-24 Wave7 doc-honesty fix: prior comment claimed this mirrors
+    /// TS `asset.invertDirection ?? cfg.invertDirection ?? false` exactly,
+    /// but `invert_direction: bool` cannot distinguish "unset / use cfg"
+    /// from "explicitly false". So the OR semantics here cannot honor TS's
+    /// asset-overrides-cfg-with-false case. In practice no production
+    /// template sets `cfg.invert_direction: true` (all use the default
+    /// `false`), so the limitation is theoretical — but `signals_forex_mr`
+    /// and similar callers that want to express "explicit non-invert"
+    /// should rely on cfg-level `false` and per-asset `true`-or-`false`
+    /// (which works). True asset-overrides-cfg-with-false would need a
+    /// migration to `Option<bool>` and updates to all 56+ call sites.
     pub fn effective_invert_direction(&self, cfg: &EngineConfig) -> bool {
         self.invert_direction || cfg.invert_direction
     }
