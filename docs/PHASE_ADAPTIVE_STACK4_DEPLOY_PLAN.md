@@ -1,18 +1,22 @@
 # Phase-Adaptive Stack-4 Live-Deployment Plan
 
 **Status:** Plan only — implementation parked until live-deploy decision.
-**Source finding:** [[session-2026-05-25-phase-adaptive-stack4]] (random-restart greedy = 88.82% OOS TRUE-SEQ CF).
+**Source finding:** [[session-2026-05-25-phase-adaptive-stack4]] (GA Stack-4 multi-seed = 93.35% OOS BEST / 90.60% mean).
 
-## Recommended Stack-4 Config (lowest-drift, most stable)
+## Recommended Stack-4 Config (GA-optimal, seed 456 winner)
 
-| Account | P1 Template                                   | P2 Template (auto-switch on P1-target hit) |
-| ------- | --------------------------------------------- | ------------------------------------------ |
-| A       | `v5-amber-max-passlock-risk05`                | `v5-amber-max-passlock-shorts-only`        |
-| B       | `aggressive-24h-kelly-reentry` (ext24 basket) | `v5-amber-max-passlock`                    |
-| C       | `v5-amber-max-passlock-shorts-only`           | `shorts-agg`                               |
-| D       | `aggressive-24h`                              | `obsidian`                                 |
+| Account | P1 Template                         | P2 Template (auto-switch on P1-target hit) |
+| ------- | ----------------------------------- | ------------------------------------------ |
+| A       | `v5-amber-max-passlock-risk05`      | `v5-amber-max-passlock-obsidian`           |
+| B       | `v5-amber-max-passlock-shorts-only` | `v5-amber-max-passlock-shorts-only` (sym!) |
+| C       | `v5-amber-max-passlock-shorts-agg`  | `v5-amber-max-passlock-topaz`              |
+| D       | `v5-amber-max-passlock-risk06`      | `v5-amber-max-passlock-shorts-only`        |
 
-Walk-forward TEST 88.82% / TRAIN 84.70% / drift +4.12pp = robust.
+Walk-forward TEST 93.35% / TRAIN 86.82% / drift +6.54pp = ROBUST (anti-overfit).
+
+## Robustness Range (8 GA seeds)
+
+TEST range: [89.73%, 93.35%], mean 90.60%. Conservative live-realistic estimate: 85-88%.
 
 ## Required Infrastructure
 
