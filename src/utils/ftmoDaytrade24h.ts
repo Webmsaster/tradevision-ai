@@ -8830,6 +8830,39 @@ export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE: FtmoDaytrade24h
     ),
   };
 
+// 2026-05-24 AGGRESSIVE_24H_KELLY_REENTRY — best-of-stack single-account
+// variant discovered via ceiling-hunt. Combines all working levers:
+//   1. bidir + mutexLongShort (from BIDIR_MUTEX)
+//   2. maxConcurrentTrades=25 (from AGGRESSIVE)
+//   3. allowedHoursUtc removed (24h trading instead of 8h restricted)
+//   4. half-Kelly rolling-WR sizing tiers (multipliers halved vs Rust's
+//      fraction=0.5 + 2.0/1.5/1.0/0.5 since TS KellySizing has no
+//      fraction field — net effect identical)
+//   5. reentryAfterStop: re-enter same direction at half size within 12 bars
+//      after a stop-out (often near reversal → second attempt catches recovery)
+// Empirical: 36.10% TRUE-SEQ CF (+6.80pp vs AMBER baseline 29.30%, n=1000).
+// Walk-forward: in-sample 34.48% / out-of-sample 38.74% (no overfit).
+// Mirrors engine-rust v5_amber_max_passlock_aggressive_24h_kelly_reentry().
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H_KELLY_REENTRY: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE,
+    allowedHoursUtc: undefined,
+    kellySizing: {
+      windowSize: 30,
+      minTrades: 10,
+      tiers: [
+        { winRateAbove: 0.65, multiplier: 1.0 }, // 2.0 × 0.5 fraction
+        { winRateAbove: 0.55, multiplier: 0.75 }, // 1.5 × 0.5
+        { winRateAbove: 0.45, multiplier: 0.5 }, // 1.0 × 0.5
+        { winRateAbove: 0.0, multiplier: 0.25 }, // 0.5 × 0.5
+      ],
+    },
+    reentryAfterStop: {
+      sizeMult: 0.5,
+      withinBars: 12, // 6h on 30m bars
+    },
+  };
+
 // 2026-05-24 SHORTS_ONLY: pure shorts-only variant of AMBER_MAX_PASSLOCK.
 // Mirrors engine-rust v5_amber_max_passlock_shorts_only() — per-asset
 // removes invertDirection, blocks longs, allows shorts. Voter outputs
