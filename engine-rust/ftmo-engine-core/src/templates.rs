@@ -629,6 +629,45 @@ pub fn v5_amber_max_passlock_mixed_v3() -> EngineConfig {
     cfg
 }
 
+// AGG_KR + adaptive sizing tier (2x on +3% buffer)
+pub fn v5_amber_max_passlock_agg_kr_adaptive() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly_reentry();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_AGG_KR_ADAPTIVE".into();
+    cfg.adaptive_sizing = Some(vec![
+        crate::config::AdaptiveSizingTier { equity_above: 0.03, factor: 1.5 },
+        crate::config::AdaptiveSizingTier { equity_above: 0.06, factor: 2.0 },
+    ]);
+    cfg
+}
+
+// AGG_KR + chandelier exit (ATR-trailing on winners)
+pub fn v5_amber_max_passlock_agg_kr_chandelier() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly_reentry();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_AGG_KR_CHANDELIER".into();
+    cfg.chandelier_exit = Some(crate::config::ChandelierExit {
+        period: 22, mult: 2.5, min_move_r: Some(0.5),
+    });
+    cfg
+}
+
+// AGG_KR + partial take profit (lock 30% at +3%)
+pub fn v5_amber_max_passlock_agg_kr_ptp() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly_reentry();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_AGG_KR_PTP".into();
+    cfg.partial_take_profit = Some(crate::config::PartialTakeProfit {
+        trigger_pct: 0.03, close_fraction: 0.3,
+    });
+    cfg
+}
+
+// AGG_KR + break-even threshold (move SL to entry at +1% — earlier than original 1.5%)
+pub fn v5_amber_max_passlock_agg_kr_be_early() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly_reentry();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_AGG_KR_BE_EARLY".into();
+    cfg.break_even = Some(crate::config::BreakEven { threshold: 0.01 });
+    cfg
+}
+
 // AGG_KR + tighter stops (0.03 vs 0.05 default)
 pub fn v5_amber_max_passlock_agg_kr_tight_stop() -> EngineConfig {
     let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly_reentry();
@@ -676,6 +715,53 @@ pub fn v5_amber_max_passlock_mixed_v4_cvd_only() -> EngineConfig {
     for asset in cfg.assets.iter_mut() {
         asset.cvd_entry = Some(crate::config::CvdEntry { lookback_bars: 50 });
     }
+    cfg
+}
+
+/// 2026-05-25 SHORTS_AGG — SHORTS_ONLY base + AGG upgrades (bidir+mutex+
+/// MCT=25+24h+kelly+reentry). Tests if SHORTS-side benefits from AGG.
+pub fn v5_amber_max_passlock_shorts_agg() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_shorts_only();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_SHORTS_AGG".into();
+    cfg.mutex_long_short = true;
+    cfg.max_concurrent_trades = Some(25);
+    cfg.allowed_hours_utc = None;
+    cfg.kelly_sizing = Some(crate::config::KellySizing {
+        window_size: 30, min_trades: 10, fraction: 0.5,
+        tiers: vec![
+            crate::config::KellyTier { win_rate_above: 0.65, multiplier: 2.0 },
+            crate::config::KellyTier { win_rate_above: 0.55, multiplier: 1.5 },
+            crate::config::KellyTier { win_rate_above: 0.45, multiplier: 1.0 },
+            crate::config::KellyTier { win_rate_above: 0.0, multiplier: 0.5 },
+        ],
+    });
+    cfg.reentry_after_stop = Some(crate::config::ReentryAfterStop { within_bars: 12, size_mult: 0.5 });
+    cfg
+}
+
+/// 2026-05-25 AGG_KR_HOLD_120 — shorter hold (2.5d instead of 5d).
+/// Faster turnover; tests if more trades per window helps.
+pub fn v5_amber_max_passlock_agg_kr_hold_120() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly_reentry();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_AGG_KR_HOLD120".into();
+    cfg.hold_bars = 120;
+    for asset in cfg.assets.iter_mut() {
+        asset.hold_bars = Some(120);
+    }
+    cfg
+}
+
+/// 2026-05-25 AGG_KR with combined adaptive + chandelier (without ptp/be).
+pub fn v5_amber_max_passlock_agg_kr_combo() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly_reentry();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_AGG_KR_COMBO".into();
+    cfg.adaptive_sizing = Some(vec![
+        crate::config::AdaptiveSizingTier { equity_above: 0.03, factor: 1.5 },
+        crate::config::AdaptiveSizingTier { equity_above: 0.06, factor: 2.0 },
+    ]);
+    cfg.chandelier_exit = Some(crate::config::ChandelierExit {
+        period: 22, mult: 2.5, min_move_r: Some(0.5),
+    });
     cfg
 }
 
@@ -2010,6 +2096,13 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-amber-max-passlock-agg-kr-wide-stop" => v5_amber_max_passlock_agg_kr_wide_stop(),
         "2h-trend-v5-amber-max-passlock-agg-kr-high-tp" => v5_amber_max_passlock_agg_kr_high_tp(),
         "2h-trend-v5-amber-max-passlock-agg-kr-low-tp" => v5_amber_max_passlock_agg_kr_low_tp(),
+        "2h-trend-v5-amber-max-passlock-agg-kr-adaptive" => v5_amber_max_passlock_agg_kr_adaptive(),
+        "2h-trend-v5-amber-max-passlock-agg-kr-chandelier" => v5_amber_max_passlock_agg_kr_chandelier(),
+        "2h-trend-v5-amber-max-passlock-agg-kr-ptp" => v5_amber_max_passlock_agg_kr_ptp(),
+        "2h-trend-v5-amber-max-passlock-agg-kr-be-early" => v5_amber_max_passlock_agg_kr_be_early(),
+        "2h-trend-v5-amber-max-passlock-shorts-agg" => v5_amber_max_passlock_shorts_agg(),
+        "2h-trend-v5-amber-max-passlock-agg-kr-hold120" => v5_amber_max_passlock_agg_kr_hold_120(),
+        "2h-trend-v5-amber-max-passlock-agg-kr-combo" => v5_amber_max_passlock_agg_kr_combo(),
         "2h-trend-v5-amber-max-passlock-scheduled-split" => v5_amber_max_passlock_scheduled_split(),
         "2h-trend-v5-amber-max-passlock-bidir-safe" => v5_amber_max_passlock_bidir_safe(),
         "2h-trend-v5-amber-max-passlock-hold480" => v5_amber_max_passlock_hold_480(),
@@ -2084,6 +2177,13 @@ pub fn known_selectors() -> &'static [&'static str] {
         "2h-trend-v5-amber-max-passlock-agg-kr-wide-stop",
         "2h-trend-v5-amber-max-passlock-agg-kr-high-tp",
         "2h-trend-v5-amber-max-passlock-agg-kr-low-tp",
+        "2h-trend-v5-amber-max-passlock-agg-kr-adaptive",
+        "2h-trend-v5-amber-max-passlock-agg-kr-chandelier",
+        "2h-trend-v5-amber-max-passlock-agg-kr-ptp",
+        "2h-trend-v5-amber-max-passlock-agg-kr-be-early",
+        "2h-trend-v5-amber-max-passlock-shorts-agg",
+        "2h-trend-v5-amber-max-passlock-agg-kr-hold120",
+        "2h-trend-v5-amber-max-passlock-agg-kr-combo",
         "2h-trend-v5-amber-max-passlock-scheduled-split",
         "2h-trend-v5-amber-max-passlock-bidir-safe",
         "2h-trend-v5-amber-max-passlock-hold480",
