@@ -8790,6 +8790,30 @@ export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_BIDIR: FtmoDaytrade24hConfi
     })),
     crossAssetFiltersExtra: [_CROSS_BNB_18_50],
   };
+// 2026-05-24 SHORTS_ONLY: pure shorts-only variant of AMBER_MAX_PASSLOCK.
+// Mirrors engine-rust v5_amber_max_passlock_shorts_only() — per-asset
+// removes invertDirection, blocks longs, allows shorts. Voter outputs
+// SHORT signals naturally in trend-down windows; this template trades
+// those raw signals directly (no invert).
+//
+// Used as the second stack-member in the 2-Account Stack (AMBER + SHORTS).
+// Window-level anti-correlation vs AMBER: AMBER passes in
+// bullish/MR-bounce setups (via invert), SHORTS passes in bearish/
+// breakdown setups. 1000-window TRUE-SEQUENTIAL backtest (2026-05-24):
+//   - SHORTS_ONLY alone: 29.30% combined-funded
+//   - AMBER + SHORTS Stack-2 OR: 57.30% combined-funded (+7.28pp anti-corr excess)
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_SHORTS_ONLY: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK,
+    invertDirection: false,
+    assets: FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK.assets.map((a) => ({
+      ...a,
+      invertDirection: false,
+      disableLong: true,
+      disableShort: false,
+    })),
+    crossAssetFiltersExtra: [_CROSS_BNB_18_50],
+  };
 // 2026-05-19 MR variant — same engine stack, but mean-revert signal class.
 // Flips `invertDirection` and `disableShort` off per asset so RSI MR
 // longs/shorts pass unmodified, and adds `meanReversionSource` so the

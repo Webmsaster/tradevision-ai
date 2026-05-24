@@ -579,6 +579,11 @@ const CFG_REGISTRY: Record<string, CfgRegistryEntry> = {
     cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_BIDIR,
     label: "V5_AMBER_MAX_PASSLOCK_BIDIR (long+short, anti-long-only-fail)",
   },
+  "2h-trend-v5-amber-max-passlock-shorts-only": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_SHORTS_ONLY,
+    label:
+      "V5_AMBER_MAX_PASSLOCK_SHORTS_ONLY (pure shorts; Stack-2 partner to AMBER, anti-corr +7.28pp)",
+  },
   "2h-trend-v5-amber-max-mr-passlock": {
     cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_MR_PASSLOCK,
     label: "V5_AMBER_MAX_MR_PASSLOCK (RSI mean-revert signal class)",
