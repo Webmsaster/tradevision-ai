@@ -3286,6 +3286,13 @@ fn run_multi_asset(
         .par_iter()
         .enumerate()
         .map(|(w_idx, (lo, hi))| {
+            // 2026-05-24 PERF: disable per-bar PollSkip allocations on this
+            // rayon worker. sweep never reads result.skipped; the
+            // allocations (asset clone + format!-reason String per skipped
+            // signal × thousands of bars × hundreds of windows) were
+            // millions of wasted heap traffic. Toggle is thread-local so
+            // live executor and tests are unaffected.
+            ftmo_engine_core::harness::set_collect_skip_diagnostics(false);
             run_one_window(
                 w_idx,
                 *lo,

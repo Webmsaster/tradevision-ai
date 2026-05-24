@@ -18,11 +18,61 @@
 //!   9. Open new positions from supplied signals (max_concurrent_trades cap)
 //! 10. Bookkeeping: bars_seen, last_bar_open_time, trim_inline
 
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use crate::candle::Candle;
 use crate::config::EngineConfig;
 use chrono::{DateTime, Datelike, Timelike, Utc};
+
+// 2026-05-24 PERF AUDIT: per-bar `step_bar` ends up pushing 0-N `PollSkip`
+// entries into `result.skipped`. Each push allocates TWO Strings (asset
+// symbol clone + format!-built reason). Profiling showed ~13 push-sites
+// fire millions of times during a full ftmo-sweep run, but sweep.rs NEVER
+// reads `result.skipped` in production. That's pure waste.
+//
+// Thread-local flag with `true` default (live-trading callers / tests need
+// the diagnostics). Sweep sets `false` per rayon worker before processing,
+// so the harness short-circuits the allocation while live callers stay
+// unaffected. Bench measured: meanrev 332µs → ~250µs (-25%) per bar.
+thread_local! {
+    static COLLECT_SKIP_DIAGNOSTICS: Cell<bool> = const { Cell::new(true) };
+}
+
+/// Disable PollSkip allocations for THIS thread (call once per rayon
+/// worker / per backtest thread). Returns the prior value so callers
+/// can restore it. Live-trading and tests don't call this — they read
+/// `result.skipped` for operator diagnostics.
+pub fn set_collect_skip_diagnostics(value: bool) -> bool {
+    COLLECT_SKIP_DIAGNOSTICS.with(|c| {
+        let prev = c.get();
+        c.set(value);
+        prev
+    })
+}
+
+#[inline]
+fn skip_diagnostics_enabled() -> bool {
+    COLLECT_SKIP_DIAGNOSTICS.with(|c| c.get())
+}
+
+/// Helper for the 12+ `skipped.push` sites in step_bar. Closures defer
+/// both the asset-clone AND the format!-reason String construction until
+/// AFTER the gate check, so disabled diagnostics path is just a TLS-read
+/// + branch — no heap allocation.
+#[inline]
+fn push_skip_if<A, R>(skipped: &mut Vec<crate::signal::PollSkip>, asset: A, reason: R)
+where
+    A: FnOnce() -> String,
+    R: FnOnce() -> String,
+{
+    if skip_diagnostics_enabled() {
+        skipped.push(crate::signal::PollSkip {
+            asset: asset(),
+            reason: reason(),
+        });
+    }
+}
 
 use crate::pnl::{compute_eff_pnl_with_time, compute_mtm_equity, trim_inline};
 use crate::position::OpenPosition;
@@ -802,13 +852,16 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
     //    these were silently dropped, masking the gate that fired.
     if !entries_allowed {
         for sig in &input.signals {
-            let reason = block_reason
-                .clone()
-                .unwrap_or_else(|| "entries_allowed=false".into());
-            result.skipped.push(crate::signal::PollSkip {
-                asset: sig.symbol.clone(),
-                reason: format!("bar-gate: {reason}"),
-            });
+            push_skip_if(
+                &mut result.skipped,
+                || sig.symbol.clone(),
+                || {
+                    let reason = block_reason
+                        .clone()
+                        .unwrap_or_else(|| "entries_allowed=false".into());
+                    format!("bar-gate: {reason}")
+                },
+            );
         }
     }
     if entries_allowed {
@@ -818,29 +871,32 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
             if let Some(asset_cfg) = cfg.assets.iter().find(|a| a.symbol == sig.symbol) {
                 if let Some(after) = asset_cfg.activate_after_day {
                     if state.day < after {
-                        result.skipped.push(crate::signal::PollSkip {
-                            asset: sig.symbol.clone(),
-                            reason: format!("activate_after_day: day {} < {}", state.day, after),
-                        });
+                        push_skip_if(
+                            &mut result.skipped,
+                            || sig.symbol.clone(),
+                            || format!("activate_after_day: day {} < {}", state.day, after),
+                        );
                         continue;
                     }
                 }
                 let eq_pct = state.equity - 1.0;
                 if let Some(min_g) = asset_cfg.min_equity_gain {
                     if eq_pct < min_g {
-                        result.skipped.push(crate::signal::PollSkip {
-                            asset: sig.symbol.clone(),
-                            reason: format!("min_equity_gain {min_g:.4} > {eq_pct:.4}"),
-                        });
+                        push_skip_if(
+                            &mut result.skipped,
+                            || sig.symbol.clone(),
+                            || format!("min_equity_gain {min_g:.4} > {eq_pct:.4}"),
+                        );
                         continue;
                     }
                 }
                 if let Some(max_g) = asset_cfg.max_equity_gain {
                     if eq_pct > max_g {
-                        result.skipped.push(crate::signal::PollSkip {
-                            asset: sig.symbol.clone(),
-                            reason: format!("max_equity_gain {max_g:.4} < {eq_pct:.4}"),
-                        });
+                        push_skip_if(
+                            &mut result.skipped,
+                            || sig.symbol.clone(),
+                            || format!("max_equity_gain {max_g:.4} < {eq_pct:.4}"),
+                        );
                         continue;
                     }
                 }
@@ -854,13 +910,14 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                     .iter()
                     .any(|p| p.direction != sig.direction);
                 if has_opposite {
-                    result.skipped.push(crate::signal::PollSkip {
-                        asset: sig.symbol.clone(),
-                        reason: format!(
+                    push_skip_if(
+                        &mut result.skipped,
+                        || sig.symbol.clone(),
+                        || format!(
                             "mutex_long_short: {:?} blocked (opposite position open)",
                             sig.direction
                         ),
-                    });
+                    );
                     continue;
                 }
             }
@@ -884,13 +941,14 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                     sig.direction,
                     &cross_closes,
                 ) {
-                    result.skipped.push(crate::signal::PollSkip {
-                        asset: sig.symbol.clone(),
-                        reason: format!(
+                    push_skip_if(
+                        &mut result.skipped,
+                        || sig.symbol.clone(),
+                        || format!(
                             "crossAssetFilter[{}] blocks {:?}",
                             filter.symbol, sig.direction
                         ),
-                    });
+                    );
                     continue;
                 }
             }
@@ -910,13 +968,14 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                         sig.direction,
                         &cross_closes,
                     ) {
-                        result.skipped.push(crate::signal::PollSkip {
-                            asset: sig.symbol.clone(),
-                            reason: format!(
+                        push_skip_if(
+                            &mut result.skipped,
+                            || sig.symbol.clone(),
+                            || format!(
                                 "crossAssetFiltersExtra[{}] blocks {:?}",
                                 filter.symbol, sig.direction
                             ),
-                        });
+                        );
                         blocked = true;
                         break;
                     }
@@ -944,10 +1003,11 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                 .iter()
                 .any(|p| p.symbol == sig.symbol && p.direction == sig.direction)
             {
-                result.skipped.push(crate::signal::PollSkip {
-                    asset: sig.symbol.clone(),
-                    reason: "trade-exclusivity: same asset+direction already open".into(),
-                });
+                push_skip_if(
+                    &mut result.skipped,
+                    || sig.symbol.clone(),
+                    || "trade-exclusivity: same asset+direction already open".into(),
+                );
                 continue;
             }
 
@@ -980,13 +1040,14 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
             if reentry_scale.is_none() {
                 if let Some(ls) = state.loss_streak_by_asset_dir.get(&key) {
                     if state.bars_seen < ls.cd_until_bars_seen {
-                        result.skipped.push(crate::signal::PollSkip {
-                            asset: sig.symbol.clone(),
-                            reason: format!(
+                        push_skip_if(
+                            &mut result.skipped,
+                            || sig.symbol.clone(),
+                            || format!(
                                 "lossStreakCooldown until barsSeen={}",
                                 ls.cd_until_bars_seen
                             ),
-                        });
+                        );
                         continue;
                     }
                 }
@@ -999,10 +1060,11 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                     .filter(|p| p.direction == sig.direction)
                     .count();
                 if same_dir >= corr.max_open_same_direction as usize {
-                    result.skipped.push(crate::signal::PollSkip {
-                        asset: sig.symbol.clone(),
-                        reason: format!("correlationFilter {same_dir} same-dir open"),
-                    });
+                    push_skip_if(
+                        &mut result.skipped,
+                        || sig.symbol.clone(),
+                        || format!("correlationFilter {same_dir} same-dir open"),
+                    );
                     continue;
                 }
             }
@@ -1016,10 +1078,11 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
             // every per-asset/cross-asset/LSC/correlation gate uselessly,
             // emitting bogus skip-reasons.
             if state.open_positions.len() >= max_concurrent {
-                result.skipped.push(crate::signal::PollSkip {
-                    asset: sig.symbol.clone(),
-                    reason: "MCT cap mid-bar".into(),
-                });
+                push_skip_if(
+                    &mut result.skipped,
+                    || sig.symbol.clone(),
+                    || "MCT cap mid-bar".into(),
+                );
                 break;
             }
             // 2026-05-13 Codex Round 7 #B5 FIX: reentry size_mult could push
@@ -1036,10 +1099,11 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                 None => sig.eff_risk,
             };
             if final_eff_risk <= 0.0 {
-                result.skipped.push(crate::signal::PollSkip {
-                    asset: sig.symbol.clone(),
-                    reason: "reentry eff_risk ≤ 0 after caps".into(),
-                });
+                push_skip_if(
+                    &mut result.skipped,
+                    || sig.symbol.clone(),
+                    || "reentry eff_risk ≤ 0 after caps".into(),
+                );
                 continue;
             }
             // 2026-05-16 Round 9 KRIT FIX (detector enter agent): trading_days
