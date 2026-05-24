@@ -88,6 +88,22 @@ def _validate_env() -> tuple[str, str]:
             file=sys.stderr,
         )
         sys.exit(1)
+    # AUDIT FIX KRIT (audit 2): Multi-account live mode requires explicit
+    # FTMO_LOGIN + FTMO_EXPECTED_LOGIN. Without these, MT5 attaches to
+    # whatever terminal is open — DANGEROUSLY may execute on the wrong
+    # FTMO account. Only skip when FTMO_MOCK=1 (mock executor for tests).
+    is_mock = os.environ.get("FTMO_MOCK", "0") == "1"
+    if not is_mock:
+        ftmo_login = os.environ.get("FTMO_LOGIN", "").strip()
+        ftmo_expected = os.environ.get("FTMO_EXPECTED_LOGIN", "").strip()
+        if not ftmo_login or not ftmo_expected:
+            print(
+                "FATAL: FTMO_LOGIN and FTMO_EXPECTED_LOGIN both required for "
+                "live execution (prevents trading on wrong MT5 account). "
+                "Set FTMO_MOCK=1 to skip this check for testing.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
     return TF_P1, TF_P2  # type: ignore[return-value]  # validated non-None above
 
 
@@ -213,13 +229,37 @@ def archive_state(state_dir: Path, label: str) -> Optional[Path]:
         log("archive_failed", error=str(e), level="error")
         return None
     # KRIT #3: move source out of the way so next executor mkdir's fresh.
+    # AUDIT FIX 2: VERIFY rename succeeded (state_dir actually gone) before
+    # caller spawns next-phase executor. Otherwise P2 spawn with sym TF
+    # may collide with the still-present P1 state-dir + singleton-lock.
     try:
         consumed = state_dir.with_name(state_dir.name + f".consumed-{ts}")
         state_dir.rename(consumed)
+        # Sync FS to ensure rename is durable before caller proceeds.
+        try:
+            import os as _os
+            if hasattr(_os, "sync"):
+                _os.sync()
+        except OSError:
+            pass
+        if state_dir.exists():
+            # Rename "succeeded" but path still exists — KRIT failure.
+            log(
+                "state_dir_consume_verify_failed",
+                src=str(state_dir),
+                level="error",
+            )
+            raise OSError(
+                f"state_dir {state_dir} still exists after rename — "
+                "P2 spawn would collide with P1 state. ABORTING."
+            )
         log("state_dir_consumed", src=str(state_dir), consumed=str(consumed))
     except OSError as e:
-        # Non-fatal: copy succeeded. But warn loudly.
-        log("state_dir_consume_failed", error=str(e), level="warn")
+        # FATAL for symmetric-TF case: if rename fails AND P1==P2 then P2
+        # cannot safely spawn. Raise to caller so supervisor exits.
+        log("state_dir_consume_failed", error=str(e), level="error")
+        if TF_P1 == TF_P2:
+            raise
     return dest
 
 

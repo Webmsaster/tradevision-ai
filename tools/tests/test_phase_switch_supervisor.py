@@ -117,6 +117,7 @@ def test_validate_env_allows_symmetric_tf_when_opted_in():
     os.environ["FTMO_TF_P1"] = "same-tf"
     os.environ["FTMO_TF_P2"] = "same-tf"
     os.environ["FTMO_ALLOW_SYMMETRIC_TF"] = "1"
+    os.environ["FTMO_MOCK"] = "1"  # skip FTMO_LOGIN validation for test
     try:
         sup = importlib.import_module("phase_switch_supervisor")
         result = sup._validate_env()
@@ -125,6 +126,32 @@ def test_validate_env_allows_symmetric_tf_when_opted_in():
         os.environ.pop("FTMO_TF_P1", None)
         os.environ.pop("FTMO_TF_P2", None)
         os.environ.pop("FTMO_ALLOW_SYMMETRIC_TF", None)
+        os.environ.pop("FTMO_MOCK", None)
+
+
+def test_validate_env_rejects_missing_login_in_live_mode():
+    """KRIT (audit #2): require FTMO_LOGIN + FTMO_EXPECTED_LOGIN for live.
+
+    Prevents MT5 attaching to wrong terminal = trading on wrong account.
+    """
+    import importlib
+    if "phase_switch_supervisor" in sys.modules:
+        del sys.modules["phase_switch_supervisor"]
+    os.environ["FTMO_TF_P1"] = "a"
+    os.environ["FTMO_TF_P2"] = "b"
+    os.environ.pop("FTMO_LOGIN", None)
+    os.environ.pop("FTMO_EXPECTED_LOGIN", None)
+    os.environ.pop("FTMO_MOCK", None)  # ensure NOT in mock mode
+    try:
+        sup = importlib.import_module("phase_switch_supervisor")
+        try:
+            sup._validate_env()
+            raise AssertionError("expected SystemExit for missing FTMO_LOGIN")
+        except SystemExit as e:
+            assert e.code == 1
+    finally:
+        os.environ.pop("FTMO_TF_P1", None)
+        os.environ.pop("FTMO_TF_P2", None)
 
 
 def test_phase_state_persistence():

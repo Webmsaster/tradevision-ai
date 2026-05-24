@@ -104,6 +104,10 @@ function buildSupervisor(envFile, accountLabel) {
       max_restarts: 50,
       restart_delay: 10000,
       max_memory_restart: "1G",
+      // AUDIT FIX WARNUNG: stop_exit_codes prevents PM2 restart-loop when
+      // supervisor exits idempotently with status=FAILED/FUNDED (codes 0/4).
+      // Without this PM2 would restart 50× over 500s burning logs.
+      stop_exit_codes: [0, 4],
       out_file: path.join(supervisorStateDir, "pm2-supervisor.out.log"),
       error_file: path.join(supervisorStateDir, "pm2-supervisor.err.log"),
       time: true,
@@ -123,6 +127,32 @@ if (apps.length === 0) {
     "[pm2-pa4stack] FATAL: no env files loaded. Copy .env.ftmo.account-A.example → .env.ftmo.account-A (etc.) and fill in.",
   );
   process.exit(1);
+}
+
+// AUDIT FIX KRIT (2026-05-25 post-deploy audit): Telegram-master count
+// validation. Telegram getUpdates is a long-poll exclusive — two masters
+// trip 409 Conflict → no /pause, /kill bot-controls work during live trades.
+// Mirror of ecosystem.4stack.config.js:193-201 validator pattern.
+const masters = apps
+  .filter((a) => {
+    const v = a.env.FTMO_TELEGRAM_BOT_MASTER;
+    return v === "1" || v === "true";
+  })
+  .map((a) => a.name);
+if (masters.length > 1) {
+  console.error(
+    `[pm2-pa4stack] FATAL: ${masters.length} accounts have FTMO_TELEGRAM_BOT_MASTER=1 (${masters.join(", ")}). ` +
+      `Only ONE account may be the Telegram master (getUpdates long-poll exclusivity). ` +
+      `Set FTMO_TELEGRAM_BOT_MASTER=0 in all but one .env file.`,
+  );
+  process.exit(4);
+}
+if (masters.length === 0) {
+  console.warn(
+    "[pm2-pa4stack] WARNING: 0 accounts have FTMO_TELEGRAM_BOT_MASTER=1. " +
+      "No /pause, /kill, /status bot-controls will be available. " +
+      "Recommended: set FTMO_TELEGRAM_BOT_MASTER=1 on Account A.",
+  );
 }
 
 console.log(

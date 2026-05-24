@@ -1,37 +1,40 @@
 # Phase-Adaptive Stack-4 Live-Deployment Plan
 
-**Status:** Plan only — implementation parked until live-deploy decision.
-**Source finding:** [[session-2026-05-25-phase-adaptive-stack4]] (BIG GA Stack-4 = 97.28% OOS BEST / 93.75% mean across 10 seeds, 2 seeds converged to same optimum).
+**Status:** Live-ready (post-audit hardening 2026-05-25).
+**Source finding:** [[session-2026-05-25-phase-adaptive-stack4]] (GA Stack-4 NO-EXT24 = 93.11% OOS BEST / 91.38% mean across 10 seeds).
 
-## Recommended Stack-4 Config (GA-optimal, seeds 1337+2024 converged)
+## Recommended Stack-4 Config (live-deployable, no ext24 dependency)
 
-| Account | P1 Template                                 | P2 Template (auto-switch on P1-target hit)  |
-| ------- | ------------------------------------------- | ------------------------------------------- |
-| A       | `v5-amber-max-passlock-shorts-agg`          | `v5-amber-max-passlock-shorts-agg` (sym ok) |
-| B       | `v5-amber-max-passlock` (ext24)             | `v5-amber-max-passlock-topaz`               |
-| C       | `v5-amber-max-passlock-risk06`              | `v5-amber-max-passlock-shorts-only`         |
-| D       | `v5-amber-max-passlock-shorts-only` (ext24) | `v5-amber-max-passlock-risk06`              |
+| Account | P1 Template                         | P2 Template (auto-switch on P1-target hit) |
+| ------- | ----------------------------------- | ------------------------------------------ |
+| A       | `v5-amber-max-passlock-shorts-agg`  | `v5-amber-max-passlock-shorts-only`        |
+| B       | `v5-obsidian-passlock`              | `v5-amber-max-passlock` (base)             |
+| C       | `v5-amber-max-passlock-shorts-only` | `v5-amber-max-passlock-risk06`             |
+| D       | `v5-amber-max-passlock-risk06`      | `v5-amber-max-passlock-shorts-agg`         |
 
-Walk-forward TEST 97.28% / TRAIN 85.15% / drift +12.13pp = ROBUST (anti-overfit + 2-seed convergence).
+Walk-forward TEST 93.11% / TRAIN 85.59% / drift +7.53pp = ROBUST (anti-overfit, 4 seeds converged to same optimum).
 
-## Robustness Range (10 GA seeds, BIG run)
+## Why NO EXT24 (audit-driven decision)
 
-TEST range: [90.94%, 97.28%], mean 93.75%. Conservative live-realistic estimate: 85-90%.
+Original GA winner used `ext24_amber` / `ext24_shorts-only` (24-asset basket via DOGE/XLM/FIL/INJ/APT extension). Post-deploy audit found `FTMO_SYMBOLS_EXT24` env-var was declared in .env files but NOT WIRED into the live signal-service or executor. Wiring it = ~1d engineering work + asset-list maintenance burden. Re-running GA WITHOUT ext24 templates found a strong alternative at 93.11% OOS (vs 97.28% with ext24). Conservative deploy-ready config trades 4.17pp theoretical performance for zero implementation risk.
+
+## Robustness Range (10 GA seeds, no-ext24 run)
+
+TEST range: [88.92%, 93.11%], mean 91.38%. Conservative live-realistic estimate: 82-88%.
 
 ## Live-Drift Sensitivity (worst-case modeling)
 
-Backtest 97.28% × (1 - live_drift):
+Backtest 93.11% × (1 - live_drift):
 | Live Drift | Live CF rate | E[funded accts] | Monthly Trader-Share (@$5k/funded) |
 | ---------- | ------------ | --------------- | ---------------------------------- |
-| -5pp | 92.28% | 3.69/4 | $18.4k/mo |
-| -10pp | 87.28% | 3.49/4 | $17.5k/mo |
-| -15pp | 82.28% | 3.29/4 | $16.4k/mo |
-| -20pp | 77.28% | 3.09/4 | $15.4k/mo |
-| -30pp (catastrophic) | 67.28% | 2.69/4 | $13.4k/mo |
+| -5pp | 88.11% | 3.52/4 | $17.6k/mo |
+| -10pp | 83.11% | 3.32/4 | $16.6k/mo |
+| -15pp | 78.11% | 3.12/4 | $15.6k/mo |
+| -20pp | 73.11% | 2.92/4 | $14.6k/mo |
+| -30pp (catastrophic) | 63.11% | 2.52/4 | $12.6k/mo |
 
 Even with catastrophic 30pp drift (historical worst case), Stack-4 phase-adaptive
-remains profitable at >$13k/mo expected. Break-even (-65pp drift) would require
-backtest-to-live degradation rarely seen in this codebase.
+remains profitable at >$12k/mo expected.
 
 ## Streak Resilience (deterministic-greedy variant, in-sample)
 
