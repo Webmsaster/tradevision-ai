@@ -8938,8 +8938,18 @@ export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_SHORTS_ONLY: FtmoDaytrade24
     crossAssetFiltersExtra: [_CROSS_BNB_18_50],
   };
 // 2026-05-25 SHORTS_AGG — TS-mirror of engine-rust v5_amber_max_passlock_shorts_agg().
-// SHORTS_ONLY base + AGG upgrades: mutex + maxConcurrentTrades=25 + Kelly tiers
-// + reentry-after-stop. Part of GA Stack-4 winner (97.28% OOS).
+// SHORTS_ONLY base + AGG upgrades: mutex + maxConcurrentTrades=25 + Kelly tiers.
+// Part of GA Stack-4 winner (97.28% OOS).
+//
+// AUDIT-FIX (2026-05-25 KRIT TS#1+#2):
+// 1. Kelly tier multipliers HALVED here because Rust applies `factor × tier ×
+//    ks.fraction(=0.5)` while TS engine multiplies only by `tier`. Mirroring
+//    the Rust EFFECTIVE multipliers (2.0×0.5=1.0, 1.5×0.5=0.75, etc).
+// 2. `reentryAfterStop` REMOVED: Rust template has `reentry_after_stop` set
+//    but TS V4 engine (`ftmoLiveEngineV4.ts`) does NOT implement it →
+//    silently dropped at live runtime → expected -3 to -8pp drift on
+//    SHORTS_AGG. Until reentry handler is wired into TS engine, mirror
+//    without the field so backtest ≈ live.
 export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_SHORTS_AGG: FtmoDaytrade24hConfig =
   {
     ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_SHORTS_ONLY,
@@ -8950,22 +8960,29 @@ export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_SHORTS_AGG: FtmoDaytrade24h
       windowSize: 30,
       minTrades: 10,
       tiers: [
-        { winRateAbove: 0.65, multiplier: 2.0 },
-        { winRateAbove: 0.55, multiplier: 1.5 },
-        { winRateAbove: 0.45, multiplier: 1.0 },
-        { winRateAbove: 0.0, multiplier: 0.5 },
+        // Halved to mirror Rust effective: factor × tier × fraction(0.5)
+        { winRateAbove: 0.65, multiplier: 1.0 },
+        { winRateAbove: 0.55, multiplier: 0.75 },
+        { winRateAbove: 0.45, multiplier: 0.5 },
+        { winRateAbove: 0.0, multiplier: 0.25 },
       ],
     },
-    reentryAfterStop: { withinBars: 12, sizeMult: 0.5 },
   };
 // 2026-05-25 RISK06 — TS-mirror of v5_amber_max_passlock with riskFrac × 0.6.
 // Used as Account-C P1 in GA Stack-4 winner (97.28% OOS).
+//
+// AUDIT-FIX KRIT TS#3: Rust SETS riskFrac absolutely. TS now also sets the
+// per-asset riskFrac to (base × 0.6). The base AMBER riskFrac is 1.0 per
+// `make_assets`. So absolute target = 0.6.
 export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_RISK06: FtmoDaytrade24hConfig =
   {
     ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK,
     assets: FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK.assets.map((a) => ({
       ...a,
-      riskFrac: (a.riskFrac ?? 0.01) * 0.6,
+      // KRIT #3 fix: absolute = base_amber_risk(1.0) × 0.6 = 0.6
+      // Was `(a.riskFrac ?? 0.01) * 0.6` which silently fell back to 0.006
+      // for any undefined-riskFrac asset.
+      riskFrac: a.riskFrac !== undefined ? a.riskFrac * 0.6 : 0.6,
     })),
   };
 // 2026-05-25 RISK05 — TS-mirror of v5_amber_max_passlock with riskFrac × 0.5.
@@ -8974,7 +8991,7 @@ export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_RISK05: FtmoDaytrade24hConf
     ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK,
     assets: FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK.assets.map((a) => ({
       ...a,
-      riskFrac: (a.riskFrac ?? 0.01) * 0.5,
+      riskFrac: a.riskFrac !== undefined ? a.riskFrac * 0.5 : 0.5,
     })),
   };
 // 2026-05-19 MR variant — same engine stack, but mean-revert signal class.
