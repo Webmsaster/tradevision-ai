@@ -648,9 +648,17 @@ export function useTradeStorage() {
       const seenInBatch = new Set<string>();
       for (const t of newTrades) {
         if (existingIds.has(t.id)) continue;
+        // 2026-05-24 Codex audit MED FIX: prior `t.accountId || activeAccountId`
+        // preserved any pre-existing accountId from the import payload.
+        // Importing a JSON backup in Account B while the file's trades carry
+        // accountId="A" would write them under A (invisible to the user
+        // who's currently viewing B). The replace path (line ~755) already
+        // force-stamps activeAccountId; merge should match. Stamp the
+        // active account always — the user is explicitly importing INTO
+        // their current account.
         const stamped = {
           ...t,
-          accountId: t.accountId || activeAccountId,
+          accountId: activeAccountId,
         };
         const hash = tradeContentHash(stamped);
         if (existingContent.has(hash)) continue;

@@ -157,7 +157,16 @@ def file_lock(
                                     except ProcessLookupError:
                                         pass  # dead → safe to reclaim
                                     except PermissionError:
-                                        pass  # different user — assume alive
+                                        # 2026-05-24 Codex audit MED FIX: comment
+                                        # said "assume alive" but `pass` fell
+                                        # through to the reclaim block — actually
+                                        # STEALING a live holder's lock under a
+                                        # different uid. Use `continue` (back-off
+                                        # + retry) to actually wait the holder out.
+                                        os.utime(lock_path, None)
+                                        time.sleep(cur_backoff)
+                                        cur_backoff = min(cur_backoff * 2.0, 0.5)
+                                        continue
                         except (ValueError, IndexError):
                             pass  # malformed token → proceed to reclaim
                         # Race-safe unlink: re-read the file's token; if it

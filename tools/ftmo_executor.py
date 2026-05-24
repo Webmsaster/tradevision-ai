@@ -5173,7 +5173,15 @@ def _emergency_close_all_positions(reason: str) -> dict:
         # 2026-05-13 Codex Round 4 Python #4: signal that NO positions were
         # closed so callers don't latch PASSLOCK state on a deferred close.
         return {"closed": 0, "failed": 0, "all_closed": False, "deferred": True}
-    bot_positions = [p for p in mt5_live if getattr(p, "magic", 0) == MAGIC]
+    # 2026-05-24 Codex audit MED FIX: prior filter caught only MAGIC,
+    # missing PING_MAGIC orphans. If a daily ping trade was open when
+    # an emergency close fired (DL/TL/news), the ping would survive,
+    # bleeding equity while the executor marked all-clear. Match both
+    # magics, like the external ftmo_kill.py at L330 already does.
+    bot_positions = [
+        p for p in mt5_live
+        if getattr(p, "magic", 0) in (MAGIC, PING_MAGIC)
+    ]
     open_json = read_json(OPEN_POS_PATH, {"positions": []}).get("positions", [])
     json_by_ticket = {
         p["ticket"]: p for p in open_json if isinstance(p, dict) and "ticket" in p
