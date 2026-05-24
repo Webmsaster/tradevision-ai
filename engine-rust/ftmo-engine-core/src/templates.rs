@@ -582,6 +582,110 @@ pub fn v5_amber_max_passlock_bidir() -> EngineConfig {
     cfg
 }
 
+/// 2026-05-24 BIDIR_SAFE — Florian's hypothesis: single-account hybrid
+/// LONG+SHORT was empirically debunked across 9 variants (best 29.23%
+/// vs AMBER alone 32.10%) due to shared-equity path-dependency.
+/// BUT — those variants ran with the SAME stop_pct/risk_frac as AMBER
+/// (2% stop, 0.4 risk_frac). The new angle: scale BOTH down per-trade
+/// so a long-stop + short-tp on the same window doesn't burn the
+/// total-loss budget. Smaller positions = more survival days =
+/// min_trading_days hit sooner = PASSLOCK fires more often.
+///
+/// Changes vs BIDIR:
+///   - per-asset stop_pct: None → 0.015 (1.5% instead of 2%)
+///   - per-asset risk_frac: 0.4 → 0.3 (smaller eff_risk per trade)
+///   - per-asset tp_pct: 0.025 (statt None → cfg.tp_pct fallback)
+///     keeps the same R-multiple (1.66) as the original AMBER ratio.
+pub fn v5_amber_max_passlock_bidir_safe() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_bidir();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_BIDIR_SAFE".into();
+    for asset in cfg.assets.iter_mut() {
+        asset.stop_pct = Some(0.015);
+        asset.tp_pct = Some(0.025);
+        asset.risk_frac = 0.3;
+    }
+    cfg
+}
+
+/// 2026-05-24 hold_bars variant — give the engine more time per trade to
+/// reach TP. AMBER_MAX_PASSLOCK default = 240 bars (5d). This bumps to
+/// 480 (10d). Hypothesis: many trades that time-exit currently would
+/// have hit TP if held longer; longer hold → higher per-trade win-rate
+/// → faster equity accrual → more PASSLOCK fires.
+pub fn v5_amber_max_passlock_hold_480() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_HOLD480".into();
+    cfg.hold_bars = 480;
+    for asset in cfg.assets.iter_mut() {
+        asset.hold_bars = Some(480);
+    }
+    cfg
+}
+
+/// 2026-05-24 hold_bars variant — even longer (720 bars = 15 days).
+/// Tests the upper end. Risk: more correlated holds → DL exposure rises.
+pub fn v5_amber_max_passlock_hold_720() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_HOLD720".into();
+    cfg.hold_bars = 720;
+    for asset in cfg.assets.iter_mut() {
+        asset.hold_bars = Some(720);
+    }
+    cfg
+}
+
+/// 2026-05-24 Florian's "amber + independent shorts on same account"
+/// hypothesis. Architecture differs from BIDIR (which made AMBER itself
+/// bidirectional via disable_short=false on the inverted voter): here we
+/// DUPLICATE every asset as TWO logical entries pointing to the SAME
+/// source_symbol cache. The AMBER half keeps `invert_direction=true`
+/// (engine longs when voter says SHORT — AMBER's mean-revert convention).
+/// The SHORTS half keeps `invert_direction=false` + `disable_long=true`
+/// (engine shorts when voter says SHORT — direct trend-following). Both
+/// fire INDEPENDENTLY on the same bar based on what the shared voter
+/// outputs, but they trade in opposite directions on different setups
+/// (AMBER on voter-short bars, SHORTS on voter-short bars also — but
+/// from opposite trade-direction perspective on the equity curve).
+///
+/// Path-dependency caveat from 2026-05-23 hybrid debunk still applies:
+/// shared equity means two simultaneous opposite trades partially hedge.
+/// But Florian's argument: across N independent trade streams the
+/// probability of hitting target+10% is approximately
+/// P(target | longs) + P(target | shorts) - P(both same window),
+/// and the second term is small when correlations are negative.
+pub fn v5_amber_max_passlock_amber_plus_shorts() -> EngineConfig {
+    let base = v5_amber_max_passlock();
+    let mut cfg = base.clone();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_AMBER_PLUS_SHORTS".into();
+    let mut combined = Vec::with_capacity(base.assets.len() * 2);
+    for a in base.assets.iter() {
+        // AMBER half — preserve original (invert=true, allows both
+        // directions but acts as mean-revert long via invert).
+        let mut amber = a.clone();
+        amber.symbol = format!("{}-AMBER", a.symbol);
+        amber.invert_direction = true;
+        amber.disable_long = false;
+        amber.disable_short = true;
+        combined.push(amber);
+        // SHORTS half — direct short on voter-short signal, no invert.
+        let mut shorts = a.clone();
+        shorts.symbol = format!("{}-SHORTS", a.symbol);
+        shorts.invert_direction = false;
+        shorts.disable_long = true;
+        shorts.disable_short = false;
+        // Half risk so both halves together don't double the eff_risk.
+        shorts.risk_frac = a.risk_frac * 0.5;
+        combined.push(shorts);
+    }
+    // Also halve the AMBER risk so combined eff_risk per source_symbol
+    // is similar to single-strategy.
+    for amber in combined.iter_mut().filter(|a| a.symbol.ends_with("-AMBER")) {
+        amber.risk_frac *= 0.5;
+    }
+    cfg.assets = combined;
+    cfg
+}
+
 // 2026-05-23 REMOVED: v5_amber_max_passlock_hybrid (single-account LONG+SHORT
 // fusion). Empirically debunked across 9 architectural variants (all worse
 // than AMBER alone) due to shared-equity path-dependency dominating
@@ -700,14 +804,23 @@ pub fn v5_forex_mr_passlock() -> EngineConfig {
         },
     ];
     cfg.invert_direction = false;
-    cfg.bar_minutes = 1440; // daily
-    cfg.hold_bars = 10; // 10 days max hold
+    // 2026-05-24 forex template params adjusted to actual 2h-bar data
+    // (scripts/cache_forex_2h/forex_2h.json). Prior cfg.bar_minutes=1440
+    // (daily) didn't match the 2h cache → engine refused to run with
+    // bar-duration mismatch. Re-scale wall-clock semantics:
+    //   bar_minutes: 120 (2h)
+    //   hold_bars:   120 (= 10 days × 12 bars/day)
+    //   BB period:   60  (= 10 days × 12 bars/day, ~wall-clock identical
+    //                     to the daily 10-period intent)
+    //   cooldown:    24  (= 2 days × 12 bars)
+    cfg.bar_minutes = 120;
+    cfg.hold_bars = 120;
     cfg.allowed_hours_utc = None; // forex 24/5
     cfg.mean_reversion_source = Some(crate::config::MeanReversionSource {
-        period: 10,
+        period: 60,
         oversold: 20.0,
         overbought: 80.0,
-        cooldown_bars: 2,
+        cooldown_bars: 24,
         size_mult: 0.5,
     });
     cfg
@@ -1452,6 +1565,10 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-amber-max-passlock" => v5_amber_max_passlock(),
         "2h-trend-v5-amber-max-passlock-step2" => v5_amber_max_passlock_step2(),
         "2h-trend-v5-amber-max-passlock-bidir" => v5_amber_max_passlock_bidir(),
+        "2h-trend-v5-amber-max-passlock-bidir-safe" => v5_amber_max_passlock_bidir_safe(),
+        "2h-trend-v5-amber-max-passlock-hold480" => v5_amber_max_passlock_hold_480(),
+        "2h-trend-v5-amber-max-passlock-hold720" => v5_amber_max_passlock_hold_720(),
+        "2h-trend-v5-amber-max-passlock-amber-plus-shorts" => v5_amber_max_passlock_amber_plus_shorts(),
         "2h-trend-v5-amber-max-passlock-shorts-only" => v5_amber_max_passlock_shorts_only(),
         "v5-forex-mr-passlock" => v5_forex_mr_passlock(),
         "2h-trend-v5-amber-max-passlock-mptp-v04a" => v5_amber_max_passlock_mptp_v04a(),
@@ -1501,7 +1618,12 @@ pub fn known_selectors() -> &'static [&'static str] {
         "2h-trend-v5-amber-max",
         "2h-trend-v5-amber-max-passlock",
         "2h-trend-v5-amber-max-passlock-bidir",
+        "2h-trend-v5-amber-max-passlock-bidir-safe",
+        "2h-trend-v5-amber-max-passlock-hold480",
+        "2h-trend-v5-amber-max-passlock-hold720",
+        "2h-trend-v5-amber-max-passlock-amber-plus-shorts",
         "2h-trend-v5-amber-max-passlock-shorts-only",
+        "v5-forex-mr-passlock",
         "2h-trend-v5-amber-max-mr-passlock",
         "2h-trend-v5-amber-quartz",
         "2h-trend-v5-amber-quartz-passlock",
@@ -2028,7 +2150,10 @@ mod tests {
         assert_eq!(cfg.label, "V5_FOREX_MR_PASSLOCK");
         assert!(cfg.close_all_on_target_reached);
         assert_eq!(cfg.assets.len(), 6, "EUR/GBP/JPY/CAD/AUD/NZD");
-        assert_eq!(cfg.bar_minutes, 1440, "daily TF");
+        // 2026-05-24 forex template re-tuned for 2h-bar data (scripts/cache_forex_2h/)
+        // since no daily-bar forex cache exists. Wall-clock window semantics
+        // preserved via BB period 60 (= 10d × 12 bars/day).
+        assert_eq!(cfg.bar_minutes, 120, "2h TF (matches forex_2h.json cache)");
         // JPY/CAD pairs must invert (reverse-MR character documented in
         // signals_forex_mr.rs).
         let jpy = cfg.assets.iter().find(|a| a.symbol == "USDJPY-MR").unwrap();
