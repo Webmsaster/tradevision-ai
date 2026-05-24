@@ -101,6 +101,25 @@ export function redactSensitive(s: string): string {
   return out;
 }
 
+/**
+ * 2026-05-24 Wave9 MED FIX (Agent 2): `extra` was passed through verbatim
+ * to the /api/log-error sink. Callers using `captureException(err, {
+ * extra: { email, sessionToken, ... } })` would exfiltrate PII/secrets
+ * past the message+stack redact pipeline. Walk string-valued keys and
+ * apply the same redactSensitive() pipeline; other types pass through
+ * (already serialized safely upstream).
+ */
+function redactExtra(
+  extra: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!extra) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(extra)) {
+    out[k] = typeof v === "string" ? redactSensitive(v) : v;
+  }
+  return out;
+}
+
 function buildExceptionPayload(
   err: unknown,
   ctx: CaptureContext | undefined,
@@ -117,7 +136,7 @@ function buildExceptionPayload(
     stack: e.stack ? redactSensitive(e.stack).slice(0, 4000) : undefined,
     source: ctx?.source,
     tags: ctx?.tags,
-    extra: ctx?.extra,
+    extra: redactExtra(ctx?.extra),
     url:
       typeof window !== "undefined" && window.location
         ? window.location.href
@@ -139,7 +158,7 @@ function buildMessagePayload(
     message: redactSensitive(msg),
     source: ctx?.source,
     tags: ctx?.tags,
-    extra: ctx?.extra,
+    extra: redactExtra(ctx?.extra),
     url:
       typeof window !== "undefined" && window.location
         ? window.location.href
