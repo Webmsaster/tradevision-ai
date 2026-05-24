@@ -214,7 +214,13 @@ export default function TradeForm({
     const lev = parseLocaleNum(leverage);
     const f = parseLocaleNum(fees);
 
-    if (ep <= 0 || qty <= 0 || !exitPrice) {
+    // 2026-05-24 Wave8 CRITICAL FIX (Agent 2): prior guard `!exitPrice`
+    // checked the raw STRING. For exitPrice="0", `!"0"` is false (truthy)
+    // — guard let xp=0 through to calculatePnl, where positionValue =
+    // exitPrice * qty = 0 → margin = 0 → pnlPercent path returned 0 with
+    // a real entry price, silently misreporting the trade as "no P&L"
+    // instead of warning the user. Validate the PARSED value too.
+    if (ep <= 0 || xp <= 0 || qty <= 0 || !exitPrice) {
       return null;
     }
 
