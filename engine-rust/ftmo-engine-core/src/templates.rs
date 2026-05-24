@@ -583,6 +583,170 @@ pub fn v5_amber_max_passlock_bidir() -> EngineConfig {
     cfg
 }
 
+/// 2026-05-24 AGGRESSIVE_24H_KELLY_REENTRY — AGG_24H_KELLY + reentry-
+/// after-stop. When a stop fires, re-enter same direction at half-size
+/// within reentry_window. Hypothesis: stops often happen near
+/// reversal — second attempt captures the recovery.
+pub fn v5_amber_max_passlock_aggressive_24h_kelly_reentry() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H_KELLY_REENTRY".into();
+    cfg.reentry_after_stop = Some(crate::config::ReentryAfterStop {
+        within_bars: 12,  // re-attempt within 6h (12 × 30m)
+        size_mult: 0.5,
+    });
+    cfg
+}
+
+/// 2026-05-24 AGGRESSIVE_24H_ADAPTIVE — 24h + adaptive sizing tier.
+/// When equity already > +3% buffer, scale risk_frac up 1.5×; > +6%
+/// scale 2×. Snowball compound effect when ahead.
+pub fn v5_amber_max_passlock_aggressive_24h_adaptive() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_aggressive_24h();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H_ADAPTIVE".into();
+    cfg.adaptive_sizing = Some(vec![
+        crate::config::AdaptiveSizingTier {
+            equity_above: 0.03,
+            factor: 1.5,
+        },
+        crate::config::AdaptiveSizingTier {
+            equity_above: 0.06,
+            factor: 2.0,
+        },
+    ]);
+    cfg
+}
+
+/// 2026-05-24 AGGRESSIVE_24H_KELLY — 24h + kelly sizing based on
+/// rolling win-rate. When recent wr > 0.55, scale risk_frac up.
+pub fn v5_amber_max_passlock_aggressive_24h_kelly() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_aggressive_24h();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H_KELLY".into();
+    cfg.kelly_sizing = Some(crate::config::KellySizing {
+        window_size: 30,
+        min_trades: 10,
+        fraction: 0.5, // half-Kelly (Thorp criterion)
+        tiers: vec![
+            crate::config::KellyTier {
+                win_rate_above: 0.65,
+                multiplier: 2.0,
+            },
+            crate::config::KellyTier {
+                win_rate_above: 0.55,
+                multiplier: 1.5,
+            },
+            crate::config::KellyTier {
+                win_rate_above: 0.45,
+                multiplier: 1.0,
+            },
+            crate::config::KellyTier {
+                win_rate_above: 0.0,
+                multiplier: 0.5,
+            },
+        ],
+    });
+    cfg
+}
+
+/// 2026-05-24 AGGRESSIVE_24H — remove the cfg-level allowedHoursUtc gate
+/// so trades fire on ALL 24 hours (vs default 8). +3× signal exposure.
+pub fn v5_amber_max_passlock_aggressive_24h() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_aggressive();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H".into();
+    cfg.allowed_hours_utc = None;
+    cfg
+}
+
+/// 2026-05-24 AGGRESSIVE_MCT50 — max_concurrent_trades 25 → 50.
+/// Tests if more parallel exposure helps further.
+pub fn v5_amber_max_passlock_aggressive_mct50() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_aggressive();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_MCT50".into();
+    cfg.max_concurrent_trades = Some(50);
+    cfg
+}
+
+/// 2026-05-24 AGGRESSIVE_BE — AGGRESSIVE + break-even ONLY (no PTP).
+/// Tests if breakEven alone helps without the PTP profit-cap cost.
+pub fn v5_amber_max_passlock_aggressive_be() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_aggressive();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_BE".into();
+    cfg.break_even = Some(crate::config::BreakEven { threshold: 0.015 });
+    cfg
+}
+
+/// 2026-05-24 FULLY_LOADED — Florian's "denk um die Ecke" insight:
+/// AMBER_MAX_PASSLOCK uses only 2 of 8 available engine safety features.
+/// Most templates were copy-paste minimal, leaving big risk-management
+/// levers off. This template enables the FULL stack on top of AGGRESSIVE:
+///
+///   ✅ already in AGGRESSIVE: bidir + mutex + MCT=25 + atr_stop +
+///                              trailing_stop + closeAllOnTargetReached
+///   ✅ NEW: partial_take_profit_levels  (lock +3%/+5%/+8% in stages)
+///   ✅ NEW: break_even at +1.5%        (move SL to entry → "free trade")
+///   ✅ NEW: peak_drawdown_throttle      (halve size after -3% DD)
+///   ✅ NEW: daily_peak_trailing_stop   (preserve intraday gains)
+///   ✅ NEW: adaptive_sizing tier        (2× risk after +3% equity buffer)
+///
+/// Hypothesis: each safety feature should add 1-3pp to TRUE-SEQ CF by
+/// reducing the structural fail-modes (lock profit early → less reversal
+/// risk; daily-peak-trail → less DL hits after big intraday win; adaptive
+/// sizing → snowball compounding when buffered). If 5 features × 1-3pp
+/// = +5-15pp on top of AGGRESSIVE 34.30% → projected 39-49% single-account.
+pub fn v5_amber_max_passlock_fully_loaded() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_aggressive();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_FULLY_LOADED".into();
+
+    // 1) Multi-level partial take profit: lock 25% at +3%, 25% at +5%,
+    //    25% at +8% — last 25% rides via PASSLOCK closeAll at +10%.
+    cfg.partial_take_profit_levels = Some(vec![
+        crate::config::PartialTakeProfitLevel {
+            trigger_pct: 0.03,
+            close_fraction: 0.25,
+        },
+        crate::config::PartialTakeProfitLevel {
+            trigger_pct: 0.05,
+            close_fraction: 0.25,
+        },
+        crate::config::PartialTakeProfitLevel {
+            trigger_pct: 0.08,
+            close_fraction: 0.25,
+        },
+    ]);
+
+    // 2) Break-even: once unrealised P&L hits +1.5%, move SL to entry
+    //    → trade becomes risk-free.
+    cfg.break_even = Some(crate::config::BreakEven { threshold: 0.015 });
+
+    // 3) Peak-drawdown throttle: if equity drops 3% from peak, halve
+    //    new-trade risk_frac. Lets us recover without compounding
+    //    losses.
+    cfg.peak_drawdown_throttle = Some(crate::config::PeakDrawdownThrottle {
+        from_peak: 0.03,
+        factor: 0.5,
+    });
+
+    // 4) Daily-peak trailing stop: if intraday equity drops 1.5% from
+    //    today's high, halt new entries for the day (preserve gains).
+    cfg.daily_peak_trailing_stop = Some(crate::config::PeakTrailingStop {
+        trail_distance: 0.015,
+    });
+
+    // 5) Adaptive sizing tier: when equity is above +3% buffer, scale
+    //    risk_frac up to use the cushion aggressively (snowball).
+    cfg.adaptive_sizing = Some(vec![
+        crate::config::AdaptiveSizingTier {
+            equity_above: 0.03,
+            factor: 1.5,
+        },
+        crate::config::AdaptiveSizingTier {
+            equity_above: 0.06,
+            factor: 2.0,
+        },
+    ]);
+
+    cfg
+}
+
 /// 2026-05-24 SCHEDULED_SPLIT — Florian's hour-disjoint hybrid hypothesis.
 ///
 /// Architecture: duplicate every asset into AMBER-side + SHORT-side
@@ -1677,6 +1841,13 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-amber-max-passlock-risk05" => v5_amber_max_passlock_risk_05(),
         "2h-trend-v5-amber-max-passlock-risk06" => v5_amber_max_passlock_risk_06(),
         "2h-trend-v5-amber-max-passlock-aggressive" => v5_amber_max_passlock_aggressive(),
+        "2h-trend-v5-amber-max-passlock-fully-loaded" => v5_amber_max_passlock_fully_loaded(),
+        "2h-trend-v5-amber-max-passlock-aggressive-24h" => v5_amber_max_passlock_aggressive_24h(),
+        "2h-trend-v5-amber-max-passlock-aggressive-mct50" => v5_amber_max_passlock_aggressive_mct50(),
+        "2h-trend-v5-amber-max-passlock-aggressive-be" => v5_amber_max_passlock_aggressive_be(),
+        "2h-trend-v5-amber-max-passlock-aggressive-24h-adaptive" => v5_amber_max_passlock_aggressive_24h_adaptive(),
+        "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly" => v5_amber_max_passlock_aggressive_24h_kelly(),
+        "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly-reentry" => v5_amber_max_passlock_aggressive_24h_kelly_reentry(),
         "2h-trend-v5-amber-max-passlock-scheduled-split" => v5_amber_max_passlock_scheduled_split(),
         "2h-trend-v5-amber-max-passlock-bidir-safe" => v5_amber_max_passlock_bidir_safe(),
         "2h-trend-v5-amber-max-passlock-hold480" => v5_amber_max_passlock_hold_480(),
@@ -1735,6 +1906,13 @@ pub fn known_selectors() -> &'static [&'static str] {
         "2h-trend-v5-amber-max-passlock-risk05",
         "2h-trend-v5-amber-max-passlock-risk06",
         "2h-trend-v5-amber-max-passlock-aggressive",
+        "2h-trend-v5-amber-max-passlock-fully-loaded",
+        "2h-trend-v5-amber-max-passlock-aggressive-24h",
+        "2h-trend-v5-amber-max-passlock-aggressive-mct50",
+        "2h-trend-v5-amber-max-passlock-aggressive-be",
+        "2h-trend-v5-amber-max-passlock-aggressive-24h-adaptive",
+        "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly",
+        "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly-reentry",
         "2h-trend-v5-amber-max-passlock-scheduled-split",
         "2h-trend-v5-amber-max-passlock-bidir-safe",
         "2h-trend-v5-amber-max-passlock-hold480",
