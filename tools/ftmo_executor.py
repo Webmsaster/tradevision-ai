@@ -1513,16 +1513,46 @@ def mt5_ensure_connected() -> bool:
             sys.exit(1)
 
 
+_MT5_ACCOUNT_CACHE_TTL_S = 1.0  # short — single poll iteration fires within ms
+_mt5_account_cache: tuple[float, dict] | None = None
+
+
 def mt5_get_equity() -> dict:
+    """Get current account equity/balance/margin/free_margin.
+
+    2026-05-24 PERF AUDIT: mt5.account_info() is a Windows-COM RPC
+    (~1-50ms per call depending on connection). Per poll iteration it's
+    called by mt5_get_equity (1×), check_target_and_pause (1× via this
+    fn), sync_account_state (1× direct), check_daily_dd_warning (1×) =
+    3-5 RPCs × ~10ms = 30-50ms wasted per 30s poll. Small TTL cache
+    (1s) coalesces the in-iteration calls without staleness risk
+    (next iteration is 30s away → cache always fresh on entry).
+    """
+    global _mt5_account_cache
+    now = time.time()
+    if _mt5_account_cache is not None:
+        cached_at, cached = _mt5_account_cache
+        if now - cached_at < _MT5_ACCOUNT_CACHE_TTL_S:
+            return cached
     info = mt5.account_info()
     if info is None:
-        return {"equity": None, "balance": None, "margin": None, "free_margin": None}
-    return {
-        "equity": float(info.equity),
-        "balance": float(info.balance),
-        "margin": float(info.margin),
-        "free_margin": float(info.margin_free),
-    }
+        result = {"equity": None, "balance": None, "margin": None, "free_margin": None}
+    else:
+        result = {
+            "equity": float(info.equity),
+            "balance": float(info.balance),
+            "margin": float(info.margin),
+            "free_margin": float(info.margin_free),
+        }
+    _mt5_account_cache = (now, result)
+    return result
+
+
+def _invalidate_mt5_account_cache() -> None:
+    """Force-refresh on the next mt5_get_equity call. Use after any
+    action that may mutate equity (order placement, close, daily reset)."""
+    global _mt5_account_cache
+    _mt5_account_cache = None
 
 
 # =============================================================================
@@ -2824,6 +2854,10 @@ def place_market_order(
                     broker_tp = float(p.tp)
         except Exception:
             pass  # keep request values
+    # 2026-05-24 PERF: invalidate the account-info cache so the next
+    # mt5_get_equity() call after a successful order picks up the new
+    # margin/free_margin instead of serving the stale pre-order snapshot.
+    _invalidate_mt5_account_cache()
     return OrderResult(
         True,
         result.order,
