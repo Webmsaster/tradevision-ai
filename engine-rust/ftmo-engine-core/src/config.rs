@@ -135,6 +135,16 @@ pub struct AssetConfig {
     /// Per-asset override of `cfg.funding_rate_filter.min_funding_for_short`.
     #[serde(default, rename = "minFundingForShort")]
     pub min_funding_for_short: Option<f64>,
+
+    /// 2026-05-24 — per-asset hour gate (UTC). When `Some`, ONLY this list
+    /// of hours allows entries on this asset; the cfg-level
+    /// `allowed_hours_utc` is ignored for this asset. Enables disjoint
+    /// time-scheduling between asset-clones (e.g. AMBER-side trading
+    /// even hours, SHORT-side trading odd hours) — eliminates the
+    /// same-bar long+short hedge problem of single-account hybrids
+    /// without needing a hard mutex.
+    #[serde(default, rename = "allowedHoursUtc")]
+    pub allowed_hours_utc: Option<Vec<u32>>,
 }
 
 impl AssetConfig {

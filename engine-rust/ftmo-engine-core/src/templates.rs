@@ -121,6 +121,7 @@ fn make_assets(symbols: &[&str], risk_frac: f64) -> Vec<AssetConfig> {
             vol_poc_entry: None,
             max_funding_for_long: None,
             min_funding_for_short: None,
+            allowed_hours_utc: None,
         })
         .collect()
 }
@@ -579,6 +580,113 @@ pub fn v5_amber_max_passlock_bidir() -> EngineConfig {
     for asset in cfg.assets.iter_mut() {
         asset.disable_short = false;
     }
+    cfg
+}
+
+/// 2026-05-24 SCHEDULED_SPLIT — Florian's hour-disjoint hybrid hypothesis.
+///
+/// Architecture: duplicate every asset into AMBER-side + SHORT-side
+/// clones (same source_symbol). AMBER-side fires only during the original
+/// AMBER allowed-hours window [4, 6, 8, 10, 14, 18, 20, 22] (8h/day);
+/// SHORT-side fires only during DISJOINT hours [1, 3, 5, 7, 9, 11, 13, 15,
+/// 17, 19, 21, 23] (12 odd hours/day). With per-asset allowed_hours_utc
+/// gating (added in same commit), no single source_symbol can have a long
+/// AND a short open simultaneously — eliminates the shared-equity hedge
+/// problem of single-account hybrids WITHOUT needing mutex_long_short.
+///
+/// cfg-level allowed_hours_utc is cleared (set to None) so the per-asset
+/// gates fully control entry timing. risk_frac halved per side (0.4 → 0.2)
+/// so combined exposure per source_symbol matches single-strategy.
+///
+/// Hypothesis: time-disjoint scheduling lets both trade-streams compound
+/// independently on the same equity. Sample-day count of SHORT hours
+/// (12) >> AMBER hours (8), so SHORT-side has higher trade-frequency
+/// potential and may add the +5-10pp boost AMBER + simultaneous-SHORTS
+/// (debunked) could not.
+pub fn v5_amber_max_passlock_scheduled_split() -> EngineConfig {
+    let base = v5_amber_max_passlock();
+    let mut cfg = base.clone();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_SCHEDULED_SPLIT".into();
+    cfg.allowed_hours_utc = None; // per-asset gates take over
+    let amber_hours = vec![4, 6, 8, 10, 14, 18, 20, 22];
+    let short_hours = vec![1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23];
+    let mut combined = Vec::with_capacity(base.assets.len() * 2);
+    for a in base.assets.iter() {
+        let mut amber = a.clone();
+        amber.symbol = format!("{}-AMBER", a.symbol);
+        amber.invert_direction = true;
+        amber.disable_long = false;
+        amber.disable_short = true;
+        amber.risk_frac = a.risk_frac * 0.5;
+        amber.allowed_hours_utc = Some(amber_hours.clone());
+        combined.push(amber);
+        let mut shorts = a.clone();
+        shorts.symbol = format!("{}-SHORT", a.symbol);
+        shorts.invert_direction = false;
+        shorts.disable_long = true;
+        shorts.disable_short = false;
+        shorts.risk_frac = a.risk_frac * 0.5;
+        shorts.allowed_hours_utc = Some(short_hours.clone());
+        combined.push(shorts);
+    }
+    cfg.assets = combined;
+    cfg
+}
+
+/// 2026-05-24 RISK_05 — Boost per-trade risk_frac 0.4 → 0.5 (+25% size).
+/// Hypothesis: faster equity accrual to +10% target. Risk: bigger
+/// per-trade DL hits.
+pub fn v5_amber_max_passlock_risk_05() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_RISK05".into();
+    for asset in cfg.assets.iter_mut() {
+        asset.risk_frac = 0.5;
+    }
+    cfg
+}
+
+/// 2026-05-24 RISK_06 — risk_frac 0.4 → 0.6 (+50% size). Approaches
+/// liveCaps ceiling. Tests upper-bound.
+pub fn v5_amber_max_passlock_risk_06() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_RISK06".into();
+    for asset in cfg.assets.iter_mut() {
+        asset.risk_frac = 0.6;
+    }
+    cfg
+}
+
+/// 2026-05-24 AGGRESSIVE — combo of all single-account boost levers:
+///   - bidir (longs + shorts)
+///   - mutex_long_short (no hedge)
+///   - risk_frac 0.5 (bigger positions)
+///   - max_concurrent_trades 25 (was 10 — more parallel exposure)
+/// Tests the upper-bound of single-account passrate before structural
+/// stack-of-accounts is needed.
+pub fn v5_amber_max_passlock_aggressive() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_bidir_mutex();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_AGGRESSIVE".into();
+    cfg.max_concurrent_trades = Some(25);
+    for asset in cfg.assets.iter_mut() {
+        asset.risk_frac = 0.5;
+    }
+    cfg
+}
+
+/// 2026-05-24 BIDIR_MUTEX — Florian's "richtig implementierter shorts"
+/// Hypothese. BIDIR alone fail (9.6% TRUE-SEQ CF) was caused by
+/// same-bar long+short hedge on shared equity. Mutex_long_short forbids
+/// opposite-direction positions opening when any position is already
+/// open — eliminating the hedge while still allowing both directions
+/// to fire over time (whichever the voter triggers first wins the slot).
+///
+/// Memory's 2026-05-23 v7-mutex-debunk used same-window proxy (29.23%
+/// vs AMBER 32.10%). This template re-measures with TRUE-SEQUENTIAL
+/// methodology and 1000-window robustness test.
+pub fn v5_amber_max_passlock_bidir_mutex() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_bidir();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_BIDIR_MUTEX".into();
+    cfg.mutex_long_short = true;
     cfg
 }
 
@@ -1565,6 +1673,11 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-amber-max-passlock" => v5_amber_max_passlock(),
         "2h-trend-v5-amber-max-passlock-step2" => v5_amber_max_passlock_step2(),
         "2h-trend-v5-amber-max-passlock-bidir" => v5_amber_max_passlock_bidir(),
+        "2h-trend-v5-amber-max-passlock-bidir-mutex" => v5_amber_max_passlock_bidir_mutex(),
+        "2h-trend-v5-amber-max-passlock-risk05" => v5_amber_max_passlock_risk_05(),
+        "2h-trend-v5-amber-max-passlock-risk06" => v5_amber_max_passlock_risk_06(),
+        "2h-trend-v5-amber-max-passlock-aggressive" => v5_amber_max_passlock_aggressive(),
+        "2h-trend-v5-amber-max-passlock-scheduled-split" => v5_amber_max_passlock_scheduled_split(),
         "2h-trend-v5-amber-max-passlock-bidir-safe" => v5_amber_max_passlock_bidir_safe(),
         "2h-trend-v5-amber-max-passlock-hold480" => v5_amber_max_passlock_hold_480(),
         "2h-trend-v5-amber-max-passlock-hold720" => v5_amber_max_passlock_hold_720(),
@@ -1618,6 +1731,11 @@ pub fn known_selectors() -> &'static [&'static str] {
         "2h-trend-v5-amber-max",
         "2h-trend-v5-amber-max-passlock",
         "2h-trend-v5-amber-max-passlock-bidir",
+        "2h-trend-v5-amber-max-passlock-bidir-mutex",
+        "2h-trend-v5-amber-max-passlock-risk05",
+        "2h-trend-v5-amber-max-passlock-risk06",
+        "2h-trend-v5-amber-max-passlock-aggressive",
+        "2h-trend-v5-amber-max-passlock-scheduled-split",
         "2h-trend-v5-amber-max-passlock-bidir-safe",
         "2h-trend-v5-amber-max-passlock-hold480",
         "2h-trend-v5-amber-max-passlock-hold720",

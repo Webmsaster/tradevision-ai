@@ -866,9 +866,29 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
     }
     if entries_allowed {
         let max_concurrent = cfg.max_concurrent_trades.unwrap_or(u32::MAX) as usize;
+        // 2026-05-24 — per-asset hour-of-day gate. Cached current UTC hour
+        // so we don't recompute DateTime::from_timestamp_millis per signal.
+        let current_utc_hour: Option<u32> =
+            DateTime::<Utc>::from_timestamp_millis(entry_bar_time).map(|dt| dt.hour());
         for sig in &input.signals {
             // Per-asset activation gates.
             if let Some(asset_cfg) = cfg.assets.iter().find(|a| a.symbol == sig.symbol) {
+                // 2026-05-24 per-asset allowed_hours_utc: when Some, only
+                // entries during the listed UTC hours pass. Enables disjoint
+                // time-scheduling between asset-clones (e.g. AMBER even
+                // hours, SHORT odd hours) without needing mutex_long_short.
+                if let Some(hours) = asset_cfg.allowed_hours_utc.as_ref() {
+                    if let Some(h) = current_utc_hour {
+                        if !hours.contains(&h) {
+                            push_skip_if(
+                                &mut result.skipped,
+                                || sig.symbol.clone(),
+                                || format!("asset_hours: {h} not in {hours:?}"),
+                            );
+                            continue;
+                        }
+                    }
+                }
                 if let Some(after) = asset_cfg.activate_after_day {
                     if state.day < after {
                         push_skip_if(
