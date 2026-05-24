@@ -684,6 +684,19 @@ pub struct EngineConfig {
     #[serde(default, rename = "mutexLongShort")]
     pub mutex_long_short: bool,
 
+    /// 2026-05-24 — Pyramid: allow a SECOND same-asset+same-direction
+    /// entry when the existing position is already at least this much in
+    /// profit (e.g. 0.02 = +2% unrealized). Bypasses the trade-exclusivity
+    /// gate which normally blocks duplicate positions. The new entry uses
+    /// `pyramid_size_mult × original_eff_risk` to limit added exposure.
+    /// 0.0 / None = disabled (default). Mirrors the discretionary trader
+    /// "scale into winning trades" pattern.
+    #[serde(default, rename = "allowPyramidAfterProfitPct")]
+    pub allow_pyramid_after_profit_pct: Option<f64>,
+    /// Size multiplier for pyramid entries. Default 0.5 = half size.
+    #[serde(default = "default_pyramid_size_mult", rename = "pyramidSizeMult")]
+    pub pyramid_size_mult: f64,
+
     /// 2026-05-19 Pattern-D fix — when this many consecutive stop-loss
     /// exits occur within a single trading day, pause all new entries
     /// until the next day boundary. 0 = disabled (default). Typical
@@ -762,6 +775,10 @@ fn default_start_balance() -> f64 {
     100_000.0
 }
 
+fn default_pyramid_size_mult() -> f64 {
+    0.5
+}
+
 fn default_bar_minutes() -> u32 {
     30
 }
@@ -827,6 +844,8 @@ impl EngineConfig {
             close_all_on_target_reached: true,
             regime_flip_close_opposite: false,
             mutex_long_short: false,
+            allow_pyramid_after_profit_pct: None,
+            pyramid_size_mult: 0.5,
             max_consec_stops_per_day: 0,
             trail_dd_lock_trigger: 0.0,
             trail_dd_lock_floor: 0.0,

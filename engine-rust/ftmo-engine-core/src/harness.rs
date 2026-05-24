@@ -1018,17 +1018,38 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
             // diff: Rust 9 trades pass +8.29% / TS 6 trades daily_loss -7.19%).
             // The TS gate is direction-specific (long has its own cooldown,
             // short has its own — both can run simultaneously per asset).
-            if state
+            // 2026-05-24 — Pyramid exception: if cfg.allow_pyramid_after_profit_pct
+            // is set AND the existing position is in profit by that pct,
+            // allow a SECOND entry. Otherwise enforce trade-exclusivity as before.
+            // Pyramid_active tracked here so the eff_risk sizing below can scale.
+            let mut pyramid_scale: Option<f64> = None;
+            let existing_pos = state
                 .open_positions
                 .iter()
-                .any(|p| p.symbol == sig.symbol && p.direction == sig.direction)
-            {
-                push_skip_if(
-                    &mut result.skipped,
-                    || sig.symbol.clone(),
-                    || "trade-exclusivity: same asset+direction already open".into(),
-                );
-                continue;
+                .find(|p| p.symbol == sig.symbol && p.direction == sig.direction);
+            if let Some(pos) = existing_pos {
+                let allow_pct = cfg.allow_pyramid_after_profit_pct.unwrap_or(0.0);
+                if allow_pct > 0.0 {
+                    // Compute unrealized PnL %.
+                    // Long: (last_known - entry) / entry; Short: (entry - last_known) / entry.
+                    let last_price = pos.last_known_price.unwrap_or(pos.entry_price);
+                    let unr_pnl = if pos.direction == crate::position::PositionSide::Long {
+                        (last_price - pos.entry_price) / pos.entry_price
+                    } else {
+                        (pos.entry_price - last_price) / pos.entry_price
+                    };
+                    if unr_pnl >= allow_pct {
+                        pyramid_scale = Some(cfg.pyramid_size_mult);
+                    }
+                }
+                if pyramid_scale.is_none() {
+                    push_skip_if(
+                        &mut result.skipped,
+                        || sig.symbol.clone(),
+                        || "trade-exclusivity: same asset+direction already open".into(),
+                    );
+                    continue;
+                }
             }
 
             // R29-Drift-Audit-2026-05-12 (REVERTED): the post-exit 1-bar
@@ -1109,7 +1130,11 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
             // eff_risk ABOVE the caps the detector already applied. Re-apply
             // the centralized caps after the multiplication so reentry never
             // exceeds maxRiskFrac or LIVE_LOSS_CAP.
-            let final_eff_risk = match reentry_scale {
+            // 2026-05-24 Pyramid: same caps logic as reentry. Pyramid takes
+            // precedence over reentry if both happen on the same signal
+            // (rare — both are exception paths to trade-exclusivity).
+            let effective_scale = pyramid_scale.or(reentry_scale);
+            let final_eff_risk = match effective_scale {
                 Some(m) => crate::sizing::apply_post_factor_caps(
                     cfg,
                     state,
