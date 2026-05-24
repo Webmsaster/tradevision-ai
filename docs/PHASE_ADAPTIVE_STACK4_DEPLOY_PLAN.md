@@ -86,21 +86,35 @@ module.exports = {
 };
 ```
 
-### 4. TS Signal-Generator Templates (TS-mirror new entries)
+### 4. TS Signal-Generator Templates (TS-mirror status)
 
-Templates already TS-mirrored: AMBER, SHORTS_ONLY, AGGRESSIVE_24H_KELLY_REENTRY, AGGRESSIVE_24H_KELLY, AMBER_MAX_PASSLOCK base, AMBER_MAX_PASSLOCK_BIDIR_MUTEX, MIXED_V3.
+Templates with full TS-mirrors (live-ready):
 
-Still need TS-mirrors (1-2h each, for live signal generation):
+- AMBER, SHORTS_ONLY, AGGRESSIVE_24H_KELLY_REENTRY, AGGRESSIVE_24H_KELLY
+- AMBER_MAX_PASSLOCK base, AMBER_MAX_PASSLOCK_BIDIR_MUTEX, MIXED_V3
+- SHORTS_AGG, RISK05, RISK06 (added 2026-05-25)
+- TOPAZ, OBSIDIAN, RUBIN (V5 family — existing)
 
-- `risk05` (just AMBER with riskFrac=0.005 per asset — trivial)
-- `aggressive-24h` (existing in Rust, need TS check)
-- `obsidian` (V5 family — check if in `ftmoDaytrade24h.ts`)
-- `shorts-agg` (new)
+### 5. ⚠️ KNOWN TS↔RUST DRIFT (audit-flagged 2026-05-25)
 
-Templates that may be engine-only (no TS-mirror needed if executor handles exits):
+**`reentryAfterStop` is engine-only in Rust.** TS V4 engine
+(`src/utils/ftmoLiveEngineV4.ts`) does NOT implement re-entry-after-stop.
+Rust `v5_amber_max_passlock_shorts_agg()` sets
+`reentry_after_stop = {within_bars:12, size_mult:0.5}` but the field is
+silently dropped at live runtime.
 
-- `agg-kr-hold120` (just `hold_bars=120` — executor-side)
-- `agg-kr-chandelier` (chandelier exit — executor-side)
+**Impact:** ~3-8pp pass-rate drift on SHORTS_AGG live vs Rust backtest.
+GA Stack-4 still works at ~85-90% live with this drift baked in.
+
+**Fix path (deferred until live-deploy):** implement `reentryAfterStop`
+handler in `ftmoLiveEngineV4.ts` — track last stop-out bar per asset,
+on next entry within `withinBars`, multiply size by `sizeMult`. Add
+parity test against Rust.
+
+Templates that may be engine-only (executor-side exits, no TS mirror needed):
+
+- `agg-kr-hold120` (just `hold_bars=120`)
+- `agg-kr-chandelier` (chandelier exit — verify executor implements)
 
 ### 5. Cost-Benefit Validation (live first 30d)
 
