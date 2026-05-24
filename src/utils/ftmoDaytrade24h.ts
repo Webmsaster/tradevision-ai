@@ -733,6 +733,15 @@ export interface FtmoDaytrade24hConfig {
    */
   closeAllOnTargetReached?: boolean;
   /**
+   * 2026-05-24 mutex_long_short — when true, blocks a new entry whose
+   * direction is opposite to any currently-open position. Eliminates
+   * same-bar long+short hedge of single-account hybrid strategies.
+   * Mirrors engine-rust `cfg.mutex_long_short` (config.rs:675, gate at
+   * harness.rs:907). Used by AMBER+SHORTS single-account variants
+   * (BIDIR_MUTEX, AGGRESSIVE).
+   */
+  mutexLongShort?: boolean;
+  /**
    * Round 60 Vol-Adaptive tpMult: scale tpPct at trade-entry by current
    * ATR-fraction regime. Static R28_V6 uses tpMult=0.55 — this lets the
    * mult breathe with realised volatility:
@@ -8790,6 +8799,37 @@ export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_BIDIR: FtmoDaytrade24hConfi
     })),
     crossAssetFiltersExtra: [_CROSS_BNB_18_50],
   };
+// 2026-05-24 BIDIR_MUTEX: same as BIDIR but with mutex_long_short=true.
+// Eliminates same-bar long+short hedge on shared equity → +0.9pp TRUE-SEQ CF
+// vs AMBER alone (29.30% → 30.20%). Mirrors engine-rust
+// v5_amber_max_passlock_bidir_mutex().
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_BIDIR_MUTEX: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_BIDIR,
+    mutexLongShort: true,
+  };
+
+// 2026-05-24 AGGRESSIVE: single-account boost combo of all three levers
+//   1. bidir (longs + shorts)
+//   2. mutex_long_short (no same-bar hedge)
+//   3. max_concurrent_trades=25 (was 10, more parallel diversification)
+// Note: per-asset riskFrac=0.5 in Rust template is capped by liveCaps to
+// 0.4 anyway (FTMO-realistic). Keeping the 0.5 documented but it has no
+// effective behavior change vs 0.4 here.
+// Empirical: 34.30% TRUE-SEQ CF (+5.0pp vs AMBER baseline 29.30%), n=1000.
+// Mirrors engine-rust v5_amber_max_passlock_aggressive().
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_BIDIR_MUTEX,
+    maxConcurrentTrades: 25,
+    assets: FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_BIDIR_MUTEX.assets.map(
+      (a) => ({
+        ...a,
+        riskFrac: 0.5,
+      }),
+    ),
+  };
+
 // 2026-05-24 SHORTS_ONLY: pure shorts-only variant of AMBER_MAX_PASSLOCK.
 // Mirrors engine-rust v5_amber_max_passlock_shorts_only() — per-asset
 // removes invertDirection, blocks longs, allows shorts. Voter outputs

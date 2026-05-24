@@ -120,6 +120,9 @@ const TF_DISPATCH: Record<string, TfTag> = {
   "2h-trend-v5-amber-max-passlock-bidir": "30m",
   // 2026-05-24 Stack-2 partner (anti-corr +7.28pp vs AMBER alone).
   "2h-trend-v5-amber-max-passlock-shorts-only": "30m",
+  // 2026-05-24 single-account boosters (mutex_long_short enabled).
+  "2h-trend-v5-amber-max-passlock-bidir-mutex": "30m",
+  "2h-trend-v5-amber-max-passlock-aggressive": "30m",
   "2h-trend-v5-amber-max-mr-passlock": "30m",
   "2h-trend-v5-rubin-passlock": "30m",
   "2h-trend-v5-obsidian-passlock": "30m",
@@ -817,6 +820,8 @@ async function runOneCheck(): Promise<DetectionResult> {
     ftmoTf === "2h-trend-v5-amber-max-passlock-step2" ||
     ftmoTf === "2h-trend-v5-amber-max-passlock-bidir" ||
     ftmoTf === "2h-trend-v5-amber-max-passlock-shorts-only" ||
+    ftmoTf === "2h-trend-v5-amber-max-passlock-bidir-mutex" ||
+    ftmoTf === "2h-trend-v5-amber-max-passlock-aggressive" ||
     ftmoTf === "2h-trend-v5-amber-max-mr-passlock" ||
     ftmoTf === "2h-trend-v5-rubin-passlock" ||
     ftmoTf === "2h-trend-v5-obsidian-passlock" ||

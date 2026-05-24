@@ -584,6 +584,16 @@ const CFG_REGISTRY: Record<string, CfgRegistryEntry> = {
     label:
       "V5_AMBER_MAX_PASSLOCK_SHORTS_ONLY (pure shorts; Stack-2 partner to AMBER, anti-corr +7.28pp)",
   },
+  "2h-trend-v5-amber-max-passlock-bidir-mutex": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_BIDIR_MUTEX,
+    label:
+      "V5_AMBER_MAX_PASSLOCK_BIDIR_MUTEX (bidir + no-hedge gate, +0.9pp single-acc)",
+  },
+  "2h-trend-v5-amber-max-passlock-aggressive": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE,
+    label:
+      "V5_AMBER_MAX_PASSLOCK_AGGRESSIVE (bidir+mutex+MCT=25, +5pp single-acc winner)",
+  },
   "2h-trend-v5-amber-max-mr-passlock": {
     cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_MR_PASSLOCK,
     label: "V5_AMBER_MAX_MR_PASSLOCK (RSI mean-revert signal class)",

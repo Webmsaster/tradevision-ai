@@ -1879,6 +1879,27 @@ export function pollLive(
           continue;
         }
 
+        // 2026-05-24 mutex_long_short gate. Mirrors engine-rust
+        // harness.rs:907. When enabled, refuses to open an entry whose
+        // direction is opposite to ANY currently-open position — required
+        // for AMBER+SHORTS single-account variants to avoid the shared-
+        // equity hedge that empirically wiped out the 9 prior hybrid
+        // attempts (best 29.23% vs AMBER alone 32.10% per 2026-05-23
+        // debunk). With this gate, BIDIR-style configs trade either-
+        // direction over time without simultaneous opposing positions.
+        if (cfg.mutexLongShort && state.openPositions.length > 0) {
+          const hasOpposite = state.openPositions.some(
+            (p) => p.direction !== matched.direction,
+          );
+          if (hasOpposite) {
+            result.skipped.push({
+              asset: asset.symbol,
+              reason: `mutex_long_short: ${matched.direction} blocked (opposite position open)`,
+            });
+            continue;
+          }
+        }
+
         // correlationFilter check — count open same-direction.
         if (cfg.correlationFilter) {
           const sameDir = state.openPositions.filter(
