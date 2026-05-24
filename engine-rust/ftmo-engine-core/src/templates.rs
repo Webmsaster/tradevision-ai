@@ -583,6 +583,51 @@ pub fn v5_amber_max_passlock_bidir() -> EngineConfig {
     cfg
 }
 
+/// 2026-05-24 MIXED_DETECTORS — Florian's "diversify signal sources"
+/// hypothesis. AGGRESSIVE_24H_KELLY_REENTRY base, then OVERRIDE per-asset
+/// entry-type so different assets fire on UNCORRELATED signals:
+///   - 5 high-vol assets (BTC, ETH, SOL, AVAX, BNB): cvd_entry (cumulative
+///     volume delta — trends with money-flow)
+///   - 5 mid-vol assets (LINK, ADA, AAVE, ATOM, DOT): vol_imbalance_entry
+///     (taker-buy ratio extreme = aggression signal)
+///   - 5 lower-vol assets (ALGO, NEAR, ARB, UNI, TRX): vol_poc_entry
+///     (mean-revert from POC distance)
+///   - 4 default-trend assets (BCH, ETC, LTC, XRP): keep R28V6 fallback
+/// Hypothesis: 4 uncorrelated signal sources × 19 assets = more
+/// diversification than single signal-source on same basket. If trade-
+/// streams are independent, pass-rate could rise +2-4pp.
+pub fn v5_amber_max_passlock_mixed_detectors() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly_reentry();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_MIXED_DETECTORS".into();
+    let cvd_set: std::collections::HashSet<&str> =
+        ["BTC", "ETH", "SOL", "AVAX", "BNB"].iter().copied().collect();
+    let vol_imb_set: std::collections::HashSet<&str> =
+        ["LINK", "ADA", "AAVE", "ATOM", "DOT"].iter().copied().collect();
+    let vol_poc_set: std::collections::HashSet<&str> =
+        ["ALGO", "NEAR", "ARB", "UNI", "TRX"].iter().copied().collect();
+    for asset in cfg.assets.iter_mut() {
+        // strip suffix like "BTC-TREND" → "BTC", or "BTC-AMBER" / "BTC-SHORTS"
+        let base = asset
+            .symbol
+            .split('-')
+            .next()
+            .unwrap_or(&asset.symbol)
+            .to_string();
+        if cvd_set.contains(base.as_str()) {
+            asset.cvd_entry = Some(crate::config::CvdEntry { lookback_bars: 50 });
+        } else if vol_imb_set.contains(base.as_str()) {
+            asset.vol_imbalance_entry = Some(crate::config::VolImbalanceEntry { long_min: 0.65 });
+        } else if vol_poc_set.contains(base.as_str()) {
+            asset.vol_poc_entry = Some(crate::config::VolPocEntry {
+                window_bars: 50,
+                min_dist_from_poc_pct: 0.005,
+            });
+        }
+        // others (BCH, ETC, LTC, XRP) keep default R28V6 detector
+    }
+    cfg
+}
+
 /// 2026-05-24 AGGRESSIVE_24H_KELLY_REENTRY — AGG_24H_KELLY + reentry-
 /// after-stop. When a stop fires, re-enter same direction at half-size
 /// within reentry_window. Hypothesis: stops often happen near
@@ -1848,6 +1893,7 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-amber-max-passlock-aggressive-24h-adaptive" => v5_amber_max_passlock_aggressive_24h_adaptive(),
         "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly" => v5_amber_max_passlock_aggressive_24h_kelly(),
         "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly-reentry" => v5_amber_max_passlock_aggressive_24h_kelly_reentry(),
+        "2h-trend-v5-amber-max-passlock-mixed-detectors" => v5_amber_max_passlock_mixed_detectors(),
         "2h-trend-v5-amber-max-passlock-scheduled-split" => v5_amber_max_passlock_scheduled_split(),
         "2h-trend-v5-amber-max-passlock-bidir-safe" => v5_amber_max_passlock_bidir_safe(),
         "2h-trend-v5-amber-max-passlock-hold480" => v5_amber_max_passlock_hold_480(),
@@ -1913,6 +1959,7 @@ pub fn known_selectors() -> &'static [&'static str] {
         "2h-trend-v5-amber-max-passlock-aggressive-24h-adaptive",
         "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly",
         "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly-reentry",
+        "2h-trend-v5-amber-max-passlock-mixed-detectors",
         "2h-trend-v5-amber-max-passlock-scheduled-split",
         "2h-trend-v5-amber-max-passlock-bidir-safe",
         "2h-trend-v5-amber-max-passlock-hold480",
