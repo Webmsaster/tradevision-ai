@@ -584,6 +584,21 @@ const CFG_REGISTRY: Record<string, CfgRegistryEntry> = {
     label:
       "V5_AMBER_MAX_PASSLOCK_SHORTS_ONLY (pure shorts; Stack-2 partner to AMBER, anti-corr +7.28pp)",
   },
+  "2h-trend-v5-amber-max-passlock-shorts-agg": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_SHORTS_AGG,
+    label:
+      "V5_AMBER_MAX_PASSLOCK_SHORTS_AGG (SHORTS_ONLY + AGG upgrades; GA Stack-4 P1+P2 member 97.28% OOS)",
+  },
+  "2h-trend-v5-amber-max-passlock-risk06": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_RISK06,
+    label:
+      "V5_AMBER_MAX_PASSLOCK_RISK06 (AMBER × 0.6 riskFrac; GA Stack-4 winner Account-C)",
+  },
+  "2h-trend-v5-amber-max-passlock-risk05": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_RISK05,
+    label:
+      "V5_AMBER_MAX_PASSLOCK_RISK05 (AMBER × 0.5 riskFrac; defensive variant)",
+  },
   "2h-trend-v5-amber-max-passlock-bidir-mutex": {
     cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_BIDIR_MUTEX,
     label:

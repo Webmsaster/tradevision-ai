@@ -127,6 +127,10 @@ const TF_DISPATCH: Record<string, TfTag> = {
   "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly-reentry": "30m",
   "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly": "30m",
   "2h-trend-v5-amber-max-passlock-mixed-v3": "30m",
+  // 2026-05-25 GA Stack-4 winners (97.28% OOS deploy templates).
+  "2h-trend-v5-amber-max-passlock-shorts-agg": "30m",
+  "2h-trend-v5-amber-max-passlock-risk06": "30m",
+  "2h-trend-v5-amber-max-passlock-risk05": "30m",
   "2h-trend-v5-amber-max-mr-passlock": "30m",
   "2h-trend-v5-rubin-passlock": "30m",
   "2h-trend-v5-obsidian-passlock": "30m",
@@ -829,6 +833,9 @@ async function runOneCheck(): Promise<DetectionResult> {
     ftmoTf === "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly-reentry" ||
     ftmoTf === "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly" ||
     ftmoTf === "2h-trend-v5-amber-max-passlock-mixed-v3" ||
+    ftmoTf === "2h-trend-v5-amber-max-passlock-shorts-agg" ||
+    ftmoTf === "2h-trend-v5-amber-max-passlock-risk06" ||
+    ftmoTf === "2h-trend-v5-amber-max-passlock-risk05" ||
     ftmoTf === "2h-trend-v5-amber-max-mr-passlock" ||
     ftmoTf === "2h-trend-v5-rubin-passlock" ||
     ftmoTf === "2h-trend-v5-obsidian-passlock" ||

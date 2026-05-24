@@ -8937,6 +8937,46 @@ export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_SHORTS_ONLY: FtmoDaytrade24
     })),
     crossAssetFiltersExtra: [_CROSS_BNB_18_50],
   };
+// 2026-05-25 SHORTS_AGG — TS-mirror of engine-rust v5_amber_max_passlock_shorts_agg().
+// SHORTS_ONLY base + AGG upgrades: mutex + maxConcurrentTrades=25 + Kelly tiers
+// + reentry-after-stop. Part of GA Stack-4 winner (97.28% OOS).
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_SHORTS_AGG: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_SHORTS_ONLY,
+    mutexLongShort: true,
+    maxConcurrentTrades: 25,
+    allowedHoursUtc: undefined,
+    kellySizing: {
+      windowSize: 30,
+      minTrades: 10,
+      tiers: [
+        { winRateAbove: 0.65, multiplier: 2.0 },
+        { winRateAbove: 0.55, multiplier: 1.5 },
+        { winRateAbove: 0.45, multiplier: 1.0 },
+        { winRateAbove: 0.0, multiplier: 0.5 },
+      ],
+    },
+    reentryAfterStop: { withinBars: 12, sizeMult: 0.5 },
+  };
+// 2026-05-25 RISK06 — TS-mirror of v5_amber_max_passlock with riskFrac × 0.6.
+// Used as Account-C P1 in GA Stack-4 winner (97.28% OOS).
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_RISK06: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK,
+    assets: FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK.assets.map((a) => ({
+      ...a,
+      riskFrac: (a.riskFrac ?? 0.01) * 0.6,
+    })),
+  };
+// 2026-05-25 RISK05 — TS-mirror of v5_amber_max_passlock with riskFrac × 0.5.
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_RISK05: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK,
+    assets: FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK.assets.map((a) => ({
+      ...a,
+      riskFrac: (a.riskFrac ?? 0.01) * 0.5,
+    })),
+  };
 // 2026-05-19 MR variant — same engine stack, but mean-revert signal class.
 // Flips `invertDirection` and `disableShort` off per asset so RSI MR
 // longs/shorts pass unmodified, and adds `meanReversionSource` so the
