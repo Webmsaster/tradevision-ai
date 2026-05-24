@@ -751,6 +751,48 @@ pub fn v5_amber_max_passlock_agg_kr_hold_120() -> EngineConfig {
     cfg
 }
 
+/// 2026-05-25 P2_GRINDER — designed for P2 only (+5%/60d).
+/// AMBER base + chandelier (lock trail) + break-even-early (move SL to entry at +1%) +
+/// tighter ATR (1.5x) + lower riskFrac (0.005 = half). Slow grind to +5% with
+/// minimal drawdown. Tested for P2-slot specialization.
+pub fn v5_amber_max_passlock_p2_grinder() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_P2_GRINDER".into();
+    cfg.profit_target = 0.05;
+    cfg.max_days = 60;
+    cfg.atr_stop = Some(crate::config::AtrStop {
+        period: 56,
+        stop_mult: 1.5,
+    });
+    cfg.chandelier_exit = Some(crate::config::ChandelierExit {
+        period: 22, mult: 2.2, min_move_r: Some(0.5),
+    });
+    cfg.break_even = Some(crate::config::BreakEven { threshold: 0.008 });
+    for asset in cfg.assets.iter_mut() {
+        asset.risk_frac = asset.risk_frac * 0.5;
+    }
+    cfg
+}
+
+/// 2026-05-25 P2_DEFENDER — alternative P2 specialist. Tighter trail-from-peak,
+/// fewer concurrent trades (cap=10), slower turnover.
+pub fn v5_amber_max_passlock_p2_defender() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_P2_DEFENDER".into();
+    cfg.profit_target = 0.05;
+    cfg.max_days = 60;
+    cfg.max_concurrent_trades = Some(10);
+    cfg.atr_stop = Some(crate::config::AtrStop {
+        period: 56,
+        stop_mult: 1.8,
+    });
+    cfg.challenge_peak_trailing_stop = Some(crate::config::PeakTrailingStop {
+        trail_distance: 0.018,
+    });
+    cfg.break_even = Some(crate::config::BreakEven { threshold: 0.012 });
+    cfg
+}
+
 /// 2026-05-25 AGG_KR with combined adaptive + chandelier (without ptp/be).
 pub fn v5_amber_max_passlock_agg_kr_combo() -> EngineConfig {
     let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly_reentry();
@@ -2103,6 +2145,8 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-amber-max-passlock-shorts-agg" => v5_amber_max_passlock_shorts_agg(),
         "2h-trend-v5-amber-max-passlock-agg-kr-hold120" => v5_amber_max_passlock_agg_kr_hold_120(),
         "2h-trend-v5-amber-max-passlock-agg-kr-combo" => v5_amber_max_passlock_agg_kr_combo(),
+        "2h-trend-v5-amber-max-passlock-p2-grinder" => v5_amber_max_passlock_p2_grinder(),
+        "2h-trend-v5-amber-max-passlock-p2-defender" => v5_amber_max_passlock_p2_defender(),
         "2h-trend-v5-amber-max-passlock-scheduled-split" => v5_amber_max_passlock_scheduled_split(),
         "2h-trend-v5-amber-max-passlock-bidir-safe" => v5_amber_max_passlock_bidir_safe(),
         "2h-trend-v5-amber-max-passlock-hold480" => v5_amber_max_passlock_hold_480(),
@@ -2184,6 +2228,8 @@ pub fn known_selectors() -> &'static [&'static str] {
         "2h-trend-v5-amber-max-passlock-shorts-agg",
         "2h-trend-v5-amber-max-passlock-agg-kr-hold120",
         "2h-trend-v5-amber-max-passlock-agg-kr-combo",
+        "2h-trend-v5-amber-max-passlock-p2-grinder",
+        "2h-trend-v5-amber-max-passlock-p2-defender",
         "2h-trend-v5-amber-max-passlock-scheduled-split",
         "2h-trend-v5-amber-max-passlock-bidir-safe",
         "2h-trend-v5-amber-max-passlock-hold480",
