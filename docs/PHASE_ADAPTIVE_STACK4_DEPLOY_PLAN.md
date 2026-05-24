@@ -1,22 +1,22 @@
 # Phase-Adaptive Stack-4 Live-Deployment Plan
 
 **Status:** Plan only — implementation parked until live-deploy decision.
-**Source finding:** [[session-2026-05-25-phase-adaptive-stack4]] (GA Stack-4 multi-seed = 93.35% OOS BEST / 90.60% mean).
+**Source finding:** [[session-2026-05-25-phase-adaptive-stack4]] (BIG GA Stack-4 = 97.28% OOS BEST / 93.75% mean across 10 seeds, 2 seeds converged to same optimum).
 
-## Recommended Stack-4 Config (GA-optimal, seed 456 winner)
+## Recommended Stack-4 Config (GA-optimal, seeds 1337+2024 converged)
 
-| Account | P1 Template                         | P2 Template (auto-switch on P1-target hit) |
-| ------- | ----------------------------------- | ------------------------------------------ |
-| A       | `v5-amber-max-passlock-risk05`      | `v5-amber-max-passlock-obsidian`           |
-| B       | `v5-amber-max-passlock-shorts-only` | `v5-amber-max-passlock-shorts-only` (sym!) |
-| C       | `v5-amber-max-passlock-shorts-agg`  | `v5-amber-max-passlock-topaz`              |
-| D       | `v5-amber-max-passlock-risk06`      | `v5-amber-max-passlock-shorts-only`        |
+| Account | P1 Template                                 | P2 Template (auto-switch on P1-target hit)  |
+| ------- | ------------------------------------------- | ------------------------------------------- |
+| A       | `v5-amber-max-passlock-shorts-agg`          | `v5-amber-max-passlock-shorts-agg` (sym ok) |
+| B       | `v5-amber-max-passlock` (ext24)             | `v5-amber-max-passlock-topaz`               |
+| C       | `v5-amber-max-passlock-risk06`              | `v5-amber-max-passlock-shorts-only`         |
+| D       | `v5-amber-max-passlock-shorts-only` (ext24) | `v5-amber-max-passlock-risk06`              |
 
-Walk-forward TEST 93.35% / TRAIN 86.82% / drift +6.54pp = ROBUST (anti-overfit).
+Walk-forward TEST 97.28% / TRAIN 85.15% / drift +12.13pp = ROBUST (anti-overfit + 2-seed convergence).
 
-## Robustness Range (8 GA seeds)
+## Robustness Range (10 GA seeds, BIG run)
 
-TEST range: [89.73%, 93.35%], mean 90.60%. Conservative live-realistic estimate: 85-88%.
+TEST range: [90.94%, 97.28%], mean 93.75%. Conservative live-realistic estimate: 85-90%.
 
 ## Required Infrastructure
 
