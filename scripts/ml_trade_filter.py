@@ -264,11 +264,19 @@ def build_dataset() -> tuple[np.ndarray, np.ndarray, list[dict], list[str]]:
         # 2026-05-23 BUG FIX (ML audit): case-insensitive direction parse.
         # `t["direction"] == "long"` strict-compared would treat "LONG"/"Long"
         # as SHORT → silent sign-flip. Also explicitly handle unknown values.
+        # 2026-05-24 Wave6 KRIT FIX (Agent 8): training previously encoded
+        # short as -1.0 but the Rust inference path at sweep.rs:182 uses 0.0
+        # for short (`if direction_long { 1.0 } else { 0.0 }`). Models trained
+        # with -1.0 would route through tree splits on direction>0.5 to the
+        # WRONG leaf at inference (0.0 < 0.5), inverting the ML signal for
+        # every short trade. Now matches Rust encoding 1.0/0.0. REQUIRES
+        # MODEL RETRAINING — old .bin files trained with -1.0 must be
+        # regenerated before next deploy.
         dir_raw = str(t.get("direction", "")).strip().lower()
         if dir_raw == "long":
             direction = 1.0
         elif dir_raw == "short":
-            direction = -1.0
+            direction = 0.0
         else:
             skipped += 1
             continue
@@ -288,10 +296,16 @@ def build_dataset() -> tuple[np.ndarray, np.ndarray, list[dict], list[str]]:
             if p["exitTime"] < et:
                 pnl = float(p["effPnl"])
                 prior_cum += pnl
+                # 2026-05-24 Wave6 MED FIX (Agent 8): prior `else` branch
+                # silently counted break-even trades (pnl == 0.0) as losses,
+                # biasing the classifier's "prior_l" feature against trades
+                # following exactly-flat prior trades. BE is neither win nor
+                # loss — must use explicit `pnl < 0` for loss count.
                 if pnl > 0:
                     prior_w += 1
-                else:
+                elif pnl < 0:
                     prior_l += 1
+                # pnl == 0.0 → break-even, neither w nor l
 
         row = [
             btc_feats["btc_ret_24h"],

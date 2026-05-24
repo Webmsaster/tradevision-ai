@@ -113,6 +113,16 @@ def update_symbol(symbol):
         except FetchError as e:
             print(f"  [{symbol}] FETCH FAILED — {e}", file=sys.stderr)
             raise  # propagate to main() for non-zero exit
+        # 2026-05-24 Wave6 MED FIX (Agent 4): defensive type check.
+        # Binance occasionally returns `{}` (rate-limit error wrapped) or
+        # a dict-shaped error response that passes `if not batch:` (truthy)
+        # but then crashes inside the iter loop with `row[0]` indexing.
+        # Surface the protocol violation loudly instead.
+        if not isinstance(batch, list):
+            raise FetchError(
+                f"unexpected response shape: {type(batch).__name__} "
+                f"(expected list of kline arrays); raw={str(batch)[:200]}"
+            )
         if not batch:
             break
         # Filter: only bars with openTime > last_open + drop non-final
