@@ -33,19 +33,44 @@ class PaperExecutor:
         if symbol not in self.positions:
             return
         pos = self.positions.pop(symbol)
-        sign = 1 if pos["side"] == "long" else -1
+        # 2026-05-24 Wave5 HIGH FIX (Agent 1): case-sensitive "long" compare
+        # silently treated "Long"/"LONG" as short → inverted PnL on every
+        # close. Mirrors the case-drift fix already applied in
+        # direction_util.py; this paper verifier was missed.
+        sign = 1 if str(pos["side"]).lower() == "long" else -1
         pnl = sign * pos["size"] * (fill_price - pos["entry_price"])
         self.equity += pnl
         self.closed_trades.append({**pos, "exit_price": fill_price, "exit_ts": ts, "pnl": pnl})
         print(f"  [paper] CLOSE {symbol} @ {fill_price:.4f} → PnL {pnl:+.2f}, equity {self.equity:.2f}")
 
 def reconcile(paper_equity, live_equity_path, threshold_pct=0.3):
-    """Compare paper vs live equity. Alert if drift exceeds threshold."""
+    """Compare paper vs live equity. Alert if drift exceeds threshold.
+
+    2026-05-24 Wave5 HIGH FIX (Agent 1): two correctness bugs:
+    (a) `live_data.get("equity", paper_equity)` silently fell back to the
+        paper equity when the live file was missing the field → diff=0%
+        → never alerts even though state is broken. Defeats the whole
+        point of the verifier (catch live↔paper divergence).
+    (b) `... / live_equity * 100` crashes with ZeroDivisionError on
+        live_equity=0 (liquidated account, fresh file) instead of
+        surfacing the bigger problem ("live is dead").
+    """
     live_equity_path = Path(live_equity_path)
     if not live_equity_path.exists():
         return None
     live_data = json.loads(live_equity_path.read_text())
-    live_equity = live_data.get("equity", paper_equity)
+    live_equity = live_data.get("equity")
+    if live_equity is None:
+        return {"paper": paper_equity, "live": None, "drift_pct": None,
+                "alert": True, "error": "live equity field missing"}
+    try:
+        live_equity = float(live_equity)
+    except (TypeError, ValueError):
+        return {"paper": paper_equity, "live": live_equity, "drift_pct": None,
+                "alert": True, "error": "live equity not a number"}
+    if live_equity <= 0:
+        return {"paper": paper_equity, "live": live_equity, "drift_pct": None,
+                "alert": True, "error": "live equity is zero/negative (liquidated?)"}
     diff_pct = abs(paper_equity - live_equity) / live_equity * 100
     return {"paper": paper_equity, "live": live_equity, "drift_pct": diff_pct,
             "alert": diff_pct > threshold_pct}
@@ -83,7 +108,10 @@ def main():
     # Reconcile against live (stub for now)
     rec = reconcile(executor.equity, "state/live_equity_latest.json")
     if rec:
-        print(f"Reconciliation: paper={rec['paper']:.2f} live={rec['live']:.2f} drift={rec['drift_pct']:.3f}%")
+        if rec.get("error"):
+            print(f"Reconciliation FAILED: {rec['error']} (paper={rec['paper']:.2f})")
+        else:
+            print(f"Reconciliation: paper={rec['paper']:.2f} live={rec['live']:.2f} drift={rec['drift_pct']:.3f}%")
         if rec["alert"]:
             print("  ⚠ DRIFT ALERT — bug suspect (would trigger Telegram)")
     else:
