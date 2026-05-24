@@ -131,6 +131,19 @@ export function validateOrder(
       `symbol ${order.symbol} not in whitelist (${Array.from(safety.symbolWhitelist).join(", ")})`,
     );
   }
+  // 2026-05-24 Codex audit HIGH FIX: prior code fell back to
+  // `order.quantity * (order.price ?? 0)`, so MARKET orders (where
+  // `price` is always undefined) computed notional=0 and the
+  // `notional > safety.maxNotionalUsd` guard was bypassed. Operator
+  // submitting a 1000-BTC MARKET order with no price hint would not
+  // get blocked, defeating the entire safety cap.
+  // Require an explicit notional OR price for the calc; reject MARKET
+  // without either.
+  if (order.notionalUsd === undefined && order.price === undefined) {
+    throw new OrderBlockedError(
+      `${order.type} order requires either notionalUsd or price to enforce max-notional cap`,
+    );
+  }
   const notional = order.notionalUsd ?? order.quantity * (order.price ?? 0);
   if (notional > safety.maxNotionalUsd) {
     throw new OrderBlockedError(

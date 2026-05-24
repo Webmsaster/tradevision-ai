@@ -227,10 +227,15 @@ function canReadArbitrarySlug(auth: {
 // Path resolution (security: whitelist + resolve-and-prefix-check)
 // ---------------------------------------------------------------------------
 
-// 2026-05-14 Codex Wave-2 Bug #10 FIX: allow underscores + uppercase so
-// multi-account state-dirs (e.g. `Account_A_2h-trend-v5-amber`) are
-// resolvable. First char must still be alphanumeric to block dot/slash.
-const TF_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+// 2026-05-24 Codex audit MED FIX: reverted from the 2026-05-14 widening
+// (uppercase + underscore) back to lowercase-only to match the SQL CHECK
+// at migration_r29_user_ftmo_accounts.sql:29 and the userFtmoAccounts.test.ts
+// contract that explicitly filters "UPPER" slugs. The widening was dead
+// code in practice because SQL rejects any uppercase row, so a slug-from-DB
+// query never returns uppercase. State-dir paths (e.g. Account_A_*) are
+// driven by FTMO_ACCOUNT_ID env, not the slug — so this revert doesn't
+// break multi-account routing.
+const TF_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 /**
  * Resolve the state directory. Priority:

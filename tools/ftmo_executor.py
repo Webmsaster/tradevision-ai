@@ -3680,7 +3680,26 @@ def _process_signals_unlocked(
         # ladder. Returns None when in-range OR sanity disabled OR alert-only
         # mode (default). Returns reason-string only when REJECT mode is
         # active AND value is out-of-range. See _sanity_check_risk_frac doc.
-        sanity_reject = _sanity_check_risk_frac(float(sig.get("riskFrac") or 0.0), sig["assetSymbol"])
+        # 2026-05-24 Codex audit HIGH FIX: prior `float(sig.get("riskFrac") or 0.0)`
+        # crashed the entire executor loop with ValueError when riskFrac was
+        # a non-numeric string (e.g. corrupted upstream payload "abc") because
+        # `"abc" or 0.0` returns the truthy string, then float() throws. Also
+        # NaN string would silently produce NaN and contaminate sizing math.
+        # Wrap in try/except so a single bad signal is rejected, not the loop.
+        _rf_raw = sig.get("riskFrac")
+        try:
+            _rf_val = float(_rf_raw) if _rf_raw is not None else 0.0
+            if not math.isfinite(_rf_val):
+                raise ValueError("not finite")
+        except (TypeError, ValueError):
+            executed["executions"].append({
+                "signal": sig,
+                "result": "invalid_risk_frac",
+                "reason": f"riskFrac={_rf_raw!r} not parseable as finite float",
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+            continue
+        sanity_reject = _sanity_check_risk_frac(_rf_val, sig["assetSymbol"])
         if sanity_reject:
             executed["executions"].append({
                 "signal": sig, "result": "risk_sanity_rejected", "reason": sanity_reject,

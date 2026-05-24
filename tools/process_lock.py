@@ -132,15 +132,20 @@ def file_lock(
                         except Exception:
                             stale_token = ""
                         # 2026-05-23 Wave2 fix (B2): probe holder PID before
-                        # reclaiming. Token format is "host:pid:nanos". If the
-                        # process is still alive (kill -0 succeeds), the lock
-                        # is held by a busy-but-live holder doing slow work;
-                        # do NOT steal — wait another stale_sec interval. This
-                        # only steals when the holder is genuinely dead.
+                        # reclaiming.
+                        # 2026-05-24 Codex audit HIGH FIX: token format is
+                        # `pid:timestamp_ms:hex` (see _make_token line 36),
+                        # NOT `host:pid:nanos` as the prior comment lied.
+                        # Reading `parts[1]` got the TIMESTAMP (13-digit ms),
+                        # which `os.kill()` then treated as a giant PID,
+                        # always raising ProcessLookupError, always stealing
+                        # the lock from a live holder. Result: two processes
+                        # could both believe they held the exclusive lock
+                        # → torn state writes. Use parts[0] (real PID).
                         try:
                             parts = stale_token.split(":")
-                            if len(parts) >= 2:
-                                pid = int(parts[1])
+                            if len(parts) >= 1:
+                                pid = int(parts[0])
                                 if pid > 0:
                                     try:
                                         os.kill(pid, 0)

@@ -54,12 +54,25 @@ except Exception:
 # (KRITISCH): mirror ftmo_executor's per-account magic derivation so the
 # kill switch only touches THIS account's tickets.
 #
-# Algorithm matches `tools/ftmo_executor.py::_compute_magic_id`:
-#   - FTMO_ACCOUNT_ID unset           → 231
-#   - numeric account_id              → 231 + 10 + (num * 10)   [10-wide slots]
-#   - non-numeric account_id          → 231 + 11000 + (sha256[:8] % 9000)
-#   - PING_MAGIC = MAGIC + 7  (NOT +1; +1 overlapped with next slot's MAGIC)
-def _compute_magic_id() -> int:
+# 2026-05-24 Codex audit CRIT FIX: prior code computed MAGIC WITHOUT the
+# FTMO_TF offset that ftmo_executor.py uses since Wave2 (2026-05-23) and
+# Wave6 (2026-05-24). For any account with FTMO_TF set (production uses
+# `2h-trend-v5-amber-max-passlock`, offset≈2), the kill switch was looking
+# at the WRONG magic and would silently SKIP every active position the bot
+# had opened. Real positions left untouched on /kill is a money-loss bug.
+# Algorithm must mirror ftmo_executor.py exactly: account_base + tf_offset.
+def _tf_magic_offset() -> int:
+    """Mirror of `ftmo_executor.py::_tf_magic_offset`. Deterministic across
+    process restarts (never uses Python's randomised `hash()`)."""
+    tf = os.environ.get("FTMO_TF", "").strip()
+    if not tf:
+        return 0
+    import hashlib
+    digest = hashlib.sha256(tf.encode("utf-8")).hexdigest()[:8]
+    return int(digest, 16) % 6
+
+
+def _compute_account_base() -> int:
     base = 231
     account_id = os.environ.get("FTMO_ACCOUNT_ID", "").strip()
     if not account_id:
@@ -77,8 +90,14 @@ def _compute_magic_id() -> int:
         return base + 11000 + offset
 
 
+def _compute_magic_id() -> int:
+    return _compute_account_base() + _tf_magic_offset()
+
+
 MAGIC = _compute_magic_id()
-PING_MAGIC = MAGIC + 7  # was MAGIC+1 — Codex audit Bug #1 fix
+# PING_MAGIC is fixed within the account slot (NOT shifted by tf_off) — mirrors
+# the Wave6 ftmo_executor.py fix so PING never bleeds into adjacent slots.
+PING_MAGIC = _compute_account_base() + 7
 
 
 def _resolve_state_dir() -> Path:

@@ -10,7 +10,10 @@ impl Default for VahValParams {
 }
 
 pub fn compute_vah_val_vote(candles: &[Candle], p: &VahValParams) -> Option<PositionSide> {
-    if p.window < 20 || candles.len() < p.window + 3 { return None; }
+    // 2026-05-24 Codex audit LOW FIX: n_buckets=0 caused (a) division-by-zero
+    // at L24 producing Inf bucket_size, (b) `vec![0.0; 0]` empty bucket_vol,
+    // and (c) `p.n_buckets - 1` underflow on usize → PANIC inside .min().
+    if p.window < 20 || p.n_buckets == 0 || candles.len() < p.window + 3 { return None; }
     let i = candles.len() - 2;
     if i < p.window { return None; }
     let lo = i + 1 - p.window;
