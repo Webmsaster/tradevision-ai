@@ -760,12 +760,19 @@ export default function CSVImport({ onImport }: CSVImportProps) {
                 <polyline points="22 4 12 14.01 9 11.01" />
               </svg>
             </div>
+            {/* 2026-05-24 Codex audit MED FIX: the import callback returns
+                void, so we cannot know how many trades the storage layer
+                actually persisted (dedup against existing IDs / quota /
+                soft-deleted resurrections). Reword to "sent" instead of
+                implying every one was added — the journal is the source
+                of truth post-import. */}
             <div className="csv-success-text">
               {mappedTrades.length} trade{mappedTrades.length !== 1 ? "s" : ""}{" "}
-              imported successfully!
+              sent to the journal.
             </div>
             <div className="csv-success-count">
-              Your trading data has been added to the journal.
+              Open the Trades page to verify what was added (duplicates may have
+              been skipped).
             </div>
             <button className="btn btn-primary" onClick={handleReset}>
               Import More

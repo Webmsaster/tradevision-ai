@@ -42,8 +42,14 @@ jobs:
         with:
           workspaces: engine-rust
       - name: Install npm deps (tsx)
+        # 2026-05-24 Codex audit LOW FIX: prior `npm ci || npm install`
+        # silently masked lockfile drift — when package-lock.json was
+        # out-of-sync with package.json the workflow would mutate the
+        # lockfile and continue green, hiding a real CI integrity issue.
+        # `npm ci` alone fails fast on drift; operators see the failure
+        # and either commit the regenerated lock or fix the dependency.
         run: |
-          npm ci --no-audit --prefer-offline || npm install --no-audit
+          npm ci --no-audit --prefer-offline
       - name: "Cache: pull crypto candles (BTC/ETH/AAVE only — keep CI fast)"
         run: |
           mkdir -p scripts/cache_bakeoff

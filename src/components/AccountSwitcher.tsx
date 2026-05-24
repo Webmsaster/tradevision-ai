@@ -35,7 +35,15 @@ export default function AccountSwitcher() {
 
   const loadFromStorage = useCallback(() => {
     const s = readSettings();
-    if (!s?.accounts || s.accounts.length === 0) return;
+    // 2026-05-24 Codex audit LOW FIX: prior early-return left stale
+    // state in place after logout (settings cleared but UI kept showing
+    // old accounts until full page reload). Explicit reset to defaults
+    // so the switcher reflects the cleared session immediately.
+    if (!s?.accounts || s.accounts.length === 0) {
+      setAccounts([]);
+      setActiveId("default");
+      return;
+    }
     setAccounts(s.accounts);
     // Phase 78: length>0 guarded above.
     setActiveId(s.activeAccountId || s.accounts[0]!.id);

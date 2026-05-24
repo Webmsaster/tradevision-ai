@@ -55,7 +55,14 @@ export async function GET() {
       );
     }
     const state = JSON.parse(readFileSync(STATE_FILE, "utf8"));
-    return NextResponse.json({ ...state, error: null });
+    // 2026-05-24 Codex audit MED FIX: Service Worker (public/sw.js:80)
+    // intercepts /api/* and would cache this dynamic state file. Without
+    // `Cache-Control: no-store`, a stale paper-state could be served from
+    // the SW cache, making the dashboard show stale equity/positions.
+    return NextResponse.json(
+      { ...state, error: null },
+      { headers: { "Cache-Control": "no-store" } },
+    );
   } catch (err) {
     // Round 54 (Finding #1): mirror /api/ftmo-preview pattern (Phase 33
     // R45-API-6) — never echo `(err as Error).message` to the client.

@@ -701,12 +701,20 @@ export default function SettingsPage() {
   async function handleLoadSampleData() {
     try {
       const { sampleTrades } = await import("@/data/sampleTrades");
+      // 2026-05-24 Codex audit LOW FIX: prior code generated random
+      // UUIDs without the `sample-` prefix, breaking the demo-detection
+      // heuristic in src/app/page.tsx:107 (`trades[0].id.startsWith("sample-")`).
+      // Dashboard never showed the "Clear Demo Data" CTA, leaving users
+      // unable to wipe sample trades via the intended UI path. Keep the
+      // randomization (cloud-PK uniqueness) but prepend `sample-` so
+      // the dashboard detector still works.
       const fresh = sampleTrades.map((t) => ({
         ...t,
         id:
-          typeof crypto !== "undefined" && "randomUUID" in crypto
+          "sample-" +
+          (typeof crypto !== "undefined" && "randomUUID" in crypto
             ? crypto.randomUUID()
-            : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            : `${Date.now()}-${Math.random().toString(36).slice(2)}`),
         accountId: activeAccountId,
       }));
       const count = await importTrades(fresh);

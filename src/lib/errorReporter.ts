@@ -113,11 +113,26 @@ function redactExtra(
   extra: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
   if (!extra) return undefined;
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(extra)) {
-    out[k] = typeof v === "string" ? redactSensitive(v) : v;
+  return redactValue(extra, 0) as Record<string, unknown>;
+}
+
+// 2026-05-24 Codex audit MED FIX: prior Wave9 redactExtra only walked the
+// TOP-LEVEL string values. Nested objects (e.g. `extra: { user: { email,
+// token } }`) bypassed the redaction. Now recursive with a 4-level depth
+// cap to avoid runaway on cyclic refs (errors with circular .cause chains).
+function redactValue(v: unknown, depth: number): unknown {
+  if (depth > 4) return "[depth-limit]";
+  if (v == null) return v;
+  if (typeof v === "string") return redactSensitive(v);
+  if (Array.isArray(v)) return v.map((x) => redactValue(x, depth + 1));
+  if (typeof v === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      out[k] = redactValue(val, depth + 1);
+    }
+    return out;
   }
-  return out;
+  return v;
 }
 
 function buildExceptionPayload(

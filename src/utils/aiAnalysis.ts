@@ -94,19 +94,21 @@ export function detectRevengeTrade(trades: Trade[]): AIInsight | null {
     const current = sorted[i];
 
     if (prev1!.pnl < 0 && prev2!.pnl < 0) {
-      // 2026-05-16 Round 9 WARN FIX (aiAnalysis agent): compare against
-      // margin (notional × leverage) rather than raw notional. A trader
-      // switching leverage from 1× → 10× triggers no alert via notional
-      // alone, while a doubled-price-same-quantity trade looks like
-      // "200% increase" but is actually identical exposure. Margin =
-      // quantity × entryPrice × leverage captures actual risk size.
-      const margin1 =
-        prev1!.quantity * prev1!.entryPrice * (prev1!.leverage || 1);
-      const margin2 =
-        prev2!.quantity * prev2!.entryPrice * (prev2!.leverage || 1);
+      // 2026-05-24 Codex audit MED FIX: the Round 9 "fix" multiplied by
+      // leverage but called the result "margin" — that's actually
+      // notional × leverage (leveraged_notional), which doesn't model
+      // actual risk size. True margin = notional / leverage (capital
+      // committed). For revenge-trade detection we want the trader's
+      // EXPOSURE, which is best captured by notional alone (qty × price)
+      // since two trades with the same notional pose the same
+      // directional risk regardless of how much margin backs them.
+      // Switching from 2× to 10× lev on the SAME notional shouldn't
+      // trigger a "200% size increase" — but the prior formula did
+      // exactly that (10× / 2× = 5× false alarm).
+      const margin1 = prev1!.quantity * prev1!.entryPrice;
+      const margin2 = prev2!.quantity * prev2!.entryPrice;
       const prevAvgSize = (margin1 + margin2) / 2;
-      const currentSize =
-        current!.quantity * current!.entryPrice * (current!.leverage || 1);
+      const currentSize = current!.quantity * current!.entryPrice;
 
       // Guard against zero-cost reference (corrupt data, cash positions).
       // Without this, increasePercent becomes Infinity → "increased by Infinity%".

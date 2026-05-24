@@ -2005,9 +2005,21 @@ def get_challenge_day() -> int:
     if not CHALLENGE_START_DATE:
         return 0
     try:
+        # 2026-05-24 Codex audit MED FIX: prior `except ImportError` only
+        # caught the case where `zoneinfo` itself is missing (pre-3.9
+        # Python). On systems where zoneinfo is present but the OS lacks
+        # `tzdata` (minimal Docker base images, some Windows configs),
+        # `ZoneInfo("Europe/Prague")` raises ZoneInfoNotFoundError (a
+        # subclass of KeyError, NOT ImportError). That exception bubbled
+        # to the outer except at L2025, returning 0 → challenge_day stuck
+        # at day 0 forever → minTradingDays counter never increments →
+        # bot can never satisfy FTMO 4-day rule → silent stall.
         try:
-            from zoneinfo import ZoneInfo
-            prague_tz = ZoneInfo("Europe/Prague")
+            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+            try:
+                prague_tz = ZoneInfo("Europe/Prague")
+            except ZoneInfoNotFoundError:
+                prague_tz = _eu_prague_fallback_tz()
         except ImportError:
             prague_tz = _eu_prague_fallback_tz()
         # Accept either bare date "YYYY-MM-DD" or ISO timestamp with time.
