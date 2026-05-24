@@ -97,8 +97,10 @@ FTMO_START_DATE=2026-04-23
 # Challenge-Start-Gate: Account bleibt idle bis Breadth/Majors grün sind
 FTMO_START_GATE_ENABLED=1
 FTMO_START_GATE_PATH=C:\tradevision-ai\state\timing-gate.json
-FTMO_START_GATE_MIN_BREADTH=4
-FTMO_START_GATE_MIN_MAJORS=3
+FTMO_START_GATE_WINDOW_HOURS=2
+FTMO_START_GATE_MIN_BREADTH=10
+FTMO_START_GATE_MIN_MAJORS=1
+FTMO_START_GATE_MIN_HISTORY_HOURS=0
 
 # State-Verzeichnis (absolut!)
 FTMO_STATE_DIR=C:\tradevision-ai\ftmo-state
@@ -150,15 +152,38 @@ echten Entry auf ein grünes Cluster und tradet danach die Challenge normal mit
 Passlock fertig. Das ist der schnellere Modus.
 
 Der PM2-Tracker sendet bei `SIGNAL_TRACKER_ALERTS=1` eine Telegram-Meldung,
-sobald der Live-Cluster nach mindestens 23h History grün wird. Das ist das
+sobald der Live-Cluster grün wird. Default für den schnellen 90%-Modus ist
+`FTMO_START_GATE_WINDOW_HOURS=2`, `FTMO_START_GATE_MIN_BREADTH=10`,
+`FTMO_START_GATE_MIN_MAJORS=1`, historisch **94.14% Random-Buy wait-to-green**
+und **94.81% AND** auf grünen Starts. Das ist das
 Kaufsignal für den schnellen Ablauf.
+
+### Random-Buy 90%-Mode
+
+FTMO 2-Step hat aktuell keine maximale Zeitbegrenzung; relevant sind u.a.
+Profit-Target, Drawdown-Regeln und mindestens 4 Trading Days. Dadurch kann der
+Account zufällig gekauft werden, solange der Bot nach dem Kauf NICHT sofort
+tradet. Der Random-Buy-Modus ist deshalb:
+
+1. Challenge kaufen und MT5/Env fertig einrichten.
+2. `ftmo-signal`, `ftmo-tracker` und `ftmo-executor` starten.
+3. Executor bleibt mit `FTMO_START_GATE_ENABLED=1` vor dem ersten Entry idle.
+4. Erst wenn Breadth/Majors grün sind, wird der erste echte Trade erlaubt.
+
+Damit wird der Kaufzeitpunkt vom Trading-Start entkoppelt: random kaufen ist
+okay, random sofort traden bleibt nur die ~55%-Baseline. Die historische
+90%+-Quote gilt weiterhin conditional auf den ersten Trading-Start im grünen
+Gate. Offizielle Regelquelle für "no maximum time limit": FTMO FAQ "How long
+does it take to become an FTMO Trader?"
+(`https://ftmo.com/faq/how-long-does-it-take-to-become-an-ftmo-trader/`).
 
 Optionaler Sicherheitsmodus: Mit `FTMO_CLUSTER_ONLY_ENABLED=1` gilt der
 Cluster-Check zusätzlich für jeden späteren neuen Entry. Offene Positionen
 werden weiter gemanagt, aber frische Signale werden nur ausgeführt, wenn die
-letzten 24h Signal-History mindestens `FTMO_START_GATE_MIN_BREADTH` Assets und
-`FTMO_START_GATE_MIN_MAJORS` Majors enthält. Dieser Modus ist langsamer und kann
-das Profit-Target verfehlen, wenn zu wenig Cluster-Trades kommen.
+letzte `FTMO_START_GATE_WINDOW_HOURS` Signal-History mindestens
+`FTMO_START_GATE_MIN_BREADTH` Assets und `FTMO_START_GATE_MIN_MAJORS` Majors
+enthält. Dieser Modus ist langsamer und kann das Profit-Target verfehlen, wenn
+zu wenig Cluster-Trades kommen.
 
 ### Start-gated Step 2
 
@@ -177,10 +202,10 @@ Alternativ `tools\promote_to_step2.sh` verwenden; das Script archiviert den
 Step-1-State und setzt `FTMO_PROFIT_TARGET=0.05` plus Start-Gate automatisch.
 
 Wichtig: Das Start-Gate ist ein Pre-Trade-Filter, kein Zukunftsblick. Die hohe
-historische Pass-Rate gilt nur conditional auf Challenges, die bei bereits
-grünem Gate gestartet werden. Bei zufälligem Challenge-Kauf und anschließendem
-Warten sinkt die unbedingte Single-Account-Quote deutlich, weil viele
-30-Tage-Fenster nie rechtzeitig ein qualifizierendes Cluster bilden.
+historische Pass-Rate gilt conditional auf Challenges, deren erster echter
+Trade bei grünem Gate startet. Bei sofortigem Trading nach zufälligem Kauf
+bleibt nur die Blind-Baseline; bei zufälligem Kauf plus Warten bis grün wird
+der erste Trading-Start wieder smart getimed.
 
 ## Monitoring
 
@@ -642,7 +667,7 @@ https://nssm.cc/
 1. Demo komplett durchlaufen lassen (min 1 Challenge-Zyklus = 30 Tage simuliert)
 2. Ergebnisse mit Backtest-Erwartung vergleichen (62% pass? Median 6d?)
 3. Wenn Demo match → Live Challenge kaufen
-4. **Erste 24h: ständig Monitoring**
+4. **Erste 12h / bis erster Trade: ständig Monitoring**
 5. Nach 3 Tagen ohne Fehler → weniger intensiv
 6. Kill-Switch Script auf Desktop als Shortcut
 7. Telegram-Bot anbinden (optional) für Push-Nachrichten bei jedem Trade

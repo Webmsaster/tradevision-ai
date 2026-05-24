@@ -8,7 +8,7 @@ backtest: precision=42.6%, supervisor was misleading.
 
 v2 uses the REAL Rust voter engine via ftmo-sweep with windows>=N filtered
 by --start-after-ts. The qualified_at_start flag from WindowResult is the
-authoritative buy signal — same flag used to compute the 92.42% backtest
+authoritative buy signal — same flag used to compute the 92%+ backtest
 pass-rate.
 
 Pipeline:
@@ -43,6 +43,9 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 SYMBOLS = "AAVEUSDT,ADAUSDT,ALGOUSDT,ARBUSDT,ATOMUSDT,AVAXUSDT,BCHUSDT,BNBUSDT,BTCUSDT,DOTUSDT,ETCUSDT,ETHUSDT,LINKUSDT,LTCUSDT,NEARUSDT,SOLUSDT,TRXUSDT,UNIUSDT,XRPUSDT"
 
 SWEEP_BIN = PROJ_ROOT / "engine-rust" / "target" / "release" / "ftmo-sweep"
+GATE_WINDOW_HOURS = int(float(os.environ.get("FTMO_START_GATE_WINDOW_HOURS", "2")))
+GATE_MIN_BREADTH = int(os.environ.get("FTMO_START_GATE_MIN_BREADTH", "10"))
+GATE_MIN_MAJORS = int(os.environ.get("FTMO_START_GATE_MIN_MAJORS", "1"))
 
 def atomic_write(path: Path, content: str) -> None:
     """Atomic write: tmp file + fsync + rename + parent-dir-fsync.
@@ -105,11 +108,11 @@ def run_sweep():
     TMP_OUT.unlink(missing_ok=True)
     # 2026-05-18 v3 LIVE-CLUSTER-DETECTOR mode:
     # The KEY fix — with max_days=30, the engine's latest simulatable window
-    # started 30 days ago. Its "first 24h cluster" = 30-day-old data → useless
+    # started 30 days ago. Its first cluster = 30-day-old data → useless
     # for live signal.
     # With max_days=2, the engine can simulate windows extending only 2 days
     # past their start. Latest window starts ~24h before cache_end → its
-    # "first 24h" = the actual most recent 24h of live data.
+    # "first cluster" = the actual recent live cluster.
     # Pass-rate stats are meaningless in this mode (can't reach +10% in 2d).
     # We only use the latest window's qualified_at_start flag as the live gate.
     cmd = [
@@ -129,8 +132,9 @@ def run_sweep():
         "--kelly-sizing", "--kelly-fraction", "0.5",
         "--kelly-window", "60", "--kelly-min-trades", "20",
         "--ptp-levels", "0.08:0.25",
-        "--min-initial-signal-breadth", "4",
-        "--min-initial-majors", "3",
+        "--min-initial-signal-breadth", str(GATE_MIN_BREADTH),
+        "--min-initial-majors", str(GATE_MIN_MAJORS),
+        "--initial-window-hours", str(GATE_WINDOW_HOURS),
         "--out", str(TMP_OUT),
     ]
     r = subprocess.run(cmd, cwd=str(PROJ_ROOT), capture_output=True, text=True, timeout=300)
@@ -168,7 +172,7 @@ def parse_latest_window(out_path):
     2026-05-18 v3 LIVE-CLUSTER fix: with max_days=2, the engine produces
     PARTIAL windows at cache-end (extending into future, breadth=0). Skip
     those and use the most recent window with trades > 0 (i.e. actually
-    simulated). This is the real "yesterday's first 24h" signal.
+    simulated). This approximates the latest visible live cluster.
     """
     if not out_path.exists():
         return None
@@ -243,7 +247,7 @@ def main():
         return 1
 
     # 2026-05-18 Bug-Audit (KRIT): need >= 100 windows for stable cluster-detect
-    # mode (we measure latest window's first 24h). Below that = empty cache or
+    # mode (we measure latest window's first cluster). Below that = empty cache or
     # unit-mismatch on --start-after-ts.
     # NOTE: pass_pct/pass_of_qualified are MEANINGLESS in cluster-detect mode
     # (max_days=2 → no challenge can reach +10% target). Only qualified_at_start
@@ -269,10 +273,11 @@ def main():
         "engine_qualified_count": qcount,
         "engine_qualified_total": qtotal,
         "engine_pass_of_qualified_pct": pass_pct,
-        "min_breadth": 4,
-        "min_majors": 3,
-        "source": "ftmo-sweep --windows 2000 --max-days 2 (LIVE 24h cluster detector)",
-        "validation": "v3 LIVE-CLUSTER: latest window's first 24h = real last 24h of cache",
+        "min_breadth": GATE_MIN_BREADTH,
+        "min_majors": GATE_MIN_MAJORS,
+        "window_hours": GATE_WINDOW_HOURS,
+        "source": f"ftmo-sweep --windows 2000 --max-days 2 (LIVE {GATE_WINDOW_HOURS}h cluster detector)",
+        "validation": f"v4 LIVE-CLUSTER: {GATE_WINDOW_HOURS}h b>={GATE_MIN_BREADTH} m>={GATE_MIN_MAJORS}",
     }
 
     print(f"\n[3/3] Engine result:")
@@ -323,7 +328,7 @@ def main():
                f"  Breadth: {breadth} >= {state['min_breadth']}\n"
                f"  Majors: {majors} >= {state['min_majors']}\n\n"
                f"Smart-Timing-Gate (real engine, NOT proxy) qualifying.\n"
-               f"Expected pass-rate: ~92% (memory phase33 backtest).\n"
+               f"Expected pass-rate: ~94% historical random-buy wait-to-green.\n"
                f"Buy challenge now.")
         print(f"\n{msg}")
         emit_telegram(msg)

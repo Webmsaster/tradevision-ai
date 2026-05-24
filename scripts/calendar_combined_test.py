@@ -11,6 +11,9 @@ from datetime import datetime, timezone
 
 ROOT = Path("scripts/cache_bakeoff/hunt_2026_05_17")
 MAJORS = {"BTC-TREND", "ETH-TREND", "BNB-TREND", "SOL-TREND"}
+GATE_WINDOW_HOURS = 2
+GATE_MIN_BREADTH = 10
+GATE_MIN_MAJORS = 1
 
 def load(p):
     out = {}
@@ -27,7 +30,7 @@ for line in (ROOT / "trades_p06" / "p06_p1_trades.jsonl").read_text().splitlines
 def qualifying(tl):
     if not tl: return False
     s = sorted(tl, key=lambda t: t["entryTime"])
-    cutoff = s[0]["entryTime"] + 24*3600*1000
+    cutoff = s[0]["entryTime"] + GATE_WINDOW_HOURS*3600*1000
     syms, majs = set(), set()
     for t in s:
         if t["entryTime"] > cutoff: break
@@ -35,7 +38,7 @@ def qualifying(tl):
         for p in MAJORS:
             if t["symbol"].startswith(p[:-6]+"-") or t["symbol"] == p:
                 majs.add(p); break
-    return len(syms) >= 4 and len(majs) >= 3
+    return len(syms) >= GATE_MIN_BREADTH and len(majs) >= GATE_MIN_MAJORS
 
 def dow(win_trades):
     if not win_trades: return None
@@ -110,7 +113,7 @@ for dow_set in [{4}, {0,2,4}, {0,2,4,6}, {0,2,4,5,6}]:
             a = sum(1 for w in sub if p1[w]["passed"] and p2[w]["passed"])
             rate = a / len(sub) * 100
             retention = len(sub) / n * 100
-            label = f"DoW={sorted(dow_set)} Mo={'all' if ms is None else sorted(ms)} Br={'Y' if use_breadth else 'N'}"
+            label = f"DoW={sorted(dow_set)} Mo={'all' if month_set is None else sorted(month_set)} Br={'Y' if use_breadth else 'N'}"
             best.append((rate, retention, len(sub), label))
 
 best.sort(reverse=True)

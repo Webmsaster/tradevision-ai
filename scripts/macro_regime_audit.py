@@ -171,7 +171,7 @@ def main():
 
     print(f"Computed BTC metrics for {len(rows)} windows")
 
-    # New gate: b>=10 m>=2 — match by recomputing from cluster_metrics.csv
+    # Current fast broad-cluster gate: b>=10 m>=1.
     import csv
     cm = {}
     with (CACHE / "cluster_audit/cluster_metrics.csv").open() as f:
@@ -180,7 +180,7 @@ def main():
 
     def is_new_qual(idx):
         b, m = cm.get(idx, (0, 0))
-        return b >= 10 and m >= 2
+        return b >= 10 and m >= 1
 
     qp = [r for r in rows if is_new_qual(r["win_idx"]) and r["passed"]]
     qf = [r for r in rows if is_new_qual(r["win_idx"]) and not r["passed"]]
