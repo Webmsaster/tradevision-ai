@@ -599,6 +599,16 @@ const CFG_REGISTRY: Record<string, CfgRegistryEntry> = {
     label:
       "V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H_KELLY_REENTRY (best single-acc, +6.8pp = 36.10% TRUE-SEQ)",
   },
+  "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H_KELLY,
+    label:
+      "V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H_KELLY (Stack-N partner, 35.90% single-acc)",
+  },
+  "2h-trend-v5-amber-max-passlock-mixed-v3": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_MIXED_V3,
+    label:
+      "V5_AMBER_MAX_PASSLOCK_MIXED_V3 (per-asset cvd/volImb/volPoc mix — Stack-5 contributor)",
+  },
   "2h-trend-v5-amber-max-mr-passlock": {
     cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_MR_PASSLOCK,
     label: "V5_AMBER_MAX_MR_PASSLOCK (RSI mean-revert signal class)",

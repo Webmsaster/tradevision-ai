@@ -8830,6 +8830,56 @@ export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE: FtmoDaytrade24h
     ),
   };
 
+// 2026-05-25 AGGRESSIVE_24H_KELLY — same as KELLY_REENTRY but without reentry-
+// after-stop. Useful as a UNIQUE stack-member (single-account 35.90% TRUE-SEQ
+// but contributes +14pp to Stack-3 OR). Live-deploy for Stack-4 plans.
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H_KELLY: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE,
+    allowedHoursUtc: undefined,
+    kellySizing: {
+      windowSize: 30,
+      minTrades: 10,
+      tiers: [
+        { winRateAbove: 0.65, multiplier: 1.0 },
+        { winRateAbove: 0.55, multiplier: 0.75 },
+        { winRateAbove: 0.45, multiplier: 0.5 },
+        { winRateAbove: 0.0, multiplier: 0.25 },
+      ],
+    },
+  };
+
+// 2026-05-25 MIXED_DETECTORS_V3 — per-asset detector mix (wider params).
+// Single-account 32.40% TRUE-SEQ CF (weaker alone than AGG_KR), but
+// contributes UNIQUE passes to Stack-N. Stack-5 with AMBER+SHORTS+TITANIUM+
+// AGG_KELLY+MIXED_V3 = 85.40% TRUE-SEQ CF (n=1000). Mirrors Rust
+// v5_amber_max_passlock_mixed_v3(). Per-asset entry-types: cvd_entry
+// (BTC,ETH,SOL,AVAX,BNB lookback=100), vol_imbalance_entry (LINK,ADA,AAVE,
+// ATOM,DOT longMin=0.60), vol_poc_entry (ALGO,NEAR,ARB,UNI,TRX window=100
+// minDist=0.3%), default R28V6 (BCH,ETC,LTC,XRP).
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_MIXED_V3: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H_KELLY,
+    assets:
+      FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H_KELLY.assets.map(
+        (a) => {
+          const base = a.symbol.split("-")[0];
+          const cvd = new Set(["BTC", "ETH", "SOL", "AVAX", "BNB"]);
+          const volImb = new Set(["LINK", "ADA", "AAVE", "ATOM", "DOT"]);
+          const volPoc = new Set(["ALGO", "NEAR", "ARB", "UNI", "TRX"]);
+          const out = { ...a };
+          if (cvd.has(base ?? "")) {
+            out.cvdEntry = { lookbackBars: 100 };
+          } else if (volImb.has(base ?? "")) {
+            out.volImbalanceEntry = { longMin: 0.6 };
+          } else if (volPoc.has(base ?? "")) {
+            out.volPocEntry = { windowBars: 100, minDistFromPocPct: 0.003 };
+          }
+          return out;
+        },
+      ),
+  };
+
 // 2026-05-24 AGGRESSIVE_24H_KELLY_REENTRY — best-of-stack single-account
 // variant discovered via ceiling-hunt. Combines all working levers:
 //   1. bidir + mutexLongShort (from BIDIR_MUTEX)
