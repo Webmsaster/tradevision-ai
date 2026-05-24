@@ -145,6 +145,22 @@ export function validateOrder(
     );
   }
   const notional = order.notionalUsd ?? order.quantity * (order.price ?? 0);
+  // 2026-05-24 Codex audit HIGH FIX: prior comparison
+  // `notional > safety.maxNotionalUsd` silently passed when either side
+  // is NaN (BINANCE_MAX_ORDER_NOTIONAL="abc" → NaN; `notionalUsd: NaN`
+  // → NaN). JS: `NaN > anything === false`, so the cap was bypassed
+  // entirely. Require both sides to be finite positives before the
+  // comparison runs.
+  if (!Number.isFinite(notional) || notional <= 0) {
+    throw new OrderBlockedError(
+      `notional ${notional} not a positive finite number`,
+    );
+  }
+  if (!Number.isFinite(safety.maxNotionalUsd) || safety.maxNotionalUsd <= 0) {
+    throw new OrderBlockedError(
+      `BINANCE_MAX_ORDER_NOTIONAL env not configured (got ${safety.maxNotionalUsd}); refuse to trade`,
+    );
+  }
   if (notional > safety.maxNotionalUsd) {
     throw new OrderBlockedError(
       `notional $${notional.toFixed(0)} > max $${safety.maxNotionalUsd}`,
@@ -321,6 +337,16 @@ export async function cancelOrder(
   if (safety.emergencyHalt) {
     // Allow cancels even on halt — they reduce risk
   }
+  // 2026-05-24 Codex audit HIGH FIX: prior code skipped the symbol
+  // whitelist check that placeOrder enforces. With BINANCE_LIVE_EXECUTE=1
+  // and a misconfigured env, a stray cancel could wipe out protective
+  // SL/TP orders on a symbol the operator never authorized. Whitelist
+  // is the same trust boundary as placement.
+  if (!safety.symbolWhitelist.has(symbol)) {
+    throw new OrderBlockedError(
+      `cancelOrder: symbol ${symbol} not in whitelist (${Array.from(safety.symbolWhitelist).join(", ")})`,
+    );
+  }
   if (safety.dryRun) {
     return { canceled: true, orderId };
   }
@@ -333,6 +359,12 @@ export async function cancelAllOpenOrders(
   cfg: BinanceConfig = configFromEnv(),
   safety: OrderSafetyConfig = safetyConfigFromEnv(),
 ): Promise<{ canceledSymbol: string }> {
+  // 2026-05-24 Codex audit HIGH FIX: same whitelist gate as cancelOrder.
+  if (!safety.symbolWhitelist.has(symbol)) {
+    throw new OrderBlockedError(
+      `cancelAllOpenOrders: symbol ${symbol} not in whitelist (${Array.from(safety.symbolWhitelist).join(", ")})`,
+    );
+  }
   if (safety.dryRun) return { canceledSymbol: symbol };
   await signedDelete("/fapi/v1/allOpenOrders", { symbol }, cfg);
   return { canceledSymbol: symbol };

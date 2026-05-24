@@ -909,18 +909,24 @@ export async function GET(req: NextRequest) {
   // Multi-tenant SaaS users — admin sees all, regular users see only the
   // slugs they're explicitly mapped to.
   //
+  // 2026-05-24 Codex audit HIGH FIX: prior code only enforced the mapping
+  // check when `?ftmo_tf=` was present in the query — without the param,
+  // every authenticated non-admin user could read the DEFAULT state-dir
+  // which is the bot operator's own FTMO_STATE_DIR. In a SaaS deploy
+  // that's a cross-tenant equity/position leak. Require admin OR an
+  // explicit mapping for EVERY non-admin request, regardless of param.
+  //
   // FAST path: admin-email match (`FTMO_ADMIN_EMAIL`) or env-based bypass
   //            for single-owner VPS / no-auth-backend deploys.
   // SECOND chance (R29): if the FAST path fails AND tfSlug is provided,
   //            consult the `user_ftmo_accounts` mapping table. RLS keeps
   //            tenants isolated; a missing migration fails CLOSED (helper
   //            returns false on any DB error).
-  // OTHERWISE: 403. Non-admin users without a mapping can still read the
-  //            default state-dir (no `?ftmo_tf=` param) which is the bot's
-  //            own FTMO_STATE_DIR.
-  if (tfSlug && !canReadArbitrarySlug(auth)) {
+  // OTHERWISE: 403 — non-admins must either pass an explicitly-mapped
+  //            tfSlug OR rely on env-bypass for solo-VPS deploys.
+  if (!canReadArbitrarySlug(auth)) {
     let mappedAllowed = false;
-    if (auth.userId && auth.supabase) {
+    if (tfSlug && auth.userId && auth.supabase) {
       mappedAllowed = await canUserReadSlug(auth.userId, tfSlug, auth.supabase);
     }
     if (!mappedAllowed) {

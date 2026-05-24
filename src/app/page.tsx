@@ -81,7 +81,7 @@ export default function DashboardPage() {
     setAllTrades,
     importTrades,
     activeAccountId,
-    clearAll,
+    removeTrade,
     syncError,
     dismissSyncError,
   } = useTradeStorage();
@@ -204,9 +204,20 @@ export default function DashboardPage() {
 
   /**
    * Clear demo data, remove from storage, and reset state.
+   *
+   * 2026-05-24 Codex audit HIGH FIX: prior code called clearAll() which
+   * wipes EVERY trade for the active account. If the user had imported
+   * real trades after loading sample data, clicking "Clear Demo Data"
+   * silently nuked their real journal. Now: filter to only the trades
+   * with `sample-` prefix and remove those individually, leaving real
+   * trades intact. The banner only renders when sample trades exist
+   * (see isDemoData at L107), but mixed-mode is the dangerous case.
    */
-  const handleClearDemo = () => {
-    clearAll();
+  const handleClearDemo = async () => {
+    const sampleTrades = trades.filter((t) => t.id.startsWith("sample-"));
+    for (const t of sampleTrades) {
+      await removeTrade(t.id);
+    }
   };
 
   // ------------------------------------------------------------------
