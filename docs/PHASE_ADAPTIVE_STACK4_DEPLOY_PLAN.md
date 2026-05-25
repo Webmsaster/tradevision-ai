@@ -1,7 +1,34 @@
 # Phase-Adaptive Stack-4 Live-Deployment Plan
 
-**Status:** Live-ready (post-audit hardening 2026-05-25).
-**Source finding:** [[session-2026-05-25-phase-adaptive-stack4]] (GA Stack-4 NO-EXT24 = 93.11% OOS BEST / 91.38% mean across 10 seeds).
+**Status:** ⚠️ NEEDS RE-BASELINE (Wave5 audit 2026-05-25 found MTM-DL bug that
+inflated all prior pass-rate claims by ~26-29pp).
+**Infrastructure:** Live-ready (supervisor + PM2 + envs + audit-hardened).
+**Source finding:** [[session-2026-05-25-phase-adaptive-stack4]] (BUG-INFLATED 93.11% OOS pre-fix).
+
+## ⚠️ WAVE5 CRITICAL UPDATE
+
+20-agent parallel audit (2026-05-25) found ~25 KRIT bugs (~15 fixed). The
+biggest: **harness.rs DL/TL was checking realised-only equity, not MIN(equity,
+mtm_equity).** FTMO server enforces equity-based DL (every tick); the Rust
+backtest was lenient. Fresh post-fix sweeps (`/tmp/seq_*_w5.jsonl`):
+
+| Template    | Pre-fix P1 | Post-fix P1 | Drop     |
+| ----------- | ---------- | ----------- | -------- |
+| AMBER       | 52.10%     | 26.00%      | -26.10pp |
+| SHORTS_AGG  | 52.60%     | 23.20%      | -29.40pp |
+| SHORTS_ONLY | ~50%       | 24.10%      | -25.90pp |
+| OBSIDIAN    | ~52%       | 25.60%      | -26.40pp |
+
+**Honest Stack-4 baseline projection:** ~35-50% combined-funded (vs prior
+claimed 97.28%). **Live-realistic with 5-10pp slippage drift: ~30-45%**
+combined-funded. Expected E[funded] ~1.5-2/4 accounts → ~$7-10k/mo trader-share.
+
+Stack-4 GA re-run with post-fix sweeps PENDING (background task `bd82zgk4d`,
+~30 min ETA). Final honest config TBD.
+
+**DECISION GATE:** Do NOT commit FTMO Challenge fees ($1200) until honest
+Stack-4 number is established + cross-validated. Prior 97.28% claim was bug-
+inflated, real number likely 35-50%.
 
 ## Recommended Stack-4 Config (live-deployable, no ext24 dependency)
 
