@@ -911,13 +911,33 @@ function processPositionExit(
   }
 
   // 3. BreakEven shift.
+  // 2026-05-25 Wave5 KRIT FIX (audit agent — TS↔Rust parity): mirror Rust
+  // Wave2 standalone-BE fix at engine-rust/.../exit.rs:285-307.
+  //   (a) MONOTONE guard: don't LOOSEN a tighter chandelier stop. If
+  //       chandelier already trailed past entry, BE-shift must not drag SL
+  //       back down. Was: `pos.stopPrice = entryPrice` unconditional → live
+  //       exposure on R28_V6_PASSLOCK + chandelierExit configs.
+  //   (b) COST-ADJUSTED BE: include cost_bp to mirror Rust's
+  //       `cost_adjusted_be()` so BE booked at flat-after-cost (long: entry ×
+  //       (1 + cost/10_000)) — was raw entry, ~3bp drift per BE-hit.
   if (cfg.breakEven && !pos.beActive) {
     const fav =
       pos.direction === "long"
         ? (candle.close - pos.entryPrice) / pos.entryPrice
         : (pos.entryPrice - candle.close) / pos.entryPrice;
     if (fav >= cfg.breakEven.threshold) {
-      pos.stopPrice = pos.entryPrice;
+      const asset = cfg.assets?.find((a) => a.symbol === pos.symbol);
+      const costBp = asset?.costBp ?? 0;
+      const costFrac = costBp / 10_000;
+      const beStop =
+        pos.direction === "long"
+          ? pos.entryPrice * (1 + costFrac)
+          : pos.entryPrice * (1 - costFrac);
+      if (pos.direction === "long") {
+        if (beStop > pos.stopPrice) pos.stopPrice = beStop;
+      } else {
+        if (beStop < pos.stopPrice) pos.stopPrice = beStop;
+      }
       pos.beActive = true;
     }
   }
