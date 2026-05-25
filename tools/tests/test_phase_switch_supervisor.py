@@ -168,7 +168,10 @@ def test_phase_state_persistence():
             assert sup._read_phase_state() == {}  # empty before init
             sup._write_phase_state({"current_phase": "P2", "p1_passed_at_iso": "2026-05-25"})
             re_read = sup._read_phase_state()
-            assert re_read == {"current_phase": "P2", "p1_passed_at_iso": "2026-05-25"}
+            # Wave5 KRIT: _schema_version is auto-injected.
+            assert re_read.get("current_phase") == "P2"
+            assert re_read.get("p1_passed_at_iso") == "2026-05-25"
+            assert re_read.get("_schema_version") == 1
             # Verify atomic: file exists, tmp does not
             assert (sup.SUPERVISOR_STATE_DIR / "phase.json").exists()
             assert not (sup.SUPERVISOR_STATE_DIR / "phase.tmp").exists()

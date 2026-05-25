@@ -5543,10 +5543,23 @@ def manage_open_positions() -> None:
     still_open: list[dict] = []
     for pos in open_positions.get("positions", []):
         live = mt5.positions_get(ticket=pos["ticket"])
-        if not live:
-            # R3-B Drift-1: persist engine-projected funding cost so a
-            # post-mortem can attribute live PnL drift to swap accruals.
-            # Asset without a configured rate → expected=0.0 (no-op).
+        # 2026-05-25 Wave5 KRIT FIX (audit agent #10): distinguish MT5
+        # disconnect (live is None) from real position-closure (live is []).
+        # Was: `if not live` matched BOTH → on disconnect, ALL bot positions
+        # were falsely logged as "closed by SL/TP" + Telegram spam +
+        # erased from open-positions.json. On Stack-4 with 4 accounts × ~3
+        # positions = 12 false alerts + record loss in one disconnect.
+        if live is None:
+            log_event(
+                "position_check_skipped_mt5_disconnect",
+                ticket=pos["ticket"],
+                signal_asset=pos.get("signalAsset"),
+                level="warn",
+            )
+            # Keep position in still_open; next cycle will re-check after reconnect.
+            still_open.append(pos)
+            continue
+        if not live:  # truly empty tuple/list → broker confirms closure
             expected_funding = _expected_swap_for_position(pos)
             log_event(
                 "position_gone",

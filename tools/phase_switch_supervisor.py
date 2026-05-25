@@ -275,11 +275,35 @@ def _read_phase_state() -> dict:
 
 
 def _write_phase_state(state: dict) -> None:
+    """Atomic + crash-durable phase-state write.
+
+    2026-05-25 Wave5 KRIT FIX (audit): inject _schema_version + fsync(file)
+    + fsync(parent dir) before atomic replace. Previously: VPS power-loss
+    between tmp.write_text and tmp.replace() lost the P1_started_at_iso
+    → restart resets deadline → defeats KRIT #4 fix.
+    """
     SUPERVISOR_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    state_with_schema = {"_schema_version": 1, **state}
     sf = SUPERVISOR_STATE_DIR / "phase.json"
     tmp = sf.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, indent=2))
+    payload = json.dumps(state_with_schema, indent=2)
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(payload)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
     tmp.replace(sf)  # atomic on POSIX
+    # Parent dir fsync ensures rename durability.
+    try:
+        dir_fd = os.open(str(SUPERVISOR_STATE_DIR), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
 
 
 def supervise_phase(
