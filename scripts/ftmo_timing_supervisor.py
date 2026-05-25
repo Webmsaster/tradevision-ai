@@ -328,8 +328,11 @@ def main():
                f"  Breadth: {breadth} >= {state['min_breadth']}\n"
                f"  Majors: {majors} >= {state['min_majors']}\n\n"
                f"Smart-Timing-Gate (real engine, NOT proxy) qualifying.\n"
-               f"Expected pass-rate: ~94% historical random-buy wait-to-green.\n"
-               f"Buy challenge now.")
+               f"⚠️ Note: prior 94% claim was DEBUNKED (2026-05-18 audit — "
+               f"step=3d-autocorr artifact, honest step=1d ~69% single-acct, "
+               f"cluster-gate uplift 0pp on true-sequential). Gate is now "
+               f"info-only; no entry-block enforced.\n"
+               f"Buy challenge at your discretion.")
         print(f"\n{msg}")
         emit_telegram(msg)
     elif not qualified and prev_qualified:
