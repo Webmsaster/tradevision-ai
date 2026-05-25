@@ -6689,7 +6689,18 @@ def main_loop() -> None:
                 acct = mt5_get_equity()
                 if acct["equity"] is not None:
                     sample_equity_history(acct["equity"])
-                    day_start_usd = read_json(DAILY_STATE_PATH, {}).get("equity_at_day_start_usd", acct["equity"])
+                    # 2026-05-25 Wave5 KRIT FIX (audit agent #9): use
+                    # handle_daily_reset's authoritative anchor instead of
+                    # re-reading DAILY_STATE_PATH with silent fallback. Was:
+                    # `.get(..., acct["equity"])` → if key missing → fallback
+                    # to current equity → check_daily_dd_warning sees 0%
+                    # drawdown even if equity already -4% from real day-start.
+                    day_state = read_json(DAILY_STATE_PATH, {})
+                    day_start_usd = day_state.get("equity_at_day_start_usd")
+                    if day_start_usd is None or day_start_usd <= 0:
+                        # Defensive: invoke handle_daily_reset to populate the
+                        # anchor (idempotent, returns authoritative value).
+                        day_start_usd = handle_daily_reset(acct["equity"])
                     check_daily_dd_warning(acct["equity"], day_start_usd)
                     # R28: Track intraday peak for dailyPeakTrailingStop. Even
                     # when no signal arrives, peak must keep ratcheting up so
