@@ -19,10 +19,18 @@ backtest was lenient. Fresh post-fix sweeps (`/tmp/seq_*_w5.jsonl`):
 | SHORTS_ONLY | ~50%       | 24.10%      | -25.90pp |
 | OBSIDIAN    | ~52%       | 25.60%      | -26.40pp |
 
-**HONEST Stack-4 baseline (W5 GA EXPANDED + SMC voters, 32 templates, 10 seeds):**
-**42.81% OOS BEST / 41.86% mean** (range [40.12%, 42.81%]). TRAIN 29.43%.
-SMC voter activation (regime+SMC_FVG+StopHunt at min_votes=1) added a
-single new template that won Account A slot, lifting Stack-4 +0.30pp.
+**HONEST Stack-4 baseline (W5 GA + SMC + param-overrides, 48 templates, 10 seeds):**
+**43.41% OOS BEST / 42.07% mean** (range [39.52%, 43.41%]). TRAIN 27.48%.
+
+Progression:
+
+- 42.51% (15 templates, pre-Step1)
+- 42.81% (+0.30pp from SMC voter activation, Step 1)
+- 43.41% (+0.60pp from parameter-overrides on AMBER, Step 1.5)
+- TOTAL: +0.90pp validated lift over pre-Step1 baseline
+
+Per Step-1 pattern (1/3 to 1/10 of agent projections), remaining Steps 2+3
+would likely deliver another +0.5-1.5pp = realistic Stack-4 ceiling ~44-45%.
 
 - Solo TRUE-SEQ CF: ~8-9% per template (was claimed ~30-36%)
 - Live-realistic ~37-40% → E[funded] ~1.5-1.7/4 accounts
