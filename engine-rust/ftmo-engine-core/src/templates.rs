@@ -1435,6 +1435,29 @@ pub fn v5_forex_mr_passlock_agg_narrow() -> EngineConfig {
     cfg
 }
 
+/// V5_FOREX_MR_TIGHT_STOP — keep AGG TPs but TIGHTEN stops (1.5% absolute)
+/// to limit DailyLoss-fail rate (was 25% with default stops). Trade fewer
+/// losers fully before stopping out.
+pub fn v5_forex_mr_passlock_tight_stop() -> EngineConfig {
+    let mut cfg = v5_forex_mr_passlock_agg();
+    cfg.label = "V5_FOREX_MR_PASSLOCK_TIGHT_STOP".into();
+    for asset in cfg.assets.iter_mut() {
+        asset.stop_pct = Some(0.015);  // 1.5% hard stop on all forex
+    }
+    cfg
+}
+
+/// V5_FOREX_MR_HUGE_TIGHT — HUGE TPs (5-10%) + tight 1.5% stops = 5:1 R:R
+/// on winning trades. Theoretical: 25% win rate breaks even.
+pub fn v5_forex_mr_passlock_huge_tight() -> EngineConfig {
+    let mut cfg = v5_forex_mr_passlock_huge();
+    cfg.label = "V5_FOREX_MR_PASSLOCK_HUGE_TIGHT".into();
+    for asset in cfg.assets.iter_mut() {
+        asset.stop_pct = Some(0.015);
+    }
+    cfg
+}
+
 /// 2026-05-23 V5_AMBER_MAX_PASSLOCK_SHORTS_ONLY — short-only variant
 /// of V5_AMBER_MAX_PASSLOCK. Hypothesis: AMBER trades long-pullback-recovery
 /// (invert_direction=true → engine longs when voters fire SHORT, in bearish
@@ -2214,6 +2237,8 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "v5-forex-mr-passlock-big" => v5_forex_mr_passlock_big(),
         "v5-forex-mr-passlock-huge" => v5_forex_mr_passlock_huge(),
         "v5-forex-mr-passlock-agg-narrow" => v5_forex_mr_passlock_agg_narrow(),
+        "v5-forex-mr-passlock-tight-stop" => v5_forex_mr_passlock_tight_stop(),
+        "v5-forex-mr-passlock-huge-tight" => v5_forex_mr_passlock_huge_tight(),
         "2h-trend-v5-amber-max-passlock-mptp-v04a" => v5_amber_max_passlock_mptp_v04a(),
         "2h-trend-v5-amber-max-passlock-sharpe-tight" => v5_amber_max_passlock_sharpe_tight(),
         "2h-trend-v5-amber-max-mr-passlock" => v5_amber_max_mr_passlock(),
@@ -2301,6 +2326,8 @@ pub fn known_selectors() -> &'static [&'static str] {
         "v5-forex-mr-passlock-big",
         "v5-forex-mr-passlock-huge",
         "v5-forex-mr-passlock-agg-narrow",
+        "v5-forex-mr-passlock-tight-stop",
+        "v5-forex-mr-passlock-huge-tight",
         "2h-trend-v5-amber-max-mr-passlock",
         "2h-trend-v5-amber-quartz",
         "2h-trend-v5-amber-quartz-passlock",
