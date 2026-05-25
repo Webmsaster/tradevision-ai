@@ -11,6 +11,31 @@
 //!   --top-k 10 \
 //!   --output hunter_results.jsonl
 //! ```
+//!
+//! ⚠️ 2026-05-25 Wave5 KRIT WARNING (audit):
+//! Hunter "validation" runs on the SAME `--candles-dir` and `--windows`
+//! as the search phase. This is NOT walk-forward — overfit-trials simply
+//! re-confirm themselves. Champions surfaced by hunter must be
+//! **independently re-validated** on a holdout window range BEFORE deploy.
+//!
+//! Suggested holdout workflow:
+//!   1. Run hunter on `--windows 0:660` (train 2/3).
+//!   2. Manually re-sweep top-K configs on `--windows 660:991` (test 1/3).
+//!   3. Drop any config whose test-rate is >5pp below train-rate.
+//!
+//! Also: validation `--validate-step-days` differing from search step
+//! changes the window grid → cannot directly compare train vs test rates.
+//! Use same step for both phases (overfit check), then a separate holdout
+//! pass with a different step (regime-robustness check).
+//!
+//! Related findings (audit `engine-rust/ftmo-hunter/src/`):
+//!   - archive.rs: no file-lock on JSONL output (concurrent hunters corrupt)
+//!   - archive.rs: no replay on restart (lost leaderboard on crash)
+//!   - search.rs: no stuck-in-local-min protection (refine collapses on
+//!     first high-scoring trial)
+//!   - trial.rs: `parse_pass_line` matches FIRST `passed=` (fragile if
+//!     sweep emits per-asset lines before aggregate)
+//!   - main.rs: single-seed only; champions should be multi-seed averaged
 
 use anyhow::{anyhow, Context, Result};
 use ftmo_hunter::archive::Archive;

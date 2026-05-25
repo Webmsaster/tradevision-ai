@@ -9,12 +9,34 @@ Periodically checks if the FTMO bot is alive. Sends Telegram alert if:
 
 Self-throttles: alerts at most once every 30 minutes per error type.
 
-Usage (PM2 separate process):
-    pm2 start tools/health_monitor.py --name ftmo-health --interpreter python3 \
+⚠️ 2026-05-25 Wave5 KRIT (audit): SINGLE-ACCOUNT BY DESIGN.
+This script reads ONE FTMO_TF + FTMO_ACCOUNT_ID per process. For
+Phase-Adaptive Stack-4 deployment (4 accounts), you MUST run 4×
+PM2 instances, one per account. Otherwise 3 of 4 accounts go
+unmonitored silently (bot dies → no alert).
+
+Stack-4 PM2 wiring example (add to ecosystem.phase_adaptive4stack.config.js):
+    apps: [
+      ...buildSupervisor(envFile, label),
+      // Health monitor PER account — reads same .env file
+      {
+        name: `health-${label}`,
+        script: "python3",
+        args: "-u tools/health_monitor.py",
+        env: { ...env, PYTHONUNBUFFERED: "1" },
+        cron_restart: "*/15 * * * *",
+        autorestart: false,  // cron-only
+      },
+    ]
+
+Or run as a top-level cron loop scanning ALL ftmo-state-* dirs (TODO).
+
+Usage (single-account PM2):
+    pm2 start tools/health_monitor.py --name ftmo-health-A --interpreter python3 \
       --cron-restart="*/15 * * * *"
 
 Or as cron job:
-    */15 * * * * cd /path/to/tradevision-ai && python3 tools/health_monitor.py
+    */15 * * * * cd /path/to/tradevision-ai && FTMO_ACCOUNT_ID=A python3 tools/health_monitor.py
 
 Env vars (same as ftmo_executor):
     FTMO_TF                    — strategy timeframe (used to find state-dir)

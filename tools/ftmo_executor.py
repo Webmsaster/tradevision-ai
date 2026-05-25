@@ -3576,12 +3576,18 @@ def process_pending_signals() -> None:
         # Dedup new arrivals against our snapshot (Node may have racily
         # re-queued one we already processed if it didn't see our Phase-A
         # clear in time).
+        # 2026-05-25 Wave5 KRIT FIX (audit): include `direction` in dedup
+        # key. Was 2-tuple (signalBarClose, assetSymbol) — Node could
+        # legitimately queue OPPOSITE-direction signal on same bar+asset
+        # (e.g. opposite-direction retest) and it would be silently
+        # dropped. Now 3-tuple keeps opposite-direction distinct.
         original_keys = {
-            (s.get("signalBarClose"), s.get("assetSymbol")) for s in snapshot_pending
+            (s.get("signalBarClose"), s.get("assetSymbol"), s.get("direction"))
+            for s in snapshot_pending
         }
         new_signals = [
             s for s in late_signals
-            if (s.get("signalBarClose"), s.get("assetSymbol")) not in original_keys
+            if (s.get("signalBarClose"), s.get("assetSymbol"), s.get("direction")) not in original_keys
         ]
         if new_signals:
             log_event("merged_late_signals", count=len(new_signals))
@@ -3804,6 +3810,15 @@ def _process_signals_unlocked(
                 "ts": datetime.now(timezone.utc).isoformat(),
             })
             continue
+        # 2026-05-25 Wave5 KRIT FIX (audit): refresh account_equity per-signal
+        # so a mid-batch losing trade pulls DL block on subsequent signals.
+        # Was: stale snapshot from batch-start (up to 30s old). Also refresh
+        # day_start_usd in case Prague midnight straddled this batch.
+        if i > 0:
+            _refresh_acct = mt5_get_equity()
+            if _refresh_acct["equity"] is not None:
+                account_equity = _refresh_acct["equity"]
+                day_start_usd = handle_daily_reset(account_equity)
         blocker = check_ftmo_rules(account_equity, day_start_usd)
         if blocker:
             log_event("rule_block", asset=sig["assetSymbol"], reason=blocker)
@@ -4107,6 +4122,34 @@ def _process_signals_unlocked(
             signal_stop_price=sig.get("stopPrice"),
             signal_tp_price=sig.get("tpPrice"),
         )
+        # 2026-05-25 Wave5 KRIT FIX (audit): if /pause landed during the
+        # 5-30s place_market_order wall-clock, close the just-opened ticket
+        # immediately. Was: paused-check only at TOP of loop → in-flight
+        # order_send fires AFTER pause, position opens with no risk-management
+        # owner. Critical for /pause being trustworthy as kill-signal.
+        if result.ok and is_paused():
+            log_event(
+                "post_send_pause_violation_close",
+                ticket=result.ticket,
+                asset=sig.get("assetSymbol"),
+                level="warn",
+            )
+            tg_send(
+                f"🛑 <b>Post-send pause-violation close</b>\n"
+                f"{html_escape(sig.get('assetSymbol', '?'))} ticket "
+                f"<code>{result.ticket}</code> closed (pause raced order_send)",
+                critical=True,
+            )
+            try:
+                if result.ticket is not None:
+                    close_position(int(result.ticket))
+            except Exception as _close_err:  # noqa: BLE001 — best-effort close
+                log_event("post_pause_close_failed", error=str(_close_err), level="error")
+            executed["executions"].append({
+                "signal": sig, "result": "post_pause_close",
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+            continue
         # 2026-05-15 Codex-Audit Wave-2 Bug 1 (KRITISCH): strict WAL pattern.
         #
         # Problem A: previously the marker was deleted immediately after a
@@ -5968,9 +6011,17 @@ def check_news_auto_close() -> None:
 
     now_ms = int(time.time() * 1000)
     threshold_ms = NEWS_CLOSE_MINUTES_BEFORE * 60 * 1000
+    # 2026-05-25 Wave5 KRIT FIX (audit): also fire inside the post-event
+    # window. Was: `0 <= (event_ts - now_ms) <= threshold` — only matched
+    # events in the NEXT 30 min. If bot was offline at FOMC-30min and
+    # restarted at FOMC+5min while event still emitting volatility,
+    # positions weren't flattened despite is_blackout_window() returning
+    # True (it uses ±60min). Now: also match events in last
+    # NEWS_BLACKOUT_MIN_AFTER minutes.
+    after_ms = NEWS_BLACKOUT_MIN_AFTER * 60 * 1000
     incoming = [
         e for e in events
-        if 0 <= (e["timestamp"] - now_ms) <= threshold_ms
+        if -after_ms <= (e["timestamp"] - now_ms) <= threshold_ms
         and e.get("impact") == "High"
     ]
     if not incoming:

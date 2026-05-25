@@ -112,6 +112,28 @@ function buildSupervisor(envFile, accountLabel) {
       error_file: path.join(supervisorStateDir, "pm2-supervisor.err.log"),
       time: true,
     },
+    // 2026-05-25 Wave5 KRIT FIX (audit): per-account health monitor.
+    // health_monitor.py is SINGLE-ACCOUNT-BY-DESIGN — without per-account
+    // PM2 instance, 3 of 4 accounts go unmonitored silently (bot dies, no
+    // alert). Cron-restart every 15min keeps it cheap.
+    {
+      name: `health-${accountLabel}`,
+      cwd: REPO_ROOT,
+      script: "python",
+      args: "-u tools/health_monitor.py",
+      interpreter: "none",
+      env: {
+        ...env,
+        PYTHONUNBUFFERED: "1",
+        PYTHONIOENCODING: "utf-8",
+      },
+      autorestart: false, // cron-only execution
+      cron_restart: "*/15 * * * *",
+      max_memory_restart: "200M",
+      out_file: path.join(supervisorStateDir, "pm2-health.out.log"),
+      error_file: path.join(supervisorStateDir, "pm2-health.err.log"),
+      time: true,
+    },
   ];
 }
 
