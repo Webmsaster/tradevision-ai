@@ -83,6 +83,7 @@ pub mod signals_arima;
 pub mod signals_garch;
 pub mod signals_bocpd;
 pub mod signals_funding_accel;
+pub mod signals_btcd_proxy;
 pub mod risk_parity;
 pub mod hmm_4state_loader;
 pub mod event_bus;
