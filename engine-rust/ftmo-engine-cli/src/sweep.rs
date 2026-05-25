@@ -281,6 +281,7 @@ struct MultiSignalCfg {
     /// SMA-period (20), cooldown (12 bars on a 30m feed = 6 hours).
     also_fire_ofi_persistent: bool,
     regime_use_ofi: bool,
+    regime_use_funding_accel: bool,
     ofi_window: usize,
     ofi_threshold: f64,
     ofi_sma: usize,
@@ -1273,6 +1274,7 @@ fn main() -> Result<()> {
     // the same shape as direct API users.
     let mut also_fire_ofi_persistent: bool = false;
     let mut regime_use_ofi: bool = false;
+    let mut regime_use_funding_accel: bool = false;
     let mut ofi_window: usize = 5;
     let mut ofi_threshold: f64 = 0.20;
     let mut ofi_sma: usize = 20;
@@ -1588,6 +1590,7 @@ fn main() -> Result<()> {
             // it as the 8th voter in regime-confluence.
             "--also-fire-ofi-persistent" => also_fire_ofi_persistent = true,
             "--regime-use-ofi" => regime_use_ofi = true,
+            "--regime-use-funding-accel" => regime_use_funding_accel = true,
             "--ofi-window" => ofi_window = need!("--ofi-window").parse()?,
             "--ofi-threshold" => ofi_threshold = need!("--ofi-threshold").parse()?,
             "--ofi-sma" => ofi_sma = need!("--ofi-sma").parse()?,
@@ -2133,6 +2136,7 @@ fn main() -> Result<()> {
             || regime_use_stop_hunt
             || regime_use_bb_z_mr
             || regime_use_ofi
+            || regime_use_funding_accel
             || regime_force_mr
             || adx_min.is_some()
             || chop_max.is_some()
@@ -2288,6 +2292,7 @@ fn main() -> Result<()> {
                 // CLI flags in this Detector #20 patch.
                 also_fire_ofi_persistent,
                 regime_use_ofi,
+                regime_use_funding_accel,
                 ofi_window,
                 ofi_threshold,
                 ofi_sma,
@@ -3778,6 +3783,8 @@ fn run_one_window(
                                 cooldown_bars: multi_signal.ofi_cooldown,
                                 ..ftmo_engine_core::signals_ofi::OfiPersistentParams::default_30m_crypto()
                             },
+                            use_funding_accel: multi_signal.regime_use_funding_accel,
+                            funding_accel_params: ftmo_engine_core::signals_funding_accel::FundingAccelParams::default_30m_crypto(),
                             use_cmf: multi_signal.regime_use_cmf,
                             cmf_params: ftmo_engine_core::signals_cmf::CmfParams::default_30m_crypto(),
                             use_cme_basis: multi_signal.regime_use_cme_basis,

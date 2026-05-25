@@ -409,6 +409,11 @@ pub struct RegimeConfluenceParams {
     /// Lookahead-safe: window strictly ends at `signal_idx = len-2`.
     pub use_ofi: bool,
     pub ofi_params: crate::signals_ofi::OfiPersistentParams,
+    /// 2026-05-25 Wave5 — Funding Acceleration voter (contrarian on fast
+    /// funding-rate change). Uses already-cached per-bar funding series.
+    /// Free, lookahead-safe, no new data needed.
+    pub use_funding_accel: bool,
+    pub funding_accel_params: crate::signals_funding_accel::FundingAccelParams,
     /// 2026-05-14 Phase-2 — Chaikin Money Flow voter (volume-weighted price-position).
     pub use_cmf: bool,
     pub cmf_params: crate::signals_cmf::CmfParams,
@@ -562,6 +567,8 @@ impl RegimeConfluenceParams {
             bb_z_params: crate::signals_bb_zscore_mr::BollingerZScoreSource::default(),
             use_ofi: false,
             ofi_params: crate::signals_ofi::OfiPersistentParams::default_30m_crypto(),
+            use_funding_accel: false,
+            funding_accel_params: crate::signals_funding_accel::FundingAccelParams::default_30m_crypto(),
             use_cmf: false,
             cmf_params: crate::signals_cmf::CmfParams::default_30m_crypto(),
             use_cme_basis: false,
@@ -828,6 +835,18 @@ pub fn detect_regime_confluence(
     } else {
         None
     };
+    // 2026-05-25 Wave5 Detector — Funding-Acceleration contrarian voter.
+    // Uses funding_series already passed in r28_inputs (no new input plumbing).
+    // Lookahead-safe via signal_idx = len-2.
+    let funding_accel_vote = if params.use_funding_accel {
+        crate::signals_funding_accel::compute_funding_accel_vote(
+            inputs.funding_series,
+            candles.len(),
+            &params.funding_accel_params,
+        )
+    } else {
+        None
+    };
     // 2026-05-14 Phase-2 voters — module-only registered. Wire via dedicated flags.
     let cmf_vote = if params.use_cmf {
         crate::signals_cmf::compute_cmf_vote(candles, &params.cmf_params, cfg)
@@ -1073,6 +1092,12 @@ pub fn detect_regime_confluence(
         }
     }
     if let Some(side) = ofi_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = funding_accel_vote {
         match side {
             PositionSide::Long => long_votes += 1,
             PositionSide::Short => short_votes += 1,
