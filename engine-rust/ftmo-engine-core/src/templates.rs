@@ -807,6 +807,54 @@ pub fn v5_amber_max_passlock_agg_kr_combo() -> EngineConfig {
     cfg
 }
 
+/// 2026-05-25 Wave5 — INTRADAY hour-restricted templates.
+/// Hypothesis: crypto liquidity concentrates in US-overlap hours (13-16 UTC).
+/// Trading only during these "best hours" reduces noise-trades that lose to
+/// spreads/slippage during low-liquidity overnight (20-04 UTC).
+///
+/// Base = v5_amber_max_passlock (best trend template). Override only
+/// `allowed_hours_utc` to restrict entries.
+
+/// US-PEAK: 13-16 UTC only (4 hours, US open + EU close overlap).
+pub fn v5_amber_max_passlock_intraday_us_peak() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_INTRADAY_US_PEAK".into();
+    cfg.allowed_hours_utc = Some(vec![13, 14, 15, 16]);
+    cfg
+}
+
+/// LIQUID: London + NY sessions (8h, 8-17 UTC).
+pub fn v5_amber_max_passlock_intraday_liquid() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_INTRADAY_LIQUID".into();
+    cfg.allowed_hours_utc = Some(vec![8, 10, 12, 14, 16]);
+    cfg
+}
+
+/// NY-ONLY: NY session only (5h, 14-18 UTC).
+pub fn v5_amber_max_passlock_intraday_ny_only() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_INTRADAY_NY_ONLY".into();
+    cfg.allowed_hours_utc = Some(vec![14, 15, 16, 17, 18]);
+    cfg
+}
+
+/// ASIA-AVOID: skip Asia low-liquidity (drop 0-4 + 20-22 UTC).
+pub fn v5_amber_max_passlock_intraday_asia_avoid() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_INTRADAY_ASIA_AVOID".into();
+    cfg.allowed_hours_utc = Some(vec![6, 8, 10, 12, 14, 16, 18]);
+    cfg
+}
+
+/// 24H-PEAK: Asia open + London open + NY open + NY close (4 anchor hours).
+pub fn v5_amber_max_passlock_intraday_4anchor() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_INTRADAY_4ANCHOR".into();
+    cfg.allowed_hours_utc = Some(vec![0, 8, 14, 20]);
+    cfg
+}
+
 /// 2026-05-24 PYRAMID variant — scale into winning trades. AGG_24H_KELLY_REENTRY
 /// base + allow second same-asset+direction entry when existing position is
 /// already +2% in profit. Pyramid entry uses half-size. Discretionary
@@ -2239,6 +2287,11 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "v5-forex-mr-passlock-agg-narrow" => v5_forex_mr_passlock_agg_narrow(),
         "v5-forex-mr-passlock-tight-stop" => v5_forex_mr_passlock_tight_stop(),
         "v5-forex-mr-passlock-huge-tight" => v5_forex_mr_passlock_huge_tight(),
+        "2h-trend-v5-amber-max-passlock-intraday-us-peak" => v5_amber_max_passlock_intraday_us_peak(),
+        "2h-trend-v5-amber-max-passlock-intraday-liquid" => v5_amber_max_passlock_intraday_liquid(),
+        "2h-trend-v5-amber-max-passlock-intraday-ny-only" => v5_amber_max_passlock_intraday_ny_only(),
+        "2h-trend-v5-amber-max-passlock-intraday-asia-avoid" => v5_amber_max_passlock_intraday_asia_avoid(),
+        "2h-trend-v5-amber-max-passlock-intraday-4anchor" => v5_amber_max_passlock_intraday_4anchor(),
         "2h-trend-v5-amber-max-passlock-mptp-v04a" => v5_amber_max_passlock_mptp_v04a(),
         "2h-trend-v5-amber-max-passlock-sharpe-tight" => v5_amber_max_passlock_sharpe_tight(),
         "2h-trend-v5-amber-max-mr-passlock" => v5_amber_max_mr_passlock(),
@@ -2328,6 +2381,11 @@ pub fn known_selectors() -> &'static [&'static str] {
         "v5-forex-mr-passlock-agg-narrow",
         "v5-forex-mr-passlock-tight-stop",
         "v5-forex-mr-passlock-huge-tight",
+        "2h-trend-v5-amber-max-passlock-intraday-us-peak",
+        "2h-trend-v5-amber-max-passlock-intraday-liquid",
+        "2h-trend-v5-amber-max-passlock-intraday-ny-only",
+        "2h-trend-v5-amber-max-passlock-intraday-asia-avoid",
+        "2h-trend-v5-amber-max-passlock-intraday-4anchor",
         "2h-trend-v5-amber-max-mr-passlock",
         "2h-trend-v5-amber-quartz",
         "2h-trend-v5-amber-quartz-passlock",
