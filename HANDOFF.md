@@ -1,14 +1,98 @@
-# Session Handoff — 2026-05-25 (Wave5 Engine-Refactor + Honest Ceiling)
+# Session Handoff — 2026-05-25 (True-Seq Reset + Wave5 Engine-Refactor)
 
 **Next session: READ THIS FIRST + `docs/PHASE_ADAPTIVE_STACK4_DEPLOY_PLAN.md` before any work.**
 
+## NEWEST UPDATE — True-Seq Metric Reset
+
+Florian accepted the stricter funded metric:
+
+```text
+P1 pass at start window i
+-> P2 starts at i + final_day + phase_gap
+-> P2 passes
+-> funded
+```
+
+Default `phase_gap = 1 day`. Do **not** call P1-only, same-window
+`P1[i] AND P2[i]`, `P1*P2`, or qualified-subset rates "funded".
+Use `docs/FTMO_METRIC_STANDARD.md` and `scripts/true_seq_stack_audit.py`.
+
+Important correction: older "44.01% OOS" / GA ceiling numbers below are now
+legacy diagnostics unless reproduced under the true-sequential P1->P2 rule.
+The current accepted evidence is lower.
+
+### Latest True-Seq Findings
+
+- Single-account true-seq remains weak: best W5 single observed was
+  `basket-BTCUSDT_ETHUSDT_SOLU` at `107/1000 = 10.70%`.
+- AMBER baseline true-seq: `98/999 = 9.81%`.
+- Day-1 survival / first-day defensive sizing did **not** help:
+  - baseline: `98/999 = 9.81%`
+  - day0 0.5x sizing: `66/999 = 6.61%`
+  - day0 0.7x sizing: `66/999 = 6.61%`
+- Same-account "survived day 0" conditioning looked better diagnostically,
+  but is **not accepted** without a live-valid start mechanism.
+- Best paper-day live-start selector found only about `+2pp`, still not a
+  single-account breakthrough.
+- Other edge/universe types helped stack decorrelation more than survival:
+
+  ```text
+  basket-BTCUSDT_ETHUSDT_SOLU
+  + v5-amber-max-passlock
+  + mixed-v4-cvd-only
+  + solo-mxv4-n6_BTCUSDT_ETHUSDT_LINK
+  ```
+
+  Scored `338/997 = 33.90%` true-seq Stack-4 OR.
+
+- The `36.79%` 5m result was **not single-account**. It was a Stack-4 OR over
+  only `299` common windows. The 5m single itself was `20/299 = 6.69%`.
+  Do not use the 5m stack as a new bar until rerun on enough windows.
+
+### Repro Commands / Artifacts
+
+New Day-1 sweep artifacts:
+
+```text
+/tmp/seq_day1-d0half_p1_w5.jsonl
+/tmp/seq_day1-d0half_p2_w5.jsonl
+/tmp/seq_day1-d0risk07_p1_w5.jsonl
+/tmp/seq_day1-d0risk07_p2_w5.jsonl
+```
+
+Core audits:
+
+```bash
+python3 scripts/true_seq_stack_audit.py \
+  baseline=/tmp/seq_v5-amber-max-passlock_p1_w5.jsonl,/tmp/seq_v5-amber-max-passlock_p2_w5.jsonl \
+  d0half=/tmp/seq_day1-d0half_p1_w5.jsonl,/tmp/seq_day1-d0half_p2_w5.jsonl \
+  d0risk07=/tmp/seq_day1-d0risk07_p1_w5.jsonl,/tmp/seq_day1-d0risk07_p2_w5.jsonl
+
+python3 scripts/true_seq_stack_audit.py \
+  basketBTC=/tmp/seq_basket-BTCUSDT_ETHUSDT_SOLU_p1_w5.jsonl,/tmp/seq_basket-BTCUSDT_ETHUSDT_SOLU_p2_w5.jsonl \
+  baseline=/tmp/seq_v5-amber-max-passlock_p1_w5.jsonl,/tmp/seq_v5-amber-max-passlock_p2_w5.jsonl \
+  mixedV4=/tmp/seq_mixed-v4-cvd-only_p1_w5.jsonl,/tmp/seq_mixed-v4-cvd-only_p2_w5.jsonl \
+  soloN6=/tmp/seq_solo-mxv4-n6_BTCUSDT_ETHUSDT_LINK_p1_w5.jsonl,/tmp/seq_solo-mxv4-n6_BTCUSDT_ETHUSDT_LINK_p2_w5.jsonl
+```
+
+Validation run:
+
+```bash
+python3 -m py_compile scripts/true_seq_stack_audit.py scripts/per_window_and.py
+```
+
 ## TL;DR
 
-- **Stack-4 ceiling = 44.01% OOS HONEST** (post-MTM-DL bug fix, 92-template GA, 10 seeds)
+- **Accepted funded metric reset:** true-sequential P1->P2 only.
+- **Current accepted Stack-4 evidence:** best scanned W5 true-seq OR
+  `338/997 = 33.90%`, not 44.01%.
+- **Current accepted single-account evidence:** best W5 true-seq single
+  `107/1000 = 10.70%`.
 - **65+ commits this session** on `feature/r28-deploy`, NOT pushed
 - **Live-deploy infrastructure READY** (supervisor + PM2 + .env.ftmo.A/B/C/D.example + audit-hardened)
 - **Decision-Gate ungestellt:** Florian off, frustrated. Don't push.
-- **Empirisch validiert:** Stack-4 architectural ceiling ≈ 43-44% OOS. >50% braucht paid data oder Prop-Firm switch.
+- **Empirisch validiert:** Day-1 survival did not improve true-seq; edge/universe
+  decorrelation helps, but not enough for 50%+ on accepted metric.
 
 ## Florian's emotional State (wichtig)
 
