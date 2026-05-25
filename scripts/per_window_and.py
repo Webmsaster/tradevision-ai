@@ -2,7 +2,17 @@
 """
 2026-05-17 Per-window AND scorer.
 Reads two ftmo-sweep --out JSONLs (P1 and P2) and computes real per-window
-AND pass-rate (the metric matching FTMO 2-Step single-account funded prob).
+AND pass-rate.
+
+LEGACY METRIC WARNING:
+This is NOT the accepted FTMO funded-probability metric anymore. It checks
+P1 and P2 at the same win_idx, which does not model sequential evaluation.
+For the accepted metric use:
+
+  python3 scripts/true_seq_stack_audit.py label=p1.jsonl,p2.jsonl
+
+Accepted metric:
+  P1 at i passes -> P2 at i + final_day + phase_gap passes -> funded.
 
 Usage:
   python3 scripts/per_window_and.py P1.jsonl P2.jsonl
@@ -46,7 +56,8 @@ def main():
     print(f"  P1 alone        : {p1_rate:6.2f}%")
     print(f"  P2 alone        : {p2_rate:6.2f}%")
     print(f"  P1*P2 mult      : {mult_rate:6.2f}%  (assumes independence)")
-    print(f"  AND per-window  : {and_rate:6.2f}%  <-- REAL FUNDED-PROB")
+    print(f"  AND per-window  : {and_rate:6.2f}%  <-- LEGACY same-window metric")
+    print("  accepted metric : use scripts/true_seq_stack_audit.py")
     print(f"  P(P2|P1)        : {corr_proxy:6.2f}%  (correlation proxy)")
     print(f"  pass-both       : {both}/{n}")
     print(f"  pass-P1-only    : {p1_only}/{n}")

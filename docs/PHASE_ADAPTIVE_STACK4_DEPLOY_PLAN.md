@@ -4,6 +4,8 @@
 inflated all prior pass-rate claims by ~26-29pp).
 **Infrastructure:** Live-ready (supervisor + PM2 + envs + audit-hardened).
 **Source finding:** [[session-2026-05-25-phase-adaptive-stack4]] (BUG-INFLATED 93.11% OOS pre-fix).
+**Metric standard:** report funded probability only via
+`docs/FTMO_METRIC_STANDARD.md` true-sequential P1→P2 (`i + final_day + gap`).
 
 ## ⚠️ WAVE5 CRITICAL UPDATE
 
