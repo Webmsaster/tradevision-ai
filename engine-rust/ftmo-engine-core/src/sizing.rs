@@ -171,7 +171,17 @@ pub fn resolve_sizing_factor(
             // 2026-05-16 Phase 14: apply fractional-Kelly modifier (default
             // 1.0 = full Kelly). 0.5 = Half-Kelly is the classical "safer"
             // setting from Thorp's Kelly-criterion literature.
-            factor *= sorted_tiers[tier_idx].multiplier * ks.fraction;
+            //
+            // 2026-05-25 Wave5 KRIT FIX: clamp + skip-if-zero. `ks.fraction=0`
+            // (config-bug / serde-default-bug) hard-zeros `factor` → all post
+            // caps stay 0 → engine `eff_risk <= 0` short-circuit → NO TRADES.
+            // `fraction < 0` would flip sign → undefined behavior in caps.
+            let frac = ks.fraction.clamp(0.0, 1.0);
+            if frac > 1e-6 {
+                factor *= sorted_tiers[tier_idx].multiplier * frac;
+            }
+            // else: skip Kelly term entirely (degenerate config), keep
+            // pre-Kelly factor.
         }
     }
 

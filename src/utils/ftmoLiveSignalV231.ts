@@ -707,7 +707,13 @@ if (_ftmoTfRaw && _ftmoTfRaw.trim() !== _ftmoTfRaw) {
 }
 const _ftmoTfKey = _ftmoTfRaw?.trim() ?? "";
 const _registryHit =
-  _ftmoTfKey in CFG_REGISTRY ? CFG_REGISTRY[_ftmoTfKey] : null;
+  // 2026-05-25 Wave5 KRIT FIX: `in` operator matches Prototype properties
+  // (`__proto__`, `toString`, `constructor`). If FTMO_TF=constructor were set,
+  // `_registryHit` would be truthy with cfg=undefined → assertConfigValid(undefined)
+  // crash. Use Object.hasOwnProperty.call for own-property check only.
+  Object.prototype.hasOwnProperty.call(CFG_REGISTRY, _ftmoTfKey)
+    ? CFG_REGISTRY[_ftmoTfKey]
+    : null;
 // Round 54 Fix #3 + #7: when env was SET but didn't match any registry key
 // (typo, trim mismatch, removed config), THROW at module load instead of
 // silently falling back to V261 4h. Operators easily miss console.error

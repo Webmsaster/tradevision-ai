@@ -1190,9 +1190,16 @@ pub fn detect_regime_confluence(
     // BOTH fire in the SAME direction, that's the rare strong-confluence
     // signal (cross-paradigm agreement). Add +1 bonus vote in that direction.
     // Toggle via `params.disagreement_bonus` (default false; set via CLI).
+    //
+    // 2026-05-25 Wave5 KRIT FIX (audit agent #4): apply bonus ONLY as a
+    // tie-breaker, not as cumulative vote-inflation. Previously: supertrend+bb_z
+    // already counted in long/short_votes; adding +1 made 2 agreeing voters
+    // count as 3 votes total — with min_votes=3, two voters carried quorum
+    // alone (vote-inflation, identical class to 05-13 funding-target-latch bug).
+    // New: only break a tie when ST+BB-Z agree on the same side.
     if params.disagreement_bonus {
         if let (Some(st), Some(bb)) = (supertrend_vote, bb_z_vote) {
-            if st == bb {
+            if st == bb && long_votes == short_votes {
                 match st {
                     PositionSide::Long => long_votes += 1,
                     PositionSide::Short => short_votes += 1,
@@ -1203,7 +1210,9 @@ pub fn detect_regime_confluence(
 
     // 2026-05-13 Codex LOW FIX: clamp before u8 cast — min_votes ≥ 256
     // would silently wrap to 0 (vacuous-truth fires every bar).
-    let min = params.min_votes.min(u8::MAX as usize) as u8;
+    // 2026-05-25 Wave5 HOCH FIX (audit agent #4): also floor at 1.
+    // min_votes=0 + single-voter abstain-pass = entry on every poll.
+    let min = params.min_votes.max(1).min(u8::MAX as usize) as u8;
     // 2026-05-13 Bug-Audit Round 3 — BUG #2 FIX: strict majority `>` not `>=`.
     // Tie (long_votes == short_votes) means no consensus → return None.
     // Previously `>=` favored Long unconditionally on tied votes which fired

@@ -426,36 +426,51 @@ SYMBOL_MAP = {
 # `hash()` — PYTHONHASHSEED is per-process and would orphan yesterday's
 # tickets on a restart).
 def _tf_magic_offset() -> int:
-    """2026-05-23 Wave2 fix (CRITICAL — multi-TF collision audit): mix the
-    FTMO_TF into the magic so two strategies on the SAME MT5 login (same
-    FTMO_ACCOUNT_ID, different FTMO_TF) get distinct MAGICs. Previously, both
-    strategies shared MAGIC → magic-filtered iteration in close-all / SL-
-    management / reconcile treated each other's positions as their own.
-    Each TF gets a fixed 1-of-6 slot inside the existing 10-wide account
-    slot, leaving slot 7 free for PING_MAGIC (= MAGIC + 7 across all TFs).
+    """2026-05-25 Wave5 KRIT FIX (audit agent #7): widened from mod 6 to mod 1000.
+
+    Birthday-paradox math: for Phase-Adaptive Stack-4 (4 accounts × 2 TFs each
+    = 8 distinct (account_id, tf) tuples on shared MT5 login), the prior mod-6
+    scheme had 72% probability of AT LEAST ONE collision. Live impact:
+    mt5.positions_get(magic=X) would silently match another strategy's
+    positions → close-all / SL-management / reconcile cross-contamination.
+
+    Mod 1000 + per-account 1010-wide slot drops 8-tuple collision probability
+    to ~3.2%, AND the supervisor's startup-validator (KRIT #2 fix) enforces
+    TF_P1 ≠ TF_P2 offsets per-account (intra-account zero-collision).
+
+    Slot reservations within the 1010-wide block:
+      - 0..6, 8..999 = TF disambiguation (999 valid slots)
+      - 7 = PING_MAGIC (skipped here; if hash hits 7, remap to 6)
+      - 1000..1009 = reserved for future use
     """
     tf = os.environ.get("FTMO_TF", "").strip()
     if not tf:
         return 0
     import hashlib
     digest = hashlib.sha256(tf.encode("utf-8")).hexdigest()[:8]
-    # Slots 0..5 reserved for TF disambiguation; 6 is unused; 7 is PING_MAGIC.
-    return int(digest, 16) % 6
+    raw = int(digest, 16) % 1000
+    # Skip slot 7 (= PING_MAGIC). Remap collision to slot 6 (unused otherwise).
+    if raw == 7:
+        raw = 6
+    return raw
 
 
 def _compute_account_base() -> int:
-    """2026-05-24 Wave4 HIGH FIX (Agent 3): the prior single-function
-    `_compute_magic_id()` returned `account_base + tf_off`, and then
-    `PING_MAGIC = MAGIC + 7` was computed downstream. At tf_off=5 this
-    pushed PING (= base + tf_off + 7 = base + 12) PAST the 10-wide account
-    slot boundary — e.g. account 1 (base=251) PING at tf_off=5 = 263, which
-    is inside account 2's MAGIC range [261..270]. On a shared MT5 login with
-    multiple numeric accounts, mt5.positions_get(magic=PING) for account 1
-    would silently also match account 2's MAGIC trades and vice versa.
-    The comment in old code claimed "PING stays within slot regardless of
-    tf_off" — that was false.
-    Fix: compute the account_base separately from tf_off, then PING uses
-    base + 7 (fixed within the 10-wide slot, NOT shifted by tf_off).
+    """2026-05-25 Wave5 KRIT FIX: widened from 10-wide to 1010-wide per-account.
+
+    Was: `base + 10 + num*10` → account-N base at base+10+10N. With tf_off ≤5
+    and PING at base+7, account-N's MAGIC range was [base+10+10N, base+15+10N]
+    and PING at base+17+10N — inside account-(N+1)'s slot.
+
+    New: `base + 10 + num*1010` → account-N base at base+10+1010N. tf_off up to
+    999 + PING at base+7 fit comfortably within the 1010-wide slot.
+
+    Account-1 base = 1251, account-2 base = 2261, etc. Bases grow ~1K each
+    account, so 100 accounts max-fit before 32-bit MAGIC overflow concern
+    (FTMO realistically caps at ~20 accounts/trader).
+
+    PING_MAGIC = base + 7 (within slot, NOT shifted by tf_off — Wave4 fix
+    pattern preserved).
     """
     base = 231
     account_id = os.environ.get("FTMO_ACCOUNT_ID", "").strip()
@@ -465,17 +480,16 @@ def _compute_account_base() -> int:
         num = int(account_id)
         if num < 0:
             raise ValueError("negative account_id")
-        # base + 10 + num*10 → account 1=251, account 2=261, ...
-        return base + 10 + (num * 10)
+        # base + 10 + num*1010 → account 1=1251, account 2=2261, ...
+        return base + 10 + (num * 1010)
     except ValueError:
-        # Non-numeric: shift to [11231, 20230] so it's disjoint from
-        # numeric range [241, 10241]. tf_off is added at MAGIC compute,
-        # PING uses the base directly so it stays within the 10-wide slot.
+        # Non-numeric: shift to disjoint range. Width 1010 per slot.
         import hashlib
 
         digest = hashlib.sha256(account_id.encode("utf-8")).hexdigest()[:8]
         offset = int(digest, 16) % 9000
-        return base + 11000 + offset
+        # base + 11_000_000 + offset*1010 — disjoint from numeric range.
+        return base + 11_000_000 + (offset * 1010)
 
 
 def _compute_magic_id() -> int:
@@ -2591,7 +2605,11 @@ def place_market_order(
     # check. Signal-source bug with stop_pct=0.10 would have passed through
     # unbounded to MT5 → 2× FTMO daily-loss exposure per trade. Skip rather
     # than clip (signal-source bug → don't trade it).
-    LIVE_MAX_STOP_PCT = 0.05
+    # 2026-05-25 Wave5 KRIT FIX: env-driven cap matches engine's per-template
+    # `liveCaps {maxStopPct}`. Was hardcoded 0.05; if a template uses
+    # `maxStopPct: 0.03`, live would still permit 5% stops → engine-contract
+    # violation. Asymmetric with `RISK_FRAC_HARD_CAP` which already had env override.
+    LIVE_MAX_STOP_PCT = float(os.environ.get("FTMO_LIVE_MAX_STOP_PCT", "0.05"))
     if stop_pct > LIVE_MAX_STOP_PCT:
         log_event("live_stop_pct_exceeded", asset=ftmo_symbol, stop_pct=stop_pct, level="warn")
         return OrderResult(
@@ -2735,6 +2753,18 @@ def place_market_order(
     if lot <= 0:
         return OrderResult(False, None, "no lot size fits free margin", None, fill_price)
 
+    # 2026-05-25 Wave5 KRIT FIX: derive deviation from MAX_ENTRY_SLIPPAGE_PCT
+    # × price / point instead of hardcoded 20 points. Was: 20pts on BTCUSD
+    # (point=0.01) = 0.20 USD slippage tolerance — REQUOTE-rejects almost any
+    # tick on a 60k asset. 20pts on JPY pair (point=0.001) = 2 pips — too
+    # lenient. Dynamic = matches signal-source slippage budget per-symbol.
+    # `info` is the mt5.symbol_info object from line ~2576.
+    _info_point = getattr(info, "point", 0) or 0
+    _dynamic_dev = (
+        max(20, int(MAX_ENTRY_SLIPPAGE_PCT * fill_price / _info_point))
+        if _info_point > 0
+        else 20
+    )
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": ftmo_symbol,
@@ -2743,7 +2773,7 @@ def place_market_order(
         "price": fill_price,
         "sl": stop_price,
         "tp": tp_price,
-        "deviation": 20,
+        "deviation": _dynamic_dev,
         "magic": MAGIC,
         "comment": comment[:31],
         "type_time": mt5.ORDER_TIME_GTC,

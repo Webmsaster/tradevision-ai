@@ -836,6 +836,11 @@ async function runOneCheck(): Promise<DetectionResult> {
     ftmoTf === "2h-trend-v5-amber-max-passlock-shorts-agg" ||
     ftmoTf === "2h-trend-v5-amber-max-passlock-risk06" ||
     ftmoTf === "2h-trend-v5-amber-max-passlock-risk05" ||
+    // 2026-05-25 Wave5 KRIT FIX: mr-passlock was IN TF_DISPATCH but MISSING
+    // from isExplicitPasslockSister whitelist → silent fall-through to V231
+    // legacy WITHOUT PASSLOCK enforcement = -8pp pass-rate hit on the MR
+    // account in 3/4-Stack deployments.
+    ftmoTf === "2h-trend-v5-amber-mr-passlock" ||
     ftmoTf === "2h-trend-v5-amber-max-mr-passlock" ||
     ftmoTf === "2h-trend-v5-rubin-passlock" ||
     ftmoTf === "2h-trend-v5-obsidian-passlock" ||

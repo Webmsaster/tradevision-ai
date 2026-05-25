@@ -4246,15 +4246,19 @@ def test_codex_bug1_old_collision_pairs_now_distinct(monkeypatch):
 
 
 def test_codex_bug1_non_numeric_account_uses_sha256_fallback(monkeypatch):
-    """Non-numeric account_ids should hit the sha256 fallback path,
-    yielding values in [11231, 20230].
+    """Non-numeric account_ids should hit the sha256 fallback path.
+
+    2026-05-25 Wave5: range widened — base + 11_000_000 + (offset * 1010)
+    where offset ∈ [0, 9000). Range: [base+11M, base+11M+9090*1010-1].
     """
     import ftmo_executor as exe
 
     monkeypatch.setenv("FTMO_ACCOUNT_ID", "alias-prod-01")
     m_alias = exe._compute_magic_id()
-    assert 11231 <= m_alias <= 20230, (
-        f"non-numeric account_id should hash into [11231, 20230], got {m_alias}"
+    # Lower bound: base(231) + 11M + 0 + tf_off(0..999) ≥ 11_000_231
+    # Upper bound: 231 + 11_000_000 + 8999*1010 + 999 = 20_089_220
+    assert 11_000_231 <= m_alias <= 20_100_000, (
+        f"non-numeric account_id should hash into [11M, 20.1M], got {m_alias}"
     )
     # Deterministic across calls.
     m_alias_again = exe._compute_magic_id()
@@ -4275,7 +4279,7 @@ def test_codex_bug1_negative_account_id_falls_through_to_sha256(monkeypatch):
 
     monkeypatch.setenv("FTMO_ACCOUNT_ID", "-1")
     m = exe._compute_magic_id()
-    assert 11231 <= m <= 20230
+    assert 11_000_231 <= m <= 20_100_000
 
 
 def test_codex_bug1_kill_module_no_collisions(monkeypatch):

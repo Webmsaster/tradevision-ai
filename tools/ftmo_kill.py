@@ -62,17 +62,24 @@ except Exception:
 # had opened. Real positions left untouched on /kill is a money-loss bug.
 # Algorithm must mirror ftmo_executor.py exactly: account_base + tf_offset.
 def _tf_magic_offset() -> int:
-    """Mirror of `ftmo_executor.py::_tf_magic_offset`. Deterministic across
-    process restarts (never uses Python's randomised `hash()`)."""
+    """2026-05-25 Wave5 KRIT FIX — mirror of `ftmo_executor.py::_tf_magic_offset`.
+    Widened from mod 6 to mod 1000 (Stack-4 4-TF birthday collision dropped
+    from 72% → 3%). Deterministic across process restarts."""
     tf = os.environ.get("FTMO_TF", "").strip()
     if not tf:
         return 0
     import hashlib
     digest = hashlib.sha256(tf.encode("utf-8")).hexdigest()[:8]
-    return int(digest, 16) % 6
+    raw = int(digest, 16) % 1000
+    if raw == 7:
+        raw = 6  # skip PING_MAGIC slot
+    return raw
 
 
 def _compute_account_base() -> int:
+    """Mirror of `ftmo_executor.py::_compute_account_base`. Widened from
+    10-wide to 1010-wide per-account slot (Wave5 KRIT fix). Account-1 base
+    = 1251, account-2 = 2261, ..."""
     base = 231
     account_id = os.environ.get("FTMO_ACCOUNT_ID", "").strip()
     if not account_id:
@@ -81,13 +88,13 @@ def _compute_account_base() -> int:
         num = int(account_id)
         if num < 0:
             raise ValueError("negative account_id")
-        return base + 10 + (num * 10)
+        return base + 10 + (num * 1010)
     except ValueError:
         import hashlib
 
         digest = hashlib.sha256(account_id.encode("utf-8")).hexdigest()[:8]
         offset = int(digest, 16) % 9000
-        return base + 11000 + offset
+        return base + 11_000_000 + (offset * 1010)
 
 
 def _compute_magic_id() -> int:
