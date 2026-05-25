@@ -19,12 +19,20 @@ backtest was lenient. Fresh post-fix sweeps (`/tmp/seq_*_w5.jsonl`):
 | SHORTS_ONLY | ~50%       | 24.10%      | -25.90pp |
 | OBSIDIAN    | ~52%       | 25.60%      | -26.40pp |
 
-**Honest Stack-4 baseline projection:** ~35-50% combined-funded (vs prior
-claimed 97.28%). **Live-realistic with 5-10pp slippage drift: ~30-45%**
-combined-funded. Expected E[funded] ~1.5-2/4 accounts → ~$7-10k/mo trader-share.
+**HONEST Stack-4 baseline (W5 GA, 10 seeds × 200×100 GA, all converged):**
+**36.23% OOS combined-funded.** TRAIN 29.13%, drift +7.10pp (anti-overfit).
 
-Stack-4 GA re-run with post-fix sweeps PENDING (background task `bd82zgk4d`,
-~30 min ETA). Final honest config TBD.
+- Solo TRUE-SEQ CF: ~8-9% per template (was claimed ~30-36%)
+- Live-realistic ~25-30% → E[funded] ~1-1.5/4 accounts
+- **Expected trader-share: ~$5-7k/mo** (NOT $16-20k claimed pre-fix)
+
+Honest Stack-4 config (W5 GA-best, seed-stable):
+| Account | P1 Template | P2 Template |
+|---|---|---|
+| A | `shorts-only` | `v5-amber-max-passlock` |
+| B | `aggressive-24h-kelly` | `aggressive` |
+| C | `v5-amber-max-passlock` | `obsidian` |
+| D | `shorts-only` | `shorts-only` (symmetric) |
 
 **DECISION GATE:** Do NOT commit FTMO Challenge fees ($1200) until honest
 Stack-4 number is established + cross-validated. Prior 97.28% claim was bug-
