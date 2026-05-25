@@ -19,18 +19,31 @@ backtest was lenient. Fresh post-fix sweeps (`/tmp/seq_*_w5.jsonl`):
 | SHORTS_ONLY | ~50%       | 24.10%      | -25.90pp |
 | OBSIDIAN    | ~52%       | 25.60%      | -26.40pp |
 
-**HONEST Stack-4 baseline (W5 GA + SMC + param-overrides, 48 templates, 10 seeds):**
-**43.41% OOS BEST / 42.07% mean** (range [39.52%, 43.41%]). TRAIN 27.48%.
+**HONEST Stack-4 FINAL (W5 GA full pool, 79 templates, 10 seeds):**
+**43.71% OOS BEST / 42.04% mean** (range [40.72%, 43.71%]). TRAIN 27.48%.
 
-Progression:
+Final Wave5 Engine-Refactor progression:
 
-- 42.51% (15 templates, pre-Step1)
-- 42.81% (+0.30pp from SMC voter activation, Step 1)
-- 43.41% (+0.60pp from parameter-overrides on AMBER, Step 1.5)
-- TOTAL: +0.90pp validated lift over pre-Step1 baseline
+- 42.51% (15 templates, pre-Wave5-Refactor)
+- 42.81% (+0.30pp from SMC voter activation)
+- 43.41% (+0.60pp from AMBER parameter-overrides)
+- 43.71% (+0.30pp from basket-subsets + obsidian-override + agg-kr-tight)
+- **TOTAL: +1.20pp validated lift** (vs agent-projected +5-10pp)
 
-Per Step-1 pattern (1/3 to 1/10 of agent projections), remaining Steps 2+3
-would likely deliver another +0.5-1.5pp = realistic Stack-4 ceiling ~44-45%.
+Pattern: agent projections delivered ~1/5 to 1/10 of claimed lift. The
+**empirical Stack-4 ceiling is ~43-44% OOS** with current architecture.
+Going beyond 50% requires fundamentally different edge-class (not crypto-
+trend variants — all empirically debunked: forex-MR 0% P1, intraday 0pp lift,
+news-momentum 8-18%, Wyckoff 18-22%).
+
+## Wave5 Final Stack-4 Config (most recent GA-best)
+
+| Account | P1 Template                                 | P2 Template                                  |
+| ------- | ------------------------------------------- | -------------------------------------------- |
+| A       | `agg-kr-tight-stop`                         | `agg-kr-low-tp`                              |
+| B       | `mixed-v4-cvd-only`                         | `mixed-v2`                                   |
+| C       | `basket-AAVEUSDT_ADAUSDT_ARB` (8 alt-coins) | `mixed-v4-cvd-only`                          |
+| D       | `mixed-v2`                                  | `obsidian-passlock-or2-tp05_s005` (override) |
 
 - Solo TRUE-SEQ CF: ~8-9% per template (was claimed ~30-36%)
 - Live-realistic ~37-40% → E[funded] ~1.5-1.7/4 accounts
