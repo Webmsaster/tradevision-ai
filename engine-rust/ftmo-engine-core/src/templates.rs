@@ -2048,6 +2048,50 @@ pub fn v5_titanium_passlock_todcut18() -> EngineConfig {
 ///   - 30m has 48 bars/day, 5m has 288 → ratio 6
 ///   - hold_bars 240 (=5 days @ 30m) → 1440 (=5 days @ 5m)
 ///   - All else unchanged: tp 4%, stop 5%, leverage 2x, MCT 6
+/// 2026-05-25 Wave5 — AMBER_MAX_PASSLOCK on 5m bars (Path B: faster decisions).
+/// 6× more bars/day → more entry opportunities, potentially +2-5pp Stack-lift.
+/// Risk: spreads + commissions eat per-trade PnL on shorter timeframe.
+pub fn v5_amber_max_passlock_5m() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_5M".into();
+    cfg.bar_minutes = 5;
+    cfg.hold_bars = 720; // 30m × 120 / 5 = 720 bars (= 2.5d on 5m)
+    for asset in cfg.assets.iter_mut() {
+        if asset.hold_bars.is_some() {
+            asset.hold_bars = Some(720);
+        }
+    }
+    cfg
+}
+
+/// 2026-05-25 Wave5 — Mixed-V4 CVD-only on 5m bars (current solo champion 11%).
+pub fn v5_amber_max_passlock_mixed_v4_cvd_only_5m() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_mixed_v4_cvd_only();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_MIXED_V4_CVD_ONLY_5M".into();
+    cfg.bar_minutes = 5;
+    cfg.hold_bars = 720;
+    for asset in cfg.assets.iter_mut() {
+        if asset.hold_bars.is_some() {
+            asset.hold_bars = Some(720);
+        }
+    }
+    cfg
+}
+
+/// 2026-05-25 Wave5 — Mixed-V2 on 5m bars.
+pub fn v5_amber_max_passlock_mixed_v2_5m() -> EngineConfig {
+    let mut cfg = v5_amber_max_passlock_mixed_v2();
+    cfg.label = "V5_AMBER_MAX_PASSLOCK_MIXED_V2_5M".into();
+    cfg.bar_minutes = 5;
+    cfg.hold_bars = 720;
+    for asset in cfg.assets.iter_mut() {
+        if asset.hold_bars.is_some() {
+            asset.hold_bars = Some(720);
+        }
+    }
+    cfg
+}
+
 pub fn v5_titanium_passlock_5m() -> EngineConfig {
     let mut cfg = v5_titanium_passlock();
     cfg.label = "V5_TITANIUM_PASSLOCK_5M".into();
@@ -2308,6 +2352,9 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         // R29-Hunter (2026-05-09 mass-sweep winner @ step=14d 66.14%)
         "2h-trend-v5-titanium-passlock-hunter" => v5_titanium_passlock_hunter(),
         "2h-trend-v5-titanium-passlock-5m" => v5_titanium_passlock_5m(),
+        "2h-trend-v5-amber-max-passlock-5m" => v5_amber_max_passlock_5m(),
+        "2h-trend-v5-amber-max-passlock-mixed-v4-cvd-only-5m" => v5_amber_max_passlock_mixed_v4_cvd_only_5m(),
+        "2h-trend-v5-amber-max-passlock-mixed-v2-5m" => v5_amber_max_passlock_mixed_v2_5m(),
         _ => return None,
     })
 }
@@ -2412,6 +2459,9 @@ pub fn known_selectors() -> &'static [&'static str] {
         "2h-trend-v5-titanium-passlock-hunter",
         // R29 5m
         "2h-trend-v5-titanium-passlock-5m",
+        "2h-trend-v5-amber-max-passlock-5m",
+        "2h-trend-v5-amber-max-passlock-mixed-v4-cvd-only-5m",
+        "2h-trend-v5-amber-max-passlock-mixed-v2-5m",
     ]
 }
 
