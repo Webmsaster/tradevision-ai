@@ -1379,6 +1379,62 @@ pub fn v5_forex_mr_passlock() -> EngineConfig {
     cfg
 }
 
+/// 2026-05-25 Wave5 — V5_FOREX_MR variants with FTMO-target-scaled TPs.
+/// Original `v5_forex_mr_passlock` used daily-tuned TPs (1.5-2%) which
+/// produced 0% P1 pass-rate (27 trades × 2% TP × 0.4 risk = max ~2% equity).
+/// FTMO needs +10%/30d → per-trade TP needs to scale up.
+///
+/// Helper: scale all TP/stop on existing forex assets.
+fn scale_forex_assets(cfg: &mut EngineConfig, tp_mult: f64, stop_mult: f64) {
+    for asset in cfg.assets.iter_mut() {
+        if let Some(tp) = asset.tp_pct {
+            asset.tp_pct = Some(tp * tp_mult);
+        }
+        if let Some(stop) = asset.stop_pct {
+            asset.stop_pct = Some(stop * stop_mult);
+        }
+    }
+}
+
+/// V5_FOREX_MR_AGG — TPs × 2.5 (~4-5%), stops × 2.0 (~3%).
+pub fn v5_forex_mr_passlock_agg() -> EngineConfig {
+    let mut cfg = v5_forex_mr_passlock();
+    cfg.label = "V5_FOREX_MR_PASSLOCK_AGG".into();
+    scale_forex_assets(&mut cfg, 2.5, 2.0);
+    cfg
+}
+
+/// V5_FOREX_MR_BIG — TPs × 3.5 (~5-7%), stops × 2.5 (~3.5-4%).
+pub fn v5_forex_mr_passlock_big() -> EngineConfig {
+    let mut cfg = v5_forex_mr_passlock();
+    cfg.label = "V5_FOREX_MR_PASSLOCK_BIG".into();
+    scale_forex_assets(&mut cfg, 3.5, 2.5);
+    cfg
+}
+
+/// V5_FOREX_MR_HUGE — TPs × 5.0 (~7.5-10%), stops × 3.0 (~4-5%).
+pub fn v5_forex_mr_passlock_huge() -> EngineConfig {
+    let mut cfg = v5_forex_mr_passlock();
+    cfg.label = "V5_FOREX_MR_PASSLOCK_HUGE".into();
+    scale_forex_assets(&mut cfg, 5.0, 3.0);
+    cfg
+}
+
+/// V5_FOREX_MR_AGG_NARROW — TPs × 2.5 + tighter BB-deviation (more triggers).
+/// Tightens BB oversold/overbought from 20/80 to 25/75 (closer to mean).
+pub fn v5_forex_mr_passlock_agg_narrow() -> EngineConfig {
+    let mut cfg = v5_forex_mr_passlock_agg();
+    cfg.label = "V5_FOREX_MR_PASSLOCK_AGG_NARROW".into();
+    cfg.mean_reversion_source = Some(crate::config::MeanReversionSource {
+        period: 60,
+        oversold: 25.0,
+        overbought: 75.0,
+        cooldown_bars: 24,
+        size_mult: 0.5,
+    });
+    cfg
+}
+
 /// 2026-05-23 V5_AMBER_MAX_PASSLOCK_SHORTS_ONLY — short-only variant
 /// of V5_AMBER_MAX_PASSLOCK. Hypothesis: AMBER trades long-pullback-recovery
 /// (invert_direction=true → engine longs when voters fire SHORT, in bearish
@@ -2154,6 +2210,10 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-amber-max-passlock-amber-plus-shorts" => v5_amber_max_passlock_amber_plus_shorts(),
         "2h-trend-v5-amber-max-passlock-shorts-only" => v5_amber_max_passlock_shorts_only(),
         "v5-forex-mr-passlock" => v5_forex_mr_passlock(),
+        "v5-forex-mr-passlock-agg" => v5_forex_mr_passlock_agg(),
+        "v5-forex-mr-passlock-big" => v5_forex_mr_passlock_big(),
+        "v5-forex-mr-passlock-huge" => v5_forex_mr_passlock_huge(),
+        "v5-forex-mr-passlock-agg-narrow" => v5_forex_mr_passlock_agg_narrow(),
         "2h-trend-v5-amber-max-passlock-mptp-v04a" => v5_amber_max_passlock_mptp_v04a(),
         "2h-trend-v5-amber-max-passlock-sharpe-tight" => v5_amber_max_passlock_sharpe_tight(),
         "2h-trend-v5-amber-max-mr-passlock" => v5_amber_max_mr_passlock(),
@@ -2237,6 +2297,10 @@ pub fn known_selectors() -> &'static [&'static str] {
         "2h-trend-v5-amber-max-passlock-amber-plus-shorts",
         "2h-trend-v5-amber-max-passlock-shorts-only",
         "v5-forex-mr-passlock",
+        "v5-forex-mr-passlock-agg",
+        "v5-forex-mr-passlock-big",
+        "v5-forex-mr-passlock-huge",
+        "v5-forex-mr-passlock-agg-narrow",
         "2h-trend-v5-amber-max-mr-passlock",
         "2h-trend-v5-amber-quartz",
         "2h-trend-v5-amber-quartz-passlock",
