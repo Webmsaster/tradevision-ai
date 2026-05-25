@@ -1549,7 +1549,25 @@ def mt5_get_equity() -> dict:
         if now - cached_at < _MT5_ACCOUNT_CACHE_TTL_S:
             return cached
     info = mt5.account_info()
-    if info is None:
+    # 2026-05-25 Wave5 KRIT FIX (audit agent #9): treat equity<=0 or
+    # balance<=0 as disconnect, identical to `info is None`. MT5 commonly
+    # returns the named-tuple with equity=0.0 during reconnect/login-pending
+    # states. Without this guard, equity-history.jsonl gets equity_pct=-1.0
+    # → handle_daily_reset snapshots 0.0 as equity_at_day_start_usd → next
+    # call hits corrupt-state branch and locks anchor to 0 → Phase-Adaptive
+    # supervisor sees a -100% crash signal.
+    if (
+        info is None
+        or float(getattr(info, "equity", 0) or 0) <= 0
+        or float(getattr(info, "balance", 0) or 0) <= 0
+    ):
+        if info is not None:
+            log_event(
+                "mt5_account_info_invalid_equity",
+                equity=getattr(info, "equity", None),
+                balance=getattr(info, "balance", None),
+                level="warn",
+            )
         result = {"equity": None, "balance": None, "margin": None, "free_margin": None}
     else:
         result = {
@@ -2812,6 +2830,19 @@ def place_market_order(
         getattr(mt5, "TRADE_RETCODE_PRICE_OFF", 10021),
         getattr(mt5, "TRADE_RETCODE_CONNECTION", 10031),
     }
+    # 2026-05-25 Wave5 KRIT FIX (audit agent #7): on REQUOTE/PRICE_CHANGED,
+    # the broker rejected because PRICE MOVED. Re-sending the OLD `request`
+    # (stale fill_price, stop_price, tp_price) is precisely what triggered
+    # the REQUOTE — retries fail deterministically until market drifts back
+    # OR succeed at worse-than-allowed slippage. New behavior: on transient
+    # price-related retcode, re-fetch tick, re-validate slippage budget,
+    # recompute fill_price + sl + tp + lot, then resend.
+    _PRICE_RETRY_CODES = {
+        getattr(mt5, "TRADE_RETCODE_REQUOTE", 10004),
+        getattr(mt5, "TRADE_RETCODE_PRICE_CHANGED", 10020),
+        getattr(mt5, "TRADE_RETCODE_PRICE_OFF", 10021),
+    }
+    _signal_anchor_price = fill_price  # for slippage budget re-validation
     result = None
     last_err = ""
     for attempt in range(3):
@@ -2825,6 +2856,38 @@ def place_market_order(
         last_err = f"retcode={result.retcode} {getattr(result, 'comment', '')}"
         if result.retcode in _RETRY_CODES and attempt < 2:
             time.sleep(0.2 * (attempt + 1))
+            # KRIT-fix: refresh price + re-validate slippage before resend
+            # for PRICE-class retcodes. Connection-class retcodes don't
+            # need price refresh (broker didn't see the request).
+            if result.retcode in _PRICE_RETRY_CODES:
+                tick2 = mt5.symbol_info_tick(ftmo_symbol)
+                if tick2 is not None:
+                    new_fill = tick2.ask if order_type == mt5.ORDER_TYPE_BUY else tick2.bid
+                    slip_pct = abs(new_fill - _signal_anchor_price) / _signal_anchor_price
+                    if slip_pct > MAX_ENTRY_SLIPPAGE_PCT:
+                        log_event(
+                            "requote_retry_abandoned_excessive_slip",
+                            asset=ftmo_symbol, slip_pct=slip_pct,
+                            cap=MAX_ENTRY_SLIPPAGE_PCT, attempt=attempt,
+                            level="warn",
+                        )
+                        return OrderResult(
+                            False, None,
+                            f"REQUOTE retry slip {slip_pct*100:.2f}% > cap "
+                            f"{MAX_ENTRY_SLIPPAGE_PCT*100:.2f}%", lot, new_fill,
+                        )
+                    request["price"] = new_fill
+                    # Also re-check news-blackout on retry (could have
+                    # crossed event boundary between attempts).
+                    news_block_retry = check_news_blackout()
+                    if news_block_retry:
+                        log_event("news_blackout_race_on_retry", asset=ftmo_symbol,
+                                  reason=news_block_retry, level="warn")
+                        return OrderResult(
+                            False, None,
+                            f"news-blackout entered during retry: {news_block_retry}",
+                            lot, new_fill,
+                        )
             continue
         break
     if result is None:

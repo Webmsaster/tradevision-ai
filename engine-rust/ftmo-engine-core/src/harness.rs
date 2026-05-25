@@ -563,14 +563,22 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
     // microscopic but a real parity drift on f64 boundary equity values.
     let daily_loss_floor =
         state.day_start * (1.0 - cfg.max_daily_loss) + state.day_start.max(0.0) * FAIL_EPSILON;
-    if state.equity <= total_loss_floor {
+    // 2026-05-25 Wave5 KRIT FIX (audit agent #3): use MIN(equity, mtm_equity)
+    // for DL/TL checks so unrealised drawdown on still-open positions ALSO
+    // triggers a stop-out — matches TS V4 behavior. Was: checked only
+    // `state.equity` (realised-only). On a bar with -8% unrealised + 0%
+    // realised (DL=5%), the window stayed alive in Rust but FTMO live would
+    // close all positions via daily-loss server-side rule. Live-vs-backtest
+    // drift = ~2-5pp inflated Rust pass-rate on aggressive templates.
+    let dd_equity = state.equity.min(state.mtm_equity);
+    if dd_equity <= total_loss_floor {
         state.stopped_reason = Some(StoppedReason::TotalLoss);
         result.fail_reason = Some(FailReason::TotalLoss);
         result.challenge_ended = true;
         bookkeep(state, last_bar_time, cfg);
         return result;
     }
-    if state.equity <= daily_loss_floor {
+    if dd_equity <= daily_loss_floor {
         state.stopped_reason = Some(StoppedReason::DailyLoss);
         result.fail_reason = Some(FailReason::DailyLoss);
         result.challenge_ended = true;
