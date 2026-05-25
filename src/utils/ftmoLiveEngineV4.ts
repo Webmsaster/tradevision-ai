@@ -841,11 +841,19 @@ function processPositionExit(
     if (ptpHit && (!stopHit || gapPastPtp)) {
       pos.ptpTriggered = true;
       pos.ptpRealizedPct = ptp.closeFraction * ptp.triggerPct;
-      // Auto-move stop to break-even (mirrors backtest fix).
+      // 2026-05-25 Wave5 KRIT FIX (audit PTP): cost-adjusted BE to mirror
+      // Rust `cost_adjusted_be()` (exit.rs:23-34). Raw entryPrice gave
+      // ~costBp pessimism drift vs Rust backtest on PTP-BE'd trades.
+      const asset = cfg.assets?.find((a) => a.symbol === pos.symbol);
+      const costFrac = (asset?.costBp ?? 0) / 10_000;
+      const beStop =
+        pos.direction === "long"
+          ? pos.entryPrice * (1 + costFrac)
+          : pos.entryPrice * (1 - costFrac);
       if (pos.direction === "long") {
-        if (pos.entryPrice > pos.stopPrice) pos.stopPrice = pos.entryPrice;
+        if (beStop > pos.stopPrice) pos.stopPrice = beStop;
       } else {
-        if (pos.entryPrice < pos.stopPrice) pos.stopPrice = pos.entryPrice;
+        if (beStop < pos.stopPrice) pos.stopPrice = beStop;
       }
       pos.beActive = true;
       // Reset chandelier reference to current close.

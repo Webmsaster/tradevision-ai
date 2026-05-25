@@ -19,20 +19,27 @@ backtest was lenient. Fresh post-fix sweeps (`/tmp/seq_*_w5.jsonl`):
 | SHORTS_ONLY | ~50%       | 24.10%      | -25.90pp |
 | OBSIDIAN    | ~52%       | 25.60%      | -26.40pp |
 
-**HONEST Stack-4 baseline (W5 GA, 10 seeds × 200×100 GA, all converged):**
-**36.23% OOS combined-funded.** TRAIN 29.13%, drift +7.10pp (anti-overfit).
+**HONEST Stack-4 baseline (W5 GA EXPANDED, 31 templates, 10 seeds):**
+**42.51% OOS BEST / 41.62% mean** (range [40.12%, 42.51%]). TRAIN 28.98%.
 
 - Solo TRUE-SEQ CF: ~8-9% per template (was claimed ~30-36%)
-- Live-realistic ~25-30% → E[funded] ~1-1.5/4 accounts
-- **Expected trader-share: ~$5-7k/mo** (NOT $16-20k claimed pre-fix)
+- Live-realistic ~37-40% → E[funded] ~1.5-1.7/4 accounts
+- Cost-research: backtest leicht konservativ → +1pp live-headroom
+- **Expected trader-share: ~$7-8.5k/mo** (NOT $16-20k claimed pre-fix)
 
-Honest Stack-4 config (W5 GA-best, seed-stable):
+Honest Stack-4 config (5 seeds independently converged):
 | Account | P1 Template | P2 Template |
 |---|---|---|
-| A | `shorts-only` | `v5-amber-max-passlock` |
-| B | `aggressive-24h-kelly` | `aggressive` |
-| C | `v5-amber-max-passlock` | `obsidian` |
-| D | `shorts-only` | `shorts-only` (symmetric) |
+| A | `mixed-v4-cvd-only` | `mixed-v2` |
+| B | `mixed-v2` | `obsidian` |
+| C | `agg-kr-combo` | `agg-kr-low-tp` |
+| D | `obsidian` | `mixed-v4-cvd-only` |
+
+(Earlier 36.23% config was on 15-template pool; expanding to 31 templates
+unlocked +6.28pp by including mixed-detector + agg-kr variants.)
+
+Path to 50%+: Forex-MR tuning (~2-4h work) projected +6-10pp Stack-lift
+due to true cross-asset orthogonality. Documented in next-session plan.
 
 **DECISION GATE:** Do NOT commit FTMO Challenge fees ($1200) until honest
 Stack-4 number is established + cross-validated. Prior 97.28% claim was bug-
