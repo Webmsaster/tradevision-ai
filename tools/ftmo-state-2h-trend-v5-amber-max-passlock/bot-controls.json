@@ -1,0 +1,10 @@
+{
+  "orderFailStreak": 4,
+  "lastOrderFailError": "test-stop-after-capture",
+  "paused": true,
+  "lastCommand": {
+    "ts": "2026-05-21T17:32:27.035491+00:00",
+    "cmd": "/auto-pause",
+    "reason": "3 consecutive order failures"
+  }
+}

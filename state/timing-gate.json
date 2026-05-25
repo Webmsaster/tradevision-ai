@@ -1,14 +1,15 @@
 {
-  "ts": 1779093286050,
-  "ts_iso": "2026-05-18T08:34:46.050853+00:00",
-  "qualified": false,
-  "breadth": 3,
-  "majors": 0,
-  "engine_qualified_count": 0,
-  "engine_qualified_total": 1,
+  "ts": 1779710491309,
+  "ts_iso": "2026-05-25T12:01:31.309380+00:00",
+  "qualified": true,
+  "breadth": 10,
+  "majors": 3,
+  "engine_qualified_count": 300,
+  "engine_qualified_total": 1053,
   "engine_pass_of_qualified_pct": 0.0,
-  "min_breadth": 4,
-  "min_majors": 3,
-  "source": "ftmo-sweep --windows 700 --start-after-ts (NOW-32d)",
-  "validation": "v2: real Rust engine with V02 voters (NOT EMA proxy)"
+  "min_breadth": 10,
+  "min_majors": 1,
+  "window_hours": 2,
+  "source": "ftmo-sweep --windows 2000 --max-days 2 (LIVE 2h cluster detector)",
+  "validation": "v4 LIVE-CLUSTER: 2h b>=10 m>=1"
 }

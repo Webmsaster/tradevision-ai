@@ -19,8 +19,8 @@ backtest was lenient. Fresh post-fix sweeps (`/tmp/seq_*_w5.jsonl`):
 | SHORTS_ONLY | ~50%       | 24.10%      | -25.90pp |
 | OBSIDIAN    | ~52%       | 25.60%      | -26.40pp |
 
-**HONEST Stack-4 FINAL (W5 GA full pool, 79 templates, 10 seeds):**
-**43.71% OOS BEST / 42.04% mean** (range [40.72%, 43.71%]). TRAIN 27.48%.
+**HONEST Stack-4 FINAL (W5 GA full pool, 92 templates, 10 seeds):**
+**44.01% OOS BEST / 42.34% mean** (range [40.72%, 44.01%]). TRAIN 29.13%.
 
 Final Wave5 Engine-Refactor progression:
 
