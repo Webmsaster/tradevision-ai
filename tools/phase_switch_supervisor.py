@@ -221,7 +221,18 @@ def archive_state(state_dir: Path, label: str) -> Optional[Path]:
         return None
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    dest = BACKUP_DIR / f"{ACCOUNT_ID}-{label}-{ts}"
+    # 2026-05-25 Wave5 KRIT FIX: sub-second collision counter. Sekunden-Auflösung
+    # means two archive_state calls for the same ACCOUNT in the same second
+    # (e.g. P1-TIMEOUT + cleanup) collide → copytree FileExistsError →
+    # archive_failed log, return None — but caller doesn't check return value
+    # → P2 spawn proceeds without state archived. Now: bump counter suffix
+    # until path is free.
+    base_dest = BACKUP_DIR / f"{ACCOUNT_ID}-{label}-{ts}"
+    dest = base_dest
+    counter = 0
+    while dest.exists() and counter < 1000:
+        counter += 1
+        dest = BACKUP_DIR / f"{ACCOUNT_ID}-{label}-{ts}-{counter:03d}"
     try:
         shutil.copytree(state_dir, dest)
         log("state_archived", src=str(state_dir), dest=str(dest))

@@ -213,6 +213,14 @@ def _parse_events() -> list[tuple[datetime, str]]:
                     for entry in live_entries:
                         if not isinstance(entry, dict):
                             continue
+                        # 2026-05-25 Wave5 KRIT FIX (audit agent #11):
+                        # filter Medium/Low events. Was: all events became
+                        # blackout windows. With Finnhub/ForexFactory feed
+                        # returning HUNDREDS of Medium/Low events per week,
+                        # this caused near-constant blackout → bot never trades.
+                        impact = str(entry.get("impact", "")).lower()
+                        if impact and impact not in ("high", "critical"):
+                            continue
                         label = str(entry.get("label", entry.get("title", "live-event")))
                         t = (
                             entry.get("t")
@@ -422,13 +430,16 @@ def refresh_from_api(
             payload = resp.read().decode("utf-8")
         data = json.loads(payload)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
-        _log(f"api fetch failed: {exc}")
+        # 2026-05-25 Wave5 KRIT FIX (audit agent #11): API key leak in URL.
+        # On HTTPError, default `__str__` can include the URL (with ?token=).
+        # Logged via _log → captured by PM2 logs → secret leak.
+        _log(f"api fetch failed: {type(exc).__name__}: {getattr(exc, 'code', '?')}")
         return 0
     except json.JSONDecodeError as exc:
-        _log(f"api response not JSON: {exc}")
+        _log(f"api response not JSON: {type(exc).__name__}")
         return 0
     except Exception as exc:  # noqa: BLE001 — last-resort offline-first guard
-        _log(f"unexpected error during refresh: {exc}")
+        _log(f"unexpected error during refresh: {type(exc).__name__}")
         return 0
 
     # Finnhub returns {"economicCalendar": [ {country, event, impact, time, ...}, ... ]}
