@@ -13,9 +13,16 @@ Florians Idee: BrightFundeds Daily-Loss modellieren. **Wichtigste Lehre: erst ei
   - FTMO intraday (close-based): **27,65 %**
   - BrightFunded HWM (korrekt, close-based): **25,54 %** (−2,1pp — leicht SCHLECHTER, HWM-Anker minimal strenger)
   - BrightFunded HWM + intra-bar: **17,60 %** · FTMO + intra-bar: **18,98 %**
-- **🔑 Zwei harte Erkenntnisse:** (1) **BrightFunded-Daily-Loss = NULL Vorteil** (sogar minimal schlechter). Die 48,67 % waren komplett EoD-Modellfehler. (2) **Ehrliche intra-bar-Prüfung (beide Firmen real-time) → wahre Funded ~17-19 %** — close-based 27,65 % war ~9pp optimistisch (MTM-intra-bar-Bug). **Real deployable ~17-19 %, live-realistisch ~13-16 %.**
-- **Un-modelliert echte BF-Vorteile:** weekend-hold + 1:5 Hebel (nicht im Backtest, nicht pass-rate-relevant). „Bright"-8 %-Target hat strengere Limits → wahrscheinlich kein Netto-Gewinn (ungemessen).
-- **Bottom line:** Firm-Wechsel ist KEIN Daily-Loss-Silver-Bullet. DL-Problem strukturell bei gehebeltem Crypto-Trend. Code commit-ready.
+- **🔑 BrightFunded-Daily-Loss = NULL Vorteil** (sogar minimal schlechter, HWM-Anker strenger). Die 48,67 % waren komplett EoD-Modellfehler.
+
+## 🔧 2026-05-29 SPÄT — KORREKTUR: die intra-bar-17-19%-Zahlen waren ÜBER-PESSIMISTISCH (Florian: „richtig getestet?")
+
+- **Mein Fehler:** `compute_stress_mtm_equity` summiert alle Basket-Positionen GLEICHZEITIG auf ihrem intra-bar-Tief → nimmt an, alle Assets crashen im selben Tick. Exakt für 1 Asset, harte Obergrenze für einen Basket.
+- **Single-Asset-Test (Check ist da EXAKT):** intra-bar-Penalty BTC 0 % / ETH 6 % / SOL 3 % / AVAX 3 % = **~3 % relativ**. 4er-Basket: 20,1 %→16,4 % = **19 %**. → der echte Effekt ist ~3 %, die restlichen ~16pp sind reines Simultan-Worst-Artefakt (~6× Over-Count).
+- **Korrigierte ehrliche Zahlen:** Single-Account ~**7-7,5 %** (nicht 5,3 %), Stack-4 ~**25 %** (nicht 17,6 %), funded-EV +3 %-Banking **≈ break-even (−€7..−€30)** (nicht −€120). Die close-basierte 27,65 % war die ganze Zeit ~richtig.
+- **Verdict revidiert: NICHT „firmly −EV" → marginal/break-even.** Funded-Account ist +EV im Betrieb (~+7 %/Leben; +3 %-Banking senkt Monats-Todesrate 100 %→36 %). Engpass = Akquise-Kosten, nicht Trading. Kipphebel break-even→+: Banking-Disziplin, FTMO-Fee-Refund, billigere Akquise (Instant-Funding?), bessere Config. Live-Drift −3-5pp kann mild ins Minus kippen.
+- pnl.rs intra-bar-Check als single-asset/worst-case-only dokumentiert. Entscheidung: **bei FTMO bleiben**, Energie in Profit-Banking + Akquise-Kosten statt Strategie-Tweaks.
+- **Bottom line:** Firm-Wechsel ist kein Hebel; aber „lohnt sich ein Account?" = ~break-even (marginal), NICHT klarer Verlust. Code commit-ready.
 
 ## 🔄 2026-05-29 Resume (nach PC-Crash 16:00) — DailyEquityGuardian abgeschlossen (committed `bfd5b73`)
 

@@ -295,6 +295,16 @@ pub fn compute_mtm_equity(
 /// that pierces the loss floor mid-bar and recovers by the close is still
 /// caught — matching a broker's real-time, tick-by-tick equity monitoring.
 ///
+/// ⚠️ 2026-05-29 KNOWN LIMITATION — over-counts multi-asset drawdown. This sums
+/// EVERY open position at its OWN intra-bar extreme, i.e. it assumes all assets
+/// hit their worst tick SIMULTANEOUSLY. That is exact for a SINGLE position but
+/// a hard upper bound for a basket: real assets do not bottom in the same tick.
+/// Empirically (2026-05-29) the single-asset penalty is ~3% relative while a
+/// 4-asset basket showed ~19% — ~6× inflation that is pure artifact. So treat
+/// this as a single-asset / worst-case tool only; for honest multi-asset
+/// pass-rates prefer the close-based MTM (≈ truth minus a small ~3-10% haircut),
+/// NOT this. A faithful multi-asset version needs joint sub-bar (e.g. 5m) data.
+///
 /// READ-ONLY: unlike `compute_mtm_equity` it does NOT write `last_known_price`,
 /// so it is safe to call alongside the close-based MTM in the same bar.
 /// `intrabar_by_source` maps source symbol → (bar_low, bar_high).
