@@ -595,6 +595,12 @@ struct CfgOverrides {
     min_trading_days: Option<u32>,
     profit_target: Option<f64>,
     max_days: Option<u32>,
+    /// 2026-05-29 firm-rule overrides. --max-daily-loss 1.0 effectively DISABLES
+    /// the intraday daily-loss check (only the overall --max-total-loss floor
+    /// remains) → models a prop firm with NO intraday daily-loss limit, which
+    /// directly bypasses the ~97 %-of-fails daily-loss killer.
+    max_daily_loss: Option<f64>,
+    max_total_loss: Option<f64>,
     /// 2026-05-19 Pattern-D fix: max consecutive stop-loss exits per day
     /// before pausing new entries until next day rollover. 0 = disabled.
     max_consec_stops_per_day: Option<u32>,
@@ -837,6 +843,12 @@ fn apply_overrides(
     }
     if let Some(d) = ov.min_trading_days {
         cfg.min_trading_days = d;
+    }
+    if let Some(v) = ov.max_daily_loss {
+        cfg.max_daily_loss = v;
+    }
+    if let Some(v) = ov.max_total_loss {
+        cfg.max_total_loss = v;
     }
     if let Some(d) = ov.max_days {
         cfg.max_days = d;
@@ -1203,6 +1215,8 @@ fn main() -> Result<()> {
     let mut min_trading_days: Option<u32> = None;
     let mut profit_target: Option<f64> = None;
     let mut max_days: Option<u32> = None;
+    let mut max_daily_loss: Option<f64> = None;
+    let mut max_total_loss: Option<f64> = None;
     let mut cross_asset_sym: Option<String> = None;
     let mut cross_asset_dir: Option<String> = None;
     let mut cross_asset_fast: Option<u32> = None;
@@ -1486,6 +1500,8 @@ fn main() -> Result<()> {
             "--intrabar-dd-check" => intrabar_dd_check = true,
             "--min-trading-days" => min_trading_days = Some(need!("--min-trading-days").parse()?),
             "--profit-target" => profit_target = Some(need!("--profit-target").parse()?),
+            "--max-daily-loss" => max_daily_loss = Some(need!("--max-daily-loss").parse()?),
+            "--max-total-loss" => max_total_loss = Some(need!("--max-total-loss").parse()?),
             "--max-days" => max_days = Some(need!("--max-days").parse()?),
             "--cross-asset-sym" => cross_asset_sym = Some(need!("--cross-asset-sym")),
             "--cross-asset-dir" => cross_asset_dir = Some(need!("--cross-asset-dir")),
@@ -2216,6 +2232,8 @@ fn main() -> Result<()> {
         intrabar_dd_check,
         min_trading_days,
         profit_target,
+        max_daily_loss,
+        max_total_loss,
         max_days,
         max_consec_stops_per_day: if max_consec_stops_per_day > 0 {
             Some(max_consec_stops_per_day)
