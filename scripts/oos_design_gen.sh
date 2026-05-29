@@ -8,7 +8,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SWEEP="$ROOT/engine-rust/target/release/ftmo-sweep"; C="scripts/cache_bakeoff"
 O="${1:-/tmp/oos_design}"; mkdir -p "$O"
-JOBS=4
+# 2026-05-29 speed fix: the WSL2 crash was OVERSUBSCRIPTION (threads × jobs >>
+# cores → swap-thrash), NOT the core count. Safe rule: jobs × threads <= cores-2.
+# Each sweep is --threads 1, so jobs=12 on a 16-core box is safe + ~3× faster.
+JOBS="${JOBS:-12}"
 
 declare -A CFG=(
  [diamond]="2h-trend-v5-diamond-passlock"

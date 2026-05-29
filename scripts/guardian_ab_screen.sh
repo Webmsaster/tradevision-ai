@@ -22,7 +22,11 @@ TRIGGERS=("$@")
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SWEEP="$ROOT/engine-rust/target/release/ftmo-sweep"
 CACHE="scripts/cache_bakeoff"
-JOBS=4          # throttled: WSL2 box crashes under heavy parallel sweeps
+# 2026-05-29 speed fix: the WSL2 crash was OVERSUBSCRIPTION (threads=14 × many
+# sweeps = >>16 cores → swap-thrash), NOT the core count. Safe rule:
+# jobs × threads <= cores-2. Each sweep here is --threads 1, so jobs=12 on a
+# 16-core box is safe and ~3× faster than the old jobs=4. Override via JOBS env.
+JOBS="${JOBS:-12}"
 mkdir -p "$OUTDIR"
 
 # 4 fixed clean accounts: key | selector | symbols | per-account knob flags
