@@ -74,7 +74,9 @@ where
     }
 }
 
-use crate::pnl::{compute_eff_pnl_with_time, compute_mtm_equity, trim_inline};
+use crate::pnl::{
+    compute_eff_pnl_with_time, compute_mtm_equity, compute_stress_mtm_equity, trim_inline,
+};
 use crate::position::OpenPosition;
 use crate::signal::{CloseIntent, PollDecision, PollSignal};
 use crate::state::{EngineState, KellyPnl, LossStreakEntry, StoppedReason};
@@ -182,6 +184,9 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
         state.day_start = state.equity;
         state.day_peak = state.mtm_equity.max(1.0);
         state.challenge_peak = state.mtm_equity.max(1.0);
+        // Day-0 BrightFunded floor: no prior EoD yet → anchor to the starting
+        // balance/equity, same as the FTMO day-start floor on day 0.
+        state.eod_hwm_floor = state.equity.max(state.mtm_equity) - cfg.max_daily_loss;
     }
 
     // Idempotent retry guard.
@@ -198,25 +203,20 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
             "time regression: newDay={new_day} state.day={cur_day} — keeping anchors"
         ));
     } else if new_day > cur_day {
-        // 2026-05-29 BrightFunded EoD DailyLoss: evaluate the just-closed day's
-        // CLOSING equity against its daily floor BEFORE the anchor is reset.
-        // This is the new day's first bar (pre-MTM-recompute), so
-        // `state.mtm_equity` / `state.day_start` still describe the day that
-        // just ended. Unlike FTMO's intraday rule, an intraday dip that
-        // recovered by the close does NOT bust here. Complete for pass-rate:
-        // every mid-challenge day triggers a rollover; the only uncovered day
-        // is the terminal one, whose outcome is already fixed by target/time
-        // (a late daily breach cannot turn a fail into a pass → no inflation).
-        if cfg.daily_loss_eod && state.day_start > 0.0 {
-            let eod_floor =
-                state.day_start * (1.0 - cfg.max_daily_loss) + state.day_start * 1e-9;
-            if state.mtm_equity <= eod_floor {
-                state.stopped_reason = Some(StoppedReason::DailyLoss);
-                result.fail_reason = Some(FailReason::DailyLoss);
-                result.challenge_ended = true;
-                bookkeep(state, last_bar_time, cfg);
-                return result;
-            }
+        // 2026-05-29 BrightFunded daily-loss floor (daily_loss_eod_hmw): anchor
+        // the next day's floor to the JUST-CLOSED day's high-water-mark =
+        // max(EoD balance, EoD equity) − daily_loss_limit. Computed here at the
+        // rollover (state.equity / state.mtm_equity still describe the day that
+        // ended) and then FROZEN for the whole new day — it does NOT trail
+        // intraday highs. The breach itself is still checked intraday (see the
+        // daily-loss check below), so this is NOT an "only at EoD" rule; it
+        // only differs from FTMO in the floor's anchor (prev-EoD-HWM vs the
+        // current day-start). Verbatim BrightFunded help-center: "the minimum
+        // level = EOD highest value − loss limit … if balance or equity hits
+        // this level at any point during the day, the account is breached."
+        if cfg.daily_loss_eod_hwm {
+            state.eod_hwm_floor =
+                state.equity.max(state.mtm_equity) - cfg.max_daily_loss;
         }
         state.day = new_day as u32;
         state.day_start = state.equity;
@@ -321,6 +321,22 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
             chosen.map(|c| (k.clone(), c.close))
         })
         .collect();
+
+    // 2026-05-29 Intra-bar (low, high) per source for the optional intra-bar
+    // drawdown check. Built only when enabled — close-based runs skip the work.
+    let intrabar_by_source: HashMap<String, (f64, f64)> = if cfg.intrabar_dd_check {
+        input
+            .candles_by_source
+            .iter()
+            .filter_map(|(k, arr)| {
+                let chosen = find_candle_at_time(arr, last_bar_time)
+                    .or_else(|| find_candle_at_or_before(arr, last_bar_time));
+                chosen.map(|c| (k.clone(), (c.low, c.high)))
+            })
+            .collect()
+    } else {
+        HashMap::new()
+    };
 
     // 4a. dailyEquityGuardian (V5R) — checked on a PRE-exit MTM snapshot
     //     because the guard's purpose is to fire while positions are still
@@ -590,8 +606,15 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
     // MORE LENIENT than TS at the daily-loss boundary when day_start > 1
     // (post-profit). With day_start ≈ 1.08 the gap is 0.08e-9 ≈ ULP-scale —
     // microscopic but a real parity drift on f64 boundary equity values.
-    let daily_loss_floor =
-        state.day_start * (1.0 - cfg.max_daily_loss) + state.day_start.max(0.0) * FAIL_EPSILON;
+    // FTMO: floor = day-start × (1 − mdl), re-anchored each day. BrightFunded
+    // (daily_loss_eod_hwm): floor = max(prev-EoD balance, equity) − mdl, frozen
+    // for the day at the rollover above. BOTH are checked intraday below — the
+    // only difference is the anchor.
+    let daily_loss_floor = if cfg.daily_loss_eod_hwm {
+        state.eod_hwm_floor + FAIL_EPSILON
+    } else {
+        state.day_start * (1.0 - cfg.max_daily_loss) + state.day_start.max(0.0) * FAIL_EPSILON
+    };
     // 2026-05-25 Wave5 KRIT FIX (audit agent #3): use MIN(equity, mtm_equity)
     // for DL/TL checks so unrealised drawdown on still-open positions ALSO
     // triggers a stop-out — matches TS V4 behavior. Was: checked only
@@ -599,7 +622,15 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
     // realised (DL=5%), the window stayed alive in Rust but FTMO live would
     // close all positions via daily-loss server-side rule. Live-vs-backtest
     // drift = ~2-5pp inflated Rust pass-rate on aggressive templates.
-    let dd_equity = state.equity.min(state.mtm_equity);
+    let mut dd_equity = state.equity.min(state.mtm_equity);
+    // 2026-05-29 Intra-bar drawdown: also fold in the worst-case intra-bar MTM
+    // (bar low for longs / high for shorts) so a position that pierces a floor
+    // mid-bar and recovers by the close is still caught — matching a broker's
+    // real-time equity check. Off by default (close-only, FTMO parity); the
+    // BrightFunded EoD model enables it so the hard total floor is honest.
+    if cfg.intrabar_dd_check {
+        dd_equity = dd_equity.min(compute_stress_mtm_equity(state, &intrabar_by_source, cfg));
+    }
     if dd_equity <= total_loss_floor {
         state.stopped_reason = Some(StoppedReason::TotalLoss);
         result.fail_reason = Some(FailReason::TotalLoss);
@@ -607,11 +638,7 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
         bookkeep(state, last_bar_time, cfg);
         return result;
     }
-    // 2026-05-29 In EoD mode the daily floor is evaluated at the day rollover
-    // (above) against the day's CLOSING equity, NOT intraday. Skip the
-    // intraday daily bust here; the intraday TotalLoss check above stays as the
-    // hard backstop.
-    if !cfg.daily_loss_eod && dd_equity <= daily_loss_floor {
+    if dd_equity <= daily_loss_floor {
         state.stopped_reason = Some(StoppedReason::DailyLoss);
         result.fail_reason = Some(FailReason::DailyLoss);
         result.challenge_ended = true;
@@ -2022,14 +2049,14 @@ mod tests {
         );
     }
 
-    // ─── BrightFunded EoD DailyLoss (daily_loss_eod) ─────────────────────
+    // ─── BrightFunded daily-loss floor (daily_loss_eod_hwm) ──────────────
     // mtm = 1 + (price/100 - 1) * leverage(2) * eff_risk(0.4) = 1 + dpct*0.8.
-    // day_start = 1.0 → daily floor = 0.95. price 88 → mtm 0.904 (below floor);
-    // price 99 → mtm 0.992 (above floor). max_total_loss 0.80 keeps the
-    // intraday TL backstop far away so only the daily rule is under test.
+    // The floor is the prev-EoD HWM − mdl, FROZEN for the day but checked
+    // INTRADAY (verified against BrightFunded's help-center — NOT an EoD-only
+    // rule). max_total_loss 0.80 keeps the TL backstop out of the way.
     fn eod_cfg() -> EngineConfig {
         let mut cfg = cfg_basic();
-        cfg.daily_loss_eod = true;
+        cfg.daily_loss_eod_hwm = true;
         cfg.max_daily_loss = 0.05;
         cfg.max_total_loss = 0.80;
         cfg.max_days = 30;
@@ -2045,78 +2072,117 @@ mod tests {
         state.challenge_start_ts = 1;
         state.last_bar_open_time = 0;
         state.day_start = 1.0;
+        state.eod_hwm_floor = 0.95; // day-0 floor = HWM(1.0) − 0.05
         state.open_positions.push(floating_long(100.0, 0.4));
         state
     }
 
     #[test]
-    fn daily_loss_eod_survives_intraday_dip_that_recovers_by_close() {
+    fn daily_loss_eod_hwm_busts_intraday_below_frozen_floor() {
+        // The frozen floor is 0.95. A mid-bar dip to 90 (mtm 0.92 ≤ 0.95) must
+        // bust INTRADAY — BrightFunded checks the breach in real time, it is not
+        // deferred to the close. (This is exactly what the earlier EoD-only
+        // model got wrong and why it overstated the funded rate.)
         let cfg = eod_cfg();
         let mut state = eod_state();
         let atr = HashMap::new();
-        // Bar 1 (day 0, early): closes at 88 → mtm 0.904, BELOW the -5% daily
-        // floor. FTMO intraday would bust here; EoD must not.
-        let mut c1 = HashMap::new();
-        c1.insert("BTCUSDT".into(), vec![make_candle(1_000, 99.0, 99.0, 88.0, 88.0)]);
-        let r1 = step_bar(&mut state, &make_input(&c1, &atr, vec![]), &cfg);
-        assert!(!r1.challenge_ended, "EoD must not bust on an intraday dip");
-
-        // Bar 2 (day 0, later): recovers to 99 → the day CLOSES above the floor.
-        let mut c2 = HashMap::new();
-        c2.insert(
-            "BTCUSDT".into(),
-            vec![make_candle(1_000 + 3_600_000, 88.0, 99.0, 88.0, 99.0)],
-        );
-        let r2 = step_bar(&mut state, &make_input(&c2, &atr, vec![]), &cfg);
-        assert!(!r2.challenge_ended);
-
-        // Bar 3 (next day): rollover evaluates day 0's CLOSING equity (0.992,
-        // recovered) → still alive, no DailyLoss.
-        let mut c3 = HashMap::new();
-        c3.insert(
-            "BTCUSDT".into(),
-            vec![make_candle(1_000 + 2 * 86_400_000, 99.0, 100.0, 99.0, 100.0)],
-        );
-        let r3 = step_bar(&mut state, &make_input(&c3, &atr, vec![]), &cfg);
-        assert!(!r3.challenge_ended, "recovered close survives the EoD rollover");
-        assert_ne!(state.stopped_reason, Some(StoppedReason::DailyLoss));
-    }
-
-    #[test]
-    fn daily_loss_eod_busts_when_day_closes_below_floor() {
-        let cfg = eod_cfg();
-        let mut state = eod_state();
-        let atr = HashMap::new();
-        // Day 0's last (only) bar closes at 88 → mtm 0.904, below the floor.
-        let mut c1 = HashMap::new();
-        c1.insert("BTCUSDT".into(), vec![make_candle(1_000, 99.0, 99.0, 88.0, 88.0)]);
-        let r1 = step_bar(&mut state, &make_input(&c1, &atr, vec![]), &cfg);
-        assert!(!r1.challenge_ended, "no intraday bust in EoD mode");
-
-        // Next day → rollover evaluates day 0's bad CLOSE → DailyLoss.
-        let mut c2 = HashMap::new();
-        c2.insert(
-            "BTCUSDT".into(),
-            vec![make_candle(1_000 + 2 * 86_400_000, 88.0, 89.0, 88.0, 88.0)],
-        );
-        let r2 = step_bar(&mut state, &make_input(&c2, &atr, vec![]), &cfg);
-        assert!(r2.challenge_ended, "a day closing below the floor must bust at EoD");
+        let mut c = HashMap::new();
+        c.insert("BTCUSDT".into(), vec![make_candle(1_000, 99.0, 99.0, 90.0, 90.0)]);
+        let r = step_bar(&mut state, &make_input(&c, &atr, vec![]), &cfg);
+        assert!(r.challenge_ended, "intraday breach of the frozen floor must bust");
         assert_eq!(state.stopped_reason, Some(StoppedReason::DailyLoss));
     }
 
     #[test]
-    fn daily_loss_intraday_mode_busts_on_dip_unchanged() {
-        // Default (daily_loss_eod = false) keeps FTMO's intraday rule: the same
-        // -5% dip busts immediately on the bar it happens.
+    fn daily_loss_eod_hwm_floor_anchors_to_prev_eod_high_water_mark() {
+        // Day 0 closes with the long UP at 110 → EoD equity 1.08, realised 1.0.
+        // At the day-1 rollover the floor must anchor to max(1.0, 1.08) − 0.05
+        // = 1.03 (includes the open profit), NOT the day-start × 0.95 = 0.95
+        // that FTMO would use. Demonstrates the HWM anchor.
+        let cfg = eod_cfg();
+        let mut state = eod_state();
+        let atr = HashMap::new();
+        let mut c0 = HashMap::new();
+        c0.insert("BTCUSDT".into(), vec![make_candle(1_000, 100.0, 110.0, 100.0, 110.0)]);
+        let r0 = step_bar(&mut state, &make_input(&c0, &atr, vec![]), &cfg);
+        assert!(!r0.challenge_ended);
+        let mut c1 = HashMap::new();
+        c1.insert(
+            "BTCUSDT".into(),
+            vec![make_candle(1_000 + 2 * 86_400_000, 110.0, 111.0, 110.0, 110.0)],
+        );
+        let _ = step_bar(&mut state, &make_input(&c1, &atr, vec![]), &cfg);
+        assert!(
+            (state.eod_hwm_floor - 1.03).abs() < 1e-9,
+            "floor anchors to prev-EoD HWM, got {}",
+            state.eod_hwm_floor
+        );
+    }
+
+    #[test]
+    fn ftmo_intraday_mode_busts_on_dip_unchanged() {
+        // Default (no daily_loss_eod_hwm) keeps FTMO's day-start floor, checked
+        // intraday — the same -5% dip busts on the bar it happens.
         let mut cfg = eod_cfg();
-        cfg.daily_loss_eod = false;
+        cfg.daily_loss_eod_hwm = false;
         let mut state = eod_state();
         let atr = HashMap::new();
         let mut c1 = HashMap::new();
-        c1.insert("BTCUSDT".into(), vec![make_candle(1_000, 99.0, 99.0, 88.0, 88.0)]);
+        c1.insert("BTCUSDT".into(), vec![make_candle(1_000, 99.0, 99.0, 90.0, 90.0)]);
         let r1 = step_bar(&mut state, &make_input(&c1, &atr, vec![]), &cfg);
-        assert!(r1.challenge_ended, "intraday mode busts on the dip bar");
+        assert!(r1.challenge_ended, "FTMO intraday mode busts on the dip bar");
         assert_eq!(state.stopped_reason, Some(StoppedReason::DailyLoss));
+    }
+
+    // ─── Intra-bar drawdown check (intrabar_dd_check) ────────────────────
+    #[test]
+    fn intrabar_dd_check_busts_on_intra_bar_low_through_total_floor() {
+        // TL floor 0.90. A bar dips to 85 intra-bar (stress mtm ~0.88 < 0.90)
+        // but closes at 95 (mtm ~0.96 > 0.90). Close-only would survive; the
+        // intra-bar check must bust on the low.
+        let mut cfg = cfg_basic();
+        cfg.intrabar_dd_check = true;
+        cfg.max_total_loss = 0.10;
+        cfg.max_daily_loss = 0.50; // keep the daily rule out of the way
+        cfg.daily_peak_trailing_stop = None;
+        cfg.challenge_peak_trailing_stop = None;
+        cfg.intraday_daily_loss_throttle = None;
+        cfg.daily_equity_guardian = None;
+        let mut state = EngineState::initial("x");
+        state.challenge_start_ts = 1;
+        state.last_bar_open_time = 0;
+        state.day_start = 1.0;
+        state.open_positions.push(floating_long(100.0, 0.4));
+        let atr = HashMap::new();
+        let mut c = HashMap::new();
+        c.insert("BTCUSDT".into(), vec![make_candle(1_000, 95.0, 96.0, 85.0, 95.0)]);
+        let r = step_bar(&mut state, &make_input(&c, &atr, vec![]), &cfg);
+        assert!(r.challenge_ended, "intra-bar low through the total floor must bust");
+        assert_eq!(state.stopped_reason, Some(StoppedReason::TotalLoss));
+    }
+
+    #[test]
+    fn close_only_dd_survives_intra_bar_low_when_flag_off() {
+        // Same bar, default (intrabar_dd_check = false): close-based check only
+        // → survives. Documents that the fix is opt-in and FTMO parity holds.
+        let mut cfg = cfg_basic();
+        cfg.intrabar_dd_check = false;
+        cfg.max_total_loss = 0.10;
+        cfg.max_daily_loss = 0.50;
+        cfg.daily_peak_trailing_stop = None;
+        cfg.challenge_peak_trailing_stop = None;
+        cfg.intraday_daily_loss_throttle = None;
+        cfg.daily_equity_guardian = None;
+        let mut state = EngineState::initial("x");
+        state.challenge_start_ts = 1;
+        state.last_bar_open_time = 0;
+        state.day_start = 1.0;
+        state.open_positions.push(floating_long(100.0, 0.4));
+        let atr = HashMap::new();
+        let mut c = HashMap::new();
+        c.insert("BTCUSDT".into(), vec![make_candle(1_000, 95.0, 96.0, 85.0, 95.0)]);
+        let r = step_bar(&mut state, &make_input(&c, &atr, vec![]), &cfg);
+        assert!(!r.challenge_ended, "close-only mode survives the intra-bar dip");
     }
 
     #[test]

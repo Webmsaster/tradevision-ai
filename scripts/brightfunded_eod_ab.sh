@@ -58,10 +58,15 @@ run_one() {  # variant_tag, extra_flags...
 }
 
 echo "[bf-ab] step=$STEP windows=$WIN jobs=$JOBS out=$OUTDIR"
+# Decompose the firm-switch effect:
+#   ftmo_intraday    = FTMO baseline (day-start floor, intraday, close-based TL)
+#   bf_hwm           = BrightFunded daily floor (prev-EoD-HWM, still intraday)
+#   bf_hwm_intrabar  = + honest intra-bar TL check  ← the faithful BrightFunded model
 run_one "ftmo_intraday"
-run_one "brightfunded_eod" --daily-loss-eod
+run_one "bf_hwm" --daily-loss-eod-hwm
+run_one "bf_hwm_intrabar" --daily-loss-eod-hwm --intrabar-dd-check
 echo "[bf-ab] DONE. Stack-OR + per-account:"
-for tag in ftmo_intraday brightfunded_eod; do
+for tag in ftmo_intraday bf_hwm bf_hwm_intrabar; do
   echo "=== $tag ==="
   grep -E ">=1 funded|true-seq funded" "$OUTDIR/${tag}__audit.txt"
 done

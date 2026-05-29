@@ -288,6 +288,65 @@ pub fn compute_mtm_equity(
     mtm
 }
 
+/// Worst-case intra-bar mark-to-market equity: like `compute_mtm_equity` but
+/// each open position is priced at its ADVERSE intra-bar extreme (the bar LOW
+/// for longs, the bar HIGH for shorts) instead of the close. Used for the
+/// optional intra-bar drawdown check (`cfg.intrabar_dd_check`) so a position
+/// that pierces the loss floor mid-bar and recovers by the close is still
+/// caught — matching a broker's real-time, tick-by-tick equity monitoring.
+///
+/// READ-ONLY: unlike `compute_mtm_equity` it does NOT write `last_known_price`,
+/// so it is safe to call alongside the close-based MTM in the same bar.
+/// `intrabar_by_source` maps source symbol → (bar_low, bar_high).
+pub fn compute_stress_mtm_equity(
+    state: &EngineState,
+    intrabar_by_source: &HashMap<String, (f64, f64)>,
+    cfg: &EngineConfig,
+) -> f64 {
+    let mut mtm = state.equity;
+    for pos in state.open_positions.iter() {
+        let Some(&(low, high)) = intrabar_by_source.get(&pos.source_symbol) else {
+            continue;
+        };
+        let price = match pos.direction {
+            PositionSide::Long => low,
+            PositionSide::Short => high,
+        };
+        if !price.is_finite() || price <= 0.0 {
+            continue;
+        }
+        if !pos.entry_price.is_finite() || pos.entry_price <= 0.0 {
+            continue;
+        }
+        let mut raw_pnl = match pos.direction {
+            PositionSide::Long => (price - pos.entry_price) / pos.entry_price,
+            PositionSide::Short => (pos.entry_price - price) / pos.entry_price,
+        };
+        // Mirror compute_mtm_equity's PTP-aware blend so a partially-closed
+        // position's remaining exposure is sized identically.
+        if pos.ptp_triggered {
+            if let Some(ptp) = cfg.partial_take_profit {
+                let close_frac = ptp.close_fraction;
+                raw_pnl = pos.ptp_realized_pct + (1.0 - close_frac) * raw_pnl;
+            }
+        } else if pos.ptp_levels_realized > 0.0 {
+            if let Some(levels) = cfg.partial_take_profit_levels.as_ref() {
+                let total_closed: f64 = levels
+                    .iter()
+                    .take(pos.ptp_level_idx)
+                    .map(|l| l.close_fraction)
+                    .sum();
+                raw_pnl = pos.ptp_levels_realized + (1.0 - total_closed) * raw_pnl;
+            }
+        }
+        let risk_for_floor = pos.eff_risk.max(0.0);
+        let unrealised =
+            (raw_pnl * cfg.leverage * risk_for_floor).max(GAP_TAIL_MULT * risk_for_floor);
+        mtm *= 1.0 + unrealised;
+    }
+    mtm
+}
+
 /// Inline trim — bound `kelly_pnls` and `closed_trades` between saves.
 /// Mirrors `trimInline()` in the TS engine.
 pub fn trim_inline(state: &mut EngineState, cfg: &EngineConfig) {

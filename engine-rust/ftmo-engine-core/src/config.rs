@@ -769,16 +769,26 @@ pub struct EngineConfig {
     pub reentry_after_stop: Option<ReentryAfterStop>,
     #[serde(default, rename = "meanReversionSource")]
     pub mean_reversion_source: Option<MeanReversionSource>,
-    /// 2026-05-29 BrightFunded-style End-of-Day DailyLoss evaluation. When
-    /// `true`, the `-max_daily_loss` floor is NOT enforced intraday; instead it
-    /// is checked only against each day's CLOSING equity at the day rollover.
-    /// Intraday dips that recover by the close no longer bust the account —
-    /// this models prop-firms (e.g. BrightFunded) whose daily limit is measured
-    /// on end-of-day equity rather than FTMO's real-time intraday rule. The
-    /// hard `max_total_loss` floor stays intraday as the backstop. Default
-    /// `false` = FTMO intraday behavior (no change to existing runs).
-    #[serde(default, rename = "dailyLossEod")]
-    pub daily_loss_eod: bool,
+    /// 2026-05-29 BrightFunded daily-loss floor. When `true`, the daily floor is
+    /// anchored to the PREVIOUS day's high-water-mark = `max(EoD balance, EoD
+    /// equity) − max_daily_loss`, computed once at the day rollover and FROZEN
+    /// for the whole day (it does NOT trail intraday highs). The breach is still
+    /// checked INTRADAY (every bar, on `min(balance, equity)`), so this is not
+    /// an "only at end-of-day" rule — it differs from FTMO solely in the floor's
+    /// anchor (prev-EoD-HWM vs the current day-start × (1 − mdl)). Verified
+    /// against the BrightFunded help-center. Default `false` = FTMO behavior.
+    #[serde(default, rename = "dailyLossEodHwm")]
+    pub daily_loss_eod_hwm: bool,
+    /// 2026-05-29 Intra-bar drawdown check. When `true`, the DailyLoss /
+    /// TotalLoss floors are also tested against the worst-case intra-bar MTM
+    /// (bar low for longs, bar high for shorts) — not just the bar close — so a
+    /// position that pierces the floor mid-bar and recovers by the close is
+    /// still busted, matching a broker's real-time equity monitoring. Default
+    /// `false` keeps the close-only behavior (FTMO parity). Pairs with
+    /// `daily_loss_eod` to model BrightFunded: daily floor evaluated EoD on the
+    /// close, the hard total floor still enforced intra-bar.
+    #[serde(default, rename = "intrabarDdCheck")]
+    pub intrabar_dd_check: bool,
 }
 
 fn default_start_balance() -> f64 {
@@ -862,7 +872,8 @@ impl EngineConfig {
             invert_direction: false,
             bar_minutes: 30,
             daily_equity_guardian: None,
-            daily_loss_eod: false,
+            daily_loss_eod_hwm: false,
+            intrabar_dd_check: false,
             bypass_live_caps: false,
             day_progressive_sizing: None,
             early_defensive_on_progress: None,

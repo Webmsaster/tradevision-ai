@@ -2,19 +2,20 @@
 
 **Next session: READ THIS + memory `project_audit_2026_05_28_reentry_overfit_engine_clean.md` first.**
 
-## 🎯 2026-05-29 — EoD-DailyLoss modelliert → +21pp, ERSTER echter Lift im Projekt
+## ⚠️ 2026-05-29 — BrightFunded-Daily-Loss bringt KEINEN Vorteil (EoD-„+21pp" war Modellfehler) + ehrliche Baseline ~17-19 %
 
-Florians Idee: BrightFundeds weicheres **End-of-Day**-Daily-Loss (statt FTMO-intraday) in die Engine modellieren und ehrlich messen. Ergebnis = der erste große, step-stabile Lift:
+Florians Idee: BrightFundeds Daily-Loss modellieren. **Wichtigste Lehre: erst ein falsches Modell (+21pp), dann durch Regel-Verifikation korrigiert auf „kein Vorteil".** Florians Insistenz auf echte Regeln hat ein Debunk #10 verhindert.
 
-- **Implementiert:** `cfg.daily_loss_eod` (config.rs) — der −5 %-Daily-Floor wird NICHT intraday geprüft, sondern nur gegen den **Tagesschluss-Equity** beim Day-Rollover (harness.rs). Intraday-Dips, die sich bis zum Close erholen, busten nicht mehr. Hard −10 %-TotalLoss-Floor bleibt intraday als Backstop. `--daily-loss-eod` CLI (sweep.rs). 3 Unit-Tests + 472 Core-Tests grün. Runner: `scripts/brightfunded_eod_ab.sh`.
-- **Messung (sauberer Stack-4, step=1, gleiche 4 Configs wie die 27,65 %-Baseline):**
-  - FTMO intraday: **27,65 %** (exakt reproduziert)
-  - BrightFunded EoD: **48,67 %** (+21,02pp) — Per-Account ~verdoppelt.
-  - **step-STABIL:** step=3 48,80 % ≈ step=1 48,67 % → KEIN Screening-Artefakt (anders als der Guardian, der bei step=1 kollabierte).
-- **Fail-Shift (P1, step=1):** DailyLoss 4303→1273 (−70 %), aber TotalLoss 155→2491 (neuer Hauptkiller). EoD verschiebt den bindenden Constraint Daily→Total — die Strategie wird nicht „sicher".
-- **⚠️ Ehrliche Caveats (48,67 % ist eher Obergrenze):** (1) TL-Check ist Bar-CLOSE-basiert (MTM-intra-bar-Bug, Befund 3) → unter EoD reiten Accounts tiefer → intra-bar −10 %-Breaches häufiger verfehlt → Zahl optimistisch. Fix = intra-bar low/high für TL. (2) Exakte BrightFunded-Regel (HWM vs day-start, balance vs equity) noch nicht gegen Docs verifiziert. (3) −3..−5pp clean live-drift. (4) Configs in-sample. → **live-realistisch grob ~40-45 % vs FTMO ~23-25 %**.
-- **🔑 Bestätigt die 05-28-These HART:** Flaschenhals war NIE die Strategie, sondern FTMOs Intraday-DL. Firm mit EoD-DL ~verdoppelt die Funded-Rate bei NULL Strategie-Änderung.
-- **Nächste Hebel:** (a) intra-bar-TL-Fix für ehrlichere Zahl, (b) BrightFunded-Specs gegen Docs verifizieren, (c) Demo-Deploy. Code uncommitted (commit-ready).
+- **Falsches erstes Modell:** `daily_loss_eod` = Daily-Floor NUR am Tagesschluss prüfen → 48,67 % Stack-4 step=1 (+21pp, step-stabil). Sah toll aus.
+- **Regel-Verifikation (Research-Agent, BrightFunded Help-Center verbatim):** Modell FALSCH. BrightFunded-Daily-Floor = `max(EoD-Balance, EoD-Equity) − Limit`, bei Rollover gesetzt, tagsüber eingefroren — aber **Breach wird INTRADAY/real-time geprüft** ("if balance or equity hits this level at any point during the day"). Unterschied zu FTMO = nur der Floor-Anker (prev-EoD-HWM vs day-start), NICHT das Timing. DD 10 % static (= FTMO). 2-Step Classic 10 %/5 % (= FTMO). Crypto 1:5, weekend-hold, min-days 5, keine Consistency, MT5.
+- **Korrekt re-modelliert:** `cfg.daily_loss_eod_hwm` (state.eod_hwm_floor, intraday geprüft) + **intra-bar-TL-Fix** `cfg.intrabar_dd_check` (`compute_stress_mtm_equity` in pnl.rs, behebt MTM-close-only-Bug Befund 3). 474 Core-Tests grün. Runner: `scripts/brightfunded_eod_ab.sh`.
+- **Ehrliche Messung (Stack-4, step=1):**
+  - FTMO intraday (close-based): **27,65 %**
+  - BrightFunded HWM (korrekt, close-based): **25,54 %** (−2,1pp — leicht SCHLECHTER, HWM-Anker minimal strenger)
+  - BrightFunded HWM + intra-bar: **17,60 %** · FTMO + intra-bar: **18,98 %**
+- **🔑 Zwei harte Erkenntnisse:** (1) **BrightFunded-Daily-Loss = NULL Vorteil** (sogar minimal schlechter). Die 48,67 % waren komplett EoD-Modellfehler. (2) **Ehrliche intra-bar-Prüfung (beide Firmen real-time) → wahre Funded ~17-19 %** — close-based 27,65 % war ~9pp optimistisch (MTM-intra-bar-Bug). **Real deployable ~17-19 %, live-realistisch ~13-16 %.**
+- **Un-modelliert echte BF-Vorteile:** weekend-hold + 1:5 Hebel (nicht im Backtest, nicht pass-rate-relevant). „Bright"-8 %-Target hat strengere Limits → wahrscheinlich kein Netto-Gewinn (ungemessen).
+- **Bottom line:** Firm-Wechsel ist KEIN Daily-Loss-Silver-Bullet. DL-Problem strukturell bei gehebeltem Crypto-Trend. Code commit-ready.
 
 ## 🔄 2026-05-29 Resume (nach PC-Crash 16:00) — DailyEquityGuardian abgeschlossen (committed `bfd5b73`)
 

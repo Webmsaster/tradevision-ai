@@ -172,6 +172,13 @@ pub struct EngineState {
     /// trigger, trading is parked for the rest of the day.
     #[serde(rename = "guardianHalted", default)]
     pub guardian_halted: bool,
+    /// 2026-05-29 BrightFunded daily-loss floor (used only when
+    /// `cfg.daily_loss_eod_hwm`). Set at each day rollover to
+    /// `max(prev-EoD balance, prev-EoD equity) − max_daily_loss` and frozen for
+    /// the day; the intraday daily-loss check compares `min(balance, equity)`
+    /// against it. In FTMO mode this field is unused.
+    #[serde(rename = "eodHwmFloor", default)]
+    pub eod_hwm_floor: f64,
 }
 
 impl EngineState {
@@ -207,6 +214,7 @@ impl EngineState {
             trail_dd_peak: 0.0,
             kill_switch_evaluated: false,
             guardian_halted: false,
+            eod_hwm_floor: 0.0,
         }
     }
 
