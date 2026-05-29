@@ -583,6 +583,11 @@ struct CfgOverrides {
     /// -trigger_pct intraday MTM. Probes whether parking the day below the
     /// hard -5% DailyLoss lifts true-seq pass-rate.
     daily_equity_guardian: Option<f64>,
+    /// 2026-05-29 BrightFunded End-of-Day DailyLoss. When true, sets
+    /// `cfg.daily_loss_eod = true` so the -max_daily_loss floor is evaluated on
+    /// each day's CLOSING equity instead of intraday — models the softer EoD
+    /// daily rule (e.g. BrightFunded) vs FTMO's real-time intraday rule.
+    daily_loss_eod: bool,
     min_trading_days: Option<u32>,
     profit_target: Option<f64>,
     max_days: Option<u32>,
@@ -889,6 +894,9 @@ fn apply_overrides(
     if let Some(trigger_pct) = ov.daily_equity_guardian {
         cfg.daily_equity_guardian = Some(DailyEquityGuardian { trigger_pct });
     }
+    if ov.daily_loss_eod {
+        cfg.daily_loss_eod = true;
+    }
     if ov.lscool_after.is_some() || ov.lscool_bars.is_some() {
         let cur = cfg.loss_streak_cooldown.unwrap_or(LossStreakCooldown {
             after_losses: 3,
@@ -1183,6 +1191,7 @@ fn main() -> Result<()> {
     let mut idl_threshold: Option<f64> = None; // intraday_daily_loss_throttle.hard_loss_threshold
     let mut idl_factor: Option<f64> = None; // intraday_daily_loss_throttle.size_factor
     let mut daily_equity_guardian: Option<f64> = None; // daily_equity_guardian.trigger_pct
+    let mut daily_loss_eod: bool = false; // BrightFunded End-of-Day daily-loss
     let mut min_trading_days: Option<u32> = None;
     let mut profit_target: Option<f64> = None;
     let mut max_days: Option<u32> = None;
@@ -1465,6 +1474,7 @@ fn main() -> Result<()> {
             "--daily-equity-guardian" => {
                 daily_equity_guardian = Some(need!("--daily-equity-guardian").parse()?)
             }
+            "--daily-loss-eod" => daily_loss_eod = true,
             "--min-trading-days" => min_trading_days = Some(need!("--min-trading-days").parse()?),
             "--profit-target" => profit_target = Some(need!("--profit-target").parse()?),
             "--max-days" => max_days = Some(need!("--max-days").parse()?),
@@ -2193,6 +2203,7 @@ fn main() -> Result<()> {
         idl_threshold,
         idl_factor,
         daily_equity_guardian,
+        daily_loss_eod,
         min_trading_days,
         profit_target,
         max_days,

@@ -769,6 +769,16 @@ pub struct EngineConfig {
     pub reentry_after_stop: Option<ReentryAfterStop>,
     #[serde(default, rename = "meanReversionSource")]
     pub mean_reversion_source: Option<MeanReversionSource>,
+    /// 2026-05-29 BrightFunded-style End-of-Day DailyLoss evaluation. When
+    /// `true`, the `-max_daily_loss` floor is NOT enforced intraday; instead it
+    /// is checked only against each day's CLOSING equity at the day rollover.
+    /// Intraday dips that recover by the close no longer bust the account —
+    /// this models prop-firms (e.g. BrightFunded) whose daily limit is measured
+    /// on end-of-day equity rather than FTMO's real-time intraday rule. The
+    /// hard `max_total_loss` floor stays intraday as the backstop. Default
+    /// `false` = FTMO intraday behavior (no change to existing runs).
+    #[serde(default, rename = "dailyLossEod")]
+    pub daily_loss_eod: bool,
 }
 
 fn default_start_balance() -> f64 {
@@ -852,6 +862,7 @@ impl EngineConfig {
             invert_direction: false,
             bar_minutes: 30,
             daily_equity_guardian: None,
+            daily_loss_eod: false,
             bypass_live_caps: false,
             day_progressive_sizing: None,
             early_defensive_on_progress: None,

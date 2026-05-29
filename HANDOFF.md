@@ -1,15 +1,27 @@
-# Session Handoff — 2026-05-28/29 (Forensik-Audit + ehrliche Re-Baseline + DL-Tuning + DailyEquityGuardian)
+# Session Handoff — 2026-05-28/29 (Forensik-Audit + Re-Baseline + DailyEquityGuardian + EoD-DailyLoss BREAKTHROUGH)
 
 **Next session: READ THIS + memory `project_audit_2026_05_28_reentry_overfit_engine_clean.md` first.**
 
-## 🔄 2026-05-29 Resume (nach PC-Crash 16:00) — DailyEquityGuardian abgeschlossen
+## 🎯 2026-05-29 — EoD-DailyLoss modelliert → +21pp, ERSTER echter Lift im Projekt
+
+Florians Idee: BrightFundeds weicheres **End-of-Day**-Daily-Loss (statt FTMO-intraday) in die Engine modellieren und ehrlich messen. Ergebnis = der erste große, step-stabile Lift:
+
+- **Implementiert:** `cfg.daily_loss_eod` (config.rs) — der −5 %-Daily-Floor wird NICHT intraday geprüft, sondern nur gegen den **Tagesschluss-Equity** beim Day-Rollover (harness.rs). Intraday-Dips, die sich bis zum Close erholen, busten nicht mehr. Hard −10 %-TotalLoss-Floor bleibt intraday als Backstop. `--daily-loss-eod` CLI (sweep.rs). 3 Unit-Tests + 472 Core-Tests grün. Runner: `scripts/brightfunded_eod_ab.sh`.
+- **Messung (sauberer Stack-4, step=1, gleiche 4 Configs wie die 27,65 %-Baseline):**
+  - FTMO intraday: **27,65 %** (exakt reproduziert)
+  - BrightFunded EoD: **48,67 %** (+21,02pp) — Per-Account ~verdoppelt.
+  - **step-STABIL:** step=3 48,80 % ≈ step=1 48,67 % → KEIN Screening-Artefakt (anders als der Guardian, der bei step=1 kollabierte).
+- **Fail-Shift (P1, step=1):** DailyLoss 4303→1273 (−70 %), aber TotalLoss 155→2491 (neuer Hauptkiller). EoD verschiebt den bindenden Constraint Daily→Total — die Strategie wird nicht „sicher".
+- **⚠️ Ehrliche Caveats (48,67 % ist eher Obergrenze):** (1) TL-Check ist Bar-CLOSE-basiert (MTM-intra-bar-Bug, Befund 3) → unter EoD reiten Accounts tiefer → intra-bar −10 %-Breaches häufiger verfehlt → Zahl optimistisch. Fix = intra-bar low/high für TL. (2) Exakte BrightFunded-Regel (HWM vs day-start, balance vs equity) noch nicht gegen Docs verifiziert. (3) −3..−5pp clean live-drift. (4) Configs in-sample. → **live-realistisch grob ~40-45 % vs FTMO ~23-25 %**.
+- **🔑 Bestätigt die 05-28-These HART:** Flaschenhals war NIE die Strategie, sondern FTMOs Intraday-DL. Firm mit EoD-DL ~verdoppelt die Funded-Rate bei NULL Strategie-Änderung.
+- **Nächste Hebel:** (a) intra-bar-TL-Fix für ehrlichere Zahl, (b) BrightFunded-Specs gegen Docs verifizieren, (c) Demo-Deploy. Code uncommitted (commit-ready).
+
+## 🔄 2026-05-29 Resume (nach PC-Crash 16:00) — DailyEquityGuardian abgeschlossen (committed `bfd5b73`)
 
 Florians PC war mitten in der DailyEquityGuardian-Implementierung gecrasht. Resume:
 
-- **Code war fertig, nur ungetestet:** `guardian_halted`-Latch (state.rs), force-close+park-for-day (harness.rs), `--daily-equity-guardian <trig>` CLI (sweep.rs). → gebaut, 469+2 Rust-Tests grün, Release-Binary neu.
-- **A/B gemessen** (`scripts/guardian_ab_screen.sh`, sauberer Stack-4, step=1 vs 27,65 % Baseline exakt reproduziert): bestes Setting trig 0.015 = **27,08 % (−0,57pp)**, alle anderen Triggers −2 bis −6pp. **KEIN Setting > Baseline.**
-- **Mechanismus:** Guardian verschiebt DailyLoss-Fails → TotalLoss-Fails (smoke: 100→32 DL / 3→71 TL), killt Recovery-Tage, schafft keinen Edge. = **3. unabhängige Bestätigung** dass FTMO-DL strukturell nicht weg-tunebar ist.
-- **Verdict:** Letzter DL-Hebel abgehakt → ändert nichts an der 2026-05-28-Conclusion. Code bleibt OFF by default, **uncommitted (commit-ready)**. BrightFunded-Switch bleibt der einzige echte Hebel.
+- **Code war fertig, nur ungetestet:** `guardian_halted`-Latch (state.rs), force-close+park-for-day (harness.rs), `--daily-equity-guardian <trig>` CLI (sweep.rs). → gebaut, Tests grün, committed `bfd5b73`.
+- **A/B gemessen** (`scripts/guardian_ab_screen.sh`, sauberer Stack-4, step=1 vs 27,65 % Baseline): bestes Setting trig 0.015 = **27,08 % (−0,57pp)**, alle anderen −2 bis −6pp. **KEIN Setting > Baseline.** Guardian verschiebt nur DailyLoss→TotalLoss, kein Edge. = letzter FTMO-interner DL-Hebel abgehakt. (Kontrast: EoD oben rettet echt, weil es die FTMO-Regel selbst ersetzt.)
 
 ## TL;DR (die wichtigste Erkenntnis der Session)
 
