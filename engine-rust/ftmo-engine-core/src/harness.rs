@@ -213,6 +213,9 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
         // day boundary so a fresh trading day is unrestricted.
         state.day_consec_stops = 0;
         state.consec_stops_paused = false;
+        // 2026-05-29 Release the DailyEquityGuardian soft-stop latch so a fresh
+        // trading day starts unrestricted (mirrors consec_stops_paused).
+        state.guardian_halted = false;
     }
 
     // 3. Force-close at max_days.
@@ -380,6 +383,12 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                     ));
                 }
                 apply_exits(state, &mut closes, cfg, last_bar_time, &mut result, input);
+                // 2026-05-29 Park trading for the rest of the day. The
+                // force-close alone only realises the open loss at -trigger_pct;
+                // without this latch a fresh signal could re-enter on the next
+                // bar and push the account into the -5% hard DailyLoss the
+                // guardian exists to avoid. Cleared at the day rollover.
+                state.guardian_halted = true;
                 result.notes.push(format!(
                     "dailyEquityGuardian fired: day_pnl={:.2}% <= -{:.2}%",
                     day_pnl * 100.0,
@@ -780,6 +789,16 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
             "consecStopsPaused: {} consec stops hit threshold {}",
             state.day_consec_stops, cfg.max_consec_stops_per_day
         );
+        result.notes.push(msg.clone());
+        block_reason = Some(msg);
+    }
+    // 2026-05-29 DailyEquityGuardian soft-stop — once the guardian force-closed
+    // at -trigger_pct today, park new entries until the day rollover clears the
+    // latch. This is what turns the guardian from a "realise the loss" into a
+    // genuine intraday stop that caps the day's loss below the hard DL limit.
+    if entries_allowed && state.guardian_halted {
+        entries_allowed = false;
+        let msg = "dailyEquityGuardian: halted for day".to_string();
         result.notes.push(msg.clone());
         block_reason = Some(msg);
     }
@@ -1857,6 +1876,99 @@ mod tests {
         assert!(r.notes.iter().any(|n| n.contains("dailyEquityGuardian")));
         // Equity must be below 1.0 (loss locked in).
         assert!(state.equity < 1.0);
+    }
+
+    #[test]
+    fn daily_equity_guardian_halts_new_entries_then_clears_at_rollover() {
+        let mut cfg = cfg_basic();
+        // Give DL headroom so the guardian's realised -2.4% close survives the
+        // hard floor, and silence the other entry gates so the only blocker we
+        // assert on is the guardian latch.
+        cfg.max_daily_loss = 0.05;
+        cfg.daily_peak_trailing_stop = None;
+        cfg.challenge_peak_trailing_stop = None;
+        cfg.intraday_daily_loss_throttle = None;
+        cfg.daily_equity_guardian = Some(crate::config::DailyEquityGuardian { trigger_pct: 0.02 });
+        let mut state = EngineState::initial("x");
+        state.challenge_start_ts = 1;
+        state.last_bar_open_time = 0;
+        state.day_start = 1.0;
+        // Underwater long → -2.4% MTM (raw -3% × lev2 × risk0.4) → guardian
+        // fires (<= -2%) but realises ABOVE the -5% hard DL floor.
+        state.open_positions.push(OpenPosition {
+            ticket_id: "t".into(),
+            symbol: "BTC-TREND".into(),
+            source_symbol: "BTCUSDT".into(),
+            direction: PositionSide::Long,
+            entry_time: 0,
+            entry_price: 100.0,
+            initial_stop_pct: 0.05,
+            stop_price: 95.0,
+            tp_price: 110.0,
+            eff_risk: 0.4,
+            entry_bar_idx: 0,
+            high_watermark: 100.0,
+            be_active: false,
+            ptp_triggered: false,
+            ptp_realized_pct: 0.0,
+            ptp_level_idx: 0,
+            ptp_levels_realized: 0.0,
+            last_known_price: None,
+            trail_active: false,
+            trail_peak: 0.0,
+        });
+        let mut candles = HashMap::new();
+        candles.insert(
+            "BTCUSDT".into(),
+            vec![make_candle(1_000, 98.0, 98.5, 96.5, 97.0)],
+        );
+        let atr = HashMap::new();
+        // Fresh buy signal arriving on the SAME bar the guardian fires — must be
+        // parked, not opened, because the soft-stop halts the rest of the day.
+        let sig = PollSignal {
+            symbol: "BTC-TREND".into(),
+            source_symbol: "BTCUSDT".into(),
+            direction: PositionSide::Long,
+            entry_time: 1_000,
+            entry_price: 97.0,
+            stop_price: 95.0,
+            tp_price: 101.0,
+            stop_pct: 0.02,
+            tp_pct: 0.04,
+            eff_risk: 0.4,
+            chandelier_atr_at_entry: None,
+        };
+        let r = step_bar(&mut state, &make_input(&candles, &atr, vec![sig]), &cfg);
+        assert!(state.guardian_halted, "latch should arm when guardian fires");
+        assert!(
+            state.open_positions.is_empty(),
+            "force-close closed the old long AND blocked the new entry"
+        );
+        assert!(
+            r.skipped
+                .iter()
+                .any(|s| s.reason.contains("dailyEquityGuardian: halted for day")),
+            "new entry must be skipped with the halt reason"
+        );
+
+        // Next trading day → rollover clears the latch.
+        let next_day_ts = 1_000 + 2 * 86_400_000_i64;
+        let mut candles2 = HashMap::new();
+        candles2.insert(
+            "BTCUSDT".into(),
+            vec![make_candle(next_day_ts, 100.0, 101.0, 99.0, 100.0)],
+        );
+        let r2 = step_bar(&mut state, &make_input(&candles2, &atr, vec![]), &cfg);
+        assert!(
+            !state.guardian_halted,
+            "day rollover must release the soft-stop latch"
+        );
+        assert!(
+            !r2.skipped
+                .iter()
+                .any(|s| s.reason.contains("dailyEquityGuardian")),
+            "no halt block on the fresh day"
+        );
     }
 
     #[test]

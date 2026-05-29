@@ -161,6 +161,17 @@ pub struct EngineState {
     /// → force_close_all_external + StoppedReason::EarlyAbort.
     #[serde(rename = "killSwitchEvaluated", default)]
     pub kill_switch_evaluated: bool,
+    /// 2026-05-29 DailyEquityGuardian halt latch. Set `true` when the guardian
+    /// force-closes all positions at -trigger_pct intraday MTM; blocks NEW
+    /// entries until the next day rollover (cleared alongside
+    /// `consec_stops_paused`). Without this latch the guardian only converts
+    /// the unrealised drawdown into a realised one and lets fresh signals
+    /// re-open the same day — so the account can still drift into the -5% hard
+    /// DailyLoss the soft-stop was meant to prevent. The latch makes the
+    /// guardian an actual intraday soft-stop: once today's loss reaches the
+    /// trigger, trading is parked for the rest of the day.
+    #[serde(rename = "guardianHalted", default)]
+    pub guardian_halted: bool,
 }
 
 impl EngineState {
@@ -195,6 +206,7 @@ impl EngineState {
             trail_dd_armed: false,
             trail_dd_peak: 0.0,
             kill_switch_evaluated: false,
+            guardian_halted: false,
         }
     }
 

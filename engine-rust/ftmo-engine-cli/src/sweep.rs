@@ -577,6 +577,12 @@ struct CfgOverrides {
     cpts_trail: Option<f64>,
     idl_threshold: Option<f64>,
     idl_factor: Option<f64>,
+    /// 2026-05-29 DailyEquityGuardian intraday soft-stop. When set, injects
+    /// `cfg.daily_equity_guardian = Some(DailyEquityGuardian { trigger_pct })`
+    /// so any template (not just V5R) gets the force-close + halt-for-day at
+    /// -trigger_pct intraday MTM. Probes whether parking the day below the
+    /// hard -5% DailyLoss lifts true-seq pass-rate.
+    daily_equity_guardian: Option<f64>,
     min_trading_days: Option<u32>,
     profit_target: Option<f64>,
     max_days: Option<u32>,
@@ -674,9 +680,9 @@ fn apply_overrides(
     ov: &CfgOverrides,
 ) -> Result<()> {
     use ftmo_engine_core::config::{
-        BreakEven, DayProgressiveTier, EarlyDefensiveOnProgress, FundingRateFilter,
-        IntradayDailyLossThrottle, LossStreakCooldown, PeakDrawdownThrottle, PeakTrailingStop,
-        TimeDecayMode, TimeDecaySizing, TrailingStop,
+        BreakEven, DailyEquityGuardian, DayProgressiveTier, EarlyDefensiveOnProgress,
+        FundingRateFilter, IntradayDailyLossThrottle, LossStreakCooldown, PeakDrawdownThrottle,
+        PeakTrailingStop, TimeDecayMode, TimeDecaySizing, TrailingStop,
     };
 
     if let Some(m) = ov.tp_mult {
@@ -879,6 +885,9 @@ fn apply_overrides(
             hard_loss_threshold: ov.idl_threshold.unwrap_or(cur.hard_loss_threshold),
             soft_factor: ov.idl_factor.unwrap_or(cur.soft_factor),
         });
+    }
+    if let Some(trigger_pct) = ov.daily_equity_guardian {
+        cfg.daily_equity_guardian = Some(DailyEquityGuardian { trigger_pct });
     }
     if ov.lscool_after.is_some() || ov.lscool_bars.is_some() {
         let cur = cfg.loss_streak_cooldown.unwrap_or(LossStreakCooldown {
@@ -1173,6 +1182,7 @@ fn main() -> Result<()> {
     let mut cpts_trail: Option<f64> = None; // challenge_peak_trailing_stop.trail_distance
     let mut idl_threshold: Option<f64> = None; // intraday_daily_loss_throttle.hard_loss_threshold
     let mut idl_factor: Option<f64> = None; // intraday_daily_loss_throttle.size_factor
+    let mut daily_equity_guardian: Option<f64> = None; // daily_equity_guardian.trigger_pct
     let mut min_trading_days: Option<u32> = None;
     let mut profit_target: Option<f64> = None;
     let mut max_days: Option<u32> = None;
@@ -1452,6 +1462,9 @@ fn main() -> Result<()> {
             "--cpts-trail" => cpts_trail = Some(need!("--cpts-trail").parse()?),
             "--idl-threshold" => idl_threshold = Some(need!("--idl-threshold").parse()?),
             "--idl-factor" => idl_factor = Some(need!("--idl-factor").parse()?),
+            "--daily-equity-guardian" => {
+                daily_equity_guardian = Some(need!("--daily-equity-guardian").parse()?)
+            }
             "--min-trading-days" => min_trading_days = Some(need!("--min-trading-days").parse()?),
             "--profit-target" => profit_target = Some(need!("--profit-target").parse()?),
             "--max-days" => max_days = Some(need!("--max-days").parse()?),
@@ -2179,6 +2192,7 @@ fn main() -> Result<()> {
         cpts_trail,
         idl_threshold,
         idl_factor,
+        daily_equity_guardian,
         min_trading_days,
         profit_target,
         max_days,
