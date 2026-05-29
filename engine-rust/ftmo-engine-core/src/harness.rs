@@ -645,6 +645,21 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
         bookkeep(state, last_bar_time, cfg);
         return result;
     }
+    // 2026-05-29 Trailing max-loss HARD bust (CTI-style): fail the moment dd
+    // equity drops `trail` below the challenge peak. Uses `dd_equity` so the
+    // intra-bar low counts when `intrabar_dd_check` is on. challenge_peak is the
+    // running max close-MTM (≥ closed-balance peak → conservative vs CTI's
+    // balance-based peak). Unlike challenge_peak_trailing_stop (entry-block),
+    // this terminates the account, matching a real trailing-drawdown firm.
+    if let Some(trail) = cfg.trailing_max_loss {
+        if dd_equity <= state.challenge_peak * (1.0 - trail) {
+            state.stopped_reason = Some(StoppedReason::TotalLoss);
+            result.fail_reason = Some(FailReason::TotalLoss);
+            result.challenge_ended = true;
+            bookkeep(state, last_bar_time, cfg);
+            return result;
+        }
+    }
     // Ping-day bookkeeping (R57 V4-3 Fix 5): after target hits + paused,
     // every new calendar day counts toward minTradingDays. Reuses the
     // day_index already computed above as `new_day` — saves a chrono-tz

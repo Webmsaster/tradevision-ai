@@ -789,6 +789,14 @@ pub struct EngineConfig {
     /// close, the hard total floor still enforced intra-bar.
     #[serde(default, rename = "intrabarDdCheck")]
     pub intrabar_dd_check: bool,
+    /// 2026-05-29 Trailing max-loss as a HARD account bust (models CTI-style
+    /// trailing drawdown). When set, the account FAILS (TotalLoss) the moment
+    /// drawdown equity drops `trail` below the challenge peak — unlike
+    /// `challenge_peak_trailing_stop` which only blocks NEW entries. Combine
+    /// with `daily_loss` disabled to model a no-daily + 5%-trailing firm; with
+    /// `intrabar_dd_check` the trailing is tested on the intra-bar low.
+    #[serde(default, rename = "trailingMaxLoss")]
+    pub trailing_max_loss: Option<f64>,
 }
 
 fn default_start_balance() -> f64 {
@@ -874,6 +882,7 @@ impl EngineConfig {
             daily_equity_guardian: None,
             daily_loss_eod_hwm: false,
             intrabar_dd_check: false,
+            trailing_max_loss: None,
             bypass_live_caps: false,
             day_progressive_sizing: None,
             early_defensive_on_progress: None,
