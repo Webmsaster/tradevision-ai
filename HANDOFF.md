@@ -1,6 +1,19 @@
 # Session Handoff — 2026-05-28/29 (Forensik-Audit + Re-Baseline + DailyEquityGuardian + EoD-DailyLoss BREAKTHROUGH)
 
-**Next session: READ THIS + memory `project_audit_2026_05_28_reentry_overfit_engine_clean.md` first.**
+**Next session: READ THIS + memory `project_2026_05_29_negative_expectancy_root_cause.md` first.**
+
+## 🎯🎯🎯 2026-05-29 — ROOT CAUSE FOUND: no genuine edge, pass-rate is a variance lottery (the answer to "steady strategy?")
+
+Florian wanted a "savere strategy die nie busted und stetig steigt". Building the test that decides if that's possible produced THE structural explanation for all 9 debunks + the stuck pass-rate.
+
+- **Edge-detector** (`scripts/steady_risk_grid.py`, commit db35fdf): shrink position size (`--risk-frac-mult`) with `--max-days 240` (FTMO has no time-limit). **Pass-rate RISING as risk drops = real positive edge; FALLING = variance lottery.** Rigorous because risk_frac_mult scales expectancy AND cost linearly → net-drift SIGN is sizing-invariant; proportional bps costs (no fixed-cost artifact); a zero-drift walk would give ~50% pass at low risk.
+- **Result: EVERY signal class FALLS.** trend 9.8%→0%, meanrev 6.2%→0% (then treads water ≈zero drift), breakout 17.9%→3.6%, regime 16.1%→3.6% (mult 1.0→0.125). Universal across diamond/amber-max/obsidian/rubin AND both targets (P1 +10%, easy P2 +5%). Low risk bleeds to -10% TotalLoss in ~47d ≈ 0.33%/day ≈ the round-trip cost.
+- **Zero-funding control:** zeroing all funding rates = IDENTICAL bleed → funding is NOT the killer. The signal's gross edge is ~zero; fees/slippage make it net-negative.
+- **Meaning:** the bot has no predictive edge. Pass-rate = P(random spike clears +target before a dip clears a loss-floor). → Max pass-rate = MAX variance (full risk is already optimal). De-risking for "steadiness" is counterproductive. A steadily-rising/never-bust curve is a POSITIVE-expectancy object → **mathematically impossible on this signal set.** ~25% stack is the lottery ceiling, reached.
+- **Only path to "steady" = find genuine positive expectancy** (must pass the edge-detector FIRST, before any tuning). meanrev is least-bad (treads water, not bleeding) = best edge-hunt start. Forex-trend is a candidate BUT lower-vol≠edge (zero-funding proved the problem is the signal) and needs a forex-trend config built (only debunked v5-forex-mr-passlock exists). Honest odds low — retail markets are efficient.
+- **NOT a bug** — engine is forensically clean (05-28 audit). This is the genuine absence of edge.
+
+---
 
 ## ⚠️ 2026-05-29 — BrightFunded-Daily-Loss bringt KEINEN Vorteil (EoD-„+21pp" war Modellfehler) + ehrliche Baseline ~17-19 %
 
