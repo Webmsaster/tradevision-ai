@@ -1,3 +1,40 @@
+# Session Handoff — 2026-05-29 (Steady-Strategy Investigation → ROOT CAUSE: no edge)
+
+## What was done
+
+- **Built the edge-detector** (`scripts/steady_risk_grid.py`) and used it to find THE root cause of all 9 debunks + the stuck pass-rate: shrink position size (`--risk-frac-mult`) with no time-limit (`--max-days 240`); pass-rate rising as risk drops = real edge, falling = variance lottery.
+- **Proved no signal class has positive expectancy** — trend/meanrev/breakout/regime × diamond/amber-max/obsidian/rubin × both FTMO targets ALL fall as risk drops. Zero-funding control = identical → it's the signal, not carry cost. → a steady never-bust strategy is mathematically impossible on this signal set.
+- (Earlier this session, pre-this-finding) DailyEquityGuardian soft-stop (debunked, 0 DL lift); BrightFunded EoD daily-loss modeled → rule-verified → NO advantage over FTMO (caught a +21pp model error); CTI 1-Step modeled → corrected from ~40% to ~5-9% ≈ FTMO (caught a `cpts-trail`-only-blocks-entries error via real `trailing_max_loss` hard bust); first clean train/test OOS validation → baseline HOLDS (not selection- nor design-overfit); sweep parallelism 4→12 jobs (~3×); `fast_oos_search.py` (OOS-protected funnel); executor hardening (equity=None defer, /pause signal-loss).
+
+## Current state
+
+- **Honest deployable numbers (unchanged, now EXPLAINED):** single-account ~7%, Stack-4 ~25% true-seq, funded-EV with +3% banking ≈ break-even. **This ~25% is the variance-lottery ceiling — reached.** No tuning changes the sign of the expectancy.
+- Engine forensically clean (05-28 audit); 474 Rust core tests + Python tests green. This is NOT a bug — it's the genuine absence of edge.
+- Branch `feature/r28-deploy`: **110 commits ahead of origin, NOT pushed.** Working tree: only runtime state artifacts modified (intentional, do not commit).
+- Live-deploy infra ready, but deploying = playing a break-even lottery (no illusion of "steady").
+
+## Next steps
+
+1. **Florian's decision-gate** (strategic + emotional — do NOT push): (A) hunt for genuine edge, (B) accept the lottery and deploy-or-not as break-even, (C) pause/stop.
+2. If (A): forex-trend is the candidate but needs a forex-trend config BUILT (only debunked `v5-forex-mr-passlock` exists) + forex window-planning fixed for weekend gaps + run the edge-detector on it FIRST. `meanrev` is the least-bad crypto start (treads water ≈ zero drift, doesn't bleed). Honest odds: low — retail markets are efficient.
+3. **Stop all crypto-config tuning** — proven no-edge, exhausted across 92+ templates and now 4 signal classes.
+
+## Open issues / blockers
+
+- The decision is Florian's; he was frustrated earlier — present empathetically, no "+Npp possible" promises.
+- Forex window-planning: few windows survive at 2h (data only ~2yr); 10yr daily forex is the better OOS target but needs a daily-tuned config.
+- 110 unpushed commits — push when direction is decided.
+
+## Key files changed
+
+- `scripts/steady_risk_grid.py` (NEW) — the edge-detector (risk × max_days grid, fail-reason breakdown).
+- `scripts/fast_oos_search.py` (NEW) — OOS-protected funnel config search.
+- `engine-rust/ftmo-engine-{core,cli}/src/*` — `trailing_max_loss` hard bust, `daily_loss_eod_hwm`, `intrabar_dd_check`, firm-rule override flags, jobs→12.
+- `tools/ftmo_executor.py` + `test_ftmo_executor.py` — equity=None defer, /pause signal-loss fix.
+- `HANDOFF.md` + memory `project_2026_05_29_negative_expectancy_root_cause.md` — root-cause documentation.
+
+---
+
 # Session Handoff — 2026-05-28/29 (Forensik-Audit + Re-Baseline + DailyEquityGuardian + EoD-DailyLoss BREAKTHROUGH)
 
 **Next session: READ THIS + memory `project_2026_05_29_negative_expectancy_root_cause.md` first.**
