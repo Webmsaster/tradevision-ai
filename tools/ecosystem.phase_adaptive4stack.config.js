@@ -77,6 +77,13 @@ function buildSupervisor(envFile, accountLabel) {
     console.warn(`[pm2-pa4stack] ${envFile} missing FTMO_TF_P1/P2 — skipping`);
     return [];
   }
+  // 2026-05-29 execution-path audit fix: activate the per-account portfolio
+  // risk cap (summed effective risk_frac of open + in-batch positions). With
+  // it disabled (the code default 0), a correlated burst could stack up to
+  // MAX_CONCURRENT_TRADES × RISK_FRAC_HARD_CAP toward the FTMO -5% daily loss
+  // before stops fire. 0.20 leaves room for diversification while bounding the
+  // tail. Override per account via FTMO_PORTFOLIO_MAX_RISK in the .env file.
+  if (!env.FTMO_PORTFOLIO_MAX_RISK) env.FTMO_PORTFOLIO_MAX_RISK = "0.20";
   const accountId = env.FTMO_ACCOUNT_ID || accountLabel;
   const supervisorStateDir = path.resolve(
     REPO_ROOT,

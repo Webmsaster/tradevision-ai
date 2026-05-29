@@ -2068,6 +2068,52 @@ def test_tier_risk_mult_is_actually_applied_to_lot_sizing(monkeypatch, tmp_path)
     )
 
 
+def test_paused_mid_batch_keeps_unplaced_signals_in_remaining(monkeypatch, tmp_path):
+    """2026-05-29 audit fix: a /pause landing mid-batch must KEEP the un-placed
+    signals in the returned `remaining` (so Phase C persists them). The old code
+    wrote them lock-free to PENDING_PATH, where the Phase-C original_keys dedup +
+    the `remaining + new_signals` overwrite silently clobbered them (lost on
+    /resume)."""
+    import ftmo_executor as exe
+    import time as _time
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "EXECUTOR_LOG_PATH", tmp_path / "executor-log.jsonl")
+    monkeypatch.setattr(exe, "DAILY_STATE_PATH", tmp_path / "daily-reset.json")
+    monkeypatch.setattr(exe, "PAUSE_STATE_PATH", tmp_path / "pause-state.json")
+    monkeypatch.setattr(exe, "START_GATE_ENABLED", False)
+    monkeypatch.setattr(exe, "CLUSTER_ONLY_ENABLED", False)
+    monkeypatch.setattr(exe, "mt5_get_equity", lambda: {"equity": 100000.0})
+    monkeypatch.setattr(exe.mt5, "positions_get", lambda *a, **kw: [])
+    # /pause is active: the i=0 signal is processed (i>0 guard skips the check),
+    # then the mid-batch pause fires at i=1, leaving signals #2 and #3 un-placed.
+    monkeypatch.setattr(exe, "is_paused", lambda: True)
+    monkeypatch.setattr(
+        exe, "place_market_order",
+        lambda **kw: exe.OrderResult(True, 111, None, 0.1, 50000.0),
+    )
+
+    def mk(sym):
+        return {
+            "assetSymbol": sym, "sourceSymbol": "BTCUSDT", "direction": "long",
+            "riskFrac": 0.02, "stopPct": 0.01, "tpPct": 0.02,
+            "stopPrice": 49500.0, "tpPrice": 51000.0, "entryPrice": 50000.0,
+            "signalBarClose": int(_time.time() * 1000),
+            "maxHoldUntil": int(_time.time() * 1000) + 24 * 3600_000,
+        }
+
+    pending = [mk("BTC-TREND"), mk("ETH-TREND"), mk("SOL-TREND")]
+    proc = exe._process_signals_unlocked(
+        pending=pending,
+        executed={"executions": []},
+        open_positions={"positions": []},
+    )
+
+    rem_syms = {s.get("assetSymbol") for s in proc["remaining"]}
+    assert {"ETH-TREND", "SOL-TREND"} <= rem_syms, \
+        f"un-placed post-pause signals were lost: remaining={rem_syms}"
+
+
 def test_tier_risk_mult_capped_at_hard_cap(monkeypatch, tmp_path):
     """KRIT-1 follow-on: boost × signal risk must not exceed
     RISK_FRAC_HARD_CAP. If a TIER-S boost would push risk above the cap,

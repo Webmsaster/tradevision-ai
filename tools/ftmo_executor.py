@@ -3749,15 +3749,16 @@ def _process_signals_unlocked(
         # tests using the default state dir's bot-controls.json.
         if i > 0 and is_paused():
             log_event("signals_paused_mid_batch", remaining=len(pending) - i)
-            # Re-queue the remaining un-placed signals so they're not lost.
-            pending_rest = pending[i:]
-            if pending_rest:
-                try:
-                    existing_pending = read_json(PENDING_PATH, {"signals": []})
-                    existing_pending["signals"] = existing_pending.get("signals", []) + pending_rest
-                    write_json(PENDING_PATH, existing_pending)
-                except Exception as e:
-                    log_event("signals_paused_requeue_failed", error=str(e), level="warn")
+            # 2026-05-29 audit fix: keep the un-placed signals by APPENDING them
+            # to the returned `remaining` list — do NOT write PENDING_PATH here.
+            # The old lock-free write was silently clobbered in Phase C: the
+            # caller (process_pending_signals) re-reads PENDING_PATH, drops
+            # anything from the original snapshot via the `original_keys` dedup
+            # (which these re-queued signals are), then overwrites PENDING_PATH
+            # with `remaining + new_signals` — so the re-queue vanished on
+            # /resume. `remaining` is NOT dedup-filtered, so appending here
+            # survives the Phase-C merge and the signals are correctly kept.
+            remaining.extend(pending[i:])
             break
         # 2026-05-23 Wave2 fix (KRIT-1): emit a `signal_received` event so
         # health_monitor.check_real_liveness can detect the signals-but-zero-
