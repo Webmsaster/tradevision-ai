@@ -1507,6 +1507,9 @@ def test_start_gate_blocks_pending_before_challenge_start(monkeypatch, tmp_path)
     monkeypatch.setattr(exe, "START_GATE_MIN_BREADTH", 4)
     monkeypatch.setattr(exe, "START_GATE_MIN_MAJORS", 3)
     monkeypatch.setattr(exe, "START_GATE_MAX_AGE_MIN", 180.0)
+    # audit-fix precondition: valid equity so the new equity-None defer guard in
+    # the signal path doesn't short-circuit the start-gate logic under test.
+    monkeypatch.setattr(exe, "mt5_get_equity", lambda: {"equity": 100000.0})
 
     exe.write_json(exe.START_GATE_PATH, {
         "ts": int(_time.time() * 1000),
@@ -1529,6 +1532,37 @@ def test_start_gate_blocks_pending_before_challenge_start(monkeypatch, tmp_path)
     reason = proc["executed"]["executions"][0]["reason"]
     assert ("start_gate_warmup" in reason or "start_gate_red" in reason), \
         f"unexpected block reason: {reason}"
+
+
+def test_signals_deferred_when_equity_unavailable(monkeypatch, tmp_path):
+    """2026-05-29 audit fix: when mt5_get_equity() returns equity=None (poisoned/
+    reconnecting account), the signal path must NOT fabricate $100k. It must
+    defer — keep the signals pending for retry, place nothing, and NOT write a
+    fake-anchored daily-reset. The old `acct["equity"] or CHALLENGE_START_BALANCE`
+    sized orders + the DL gate against a fabricated $100k."""
+    import ftmo_executor as exe
+
+    monkeypatch.setattr(exe, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(exe, "DAILY_STATE_PATH", tmp_path / "daily-reset.json")
+    monkeypatch.setattr(exe, "PAUSE_STATE_PATH", tmp_path / "pause-state.json")
+    monkeypatch.setattr(exe, "EXECUTOR_LOG_PATH", tmp_path / "executor-log.jsonl")
+    monkeypatch.setattr(exe, "mt5_get_equity", lambda: {"equity": None})
+
+    pending = [
+        {"assetSymbol": "BTC", "direction": "long"},
+        {"assetSymbol": "ETH", "direction": "long"},
+    ]
+    proc = exe._process_signals_unlocked(
+        pending=pending,
+        executed={"executions": []},
+        open_positions={"positions": []},
+    )
+
+    assert proc["remaining"] == pending, "signals must be kept pending for retry"
+    assert proc["executed"]["executions"] == [], "nothing may be placed/executed"
+    assert proc["placed_markers"] == []
+    assert not (tmp_path / "daily-reset.json").exists(), \
+        "must not anchor daily-reset to a fabricated $100k equity"
 
 
 def test_start_gate_allows_after_start_marker(monkeypatch, tmp_path):
@@ -1736,6 +1770,7 @@ def test_cluster_only_blocks_new_entries_after_start_marker(monkeypatch, tmp_pat
     monkeypatch.setattr(exe, "START_GATE_MIN_MAJORS", 3)
     monkeypatch.setattr(exe, "START_GATE_MAX_AGE_MIN", 180.0)
     monkeypatch.setattr(exe, "CLUSTER_ONLY_MIN_HISTORY_HOURS", 23.0)
+    monkeypatch.setattr(exe, "mt5_get_equity", lambda: {"equity": 100000.0})
 
     exe.write_json(tmp_path / "start-gate-state.json", {"started": True})
     base_ms = int(_time.time() * 1000) - int(23.5 * 3600 * 1000)
@@ -1991,6 +2026,7 @@ def test_tier_risk_mult_is_actually_applied_to_lot_sizing(monkeypatch, tmp_path)
     monkeypatch.setattr(exe, "MOCK_MODE", True)
     monkeypatch.setattr(exe, "TIER_S_RISK_MULT", 2.0)
     monkeypatch.setattr(exe, "RISK_FRAC_HARD_CAP", 0.10)
+    monkeypatch.setattr(exe, "mt5_get_equity", lambda: {"equity": 100000.0})
     monkeypatch.setattr(exe, "EXECUTOR_LOG_PATH", tmp_path / "executor-log.jsonl")
     monkeypatch.setattr(exe, "DAILY_STATE_PATH", tmp_path / "daily-reset.json")
     monkeypatch.setattr(exe, "PAUSE_STATE_PATH", tmp_path / "pause-state.json")
@@ -2054,6 +2090,7 @@ def test_tier_risk_mult_capped_at_hard_cap(monkeypatch, tmp_path):
     monkeypatch.setattr(exe, "MOCK_MODE", True)
     monkeypatch.setattr(exe, "TIER_S_RISK_MULT", 3.0)      # aggressive boost
     monkeypatch.setattr(exe, "RISK_FRAC_HARD_CAP", 0.05)   # firm 5% cap
+    monkeypatch.setattr(exe, "mt5_get_equity", lambda: {"equity": 100000.0})
     monkeypatch.setattr(exe, "EXECUTOR_LOG_PATH", tmp_path / "executor-log.jsonl")
     monkeypatch.setattr(exe, "DAILY_STATE_PATH", tmp_path / "daily-reset.json")
     monkeypatch.setattr(exe, "PAUSE_STATE_PATH", tmp_path / "pause-state.json")

@@ -3641,7 +3641,24 @@ def _process_signals_unlocked(
     after writes succeed).
     """
     acct = mt5_get_equity()
-    account_equity = acct["equity"] or CHALLENGE_START_BALANCE
+    # 2026-05-29 audit fix: mt5_get_equity() returns equity=None on a poisoned /
+    # reconnecting account (it treats equity<=0 as a disconnect). The old
+    # `acct["equity"] or CHALLENGE_START_BALANCE` fabricated a $100k equity here,
+    # which (a) sized orders against fake equity, (b) passed the DL/TL gate
+    # against a real account possibly near a breach, and (c) poisoned
+    # handle_daily_reset's day-start anchor for the whole Prague day. The main
+    # loop (L6741) already guards equity-None; the signal path did not. Defer:
+    # skip processing and KEEP the signals pending so they retry once equity
+    # reads cleanly again.
+    if acct["equity"] is None:
+        log_event("signals_deferred_equity_unavailable", count=len(pending))
+        return {
+            "remaining": list(pending),
+            "executed": executed,
+            "open_positions": open_positions,
+            "placed_markers": [],
+        }
+    account_equity = acct["equity"]
     day_start_usd = handle_daily_reset(account_equity)
 
     # iter236+: if target reached, skip all new signal trades. The pause logic
