@@ -33,7 +33,15 @@ Florian fragte, ob die Projekt-Grundlage (nicht heute) Test-Fehler hat. Größte
 - **→ Baseline ist NICHT selektions-overfit. Die ~25% Stack / ~6-9% Single sind ECHT, halten OOS.** Erste saubere OOS des Projekts. Die 9 Debunks holten 97%→25%; dieser Boden hält jetzt OOS = echter Floor, nicht nächste Illusion. Cache auch verifiziert (frisch, 40 assets, 2020-09→2026-05).
 - **Limits:** validiert SELEKTION, nicht config-DESIGN (templates/TP per GA auf voller Historie → volle OOS bräuchte GA-Rerun nur-train); Test-Periode 2024-2026 war günstiges Trend-Regime; close-based + live-drift −3-5pp gelten weiter.
 
-**Session-Gesamtbild (29.05.):** Baseline ~25% Stack / ~7% Single ist **OOS-belastbar**; mit +3%-Profit-Banking funded-EV ≈ **break-even**; FTMO ≈ BrightFunded (Firm kein Hebel); intra-bar-Over-Pessimismus korrigiert. Fundament vertrauenswürdiger als die Debunk-Historie nahelegt. Florians 2 Catches (EoD-Modell, intra-bar-Over-Count) + die OOS-Frage waren die wertvollsten Beiträge.
+## ✅ 2026-05-29 — DESIGN-Overfit-Test (getunte Knobs): auch KEIN Overfit
+
+Florians letzter Winkel: validiert die SELEKTION-OOS nur die config-Auswahl, oder auch das Parameter-DESIGN? Test (`scripts/oos_design_gen.sh` + `oos_design_analyze.py`): die getunten Knobs (tp_mult 0.95-1.15, votes1, kelly — auf voller Historie optimiert) in den Suchraum, Stack-4 auf Train wählen → auf Test messen.
+
+- **step=2 (vergleichbar): TRAIN 29,7% → TEST 32,9%** (Gap −3,2%, Test höher, hält). vs base-knob-OOS 23,9/25,2 → die validen Knobs addieren **~+8pp und transferieren OOS** (kein Overfit). (step=3 gab 33,8→41,2 — absolut unzuverlässig, Debunk #7; nur die Train→Test-Beziehung zählt.)
+- **→ WEDER Selektion NOCH Design overfit.** Beide Achsen test ≥ train. Der deploybare Knob-Stack ist OOS ~33% (nicht nur 25% base-knob).
+- Einziger nicht-runtime-testbarer Rest: baked per-asset-TP in Templates — aber die Templates transferieren OOS (indirekte Evidenz ok).
+
+**Session-Gesamtbild (29.05.) — FINAL:** Baseline ist auf ALLEN testbaren Achsen OOS-validiert: Selektion ✓, Design/Knobs ✓, Cache ✓, Kosten/Lookahead auditiert ✓. **Kein Fehler auffindbar, nicht zu pessimistisch, eher minimal optimistisch für live (drift −3-5pp).** Ehrliche Zahlen: Stack ~25% (base) bis ~33% (validierte Knobs), Single ~7-12%, funded-EV mit +3%-Banking ≈ break-even bis leicht positiv. FTMO ≈ BrightFunded (Firm kein Hebel). Florians 3 Beiträge (EoD-Skepsis, „richtig getestet?", „vor heute?"→OOS) haben 2 Modellfehler gefangen UND das Fundament validiert — der wertvollste Teil der Session.
 
 ## 🔄 2026-05-29 Resume (nach PC-Crash 16:00) — DailyEquityGuardian abgeschlossen (committed `bfd5b73`)
 
