@@ -24,6 +24,17 @@ Florians Idee: BrightFundeds Daily-Loss modellieren. **Wichtigste Lehre: erst ei
 - pnl.rs intra-bar-Check als single-asset/worst-case-only dokumentiert. Entscheidung: **bei FTMO bleiben**, Energie in Profit-Banking + Akquise-Kosten statt Strategie-Tweaks.
 - **Bottom line:** Firm-Wechsel ist kein Hebel; aber „lohnt sich ein Account?" = ~break-even (marginal), NICHT klarer Verlust. Code commit-ready.
 
+## ✅ 2026-05-29 — ERSTE saubere Out-of-Sample-Validierung: Baseline HÄLT (Florian: „hatten wir VOR heute Test-Fehler?")
+
+Florian fragte, ob die Projekt-Grundlage (nicht heute) Test-Fehler hat. Größter nie-gefixter Verdacht: **In-Sample-Selektion** (Champions immer auf voller Historie gewählt, kein train/test-split — je).
+
+- **Test** (`scripts/oos_validation.py`, neu): 6 clean configs × 3 baskets, base-knobs, FTMO close-based step=2. Greedy-Stack-4 auf TRAIN (frühe 70%, 2020-2024) wählen → auf TEST (späte 30%, 2024-2026, nie für Selektion genutzt) messen.
+- **Ergebnis: TRAIN 23,9% → TEST 25,2% (Gap −1,3%, Test leicht HÖHER). Single 8,6%→9,3%. Avg/18 configs 5,2%→6,1%.**
+- **→ Baseline ist NICHT selektions-overfit. Die ~25% Stack / ~6-9% Single sind ECHT, halten OOS.** Erste saubere OOS des Projekts. Die 9 Debunks holten 97%→25%; dieser Boden hält jetzt OOS = echter Floor, nicht nächste Illusion. Cache auch verifiziert (frisch, 40 assets, 2020-09→2026-05).
+- **Limits:** validiert SELEKTION, nicht config-DESIGN (templates/TP per GA auf voller Historie → volle OOS bräuchte GA-Rerun nur-train); Test-Periode 2024-2026 war günstiges Trend-Regime; close-based + live-drift −3-5pp gelten weiter.
+
+**Session-Gesamtbild (29.05.):** Baseline ~25% Stack / ~7% Single ist **OOS-belastbar**; mit +3%-Profit-Banking funded-EV ≈ **break-even**; FTMO ≈ BrightFunded (Firm kein Hebel); intra-bar-Over-Pessimismus korrigiert. Fundament vertrauenswürdiger als die Debunk-Historie nahelegt. Florians 2 Catches (EoD-Modell, intra-bar-Over-Count) + die OOS-Frage waren die wertvollsten Beiträge.
+
 ## 🔄 2026-05-29 Resume (nach PC-Crash 16:00) — DailyEquityGuardian abgeschlossen (committed `bfd5b73`)
 
 Florians PC war mitten in der DailyEquityGuardian-Implementierung gecrasht. Resume:
