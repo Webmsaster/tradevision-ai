@@ -26,7 +26,7 @@
     "live:check": "node ./node_modules/vitest/vitest.mjs run --config vitest.scripts.config.ts scripts/liveCheck.test.ts --reporter=verbose"
   },
   "dependencies": {
-    "@sentry/nextjs": "^10.52.0",
+    "@sentry/nextjs": "^10.55.0",
     "@supabase/ssr": "^0.10.2",
     "@supabase/supabase-js": "^2.103.0",
     "next": "^16.1.6",
