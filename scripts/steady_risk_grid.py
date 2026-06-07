@@ -25,7 +25,7 @@ SWEEP = ROOT / "engine-rust/target/release/ftmo-sweep"
 CACHE = ROOT / "scripts/cache_bakeoff"
 
 
-def run_cell(out_dir, config, symbols, target, step, mult, max_days, cache=CACHE, signals="regime"):
+def run_cell(out_dir, config, symbols, target, step, mult, max_days, cache=CACHE, signals="regime", timeframe=None):
     out = out_dir / f"m{mult}_md{max_days}.jsonl"
     if not out.exists() or out.stat().st_size == 0:
         cmd = [
@@ -36,6 +36,8 @@ def run_cell(out_dir, config, symbols, target, step, mult, max_days, cache=CACHE
             "--max-days", str(max_days), "--risk-frac-mult", str(mult),
             "--out", str(out),
         ]
+        if timeframe:
+            cmd += ["--timeframe", timeframe]
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     rows = [json.loads(l) for l in out.read_text().splitlines() if l.strip()] if out.exists() else []
     n = len(rows)
@@ -67,6 +69,9 @@ def main():
     ap.add_argument("--out-dir", default="/tmp/steady_grid")
     ap.add_argument("--cache-dir", default=str(CACHE))
     ap.add_argument("--signals", default="regime")
+    ap.add_argument("--timeframe", default=None,
+                    help="pass-through to ftmo-sweep (e.g. 'daily', '2h'); needed so "
+                         "the window-planner uses the right bars/day for non-30m data")
     args = ap.parse_args()
 
     cache = Path(args.cache_dir)
@@ -80,7 +85,8 @@ def main():
     results = {}
     with ThreadPoolExecutor(max_workers=args.jobs) as ex:
         futs = {ex.submit(run_cell, out_dir, args.config, args.symbols, args.target,
-                          args.step, m, md, cache, args.signals): (m, md) for m, md in cells}
+                          args.step, m, md, cache, args.signals, args.timeframe): (m, md)
+                for m, md in cells}
         for f in futs:
             r = f.result()
             results[(r[0], r[1])] = r

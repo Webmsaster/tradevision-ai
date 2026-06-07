@@ -1,3 +1,70 @@
+# Session Handoff — 2026-06-07 (Option A: edge-hunt extended to FOREX + GOLD → still no edge)
+
+## What was done
+
+Florian chose decision-gate option (A) "hunt for genuine edge" ("bau das schnell
+mit mehreren agents es muss was geben"). Extended the edge-detector beyond crypto
+to forex majors + gold, with multi-agent support (data-quality audit + literature
+research ran in parallel).
+
+- **Built 4 measurement-instrument configs** in `engine-rust/ftmo-engine-core/src/templates.rs`
+  (NEUTRAL: invert=false, bidirectional, forex/gold costs — NOT deploy configs):
+  `v5-forex-neutral-2h`, `v5-forex-neutral-daily`, `v5-gold-neutral-daily`. Reason:
+  the debunked `v5-forex-mr-passlock` baked per-asset invert flags that contaminate
+  any non-MR `--signals` mode. Daily data needs its own config (`bar_minutes=1440`;
+  `--timeframe` only selects the file, doesn't override bar_minutes).
+- **Added `--timeframe` passthrough** to `scripts/steady_risk_grid.py` (needed so the
+  window-planner uses the right bars/day for daily/2h non-30m data).
+- **Built `scripts/tsmom_edge_probe.py`** — engine-free Time-Series-Momentum probe
+  (no TP-cap confound). The decisive academic-standard edge test.
+- **Fetched real gold data** (`scripts/fetch_gold_daily.py` → PAXG proxy,
+  `cache_forex_indices/GOLD_daily.json`, 2110 bars 2020-2026; old GOLD_1h was 86
+  broken bars). Gold was the literature's strongest remaining price-only candidate.
+- **rustc ICE workaround:** normal `cargo build` ICEs (compiler bug in the diagnostic
+  renderer triggered by pre-existing dead-code warnings `cost_bp_for`/`slippage_bp_for`/
+  `swap_bp_per_day_for` in templates.rs). Build with `--message-format=short` to avoid it.
+
+## Current state — option A is EMPIRICALLY DEAD (3 convergent lines)
+
+1. **Engine edge-detector:** every forex + gold cell shows the LOTTERY signature
+   (pass% max at full risk, →0 as risk drops). forex trend daily P1 19→0 / P2 39→0;
+   breakout 10→0; meanrev 0 (treads water); 2h trend 0; gold trend P1 24→0 / P2 54→0.
+2. **TSMOM probe (forex daily, drift-removed long+short):** Sharpe ~0.09-0.20 in-sample,
+   INVERTS negative OOS, t-stat never significant. The tiny apparent edge is static
+   USD drift, not trend.
+3. **Literature (cited):** FX trend de-biased Sharpe ~0.05; real edge is cross-sectional
+   (20-48 ccy)+carry, not a 6-major price engine; post-pub OOS +0.39→−0.32; asymmetric
+   −5%/−10% rule makes pass/fail variance-dominated for any small edge.
+
+**GOLD = least-dead but not a savior:** TSMOM headline 6mo-trend full-Sharpe 0.95 (t=2.22)
+is a RECENCY ARTIFACT — train70 Sharpe 0.27 vs test30 2.29 = the 2024-26 parabolic blow-off
+(1900→4300), the exact V5_ONYX/V12_30M_OPT_STOCK trap. Honest train-period gold trend Sharpe
+~0.2-0.3 (real but too small vs drawdown rule). Edge-detector gate confirms gold falls like
+the rest. A single gold-trend stack-leg is more defensible than another crypto config, but
+eyes-open on the recency caveat + gold's high vol trips the −5% daily rule.
+
+## Next steps / the honest reframe
+
+- **The lever was never a bigger edge — the GAME is variance-dominated.** Confirms the
+  2026-05-29 root cause. Real +EV path = operational/portfolio math (funded-account
+  ~break-even-to-positive in operation, profit-banking, cheaper acquisition / fee-refund,
+  multi-account stacking), NOT a magic config.
+- If Florian still wants to push edge-hunting: the ONLY evidence-backed remaining angles
+  are (a) a bigger commodity/index universe for cross-sectional momentum (needs real
+  multi-asset data, not 6 majors), (b) carry — but wrong skew for the drawdown rule.
+  Honest odds: low. Stop price-only single-/few-asset signal tuning.
+- Data: forex audit clean (weekend gaps normal; ~3-6% daily bars have open/close marginally
+  outside [low,high] — TSMOM winsorizes so no fake edge leaked).
+
+## Git
+
+- Branch `feature/r28-deploy`, still **NOT pushed** (110+ commits ahead). Session artifacts
+  committed locally (configs + 2 probe scripts + gold data + edge-detector `--timeframe`).
+  Do NOT push without Florian's go.
+- Memory: `project_2026_06_07_forex_gold_no_edge.md`.
+
+---
+
 # Session Handoff — 2026-05-29 (Steady-Strategy Investigation → ROOT CAUSE: no edge)
 
 ## What was done

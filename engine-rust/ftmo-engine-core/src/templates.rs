@@ -1506,6 +1506,100 @@ pub fn v5_forex_mr_passlock_huge_tight() -> EngineConfig {
     cfg
 }
 
+/// 2026-06-07 EDGE-DETECTOR SUBSTRATE — neutral forex base. NOT a deploy
+/// config: a measurement instrument for `scripts/steady_risk_grid.py`. The
+/// debunked V5_FOREX_MR family baked per-asset `invert_direction` (USDJPY/
+/// USDCAD = true) tuned for mean-reversion — which CONTAMINATES any other
+/// `--signals` mode (a trend signal on an inverted pair tests anti-trend).
+/// This base is fully NEUTRAL so `--signals trend|meanrev|breakout|regime|
+/// forex-mr` each express their NATIVE signal direction, letting the
+/// edge-detector measure each signal class's true expectancy on forex.
+///
+/// All 6 majors: invert_direction=false, bidirectional (long+short enabled),
+/// forex costs (2bp commission / 1bp slippage / 1bp-per-day swap), PASSLOCK +
+/// liveCaps inherited from the AMBER base. Moderate fixed tp/stop; ATR-stop
+/// (56,2.0) + trailing handle volatility adaptivity. The edge-detector scales
+/// position size via --risk-frac-mult, so absolute tp/stop only set trade
+/// structure — the SIGN of net drift is what the probe reads.
+fn forex_neutralize(cfg: &mut EngineConfig, tp: f64, stop: f64) {
+    for a in cfg.assets.iter_mut() {
+        a.invert_direction = false;
+        a.disable_short = false;
+        a.disable_long = false;
+        a.tp_pct = Some(tp);
+        a.stop_pct = Some(stop);
+        // keep forex cost_bp/slippage_bp/swap_bp_per_day from the MR base
+    }
+    cfg.invert_direction = false;
+}
+
+/// 2h neutral forex substrate (2yr data: scripts/cache_forex_2h_split).
+pub fn v5_forex_neutral_2h() -> EngineConfig {
+    let mut cfg = v5_forex_mr_passlock(); // 6 majors + forex costs + PASSLOCK + bar_minutes=120
+    cfg.label = "V5_FOREX_NEUTRAL_2H".into();
+    forex_neutralize(&mut cfg, 0.025, 0.015);
+    // bar_minutes=120, hold_bars=120, allowed_hours_utc=None already set by MR base.
+    // forex-mr signal params (wall-clock 10d BB / 2d cooldown on 2h bars):
+    cfg.mean_reversion_source = Some(crate::config::MeanReversionSource {
+        period: 60,
+        oversold: 20.0,
+        overbought: 80.0,
+        cooldown_bars: 24,
+        size_mult: 1.0,
+    });
+    cfg
+}
+
+/// 2026-06-07 GOLD edge-detector substrate. Single asset (PAXG gold proxy,
+/// scripts/cache_forex_indices/GOLD_daily.json). Literature flags commodity/
+/// gold trend as the strongest price-only candidate (Lempériere et al.: gold
+/// trend Sharpe ~0.8, de-biased ~0.33 vs FX ~0.05). Neutral/bidirectional so
+/// `--signals trend|breakout|meanrev` express native direction. Wider tp/stop
+/// for gold's ~1.3%/day vol. NOT a deploy config — a measurement instrument.
+pub fn v5_gold_neutral_daily() -> EngineConfig {
+    let mut cfg = v5_forex_neutral_daily();
+    cfg.label = "V5_GOLD_NEUTRAL_DAILY".into();
+    cfg.assets = vec![AssetConfig {
+        symbol: "GOLD".into(),
+        source_symbol: Some("GOLD".into()),
+        tp_pct: Some(0.04),
+        stop_pct: Some(0.025),
+        risk_frac: 0.4,
+        invert_direction: false,
+        disable_short: false,
+        disable_long: false,
+        trigger_bars: Some(1),
+        cost_bp: Some(5.0),
+        slippage_bp: Some(2.0),
+        swap_bp_per_day: Some(1.0),
+        ..AssetConfig::default()
+    }];
+    cfg.bar_minutes = 1440;
+    cfg
+}
+
+/// daily neutral forex substrate (10yr data: scripts/cache_forex). The long
+/// history is the project's best out-of-sample target for EDGE DETECTION
+/// (the SIGN of expectancy needs many independent windows). NOTE: daily bars
+/// understate the FTMO intraday DailyLoss rule (close-based MTM hides the
+/// intrabar swing), so this substrate is for *edge presence*, not realistic
+/// pass-rate — confirm any positive finding on the 2h substrate.
+pub fn v5_forex_neutral_daily() -> EngineConfig {
+    let mut cfg = v5_forex_neutral_2h();
+    cfg.label = "V5_FOREX_NEUTRAL_DAILY".into();
+    cfg.bar_minutes = 1440;
+    cfg.hold_bars = 30; // 30 daily bars = 30 days max hold (let trends run)
+    // forex-mr params re-scaled to daily bars (10d BB / 2d cooldown):
+    cfg.mean_reversion_source = Some(crate::config::MeanReversionSource {
+        period: 10,
+        oversold: 20.0,
+        overbought: 80.0,
+        cooldown_bars: 2,
+        size_mult: 1.0,
+    });
+    cfg
+}
+
 /// 2026-05-23 V5_AMBER_MAX_PASSLOCK_SHORTS_ONLY — short-only variant
 /// of V5_AMBER_MAX_PASSLOCK. Hypothesis: AMBER trades long-pullback-recovery
 /// (invert_direction=true → engine longs when voters fire SHORT, in bearish
@@ -2331,6 +2425,9 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "v5-forex-mr-passlock-agg-narrow" => v5_forex_mr_passlock_agg_narrow(),
         "v5-forex-mr-passlock-tight-stop" => v5_forex_mr_passlock_tight_stop(),
         "v5-forex-mr-passlock-huge-tight" => v5_forex_mr_passlock_huge_tight(),
+        "v5-forex-neutral-2h" => v5_forex_neutral_2h(),
+        "v5-forex-neutral-daily" => v5_forex_neutral_daily(),
+        "v5-gold-neutral-daily" => v5_gold_neutral_daily(),
         "2h-trend-v5-amber-max-passlock-intraday-us-peak" => v5_amber_max_passlock_intraday_us_peak(),
         "2h-trend-v5-amber-max-passlock-intraday-liquid" => v5_amber_max_passlock_intraday_liquid(),
         "2h-trend-v5-amber-max-passlock-intraday-ny-only" => v5_amber_max_passlock_intraday_ny_only(),
@@ -2428,6 +2525,9 @@ pub fn known_selectors() -> &'static [&'static str] {
         "v5-forex-mr-passlock-agg-narrow",
         "v5-forex-mr-passlock-tight-stop",
         "v5-forex-mr-passlock-huge-tight",
+        "v5-forex-neutral-2h",
+        "v5-forex-neutral-daily",
+        "v5-gold-neutral-daily",
         "2h-trend-v5-amber-max-passlock-intraday-us-peak",
         "2h-trend-v5-amber-max-passlock-intraday-liquid",
         "2h-trend-v5-amber-max-passlock-intraday-ny-only",
