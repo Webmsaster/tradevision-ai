@@ -38,10 +38,39 @@ COMMODITIES = {"USOIL.cash", "UKOIL.cash", "NATGAS.cash", "HEATOIL.c",
 MIN_CARRY_ANN = 1.5      # %/yr; below this the side is noise, skip
 
 
+def inverse_vol_factors() -> dict[str, float]:
+    """Per-instrument 1/vol from the 15y history cache (clipped daily rets).
+    Falls back to {} (equal weight) if /tmp/commod_hist is absent."""
+    import math
+    hist_map = {"USOIL.cash": "CL", "UKOIL.cash": "BZ", "NATGAS.cash": "NG",
+                "HEATOIL.c": "HO", "SOYBEAN.c": "ZS", "CORN.c": "ZC",
+                "WHEAT.c": "ZW", "COCOA.c": "CC", "COFFEE.c": "KC",
+                "COTTON.c": "CT", "SUGAR.c": "SB", "XAU/USD": "GC",
+                "XAG/USD": "SI"}
+    out = {}
+    for code, sym in hist_map.items():
+        p = Path("/tmp/commod_hist") / f"{sym}.json"
+        if not p.exists():
+            continue
+        rows = json.loads(p.read_text())
+        closes = [c for _, c in rows]
+        rets = [max(-0.5, min(0.5, b / a - 1.0))
+                for a, b in zip(closes, closes[1:]) if a]
+        m = sum(rets) / len(rets)
+        sd = math.sqrt(sum((x - m) ** 2 for x in rets) / len(rets))
+        if sd > 0:
+            out[code] = 1.0 / sd
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--capital", type=float, default=10_000.0,
                     help="account size in USD (Free Trial default 10k... set to yours)")
+    ap.add_argument("--vol-weighted", action="store_true",
+                    help="inverse-vol weights within each side (recommended: "
+                         "+5pp funded, enables lev 1.7-2.0 with -3.5%% daily "
+                         "stop for 2.6-3.5mo median time-to-funded)")
     args = ap.parse_args()
 
     syms = {s["code"]: s for s in get_json(URL)["data"]["symbols"]
@@ -65,9 +94,12 @@ def main():
     if not longs or not shorts:
         sys.exit("book not constructible (need both sides) — market regime check")
 
+    iv = inverse_vol_factors() if args.vol_weighted else {}
     for group, w_side in ((longs, 0.5), (shorts, 0.5)):
+        tot = sum(iv.get(c["code"], 1.0) for c in group) if iv else len(group)
         for c in group:
-            c["weight"] = w_side / len(group)
+            c["weight"] = w_side * (iv.get(c["code"], 1.0) / tot if iv
+                                    else 1.0 / len(group))
             notional = c["weight"] * args.capital
             c["lots"] = round(notional / (c["contractSize"] * c["price"]), 2)
             c["notional"] = notional
