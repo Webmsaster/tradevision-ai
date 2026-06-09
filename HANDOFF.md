@@ -1,3 +1,46 @@
+# Session Handoff — 2026-06-09 PART 2 ("mach mich profitabel": survivorship fix + vehicle decision DONE)
+
+Florian approved the 3-step plan. Steps 1+2 completed this session:
+
+## 1. Survivorship fix ✅ (commit a40212b)
+
+All 145 delisted Binance USDT perps fetched (fapi still serves them; LUNA's -94%
+days verified), 78 qualified by objective volume floor, universe 27→105, winsor
+±95%. **FUNDING signal survives: net@10bp S 1.02 t 2.33; exchange variant
+(price+carry) S 1.41 t 3.23 = 37.6%/yr, only 2022 negative (-9.2%).** Real tails
+now visible: worst month 2022-05 -29% (the predicted LUNA hit), maxDD -42%.
+XSMOM degrades to diversifier-only (test30 S 0.33). Death-spiral guard (ONE
+pre-registered value, no sweep): marginal (S 1.10) — deliberately NOT iterating
+guards. 2025/26 strength (+80/+99%) comes from shorting overheated NEW meme
+perps (AI16Z/VINE class). Tooling: `scripts/fetch_delisted_perps.py`.
+
+## 2. Vehicle decision ✅ (primary-source research, memory `reference-prop-firm-crypto-holding-costs.md`)
+
+- **FTMO: DEAD** for this signal — swapLong=swapShort=**-30%/yr** on all 31
+  crypto CFDs (own symbol API) = ~30%/yr drag on a held 1.0x book; also no meme
+  listings, no carry income. (Retro-explains funded-account bleed of the old bot.)
+- Breakout Prop: ~12%/yr swap + no API → dead/marginal.
+- **HyroTrader: only viable prop** (real Bybit perps via API, no firm swap, real
+  funding, 700+ pairs, no position limits) — but 4%-daily/6%-total DD corset
+  forces ~1/5-1/7 risk scaling; option for LATER leverage after live validation.
+- **Binance/Bybit own capital: the natural first vehicle** (~1-2%/yr costs).
+
+## 3. Next steps (pending Florian: it's his money/account)
+
+1. Build a simple daily-rebalance executor (ccxt, ~150 lines: funding ranking →
+   target weights → orders; NOT the MT5 bot) → paper/micro-live €500-1k on
+   Binance or Bybit for 4-8 weeks → measure slippage drift (esp. meme perps).
+2. If live Sharpe holds: scale own capital, THEN evaluate HyroTrader $100k
+   ($579, refundable) as leverage — first confirm via support that their
+   challenge env simulates Bybit funding.
+3. Expectations (honest): historical 37.6%/yr on 1.0x gross with -28% tail
+   months and a flat-to-negative 2022-style regime possible. At €5k → ~€150/mo
+   average. First genuinely +EV deployable thing in the project; NOT a lottery.
+
+Branch NOT pushed (113+ ahead). Memory: `project-2026-06-09-xsec-edge-candidate.md`.
+
+---
+
 # Session Handoff — 2026-06-09 (CROSS-SECTIONAL probe: FIRST candidate to survive the debunk checklist)
 
 ## What was done
