@@ -1,3 +1,29 @@
+# Session Handoff — 2026-06-10 ~00:45 (🚀 FTMO-DEMO LIVE: Buch deployed, Guard läuft, Pipeline komplett)
+
+Fortsetzung der Nacht: Free Trial verbunden, Carry-Buch IST LIVE auf $100k-Demo.
+
+## Live-Status
+
+- 11 Positionen $101.5k gross (Energie gefüllt 00:15; Agri füllt ~02:00, Softs ~09:00 automatisch)
+- Windows-Guard-Loop alle 5 min (schtasks `ftmo_carry_loop`): -3.5%-Equity-Stop, Auto-Fill, Diff-Rebalance
+- Daily-Pipeline Linux-Cron 03:45: live Swaps → Pilot-Buch → MT5-Spec-Lots → C:\carry_book.json
+- Crons gesamt: 03:00 xsec | 03:15 xsec-exec | 03:30 swap-logger | 03:45 carry-pipeline
+- Erste Swap-Gutschrift: Nacht 10.→11.06. im Demo-Statement (= Beginn Netto-Prämien-Messung, 14d Trial)
+
+## Finale Zahlen (MC, Live-Buch 11 Legs, empirisch validierter Stop)
+
+lev 1.4: 49% funded / 4.6mo | lev 1.7: 42% / 3.2mo (@konservativ 5%/yr Netto-Prämie; @8%: 56%/49%)
+P2-asymmetrischer Hebel: bringt nichts. Energie-Long-Konzentration 36% (geloggt, kein Cap).
+
+## MT5-Lektionen (Stunden gekostet!)
+
+FTMO-Installer = generisch → Server via Datei→KONTO ERÖFFNEN→Brokersuche. Python-IPC braucht
+GRÜNEN Algo-Handel-Button. WSL→MT5 via schtasks. 10018 = Markt zu. Specs: mt5_specs.json.
+
+Commits bis 92ff619 gepusht. Memory: project-2026-06-09-ftmo-denkfehler-audit.md (Nachträge 1-12).
+
+---
+
 # Session Handoff — 2026-06-09 PART 3 (Denkfehler-Audit + FTMO-Commodity-Carry: Beweiskette komplett bis auf Total-Return)
 
 Florians /goal: "mach mich mit ftmo profitabel, irgendwo muss ein denkfehler sein, es muss edge geben" — beides bestätigt:
