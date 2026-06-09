@@ -92,8 +92,18 @@ def book_returns(book: str = "ew") -> tuple[list[float], float]:
     return [r - mean for r in rets], carry_ratio
 
 
-def run_phase(rets, rng, target, premium_d, lev, block=10, daily_stop=None):
-    """One phase: (passed, trading_days_used)."""
+STOP_SLIP = 1.15      # stop realises stop*1.15 (overnight gaps, slippage)
+
+
+def run_phase(rets, rng, target, premium_d, lev, block=10, daily_stop=None,
+              bridge_vol=None):
+    """One phase: (passed, trading_days_used).
+
+    bridge_vol: book daily vol at this leverage. When set together with
+    daily_stop, days that CLOSE above the stop still get stopped with the
+    Brownian-bridge touch probability exp(-2*s*(s+r)/sigma^2) — without this
+    the close-based cap is a fantasy asymmetry that inflates high leverage
+    (naive model showed lev 5 = 62% funded; corrected = 5.7%)."""
     eq, n = 1.0, len(rets)
     days = 0
     while days < MAX_DAYS:
@@ -101,7 +111,13 @@ def run_phase(rets, rng, target, premium_d, lev, block=10, daily_stop=None):
         for k in range(block):
             r = rets[start + k] * lev + premium_d
             if daily_stop is not None:
-                r = max(r, -daily_stop)  # intraday stop realises the cap
+                if r <= -daily_stop:
+                    r = -daily_stop * STOP_SLIP
+                elif bridge_vol:
+                    p_touch = math.exp(-2 * daily_stop * (daily_stop + r)
+                                       / (bridge_vol * bridge_vol))
+                    if rng.random() < p_touch:
+                        r = -daily_stop * STOP_SLIP
             elif r <= DL_SOFT:
                 return False, days       # daily loss (close-based proxy)
             eq *= (1.0 + r)
@@ -120,6 +136,9 @@ def main():
     ap.add_argument("--book", choices=["ew", "vw"], default="ew")
     ap.add_argument("--daily-stop", type=float, default=None,
                     help="intraday equity stop, e.g. 0.035 (fraction of equity)")
+    ap.add_argument("--no-bridge", action="store_true",
+                    help="disable the Brownian-bridge intraday-touch correction "
+                         "(naive close-based cap; optimistic, esp. at high lev)")
     ap.add_argument("--levs", default="1,2,3,5,8")
     args = ap.parse_args()
     rets, carry_ratio = book_returns(args.book)
@@ -135,10 +154,13 @@ def main():
         for lev in levs:
             rng = random.Random(args.seed)
             premium_d = (prem_ann * carry_ratio * lev - COST_ANN) / 252.0
+            bv = None if args.no_bridge else sd * lev
             p1 = [run_phase(rets, rng, 0.10, premium_d, lev,
-                            daily_stop=args.daily_stop) for _ in range(args.paths)]
+                            daily_stop=args.daily_stop, bridge_vol=bv)
+                  for _ in range(args.paths)]
             p2 = [run_phase(rets, rng, 0.05, premium_d, lev,
-                            daily_stop=args.daily_stop) for _ in range(args.paths)]
+                            daily_stop=args.daily_stop, bridge_vol=bv)
+                  for _ in range(args.paths)]
             pr1 = sum(x for x, _ in p1) / args.paths
             pr2 = sum(x for x, _ in p2) / args.paths
             passed1 = sorted(d for x, d in p1 if x)
