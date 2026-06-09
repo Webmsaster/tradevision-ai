@@ -1,3 +1,47 @@
+# Session Handoff — 2026-06-09 PART 3 (Denkfehler-Audit + FTMO-Commodity-Carry: Beweiskette komplett bis auf Total-Return)
+
+Florians /goal: "mach mich mit ftmo profitabel, irgendwo muss ein denkfehler sein, es muss edge geben" — beides bestätigt:
+
+## Denkfehler GEFUNDEN + getestet (commit 4fa86fb)
+
+Edge-Detector bewies nur netto<0, nicht brutto≈0 (Kosten-Artefakt + 1/k²-Zensierung).
+Korrektur-Test = Brutto/Netto-Zerlegung via `ftmo-sweep --trades-out` (rawPnl/effPnl),
+Stops disabled, 35 disjunkte 30d-Fenster: trend t=-0.14, mr t=-11.5 (NEGATIV),
+bidir t=-5.7, mixed-v2 nominal +0.2%/Trade aber Long-Beta-Confound (long t=+4.2/
+short t=-0.2, alles 2024). → Alte Zeitreihen-Signale endgültig tot, jetzt brutto-bewiesen.
+xsec-Signal auf FTMOs 31 Coins: lebt (S 1.54) aber FTMO-Kosten töten (-9.8/-23.4%/yr).
+FX-Carry: Markup frisst Zinsdifferenz (beste Seite +1%/yr). Brutto-Zerlegung = neuer Pflicht-Erstcheck.
+
+## Edge GEFUNDEN: Commodity-Carry via FTMOs eigene Cash-CFD-Swaps (commits ff70e45, efecb96, ce97c9c)
+
+FTMO reicht die Futures-Term-Structure durch die Swaps durch — JEDER Baustein gemessen:
+
+1. Durchreichung: 12/13 Kurven stimmen (USOIL +15.1% vs echte WTI-Kurve +20.2%).
+2. Geometrie: `commodity_carry_mc.py` (Block-Bootstrap echter 15y-Renditen, demeaned,
+   exakte FTMO-Regeln, no time limit): Prämie 0% → 33% funded (!), 3% → 42%,
+   5% → 48%, 8% → 56% — vs 7-12% alte Lotterie. LEVERAGE SCHADET STRIKT (lev 1 optimal).
+3. Persistenz: FTMO-API ist in der WAYBACK MACHINE archiviert (3 Snapshots) →
+   `ftmo_swap_persistence.py`: Buch-Einkommen +6.0/+5.4/+8.7/+7.7 %/yr über 3,3 Monate,
+   7/13 Seiten stabil, Flips ökonomisch (NatGas-Saison). Backfill in swap-history.jsonl.
+4. Tooling: `commodity_carry_pilot.py` → fertiger MT5-Order-Plan (heute: 11 Positionen,
+   long USOIL/HEATOIL/UKOIL/COFFEE, short NATGAS/COTTON/CORN/COCOA/SUGAR/WHEAT/SOYBEAN,
+   7.67%/yr erwartetes Swap-Einkommen; XCU exkludiert bis MT5-Quote verifiziert).
+
+## ➡️ NÄCHSTER SCHRITT (nur Florian kann: persönliche Daten)
+
+1. FTMO **Free Trial** registrieren (gratis, 14d, bucht ECHTE Swaps ins Demo-Statement).
+2. `python3 scripts/commodity_carry_pilot.py --capital <Kontogröße>` → 11 Orders abtippen, Hebel-Effekt = keiner nötig (lev 1).
+3. Nach 1-2 Wochen: Swap-Gutschriften im Statement vs erwartete ~7%/yr × t prüfen (mache ich).
+4. Bestätigt → erste bezahlte Challenge = +EV-Kauf (~42-56% funded, konservativ 3-5% Netto-Prämie nach Spot-Konvergenz, Literatur: Hälfte+ des Carry bleibt). Funded-Account verdient danach WEITER (anders als die alte Lotterie).
+
+## Daueraufgaben (Crons, außerhalb Repo)
+
+03:00 xsec_live.py | 03:15 xsec_executor.py (paper $1k) | 03:30 ftmo_swap_logger.py
+
+Branch gepusht bis ce97c9c. Memory: `project-2026-06-09-ftmo-denkfehler-audit.md`.
+
+---
+
 # Session Handoff — 2026-06-09 PART 2 ("mach mich profitabel": survivorship fix + vehicle decision DONE)
 
 Florian approved the 3-step plan. Steps 1+2 completed this session:
