@@ -79,9 +79,34 @@ def beta_alpha(u, pnl):
     return a * 365, b, (sr["sharpe"] if sr else 0.0)
 
 
+def worst_months(u, pnl, k=5):
+    """Monthly compounded PnL, worst k."""
+    out = {}
+    for i, x in enumerate(pnl):
+        if x is None:
+            continue
+        import datetime as dt
+        d = dt.datetime.fromtimestamp(u.days[i] * 86400, dt.UTC)
+        out.setdefault((d.year, d.month), []).append(x)
+    monthly = []
+    for (y, m), v in out.items():
+        eq = 1.0
+        for x in v:
+            eq *= 1 + x
+        monthly.append((eq - 1.0, y, m))
+    return sorted(monthly)[:k]
+
+
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--delisted-dir", default=None)
+    ap.add_argument("--winsor", type=float, default=0.5)
+    args = ap.parse_args()
     cache = ROOT / "scripts/cache_bakeoff"
-    u = Universe(cache, PRICE_SYMBOLS)
+    dd = (ROOT / args.delisted_dir) if args.delisted_dir else None
+    u = Universe(cache, PRICE_SYMBOLS, delisted_dir=dd, clip=args.winsor)
+    print(f"# universe: {len(u.symbols)} symbols | winsor ±{args.winsor} | clips {u.n_clipped}")
     funding_syms = [s for s in u.symbols if any(x is not None for x in u.funding[s])]
     n = len(u.days)
 
@@ -127,6 +152,10 @@ def main():
 
         a, b, rs = beta_alpha(u, res["net"])
         print(f"-- BTC regression: ann.alpha {100*a:>6.1f}%  beta {b:>6.3f}  residual Sharpe {rs:>5.2f}")
+
+        print("-- worst 5 months (net):")
+        for ret, y, m in worst_months(u, res["net"]):
+            print(f"   {y}-{m:02d}: {100*ret:>6.1f}%")
 
     # combo
     p1, p2 = pnls[candidates[0][0]], pnls[candidates[1][0]]

@@ -64,6 +64,16 @@ def load_daily_closes(cache_dir: Path, symbol: str):
     return by_day
 
 
+def load_daily_closes_1d(path: Path):
+    """{utc_day_int: close} from a direct 1d-kline file; last (partial) day dropped."""
+    rows = json.loads(path.read_text())
+    rows = [r for r in rows if r.get("isFinal", True)]
+    by_day = {int(r["openTime"]) // DAY_MS: float(r["close"]) for r in rows}
+    if by_day:
+        by_day.pop(max(by_day), None)
+    return by_day
+
+
 def load_daily_funding(cache_dir: Path, symbol: str):
     """{utc_day_int: summed funding rate} (3x 8h payments per day)."""
     p = cache_dir / f"{symbol}_funding.json"
@@ -97,21 +107,35 @@ def stats(daily_pnl, bars_per_year=365.0):
 
 
 class Universe:
-    def __init__(self, cache_dir: Path, symbols):
+    def __init__(self, cache_dir: Path, symbols, delisted_dir: Path | None = None,
+                 clip: float = 0.5):
+        self.clip = clip
         self.symbols = []
         per_sym_days = {}
+        funding_src = {}
         for s in symbols:
             d = load_daily_closes(cache_dir, s)
             if len(d) > 200:
                 per_sym_days[s] = d
+                funding_src[s] = cache_dir
                 self.symbols.append(s)
+        if delisted_dir and delisted_dir.is_dir():
+            for p in sorted(delisted_dir.glob("*_1d.json")):
+                s = p.name[:-len("_1d.json")]
+                if s in per_sym_days:
+                    continue
+                d = load_daily_closes_1d(p)
+                if len(d) > 60:
+                    per_sym_days[s] = d
+                    funding_src[s] = delisted_dir
+                    self.symbols.append(s)
         self.days = sorted(set().union(*per_sym_days.values()))
         self.idx = {d: i for i, d in enumerate(self.days)}
         n = len(self.days)
         self.close = {s: [per_sym_days[s].get(d) for d in self.days] for s in self.symbols}
         self.funding = {}
         for s in self.symbols:
-            fd = load_daily_funding(cache_dir, s)
+            fd = load_daily_funding(funding_src[s], s)
             self.funding[s] = [fd.get(d) for d in self.days]
         # daily returns, winsorised
         self.ret = {}
@@ -122,9 +146,9 @@ class Universe:
             for i in range(1, n):
                 if c[i] is not None and c[i - 1] is not None and c[i - 1] > 0:
                     x = c[i] / c[i - 1] - 1.0
-                    if abs(x) > 0.5:
+                    if abs(x) > clip:
                         self.n_clipped += 1
-                        x = max(-0.5, min(0.5, x))
+                        x = max(-clip, min(clip, x))
                     r[i] = x
             self.ret[s] = r
 
@@ -160,7 +184,13 @@ def quintile_weights(scored, min_n):
 
 
 def run_strategy(u: Universe, mode, look, skip, hold, cost_bp, min_n=15,
-                 funding_syms=None, start_frac=0.0, end_frac=1.0):
+                 funding_syms=None, start_frac=0.0, end_frac=1.0,
+                 funding_floor=None):
+    """funding_floor: death-spiral guard for the funding mode. A coin whose
+    trailing daily funding is BELOW this (e.g. -0.0027/day = -100%/yr annualised)
+    is excluded from the candidate pool: such funding prices acute collapse
+    (LUNA hit -0.75%/8h), not harvestable unpopularity. Single pre-registered
+    value, deliberately NOT swept (overfit discipline)."""
     """Returns dict of pnl series: gross, net, and for funding mode also *_carry."""
     n = len(u.days)
     lo, hi = int(n * start_frac), int(n * end_frac)
@@ -188,6 +218,8 @@ def run_strategy(u: Universe, mode, look, skip, hold, cost_bp, min_n=15,
                 v = -v if v is not None else None
             elif mode == "funding":
                 v = u.trailing_funding(s, i, look)
+                if v is not None and funding_floor is not None and v < funding_floor:
+                    v = None  # death-spiral guard: not a long candidate
                 v = -v if v is not None else None
             else:
                 raise ValueError(mode)
@@ -237,13 +269,22 @@ def fmt_row(tag, split, res, bars_per_year=365.0):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cache-dir", default="scripts/cache_bakeoff")
+    ap.add_argument("--delisted-dir", default=None,
+                    help="dir with {SYM}_1d.json + {SYM}_funding.json for dead coins "
+                         "(survivorship fix), e.g. scripts/cache_delisted")
+    ap.add_argument("--winsor", type=float, default=0.5,
+                    help="daily-return clip; use 0.95 with --delisted-dir so real "
+                         "crash days (LUNA -94%%) are not artificially dampened")
     ap.add_argument("--cost-bp", type=float, default=10.0,
                     help="one-way cost per unit turnover (10=Binance-ish, 20=CFD-ish)")
     ap.add_argument("--min-n", type=int, default=15)
     args = ap.parse_args()
 
     cache = ROOT / args.cache_dir if not Path(args.cache_dir).is_absolute() else Path(args.cache_dir)
-    u = Universe(cache, PRICE_SYMBOLS)
+    dd = None
+    if args.delisted_dir:
+        dd = ROOT / args.delisted_dir if not Path(args.delisted_dir).is_absolute() else Path(args.delisted_dir)
+    u = Universe(cache, PRICE_SYMBOLS, delisted_dir=dd, clip=args.winsor)
     funding_syms = [s for s in u.symbols if any(x is not None for x in u.funding[s])]
     print(f"# XS edge probe | {len(u.symbols)} syms | {len(u.days)} days "
           f"({u.days[0]}..{u.days[-1]} epoch-days) | {len(funding_syms)} with funding | "
