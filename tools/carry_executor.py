@@ -112,7 +112,8 @@ class CarryExecutor:
         req = {"action": self.mt5.TRADE_ACTION_DEAL, "symbol": symbol,
                "volume": round(abs(lots), 2), "type": side, "magic": MAGIC,
                "deviation": 50, "comment": "carry",
-               "type_time": self.mt5.ORDER_TIME_GTC}
+               "type_time": self.mt5.ORDER_TIME_GTC,
+               "type_filling": getattr(self.mt5, "ORDER_FILLING_IOC", 2)}
         if position_ticket is not None:
             req["position"] = position_ticket
         if self.dry_run:
@@ -121,8 +122,11 @@ class CarryExecutor:
         res = self.mt5.order_send(req)
         ok = res is not None and res.retcode == self.mt5.TRADE_RETCODE_DONE
         if not ok:
-            notify(f"ORDER FAILED {symbol} {lots:+.2f}: "
-                   f"{getattr(res, 'retcode', 'None')}")
+            rc = getattr(res, "retcode", None)
+            if rc == 10018:        # market closed — expected off-hours, retry next poll
+                print(f"[carry] {symbol} market closed, will retry", flush=True)
+            else:
+                notify(f"ORDER FAILED {symbol} {lots:+.2f}: {rc}")
         return ok
 
     # ---------- core actions ----------
@@ -192,7 +196,17 @@ def main() -> None:  # pragma: no cover - thin CLI wrapper
 
     if mt5 is None:
         sys.exit("MetaTrader5 not available — run on Windows or with FTMO_MOCK=1")
-    if not mt5.initialize():
+    init_kw = {}
+    if os.environ.get("FTMO_LOGIN"):           # explicit login (Windows real MT5)
+        init_kw = dict(login=int(os.environ["FTMO_LOGIN"]),
+                       password=os.environ.get("FTMO_PASSWORD", ""),
+                       server=os.environ.get("FTMO_SERVER", "FTMO-Demo"),
+                       timeout=180000)
+        term = os.environ.get("MT5_TERMINAL")
+        ok = mt5.initialize(term, **init_kw) if term else mt5.initialize(**init_kw)
+    else:
+        ok = mt5.initialize()
+    if not ok:
         sys.exit(f"mt5.initialize() failed: {mt5.last_error()}")
     notify(f"started — stop {100*args.stop:.1f}%, book {args.book}, "
            f"{'DRY-RUN' if args.dry_run else 'LIVE'}")

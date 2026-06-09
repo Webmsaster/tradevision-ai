@@ -46,13 +46,18 @@ import argparse, json, math, random
 from pathlib import Path
 
 HIST_DIR = Path("/tmp/commod_hist")
-LONGS = ["CL", "HO", "KC"]
+# 2026-06-10: BZ (UKOIL) added as 4th long — matches the LIVE deployed book.
+LONGS = ["CL", "BZ", "HO", "KC"]
 SHORTS = ["NG", "ZS", "ZC", "ZW", "CC", "CT", "SB"]
+# COST_ANN validated against measured FTMO spreads (MT5 probe 2026-06-10):
+# book-weighted half-spread one-way = 0.22% (NATGAS 2.0%, SUGAR 1.1%,
+# HEATOIL 1.0%, oils 7-8bp); open 0.22% + ~1-2 side flips/month -> ~0.8%/yr.
 COST_ANN = 0.01
 DL_SOFT = -0.04          # FTMO daily loss is -5%; -4% close-based proxies intraday paths
 MAX_DAYS = 500
-CARRY_TODAY = {"CL": 15.10, "HO": 13.91, "KC": 2.58, "NG": 15.31, "ZS": 2.02,
-               "ZC": 3.35, "ZW": 2.07, "CC": 3.20, "CT": 4.58, "SB": 2.32}
+CARRY_TODAY = {"CL": 15.10, "BZ": 11.00, "HO": 13.91, "KC": 2.58, "NG": 15.31,
+               "ZS": 2.02, "ZC": 3.35, "ZW": 2.07, "CC": 3.20, "CT": 4.58,
+               "SB": 2.32}
 
 
 def book_returns(book: str = "ew") -> tuple[list[float], float]:
