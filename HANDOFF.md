@@ -1,3 +1,44 @@
+# Session Handoff — 2026-06-09 (CROSS-SECTIONAL probe: FIRST candidate to survive the debunk checklist)
+
+## What was done
+
+Florian: "ich bin mit keiner ki mehr weiter gekommen, vl schaffst du was." The answer
+to WHY nobody got further: the time-series question was conclusively answered (no
+edge). The one evidence-backed angle the 06-07 handoff named but nobody ever tested
+is CROSS-SECTIONAL (peer-relative) — structurally different information. Tested it.
+
+- **`scripts/xsec_edge_probe.py`** (commit 5400739): engine-free, 27 crypto majors
+  daily-resampled from the 30m cache (2020-09→2026-06), dollar-neutral quintile
+  long/short, signal at close t → PnL t→t+1, J-T overlapping portfolios, explicit
+  bp costs, FULL/train70/test30. Three signals: XS momentum, XS reversal,
+  **funding-rate-as-signal** (short crowded longs — funding was only ever modelled
+  as a COST here, never as a predictor).
+- **`scripts/xsec_robustness.py`**: per-year, 3-fold, cost stress 10/20/30bp,
+  long/short leg split, BTC-beta regression, combo.
+
+## Results (net @10bp one-way)
+
+- **XSMOM L14/H7:** Sharpe 0.99 (t 2.26), 3/3 folds positive, test30 S 1.18, beta
+  -0.03. Weak spot: **2026 YTD -17%** (decay risk).
+- **FUNDING L7/H7 (price-only = CFD-tradeable part):** Sharpe 0.95 (t 2.17),
+  **all 6 calendar years positive incl. 2022**, test30 STRONGER (S 1.41),
+  consistent across L=3/7/14. Exchange variant with carry income: S 1.35/1.71.
+- **COMBO 50/50 (corr -0.10): Sharpe 1.43, t=3.26, maxDD -15.1%, no losing year.**
+  Half-risk: +11.3%/yr at -7.8% maxDD — the steadily-rising curve the 05-29 root
+  cause proved impossible on the time-series set. Reversal control: clearly negative.
+
+## NOT proof — open before believing/deploying (in order)
+
+1. **Survivorship:** universe = today's survivors; dead coins (LUNA) would have hurt
+   the funding LONG leg. Fetch delisted Binance perp data → rerun.
+2. **Vehicle:** strategy holds positions permanently → FTMO CFD swap costs unmodelled
+   and could eat it; own-capital exchange (earns carry too) may beat prop-firm here.
+3. Only then: engine integration / steady_risk_grid / paper trade.
+
+Memory: `project-2026-06-09-xsec-edge-candidate.md`. Branch still NOT pushed (111+ ahead).
+
+---
+
 # Session Handoff — 2026-06-07 (Option A: edge-hunt extended to FOREX + GOLD → still no edge)
 
 ## What was done
