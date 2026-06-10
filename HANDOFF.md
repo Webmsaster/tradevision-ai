@@ -1,3 +1,36 @@
+# Session Handoff — 2026-06-10 ~15:40 (Midday-Verify: Buch KOMPLETT 11/11, Hedge-Fix hält, Messnacht steht)
+
+Read-only Status-Session am Nachmittag — kein Code geändert, Live-Zustand verifiziert.
+
+## What was done
+
+- **Live-Buch via `carry_check.py` (MT5, read-only) verifiziert: 11/11 Symbole offen, ALLE single-direction — KEINE Gegenrichtungs-Paare.** Der Hedge-Mode-Fix `7a4fb50` hält im Betrieb. COCOA + COFFEE wurden wie vom Morgen-Handoff erwartet (~10:15/10:45) vom Loop automatisch nachgefüllt.
+- Tages-Crons bestätigt gelaufen (Morgen-Catch-up): Carry-Pipeline (Soll-Buch 2026-06-10, **7,68 %/yr erwartetes Swap-Einkommen**, 10 Resize-Orders deployed, Energie-Long-Konzentration 38,3 %), Swap-Logger (166 Instrumente), xsec_live + xsec_executor (09:31).
+- Guard-Loop lebt: schtasks `ftmo_carry_loop` „Bereit/Aktiviert", `carry_out.txt` zuletzt 15:37 (5-min-Takt intakt).
+- Memory `project-2026-06-10-reboot-hedge-mode-incident.md` um Verifikations-Nachtrag ergänzt.
+
+## Current state
+
+- **Balance 99.960 / Equity 99.476 (-0,52 %, Floating -484)** — weit über Stop -3,5 %. Margin frei ~$82,4k.
+- NATGAS (1,10+1,18 = 2,28) und USOIL (1,15+0,27 = 1,42) haben je 2 Tickets GLEICHER Richtung (Hedge-Mode-Additionen vom Auto-Fill — normal, kein Bug). Alle anderen Lots = Soll-Buch modulo `volume_step`-Rundung (CORN 17 vs 16,94, SOYBEAN 6 vs 6,38, COCOA 2 vs 1,84 etc.).
+- `swap = 0.0` auf allen Legs — **erste Gutschrift kommt heute Nacht 10.→11.06.** = Beginn der Netto-Prämien-Messung (14d-Trial-Uhr läuft).
+- Branch `feature/r28-deploy` @ `0a5d366` gepusht. Uncommitted nur Runtime-State (commodity-carry-pilot/, xsec-live-state/, day-peak.json, pending-orders/, ftmo-state-test-midbatch/ — gewollt, nicht committen).
+
+## Next steps
+
+→ Unverändert die **Morgen-Checkliste der 09:50-Sektion direkt darunter** (Swap-Gutschrift prüfen ~$19/Nacht brutto, carry_check 11/11, nach 3-5 Tagen empirische Netto-Prämie vs MC-Zahlen, optional Task-Härtung).
+
+## Open issues / blockers
+
+→ Unverändert aus 09:50-Sektion: Boot→Logon-Lücke, Loop loggt Erfolge nicht (Wahrheit = carry_check), WHEAT-Rundung gewollt.
+
+## Key files changed
+
+- `HANDOFF.md` — diese Verifikations-Sektion. **Kein Repo-Code geändert.**
+- Memory: `project-2026-06-10-reboot-hedge-mode-incident.md` (Verify-Nachtrag).
+
+---
+
 # Session Handoff — 2026-06-10 ~09:50 (Crash-Recovery + Hedge-Mode-Fix — Buch lebt, Messnacht läuft autonom)
 
 ## What was done
