@@ -146,12 +146,66 @@ class CarryExecutor:
             out[sym] = pos["lots"] if pos["side"] == "long" else -pos["lots"]
         return out
 
+    def _step(self, symbol: str) -> float:
+        """Broker volume step; orders below it are rejected (10014)."""
+        info_fn = getattr(self.mt5, "symbol_info", None)
+        info = info_fn(symbol) if info_fn else None
+        step = float(getattr(info, "volume_step", 0.0) or 0.0)
+        return step if step > 0 else 0.01
+
+    @staticmethod
+    def _round_step(lots: float, step: float) -> float:
+        return round(round(lots / step) * step, 8)
+
     def sync_book(self) -> None:
+        """Converge held positions to the book.
+
+        FTMO MT5 accounts are HEDGE mode: a plain market order in the
+        opposite direction opens a SECOND position instead of reducing the
+        held one — both legs then pay swap, which bleeds exactly the carry
+        income this book exists to collect (live incident 2026-06-10).
+        Reductions therefore must target an existing position ticket.
+        """
         target = self.load_book()
-        held = self._positions()
-        for sym in sorted(set(target) | set(held)):
-            delta = target.get(sym, 0.0) - held.get(sym, 0.0)
-            if abs(delta) >= LOT_TOL:
+        legs: dict[str, list] = {}
+        for p in (self.mt5.positions_get() or []):
+            if getattr(p, "magic", MAGIC) != MAGIC:
+                continue
+            legs.setdefault(p.symbol, []).append(p)
+
+        for sym in sorted(set(target) | set(legs)):
+            step = self._step(sym)
+            tgt = self._round_step(target.get(sym, 0.0), step)
+            tol = max(LOT_TOL, step / 2)
+
+            kept = []           # same-side legs: (position, sign, lots)
+            kept_net = 0.0
+            for p in legs.get(sym, []):
+                sign = 1.0 if p.type == self.mt5.POSITION_TYPE_BUY else -1.0
+                vol = float(p.volume)
+                if tgt == 0.0 or sign * tgt < 0:   # wrong-side leg: always close
+                    if not self._send(sym, -sign * vol,
+                                      position_ticket=getattr(p, "ticket", None)):
+                        kept_net += sign * vol     # close failed, still held
+                else:
+                    kept.append((p, sign, vol))
+                    kept_net += sign * vol
+
+            delta = self._round_step(tgt - kept_net, step)
+            if abs(delta) < tol:
+                continue
+            if tgt != 0.0 and delta * tgt < 0:     # too big: shrink via tickets
+                rest = abs(delta)
+                for p, sign, vol in sorted(kept, key=lambda kv: -kv[2]):
+                    cut = self._round_step(min(vol, rest), step)
+                    if cut < tol:
+                        continue
+                    if self._send(sym, -sign * cut,
+                                  position_ticket=getattr(p, "ticket", None)):
+                        rest = self._round_step(rest - cut, step)
+                    if rest < tol:
+                        break
+            else:                                   # grow: plain market order
                 self._send(sym, delta)
 
     # ---------- one poll cycle ----------

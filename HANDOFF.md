@@ -2,11 +2,17 @@
 
 Fortsetzung der Nacht: Free Trial verbunden, Carry-Buch IST LIVE auf $100k-Demo.
 
+## ⚠️ 2026-06-10 09:30 Nachtrag: PC-Reboot 01:31 + Hedge-Mode-Bug (beides behoben)
+
+- PC rebootete 01:31 → WSL (und alle 03:xx-Crons) down bis Login ~09:18. Alle 4 Läufe nachgeholt (Swaps geloggt, Buch neu deployed, xsec-Paper gefüllt). **Fix: Startup-Ordner `wsl_cron_autostart.vbs`** startet WSL-Keep-alive (`C:\Users\flooe\wsl_autostart.ps1`) bei jedem Logon — verifiziert. Rest-Lücke: zwischen Boot und Logon läuft weiter nichts (schtasks "Nur interaktiv"; Fix bräuchte Windows-Passwort für "run whether logged on").
+- **🐛 LIVE-BUG gefunden+gefixt: FTMO-MT5 ist HEDGE-Mode** — `sync_book()` öffnete bei Gegenrichtungs-Diffs NEUE Gegenpositionen statt zu reduzieren (5 Hedge-Paare um 09:32, beide Seiten zahlen Swap = frisst das Carry). Fix: Reduktionen via `position`-Ticket + Lot-Step-Rundung (killt auch WHEAT-12.1-vs-12.0-Spam). 3 Regressionstests, FakeMT5 jetzt Hedge-Mode. Konto bereinigt (~$39 Spread-Lehrgeld), alle Legs wieder single-direction, Netto = Buch.
+- Status 09:45: 9/11 Positionen offen (SUGAR auto-gefüllt 09:40 ✓), COCOA+COFFEE öffnen ~10:15/10:45. Equity -0,6 % vs Stop -3,5 %. Erste Swap-Gutschrift heute Nacht bleibt der Messstart.
+
 ## Live-Status
 
 - 11 Positionen $101.5k gross (Energie gefüllt 00:15; Agri füllt ~02:00, Softs ~09:00 automatisch)
 - Windows-Guard-Loop alle 5 min (schtasks `ftmo_carry_loop`): -3.5%-Equity-Stop, Auto-Fill, Diff-Rebalance
-- Daily-Pipeline Linux-Cron 03:45: live Swaps → Pilot-Buch → MT5-Spec-Lots → C:\carry_book.json
+- Daily-Pipeline Linux-Cron 03:45: live Swaps → Pilot-Buch → MT5-Spec-Lots → C:\Users\flooe\carry_book.json
 - Crons gesamt: 03:00 xsec | 03:15 xsec-exec | 03:30 swap-logger | 03:45 carry-pipeline
 - Erste Swap-Gutschrift: Nacht 10.→11.06. im Demo-Statement (= Beginn Netto-Prämien-Messung, 14d Trial)
 
