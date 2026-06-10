@@ -1,12 +1,48 @@
+# Session Handoff — 2026-06-10 ~09:50 (Crash-Recovery + Hedge-Mode-Fix — Buch lebt, Messnacht läuft autonom)
+
+## What was done
+
+- **PC-Reboot 01:31 diagnostiziert** (75 min nach Live-Deploy, Florians Frage „ist pc gecrashed?"): Windows-Loop + MT5 kamen mit Logon (~09:18) zurück, Positionen blieben offen; WSL und damit ALLE 03:xx-Nacht-Crons fielen aus.
+- **Alle 4 verpassten Crons nachgeholt:** swap-logger (166 Instrumente), Carry-Pipeline (Soll-Buch neu → deployed), xsec_live + xsec_executor (Paper).
+- **WSL-Autostart-Fix installiert + verifiziert:** `Startup\wsl_cron_autostart.vbs` → `C:\Users\flooe\wsl_autostart.ps1` → hidden `wsl -e sleep infinity` bei jedem Logon.
+- **🐛 LIVE-BUG gefunden + gefixt: FTMO-MT5 ist HEDGE-Mode** — `sync_book()` öffnete bei Reduktions-Diffs NEUE Gegenpositionen statt zu reduzieren (09:32: 5 Hedge-Paare, z.B. CORN short 19 + long 2; beide Seiten zahlen Swap = frisst exakt das Carry). Fix: Reduktionen via `position`-Ticket (Partial Close) + Lot-Rundung auf `volume_step` (killt auch den WHEAT-12.1-vs-12.0-Retry-Spam). FakeMT5-Testdouble auf Hedge-Mode umgebaut (Netting-Fake hatte den Bug maskiert), 3 Regressionstests, 9/9 grün. Konto bereinigt (~$39 Spread-Lehrgeld). **Commit `7a4fb50`, gepusht.**
+- Status-Tool `C:\Users\flooe\carry_check.py` erstellt (Equity + alle Legs als JSON).
+- Memory: `project-2026-06-10-reboot-hedge-mode-incident.md` + MEMORY.md-Index.
+
+## Current state
+
+- **Buch LIVE, 9/11 Symbole offen** (09:47): Energie + Grains + SUGAR (auto-gefüllt 09:40 ✓ = Beweis, dass Auto-Fill mit Fix funktioniert). COCOA + COFFEE öffnen ~10:15/10:45 CEST — Loop füllt automatisch nach.
+- Alle Legs single-direction, Netto = Soll-Buch. Equity ~$99,3k (-0,7 %) vs Stop -3,5 %. Balance 99.960 (Bug-Lehrgeld realisiert).
+- Guard-Loop (schtasks `ftmo_carry_loop`, alle 5 min) läuft mit gefixtem Executor; Soll-Buch: `C:\Users\flooe\carry_book.json`.
+- **Heute Nacht läuft autonom:** Crons 03:00/03:15/03:30/03:45 (WSL lebt via Keep-alive, solange PC an + eingeloggt) und die **erste Swap-Gutschrift 10.→11.06.** = Beginn der Netto-Prämien-Messung (14d-Trial-Uhr läuft).
+- Branch `feature/r28-deploy` @ `7a4fb50` gepusht. Uncommitted nur Runtime-State-Files (gewollt).
+
+## Next steps (Morgen-Checkliste, priorisiert)
+
+1. **Swap-Gutschrift im Demo-Statement prüfen** (MT5 → Kontohistorie, Nacht 10.→11.06.): erwartete Größenordnung ~7 %/yr × $100k / 365 ≈ **$19/Nacht brutto** (Einzeltage schwanken, Mi=Triple-Swap bei manchen Symbolen). Gutschrift da + Vorzeichen je Leg plausibel → Messreihe läuft.
+2. **System-Health:** `python C:\Users\flooe\carry_check.py` (via carry_run.ps1-Env) → 11/11 Symbole, KEINE Gegenrichtungs-Paare; `tools/commodity-carry-pilot/pipeline.log` → 03:45-Lauf vorhanden; `carry_out.txt` → keine ORDER FAILED.
+3. Nach 3-5 Tagen: `swap-history.jsonl` vs Statement-Gutschriften = **empirische Netto-Prämie** → in `commodity_carry_mc.py` einsetzen und die 49 %/42 %-Funded-Zahlen bestätigen/korrigieren.
+4. Optional Härtung: PC übernacht an + eingeloggt lassen ODER Tasks auf „run whether logged on" umstellen (braucht Florians Windows-Passwort — einzige verbleibende Lücke).
+
+## Open issues / blockers
+
+- **Boot→Logon-Lücke:** Nach einem Reboot läuft NICHTS bis zum Login (alle Tasks „Nur interaktiv"). Heute Nacht ok solange kein erneuter Crash.
+- WHEAT hält 12.0 statt Buch 12.1 (volume_step 1.0 — gewollte Rundung, kein Fehler).
+- Loop loggt nur Fehler/market-closed, Erfolge nicht → Positions-Wahrheit immer via `carry_check.py`, nie via `carry_out.txt`.
+- 11:00-Watchdog (Hintergrund-Task dieser Session) stirbt mit der Session — unkritisch, der Windows-Loop arbeitet unabhängig.
+
+## Key files changed
+
+- `tools/carry_executor.py` — hedge-mode `sync_book` (Ticket-Reduktion, `volume_step`-Rundung); identisch deployed nach `C:\Users\flooe\carry_executor.py`
+- `tools/test_carry_executor.py` — FakeMT5 jetzt Hedge-Mode, +3 Regressionstests (Incident, Cleanup, Sub-Step)
+- `HANDOFF.md` — diese Übergabe
+- Außerhalb Repo: `C:\Users\flooe\carry_check.py` (neu), `wsl_autostart.ps1` (neu), `Startup\wsl_cron_autostart.vbs` (neu)
+
+---
+
 # Session Handoff — 2026-06-10 ~00:45 (🚀 FTMO-DEMO LIVE: Buch deployed, Guard läuft, Pipeline komplett)
 
 Fortsetzung der Nacht: Free Trial verbunden, Carry-Buch IST LIVE auf $100k-Demo.
-
-## ⚠️ 2026-06-10 09:30 Nachtrag: PC-Reboot 01:31 + Hedge-Mode-Bug (beides behoben)
-
-- PC rebootete 01:31 → WSL (und alle 03:xx-Crons) down bis Login ~09:18. Alle 4 Läufe nachgeholt (Swaps geloggt, Buch neu deployed, xsec-Paper gefüllt). **Fix: Startup-Ordner `wsl_cron_autostart.vbs`** startet WSL-Keep-alive (`C:\Users\flooe\wsl_autostart.ps1`) bei jedem Logon — verifiziert. Rest-Lücke: zwischen Boot und Logon läuft weiter nichts (schtasks "Nur interaktiv"; Fix bräuchte Windows-Passwort für "run whether logged on").
-- **🐛 LIVE-BUG gefunden+gefixt: FTMO-MT5 ist HEDGE-Mode** — `sync_book()` öffnete bei Gegenrichtungs-Diffs NEUE Gegenpositionen statt zu reduzieren (5 Hedge-Paare um 09:32, beide Seiten zahlen Swap = frisst das Carry). Fix: Reduktionen via `position`-Ticket + Lot-Step-Rundung (killt auch WHEAT-12.1-vs-12.0-Spam). 3 Regressionstests, FakeMT5 jetzt Hedge-Mode. Konto bereinigt (~$39 Spread-Lehrgeld), alle Legs wieder single-direction, Netto = Buch.
-- Status 09:45: 9/11 Positionen offen (SUGAR auto-gefüllt 09:40 ✓), COCOA+COFFEE öffnen ~10:15/10:45. Equity -0,6 % vs Stop -3,5 %. Erste Swap-Gutschrift heute Nacht bleibt der Messstart.
 
 ## Live-Status
 
