@@ -73,6 +73,7 @@ fn bench_idle(c: &mut Criterion) {
                     &BarInput {
                         candles_by_source: &feed,
                         atr_series_by_source: &atr_feed,
+                        funding_by_source: None,
                         signals: vec![],
                     },
                     &cfg,
@@ -113,6 +114,7 @@ fn bench_breakout(c: &mut Criterion) {
                     &BarInput {
                         candles_by_source: &feed,
                         atr_series_by_source: &atr_feed,
+                        funding_by_source: None,
                         signals,
                     },
                     &cfg,
@@ -166,6 +168,7 @@ fn bench_meanrev(c: &mut Criterion) {
                     &BarInput {
                         candles_by_source: &feed,
                         atr_series_by_source: &atr_feed,
+                        funding_by_source: None,
                         signals,
                     },
                     &cfg,

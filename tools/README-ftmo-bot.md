@@ -94,6 +94,14 @@ FTMO_SOL_SYMBOL=SOLUSD
 FTMO_START_BALANCE=100000
 FTMO_START_DATE=2026-04-23
 
+# Challenge-Start-Gate: Account bleibt idle bis Breadth/Majors grün sind
+FTMO_START_GATE_ENABLED=1
+FTMO_START_GATE_PATH=C:\tradevision-ai\state\timing-gate.json
+FTMO_START_GATE_WINDOW_HOURS=2
+FTMO_START_GATE_MIN_BREADTH=10
+FTMO_START_GATE_MIN_MAJORS=1
+FTMO_START_GATE_MIN_HISTORY_HOURS=0
+
 # State-Verzeichnis (absolut!)
 FTMO_STATE_DIR=C:\tradevision-ai\ftmo-state
 ```
@@ -132,6 +140,72 @@ python tools\ftmo_executor.py
 ```
 
 Pollt alle 30 Sekunden pending-signals.json, platziert Orders, schreibt account.json zurück.
+
+Mit `FTMO_START_GATE_ENABLED=1` platziert der Executor keine neuen Entry-Orders,
+solange `state\timing-gate.json` fehlt, veraltet ist oder `qualified=false`
+meldet. Nach dem ersten echten Order-Fill schreibt er
+`start-gate-state.json` in das Account-State-Verzeichnis; ab dann läuft die
+Challenge normal weiter, auch wenn das Start-Gate später wieder rot wird.
+
+Fast-Pass Default: `FTMO_CLUSTER_ONLY_ENABLED=0`. Der Bot wartet vor dem ersten
+echten Entry auf ein grünes Cluster und tradet danach die Challenge normal mit
+Passlock fertig. Das ist der schnellere Modus.
+
+Der PM2-Tracker sendet bei `SIGNAL_TRACKER_ALERTS=1` eine Telegram-Meldung,
+sobald der Live-Cluster grün wird. Default für den schnellen 90%-Modus ist
+`FTMO_START_GATE_WINDOW_HOURS=2`, `FTMO_START_GATE_MIN_BREADTH=10`,
+`FTMO_START_GATE_MIN_MAJORS=1`, historisch **94.14% Random-Buy wait-to-green**
+und **94.81% AND** auf grünen Starts. Das ist das
+Kaufsignal für den schnellen Ablauf.
+
+### Random-Buy 90%-Mode
+
+FTMO 2-Step hat aktuell keine maximale Zeitbegrenzung; relevant sind u.a.
+Profit-Target, Drawdown-Regeln und mindestens 4 Trading Days. Dadurch kann der
+Account zufällig gekauft werden, solange der Bot nach dem Kauf NICHT sofort
+tradet. Der Random-Buy-Modus ist deshalb:
+
+1. Challenge kaufen und MT5/Env fertig einrichten.
+2. `ftmo-signal`, `ftmo-tracker` und `ftmo-executor` starten.
+3. Executor bleibt mit `FTMO_START_GATE_ENABLED=1` vor dem ersten Entry idle.
+4. Erst wenn Breadth/Majors grün sind, wird der erste echte Trade erlaubt.
+
+Damit wird der Kaufzeitpunkt vom Trading-Start entkoppelt: random kaufen ist
+okay, random sofort traden bleibt nur die ~55%-Baseline. Die historische
+90%+-Quote gilt weiterhin conditional auf den ersten Trading-Start im grünen
+Gate. Offizielle Regelquelle für "no maximum time limit": FTMO FAQ "How long
+does it take to become an FTMO Trader?"
+(`https://ftmo.com/faq/how-long-does-it-take-to-become-an-ftmo-trader/`).
+
+Optionaler Sicherheitsmodus: Mit `FTMO_CLUSTER_ONLY_ENABLED=1` gilt der
+Cluster-Check zusätzlich für jeden späteren neuen Entry. Offene Positionen
+werden weiter gemanagt, aber frische Signale werden nur ausgeführt, wenn die
+letzte `FTMO_START_GATE_WINDOW_HOURS` Signal-History mindestens
+`FTMO_START_GATE_MIN_BREADTH` Assets und `FTMO_START_GATE_MIN_MAJORS` Majors
+enthält. Dieser Modus ist langsamer und kann das Profit-Target verfehlen, wenn
+zu wenig Cluster-Trades kommen.
+
+### Start-gated Step 2
+
+Step 2 muss denselben Start-Gate-Ablauf verwenden. Der Unterschied ist nur das
+Profit-Target:
+
+```powershell
+$env:FTMO_TF="2h-trend-v5-amber-max-passlock-step2"
+$env:FTMO_PROFIT_TARGET="0.05"
+$env:FTMO_START_GATE_ENABLED="1"
+$env:FTMO_START_GATE_PATH="C:\tradevision-ai\state\timing-gate.json"
+$env:FTMO_CLUSTER_ONLY_ENABLED="0"
+```
+
+Alternativ `tools\promote_to_step2.sh` verwenden; das Script archiviert den
+Step-1-State und setzt `FTMO_PROFIT_TARGET=0.05` plus Start-Gate automatisch.
+
+Wichtig: Das Start-Gate ist ein Pre-Trade-Filter, kein Zukunftsblick. Die hohe
+historische Pass-Rate gilt conditional auf Challenges, deren erster echter
+Trade bei grünem Gate startet. Bei sofortigem Trading nach zufälligem Kauf
+bleibt nur die Blind-Baseline; bei zufälligem Kauf plus Warten bis grün wird
+der erste Trading-Start wieder smart getimed.
 
 ## Monitoring
 
@@ -445,11 +519,11 @@ welche Regeln dein konkreter Plan hat.
 
 ## PM2 Auto-Restart (empfohlen für Production)
 
-PM2 hält beide Services (Node Signal + Python Executor) am Leben durch:
+PM2 hält die Services (Node Signal + Warm-up Tracker + Python Executor) am Leben durch:
 
 - Auto-restart bei Crash (max 50 retries, 5-10s delay)
 - Restart-on-boot (Windows Service via `pm2-windows-startup`)
-- Memory-Limit-Restart (500M / 300M)
+- Memory-Limit-Restart (500M / 150M / 300M)
 - Persistente Logs in `ftmo-state-{tf}/pm2-*.log`
 
 ### Setup auf Windows VPS
@@ -465,7 +539,10 @@ cd C:\tradevision-ai
 $env:TELEGRAM_BOT_TOKEN = "<YOUR_BOT_TOKEN>"
 $env:TELEGRAM_CHAT_ID = "<YOUR_CHAT_ID>"
 
-# 4. Beide Services starten (default: 1h Variante = V7_1H_OPT)
+# 4a. Vor Challenge-Kauf: nur Signal + Tracker warm laufen lassen
+pm2 start tools/ecosystem.config.js --only ftmo-signal,ftmo-tracker
+
+# 4b. Nach Challenge-Kauf: Executor dazuschalten
 pm2 start tools/ecosystem.config.js
 
 # 5. Konfiguration speichern
@@ -492,6 +569,7 @@ pm2 save
 ```powershell
 pm2 list                  # Status check
 pm2 logs ftmo-signal      # Live Signal-Service Logs
+pm2 logs ftmo-tracker     # Warm-up / signal-history Logs
 pm2 logs ftmo-executor    # Live Executor Logs
 pm2 monit                 # Interactive monitor (CPU/RAM)
 pm2 restart all           # Force restart beider Services
@@ -589,7 +667,7 @@ https://nssm.cc/
 1. Demo komplett durchlaufen lassen (min 1 Challenge-Zyklus = 30 Tage simuliert)
 2. Ergebnisse mit Backtest-Erwartung vergleichen (62% pass? Median 6d?)
 3. Wenn Demo match → Live Challenge kaufen
-4. **Erste 24h: ständig Monitoring**
+4. **Erste 12h / bis erster Trade: ständig Monitoring**
 5. Nach 3 Tagen ohne Fehler → weniger intensiv
 6. Kill-Switch Script auf Desktop als Shortcut
 7. Telegram-Bot anbinden (optional) für Push-Nachrichten bei jedem Trade

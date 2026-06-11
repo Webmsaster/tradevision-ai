@@ -97,12 +97,23 @@ function alignFunding(
   candles: Candle[],
   funding: FundingPt[],
 ): (number | null)[] {
+  // 2026-05-13 Codex Round 8 KRITISCH FIX: events at [bar_start, bar_start
+  // + bar_dur) attribute to THIS bar. Binance funding events drift by
+  // milliseconds past the 8h boundary (~45% of historical events on BTC).
+  // With strict `<= t` (boundary-inclusive only when equal), events at
+  // `boundary + 3ms` attribute to the NEXT bar → off-by-one rate-feed.
+  // Mirrors Rust `align_funding` fix in engine-rust/.../loader.rs.
   const out: (number | null)[] = new Array(candles.length);
   let fIdx = 0;
   let cur: number | null = null;
+  const barDurMs =
+    candles.length >= 2
+      ? Math.max(candles[1]!.openTime - candles[0]!.openTime, 1)
+      : 30 * 60 * 1000;
   for (let i = 0; i < candles.length; i++) {
     const t = candles[i]!.openTime;
-    while (fIdx < funding.length && funding[fIdx]!.t <= t) {
+    const upper = t + barDurMs;
+    while (fIdx < funding.length && funding[fIdx]!.t < upper) {
       cur = funding[fIdx]!.r;
       fIdx++;
     }

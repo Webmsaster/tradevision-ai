@@ -1,1 +1,18 @@
-npx lint-staged
+#!/bin/sh
+# 2026-05-23 Wave1 audit fix: extend pre-commit beyond lint-staged.
+# Was: only lint+format. Now: typecheck on staged TS files (fast, fail-loud
+# locally instead of CI 5min later). Tests stay in CI (too slow for commit).
+
+# Run lint+format on staged files
+npx lint-staged || exit 1
+
+# Typecheck only when TS/TSX files are staged (skip pure Python/Rust commits).
+ts_staged=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|tsx)$' || true)
+if [ -n "$ts_staged" ]; then
+  echo "→ typecheck (TS files staged)..."
+  npm run typecheck || {
+    echo ""
+    echo "✗ typecheck failed. Fix errors or commit with --no-verify (NOT recommended)."
+    exit 1
+  }
+fi

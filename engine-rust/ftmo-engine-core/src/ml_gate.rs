@@ -30,7 +30,10 @@ use std::collections::HashMap;
 /// `schema_version` and `asset_id_map` fields. Inference rejects models that
 /// were exported before the writer was updated; retrain via
 /// `scripts/_mlTrainClassifier.py` to refresh.
-pub const EXPECTED_SCHEMA_VERSION: u32 = 1;
+/// 2026-05-23 v3 — Round 11.3 R2-1 fix: feature_medians now embedded in
+/// model JSON so inference applies same imputation as training (was 0.0,
+/// re-introduced the bias R11 was meant to remove).
+pub const EXPECTED_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
@@ -71,6 +74,24 @@ pub struct MlModel {
     /// when present, `asset_id_for(sym)` is the authoritative source.
     #[serde(default)]
     pub asset_id_map: HashMap<String, usize>,
+    /// 2026-05-23 ML Round 11.3 R2-1: per-feature medians used at training
+    /// for NaN imputation. Inference MUST apply the same imputation so
+    /// training-vs-inference feature distributions align. Empty → fall back
+    /// to 0.0 imputation (legacy v2 models).
+    #[serde(default)]
+    pub feature_medians: Vec<f64>,
+    /// 2026-05-23 ML Round 11.2/Wave1: git commit hash at training time.
+    /// Loader warns when model commit ≠ current engine commit (stale-cache
+    /// detection). Empty = legacy v2 model with no commit stamp.
+    #[serde(default)]
+    pub git_commit: String,
+    /// Unix-seconds of the training-data file mtime at training time.
+    #[serde(default)]
+    pub training_data_mtime: i64,
+    /// Unix-seconds when training completed. Loader warns if model is
+    /// >30 days old (stale-model detection).
+    #[serde(default)]
+    pub trained_at_utc: i64,
 }
 
 /// R29-Audit-Round2.5: expected feature ordering. Inference computes
@@ -93,6 +114,27 @@ pub const EXPECTED_FEATURES: &[&str] = &[
     "direction_long",
     "funding_rate",
 ];
+
+/// 2026-05-23 Wave2 helper: strip a template suffix from a basket symbol.
+/// Order matters: longer suffixes first to prevent `-AMBER_MAX` being
+/// matched by the shorter `-AMBER` rule. Returns the unmodified slice when
+/// nothing matches. Public so `sweep.rs::bare_source()` can reuse it.
+pub fn strip_template_suffix(s: &str) -> &str {
+    for suf in [
+        "-AMBER_MAX",
+        "-AMBER",
+        "-BIDIR",
+        "-SHORTS",
+        "-PYRAMID",
+        "-TREND",
+        "-MR",
+    ] {
+        if let Some(b) = s.strip_suffix(suf) {
+            return b;
+        }
+    }
+    s
+}
 
 impl MlModel {
     pub fn load_from_path(path: &str) -> std::io::Result<Self> {
@@ -130,6 +172,60 @@ impl MlModel {
                 ),
             ));
         }
+        // 2026-05-23 Wave2 fix: feature_medians MUST match feature count or be
+        // empty (legacy v2 fallback). A short/over-long vector would silently
+        // pad with 0.0 in predict_proba and quietly drift the inference toward
+        // origin-imputation on NaN inputs. v3+ models without proper medians
+        // are a build-time defect — fail loud rather than silent 0-drift.
+        if !model.feature_medians.is_empty()
+            && model.feature_medians.len() != EXPECTED_FEATURES.len()
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "ML model feature_medians length {} != expected {}",
+                    model.feature_medians.len(),
+                    EXPECTED_FEATURES.len()
+                ),
+            ));
+        }
+        if model.schema_version >= 3 && model.feature_medians.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "ML model schema_version >= 3 but feature_medians is empty — \
+                 retrain via `scripts/_mlTrainClassifier.py`"
+                    .to_string(),
+            ));
+        }
+        // 2026-05-23 Wave1 audit fix: validate stale-cache metadata stamps
+        // (Round 11.2 wrote them but loader never checked). Warn — don't fail
+        // — since the engine-commit comparison would over-trigger on every
+        // benign engine update that doesn't actually invalidate the model.
+        if !model.git_commit.is_empty() {
+            if let Ok(cur_commit) = std::env::var("ML_ENGINE_COMMIT") {
+                if cur_commit.trim() != model.git_commit.trim() {
+                    eprintln!(
+                        "[ml_gate] WARN: model trained on commit {} != current engine commit {} — \
+                         consider retrain if engine changed feature pipeline",
+                        &model.git_commit[..model.git_commit.len().min(12)],
+                        &cur_commit[..cur_commit.len().min(12)],
+                    );
+                }
+            }
+        }
+        if model.trained_at_utc > 0 {
+            let now_s = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let age_days = (now_s - model.trained_at_utc) / 86_400;
+            if age_days > 30 {
+                eprintln!(
+                    "[ml_gate] WARN: model is {age_days}d old — retrain via \
+                     `scripts/_mlTrainClassifier.py` recommended"
+                );
+            }
+        }
         Ok(model)
     }
 
@@ -147,15 +243,27 @@ impl MlModel {
         if let Some(&id) = self.asset_id_map.get(symbol) {
             return Some(id);
         }
-        // Try common cache-key variants used across the TS / Rust split: the
-        // training writer emits e.g. "ETHUSDT" while runtime config asset
-        // symbols may be "ETH-TREND". Normalise both ends to share lookups.
-        let bare = symbol.replace("-TREND", "");
-        if let Some(&id) = self.asset_id_map.get(&bare) {
+        // 2026-05-23 Wave2 fix (HIGH latent + MEDIUM real): suffix-strip helper
+        // replaces broken `.replace()` chain. `.replace()` is substring-based
+        // (e.g. `XMRUSDT`.replace("-MR", "") = `XMRUSDT` is safe today only
+        // because XMR isn't in the basket — but `XYZ-MR-foo`.replace("-MR","")
+        // mutates internal occurrences too). Use `strip_suffix` with
+        // longest-first ordering. Forex pairs (already 6-char *USD) must NOT
+        // get a `USDT` fallback appended — that produces permanent miss
+        // (e.g. `EURUSDUSDT`). Mirror in sweep.rs::bare_source().
+        let bare = strip_template_suffix(symbol);
+        if let Some(&id) = self.asset_id_map.get(bare) {
             return Some(id);
         }
-        let with_usdt = format!("{bare}USDT");
-        self.asset_id_map.get(&with_usdt).copied()
+        // Skip USDT-suffix fallback for forex tickers (already 6-char USD).
+        let looks_forex = bare.len() == 6 && bare.ends_with("USD");
+        if !looks_forex {
+            let with_usdt = format!("{bare}USDT");
+            if let Some(&id) = self.asset_id_map.get(&with_usdt) {
+                return Some(id);
+            }
+        }
+        None
     }
 
     /// Average P(win=1) across all trees in the forest.
@@ -180,21 +288,45 @@ impl MlModel {
         if self.trees.is_empty() {
             return self.win_rate_baseline;
         }
-        // R29-Audit-Round4 2026-05-12 (Bug-7 fix): heap-alloc-free
-        // cleaning. Previous implementation allocated a Vec<f64> per
-        // call; with ~2000 signals × 200 trees in a sweep that's 400k
-        // unnecessary allocations. EXPECTED_FEATURES.len() is fixed and
-        // small, so we stack-allocate.
+        // 2026-05-23 BUG FIX (ML audit Round 11):
+        //   - Hard-check feature length (was silently truncating; missing
+        //     slots became 0 → false `all_zero` trigger).
+        //   - Replace `all_zero` heuristic with explicit warmup-detection
+        //     via `atr_pct`/`rsi14` finite-non-zero (volatility/RSI are
+        //     never legitimately exactly 0 in normal markets, but they ARE
+        //     0/NaN during warmup). This stops false-positive cold-starts
+        //     on legitimate SHORT signals at hour=0/dow=0/asset_id=0/funding=0.
+        //   - Caller MUST pass exactly EXPECTED_FEATURES.len() features.
+        if features.len() != EXPECTED_FEATURES.len() {
+            debug_assert!(
+                false,
+                "predict_proba: expected {} features, got {} — caller bug",
+                EXPECTED_FEATURES.len(),
+                features.len()
+            );
+            return self.win_rate_baseline;
+        }
+        // Round 11.3 R2-1: use trainer-stamped feature_medians for NaN imputation
+        // (was 0.0 → re-introduced bias on funding_rate/RSI/ADX since median != 0).
+        // Empty feature_medians (legacy v2 models) → fall back to 0.0.
         let mut cleaned = [0.0_f64; EXPECTED_FEATURES.len()];
-        let n = features.len().min(cleaned.len());
-        let mut all_zero = true;
-        for (i, &v) in features.iter().take(n).enumerate() {
-            cleaned[i] = if v.is_finite() { v } else { 0.0 };
-            if cleaned[i] != 0.0 {
-                all_zero = false;
+        let use_medians = self.feature_medians.len() == EXPECTED_FEATURES.len();
+        for (i, &v) in features.iter().enumerate() {
+            if v.is_finite() {
+                cleaned[i] = v;
+            } else if use_medians {
+                cleaned[i] = self.feature_medians[i];
+            } else {
+                cleaned[i] = 0.0;
             }
         }
-        if all_zero {
+        // 2026-05-23 Round 11.3 R2-5 fix: replaced two-feature warmup
+        // heuristic (atr_pct == 0 AND rsi14 == 0) with strict ALL-zero
+        // check. Caller (ml_features_for_signal) already filters warmup
+        // via Option<None>; this is defensive-only for "caller passed
+        // zero-vec by accident" path. RSI=0 + atr_pct=0 + everything else
+        // simultaneously is structurally cold-start, not a real signal.
+        if cleaned.iter().all(|&v| v == 0.0) {
             return self.win_rate_baseline;
         }
         let mut sum = 0.0_f64;
@@ -212,6 +344,18 @@ impl MlModel {
 /// min_samples_leaf=20 can produce paths far longer than the configured
 /// max_depth would suggest. Iteration eliminates both risks; the function
 /// stays inlineable.
+/// PRECONDITION: caller must pass a `features` slice containing only
+/// finite (non-NaN, non-Inf) values. `predict_proba` sanitises via
+/// `cleaned[i]` (median imputation) before reaching this function, so
+/// the production hot path is safe. Direct callers (unit tests, future
+/// inference call-sites) MUST mirror that sanitisation — `NaN <= threshold`
+/// is `false`, which silently routes RIGHT, diverging from sklearn's
+/// `nan_to_num` training-time behavior.
+///
+/// 2026-05-23 Wave2 fix (MEDIUM — predict_proba audit): debug_assert
+/// catches the precondition violation in dev/test without runtime cost
+/// in release. Future callers will see the failure immediately instead
+/// of inheriting silent inference drift.
 fn traverse(node: &TreeNode, features: &[f64]) -> f64 {
     let mut cur = node;
     loop {
@@ -224,6 +368,12 @@ fn traverse(node: &TreeNode, features: &[f64]) -> f64 {
                 right,
             } => {
                 let v = features.get(*feature).copied().unwrap_or(0.0);
+                debug_assert!(
+                    v.is_finite(),
+                    "traverse precondition: features[{}]={} must be finite",
+                    feature,
+                    v
+                );
                 // sklearn convention: go left if value <= threshold
                 cur = if v <= *threshold { left } else { right };
             }
@@ -284,8 +434,17 @@ mod tests {
             validation_auc: 0.0,
             schema_version: EXPECTED_SCHEMA_VERSION,
             asset_id_map: HashMap::new(),
+            feature_medians: vec![],
+            git_commit: String::new(),
+            training_data_mtime: 0,
+            trained_at_utc: 0,
         };
-        assert!((m.predict_proba(&[1.0]) - 0.5).abs() < 1e-9);
+        // 2026-05-23: must pass full 14-feature vector (post-bug-fix #5).
+        // Set atr_pct (idx 3) and rsi14 (idx 0) non-zero to bypass warmup guard.
+        let mut feats = [0.0; EXPECTED_FEATURES.len()];
+        feats[0] = 50.0; // rsi14
+        feats[3] = 0.01; // atr14_pct
+        assert!((m.predict_proba(&feats) - 0.5).abs() < 1e-9);
     }
 
     #[test]
@@ -301,6 +460,10 @@ mod tests {
             validation_auc: 0.0,
             schema_version: EXPECTED_SCHEMA_VERSION,
             asset_id_map: map,
+            feature_medians: vec![],
+            git_commit: String::new(),
+            training_data_mtime: 0,
+            trained_at_utc: 0,
         };
         assert_eq!(m.asset_id_for("ETHUSDT"), Some(3));
         // config symbol "ETH-TREND" normalises to "ETH" then "ETHUSDT".
@@ -333,6 +496,10 @@ mod tests {
             validation_auc: 0.0,
             schema_version: EXPECTED_SCHEMA_VERSION,
             asset_id_map: HashMap::new(),
+            feature_medians: vec![],
+            git_commit: String::new(),
+            training_data_mtime: 0,
+            trained_at_utc: 0,
         };
         let zeros = vec![0.0_f64; EXPECTED_FEATURES.len()];
         assert_eq!(m.predict_proba(&zeros), 0.42);
@@ -372,6 +539,10 @@ mod tests {
             validation_auc: 0.0,
             schema_version: EXPECTED_SCHEMA_VERSION,
             asset_id_map: HashMap::new(),
+            feature_medians: vec![],
+            git_commit: String::new(),
+            training_data_mtime: 0,
+            trained_at_utc: 0,
         };
         assert_eq!(m.asset_id_for("ANY"), None);
     }

@@ -18,7 +18,20 @@ function isEnabled() {
 }
 
 function getStateDir() {
-  return process.env.FTMO_STATE_DIR ?? join(process.cwd(), "ftmo-state");
+  // 2026-05-14 Codex Wave-2 Bug #9 FIX: mirror executor convention. The
+  // executor (ftmo_executor.py) uses `ftmo-state-${FTMO_TF}` per-strategy
+  // state-dirs; the API was reading the default `./ftmo-state` so without
+  // FTMO_STATE_DIR the dashboard saw an empty state and looked broken.
+  // 2026-05-15 (Audit-Round-6 / Agent #5 KRIT): default unified with
+  // tools/_ftmo_defaults.py (Python toolkit) and tools/ecosystem.config.js.
+  // Was "2h-trend-v5-amber-passlock" — caused the Dashboard to read from a
+  // different state-dir than the executor wrote when FTMO_TF was unset →
+  // dashboard showed empty state. Active 2026-05-15 champion is AMBER_MAX.
+  if (process.env.FTMO_STATE_DIR) {
+    return process.env.FTMO_STATE_DIR;
+  }
+  const tf = process.env.FTMO_TF ?? "2h-trend-v5-amber-max-passlock";
+  return join(process.cwd(), `ftmo-state-${tf}`);
 }
 
 // Phase 62 (R45-API-5): cap state-file reads at 1 MB so a corrupted /

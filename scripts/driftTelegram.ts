@@ -23,9 +23,20 @@ function envFor(
   varBase: string,
   accountId: string | undefined,
 ): string | undefined {
+  // 2026-05-15 Codex-Audit Wave-2 Bug 12 (NIEDRIG/MITTEL): match the sanitiser
+  // in `src/utils/telegramNotify.ts::resolveAccountEnv` exactly — strip the
+  // account-id of unsafe chars but DO NOT uppercase. Linux env-vars are
+  // case-sensitive (unlike Windows): a lowercase `demo1` account previously
+  // resolved to `TELEGRAM_BOT_TOKEN_DEMO1` here but `TELEGRAM_BOT_TOKEN_demo1`
+  // in telegramNotify → drift alerts and live signals routed to different
+  // chats (or one of them silently fell back to the default).
   if (accountId) {
-    const v = process.env[`${varBase}_${accountId.toUpperCase()}`];
-    if (v) return v;
+    const trimmed = accountId.trim();
+    if (trimmed) {
+      const safe = trimmed.replace(/[^A-Za-z0-9_]/g, "_");
+      const v = process.env[`${varBase}_${safe}`];
+      if (v) return v;
+    }
   }
   return process.env[varBase];
 }

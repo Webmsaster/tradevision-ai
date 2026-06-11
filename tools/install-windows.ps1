@@ -53,7 +53,8 @@ function Test-Command {
 Write-Host @"
 ╔═══════════════════════════════════════════════════════╗
 ║  FTMO Auto-Trading Bot — Windows Installer            ║
-║  Strategy: iter231 (~62% pass rate, 6d median)        ║
+║  Champion: V5_AMBER_MAX_PASSLOCK (2026-05-15)         ║
+║  P1=49% / P2=59.4% / Combined Funded ≈ 29% single     ║
 ╚═══════════════════════════════════════════════════════╝
 "@ -ForegroundColor Magenta
 

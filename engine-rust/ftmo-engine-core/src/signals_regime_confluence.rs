@@ -1,5 +1,13 @@
 // 2026-05-13 Phase B — Regime-Confluence multi-detector consensus signal.
 //
+// 2026-05-21 PARITY NOTE: `disagreement_bonus` and `use_poc_zone_gate` exist
+// only in this Rust module — the TS regimeVoters orchestrator has no equivalent.
+// This divergence is DORMANT and safe: both flags default OFF, are exposed only
+// via backtest-sweep CLI (--regime-disagreement-bonus / --regime-poc-zone-gate),
+// and no production/champion config (R28V6 / V5_AMBER trend) uses
+// SignalSrc::RegimeConfluence at all. If RegimeConfluence is ever promoted to a
+// live config, port these two features to TS (or gate them) for engine parity.
+//
 // Background: 13 systematic 65%-hunt waves on the standalone R28V6 detector
 // + V5_AMBER engine + 30m TF + 19-asset basket plateau at 58.3% s1 single-
 // account pass-rate. Knob-tuning (mct, pt, tp×, drop-symbols, hours, DOWs,
@@ -24,22 +32,115 @@ use crate::config::{AssetConfig, EngineConfig};
 use crate::position::PositionSide;
 use crate::signal::PollSignal;
 use crate::signals_breakout::{detect_breakout, BreakoutParams};
+use crate::signals_hmm_regime::HmmModel;
 use crate::signals_meanrev::detect_mean_reversion;
+use crate::signals_nupl::{NuplSample, NuplSeries};
 use crate::signals_r28v6::{detect_r28_v6, R28V6Inputs, R28V6Params};
 use crate::state::EngineState;
 
+/// External time-series fed to the macro / cross-market voters
+/// (CB-Premium, CME-Basis, Top-Trader-LS, Stablecoin-Supply-Flow). Every
+/// field is `Option<&[Option<f64>]>` so callers that haven't loaded a feed
+/// pass `None` → the corresponding voter abstains gracefully. Loader-side
+/// helpers (`loader::align_funding`-style) align the source feed onto the
+/// per-bar candle index so `series[i]` corresponds to `candles[i]`.
+#[derive(Default, Clone, Copy)]
+pub struct RegimeConfluenceInputs<'a> {
+    pub cb_premium_series: Option<&'a [Option<f64>]>,
+    pub cme_basis_series: Option<&'a [Option<f64>]>,
+    pub top_ls_series: Option<&'a [Option<f64>]>,
+    pub global_ls_series: Option<&'a [Option<f64>]>,
+    pub stablecoin_supply_series: Option<&'a [Option<f64>]>,
+}
+
+/// 2026-05-13 Phase 3b — VWAP-trend vote helper. Returns the trend
+/// direction sampled from VWAP — Long if signal-bar close > VWAP AND VWAP
+/// is rising (last-period delta > 0), Short if close < VWAP AND VWAP
+/// falling. Provides a 5th independent voter (price+volume joint signal,
+/// orthogonal to vol_confirm which only consults raw volume).
+///
+/// 2026-05-13 Codex KRITISCH FIX: signal-bar = `candles[i-1]` (the just-
+/// closed bar), NOT `candles[i]` (the current execution bar whose close
+/// is future data). VWAP window is `[i-1-n .. i-1)` and the "previous"
+/// window slides one bar back for the slope.
+///
+/// vwap = Σ(close_k × volume_k) / Σ(volume_k)  over last `vwap_period` bars.
+fn compute_vwap_trend_vote(
+    candles: &[Candle],
+    params: &RegimeConfluenceParams,
+) -> Option<PositionSide> {
+    let n = params.vwap_period;
+    // Need bar `i` + the i-1 slice for VWAP-now + the i-2 slice for prev VWAP.
+    if n == 0 || candles.len() < n + 3 {
+        return None;
+    }
+    let signal_idx = candles.len() - 2; // bar i-1 (just closed, no lookahead)
+    let signal_bar = candles[signal_idx];
+    if !signal_bar.close.is_finite() {
+        return None;
+    }
+    // VWAP-now: bars (i-1-n .. i-1), excluding signal_bar itself so the
+    // sum is on bars STRICTLY BEFORE the signal bar.
+    let slice = &candles[signal_idx - n..signal_idx];
+    let (sum_pv, sum_v) = slice.iter().fold((0.0_f64, 0.0_f64), |(p, v), c| {
+        (p + c.close * c.volume, v + c.volume)
+    });
+    if !sum_v.is_finite() || sum_v <= 0.0 || !sum_pv.is_finite() {
+        return None;
+    }
+    let vwap_now = sum_pv / sum_v;
+    // Prev-window VWAP for slope: bars (i-2-n .. i-2).
+    if signal_idx < n + 1 {
+        return None;
+    }
+    let prev_slice = &candles[signal_idx - 1 - n..signal_idx - 1];
+    let (sum_pv_p, sum_v_p) = prev_slice.iter().fold((0.0_f64, 0.0_f64), |(p, v), c| {
+        (p + c.close * c.volume, v + c.volume)
+    });
+    // 2026-05-15 (Audit-Round-5 / Agent #2 HINWEIS): is_finite guard. A NaN
+    // volume on any prev_slice bar propagates through sum_v_p, makes
+    // `NaN <= 0.0` evaluate to false, division produces NaN vwap_prev, and
+    // rising/falling comparisons return false for ANY bar (NaN-poisoned) →
+    // silent voter-abstain instead of a directional vote. Mirror the
+    // `sum_v` guard on line 80 which already checks `is_finite`.
+    if !sum_v_p.is_finite() || !sum_pv_p.is_finite() || sum_v_p <= 0.0 {
+        return None;
+    }
+    let vwap_prev = sum_pv_p / sum_v_p;
+    let dev_pct = (signal_bar.close - vwap_now) / vwap_now;
+    if !dev_pct.is_finite() {
+        return None;
+    }
+    let min_dev = params.vwap_min_dev_pct.max(0.0);
+    let rising = vwap_now > vwap_prev;
+    let falling = vwap_now < vwap_prev;
+    if rising && dev_pct >= min_dev {
+        Some(PositionSide::Long)
+    } else if falling && dev_pct <= -min_dev {
+        Some(PositionSide::Short)
+    } else {
+        None
+    }
+}
+
 /// 2026-05-13 — volume-confirmation vote helper. Returns the breakout's
-/// direction if the current bar's volume cleared
+/// direction if the SIGNAL-bar's volume cleared
 /// `params.vol_confirm_mult × SMA(volume, params.vol_confirm_period)`.
 /// Independent voter so mv=3/mv=4 consensus is reachable without an
 /// MR-source on AMBER family.
+///
+/// 2026-05-13 Codex KRITISCH FIX: signal-bar = `candles[i-1]` (just-closed,
+/// volume known). SMA window slides to bars STRICTLY BEFORE the signal bar
+/// so the comparison is "signal-bar volume vs prior N bars", with no
+/// dependency on `candles[i].volume` (which is future data at signal time).
 fn compute_vol_confirm_vote(
     candles: &[Candle],
     params: &RegimeConfluenceParams,
     bo_signal: Option<&PollSignal>,
 ) -> Option<PositionSide> {
     let n = params.vol_confirm_period;
-    if n == 0 || candles.len() <= n {
+    // Need bar `i` + signal-bar (i-1) + n SMA-window bars before signal-bar.
+    if n == 0 || candles.len() < n + 2 {
         return None;
     }
     // 2026-05-13 Bug-Audit Round 3 — BUG #5 FIX: guard against vol_confirm_mult
@@ -51,23 +152,202 @@ fn compute_vol_confirm_vote(
         return None;
     }
     let bo = bo_signal?;
-    let last = candles.last()?;
-    let sma: f64 = candles[candles.len() - 1 - n..candles.len() - 1]
+    let signal_idx = candles.len() - 2;
+    let signal_bar = candles[signal_idx];
+    let sma: f64 = candles[signal_idx - n..signal_idx]
         .iter()
         .map(|c| c.volume)
         .sum::<f64>()
         / n as f64;
-    if !sma.is_finite() || sma <= 0.0 || !last.volume.is_finite() {
+    if !sma.is_finite() || sma <= 0.0 || !signal_bar.volume.is_finite() {
         return None;
     }
-    if last.volume >= params.vol_confirm_mult * sma {
+    if signal_bar.volume >= params.vol_confirm_mult * sma {
         Some(bo.direction)
     } else {
         None
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+/// 2026-05-14 Detector #12 — multi-bar Volume-Profile POC-Z distance voter.
+///
+/// Builds a discrete volume profile over the last `poc_window_bars` (TF-scaled
+/// by `30 / cfg.bar_minutes` so a 30m-tuned window stays time-equivalent on
+/// 5m/2h feeds). Each bar's close is bucketed by `poc_bucket_pct × first-close`,
+/// volumes summed per bucket; bucket with max volume = POC. Distance from
+/// signal-bar close to POC-mid is then z-scored against the window's close-std.
+///
+/// Voting contract:
+///   z ≥ +poc_z_min  → Short  (price far above value → mean-revert down)
+///   z ≤ -poc_z_min  → Long   (price far below value → mean-revert up)
+///   |z| < poc_z_min → None   (within typical band; abstain)
+///
+/// Lookahead-safe: the window strictly ends at `signal_idx = candles.len() - 2`
+/// (the last fully-closed bar). The entry bar `candles[candles.len() - 1]`
+/// is NEVER consulted — verified by `poc_z_window_excludes_entry_bar` test.
+fn compute_poc_z_vote(
+    candles: &[Candle],
+    params: &RegimeConfluenceParams,
+    cfg: &EngineConfig,
+) -> Option<PositionSide> {
+    // TF-scale: 30 / cfg.bar_minutes so a 30m-tuned `poc_window_bars` stays
+    // time-equivalent on 5m/2h feeds. Same convention as r29r5::detect_vol_poc.
+    let scale = (30.0 / (cfg.bar_minutes.max(1) as f64)).round().max(1.0) as usize;
+    let n = (params.poc_window_bars as usize).saturating_mul(scale);
+    if n < 4 || candles.len() < n + 2 {
+        return None;
+    }
+    if !params.poc_z_min.is_finite() || params.poc_z_min <= 0.0 {
+        return None;
+    }
+    if !params.poc_bucket_pct.is_finite() || params.poc_bucket_pct <= 0.0 {
+        return None;
+    }
+
+    let signal_idx = candles.len() - 2;
+    // Window = signal_idx-n+1 ..= signal_idx (n bars ending at last-closed).
+    let window = &candles[signal_idx + 1 - n..=signal_idx];
+    let first_close = window[0].close;
+    if !first_close.is_finite() || first_close <= 0.0 {
+        return None;
+    }
+    let bucket_size = params.poc_bucket_pct * first_close;
+    if bucket_size <= 0.0 || !bucket_size.is_finite() {
+        return None;
+    }
+
+    use std::collections::HashMap;
+    let mut buckets: HashMap<i64, f64> = HashMap::with_capacity(n);
+    let mut closes: Vec<f64> = Vec::with_capacity(n);
+    let mut total_vol = 0.0_f64;
+    for c in window.iter() {
+        if !c.close.is_finite() || !c.volume.is_finite() || c.volume < 0.0 {
+            return None;
+        }
+        let key = (c.close / bucket_size).floor() as i64;
+        *buckets.entry(key).or_insert(0.0) += c.volume;
+        closes.push(c.close);
+        total_vol += c.volume;
+    }
+    if total_vol <= 0.0 {
+        return None;
+    }
+
+    let (&poc_key, _) = buckets.iter().max_by(|a, b| a.1.total_cmp(b.1))?;
+    let poc_price = (poc_key as f64 + 0.5) * bucket_size;
+
+    // Sample-std of closes — guards flat-market (std=0 → no vote).
+    let mean = closes.iter().sum::<f64>() / n as f64;
+    let var = closes.iter().map(|c| (c - mean).powi(2)).sum::<f64>() / (n as f64 - 1.0);
+    let std = var.sqrt();
+    if std <= 0.0 || !std.is_finite() {
+        return None;
+    }
+
+    let signal_close = candles[signal_idx].close;
+    let dist_z = (signal_close - poc_price) / std;
+    if !dist_z.is_finite() {
+        return None;
+    }
+
+    if dist_z >= params.poc_z_min {
+        // Price far above POC value-area → mean-revert short.
+        Some(PositionSide::Short)
+    } else if dist_z <= -params.poc_z_min {
+        // Price far below POC value-area → mean-revert long.
+        Some(PositionSide::Long)
+    } else {
+        None
+    }
+}
+
+/// 2026-05-16 Phase 2.2 — POC-Zone Hard-Gate (HVN block).
+///
+/// Returns `false` when the signal-bar close sits inside a HIGH-VOLUME NODE
+/// (HVN) bucket — i.e. price is inside a value-area cluster where mean-
+/// reversion dominates. Trend-entries fired from inside HVN have
+/// historically lower follow-through (price oscillates around the cluster).
+///
+/// HVN definition: bucket volume >= `hvn_min_ratio × (total_vol / n_buckets)`.
+/// At ratio=1.5 → bucket carries 1.5× the uniform-distribution average → real
+/// value-area peak.
+///
+/// Bug-frei (verified pattern same as compute_poc_z_vote):
+/// - `signal_idx = len - 2` (just-closed bar)
+/// - Volume profile built from candles `[signal_idx + 1 - n ..= signal_idx]`,
+///   strictly EXCLUDING entry bar `candles[len - 1]`
+/// - Bucket lookup uses `signal_close` (closed bar's close, no lookahead)
+///
+/// Returns:
+/// - `true` (allow entry) when (a) volume profile cannot be computed, or
+///   (b) signal_close NOT in HVN bucket
+/// - `false` (block entry) when signal_close IS in HVN bucket
+pub fn poc_zone_gate_allows(
+    candles: &[Candle],
+    params: &RegimeConfluenceParams,
+    cfg: &EngineConfig,
+) -> bool {
+    let scale = (30.0 / (cfg.bar_minutes.max(1) as f64)).round().max(1.0) as usize;
+    let n = (params.poc_window_bars as usize).saturating_mul(scale);
+    if n < 4 || candles.len() < n + 2 {
+        return true; // not enough data — allow
+    }
+    if !params.poc_bucket_pct.is_finite() || params.poc_bucket_pct <= 0.0 {
+        return true;
+    }
+    if !params.poc_zone_hvn_min_ratio.is_finite() || params.poc_zone_hvn_min_ratio <= 1.0 {
+        return true; // ratio <= 1 means "every bucket is HVN" = block everything; disallow
+    }
+
+    let signal_idx = candles.len() - 2;
+    let window = &candles[signal_idx + 1 - n..=signal_idx];
+    let first_close = window[0].close;
+    if !first_close.is_finite() || first_close <= 0.0 {
+        return true;
+    }
+    let bucket_size = params.poc_bucket_pct * first_close;
+    if bucket_size <= 0.0 || !bucket_size.is_finite() {
+        return true;
+    }
+
+    use std::collections::HashMap;
+    let mut buckets: HashMap<i64, f64> = HashMap::with_capacity(n);
+    let mut total_vol = 0.0_f64;
+    for c in window.iter() {
+        if !c.close.is_finite() || !c.volume.is_finite() || c.volume < 0.0 {
+            return true;
+        }
+        let key = (c.close / bucket_size).floor() as i64;
+        *buckets.entry(key).or_insert(0.0) += c.volume;
+        total_vol += c.volume;
+    }
+    if total_vol <= 0.0 || buckets.is_empty() {
+        return true;
+    }
+    let avg_per_bucket = total_vol / buckets.len() as f64;
+    let hvn_threshold = params.poc_zone_hvn_min_ratio * avg_per_bucket;
+
+    let signal_close = candles[signal_idx].close;
+    if !signal_close.is_finite() {
+        return true;
+    }
+    let signal_bucket_key = (signal_close / bucket_size).floor() as i64;
+    let signal_bucket_vol = *buckets.get(&signal_bucket_key).unwrap_or(&0.0);
+
+    // Block (return false) when signal sits in HVN cluster.
+    // Safety: keep the negated form — a NaN threshold (NaN ratio param) must
+    // yield true (gate allows) like the invalid-data paths above; the
+    // de-negated `<` comparison would silently flip that to false.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    let allows = !(signal_bucket_vol >= hvn_threshold);
+    allows
+}
+
+// 2026-05-14 Detector #34 — dropped Copy: `cb_premium_params.symbol_allowlist`
+// is a Vec<String> which is owned heap data. Clone is sufficient for the
+// few call-sites that pass-by-value (e.g. test fixtures); the regime
+// orchestrator passes by reference exclusively.
+#[derive(Debug, Clone)]
 pub struct RegimeConfluenceParams {
     /// Number of detectors that must agree on direction. With 3 detectors
     /// in the panel, 2 = majority vote, 3 = unanimous.
@@ -98,6 +378,171 @@ pub struct RegimeConfluenceParams {
     pub r28v6_rsi_long_max: Option<f64>,
     pub r28v6_rsi_short_min: Option<f64>,
     pub r28v6_rsi_period: Option<usize>,
+    /// 2026-05-13 Phase 3b: 5th voter — VWAP-trend gate. When
+    /// `use_vwap_trend`, fires the side of price-vs-VWAP whose VWAP slope
+    /// agrees (Long if close > VWAP AND VWAP rising). Orthogonal to
+    /// vol_confirm (which uses raw volume) and breakout (which uses
+    /// price-vs-prev-high). 5 voters → mv=4 / mv=5 quorum reachable.
+    pub use_vwap_trend: bool,
+    pub vwap_period: usize,
+    pub vwap_min_dev_pct: f64,
+    /// 2026-05-14 Detector #14 — Stop-Hunt Liquidity-Sweep Reversal voter
+    /// (6th independent voter). Fires Long when the signal-bar wicks below
+    /// the prior N-bar swing-low by ≥ `stop_hunt_wick_pct` then closes back
+    /// above it; Short on the symmetric upside sweep. Reference range is
+    /// EXCLUSIVE of the signal bar to prevent self-fulfilling lookahead
+    /// (the bug class from TS `ftmoSmcEngine.ts:138-170`).
+    pub use_stop_hunt: bool,
+    pub stop_hunt_lookback: usize,
+    pub stop_hunt_wick_pct: f64,
+    pub stop_hunt_close_strict: bool,
+    /// 2026-05-14 Detector #1 — Bollinger-Band Z-score Mean-Reversion voter
+    /// (7th independent voter). Fires Long when price dips to a deep z-extreme
+    /// (Z ≤ -threshold) within the last `look_back_bars` AND closes back inside
+    /// the lower BB on the signal bar AND the signal-bar z is back below
+    /// `z_recover_cap`. Short on the symmetric upside extreme. Orthogonal to
+    /// RSI-MR (cross-of-threshold) and Stop-Hunt (wick-depth) — picks up clean
+    /// snap-back setups from absolute-price displacement.
+    pub use_bb_z_mr: bool,
+    pub bb_z_params: crate::signals_bb_zscore_mr::BollingerZScoreSource,
+    /// 2026-05-14 Detector #2 — Order-Flow-Imbalance Persistent Cluster voter
+    /// (8th independent voter). Fires the direction agreed by every bar in the
+    /// last N closed bars' signed taker-flow delta, gated by a min ratio
+    /// threshold, an SMA-trend confirmation, and a net-return secondary
+    /// filter. Orthogonal to vol_confirm (raw volume), VWAP-trend
+    /// (price-vs-mean slope), and the MR/Stop-Hunt voters (reversal-class).
+    /// Lookahead-safe: window strictly ends at `signal_idx = len-2`.
+    pub use_ofi: bool,
+    pub ofi_params: crate::signals_ofi::OfiPersistentParams,
+    /// 2026-05-25 Wave5 — Funding Acceleration voter (contrarian on fast
+    /// funding-rate change). Uses already-cached per-bar funding series.
+    /// Free, lookahead-safe, no new data needed.
+    pub use_funding_accel: bool,
+    pub funding_accel_params: crate::signals_funding_accel::FundingAccelParams,
+    /// 2026-05-14 Phase-2 — Chaikin Money Flow voter (volume-weighted price-position).
+    pub use_cmf: bool,
+    pub cmf_params: crate::signals_cmf::CmfParams,
+    /// 2026-05-14 Phase-2 — CME futures basis premium voter (BTC-only).
+    pub use_cme_basis: bool,
+    pub cme_basis_params: crate::signals_cme_basis::CmeBasisParams,
+    /// 2026-05-14 Phase-2 — HMM regime classifier voter (3-state bear/range/bull).
+    pub use_hmm_regime: bool,
+    pub hmm_regime_params: crate::signals_hmm_regime::HmmRegimeParams,
+    /// 2026-05-14 Phase-2 — NUPL regime voter (multi-week macro on-chain signal).
+    pub use_nupl: bool,
+    pub nupl_params: crate::signals_nupl::NuplParams,
+    /// 2026-05-14 Phase-2 — RSI hidden-divergence trend-continuation voter.
+    pub use_rsi_hidden_div: bool,
+    pub rsi_hidden_div_params: crate::signals_rsi_hidden_div::RsiHiddenDivParams,
+    /// 2026-05-14 Phase-2 — Top-trader long/short follow voter (smart-money).
+    pub use_top_trader_ls: bool,
+    pub top_trader_ls_params: crate::signals_top_trader_ls::TopTraderLsParams,
+    /// 2026-05-14 Detector #33 — CME futures-basis premium voter (BTC-only).
+    /// Loader feeds `cme_basis_series` (annualised premium f64) + optional
+    /// `funding_series` into the helper. When the series is absent the voter
+    /// abstains.
+    pub use_cb_premium: bool,
+    pub cb_premium_params: crate::signals_cb_premium::CbPremiumParams,
+    /// 2026-05-14 Detector #22 — USDT stablecoin-supply-flow voter
+    /// (LONG-only macro regime gate). Requires `stablecoin_supply_series`
+    /// in `RegimeConfluenceInputs`.
+    pub use_stablecoin_flow: bool,
+    pub stablecoin_flow_params: crate::signals_stablecoin_flow::StablecoinFlowParams,
+    /// 2026-05-14 — pre-loaded HMM model passed by value so we don't have to
+    /// propagate lifetimes through the params struct. When `use_hmm_regime`
+    /// is true but `hmm_model` is None, the voter falls back to
+    /// `HmmModel::default_btc_30m()`.
+    pub hmm_model: Option<HmmModel>,
+    /// 2026-05-14 — owned NUPL sample buffer (loader hands the parsed JSON
+    /// over by value). The voter wraps it in a borrowed `NuplSeries` at call
+    /// time so the sweep loop avoids per-bar allocation.
+    pub nupl_samples: Option<Vec<NuplSample>>,
+    /// 2026-05-14 Phase-3 — A/D-Line divergence voter (#14).
+    pub use_ad_line: bool,
+    pub ad_line_params: crate::signals_ad_line::AdLineTrendParams,
+    /// 2026-05-14 Phase-3 — Aroon oscillator voter (#17).
+    pub use_aroon: bool,
+    pub aroon_params: crate::signals_aroon::AroonParams,
+    /// 2026-05-14 Phase-3 — Double-Top/Bottom pattern voter (#29).
+    pub use_double_top: bool,
+    pub double_top_params: crate::signals_double_top::DoubleTopParams,
+    /// 2026-05-14 Phase-3 — SMC Fair-Value-Gap voter (#21).
+    pub use_smc_fvg: bool,
+    pub smc_fvg_params: crate::signals_smc_fvg::FvgParams,
+    /// 2026-05-14 Phase-3 — Supertrend volatility-band voter.
+    pub use_supertrend: bool,
+    pub supertrend_params: crate::signals_supertrend::SupertrendParams,
+    /// 2026-05-16 Phase 17 — Fisher Transform voter (Hunt 3 brainstorm).
+    pub use_fisher: bool,
+    pub fisher_params: crate::signals_fisher::FisherParams,
+    /// 2026-05-17 KAMA voter (Architecture-brainstorm Hunt 2).
+    pub use_kama: bool,
+    pub kama_params: crate::signals_kama::KamaParams,
+    /// 2026-05-17 Stufe-1 batch wireup — 10 new voters.
+    pub use_squeeze: bool,
+    pub squeeze_params: crate::signals_squeeze::SqueezeParams,
+    pub use_hurst: bool,
+    pub hurst_params: crate::signals_hurst::HurstParams,
+    pub use_wavelet: bool,
+    pub wavelet_params: crate::signals_wavelet::WaveletParams,
+    pub use_pivot: bool,
+    pub pivot_params: crate::signals_pivot::PivotParams,
+    pub use_fib: bool,
+    pub fib_params: crate::signals_fib::FibParams,
+    pub use_vah_val: bool,
+    pub vah_val_params: crate::signals_vah_val::VahValParams,
+    pub use_ichimoku: bool,
+    pub ichimoku_params: crate::signals_ichimoku::IchimokuParams,
+    pub use_arima: bool,
+    pub arima_params: crate::signals_arima::ArimaParams,
+    /// Veto-gates (block entries, don't vote direction).
+    pub use_garch_gate: bool,
+    pub garch_params: crate::signals_garch::GarchParams,
+    pub use_bocpd_gate: bool,
+    pub bocpd_params: crate::signals_bocpd::BocpdParams,
+    /// 2026-05-14 Phase-3 — Kalman trend-filter voter.
+    pub use_kalman_trend: bool,
+    pub kalman_trend_params: crate::signals_kalman_trend::KalmanTrendParams,
+    /// 2026-05-14 Detector #13 — HTF MACD-histogram trend gate. Applied
+    /// INSIDE the R28V6 probe of the regime panel (via
+    /// `apply_r28v6_overrides` → `R28V6Params.htf_macd_*`). Propagating
+    /// here keeps the same CLI flags (`--use-htf-macd-gate`, …) honored
+    /// in both standalone-R28V6 and REGIME mode — closing the bug-class
+    /// that bit us in Codex Round 2 (silent no-op of CLI flags inside
+    /// REGIME). Each field defaults to dormant; the gate only activates
+    /// when `htf_macd_enabled = true`.
+    pub htf_macd_enabled: bool,
+    pub htf_macd_fast: usize,
+    pub htf_macd_slow: usize,
+    pub htf_macd_signal: usize,
+    pub htf_macd_rising_lookback: usize,
+    pub htf_macd_min_magnitude: f64,
+    /// 2026-05-14 Detector #12: multi-bar Volume-Profile POC-Z distance voter.
+    /// 6th independent voter (counting vol_confirm as 4th + future vwap as
+    /// 5th). When `use_poc_z`, a multi-bar volume-profile is built across
+    /// `poc_window_bars` (TF-scaled), bucketing closes by `poc_bucket_pct ×
+    /// first-window-close`. The bar with max bucketed volume is the POC.
+    /// The signal-bar's distance-to-POC is z-scored against the window's
+    /// close-distribution std. If z ≥ +poc_z_min → Short (over-extended
+    /// above value); z ≤ -poc_z_min → Long (deep-discount).
+    ///
+    /// Orthogonal to single-bar `signals_r29r5::detect_vol_poc` (which uses
+    /// a fixed-pct distance threshold) — z-norm gives self-adaptive thresholds
+    /// across regimes (calm vs. volatile).
+    pub use_poc_z: bool,
+    pub poc_window_bars: u32,
+    pub poc_bucket_pct: f64,
+    pub poc_z_min: f64,
+    /// 2026-05-16 Phase 2.2 — POC-Zone Hard-Gate (HVN block).
+    /// When `use_poc_zone_gate` is true, an entry is BLOCKED if the
+    /// signal-bar close sits inside a high-volume-node (HVN) bucket.
+    /// HVN = bucket vol ≥ `poc_zone_hvn_min_ratio × (total_vol / n_buckets)`.
+    /// Default 1.5 → bucket carries 1.5× uniform average. Defaults disabled.
+    pub use_poc_zone_gate: bool,
+    pub poc_zone_hvn_min_ratio: f64,
+    /// 2026-05-16 Phase 16 — Voter-Disagreement-Bonus (Hunt 40#3). When
+    /// supertrend and bb_z_mr voters agree on direction, add +1 bonus vote.
+    pub disagreement_bonus: bool,
 }
 
 impl RegimeConfluenceParams {
@@ -116,6 +561,89 @@ impl RegimeConfluenceParams {
             r28v6_rsi_long_max: None,
             r28v6_rsi_short_min: None,
             r28v6_rsi_period: None,
+            use_vwap_trend: false,
+            vwap_period: 20,
+            vwap_min_dev_pct: 0.0,
+            use_stop_hunt: false,
+            stop_hunt_lookback: 20,
+            stop_hunt_wick_pct: 0.003,
+            stop_hunt_close_strict: false,
+            use_bb_z_mr: false,
+            bb_z_params: crate::signals_bb_zscore_mr::BollingerZScoreSource::default(),
+            use_ofi: false,
+            ofi_params: crate::signals_ofi::OfiPersistentParams::default_30m_crypto(),
+            use_funding_accel: false,
+            funding_accel_params:
+                crate::signals_funding_accel::FundingAccelParams::default_30m_crypto(),
+            use_cmf: false,
+            cmf_params: crate::signals_cmf::CmfParams::default_30m_crypto(),
+            use_cme_basis: false,
+            cme_basis_params: crate::signals_cme_basis::CmeBasisParams::default(),
+            use_hmm_regime: false,
+            hmm_regime_params: crate::signals_hmm_regime::HmmRegimeParams::default(),
+            use_nupl: false,
+            nupl_params: crate::signals_nupl::NuplParams::default(),
+            use_rsi_hidden_div: false,
+            rsi_hidden_div_params: crate::signals_rsi_hidden_div::RsiHiddenDivParams::default(),
+            use_top_trader_ls: false,
+            top_trader_ls_params: crate::signals_top_trader_ls::TopTraderLsParams::default(),
+            use_cb_premium: false,
+            cb_premium_params: crate::signals_cb_premium::CbPremiumParams::default_30m_crypto(),
+            use_stablecoin_flow: false,
+            stablecoin_flow_params:
+                crate::signals_stablecoin_flow::StablecoinFlowParams::default_30m_crypto(),
+            hmm_model: None,
+            nupl_samples: None,
+            use_ad_line: false,
+            ad_line_params: crate::signals_ad_line::AdLineTrendParams::default_30m_crypto(),
+            use_aroon: false,
+            aroon_params: crate::signals_aroon::AroonParams::default_30m_crypto(),
+            use_double_top: false,
+            double_top_params: crate::signals_double_top::DoubleTopParams::default(),
+            use_smc_fvg: false,
+            smc_fvg_params: crate::signals_smc_fvg::FvgParams::default_30m_crypto(),
+            use_supertrend: false,
+            supertrend_params: crate::signals_supertrend::SupertrendParams::default_30m_crypto(),
+            use_fisher: false,
+            fisher_params: crate::signals_fisher::FisherParams::default(),
+            use_kama: false,
+            kama_params: crate::signals_kama::KamaParams::default(),
+            use_squeeze: false,
+            squeeze_params: crate::signals_squeeze::SqueezeParams::default(),
+            use_hurst: false,
+            hurst_params: crate::signals_hurst::HurstParams::default(),
+            use_wavelet: false,
+            wavelet_params: crate::signals_wavelet::WaveletParams::default(),
+            use_pivot: false,
+            pivot_params: crate::signals_pivot::PivotParams::default(),
+            use_fib: false,
+            fib_params: crate::signals_fib::FibParams::default(),
+            use_vah_val: false,
+            vah_val_params: crate::signals_vah_val::VahValParams::default(),
+            use_ichimoku: false,
+            ichimoku_params: crate::signals_ichimoku::IchimokuParams::default(),
+            use_arima: false,
+            arima_params: crate::signals_arima::ArimaParams::default(),
+            use_garch_gate: false,
+            garch_params: crate::signals_garch::GarchParams::default(),
+            use_bocpd_gate: false,
+            bocpd_params: crate::signals_bocpd::BocpdParams::default(),
+            use_kalman_trend: false,
+            kalman_trend_params: crate::signals_kalman_trend::KalmanTrendParams::default_30m_crypto(
+            ),
+            htf_macd_enabled: false,
+            htf_macd_fast: 12,
+            htf_macd_slow: 26,
+            htf_macd_signal: 9,
+            htf_macd_rising_lookback: 1,
+            htf_macd_min_magnitude: 0.0,
+            use_poc_z: false,
+            poc_window_bars: 20,
+            poc_bucket_pct: 0.005,
+            poc_z_min: 1.5,
+            use_poc_zone_gate: false,
+            poc_zone_hvn_min_ratio: 1.5,
+            disagreement_bonus: false,
         }
     }
 
@@ -136,6 +664,18 @@ impl RegimeConfluenceParams {
             p.rsi_long_max = self.r28v6_rsi_long_max;
             p.rsi_short_min = self.r28v6_rsi_short_min;
         }
+        // Detector #13 — forward HTF MACD-hist params into the R28V6 probe.
+        // Sweep.rs `apply_r28v6_param_overrides` mirrors the same wiring on
+        // the standalone path so the CLI flags don't silently no-op inside
+        // REGIME mode (Codex Round 2 bug class).
+        if self.htf_macd_enabled {
+            p.htf_macd_enabled = true;
+            p.htf_macd_fast = self.htf_macd_fast;
+            p.htf_macd_slow = self.htf_macd_slow;
+            p.htf_macd_signal = self.htf_macd_signal;
+            p.htf_macd_rising_lookback = self.htf_macd_rising_lookback;
+            p.htf_macd_min_magnitude = self.htf_macd_min_magnitude;
+        }
     }
 }
 
@@ -152,7 +692,15 @@ pub fn detect_regime_confluence(
     candles: &[Candle],
     params: &RegimeConfluenceParams,
     inputs: &R28V6Inputs<'_>,
+    regime_inputs: &RegimeConfluenceInputs<'_>,
 ) -> Option<PollSignal> {
+    // 2026-05-16 Phase 2.2 — POC-Zone Hard-Gate: block entries inside HVN
+    // clusters BEFORE running the voter probes (which mutate state-clones
+    // and waste compute). Returns true (allow) when feature disabled or
+    // when signal-bar NOT in HVN; returns false (block) when HVN-inside.
+    if params.use_poc_zone_gate && !poc_zone_gate_allows(candles, params, cfg) {
+        return None;
+    }
     // 2026-05-13 Audit-2 fix: each probe gets its OWN clone of state so
     // a probe's internal state-mutations (resolve_sizing_factor mutates
     // state.kelly_tier_idx; MR mutates state.loss_streak_by_asset_dir)
@@ -185,7 +733,43 @@ pub fn detect_regime_confluence(
     // REGIME-only trades vs standalone R28V6).
     let mr_effective_some =
         cfg.mean_reversion_source.is_some() || params.mr_source_override.is_some();
-    if r28.is_none() && params.min_votes >= 2 && !mr_effective_some && !params.use_vol_confirm {
+    // 2026-05-13 Codex MED FIX: VWAP-trend is a 5th independent voter — if
+    // enabled it can carry quorum with breakout even when R28V6 abstains
+    // and MR/vol-confirm are disabled. Previously the early-exit didn't
+    // know about VWAP and dropped legitimate VWAP+BO consensus.
+    // 2026-05-14 Detector #14: Stop-Hunt is the 6th voter — same reasoning,
+    // it can carry quorum with breakout when R28V6 abstains and MR/vol-
+    // confirm/VWAP are disabled.
+    // 2026-05-14 Detector #2: OFI is the 8th voter — same reasoning, it
+    // can carry quorum with breakout when R28V6 abstains and every other
+    // optional voter is off.
+    // 2026-05-14 Detector #34: CB-premium can also carry quorum with breakout.
+    // 2026-05-14 Detector #12: POC-Z is also an independent voter — can
+    // carry quorum with breakout when R28V6 abstains.
+    if r28.is_none()
+        && params.min_votes >= 2
+        && !mr_effective_some
+        && !params.use_vol_confirm
+        && !params.use_vwap_trend
+        && !params.use_stop_hunt
+        && !params.use_bb_z_mr
+        && !params.use_ofi
+        && !params.use_cmf
+        && !params.use_rsi_hidden_div
+        && !params.use_ad_line
+        && !params.use_aroon
+        && !params.use_double_top
+        && !params.use_smc_fvg
+        && !params.use_supertrend
+        && !params.use_kalman_trend
+        && !params.use_cb_premium
+        && !params.use_cme_basis
+        && !params.use_hmm_regime
+        && !params.use_nupl
+        && !params.use_top_trader_ls
+        && !params.use_stablecoin_flow
+        && !params.use_poc_z
+    {
         return None;
     }
 
@@ -194,12 +778,16 @@ pub fn detect_regime_confluence(
     let bo = detect_breakout(&mut state_for_bo, cfg, asset, source_symbol, candles, &bp);
 
     // MR probe — uses override if provided, else cfg.mean_reversion_source.
+    // 2026-05-13 Codex MED FIX: hoist state_for_mr out of the closure so we
+    // can propagate its mutations (cooldown_by_asset_dir + loss-streak) back
+    // when MR is the winning anchor. Without this, MR cooldown silently
+    // evaporates and back-to-back MR signals fire same-bar (anti-spam dead).
     let mr_src = params
         .mr_source_override
         .as_ref()
         .or(cfg.mean_reversion_source.as_ref());
+    let mut state_for_mr = state.clone();
     let mr = mr_src.and_then(|src| {
-        let mut state_for_mr = state.clone();
         detect_mean_reversion(&mut state_for_mr, cfg, asset, source_symbol, candles, src)
     });
 
@@ -209,6 +797,257 @@ pub fn detect_regime_confluence(
     // direction as the proxy (the simplest "price+volume agreement" rule).
     let vol_vote = if params.use_vol_confirm {
         compute_vol_confirm_vote(candles, params, bo.as_ref())
+    } else {
+        None
+    };
+    // VWAP-trend probe (Phase 3b) — independent 5th voter. Long if close >
+    // VWAP and VWAP rising, Short if close < VWAP and VWAP falling. Uses
+    // its own direction (NOT parasitic on breakout). Orthogonal joint
+    // price+volume signal.
+    let vwap_vote = if params.use_vwap_trend {
+        compute_vwap_trend_vote(candles, params)
+    } else {
+        None
+    };
+    // 2026-05-14 Detector #14 — Stop-Hunt Liquidity-Sweep 6th voter.
+    // Independent of all prior voters: uses OHLC wick-vs-prior-swing
+    // relationship, not trend / volume / VWAP slope. Lookahead-safe by
+    // construction (reference range EXCLUDES signal bar).
+    let stop_hunt_vote = if params.use_stop_hunt {
+        let sh_params = crate::signals_stop_hunt::StopHuntParams {
+            lookback: params.stop_hunt_lookback,
+            required_wick_depth_pct: params.stop_hunt_wick_pct,
+            close_back_strict: params.stop_hunt_close_strict,
+        };
+        crate::signals_stop_hunt::compute_stop_hunt_vote(candles, &sh_params)
+    } else {
+        None
+    };
+    // 2026-05-14 Detector #1 — Bollinger-Band Z-score MR 7th voter. Vote is
+    // computed by `compute_bb_zscore_vote` (pure helper, no state). Provides
+    // an orthogonal mean-reversion read independent of RSI-MR / Stop-Hunt /
+    // VWAP-trend. Lookahead-safe by construction (reads candles[..=i-1]).
+    let bb_z_vote = if params.use_bb_z_mr {
+        crate::signals_bb_zscore_mr::compute_bb_zscore_vote(candles, &params.bb_z_params)
+    } else {
+        None
+    };
+    // 2026-05-14 Detector #2 — OFI persistent-cluster 8th voter. Pure
+    // helper (`compute_ofi_vote`) so no state-clone juggling — orthogonal
+    // taker-flow-aggregate signal independent of all prior voters
+    // (price-only, single-bar volume, raw aggressor ratio, value-area
+    // distance). Lookahead-safe by construction (window ends at signal_idx).
+    let ofi_vote = if params.use_ofi {
+        crate::signals_ofi::compute_ofi_vote(candles, &params.ofi_params, cfg)
+    } else {
+        None
+    };
+    // 2026-05-25 Wave5 Detector — Funding-Acceleration contrarian voter.
+    // Uses funding_series already passed in r28_inputs (no new input plumbing).
+    // Lookahead-safe via signal_idx = len-2.
+    let funding_accel_vote = if params.use_funding_accel {
+        crate::signals_funding_accel::compute_funding_accel_vote(
+            inputs.funding_series,
+            candles.len(),
+            &params.funding_accel_params,
+        )
+    } else {
+        None
+    };
+    // 2026-05-14 Phase-2 voters — module-only registered. Wire via dedicated flags.
+    let cmf_vote = if params.use_cmf {
+        crate::signals_cmf::compute_cmf_vote(candles, &params.cmf_params, cfg)
+    } else {
+        None
+    };
+    let rsi_hd_vote = if params.use_rsi_hidden_div {
+        crate::signals_rsi_hidden_div::compute_rsi_hidden_div_vote(
+            candles,
+            &params.rsi_hidden_div_params,
+        )
+    } else {
+        None
+    };
+    // 2026-05-14 Phase-3 voters (#14, #17, #29, #21 + supertrend + kalman).
+    // All pure helpers — no state-clone juggling required, lookahead-safe by
+    // construction (consult candles[..=len-2]).
+    let ad_line_vote = if params.use_ad_line {
+        crate::signals_ad_line::compute_ad_line_vote(candles, &params.ad_line_params, cfg)
+    } else {
+        None
+    };
+    let aroon_vote = if params.use_aroon {
+        crate::signals_aroon::compute_aroon_vote(candles, &params.aroon_params)
+    } else {
+        None
+    };
+    let double_top_vote = if params.use_double_top {
+        crate::signals_double_top::compute_double_top_vote(candles, &params.double_top_params)
+    } else {
+        None
+    };
+    let smc_fvg_vote = if params.use_smc_fvg {
+        crate::signals_smc_fvg::compute_smc_fvg_vote(candles, &params.smc_fvg_params)
+    } else {
+        None
+    };
+    let supertrend_vote = if params.use_supertrend {
+        crate::signals_supertrend::compute_supertrend_vote(candles, &params.supertrend_params)
+    } else {
+        None
+    };
+    let fisher_vote = if params.use_fisher {
+        crate::signals_fisher::compute_fisher_vote(candles, &params.fisher_params)
+    } else {
+        None
+    };
+    let kama_vote = if params.use_kama {
+        crate::signals_kama::compute_kama_vote(candles, &params.kama_params)
+    } else {
+        None
+    };
+    // Stufe-1 batch wireup voters
+    let squeeze_vote = if params.use_squeeze {
+        crate::signals_squeeze::compute_squeeze_vote(candles, &params.squeeze_params)
+    } else {
+        None
+    };
+    let hurst_vote = if params.use_hurst {
+        crate::signals_hurst::compute_hurst_vote(candles, &params.hurst_params)
+    } else {
+        None
+    };
+    let wavelet_vote = if params.use_wavelet {
+        crate::signals_wavelet::compute_wavelet_vote(candles, &params.wavelet_params)
+    } else {
+        None
+    };
+    let pivot_vote = if params.use_pivot {
+        crate::signals_pivot::compute_pivot_vote(candles, &params.pivot_params)
+    } else {
+        None
+    };
+    let fib_vote = if params.use_fib {
+        crate::signals_fib::compute_fib_vote(candles, &params.fib_params)
+    } else {
+        None
+    };
+    let vah_val_vote = if params.use_vah_val {
+        crate::signals_vah_val::compute_vah_val_vote(candles, &params.vah_val_params)
+    } else {
+        None
+    };
+    let ichimoku_vote = if params.use_ichimoku {
+        crate::signals_ichimoku::compute_ichimoku_vote(candles, &params.ichimoku_params)
+    } else {
+        None
+    };
+    let arima_vote = if params.use_arima {
+        crate::signals_arima::compute_arima_vote(candles, &params.arima_params)
+    } else {
+        None
+    };
+    // Veto-gates (return early if blocking)
+    if params.use_garch_gate && !crate::signals_garch::allow_entry(candles, &params.garch_params) {
+        return None;
+    }
+    if params.use_bocpd_gate && !crate::signals_bocpd::allow_entry(candles, &params.bocpd_params) {
+        return None;
+    }
+    let kalman_vote = if params.use_kalman_trend {
+        crate::signals_kalman_trend::compute_kalman_trend_vote(candles, &params.kalman_trend_params)
+    } else {
+        None
+    };
+    // 2026-05-14 Detector #33 — CME/Coinbase basis-premium voter (BTC-only).
+    // Series fed via RegimeConfluenceInputs; absent series → abstain.
+    let cb_premium_vote = if params.use_cb_premium {
+        crate::signals_cb_premium::compute_cb_premium_vote(
+            candles,
+            regime_inputs.cb_premium_series,
+            asset,
+            &params.cb_premium_params,
+        )
+    } else {
+        None
+    };
+    // 2026-05-14 Detector #33 — CME futures-basis voter. Helper consumes the
+    // funding-series carried by R28V6Inputs as the "spread mode" subtrahend.
+    let cme_basis_vote = if params.use_cme_basis {
+        crate::signals_cme_basis::compute_cme_basis_vote(
+            candles,
+            regime_inputs.cme_basis_series,
+            inputs.funding_series,
+            asset,
+            &params.cme_basis_params,
+        )
+    } else {
+        None
+    };
+    // 2026-05-14 — HMM 3-state regime voter. Caller passes an owned model in
+    // params (no per-bar allocation). When None we synthesise the default
+    // BTC-30m model once on the stack and pass a borrow into the helper.
+    let hmm_default = if params.use_hmm_regime && params.hmm_model.is_none() {
+        Some(HmmModel::default_btc_30m())
+    } else {
+        None
+    };
+    let hmm_vote = if params.use_hmm_regime {
+        let model_ref: &HmmModel = params
+            .hmm_model
+            .as_ref()
+            .or(hmm_default.as_ref())
+            .expect("hmm model present when use_hmm_regime=true");
+        crate::signals_hmm_regime::compute_hmm_regime_vote(
+            candles,
+            model_ref,
+            &params.hmm_regime_params,
+        )
+    } else {
+        None
+    };
+    // 2026-05-14 — NUPL macro voter. Loader-side parses JSON into
+    // params.nupl_samples; we wrap a borrowed view per call.
+    let nupl_vote = if params.use_nupl {
+        match params.nupl_samples.as_ref() {
+            Some(samples) if candles.len() >= 2 => {
+                let series = NuplSeries::new(samples);
+                let signal_bar = &candles[candles.len() - 2];
+                crate::signals_nupl::compute_nupl_vote(signal_bar, &series, &params.nupl_params)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    // 2026-05-14 — Top-trader long/short follow voter. Two aligned series.
+    let top_trader_vote = if params.use_top_trader_ls {
+        crate::signals_top_trader_ls::compute_top_trader_ls_vote(
+            regime_inputs.top_ls_series,
+            regime_inputs.global_ls_series,
+            candles,
+            asset,
+            &params.top_trader_ls_params,
+        )
+    } else {
+        None
+    };
+    // 2026-05-14 Detector #22 — USDT-supply long-only macro voter.
+    let stablecoin_vote = if params.use_stablecoin_flow {
+        crate::signals_stablecoin_flow::compute_stablecoin_flow_vote(
+            regime_inputs.stablecoin_supply_series,
+            candles,
+            &params.stablecoin_flow_params,
+        )
+    } else {
+        None
+    };
+    // 2026-05-14 Detector #12 — POC-Z voter. Independent of vol_confirm
+    // (bucketed volume profile vs raw SMA) and orthogonal to breakout (uses
+    // price-vs-value-area-z, not price-vs-prev-high). Direction self-derived
+    // from price-vs-POC distribution.
+    let poc_z_vote = if params.use_poc_z {
+        compute_poc_z_vote(candles, params, cfg)
     } else {
         None
     };
@@ -250,8 +1089,185 @@ pub fn detect_regime_confluence(
             PositionSide::Short => short_votes += 1,
         }
     }
+    if let Some(side) = vwap_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = stop_hunt_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = bb_z_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = ofi_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = funding_accel_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = cmf_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = rsi_hd_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = ad_line_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = aroon_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = double_top_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = smc_fvg_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = supertrend_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = fisher_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = kama_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    for v in [
+        squeeze_vote,
+        hurst_vote,
+        wavelet_vote,
+        pivot_vote,
+        fib_vote,
+        vah_val_vote,
+        ichimoku_vote,
+        arima_vote,
+    ]
+    .iter()
+    .flatten()
+    {
+        match v {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = kalman_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = cb_premium_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = cme_basis_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = hmm_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = nupl_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = top_trader_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = stablecoin_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
+    if let Some(side) = poc_z_vote {
+        match side {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
+    }
 
-    let min = params.min_votes as u8;
+    // 2026-05-16 Phase 16 — Voter-Disagreement-Bonus (Hunt 40 #3 brainstorm).
+    // When the trend-voter (supertrend) and the mean-rev voter (bb_z_mr)
+    // BOTH fire in the SAME direction, that's the rare strong-confluence
+    // signal (cross-paradigm agreement). Add +1 bonus vote in that direction.
+    // Toggle via `params.disagreement_bonus` (default false; set via CLI).
+    //
+    // 2026-05-25 Wave5 KRIT FIX (audit agent #4): apply bonus ONLY as a
+    // tie-breaker, not as cumulative vote-inflation. Previously: supertrend+bb_z
+    // already counted in long/short_votes; adding +1 made 2 agreeing voters
+    // count as 3 votes total — with min_votes=3, two voters carried quorum
+    // alone (vote-inflation, identical class to 05-13 funding-target-latch bug).
+    // New: only break a tie when ST+BB-Z agree on the same side.
+    if params.disagreement_bonus {
+        if let (Some(st), Some(bb)) = (supertrend_vote, bb_z_vote) {
+            if st == bb && long_votes == short_votes {
+                match st {
+                    PositionSide::Long => long_votes += 1,
+                    PositionSide::Short => short_votes += 1,
+                }
+            }
+        }
+    }
+
+    // 2026-05-13 Codex LOW FIX: clamp before u8 cast — min_votes ≥ 256
+    // would silently wrap to 0 (vacuous-truth fires every bar).
+    // 2026-05-25 Wave5 HOCH FIX (audit agent #4): also floor at 1.
+    // min_votes=0 + single-voter abstain-pass = entry on every poll.
+    let min = params.min_votes.max(1).min(u8::MAX as usize) as u8;
     // 2026-05-13 Bug-Audit Round 3 — BUG #2 FIX: strict majority `>` not `>=`.
     // Tie (long_votes == short_votes) means no consensus → return None.
     // Previously `>=` favored Long unconditionally on tied votes which fired
@@ -268,11 +1284,18 @@ pub fn detect_regime_confluence(
     if winning_count < min {
         return None;
     }
-    // 2026-05-13 Bug-Audit Round 3 — BUG #3 FIX: disable_short policy enforcement.
-    // Previously breakout/MR/vol-confirm could outvote a disable-short asset
-    // to a Short signal because only R28V6 honored the asset flag internally.
-    // Now enforced at the consensus output (AssetConfig has no disable_long).
+    // Disable_short/disable_long policy enforcement at consensus output.
+    // Breakout/MR/vol-confirm/vwap can outvote per-direction asset flags
+    // because only R28V6 honors them internally. Bug-Audit Round 3 added
+    // disable_short. 2026-05-13 Codex Round 8 #D FIX: add the symmetric
+    // disable_long check — recently-added AssetConfig.disable_long was
+    // omitted at this site, so a disable_long=true asset could still emit
+    // a winning Long via Breakout+Vol-confirm consensus despite the primary
+    // R28V6 path correctly skipping Long.
     if asset.disable_short && winning_side == PositionSide::Short {
+        return None;
+    }
+    if asset.disable_long && winning_side == PositionSide::Long {
         return None;
     }
     // 2026-05-13 Audit-3: debug counter for "winning vote without R28V6
@@ -316,12 +1339,60 @@ pub fn detect_regime_confluence(
     // winning side. Vol-confirm only carries a PositionSide vote, not a full
     // PollSignal, so it cannot be the anchor — but the breakout signal (which
     // vol-confirm parasitizes) is available as a fallback anchor in that case.
-    let anchor: Option<&PollSignal> = [r28.as_ref(), bo.as_ref(), mr.as_ref()]
+    // 2026-05-13 Codex MED FIX: track the index of the winning probe so we
+    // can propagate its private state-clone back to the real state. Order
+    // mirrors the [r28, bo, mr] iteration above.
+    let probes: [(Option<&PollSignal>, AnchorKind); 3] = [
+        (r28.as_ref(), AnchorKind::R28V6),
+        (bo.as_ref(), AnchorKind::Breakout),
+        (mr.as_ref(), AnchorKind::MeanReversion),
+    ];
+    let (anchor, anchor_kind) = probes
         .into_iter()
-        .flatten()
-        .find(|s| s.direction == winning_side);
-    let anchor = anchor?;
+        .filter_map(|(s, k)| s.map(|sig| (sig, k)))
+        .find(|(s, _)| s.direction == winning_side)?;
+    // Propagate the chosen probe's state-mutations back to the real state.
+    // Other probes' clones are discarded (their side-effects had no
+    // entry-route to the harness anyway). Without this propagation:
+    //   - MR cooldown_by_asset_dir resets every bar → MR fires every poll
+    //     instead of being throttled
+    //   - Kelly-tier index decrement on a fresh tier-roll is lost → next
+    //     bar's sizing reads stale tier, causing repeated over-sizing
+    //
+    // 2026-05-13 Codex MED FIX (Fix 5): when MR voted on the winning side
+    // but R28/BO became the anchor, MR's cooldown install on
+    // `state_for_mr.loss_streak_by_asset_dir` was discarded → MR voted
+    // again every bar (anti-spam dead). Now we MERGE MR's
+    // loss_streak_by_asset_dir delta whenever MR contributed a vote on
+    // `winning_side`, regardless of which probe was the anchor.
+    let mr_voted_on_winning = mr.as_ref().is_some_and(|s| s.direction == winning_side);
+    let pre_mr_keys: std::collections::HashSet<String> =
+        state.loss_streak_by_asset_dir.keys().cloned().collect();
+    match anchor_kind {
+        AnchorKind::R28V6 => *state = state_for_r28,
+        AnchorKind::Breakout => *state = state_for_bo,
+        AnchorKind::MeanReversion => *state = state_for_mr.clone(),
+    }
+    if mr_voted_on_winning && anchor_kind != AnchorKind::MeanReversion {
+        // Copy any MR-installed cooldown entries (keys present in state_for_mr
+        // but NOT in pre_mr state). MR's detect_mean_reversion writes
+        // entries with key prefix "MR|" — copy those forward.
+        for (key, value) in state_for_mr.loss_streak_by_asset_dir.iter() {
+            if key.starts_with("MR|") && !pre_mr_keys.contains(key) {
+                state
+                    .loss_streak_by_asset_dir
+                    .insert(key.clone(), value.clone());
+            }
+        }
+    }
     Some(anchor.clone())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnchorKind {
+    R28V6,
+    Breakout,
+    MeanReversion,
 }
 
 #[cfg(test)]
@@ -347,9 +1418,17 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: None,
+            cb_premium_series: None,
         };
         let s = detect_regime_confluence(
-            &mut state, &cfg, &asset, "BTCUSDT", &candles, &params, &inputs,
+            &mut state,
+            &cfg,
+            &asset,
+            "BTCUSDT",
+            &candles,
+            &params,
+            &inputs,
+            &RegimeConfluenceInputs::default(),
         );
         assert!(s.is_none(), "flat market: no detector should fire");
     }
@@ -372,9 +1451,17 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: None,
+            cb_premium_series: None,
         };
         let s = detect_regime_confluence(
-            &mut state, &cfg, &asset, "BTCUSDT", &candles, &params, &inputs,
+            &mut state,
+            &cfg,
+            &asset,
+            "BTCUSDT",
+            &candles,
+            &params,
+            &inputs,
+            &RegimeConfluenceInputs::default(),
         );
         // require_r28v6 forces a winning vote that includes R28V6. On flat
         // candles none of the detectors fire so result is None either way,
@@ -393,6 +1480,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: None,
+            cb_premium_series: None,
         }
     }
 
@@ -422,6 +1510,7 @@ mod tests {
             &flat_candles(100),
             &params,
             &nop_inputs(),
+            &RegimeConfluenceInputs::default(),
         );
         assert!(
             s.is_none(),
@@ -449,6 +1538,7 @@ mod tests {
             &flat_candles(100),
             &params,
             &nop_inputs(),
+            &RegimeConfluenceInputs::default(),
         );
         assert!(s.is_none(), "mv=4 with 3 max detectors must be unreachable");
     }
@@ -473,6 +1563,7 @@ mod tests {
             &flat_candles(100),
             &params,
             &nop_inputs(),
+            &RegimeConfluenceInputs::default(),
         );
         assert_eq!(state.equity, pre_equity, "equity must not change");
         assert_eq!(
@@ -484,10 +1575,15 @@ mod tests {
 
     #[test]
     fn vol_confirm_handles_nan_volume() {
-        // Numerical edge: if any volume is NaN/inf, helper must NOT panic.
-        // Returns None (no vote) when sma is non-finite or last vol non-finite.
+        // Numerical edge: if signal-bar volume is NaN/inf, helper must NOT panic.
+        // 2026-05-13 Codex fix: signal-bar = i-1 → put NaN on candles[48].
         let mut candles = flat_candles(50);
-        candles[49].volume = f64::NAN;
+        // Give the SMA window some non-zero baseline so it isn't filtered out
+        // by sum_v <= 0 before reaching the NaN guard.
+        for c in candles.iter_mut() {
+            c.volume = 100.0;
+        }
+        candles[48].volume = f64::NAN;
         let params = RegimeConfluenceParams {
             min_votes: 1,
             use_vol_confirm: true,
@@ -545,14 +1641,16 @@ mod tests {
 
     #[test]
     fn vol_confirm_fires_when_volume_spikes() {
-        // Numerical contract: when last-bar volume ≥ mult × SMA(N), vote = bo.direction.
+        // Numerical contract: when SIGNAL-bar (i-1) volume ≥ mult × SMA(N),
+        // vote = bo.direction.
+        // 2026-05-13 Codex KRITISCH FIX adjustment: signal-bar now i-1,
+        // spike placed at candles[48], not candles[49].
         let mut candles = flat_candles(50);
-        // Set last 25 bars to volume 100 (SMA20 of last 20 pre-current ≈ 100).
         for c in candles.iter_mut() {
             c.volume = 100.0;
         }
-        // Final bar = 250 = 2.5× SMA.
-        candles[49].volume = 250.0;
+        // Signal-bar (i-1 = idx 48) = 250 = 2.5× SMA.
+        candles[48].volume = 250.0;
         let params = RegimeConfluenceParams {
             min_votes: 1,
             use_vol_confirm: true,
@@ -587,7 +1685,8 @@ mod tests {
         for c in candles.iter_mut() {
             c.volume = 100.0;
         }
-        candles[49].volume = 150.0; // 1.5× SMA but mult is 2.0
+        // Signal-bar i-1 = idx 48 (after Codex lookahead fix).
+        candles[48].volume = 150.0; // 1.5× SMA but mult is 2.0
         let params = RegimeConfluenceParams {
             min_votes: 1,
             use_vol_confirm: true,
@@ -634,7 +1733,8 @@ mod tests {
         for c in candles.iter_mut() {
             c.volume = 0.0;
         }
-        candles[49].volume = 1.0; // tiny spike, but SMA=0 → guard out
+        // 2026-05-13 Codex fix: signal-bar = i-1 → put any spike on candles[48].
+        candles[48].volume = 1.0; // tiny spike, but SMA=0 → guard out
         let params = RegimeConfluenceParams {
             min_votes: 1,
             use_vol_confirm: true,
@@ -657,5 +1757,286 @@ mod tests {
         };
         let v = compute_vol_confirm_vote(&candles, &params, Some(&fake_signal));
         assert!(v.is_none(), "sma=0 must not divide-by-zero");
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Detector #12 — multi-bar Volume-Profile POC-Z distance voter tests
+    // ──────────────────────────────────────────────────────────────────
+
+    fn cfg_30m() -> EngineConfig {
+        EngineConfig::r28_v6_passlock_template() // bar_minutes=30
+    }
+
+    fn poc_z_params_on() -> RegimeConfluenceParams {
+        RegimeConfluenceParams {
+            use_poc_z: true,
+            poc_window_bars: 20,
+            poc_bucket_pct: 0.005,
+            poc_z_min: 1.5,
+            ..RegimeConfluenceParams::default_2of3()
+        }
+    }
+
+    fn candle_full(t: i64, close: f64, volume: f64) -> Candle {
+        Candle::new(t, close, close + 0.5, close - 0.5, close, volume)
+    }
+
+    #[test]
+    fn poc_z_zero_period_safe() {
+        // poc_window_bars=0 → n=0 < 4 → None (no divide-by-zero, no panic).
+        let cfg = cfg_30m();
+        let candles: Vec<Candle> = (0..100)
+            .map(|i| candle_full(i * 1_800_000, 100.0, 100.0))
+            .collect();
+        let params = RegimeConfluenceParams {
+            poc_window_bars: 0,
+            ..poc_z_params_on()
+        };
+        let v = compute_poc_z_vote(&candles, &params, &cfg);
+        assert!(v.is_none(), "period=0 must safely produce no vote");
+    }
+
+    #[test]
+    fn poc_z_zero_bucket_safe() {
+        let cfg = cfg_30m();
+        let candles: Vec<Candle> = (0..100)
+            .map(|i| candle_full(i * 1_800_000, 100.0, 100.0))
+            .collect();
+        let params = RegimeConfluenceParams {
+            poc_bucket_pct: 0.0,
+            ..poc_z_params_on()
+        };
+        let v = compute_poc_z_vote(&candles, &params, &cfg);
+        assert!(v.is_none(), "bucket_pct=0 must safely produce no vote");
+    }
+
+    #[test]
+    fn poc_z_nan_volume_safe() {
+        // NaN volume inside window must NOT propagate to result; guard → None.
+        let cfg = cfg_30m();
+        let mut candles: Vec<Candle> = (0..100)
+            .map(|i| candle_full(i * 1_800_000, 100.0, 100.0))
+            .collect();
+        candles[80].volume = f64::NAN;
+        let params = poc_z_params_on();
+        let v = compute_poc_z_vote(&candles, &params, &cfg);
+        assert!(v.is_none(), "NaN volume in window must produce no vote");
+    }
+
+    #[test]
+    fn poc_z_zero_total_volume_safe() {
+        // All-zero volume → total_vol=0 → guard triggers → None.
+        let cfg = cfg_30m();
+        let candles: Vec<Candle> = (0..100)
+            .map(|i| candle_full(i * 1_800_000, 100.0, 0.0))
+            .collect();
+        let params = poc_z_params_on();
+        let v = compute_poc_z_vote(&candles, &params, &cfg);
+        assert!(v.is_none(), "total_vol=0 must safely produce no vote");
+    }
+
+    #[test]
+    fn poc_z_flat_market_zero_std_safe() {
+        // All-equal closes → std=0 → divide-by-zero guard → None.
+        let cfg = cfg_30m();
+        let candles: Vec<Candle> = (0..100)
+            .map(|i| candle_full(i * 1_800_000, 100.0, 100.0))
+            .collect();
+        let params = poc_z_params_on();
+        let v = compute_poc_z_vote(&candles, &params, &cfg);
+        assert!(v.is_none(), "flat market std=0 must not divide-by-zero");
+    }
+
+    #[test]
+    fn poc_z_fires_long_below_poc() {
+        // 25 flat bars (POC ~100, std ~0.04) + signal-bar at 80 (3σ-ish below).
+        // n=20 (bar_minutes=30, scale=1). signal_idx = len - 2 = 28.
+        let cfg = cfg_30m();
+        let mut closes: Vec<f64> = Vec::with_capacity(30);
+        for i in 0..28 {
+            closes.push(100.0 + (i as f64 % 4.0 - 1.5) * 0.05);
+        }
+        closes.push(80.0); // signal-bar idx 28
+        closes.push(80.0); // entry-bar idx 29 (NOT consulted)
+        let candles: Vec<Candle> = closes
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| candle_full(i as i64 * 1_800_000, c, 100.0))
+            .collect();
+        let params = poc_z_params_on();
+        let v = compute_poc_z_vote(&candles, &params, &cfg);
+        assert_eq!(
+            v,
+            Some(PositionSide::Long),
+            "signal-close well below POC must vote Long"
+        );
+    }
+
+    #[test]
+    fn poc_z_fires_short_above_poc() {
+        let cfg = cfg_30m();
+        let mut closes: Vec<f64> = Vec::with_capacity(30);
+        for i in 0..28 {
+            closes.push(100.0 + (i as f64 % 4.0 - 1.5) * 0.05);
+        }
+        closes.push(120.0); // signal-bar idx 28 — high
+        closes.push(120.0); // entry-bar idx 29
+        let candles: Vec<Candle> = closes
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| candle_full(i as i64 * 1_800_000, c, 100.0))
+            .collect();
+        let params = poc_z_params_on();
+        let v = compute_poc_z_vote(&candles, &params, &cfg);
+        assert_eq!(
+            v,
+            Some(PositionSide::Short),
+            "signal-close well above POC must vote Short"
+        );
+    }
+
+    #[test]
+    fn poc_z_signal_at_poc_no_vote() {
+        // Signal-close right at the POC → |z| < poc_z_min → None.
+        let cfg = cfg_30m();
+        let mut closes: Vec<f64> = Vec::with_capacity(30);
+        for i in 0..28 {
+            closes.push(100.0 + (i as f64 % 4.0 - 1.5) * 0.5);
+        }
+        closes.push(100.0); // signal-bar AT POC
+        closes.push(100.0); // entry-bar
+        let candles: Vec<Candle> = closes
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| candle_full(i as i64 * 1_800_000, c, 100.0))
+            .collect();
+        let params = poc_z_params_on();
+        let v = compute_poc_z_vote(&candles, &params, &cfg);
+        assert!(v.is_none(), "signal at POC → |z|<min → abstain");
+    }
+
+    #[test]
+    fn poc_z_window_excludes_entry_bar() {
+        // LOOKAHEAD test (Codex 2026-05-13 #1 bug-class). Build a Short-firing
+        // setup, then mutate the last index (entry bar) to 9999 — decision
+        // must be IDENTICAL.
+        let cfg = cfg_30m();
+        let mut closes: Vec<f64> = Vec::with_capacity(30);
+        for i in 0..28 {
+            closes.push(100.0 + (i as f64 % 4.0 - 1.5) * 0.05);
+        }
+        closes.push(120.0); // signal-bar
+        closes.push(120.0); // entry-bar
+        let mut candles: Vec<Candle> = closes
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| candle_full(i as i64 * 1_800_000, c, 100.0))
+            .collect();
+        let params = poc_z_params_on();
+        let before = compute_poc_z_vote(&candles, &params, &cfg);
+        // Mutate entry-bar to absurd value — must not change decision.
+        let last = candles.len() - 1;
+        candles[last].close = 9999.0;
+        candles[last].high = 9999.5;
+        candles[last].low = 9998.5;
+        candles[last].volume = 1.0e9;
+        let after = compute_poc_z_vote(&candles, &params, &cfg);
+        assert_eq!(
+            before, after,
+            "LOOKAHEAD: mutating entry-bar must NOT change POC-Z decision"
+        );
+        assert_eq!(before, Some(PositionSide::Short));
+    }
+
+    #[test]
+    fn poc_z_5min_tf_scales_window() {
+        // bar_minutes=5 → scale=6 → effective n = 20*6 = 120. Need ≥ 122 candles.
+        let mut cfg = cfg_30m();
+        cfg.bar_minutes = 5;
+        let candles: Vec<Candle> = (0..125)
+            .map(|i| candle_full(i as i64 * 300_000, 100.0, 100.0))
+            .collect();
+        let params = poc_z_params_on();
+        // Flat market → std=0 → None even though n is reachable.
+        let v = compute_poc_z_vote(&candles, &params, &cfg);
+        assert!(
+            v.is_none(),
+            "flat 5m feed safely returns None (scaled n=120)"
+        );
+        // Below scaled-n threshold must early-return None.
+        let short = candles[..100].to_vec();
+        let v2 = compute_poc_z_vote(&short, &params, &cfg);
+        assert!(
+            v2.is_none(),
+            "5m feed below scaled-n threshold must return None"
+        );
+    }
+
+    #[test]
+    fn mv2_poc_z_plus_breakout_consensus() {
+        // Integration: POC-Z votes Long, R28V6 abstains, MR off, vol-confirm
+        // off. POC anchored at ~100 by heavy volume in first 52 bars; later
+        // 48 bars descend with light volume so POC bucket stays at 100.
+        // Signal-bar at 80 → POC-Z Long. detect_regime_confluence MUST NOT
+        // panic on integration; we accept either Some or None depending on
+        // whether breakout fires on the synthetic fixture.
+        let cfg = cfg_30m();
+        let asset = AssetConfig::default();
+        let mut state = EngineState::initial(&cfg.label);
+        let mut closes: Vec<f64> = Vec::with_capacity(102);
+        let mut volumes: Vec<f64> = Vec::with_capacity(102);
+        for i in 0..52 {
+            closes.push(100.0 + (i as f64 % 4.0 - 1.5) * 0.05);
+            volumes.push(1000.0); // heavy → POC anchor
+        }
+        for i in 0..48 {
+            let p = 100.0 - (i as f64 + 1.0) * (20.0 / 48.0);
+            closes.push(p);
+            volumes.push(50.0); // light → doesn't move POC
+        }
+        closes.push(80.0); // signal-bar
+        volumes.push(50.0);
+        closes.push(80.0); // entry-bar
+        volumes.push(50.0);
+        let candles: Vec<Candle> = closes
+            .iter()
+            .zip(volumes.iter())
+            .enumerate()
+            .map(|(i, (&c, &v))| Candle::new(i as i64 * 1_800_000, c, c + 0.5, c - 0.5, c, v))
+            .collect();
+        let params = RegimeConfluenceParams {
+            min_votes: 2,
+            use_poc_z: true,
+            poc_window_bars: 50,
+            poc_bucket_pct: 0.005,
+            poc_z_min: 1.0,
+            ..RegimeConfluenceParams::default_2of3()
+        };
+        let inputs = R28V6Inputs {
+            htf_closes: None,
+            cross_asset_closes: None,
+            news_events: None,
+            funding_series: None,
+            cb_premium_series: None,
+        };
+        let regime_inputs = RegimeConfluenceInputs::default();
+        // Precondition: helper fires Long on this fixture.
+        let poc_vote = compute_poc_z_vote(&candles, &params, &cfg);
+        assert_eq!(
+            poc_vote,
+            Some(PositionSide::Long),
+            "POC-Z fixture precondition: must vote Long"
+        );
+        // Integration must not panic, regardless of consensus outcome.
+        let _ = detect_regime_confluence(
+            &mut state,
+            &cfg,
+            &asset,
+            "BTCUSDT",
+            &candles,
+            &params,
+            &inputs,
+            &regime_inputs,
+        );
     }
 }

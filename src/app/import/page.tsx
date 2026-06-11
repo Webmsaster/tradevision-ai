@@ -159,14 +159,21 @@ export default function ImportPage() {
     // R67-r8: stamp fresh UUIDs + activeAccountId so samples are visible
     // under the current account and won't collide on UUID PK if pushed to
     // cloud (same fix as dashboard's R7 sample loader).
-    const fresh = sampleTrades.map((t) => ({
-      ...t,
-      id:
+    // 2026-05-22: prefix the fresh UUID with "sample-" (mirrors dashboard
+    // page.tsx loader). The `sampleDataLoaded` detector above checks
+    // `id.startsWith("sample-")`; a bare randomUUID broke that label so the
+    // "Sample data loaded" indicator never showed (and E2E waited forever).
+    const fresh = sampleTrades.map((t) => {
+      const uuid =
         typeof crypto !== "undefined" && "randomUUID" in crypto
           ? crypto.randomUUID()
-          : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      accountId: activeAccountId,
-    }));
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      return {
+        ...t,
+        id: `sample-${uuid}`,
+        accountId: activeAccountId,
+      };
+    });
     const count = await importTrades(fresh);
     if (count === 0) {
       // R8 fix: previously showed "Loaded 0 sample trades." as success — now

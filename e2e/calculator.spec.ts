@@ -40,7 +40,10 @@ test.describe("Risk Calculator", () => {
     const positionSizeCard = page.locator(
       '.stat-card:has(.stat-label:text("Position Size"))',
     );
-    await expect(positionSizeCard.locator(".stat-value")).toContainText(/\d/);
+    // entry 50000 / stop 49000 → slDistance 1000; default balance 10000 @ 1%
+    // risk → riskAmount 100 → positionSize 100/1000 = 0.1. Assert the actual
+    // computed value (was a vacuous /\d/ that passed for ANY digit).
+    await expect(positionSizeCard.locator(".stat-value")).toContainText(/0\.1/);
   });
 
   test("should update results when take profit is added", async ({ page }) => {

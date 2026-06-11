@@ -56,30 +56,69 @@ function buildAligned(
   cfg: FtmoDaytrade24hConfig,
   candleMap: Record<string, Candle[]>,
 ): Record<string, Candle[]> {
-  const out: Record<string, Candle[]> = {};
-  const requiredKeys = new Set<string>();
-  for (const a of cfg.assets) requiredKeys.add(a.sourceSymbol ?? a.symbol);
-  if (cfg.crossAssetFilter?.symbol)
-    requiredKeys.add(cfg.crossAssetFilter.symbol);
-  for (const f of cfg.crossAssetFiltersExtra ?? []) requiredKeys.add(f.symbol);
+  // 2026-05-14 Codex Wave-2 Bug #1 FIX: only PRIMARY asset feeds participate
+  // in the openTime intersection. A laggy extra-symbol/cross-asset feed used
+  // to block every primary asset from producing fresh bars; now extras get
+  // forward-filled to the primary intersection (last-known bar) so the
+  // engine sees them but they don't gate the cadence.
+  const primaryKeys = new Set<string>();
+  for (const a of cfg.assets) primaryKeys.add(a.sourceSymbol ?? a.symbol);
 
-  for (const k of requiredKeys) {
-    if (!candleMap[k]) continue;
-    out[k] = candleMap[k].filter((c) => c.isFinal !== false);
+  const extraKeys = new Set<string>();
+  if (
+    cfg.crossAssetFilter?.symbol &&
+    !primaryKeys.has(cfg.crossAssetFilter.symbol)
+  )
+    extraKeys.add(cfg.crossAssetFilter.symbol);
+  for (const f of cfg.crossAssetFiltersExtra ?? []) {
+    if (!primaryKeys.has(f.symbol)) extraKeys.add(f.symbol);
   }
-  if (Object.keys(out).length === 0) return out;
 
-  // Trim to common-openTime intersection so V4 engine's "latest bar"
-  // assumption holds: every asset's last candle must share openTime.
-  const arrs = Object.values(out);
+  const primaryFiltered: Record<string, Candle[]> = {};
+  for (const k of primaryKeys) {
+    if (!candleMap[k]) continue;
+    primaryFiltered[k] = candleMap[k].filter((c) => c.isFinal !== false);
+  }
+  if (Object.keys(primaryFiltered).length === 0) return primaryFiltered;
+
+  // Intersect ONLY across primaries so cadence is driven by trading assets.
+  const arrs = Object.values(primaryFiltered);
   const common = new Set(arrs[0]!.map((c) => c.openTime));
   for (let i = 1; i < arrs.length; i++) {
     const seen = new Set(arrs[i]!.map((c) => c.openTime));
     for (const t of [...common]) if (!seen.has(t)) common.delete(t);
   }
+
   const aligned: Record<string, Candle[]> = {};
-  for (const [k, v] of Object.entries(out)) {
+  for (const [k, v] of Object.entries(primaryFiltered)) {
     aligned[k] = v.filter((c) => common.has(c.openTime));
+  }
+
+  // Forward-fill extras: align by openTime where available, otherwise carry
+  // the last-known bar. If an extra has no bars at all, omit it silently
+  // (treat-as-not-available) instead of blocking primaries.
+  for (const k of extraKeys) {
+    const src = candleMap[k];
+    if (!src || src.length === 0) continue;
+    const finals = src.filter((c) => c.isFinal !== false);
+    if (finals.length === 0) continue;
+    const byTime = new Map<number, Candle>();
+    for (const c of finals) byTime.set(c.openTime, c);
+    const sortedTimes = [...common].sort((a, b) => a - b);
+    const filled: Candle[] = [];
+    let lastKnown: Candle | undefined;
+    for (const t of sortedTimes) {
+      const c = byTime.get(t);
+      if (c) {
+        lastKnown = c;
+        filled.push(c);
+      } else if (lastKnown) {
+        // forward-fill: synthesize a "carry" bar at openTime t using lastKnown
+        filled.push({ ...lastKnown, openTime: t });
+      }
+      // else: no past data yet — skip this timestamp for this extra
+    }
+    if (filled.length > 0) aligned[k] = filled;
   }
   return aligned;
 }
@@ -134,6 +173,28 @@ export function detectLiveSignalsV4(
   }
 
   const state: FtmoLiveStateV4 = loadState(stateDir, cfgLabel);
+
+  // 2026-05-14 Codex Wave-2 Bug #7 FIX: honor FTMO_START_DATE env in the
+  // TS live service. Python executor already parses it (line 84), but the
+  // V4 wrapper used to drop through to "first observed bar" → +/- one
+  // trading-day divergence between TS pass-counter and Python's day-tracker.
+  // Inject FTMO_START_DATE → challengeStartTs into the cfg copy fed to
+  // pollLive when cfg doesn't already carry one.
+  const startDateEnv = process.env.FTMO_START_DATE;
+  if (
+    startDateEnv &&
+    (typeof cfg.challengeStartTs !== "number" || cfg.challengeStartTs <= 0)
+  ) {
+    const parsed = Date.parse(startDateEnv);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      // Mutate a shallow-clone so we don't poison the imported config object.
+      cfg = { ...cfg, challengeStartTs: parsed } as typeof cfg;
+    } else {
+      result.notes.push(
+        `V4: FTMO_START_DATE="${startDateEnv}" unparseable — falling back to first-bar anchor`,
+      );
+    }
+  }
 
   // Phase 15 (V4 Bug 1+2): SYNC engine state with the authoritative MT5
   // state from Python BEFORE pollLive. The engine's `state.equity` and
@@ -279,9 +340,73 @@ export function detectLiveSignalsV4(
     result.btc.close = last!.close;
   }
 
+  // 2026-05-14 Codex Wave-2 Bug #6 FIX: thread funding-rate series into
+  // pollLive so cfg.fundingRateFilter is actually honored at live-time.
+  // Source-of-truth = `scripts/cache_bakeoff/{SYMBOL}_funding.json`
+  // (same path the sweep harness writes via _r29FetchFundingRates.ts) OR
+  // an operator-supplied path via `FTMO_FUNDING_CACHE_DIR`. Missing files
+  // → null-series for that asset → filter inactive (same fall-back as
+  // _r29Round7Shard).
+  let fundingByAsset: Record<string, (number | null)[]> | undefined;
+  try {
+    const hasFundingCfg =
+      !!cfg.fundingRateFilter ||
+      cfg.assets.some(
+        (a) =>
+          a.maxFundingForLong !== undefined ||
+          a.minFundingForShort !== undefined,
+      );
+    if (hasFundingCfg) {
+      const cacheDir =
+        process.env.FTMO_FUNDING_CACHE_DIR ??
+        path.join(process.cwd(), "scripts", "cache_bakeoff");
+      const out: Record<string, (number | null)[]> = {};
+      for (const [sym, candles] of Object.entries(aligned)) {
+        const fp = path.join(cacheDir, `${sym}_funding.json`);
+        if (!fs.existsSync(fp)) {
+          out[sym] = new Array(candles.length).fill(null);
+          continue;
+        }
+        try {
+          const raw = JSON.parse(fs.readFileSync(fp, "utf-8")) as Array<{
+            t: number;
+            r: number;
+          }>;
+          const series: (number | null)[] = new Array(candles.length);
+          let fIdx = 0;
+          let cur: number | null = null;
+          const barDurMs =
+            candles.length >= 2
+              ? Math.max(candles[1]!.openTime - candles[0]!.openTime, 1)
+              : 30 * 60 * 1000;
+          for (let i = 0; i < candles.length; i++) {
+            const t = candles[i]!.openTime;
+            const upper = t + barDurMs;
+            while (fIdx < raw.length && raw[fIdx]!.t < upper) {
+              cur = raw[fIdx]!.r;
+              fIdx++;
+            }
+            series[i] = cur;
+          }
+          out[sym] = series;
+        } catch (e) {
+          result.notes.push(
+            `V4 funding-load ${sym} failed: ${(e as Error).message}`,
+          );
+          out[sym] = new Array(candles.length).fill(null);
+        }
+      }
+      fundingByAsset = out;
+    }
+  } catch (e) {
+    result.notes.push(
+      `V4 funding-prep failed: ${(e as Error).message} — filter inactive`,
+    );
+  }
+
   let poll;
   try {
-    poll = pollLive(state, aligned, cfg);
+    poll = pollLive(state, aligned, cfg, undefined, fundingByAsset);
   } catch (err) {
     result.notes.push(`V4 pollLive threw: ${(err as Error).message}`);
     return result;
@@ -304,11 +429,26 @@ export function detectLiveSignalsV4(
     const maxHoldHours = (holdBars + 1) * hoursPerBar;
     // engine effRisk → live-loss-fraction conversion
     const equityLossFrac = open.effRisk * open.stopPct * cfg.leverage;
+    // 2026-05-13 Codex Round 4 Python #9 FIX: emit engine-side ticket id so
+    // the Python executor can rebuild state on restart instead of hashing
+    // a synthesized id. Format matches OpenPositionV4 (line 2018).
+    const engineTicketId = `${open.symbol}@${open.entryTime}@${open.direction}`;
+    // 2026-05-13 Codex Round 4 Python #3 FIX: V4 sim disables hold-bars
+    // time-exit (ftmoLiveEngineV4.ts:997-1003). Only emit maxHoldUntil when
+    // the config opts-in via cfg.timeExitEnabled OR the newer alias
+    // cfg.emitMaxHoldUntil (R4 worktree name) — keeps live executor in
+    // V4-Sim parity by default and avoids force-truncating positions sim
+    // would keep open until SL/TP/PASSLOCK/maxDays.
+    const timeExitEnabled =
+      (cfg as { timeExitEnabled?: boolean }).timeExitEnabled === true ||
+      cfg.emitMaxHoldUntil === true;
     const sig: LiveSignal = {
       assetSymbol: open.symbol,
       sourceSymbol: open.sourceSymbol,
       direction: open.direction,
       regime: result.regime,
+      engineTicketId,
+      entryTime: open.entryTime,
       entryPrice: open.entryPrice,
       stopPrice: open.stopPrice,
       tpPrice: open.tpPrice,
@@ -317,9 +457,32 @@ export function detectLiveSignalsV4(
       riskFrac: Math.min(equityLossFrac, 0.04), // live-cap 4% per trade
       sizingFactor: 1, // already baked into effRisk by engine
       maxHoldHours,
-      maxHoldUntil: open.entryTime + maxHoldHours * 3_600_000,
+      // maxHoldUntil only set when timeExitEnabled. The field is still
+      // required by the LiveSignal interface; we set it to Number.MAX_SAFE_INTEGER
+      // when disabled so any executor that reads it without guarding sees
+      // "effectively never" — but a Python executor that checks for the
+      // gate (recommended) will skip the time-exit branch entirely.
+      maxHoldUntil: timeExitEnabled
+        ? open.entryTime + maxHoldHours * 3_600_000
+        : Number.MAX_SAFE_INTEGER,
       signalBarClose: lastBar.closeTime,
-      reasons: [`V4 engine open: ${open.symbol} ${open.direction}`],
+      reasons: [
+        `V4 engine open: ${open.symbol} ${open.direction}`,
+        // 2026-05-15 RegimeConfluence — informational tag for the live
+        // executor. The gate is already applied inside pollLive(); this
+        // string is purely diagnostic so live logs show the active mode +
+        // voter pack without touching the LiveSignal shape.
+        ...(cfg.signalsMode === "regime"
+          ? [
+              `signalsMode=regime mv=${cfg.regimeConfluence?.minVotes ?? 2} voters=${
+                Object.entries(cfg.regimeConfluence?.voters ?? {})
+                  .filter(([, v]) => v)
+                  .map(([k]) => k)
+                  .join(",") || "none"
+              }`,
+            ]
+          : []),
+      ],
       ...(open.chandelierAtrAtEntry != null
         ? {
             chandelierExit: {
@@ -327,10 +490,26 @@ export function detectLiveSignalsV4(
               mult: cfg.chandelierExit?.mult ?? 0,
               minMoveR: cfg.chandelierExit?.minMoveR ?? 0.5,
               stopPct: open.stopPct,
+              // Codex Round 4 #7 — expose ATR period + recompute interval so
+              // Python executor can re-evaluate ATR each cycle. Default
+              // interval 0 keeps legacy fixed-atrAtEntry behaviour.
+              ...(cfg.chandelierExit?.period != null
+                ? { atrPeriod: cfg.chandelierExit.period }
+                : {}),
+              atrRecomputeIntervalBars:
+                cfg.chandelierExit?.atrRecomputeIntervalBars ?? 0,
             },
           }
         : {}),
       ...(open.ptpConfig ? { partialTakeProfit: open.ptpConfig } : {}),
+      // 2026-05-13 Codex Round 4 Python #6 FIX: propagate multi-level PTP
+      // when cfg.partialTakeProfitLevels is set. Previously the wrapper
+      // only emitted single-level partialTakeProfit, so multi-level configs
+      // silently degraded to "no PTP" in live execution. Engine + LiveSignal
+      // already supported multi-level; this closes the wrapper-side gap.
+      ...(cfg.partialTakeProfitLevels && cfg.partialTakeProfitLevels.length > 0
+        ? { partialTakeProfitLevels: cfg.partialTakeProfitLevels }
+        : {}),
       ...(open.beThreshold !== undefined
         ? { breakEvenAtProfit: { threshold: open.beThreshold } }
         : {}),
@@ -359,10 +538,17 @@ export function detectLiveSignalsV4(
   };
 
   // Persist updated state.
+  // 2026-05-14 Codex Wave-2 Bug #3 FIX: if saveState fails, do NOT return
+  // signals — without durable idempotency state the same bar can re-emit
+  // duplicate signals on the next poll. Drop signals + emit error note.
   try {
     saveState(state, stateDir);
   } catch (err) {
-    result.notes.push(`V4: saveState failed — ${(err as Error).message}`);
+    result.notes.push(
+      `V4: saveState FAILED — dropping ${result.signals.length} signal(s) to preserve idempotency. Error: ${(err as Error).message}`,
+    );
+    result.signals = [];
+    return result;
   }
   return result;
 }

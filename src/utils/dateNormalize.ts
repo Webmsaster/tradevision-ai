@@ -19,7 +19,8 @@ export type DateNormalizeWarning =
   | "ambiguous-slash-date-assumed-dmy"
   | "mt4-date-assumed-utc"
   | "eu-date-assumed-utc"
-  | "us-date-assumed-utc";
+  | "us-date-assumed-utc"
+  | "epoch-assumed-utc";
 
 export interface DateNormalizeResult {
   iso: string | null; // null when the input is unparseable
@@ -109,6 +110,17 @@ export function normalizeDateToUTC(raw: unknown): DateNormalizeResult {
   if (typeof raw !== "string") return { iso: null };
   const trimmed = raw.trim();
   if (!trimmed) return { iso: null };
+
+  // 2026-05-20 bug-find round (H4): pure-numeric epoch-millisecond timestamps
+  // (Binance/Bybit raw API exports = 13 digits). Previously dropped silently.
+  // Only 13-digit ms is accepted — 10-digit values collide with account
+  // numbers / order IDs (a mis-mapped numeric column would parse as a bogus
+  // 2001-2009 date), so seconds-epoch is intentionally NOT auto-detected.
+  if (/^\d{13}$/.test(trimmed)) {
+    const d = new Date(Number(trimmed));
+    if (Number.isNaN(d.getTime())) return { iso: null };
+    return { iso: d.toISOString(), warning: "epoch-assumed-utc" };
+  }
 
   // Date-only → assume UTC midnight, warn caller.
   if (DATE_ONLY_REGEX.test(trimmed)) {

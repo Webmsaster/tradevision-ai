@@ -2,7 +2,7 @@
 //! `src/utils/ftmoLiveEngineV4.ts` (`pragueOffsetMs`, `dayIndex`, `lsKey`,
 //! `findCandleAtTime`).
 
-use chrono::{DateTime, Timelike, Utc};
+use chrono::{DateTime, Datelike, Timelike, Utc};
 use chrono_tz::Europe::Prague;
 
 use crate::candle::Candle;
@@ -33,17 +33,41 @@ pub fn prague_offset_ms(ts_ms: i64) -> i64 {
 }
 
 /// Day-of-challenge index, anchored at `challenge_start_ms` and rolled at
-/// Prague-midnight. Both sides of the subtraction are shifted to local
-/// Prague time so DST changeovers don't drift the index.
+/// Prague-midnight.
 ///
-/// Mirrors `dayIndex(barTs, challengeStart)` in `ftmoLiveEngineV4.ts`.
+/// 2026-05-13 Codex Audit Round 4 — Fix 2: previous implementation
+/// computed `(bar_local - start_local) / 24h` which is *elapsed local
+/// time*, NOT calendar-day arithmetic. Two failure modes:
+///   1. For non-midnight `challenge_start_ms`, the rollover happened
+///      24h-from-start-time instead of at the next Prague midnight.
+///   2. On DST transitions, the dual-offset shift compensated for the
+///      hour gain/loss INSIDE the elapsed window, but failed at the
+///      boundary when the start anchor's offset and the bar's offset
+///      differed by ±1 hour with bars near the rollover.
+///
+/// Mirrors TS `pragueDay(ms)` at `ftmoDaytrade24h.ts:3581`: take each
+/// timestamp's calendar date in Europe/Prague and diff the days.
 pub fn day_index(bar_ts_ms: i64, challenge_start_ms: i64) -> i64 {
     if challenge_start_ms <= 0 {
         return 0;
     }
-    let bar_local = bar_ts_ms + prague_offset_ms(bar_ts_ms);
-    let start_local = challenge_start_ms + prague_offset_ms(challenge_start_ms);
-    (bar_local - start_local).div_euclid(24 * 3_600_000)
+    let bar_utc = match DateTime::from_timestamp_millis(bar_ts_ms) {
+        Some(t) => t,
+        None => return 0,
+    };
+    let start_utc = match DateTime::from_timestamp_millis(challenge_start_ms) {
+        Some(t) => t,
+        None => return 0,
+    };
+    let bar_day = bar_utc
+        .with_timezone(&Prague)
+        .date_naive()
+        .num_days_from_ce();
+    let start_day = start_utc
+        .with_timezone(&Prague)
+        .date_naive()
+        .num_days_from_ce();
+    (bar_day - start_day) as i64
 }
 
 /// Loss-streak hashmap key. Format MUST match the TS implementation
@@ -145,6 +169,36 @@ mod tests {
     fn day_index_handles_zero_anchor() {
         assert_eq!(day_index(1_000_000, 0), 0);
         assert_eq!(day_index(1_000_000, -42), 0);
+    }
+
+    #[test]
+    fn day_index_non_midnight_start_rolls_at_prague_midnight() {
+        // 2026-05-13 Codex Fix 2 regression: challenge_start = 10:00 Prague
+        // (mid-day) — TS `pragueDay()` returns the calendar day, so a bar
+        // at 23:59 Prague on the SAME day must be day 0, and the very next
+        // bar at 00:00 Prague next day MUST be day 1 (NOT 24h after start).
+        let start = utc_ms("2026-05-13T08:00:00+00:00"); // 10:00 Prague CEST
+        let same_day_evening = utc_ms("2026-05-13T21:59:00+00:00"); // 23:59 Prague
+        assert_eq!(day_index(same_day_evening, start), 0);
+        let next_midnight_prague = utc_ms("2026-05-13T22:00:00+00:00"); // 00:00 Prague next day
+        assert_eq!(day_index(next_midnight_prague, start), 1);
+        // 24h-elapsed-from-start (10:00 Prague next day) should ALSO be day 1
+        // — same calendar day as the prior 00:00 rollover.
+        let twenty_four_h_later = utc_ms("2026-05-14T08:00:00+00:00");
+        assert_eq!(day_index(twenty_four_h_later, start), 1);
+    }
+
+    #[test]
+    fn day_index_dst_spring_forward_boundary() {
+        // 2026-03-29 spring DST (last Sun of March): 02:00 CET → 03:00 CEST.
+        // Anchor 2026-03-28 23:00 UTC = 2026-03-29 00:00 Prague (CET pre-DST).
+        // The "next Prague-midnight" is 2026-03-29 22:00 UTC = 2026-03-30
+        // 00:00 Prague (CEST, +2h post-DST). That's 23h-UTC after anchor.
+        let start = utc_ms("2026-03-28T23:00:00+00:00");
+        let just_before = utc_ms("2026-03-29T21:59:00+00:00"); // 23:59 Prague day-of
+        assert_eq!(day_index(just_before, start), 0);
+        let next_midnight = utc_ms("2026-03-29T22:00:00+00:00"); // 00:00 Prague next-day
+        assert_eq!(day_index(next_midnight, start), 1);
     }
 
     #[test]

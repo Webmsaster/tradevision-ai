@@ -65,7 +65,16 @@ function buildAppPair(envFile, accountLabel) {
     console.warn(`[pm2-multi] ${envFile} missing FTMO_TF — skipping`);
     return [];
   }
-  const stateDir = path.resolve(REPO_ROOT, `ftmo-state-${tf}-${accountId}`);
+  // 2026-05-15 Codex-Audit Wave-2 Bug 7 (MITTEL): honor an explicit
+  // FTMO_STATE_DIR from the env-file. Previously we always computed
+  // `ftmo-state-<TF>-<accountId>` and overrode any explicit value the
+  // operator had set — this broke deploys where the state-dir was
+  // pinned to a custom path (e.g. on a tmpfs mount, or a shared NFS
+  // path with strict access controls). Only fall back to the derived
+  // path when no explicit value is provided.
+  const stateDir = env.FTMO_STATE_DIR
+    ? path.resolve(REPO_ROOT, env.FTMO_STATE_DIR)
+    : path.resolve(REPO_ROOT, `ftmo-state-${tf}-${accountId}`);
   if (seenStateDirs.has(stateDir)) {
     console.error(
       `[pm2-multi] FATAL: state-dir collision — ${envFile} resolves to the same FTMO_STATE_DIR as ${seenStateDirs.get(stateDir)}.\n` +

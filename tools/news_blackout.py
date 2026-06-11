@@ -108,22 +108,172 @@ HIGH_IMPACT_EVENTS_2026: list[tuple[str, str]] = [
     ("2026-04-29T12:30:00+00:00", "GDP"),
     ("2026-07-30T12:30:00+00:00", "GDP"),
     ("2026-10-29T12:30:00+00:00", "GDP"),
+
+    # ---- 2026-05-23 Wave1 audit extension: macro events outside US Fed ----
+    # FOMC press conferences fire ~30min after the FOMC statement; we cover
+    # ±60min in the gate so they fall inside the FOMC blackout. Explicit
+    # entries below for the press conferences that fire WITHOUT a same-day
+    # statement (semi-annual testimony, Jackson Hole, etc.).
+    ("2026-02-11T15:00:00+00:00", "Powell Senate testimony H1"),
+    ("2026-02-12T15:00:00+00:00", "Powell House testimony H1"),
+    ("2026-07-15T14:00:00+00:00", "Powell Senate testimony H2"),
+    ("2026-07-16T14:00:00+00:00", "Powell House testimony H2"),
+    ("2026-08-21T14:00:00+00:00", "Jackson Hole opening"),
+    ("2026-08-22T14:00:00+00:00", "Jackson Hole Powell speech"),
+
+    # ---- ECB rate decisions (8/year, ~12:15 UTC; presser 12:45) ----
+    ("2026-01-22T13:15:00+00:00", "ECB"),
+    ("2026-03-12T13:15:00+00:00", "ECB"),
+    ("2026-04-16T12:15:00+00:00", "ECB"),
+    ("2026-06-04T12:15:00+00:00", "ECB"),
+    ("2026-07-23T12:15:00+00:00", "ECB"),
+    ("2026-09-10T12:15:00+00:00", "ECB"),
+    ("2026-10-29T13:15:00+00:00", "ECB"),
+    ("2026-12-17T13:15:00+00:00", "ECB"),
+
+    # ---- BOJ rate decisions (8/year, ~03:00 UTC announcement, 06:30 presser) ----
+    ("2026-01-23T03:00:00+00:00", "BOJ"),
+    ("2026-03-19T03:00:00+00:00", "BOJ"),
+    ("2026-04-30T03:00:00+00:00", "BOJ"),
+    ("2026-06-17T03:00:00+00:00", "BOJ"),
+    ("2026-07-31T03:00:00+00:00", "BOJ"),
+    ("2026-09-19T03:00:00+00:00", "BOJ"),
+    ("2026-10-30T03:00:00+00:00", "BOJ"),
+    ("2026-12-18T03:00:00+00:00", "BOJ"),
+
+    # ---- Crypto-native: ETF flows announcement windows ----
+    # 13F filings deadline = 45 days after quarter end → typically reveal
+    # institutional crypto positions on these dates.
+    ("2026-02-14T21:00:00+00:00", "13F filings deadline (Q4 2025)"),
+    ("2026-05-15T20:00:00+00:00", "13F filings deadline (Q1 2026)"),
+    ("2026-08-14T20:00:00+00:00", "13F filings deadline (Q2 2026)"),
+    ("2026-11-13T21:00:00+00:00", "13F filings deadline (Q3 2026)"),
+
+    # ---- PCE (Fed's preferred inflation gauge, monthly) ----
+    ("2026-01-30T13:30:00+00:00", "PCE"),
+    ("2026-02-27T13:30:00+00:00", "PCE"),
+    ("2026-03-27T12:30:00+00:00", "PCE"),
+    ("2026-04-30T12:30:00+00:00", "PCE"),
+    ("2026-05-29T12:30:00+00:00", "PCE"),
+    ("2026-06-26T12:30:00+00:00", "PCE"),
+    ("2026-07-31T12:30:00+00:00", "PCE"),
+    ("2026-08-28T12:30:00+00:00", "PCE"),
+    ("2026-09-25T12:30:00+00:00", "PCE"),
+    ("2026-10-30T12:30:00+00:00", "PCE"),
+    ("2026-11-25T13:30:00+00:00", "PCE"),
+    ("2026-12-22T13:30:00+00:00", "PCE"),
+
+    # ---- FOMC minutes (3 weeks after each FOMC meeting, 18:00 UTC) ----
+    ("2026-02-18T19:00:00+00:00", "FOMC minutes Jan"),
+    ("2026-04-08T18:00:00+00:00", "FOMC minutes Mar"),
+    ("2026-05-20T18:00:00+00:00", "FOMC minutes Apr"),
+    ("2026-07-08T18:00:00+00:00", "FOMC minutes Jun"),
+    ("2026-08-19T18:00:00+00:00", "FOMC minutes Jul"),
+    ("2026-10-07T18:00:00+00:00", "FOMC minutes Sep"),
+    ("2026-11-18T19:00:00+00:00", "FOMC minutes Oct"),
+    ("2026-12-30T19:00:00+00:00", "FOMC minutes Dec"),
 ]
 
 
 def _parse_events() -> list[tuple[datetime, str]]:
-    """Lazily parse the ISO event list once into tz-aware datetimes."""
+    """Lazily parse the ISO event list once into tz-aware datetimes.
+
+    2026-05-23 Wave1 audit fix (KRIT-6): also merge in live events from
+    <STATE_DIR>/news-events.json (written by the Node service from Finnhub
+    feed). Previously the Python entry-gate ONLY used the hardcoded 2026
+    list — any Finnhub-fed event silently bypassed the entry blackout
+    (live news-flatten ran but new entries weren't blocked).
+    """
     out: list[tuple[datetime, str]] = []
     for iso, label in HIGH_IMPACT_EVENTS_2026:
         dt = datetime.fromisoformat(iso)
-        # Defensive: enforce UTC even if the ISO had no offset
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         out.append((dt, label))
+    # Merge live events from news-events.json (Node writes from Finnhub).
+    # 2026-05-23 Wave2 fix: Node writes `{"events": [...]}` envelope, NOT a
+    # bare list (see scripts/ftmoLiveService.ts:611 writeJSON({events: ...})).
+    # Previous code's `isinstance(live_data, list)` check ALWAYS failed →
+    # Wave1's "live events merged" claim was dead. Accept either shape.
+    try:
+        state_dir_env = os.environ.get("FTMO_STATE_DIR")
+        if state_dir_env:
+            live_path = Path(state_dir_env) / "news-events.json"
+            if live_path.exists():
+                live_raw = live_path.read_text(encoding="utf-8")
+                live_data = json.loads(live_raw)
+                # Accept both shapes: bare list OR {"events": [...]} envelope.
+                if isinstance(live_data, dict) and isinstance(live_data.get("events"), list):
+                    live_entries = live_data["events"]
+                elif isinstance(live_data, list):
+                    live_entries = live_data
+                else:
+                    live_entries = []
+                if live_entries:
+                    for entry in live_entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        # 2026-05-25 Wave5 KRIT FIX (audit agent #11):
+                        # filter Medium/Low events. Was: all events became
+                        # blackout windows. With Finnhub/ForexFactory feed
+                        # returning HUNDREDS of Medium/Low events per week,
+                        # this caused near-constant blackout → bot never trades.
+                        impact = str(entry.get("impact", "")).lower()
+                        if impact and impact not in ("high", "critical"):
+                            continue
+                        label = str(entry.get("label", entry.get("title", "live-event")))
+                        t = (
+                            entry.get("t")
+                            or entry.get("ts_ms")
+                            or entry.get("timestamp")
+                            or entry.get("iso")
+                            or entry.get("time")
+                        )
+                        if t is None:
+                            continue
+                        try:
+                            if isinstance(t, (int, float)):
+                                dt = datetime.fromtimestamp(t / 1000.0, tz=timezone.utc)
+                            else:
+                                dt = datetime.fromisoformat(str(t))
+                                if dt.tzinfo is None:
+                                    dt = dt.replace(tzinfo=timezone.utc)
+                        except (ValueError, TypeError, OverflowError):
+                            continue
+                        out.append((dt, f"live: {label}"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        # Live feed failure must not block hardcoded blackout.
+        pass
     return out
 
 
 _EVENTS_CACHE: list[tuple[datetime, str]] | None = None
+# 2026-05-23 Wave2 fix: track input file mtimes so cache invalidates when
+# Node rewrites news-events.json or refresh_from_api updates news-cache.json.
+# Previous behavior cached on first call and NEVER refreshed for the lifetime
+# of the process → live events written after process start were silently
+# ignored by the entry-gate blackout.
+_EVENTS_CACHE_MTIMES: dict[str, float] = {}
+
+
+def _current_mtimes() -> dict[str, float]:
+    """Snapshot mtimes of all files that contribute to _EVENTS_CACHE."""
+    m: dict[str, float] = {}
+    try:
+        state_dir_env = os.environ.get("FTMO_STATE_DIR")
+        if state_dir_env:
+            live_path = Path(state_dir_env) / "news-events.json"
+            if live_path.exists():
+                m[str(live_path)] = live_path.stat().st_mtime
+    except OSError:
+        pass
+    try:
+        cp = _default_cache_path()
+        if cp.exists():
+            m[str(cp)] = cp.stat().st_mtime
+    except OSError:
+        pass
+    return m
 
 
 # =============================================================================
@@ -160,7 +310,14 @@ def _default_cache_path() -> Path:
     if state_dir_env:
         base = Path(state_dir_env)
     else:
-        tf = os.environ.get("FTMO_TF", "default")
+        # 2026-05-15 (Audit-Round-4 / Agent #9 HIGH): unified default.
+        import sys as _sys
+        from pathlib import Path as _Path
+        _td = str(_Path(__file__).resolve().parent)
+        if _td not in _sys.path:
+            _sys.path.insert(0, _td)
+        from _ftmo_defaults import DEFAULT_FTMO_TF  # type: ignore
+        tf = os.environ.get("FTMO_TF", DEFAULT_FTMO_TF)
         acc = os.environ.get("FTMO_ACCOUNT_ID")
         if acc:
             base = Path(f"./ftmo-state-{tf}-{acc}")
@@ -273,13 +430,16 @@ def refresh_from_api(
             payload = resp.read().decode("utf-8")
         data = json.loads(payload)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
-        _log(f"api fetch failed: {exc}")
+        # 2026-05-25 Wave5 KRIT FIX (audit agent #11): API key leak in URL.
+        # On HTTPError, default `__str__` can include the URL (with ?token=).
+        # Logged via _log → captured by PM2 logs → secret leak.
+        _log(f"api fetch failed: {type(exc).__name__}: {getattr(exc, 'code', '?')}")
         return 0
     except json.JSONDecodeError as exc:
-        _log(f"api response not JSON: {exc}")
+        _log(f"api response not JSON: {type(exc).__name__}")
         return 0
     except Exception as exc:  # noqa: BLE001 — last-resort offline-first guard
-        _log(f"unexpected error during refresh: {exc}")
+        _log(f"unexpected error during refresh: {type(exc).__name__}")
         return 0
 
     # Finnhub returns {"economicCalendar": [ {country, event, impact, time, ...}, ... ]}
@@ -350,22 +510,43 @@ def _events() -> list[tuple[datetime, str]]:
     """
     Return the active event list. Prefers a fresh cache file if present
     and parseable, otherwise falls back to HIGH_IMPACT_EVENTS_2026.
+
+    2026-05-15 Codex-Audit Bug 11: previously the module documented
+    NEWS_API_KEY as an auto-refresh source, but `_events()` only read the
+    cache — it never CALLED refresh_from_api(). Consequence: an operator
+    setting NEWS_API_KEY would never see fresh events until they ran a
+    separate refresh script. We now call refresh_from_api() opportunistically
+    when (a) NEWS_API_KEY is set and (b) the cache is missing or stale.
+    refresh_from_api() itself short-circuits when the cache is fresh and
+    never raises — so this is safe to call from a hot path.
     """
-    global _EVENTS_CACHE
-    if _EVENTS_CACHE is not None:
+    global _EVENTS_CACHE, _EVENTS_CACHE_MTIMES
+    # 2026-05-23 Wave2 fix: invalidate cache if any source file mtime changed.
+    current_m = _current_mtimes()
+    if _EVENTS_CACHE is not None and current_m == _EVENTS_CACHE_MTIMES:
         return _EVENTS_CACHE
+    if _EVENTS_CACHE is not None and current_m != _EVENTS_CACHE_MTIMES:
+        _EVENTS_CACHE = None  # force rebuild below
 
     if os.environ.get("NEWS_API_DISABLED", "").lower() != "true":
         try:
             cache_path = _default_cache_path()
+            # 2026-05-15 Codex-Audit Bug 11: opportunistic API refresh.
+            if os.environ.get("NEWS_API_KEY", "").strip():
+                try:
+                    refresh_from_api(cache_path=cache_path, force=False)
+                except Exception as refresh_exc:  # noqa: BLE001
+                    _log(f"opportunistic refresh failed (ignored): {refresh_exc}")
             cached = _read_cache(cache_path)
             if cached:
                 _EVENTS_CACHE = cached
+                _EVENTS_CACHE_MTIMES = current_m
                 return _EVENTS_CACHE
         except Exception as exc:  # noqa: BLE001 — never break the bot
             _log(f"cache read fallback to hardcoded: {exc}")
 
     _EVENTS_CACHE = _parse_events()
+    _EVENTS_CACHE_MTIMES = current_m
     return _EVENTS_CACHE
 
 
@@ -374,9 +555,13 @@ def _events() -> list[tuple[datetime, str]]:
 # =============================================================================
 def is_blackout_window(
     now_utc: datetime,
-    blackout_minutes_before: int = 30,
+    blackout_minutes_before: int = 60,
     blackout_minutes_after: int = 60,
 ) -> tuple[bool, Optional[str]]:
+    # 2026-05-23 Wave1 audit fix (KRIT-5): defaults were 30/60, but Rust
+    # hardcoded events all use 60/60 (engine-rust/.../news.rs:62-65 etc.).
+    # Asymmetry meant backtest blackout footprint ≠ live blackout footprint
+    # → silent backtest-vs-live drift on event-day pass-rate. Unified to 60/60.
     """
     Check whether `now_utc` falls inside any high-impact event blackout.
 

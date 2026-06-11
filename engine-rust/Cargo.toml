@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["ftmo-engine-core", "ftmo-engine-cli"]
+members = ["ftmo-engine-core", "ftmo-engine-cli", "ftmo-hunter", "ftmo-event-engine", "ftmo-gpu-accel"]
 exclude = ["ftmo-engine-core/fuzz"]
 
 # R67-r22 audit fix: workspace-level lint hardening.

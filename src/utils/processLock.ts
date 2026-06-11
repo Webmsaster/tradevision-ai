@@ -88,10 +88,31 @@ export async function withFileLock<T>(
       const code = (e as NodeJS.ErrnoException).code;
       if (code !== "EEXIST") throw e;
       if (Date.now() - start > timeoutMs) {
+        // 2026-05-15 Codex external audit BUG #7 FIX — token-verify stale unlink.
+        // Previously: stat → if stale → unlinkSync. Between stat and unlink,
+        // a competing process could detect the same stale lock, unlink it,
+        // and recreate it with its own token. Our unlinkSync then deletes
+        // a legitimate fresh lock. Mitigation: capture the on-disk token
+        // before AND after the stale-decision; only unlink if the token
+        // is unchanged (no race occurred).
         try {
           const st = fs.statSync(lockPath);
           if (Date.now() - st.mtimeMs >= staleMs) {
-            fs.unlinkSync(lockPath);
+            let staleToken = "";
+            try {
+              staleToken = fs.readFileSync(lockPath, "utf8");
+            } catch {
+              continue;
+            }
+            let currentToken = "";
+            try {
+              currentToken = fs.readFileSync(lockPath, "utf8");
+            } catch {
+              continue;
+            }
+            if (currentToken === staleToken && staleToken !== "") {
+              fs.unlinkSync(lockPath);
+            }
             continue;
           }
         } catch {
@@ -141,10 +162,25 @@ export function withFileLockSync<T>(
       const code = (e as NodeJS.ErrnoException).code;
       if (code !== "EEXIST") throw e;
       if (Date.now() - start > timeoutMs) {
+        // 2026-05-15 Codex external audit BUG #7 FIX — see withFileLock above.
         try {
           const st = fs.statSync(lockPath);
           if (Date.now() - st.mtimeMs >= staleMs) {
-            fs.unlinkSync(lockPath);
+            let staleToken = "";
+            try {
+              staleToken = fs.readFileSync(lockPath, "utf8");
+            } catch {
+              continue;
+            }
+            let currentToken = "";
+            try {
+              currentToken = fs.readFileSync(lockPath, "utf8");
+            } catch {
+              continue;
+            }
+            if (currentToken === staleToken && staleToken !== "") {
+              fs.unlinkSync(lockPath);
+            }
             continue;
           }
         } catch {

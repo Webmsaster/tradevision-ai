@@ -185,6 +185,7 @@ fn run_window(
                 },
                 news_events: None,
                 funding_series: None,
+                cb_premium_series: None,
             };
             let mut state_clone = state.clone();
             if let Some(s) =
@@ -198,6 +199,7 @@ fn run_window(
             &BarInput {
                 candles_by_source: &feeds,
                 atr_series_by_source: &atr_feeds,
+                funding_by_source: None,
                 signals,
             },
             cfg,

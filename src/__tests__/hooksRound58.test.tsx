@@ -38,6 +38,7 @@ vi.mock("@/utils/storage", () => ({
   updateTrade: vi.fn(() => []),
   deleteTrade: vi.fn(() => []),
   clearAllData: vi.fn(),
+  clearTrades: vi.fn(),
   SCREENSHOTS_KEY: "tradevision-screenshots",
   QUOTA_EXCEEDED_EVENT: "tradevision-quota-exceeded",
   loadTradesFromSupabase: vi.fn(async () => []),

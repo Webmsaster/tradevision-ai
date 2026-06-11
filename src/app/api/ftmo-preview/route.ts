@@ -12,10 +12,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadBinanceHistory } from "@/utils/historicalData";
 import { requireFtmoMonitorAuth } from "@/lib/ftmoMonitorAuth";
-import {
-  detectLiveSignalsV231,
-  type AccountState,
-} from "@/utils/ftmoLiveSignalV231";
+// Type-only import is erased at compile time; the runtime module is loaded
+// lazily inside the handler. ftmoLiveSignalV231 resolves FTMO_TF at module
+// init and throws fail-loud when it is unset (R29 R3-Bug #4) — a top-level
+// import would run that guard during `next build` page-data collection,
+// where no live-trading env exists, and kill every Vercel deploy.
+import { type AccountState } from "@/utils/ftmoLiveSignalV231";
 
 function isEnabled() {
   return (
@@ -140,12 +142,26 @@ export async function GET() {
       );
     }
     const account = readAccount();
+    // R29-Frontend-Audit Bug 14: the preview historically used the V231
+    // detector + hardcoded 4h next-check boundary. The active live
+    // executor on this branch (R28_V6_PASSLOCK / V5_AMBER_PASSLOCK) uses
+    // the V4 engine on 30m bars — so the preview reports the wrong
+    // next-check window and a slightly different signal universe. The
+    // preview cannot drive the V4 engine without persistent state /
+    // FtmoDaytrade24hConfig, so we keep V231 as the read-only
+    // "preview-only" signal source but compute the next check at the
+    // resolved tf boundary (not a hardcoded 4h boundary). The body now
+    // carries `mode: "v231-preview"` so the UI can warn the operator
+    // that this is a sanity view, not the engine state.
+    const { detectLiveSignalsV231 } =
+      await import("@/utils/ftmoLiveSignalV231");
     const result = detectLiveSignalsV231(eth, btc, sol, account, []);
     const body = {
       ...result,
       lastBarClose: eth[eth.length - 1]?.closeTime ?? null,
-      nextCheckAt: computeNext4hBoundary(),
+      nextCheckAt: computeNextTfBoundary(tf),
       tf,
+      mode: "v231-preview",
     };
     cache.set(cacheKey, { ts: Date.now(), body });
     return NextResponse.json(body, {
@@ -158,17 +174,20 @@ export async function GET() {
   }
 }
 
-function computeNext4hBoundary(): number {
+// R29-Frontend-Audit Bug 14: tf-aware next-bar-boundary. Previous version
+// was hardcoded for 4h candles which lied about the next signal-check
+// time when FTMO_TF was set to a 30m / 1h / 2h champion config.
+function computeNextTfBoundary(tf: "30m" | "1h" | "2h" | "4h"): number {
   const now = new Date();
-  const h = now.getUTCHours();
-  const nextHour = Math.ceil((h + 0.001) / 4) * 4;
-  return Date.UTC(
-    now.getUTCFullYear(),
-    now.getUTCMonth(),
-    now.getUTCDate(),
-    nextHour,
-    0,
-    30,
-    0,
-  );
+  const minutesByTf: Record<typeof tf, number> = {
+    "30m": 30,
+    "1h": 60,
+    "2h": 120,
+    "4h": 240,
+  };
+  const stepMin = minutesByTf[tf];
+  const nowEpochMin = Math.floor(now.getTime() / 60_000);
+  // Next aligned boundary, +30s skew for clock-drift / Binance close-lag.
+  const nextBoundaryMin = Math.ceil((nowEpochMin + 0.001) / stepMin) * stepMin;
+  return nextBoundaryMin * 60_000 + 30_000;
 }

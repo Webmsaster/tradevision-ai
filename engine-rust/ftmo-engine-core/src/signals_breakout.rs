@@ -2,18 +2,21 @@
 //! signal source so the harness can drive end-to-end backtests before the
 //! full `detectAsset` port lands.
 //!
-//! Rule:
-//!   - long when `close[i] > max(high[i-N..i])`
-//!   - short when `close[i] < min(low[i-N..i])`
-//! The signal is emitted at the END of bar `i` (live convention) — actual
-//! execution happens at bar `i+1` open. Caller is responsible for
-//! interpreting `entry_time` / `entry_price` accordingly.
+//! Rule (decision at bar `i-1` close, execution at bar `i` open):
+//!   - long when `close[i-1] > max(high[i-1-N..i-1])`
+//!   - short when `close[i-1] < min(low[i-1-N..i-1])`
+//!
+//! 2026-05-13 Codex KRITISCH FIX: previously trigger AND entry_price used
+//! `candles[i].close` which was a lookahead — at signal-emission time we're
+//! at bar `i`'s OPEN (bar `i-1` just closed), so `candles[i].close` is
+//! future data. Now mirrors R28V6 timing: trigger uses bar `i-1` close,
+//! entry executes at `candles[i].open` (the known current bar open).
 
 use crate::candle::Candle;
 use crate::config::{AssetConfig, EngineConfig};
 use crate::position::PositionSide;
 use crate::signal::PollSignal;
-use crate::sizing::resolve_sizing_factor;
+use crate::sizing::{apply_post_factor_caps, resolve_sizing_factor};
 use crate::state::EngineState;
 
 pub struct BreakoutParams {
@@ -45,24 +48,30 @@ pub fn detect_breakout(
     candles: &[Candle],
     params: &BreakoutParams,
 ) -> Option<PollSignal> {
-    if candles.len() <= params.lookback {
+    // 2026-05-13 Codex KRITISCH FIX: signal-bar = `i-1` (the just-closed
+    // bar), execution-bar = `i` (current bar, open known, close not).
+    // Need at least lookback+1 prior bars to compute the donchian range on
+    // bars BEFORE `i-1`, plus bar `i` itself → `lookback + 2` total.
+    if candles.len() < params.lookback + 2 {
         return None;
     }
     let i = candles.len() - 1;
-    let last = candles[i];
-    let lo = i - params.lookback;
-    let max_high = candles[lo..i]
+    let signal_idx = i - 1;
+    let signal_bar = candles[signal_idx];
+    let entry_bar = candles[i];
+    let lo = signal_idx - params.lookback;
+    let max_high = candles[lo..signal_idx]
         .iter()
         .map(|c| c.high)
         .fold(f64::MIN, f64::max);
-    let min_low = candles[lo..i]
+    let min_low = candles[lo..signal_idx]
         .iter()
         .map(|c| c.low)
         .fold(f64::MAX, f64::min);
 
-    let direction = if last.close > max_high {
+    let direction = if signal_bar.close > max_high {
         PositionSide::Long
-    } else if last.close < min_low {
+    } else if signal_bar.close < min_low {
         PositionSide::Short
     } else {
         return None;
@@ -73,37 +82,53 @@ pub fn detect_breakout(
     // detect_breakout's output direction is the "open this side" trade
     // direction — same convention R28V6 emits AFTER its internal invert
     // bookkeeping. They both fire "Long" on momentum-up regardless of
-    // invert=true. (Previous attempt to invert here regressed Champion C2
-    // by 48pp because it flipped breakout's vote against R28V6's vote in
-    // REGIME consensus.) disable_short still warranted at signal source
-    // for parity with R28V6's `candidates` filter.
+    // invert=true.
+    //
+    // 2026-05-13 Codex HIGH FIX (Fix 6): also honor disable_long and
+    // deactivate_after_day so parity with R28V6 candidate-filter holds in
+    // REGIME consensus + standalone-breakout paths.
     if asset.disable_short && direction == PositionSide::Short {
         return None;
     }
+    if asset.disable_long && direction == PositionSide::Long {
+        return None;
+    }
+    if let Some(deact) = asset.deactivate_after_day {
+        if state.day >= deact {
+            return None;
+        }
+    }
 
-    let factor = resolve_sizing_factor(state, cfg, last.open_time);
-    let mut eff_risk = params.base_risk_frac * factor;
+    // R51 — skip outright if effective stop is wider than max_stop_pct.
     if !cfg.bypass_live_caps {
         if let Some(caps) = cfg.live_caps.as_ref() {
-            eff_risk = eff_risk.min(caps.max_risk_frac);
-            // R51 — also skip outright if effective stop is wider than max_stop_pct.
             if params.stop_pct > caps.max_stop_pct {
                 return None;
             }
         }
     }
+    // 2026-05-13 Codex Audit Round 3 — Fix 2: centralized post-factor caps
+    // (dayBased + maxRiskFrac + LIVE_LOSS_CAP).
+    let factor = resolve_sizing_factor(state, cfg, entry_bar.open_time);
+    let eff_risk =
+        apply_post_factor_caps(cfg, state, params.base_risk_frac * factor, params.stop_pct);
     if eff_risk <= 0.0 {
         return None;
     }
 
+    // 2026-05-13 Codex KRITISCH FIX: entry_price uses bar `i`'s OPEN (known
+    // at signal-emit time) instead of the previous `last.close` lookahead.
+    // Stop/TP anchors stay on entry_price so risk-arithmetic is consistent
+    // with R28V6.
+    let entry_price = entry_bar.open;
     let (stop_price, tp_price) = match direction {
         PositionSide::Long => (
-            last.close * (1.0 - params.stop_pct),
-            last.close * (1.0 + params.tp_pct),
+            entry_price * (1.0 - params.stop_pct),
+            entry_price * (1.0 + params.tp_pct),
         ),
         PositionSide::Short => (
-            last.close * (1.0 + params.stop_pct),
-            last.close * (1.0 - params.tp_pct),
+            entry_price * (1.0 + params.stop_pct),
+            entry_price * (1.0 - params.tp_pct),
         ),
     };
 
@@ -111,8 +136,8 @@ pub fn detect_breakout(
         symbol: asset.symbol.clone(),
         source_symbol: source_symbol.to_string(),
         direction,
-        entry_time: last.open_time,
-        entry_price: last.close,
+        entry_time: entry_bar.open_time,
+        entry_price,
         stop_price,
         tp_price,
         stop_pct: params.stop_pct,
@@ -177,11 +202,17 @@ mod tests {
         let a = asset();
         let p = BreakoutParams::from_cfg(&cfg, &a);
         let mut candles = ramp(10, 100.0, 0.5); // rising
-                                                // Force last close strictly above max(high[..-1])
-        let last = candles.last_mut().unwrap();
-        last.close = last.high + 5.0;
+                                                // 2026-05-13 Codex KRITISCH FIX adjusted: signal-bar = i-1,
+                                                // not i. Force candles[len-2].close above prev-N highs.
+        let n = candles.len();
+        let prev_high = candles[..n - 2]
+            .iter()
+            .map(|c| c.high)
+            .fold(f64::MIN, f64::max);
+        candles[n - 2].close = prev_high + 5.0;
         let sig = detect_breakout(&mut s, &cfg, &a, "BTCUSDT", &candles, &p).unwrap();
         assert_eq!(sig.direction, PositionSide::Long);
+        // Entry uses candles[n-1].open — same ramp slope so it sits above stop.
         assert!(sig.stop_price < sig.entry_price);
         assert!(sig.tp_price > sig.entry_price);
         assert!((sig.eff_risk - 0.4).abs() < 1e-9);
@@ -194,8 +225,12 @@ mod tests {
         let a = asset();
         let p = BreakoutParams::from_cfg(&cfg, &a);
         let mut candles = ramp(10, 100.0, -0.5);
-        let last = candles.last_mut().unwrap();
-        last.close = last.low - 5.0;
+        let n = candles.len();
+        let prev_low = candles[..n - 2]
+            .iter()
+            .map(|c| c.low)
+            .fold(f64::MAX, f64::min);
+        candles[n - 2].close = prev_low - 5.0;
         let sig = detect_breakout(&mut s, &cfg, &a, "BTCUSDT", &candles, &p).unwrap();
         assert_eq!(sig.direction, PositionSide::Short);
         assert!(sig.stop_price > sig.entry_price);
@@ -214,8 +249,12 @@ mod tests {
         let mut p = BreakoutParams::from_cfg(&cfg, &a);
         p.stop_pct = 0.05; // above cap
         let mut candles = ramp(10, 100.0, 0.5);
-        let last = candles.last_mut().unwrap();
-        last.close = last.high + 5.0;
+        let n = candles.len();
+        let prev_high = candles[..n - 2]
+            .iter()
+            .map(|c| c.high)
+            .fold(f64::MIN, f64::max);
+        candles[n - 2].close = prev_high + 5.0;
         assert!(detect_breakout(&mut s, &cfg, &a, "BTCUSDT", &candles, &p).is_none());
     }
 }

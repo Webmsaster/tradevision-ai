@@ -295,12 +295,16 @@ describe("ftmoLiveEngineV4 Round 54 fixes", () => {
     pollLive(state, { BTCUSDT: candles }, cfg);
 
     // PTP triggered → ptpTriggered must be true, beActive flipped, stop
-    // moved to entry (BE auto-move).
+    // moved to cost-adjusted BE level (2026-05-13 Codex Round 5 Fix #7).
+    // Pre-fix: stopPrice was raw entryPrice; post-fix: entry × (1+cost) for
+    // longs / × (1-cost) for shorts. With costBp=5 the BE level is 0.05%
+    // above entry for longs.
     const updated = state.openPositions[0];
     expect(updated).toBeDefined();
     expect(updated!.ptpTriggered).toBe(true);
     expect(updated!.beActive).toBe(true);
-    expect(updated!.stopPrice).toBe(updated!.entryPrice);
+    expect(updated!.stopPrice).toBeGreaterThanOrEqual(updated!.entryPrice);
+    expect(updated!.stopPrice).toBeLessThan(updated!.entryPrice * 1.01);
   });
 
   it("R54-V4-1: entryBarIdx is anchored on monotonic state.barsSeen", () => {

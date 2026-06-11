@@ -14,7 +14,7 @@ import {
   addTrade as addTradeLocal,
   updateTrade as updateTradeLocal,
   deleteTrade as deleteTradeLocal,
-  clearAllData,
+  clearTrades,
   SCREENSHOTS_KEY,
   QUOTA_EXCEEDED_EVENT,
   tradeContentHash,
@@ -419,6 +419,31 @@ export function useTradeStorage() {
               console.warn(
                 `[useTradeStorage] local owner=${localOwner} but logged-in user=${user!.id} — discarding local cache`,
               );
+              // 2026-05-16 Round 9 KRIT FIX (useTradeStorage agent): before
+              // wiping localStorage on owner-mismatch, snapshot the
+              // discarded trades to a dated backup key so a misconfigured
+              // token-refresh or accidental account switch can't
+              // permanently destroy data. User can manually recover via
+              // export-import or browser DevTools.
+              try {
+                if (typeof window !== "undefined" && localTrades.length > 0) {
+                  const backupKey = `tradevision-owner-mismatch-backup-${Date.now()}`;
+                  localStorage.setItem(
+                    backupKey,
+                    JSON.stringify({
+                      discardedAt: new Date().toISOString(),
+                      previousOwner: localOwner,
+                      newOwner: user!.id,
+                      trades: localTrades,
+                    }),
+                  );
+                  console.warn(
+                    `[useTradeStorage] backed up ${localTrades.length} discarded trades to ${backupKey}`,
+                  );
+                }
+              } catch {
+                /* quota/disabled storage — silent acceptance, last resort */
+              }
               setAllTrades([]);
               saveTrades([]);
               return;
@@ -505,8 +530,22 @@ export function useTradeStorage() {
         user?.id ?? null,
       );
       if (isCloud) {
+        // R29-Frontend-Audit Bug 3: the cloud-sync helpers return `false`
+        // on failure (they swallow the error internally with console.error)
+        // — we must surface that via the same setSyncError path that
+        // catches a thrown exception. Without this, a row that failed to
+        // upload looked like a success in the UI.
         try {
-          await saveTradeToSupabase(supabase!, tradeWithAccount, user!.id);
+          const ok = await saveTradeToSupabase(
+            supabase!,
+            tradeWithAccount,
+            user!.id,
+          );
+          if (!ok) {
+            setSyncError(
+              "Failed to sync new trade to cloud. Your data is saved locally.",
+            );
+          }
         } catch (err) {
           console.error("Cloud sync failed for addTrade:", err);
           setSyncError(
@@ -529,8 +568,15 @@ export function useTradeStorage() {
         user?.id ?? null,
       );
       if (isCloud) {
+        // R29-Frontend-Audit Bug 3: see addTrade comment — `false` return
+        // also has to flow through setSyncError.
         try {
-          await saveTradeToSupabase(supabase!, trade, user!.id);
+          const ok = await saveTradeToSupabase(supabase!, trade, user!.id);
+          if (!ok) {
+            setSyncError(
+              "Failed to sync trade update to cloud. Your data is saved locally.",
+            );
+          }
         } catch (err) {
           console.error("Cloud sync failed for editTrade:", err);
           setSyncError(
@@ -554,8 +600,19 @@ export function useTradeStorage() {
         user?.id ?? null,
       );
       if (isCloud) {
+        // R29-Frontend-Audit Bug 3: `deleteTradeFromSupabase` returns false
+        // on failure — surface it.
         try {
-          await deleteTradeFromSupabase(supabase!, tradeId, user!.id);
+          const ok = await deleteTradeFromSupabase(
+            supabase!,
+            tradeId,
+            user!.id,
+          );
+          if (!ok) {
+            setSyncError(
+              "Failed to sync trade deletion to cloud. Your data is saved locally.",
+            );
+          }
         } catch (err) {
           console.error("Cloud sync failed for removeTrade:", err);
           setSyncError(
@@ -581,22 +638,52 @@ export function useTradeStorage() {
       const existingContent = buildContentHashSet(existing);
       // Auto-assign active account to imported trades. Then filter out
       // both UUID-conflicts AND content-duplicates (CSV re-imports).
+      //
+      // R29-Frontend-Audit Bug 4: stamp the accountId BEFORE hashing so
+      // the per-account dedupe key includes the destination account.
+      // Previously the hash was taken on the raw row (no accountId set)
+      // → an identical CSV imported under two different accounts collided
+      // on the second import and silently dropped rows.
       const unique: Trade[] = [];
       const seenInBatch = new Set<string>();
       for (const t of newTrades) {
         if (existingIds.has(t.id)) continue;
-        const hash = tradeContentHash(t);
+        // 2026-05-24 Codex audit MED FIX: prior `t.accountId || activeAccountId`
+        // preserved any pre-existing accountId from the import payload.
+        // Importing a JSON backup in Account B while the file's trades carry
+        // accountId="A" would write them under A (invisible to the user
+        // who's currently viewing B). The replace path (line ~755) already
+        // force-stamps activeAccountId; merge should match. Stamp the
+        // active account always — the user is explicitly importing INTO
+        // their current account.
+        const stamped = {
+          ...t,
+          accountId: activeAccountId,
+        };
+        const hash = tradeContentHash(stamped);
         if (existingContent.has(hash)) continue;
         if (seenInBatch.has(hash)) continue; // dedupe within the batch too
         seenInBatch.add(hash);
-        unique.push({ ...t, accountId: t.accountId || activeAccountId });
+        unique.push(stamped);
       }
       const merged = [...existing, ...unique];
       saveTrades(merged);
       setAllTrades(merged);
       if (isCloud) {
+        // R29-Frontend-Audit Bug 3: `saveBulkTradesToSupabase` returns
+        // false on failure (and enqueues survivors for retry). Surface
+        // the failure so the user sees they need to wait/retry.
         try {
-          await saveBulkTradesToSupabase(supabase!, unique, user!.id);
+          const ok = await saveBulkTradesToSupabase(
+            supabase!,
+            unique,
+            user!.id,
+          );
+          if (!ok) {
+            setSyncError(
+              "Failed to sync imported trades to cloud. Your data is saved locally and will retry on the next sync.",
+            );
+          }
         } catch (err) {
           console.error("Cloud sync failed for importTrades:", err);
           setSyncError(
@@ -610,11 +697,22 @@ export function useTradeStorage() {
   );
 
   const clearAll = useCallback(async () => {
-    clearAllData();
+    // R29-Frontend-Audit Bug 6: use `clearTrades()` (trades + screenshots
+    // + retry-queue + owner stamp only) instead of `clearAllData()`
+    // (additionally drops settings, webhook URLs, account list and
+    // active-account selection). The UI labels this button "delete ALL
+    // trading data" — the user expects to lose trades, not their app
+    // configuration. Logout (auth-context.tsx) keeps using the full
+    // `clearAllData()` because it does intend to wipe everything.
+    clearTrades();
     setAllTrades([]);
     if (isCloud) {
+      // R29-Frontend-Audit Bug 3: surface false-return from cloud helper.
       try {
-        await clearAllSupabaseTrades(supabase!, user!.id);
+        const ok = await clearAllSupabaseTrades(supabase!, user!.id);
+        if (!ok) {
+          setSyncError("Failed to clear cloud data. Please try again.");
+        }
       } catch (err) {
         console.error("Cloud sync failed for clearAll:", err);
         setSyncError("Failed to clear cloud data. Please try again.");
@@ -643,24 +741,56 @@ export function useTradeStorage() {
         ...t,
         accountId: t.accountId || activeAccountId,
       }));
+      // R29-Frontend-Audit Bug 1: force ALL incoming trades to the active
+      // account. Previously `t.accountId || activeAccountId` preserved
+      // foreign account-ids from the JSON backup — so a backup taken under
+      // "FTMO-Step1" re-imported while "Personal" was active would:
+      //   1) wipe Personal cloud rows (clearAllSupabaseTrades(activeAccountId))
+      //   2) re-insert them under FTMO-Step1
+      // Net effect: data disappears from the account the user is looking at,
+      // silently re-attached to a different account. The Replace operation
+      // must scope strictly to the active account.
+      const overwriteAccountId = stamped.map((t) => ({
+        ...t,
+        accountId: activeAccountId,
+      }));
       // Local: union with trades for other accounts so a Replace into
       // FTMO-Step1 doesn't blow away Personal-account local rows.
       const existingLocal = loadTrades();
       const otherAccountTrades = existingLocal.filter(
         (t) => (t.accountId ?? "default") !== activeAccountId,
       );
-      const merged = [...otherAccountTrades, ...stamped];
+      const merged = [...otherAccountTrades, ...overwriteAccountId];
       saveTrades(merged);
       setAllTrades(merged);
       if (isCloud) {
+        // R29-Frontend-Audit Bug 3: cloud helpers return false on failure;
+        // each return value must flow through setSyncError.
         try {
           // Clear existing cloud data for THIS account only — leave other
           // accounts intact. Pre-stamping above guarantees `accountId` is
           // set on every incoming row, so the subsequent bulk-upsert lands
           // under the same account_id we just cleared.
-          await clearAllSupabaseTrades(supabase!, user!.id, activeAccountId);
-          if (stamped.length > 0) {
-            await saveBulkTradesToSupabase(supabase!, stamped, user!.id);
+          const clearedOk = await clearAllSupabaseTrades(
+            supabase!,
+            user!.id,
+            activeAccountId,
+          );
+          if (!clearedOk) {
+            setSyncError(
+              "Failed to sync trades to cloud. Your data is saved locally.",
+            );
+          } else if (overwriteAccountId.length > 0) {
+            const savedOk = await saveBulkTradesToSupabase(
+              supabase!,
+              overwriteAccountId,
+              user!.id,
+            );
+            if (!savedOk) {
+              setSyncError(
+                "Failed to sync trades to cloud. Your data is saved locally and will retry on the next sync.",
+              );
+            }
           }
         } catch (err) {
           console.error("Cloud sync failed for setAllTrades:", err);

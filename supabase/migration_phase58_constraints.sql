@@ -9,6 +9,16 @@
 -- and on first run if any existing row violated the predicate (no
 -- `NOT VALID` split). The wrapper makes each block idempotent and
 -- skips with a NOTICE when the constraint already exists.
+--
+-- ⚠️ Phase 96 (Codex audit) — TWO BUGS IN THIS FILE were superseded.
+-- The `trades_tags_length` CHECK below (with a subquery on unnest) is
+-- INVALID SQL — PostgreSQL forbids subqueries inside CHECK constraints
+-- (SQLSTATE 0A000). The exception handler around it swallows the real
+-- error silently, so on fresh runs no tag cap is enforced at all.
+-- The `update_updated_at()` redefinition further down also weakens the
+-- hardened R67 trigger (drops the id/user_id freeze).
+-- Run `migration_phase96_fix_check_and_trigger.sql` AFTER this file
+-- (or instead of it on a fresh DB) to install the correct enforcement.
 
 do $$
 begin
@@ -40,13 +50,19 @@ do $$
 begin
   alter table trades add constraint trades_notes_length check (length(notes) <= 5000);
 exception when duplicate_object then null; end $$;
-do $$
-begin
-  alter table trades add constraint trades_tags_length check (
-    cardinality(tags) <= 32 and
-    coalesce((select max(length(t)) from unnest(tags) t), 0) <= 64
-  );
-exception when duplicate_object then null; end $$;
+-- Phase 96 (Codex audit): the original `trades_tags_length` CHECK below
+-- contained a subquery (`select max(length(t)) from unnest(tags) t`)
+-- which PostgreSQL rejects with 0A000. The exception handler caught the
+-- wrong error class, so it was silently dropped on every run and no tag
+-- cap was ever enforced. Cardinality + per-element length enforcement
+-- moved to `migration_phase96_fix_check_and_trigger.sql` (scalar CHECK
+-- + BEFORE INSERT/UPDATE trigger). This block is intentionally a no-op.
+--
+-- ORIGINAL (kept for reference, do NOT re-enable):
+--   alter table trades add constraint trades_tags_length check (
+--     cardinality(tags) <= 32 and
+--     coalesce((select max(length(t)) from unnest(tags) t), 0) <= 64
+--   );
 do $$
 begin
   alter table trades add constraint trades_strategy_length check (strategy is null or length(strategy) <= 128);
@@ -76,10 +92,18 @@ create index if not exists idx_trades_account_exit
 drop index if exists idx_trades_pair;
 
 -- 5. Phase 69 (R45-DB-M6): freeze created_at on update.
+--    Phase 96 (Codex audit): also re-establish the R67 hardening that
+--    freezes id and user_id. Earlier revisions of this migration only
+--    froze updated_at/created_at and inadvertently dropped the R67
+--    id/user_id locks when re-run after schema.sql.
 create or replace function update_updated_at()
 returns trigger as $$
 begin
   new.updated_at = now();
+  -- R67 audit hardening (restored Phase 96): freeze id and user_id so a
+  -- PostgREST PATCH cannot rewrite the PK or steal the row's owner.
+  new.id = old.id;
+  new.user_id = old.user_id;
   new.created_at = old.created_at;
   return new;
 end;

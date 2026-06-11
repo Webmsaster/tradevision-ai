@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   SETTINGS_CHANGED_EVENT,
   SETTINGS_KEY as SETTINGS_STORAGE_KEY,
@@ -274,6 +274,20 @@ export default function SettingsPage() {
   // Remove. While the async cloud reassignment is in flight the button is
   // disabled (per row), and the onClick callback uses `void` so the
   // floating Promise warning is silenced and the click handler stays sync.
+  // 2026-05-15 (Audit-Round-5 / Agent #5 WARNUNG): refs for setTimeout cleanup.
+  // Both `saved` (2s auto-clear) and `testStatus` (5s auto-clear) used to
+  // schedule a setTimeout that could fire after the component unmounted →
+  // "Can't perform a state update on an unmounted component" React warning.
+  // We clear pending timers in the cleanup effect on unmount.
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const testTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+      if (testTimerRef.current) clearTimeout(testTimerRef.current);
+    };
+  }, []);
+
   const [removingAccountId, setRemovingAccountId] = useState<string | null>(
     null,
   );
@@ -327,7 +341,8 @@ export default function SettingsPage() {
     const userKey = resolveUserKey(user?.id);
     await saveSettingsEncrypted(settings, userKey);
     setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
+    savedTimerRef.current = setTimeout(() => setSaved(false), 2000);
     // Dispatch event so other components can react. We dispatch the
     // PLAINTEXT in-memory `settings` so listeners (e.g. AccountSwitcher)
     // continue to work without needing to know about the envelope.
@@ -404,7 +419,8 @@ export default function SettingsPage() {
         `Error: ${err instanceof Error ? err.message : "Failed to send"}`,
       );
     }
-    setTimeout(() => {
+    if (testTimerRef.current) clearTimeout(testTimerRef.current);
+    testTimerRef.current = setTimeout(() => {
       setTestStatus(null);
       setTestMessage("");
     }, 5000);
@@ -685,12 +701,20 @@ export default function SettingsPage() {
   async function handleLoadSampleData() {
     try {
       const { sampleTrades } = await import("@/data/sampleTrades");
+      // 2026-05-24 Codex audit LOW FIX: prior code generated random
+      // UUIDs without the `sample-` prefix, breaking the demo-detection
+      // heuristic in src/app/page.tsx:107 (`trades[0].id.startsWith("sample-")`).
+      // Dashboard never showed the "Clear Demo Data" CTA, leaving users
+      // unable to wipe sample trades via the intended UI path. Keep the
+      // randomization (cloud-PK uniqueness) but prepend `sample-` so
+      // the dashboard detector still works.
       const fresh = sampleTrades.map((t) => ({
         ...t,
         id:
-          typeof crypto !== "undefined" && "randomUUID" in crypto
+          "sample-" +
+          (typeof crypto !== "undefined" && "randomUUID" in crypto
             ? crypto.randomUUID()
-            : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            : `${Date.now()}-${Math.random().toString(36).slice(2)}`),
         accountId: activeAccountId,
       }));
       const count = await importTrades(fresh);
@@ -1046,10 +1070,25 @@ export default function SettingsPage() {
                   // even on this radio side-effect write. Errors fall
                   // back to the previous direct setItem path so quota /
                   // disabled storage doesn't break the radio UX.
+                  //
+                  // 2026-05-16 Round 9 KRIT FIX (settings agent): the
+                  // fallback path previously wrote `next` directly to
+                  // localStorage, which leaked the plaintext webhook URL
+                  // + bot-token to disk if encryption ever fell back. Now
+                  // we strip the webhook.url field in the fallback path —
+                  // active-account UI still updates, but secrets stay
+                  // encrypted (last successful encrypted blob remains).
                   const userKey = resolveUserKey(user?.id);
                   void saveSettingsEncrypted(next, userKey).catch(() => {
                     try {
-                      localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+                      const safeNext = {
+                        ...next,
+                        webhook: { ...next.webhook, url: "" },
+                      };
+                      localStorage.setItem(
+                        SETTINGS_KEY,
+                        JSON.stringify(safeNext),
+                      );
                     } catch {
                       /* quota / disabled storage — UI state still updates */
                     }

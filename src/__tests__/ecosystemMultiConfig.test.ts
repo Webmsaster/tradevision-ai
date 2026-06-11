@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
 const CFG_SRC = readFileSync(
@@ -43,8 +44,6 @@ function runConfig(cfgPath: string): {
   stdout: string;
   stderr: string;
 } {
-  const { spawnSync } =
-    require("node:child_process") as typeof import("node:child_process");
   const r = spawnSync(
     process.execPath,
     [

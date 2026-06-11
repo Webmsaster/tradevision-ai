@@ -81,6 +81,10 @@ interface ClosedEvent {
   // → tp/stop counts < total recent → winRate based on tpCount/recent
   // was systematically wrong, and expected_pnl_pct fell to 0 → drift
   // looked artificially green. Now treated as broker-driven realises.
+  // 2026-05-23 Wave2 fix: real Python emitters (close_position call-sites in
+  // tools/ftmo_executor.py). NOT `time`, `passlock_target_hit`, `force_close_max_days`,
+  // `emergency` (those Wave1 strings are fabricated). `emergency:<reason>` is a
+  // prefix; `ptpL<idx>_final` is a prefix too.
   exit_reason?:
     | "tp"
     | "stop"
@@ -89,7 +93,7 @@ interface ClosedEvent {
     | "hold_expired"
     | "news_blackout"
     | "kill_request"
-    | string; // "emergency:..." prefix from _emergency_close_all_positions
+    | string; // "emergency:..." + "ptpL<idx>_final" prefix forms
   slippage_bps?: number | null;
   symbol?: string;
   volume?: number;
@@ -173,12 +177,38 @@ function joinTrades(events: unknown[]): JoinedTrade[] {
     if (!o) continue; // close without open seen (older than log retention)
     const sign = o.direction === "long" ? 1 : -1;
     const raw_pnl_pct = (sign * (c.close_price - o.entry)) / o.entry;
-    const expected_pnl_pct =
-      c.exit_reason === "tp" && o.tp_pct
-        ? o.tp_pct
-        : c.exit_reason === "stop" && o.stop_pct
-          ? -o.stop_pct
-          : 0;
+    // 2026-05-23 Wave1 audit fix (HIGH): non-TP/Stop exits previously
+    // hard-coded expected_pnl_pct=0, which artificially pulled the
+    // drift-vs-expected average toward zero on PASSLOCK/time_exit/manual
+    // exits (R60 reality). On a PASSLOCK-heavy day, drift looked green
+    // (0% delta from 0% expected) even when real bot underperformed.
+    // Use the ACTUAL realised price-delta as "expected" for these classes
+    // — the exit reason was triggered by an in-engine rule, not a TP/SL
+    // hit, so the realised PnL IS the engineered outcome.
+    // 2026-05-23 Wave2 fix: Wave1's reason strings were FABRICATED — Python
+    // emits `time_exit` (not `time`), `emergency:<reason>` PREFIX (not literal
+    // `emergency`), `ptpL<idx>_final`, `hold_expired`, `kill_request`. The
+    // `passlock_target_hit` and `force_close_max_days` literals are never
+    // emitted at all. Resync to the real strings (grep'd from
+    // tools/ftmo_executor.py close_position call-sites + emergency_reason_tag).
+    let expected_pnl_pct = 0;
+    const reason = c.exit_reason ?? "";
+    if (reason === "tp" && o.tp_pct) {
+      expected_pnl_pct = o.tp_pct;
+    } else if (reason === "stop" && o.stop_pct) {
+      expected_pnl_pct = -o.stop_pct;
+    } else if (
+      reason === "time_exit" ||
+      reason === "hold_expired" ||
+      reason === "manual" ||
+      reason === "news_blackout" ||
+      reason === "kill_request" ||
+      reason.startsWith("emergency:") ||
+      reason.startsWith("ptpL")
+    ) {
+      // Engine-driven exit — expected == realised by definition.
+      expected_pnl_pct = raw_pnl_pct;
+    }
     out.push({
       ticket: c.ticket,
       asset: o.asset,
@@ -257,14 +287,27 @@ function buildReport(
   const manualCount = recent.filter((t) => t.exit_reason === "manual").length;
 
   const winRate = recent.length > 0 ? tpCount / recent.length : 0;
+  // R29-Frontend-Audit Bug 13: previously the effective return was
+  // `raw_pnl_pct * risk_frac * 2`. `risk_frac` is the desired loss
+  // fraction of equity if the stop trips, NOT a fixed 2x leverage
+  // multiplier. The correct equity-return is
+  //   raw_pnl_pct * (risk_frac / stop_pct)
+  // because (1 / stop_pct) is the leverage chosen to hit the target
+  // loss when the stop triggers. We fall back to the historical
+  // 0.4 × 2 product (=0.8) when either field is missing so the report
+  // doesn't break on legacy logs.
+  const effExposure = (t: JoinedTrade): number => {
+    const rf = t.risk_frac ?? 0.4;
+    const sp = t.stop_pct;
+    if (sp && Number.isFinite(sp) && sp > 0) return rf / sp;
+    return rf * 2; // legacy fallback
+  };
   const totalRealisedPct =
-    recent.reduce((s, t) => s + t.raw_pnl_pct * (t.risk_frac ?? 0.4) * 2, 0) /
+    recent.reduce((s, t) => s + t.raw_pnl_pct * effExposure(t), 0) /
     Math.max(1, recent.length);
   const totalExpectedPct =
-    recent.reduce(
-      (s, t) => s + t.expected_pnl_pct * (t.risk_frac ?? 0.4) * 2,
-      0,
-    ) / Math.max(1, recent.length);
+    recent.reduce((s, t) => s + t.expected_pnl_pct * effExposure(t), 0) /
+    Math.max(1, recent.length);
   const drift_pp = (totalRealisedPct - totalExpectedPct) * 100;
 
   lines.push(`## Aggregate`);
@@ -313,12 +356,9 @@ function buildReport(
     const ts = byAsset.get(asset)!;
     const tpA = ts.filter((t) => t.exit_reason === "tp").length;
     const winA = ts.length ? (tpA / ts.length) * 100 : 0;
-    const realised = avg(
-      ts.map((t) => t.raw_pnl_pct * (t.risk_frac ?? 0.4) * 2),
-    );
-    const expected = avg(
-      ts.map((t) => t.expected_pnl_pct * (t.risk_frac ?? 0.4) * 2),
-    );
+    // R29-Frontend-Audit Bug 13: see effExposure helper above.
+    const realised = avg(ts.map((t) => t.raw_pnl_pct * effExposure(t)));
+    const expected = avg(ts.map((t) => t.expected_pnl_pct * effExposure(t)));
     const driftA =
       realised !== null && expected !== null
         ? (realised - expected) * 100

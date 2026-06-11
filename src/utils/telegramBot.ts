@@ -98,7 +98,22 @@ export async function startTelegramBot(ctx: TelegramCommandHandlerCtx) {
     `🤖 <b>Bot Commands Active</b>\nSend <code>/help</code> for available commands.`,
     cfg,
   );
-  pollLoop(cfg, ctx);
+  // R29-Frontend-Audit Bug 12: pollLoop is async and previously fired
+  // and forgotten. An unhandled rejection inside the loop (DNS failure,
+  // un-caught throw) terminated the supervisor silently — the bot
+  // stopped receiving commands until the process restarted. Attach a
+  // `.catch` that logs and restarts the loop with a fixed 30s cooldown
+  // so transient errors no longer kill the receiver.
+  const supervise = () => {
+    pollLoop(cfg, ctx).catch((err) => {
+      console.error(
+        "[tg-bot] poll loop crashed; restarting in 30s:",
+        err instanceof Error ? err.message : err,
+      );
+      setTimeout(supervise, 30_000);
+    });
+  };
+  supervise();
 }
 
 async function pollLoop(cfg: TelegramConfig, ctx: TelegramCommandHandlerCtx) {
@@ -236,8 +251,15 @@ async function handleCommand(
       );
       break;
     case "/resume":
+      // 2026-05-23 Wave2 fix (B4 MED): also clear killRequested. Previously
+      // /resume only set paused=false → if a prior /kill had deferred (MT5
+      // disconnect → partial-fail) or set killRequested still true, the
+      // very next executor cycle re-ran handle_kill_request immediately,
+      // closing everything + re-pausing. Operator saw /resume followed by
+      // "🛑 Kill complete" with no idea why.
       setControls(ctx.stateDir, {
         paused: false,
+        killRequested: false,
         lastCommand: { from, cmd, ts: new Date().toISOString() },
       });
       await tgSend("▶️ <b>Bot RESUMED</b>\nNew signals will be executed.", cfg);
@@ -492,18 +514,56 @@ async function renderPnl(ctx: TelegramCommandHandlerCtx): Promise<string> {
 }
 
 async function renderConfig(ctx: TelegramCommandHandlerCtx): Promise<string> {
+  // 2026-05-14 Codex Wave-2 Bug #11 FIX: read the running cfg from the
+  // engine state-dir instead of printing hard-coded iter231/4h values.
+  // The bot has been running V4/V5/R28/30m + multi-asset for months —
+  // showing iter231 was actively misleading the operator.
+  const ftmoTf = process.env.FTMO_TF ?? "(default)";
+  const startBalance = ctx.challengeStartBalance.toLocaleString();
+  let cfgLabel = "(unknown)";
+  let assets = "?";
+  let tradingPaused = "?";
+  let day = "?";
+  let openPositions = "?";
+  try {
+    const v4Path = path.join(ctx.stateDir, "v4-engine.json");
+    if (fs.existsSync(v4Path)) {
+      const raw = JSON.parse(fs.readFileSync(v4Path, "utf-8")) as {
+        cfgLabel?: string;
+        day?: number;
+        pausedAtTarget?: boolean;
+        openPositions?: Array<{ symbol?: string }>;
+      };
+      if (raw.cfgLabel) cfgLabel = raw.cfgLabel;
+      if (typeof raw.day === "number") day = String(raw.day);
+      if (typeof raw.pausedAtTarget === "boolean")
+        tradingPaused = raw.pausedAtTarget ? "yes (PASSLOCK)" : "no";
+      if (Array.isArray(raw.openPositions)) {
+        const symbols = [
+          ...new Set(
+            raw.openPositions
+              .map((p) => p.symbol)
+              .filter((s): s is string => typeof s === "string"),
+          ),
+        ];
+        if (symbols.length > 0) assets = symbols.join(", ");
+        openPositions = String(raw.openPositions.length);
+      }
+    }
+  } catch {
+    /* best-effort */
+  }
   return [
-    "<b>⚙️ Bot Config</b>",
+    "<b>⚙️ Bot Config (live)</b>",
     "",
-    `Strategy: <b>iter231</b> (Kelly-enhanced)`,
-    `Assets: ETH + BTC + SOL (4h timeframe)`,
-    `Stop: 1.0% · TP: 2.2% · Hold: 24h`,
-    `Direction: SHORT only (mean-reversion)`,
-    `Pyramid: ETH 5× @ +0.3% equity`,
-    `Delayed assets: BTC+SOL unlock at +4% equity`,
-    `FTMO rules: max daily 5%, max total 10%`,
+    `Strategy: <b>${htmlEscape(cfgLabel)}</b>`,
+    `FTMO_TF: <code>${htmlEscape(ftmoTf)}</code>`,
+    `Active symbols: ${htmlEscape(assets)}`,
+    `Day: ${htmlEscape(day)} · Open positions: ${htmlEscape(openPositions)}`,
+    `Paused (PASSLOCK): ${htmlEscape(tradingPaused)}`,
+    `FTMO rules: max daily 5%, max total 10%, target +8%`,
     "",
-    `Start balance: $${ctx.challengeStartBalance.toLocaleString()}`,
+    `Start balance: $${startBalance}`,
     `State dir: <code>${htmlEscape(ctx.stateDir)}</code>`,
   ].join("\n");
 }

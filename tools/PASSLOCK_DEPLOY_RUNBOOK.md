@@ -1,6 +1,10 @@
-# R28_V6_PASSLOCK — Live Deploy Runbook
+# PASSLOCK — Live Deploy Runbook
 
-> ⚠️ **2026-05-12 audit notice:** Pass-rate numbers in this runbook (63.24% / 64.77% / 56.62% / 94% min-1-pass) are **cache-era inflated** — fresh Rust re-baseline shows R28_V6_PASSLOCK = 41.18% step=14d, multi-account 3-stack ≈ **87% min-1-pass**. Current honest champion is **V5_AMBER_PASSLOCK at 55.79% step=1d** (`FTMO_TF=2h-trend-v5-amber-passlock`). Use this runbook for _deploy mechanics only_; the math/expectation table at the bottom is OUT-OF-DATE. See `CLAUDE.md` re-baseline section + memory `project_session_2026_05_12_65pct_hunt.md`.
+> ⚠️ **2026-05-15 audit notice — superseded champion + corrected target:**
+>
+> 1. **Active champion** is now **V5_AMBER_MAX_PASSLOCK** (`FTMO_TF=2h-trend-v5-amber-max-passlock`), not R28_V6_PASSLOCK. Earlier R28_V6_PASSLOCK 63% was cache-era inflated (funding-target-latch bug + stale-cache); honest fresh Rust = 31.62% post-Codex. Round 4 audit added AMBER_MAX_PASSLOCK to TF_DISPATCH + CFG_REGISTRY.
+> 2. **Real FTMO Challenge profit target** is Standard 2-Step (+10% Phase 1 / +5% Phase 2). The "+8% target" referenced below was an imaginary FTMO product never sold. Per CLAUDE.md 2026-05-15: AMBER_MAX_PASSLOCK + 5 voters at FTMO Phase 1 (pt=0.10) = 49.0%, Phase 2 (pt=0.05) = 59.4%, Combined Funded ≈ 29% single, ~64% 3-Stack.
+> 3. Use this runbook for **deploy mechanics only**; replace every `FTMO_TF=2h-trend-v5-r28-v6-passlock` with `FTMO_TF=2h-trend-v5-amber-max-passlock` and set `FTMO_PROFIT_TARGET=0.10` (Phase 1) or `0.05` (Phase 2). The math/expectation tables below are HISTORICAL.
 
 Pre-condition: Round 60 Sweep abgeschlossen, PASSLOCK als Champion bestätigt (63.24% full-sweep / 64.77% preliminary 86-window backtest, +6.62 to +8.15pp vs R28_V6 56.62% baseline). **10 R60 Audit-Rounds COMPLETE** (~80 agents, ~220 findings, ~70 fixes shipped — R6-R10 hardening patches all merged including R9 gap-fix: open-position MTM realised at window end no longer leaks past Pass-Lock fire).
 
@@ -223,6 +227,51 @@ pm2 stop all
 | 3-Strategy (AMBER + TITANIUM + R28)  | 465€ |                                    — |                      ~87% |  (new champion mix) |
 
 Pass-Reward (FTMO Funded): **$1500-2500 pro Bestand**.
+
+## ⚖️ Strict-Parity Mode (R3-B, 2026-05-15)
+
+Der Live-Executor wendet 4 defensive Buffer auf die FTMO-Caps an, die ein
+30s-Poll-Cycle gegen schnelle Crypto-Moves absichern (Drift-Quelle ggü.
+Sim-Backtests):
+
+| Buffer              | Default | Strict-Parity | Zweck                              |
+| ------------------- | :-----: | :-----------: | ---------------------------------- |
+| DL Entry-Buffer     |  +1.0%  |     0.0%      | Block neue Orders ab -4% statt -5% |
+| TL Entry-Buffer     |  +1.5%  |     0.0%      | Block neue Orders ab -8.5%         |
+| DL_EMERGENCY_BUFFER |  -2.5%  |     0.0%      | Force-close alle Positionen        |
+| TL_EMERGENCY_BUFFER |  -2.5%  |     0.0%      | Force-close alle Positionen        |
+
+**Setze `FTMO_STRICT_PARITY=1`** für CI-Parity-Regressionen oder
+sim-validation runs. **NIEMALS für funded accounts** — zero buffers
+bedeuten, ein einzelner Wick kann die echte -5% DL breach ohne
+Slippage-room.
+
+```bash
+# Sim-parity (CI / regression)
+FTMO_STRICT_PARITY=1 python tools/ftmo_executor.py
+
+# Live (default, protective)
+python tools/ftmo_executor.py
+```
+
+## 🔍 Optional: Risk-Frac Sanity + Funding-Reconcile (R3-B)
+
+Defense-in-depth gegen Signal-Service-Regressionen (Rust 9-stage sizing
+ladder) + sim/live PnL-Drift durch Swap/Funding:
+
+```bash
+# Risk-frac sanity (alert-only, default ON):
+#   Warnt wenn risk_frac < 0.5% oder > 3% (typische Rust-Range).
+#   Setze REJECT=1 um Outlier-Signals zusätzlich zu BLOCKieren.
+FTMO_RISK_SANITY_ENABLED=1   # default
+FTMO_RISK_SANITY_REJECT=0    # default = alert only
+
+# Funding-cost reconciliation (default OFF — crypto hat meist 0 swap):
+#   Vergleicht engine-projected swap vs MT5 pos.swap, alarmiert bei drift.
+FTMO_FUNDING_RECONCILE=1
+FTMO_FUNDING_RATES='{"BTCUSD": 0.5, "ETHUSD": 0.3}'  # bp/day pro Asset
+FTMO_FUNDING_DRIFT_THRESHOLD=0.005  # alert bei drift > 0.5% start-balance
+```
 
 ## 🐛 Bekannte Issues / Erste Hilfe
 

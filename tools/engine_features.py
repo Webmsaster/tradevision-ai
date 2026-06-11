@@ -41,8 +41,28 @@ after any change here.
 """
 from __future__ import annotations
 
+import sys as _sys
 from dataclasses import dataclass, field
+from pathlib import Path as _Path
 from typing import List, Optional, Tuple
+
+# 2026-05-23 Wave1 audit defensive-shim: ~50 strict-string `direction == "long"`
+# compares in this file rely on callers passing exact-case "long"/"short".
+# After tools/direction_util.py landed, all known live-trading call sites
+# normalize at the boundary, but parity_check.py + future callers may not.
+# Import normalize_direction and add a helper used inside every function
+# entry to canonicalize the input so downstream `== "long"` stays correct.
+_DU = _Path(__file__).resolve().parent
+if str(_DU) not in _sys.path:
+    _sys.path.insert(0, str(_DU))
+try:
+    from direction_util import normalize_direction as _norm_dir  # type: ignore
+except ImportError:
+    def _norm_dir(d):  # type: ignore
+        if d is None:
+            return None
+        s = str(d).strip().lower()
+        return s if s in ("long", "short") else None
 
 
 # =============================================================================
@@ -75,6 +95,10 @@ def atr_smoothed_chandelier_exit(
     Returns (new_dyn_stop, updated_state). Only TIGHTENS dyn_stop, never
     loosens. Matches `applyChandelierExit` semantics in the TS engine.
     """
+    # 2026-05-24 Wave2 HIGH FIX: shim from line 55 imported _norm_dir but NEVER
+    # called it — strict `direction == "long"` compares below would silently
+    # sign-flip if caller passed "LONG"/"Buy"/etc. Normalize at every entry.
+    direction = _norm_dir(direction) or direction
     if atr_value <= 0 or chandelier_mult <= 0 or entry_price <= 0:
         return current_dyn_stop, state
 
@@ -257,6 +281,7 @@ def check_partial_take_profit(
 
     Returns (fired_this_bar, updated_state).
     """
+    direction = _norm_dir(direction) or direction
     if state.triggered or close_fraction <= 0 or trigger_pct <= 0:
         return False, state
 
@@ -317,6 +342,7 @@ def htf_trend_filter(
 
     TS anchor: search `if (cfg.htfTrendFilter)` in ftmoDaytrade24h.ts.
     """
+    direction = _norm_dir(direction) or direction
     if current_idx < lookback_bars:
         return False  # not enough history → don't gate
     base = closes[current_idx - lookback_bars]
@@ -437,6 +463,7 @@ def check_break_even(
     a small live-execution buffer (default +0.05%) used by the Python
     executor only. Set to 0 to match TS exactly (used by parity_check).
     """
+    direction = _norm_dir(direction) or direction
     if state.moved or threshold <= 0:
         return current_dyn_stop, state
     if direction == "long":
@@ -484,6 +511,7 @@ def check_time_exit(
     reached `min_gain_r × stopPct` favorable.
     TS anchor: search `if (cfg.timeExit` in ftmoDaytrade24h.ts.
     """
+    direction = _norm_dir(direction) or direction
     # Phase 10 (engine_features Bug 8): TS-Engine uses `barsHeld = j - ebIdx`,
     # so on entry-bar barsHeld=0. Python was incrementing BEFORE the check,
     # closing 1 bar earlier than TS → ~5-8% spurious 'time' exits, missing
@@ -581,6 +609,7 @@ def simulate_trade(
     This is the SHARED reference simulator used both for parity validation
     and for live in-memory replay if needed.
     """
+    direction = _norm_dir(direction) or direction
     if entry_idx >= len(bars):
         return None
     eb = bars[entry_idx]
@@ -667,11 +696,25 @@ def simulate_trade(
         if ptp_hit and cfg.partial_take_profit:
             ptp_cfg = cfg.partial_take_profit
             ptp_state.triggered = True
-            # Phase 16 (Bug 2): ptpFillCost = cost/2 (no slippage in SimConfig).
-            ptp_fill_cost = cost / 2
-            ptp_state.realized_pct = ptp_cfg["closeFraction"] * (
-                ptp_cfg["triggerPct"] - ptp_fill_cost
+            # 2026-05-21 bug-find round — parity FIX with ftmoDaytrade24h.ts
+            # Codex Round 6 #S3 (lines 4626-4642). The old formula
+            # `closeFraction × (triggerPct − cost/2)` UNDERCHARGED: `triggerPct`
+            # is a raw price-move, not entry-eff adjusted, so only the exit-half
+            # cost was applied. The closed fraction must carry the FULL
+            # round-trip cost via entry_eff (entry-half) AND ptp_exit
+            # (exit-half), exactly like the final-close leg (line 731-735).
+            # No slippage term — SimConfig carries no slippage (Phase 16 Bug 2).
+            ptp_exit = (
+                ptp_trigger_price * (1 - cost / 2)
+                if direction == "long"
+                else ptp_trigger_price * (1 + cost / 2)
             )
+            partial_raw = (
+                (ptp_exit - entry_eff) / entry_eff
+                if direction == "long"
+                else (entry_eff - ptp_exit) / entry_eff
+            )
+            ptp_state.realized_pct = ptp_cfg["closeFraction"] * partial_raw
             # Phase 16 (Bug 1): auto-move dyn_stop to BE+cost on the remainder
             be_stop = entry * (1 + cost) if direction == "long" else entry * (1 - cost)
             if direction == "long":

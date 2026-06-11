@@ -140,9 +140,17 @@ export function readTelegramConfig(): TelegramConfig | undefined {
 export async function tgSend(
   text: string,
   cfg?: TelegramConfig,
+  opts?: { critical?: boolean },
 ): Promise<boolean> {
   const conf = cfg ?? readTelegramConfig();
   if (!conf) return false;
+  // 2026-05-23 Wave2 fix (BUG-2 HIGH): critical bypass. The Python side has
+  // `critical=True` for breach/emergency-close/kill-request/wrong-account
+  // alerts that must reach the operator even when normal telegram sends are
+  // throttled. TS-side missed this entirely → a 1-burst trade flood that
+  // tripped 429 would swallow the subsequent breach alert for the whole
+  // suppression window. When critical=true, bypass the suppression gate.
+  const critical = opts?.critical === true;
   // Round 57: prefix multi-account messages so a shared chat stays readable.
   // Prefix counts toward the 4000-char Telegram budget so we apply it before
   // the safe-truncation step below.
@@ -157,21 +165,36 @@ export async function tgSend(
       : prefixed;
   // R67-r3: skip fetch entirely while inside a suppression window so a
   // misconfigured bot can't spam Telegram and trigger a global ban.
-  if (Date.now() < suppressUntilTs) return false;
+  // Wave2 fix: critical messages bypass the gate.
+  if (!critical && Date.now() < suppressUntilTs) return false;
   try {
-    const resp = await fetch(
-      `https://api.telegram.org/bot${conf.token}/sendMessage`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          chat_id: conf.chatId,
-          text: body,
-          parse_mode: "HTML",
-          disable_web_page_preview: true,
-        }),
-      },
-    );
+    // R29-Frontend-Audit Bug 11: cap the fetch at 10s with an
+    // AbortController. Telegram occasionally stalls behind Cloudflare
+    // (we've seen 60s+ TLS-handshake hangs) and an unbounded fetch
+    // blocks the signal-service loop / bot startup behind the dead
+    // socket. The catch block below already swallows AbortError as a
+    // regular failure (returns false).
+    const ctrl = new AbortController();
+    const timeoutHandle = setTimeout(() => ctrl.abort(), 10_000);
+    let resp: Response;
+    try {
+      resp = await fetch(
+        `https://api.telegram.org/bot${conf.token}/sendMessage`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            chat_id: conf.chatId,
+            text: body,
+            parse_mode: "HTML",
+            disable_web_page_preview: true,
+          }),
+          signal: ctrl.signal,
+        },
+      );
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
     if (!resp.ok) {
       const t = await resp.text().catch(() => "");
       const safeBody = redactToken(t).slice(0, 200);
@@ -190,9 +213,25 @@ export async function tgSend(
         );
         enterSuppression(ms, `HTTP ${status}`);
       } else if (status === 429 || (status >= 500 && status < 600)) {
-        // Rate-limited or server error → 60s cooldown.
-        console.error(`[telegram] backoff ${status}: ${safeBody}`);
-        enterSuppression(SUPPRESSION_COOLDOWN_MS, `HTTP ${status}`);
+        // 2026-05-23 Wave2 fix (BUG-1 HIGH): honor parameters.retry_after.
+        // Telegram 429 body is `{ ok:false, parameters:{retry_after:N} }`.
+        // Clamp to [1, 600] seconds. 5xx falls back to 60s.
+        let cooldownMs = SUPPRESSION_COOLDOWN_MS;
+        if (status === 429) {
+          try {
+            const body = JSON.parse(t || "{}");
+            const ra = body?.parameters?.retry_after;
+            if (typeof ra === "number" && ra > 0) {
+              cooldownMs = Math.max(1_000, Math.min(600_000, ra * 1000));
+            }
+          } catch {
+            // body wasn't JSON — keep default
+          }
+        }
+        console.error(
+          `[telegram] backoff ${status}: ${safeBody} (cooldown ${cooldownMs}ms)`,
+        );
+        enterSuppression(cooldownMs, `HTTP ${status}`);
       } else {
         console.error(`[telegram] HTTP ${status}: ${safeBody}`);
       }

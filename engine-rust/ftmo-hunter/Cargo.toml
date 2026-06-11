@@ -1,0 +1,24 @@
+[package]
+name = "ftmo-hunter"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ftmo-hunter"
+path = "src/main.rs"
+
+[lib]
+name = "ftmo_hunter"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+anyhow.workspace = true
+rand = "0.8"
+
+[dev-dependencies]
+tempfile = "3"

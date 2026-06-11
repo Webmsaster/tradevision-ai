@@ -17,7 +17,7 @@ use crate::detector_filters::htf_trend_allows;
 use crate::indicators::{atr, ema};
 use crate::position::PositionSide;
 use crate::signal::PollSignal;
-use crate::sizing::resolve_sizing_factor;
+use crate::sizing::{apply_post_factor_caps, resolve_sizing_factor};
 use crate::state::EngineState;
 
 pub struct V12Params {
@@ -55,17 +55,26 @@ pub fn detect_v12(
     params: &V12Params,
     htf_closes: Option<&[f64]>,
 ) -> Option<PollSignal> {
+    // 2026-05-13 Codex HIGH FIX: signal-bar = i-1 (just closed). EMA stack,
+    // pullback trigger and stop/TP anchors all read at trigger_idx. Entry
+    // uses candles[i].open. Previously used candles[i].* throughout.
     if candles.len() < params.slow_period + 4 {
         return None;
     }
     let i = candles.len() - 1;
-    let last = candles[i];
+    let trigger_idx = i - 1;
+    let signal_bar = candles[trigger_idx];
+    let entry_bar = candles[i];
     let closes: Vec<f64> = candles.iter().map(|c| c.close).collect();
     let fast = ema(&closes, params.fast_period);
     let mid = ema(&closes, params.mid_period);
     let slow = ema(&closes, params.slow_period);
-    let (f_now, m_now, s_now) = (fast[i]?, mid[i]?, slow[i]?);
-    let (f_prev, m_prev, _s_prev) = (fast[i - 1]?, mid[i - 1]?, slow[i - 1]?);
+    let (f_now, m_now, s_now) = (fast[trigger_idx]?, mid[trigger_idx]?, slow[trigger_idx]?);
+    let (f_prev, m_prev, _s_prev) = (
+        fast[trigger_idx - 1]?,
+        mid[trigger_idx - 1]?,
+        slow[trigger_idx - 1]?,
+    );
 
     // Stack direction.
     let mut direction = if f_now > m_now && m_now > s_now {
@@ -79,10 +88,14 @@ pub fn detect_v12(
         direction = direction.opposite();
     }
 
-    // Pullback trigger — close just bounced off mid EMA.
+    // Pullback trigger — signal_bar just bounced off mid EMA.
     let pullback = match direction {
-        PositionSide::Long => last.low <= m_now && last.close > m_now && f_prev > m_prev,
-        PositionSide::Short => last.high >= m_now && last.close < m_now && f_prev < m_prev,
+        PositionSide::Long => {
+            signal_bar.low <= m_now && signal_bar.close > m_now && f_prev > m_prev
+        }
+        PositionSide::Short => {
+            signal_bar.high >= m_now && signal_bar.close < m_now && f_prev < m_prev
+        }
     };
     if !pullback {
         return None;
@@ -95,20 +108,21 @@ pub fn detect_v12(
         }
     }
 
-    // Stop_pct via ATR.
+    let entry_price = entry_bar.open;
+    // Stop_pct via ATR — read at signal_bar.
     let mut stop_pct = params.stop_pct;
     if let Some(at) = cfg.atr_stop {
         let series = atr(candles, at.period as usize);
-        if let Some(a) = series[i] {
-            let atr_stop = (at.stop_mult * a) / last.close.max(1e-9);
+        if let Some(a) = series[trigger_idx] {
+            let atr_stop = (at.stop_mult * a) / entry_price.max(1e-9);
             stop_pct = stop_pct.max(atr_stop);
         }
     }
     let mut tp_pct = params.tp_pct;
     if let Some(va) = cfg.vol_adaptive_tp_mult {
         let series = atr(candles, va.atr_period as usize);
-        if let Some(a) = series[i] {
-            let atr_pct = a / last.close.max(1e-9);
+        if let Some(a) = series[trigger_idx] {
+            let atr_pct = a / entry_price.max(1e-9);
             if atr_pct >= va.atr_pct_above {
                 tp_pct *= va.factor;
             }
@@ -122,26 +136,22 @@ pub fn detect_v12(
         }
     }
 
-    let factor = resolve_sizing_factor(state, cfg, last.open_time);
-    let mut eff_risk = params.base_risk_frac * factor;
-    if !cfg.bypass_live_caps {
-        if let Some(caps) = cfg.live_caps.as_ref() {
-            eff_risk = eff_risk.min(caps.max_risk_frac);
-        }
-    }
+    // 2026-05-13 Codex Audit Round 3 — Fix 2: centralized post-factor caps.
+    let factor = resolve_sizing_factor(state, cfg, entry_bar.open_time);
+    let eff_risk = apply_post_factor_caps(cfg, state, params.base_risk_frac * factor, stop_pct);
     if eff_risk <= 0.0 {
         return None;
     }
     let (stop_price, tp_price) = match direction {
-        PositionSide::Long => (last.close * (1.0 - stop_pct), last.close * (1.0 + tp_pct)),
-        PositionSide::Short => (last.close * (1.0 + stop_pct), last.close * (1.0 - tp_pct)),
+        PositionSide::Long => (entry_price * (1.0 - stop_pct), entry_price * (1.0 + tp_pct)),
+        PositionSide::Short => (entry_price * (1.0 + stop_pct), entry_price * (1.0 - tp_pct)),
     };
     Some(PollSignal {
         symbol: asset.symbol.clone(),
         source_symbol: source_symbol.to_string(),
         direction,
-        entry_time: last.open_time,
-        entry_price: last.close,
+        entry_time: entry_bar.open_time,
+        entry_price,
         stop_price,
         tp_price,
         stop_pct,
@@ -200,12 +210,13 @@ mod tests {
         let cfg = cfg();
         let a = asset();
         let p = V12Params::default_for(&a, &cfg);
-        let mut candles = ramp(80, 100.0, 0.5);
-        // Force pullback-recovery on last bar.
-        let last = candles.last_mut().unwrap();
-        last.low = 132.0;
-        last.high = 145.0;
-        last.close = 144.0;
+        // 2026-05-13 Codex Fix 3 test-update: signal-bar = i-1, entry-bar = i.
+        // Force pullback on the signal-bar (n-2), not last bar.
+        let mut candles = ramp(81, 100.0, 0.5);
+        let n = candles.len();
+        candles[n - 2].low = 132.0;
+        candles[n - 2].high = 145.0;
+        candles[n - 2].close = 144.0;
         let sig = detect_v12(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, None);
         // The detector requires EMA(fast)>EMA(mid)>EMA(slow) AND pullback.
         // On a strong uptrend the stack is bullish — pullback to mid then recover.

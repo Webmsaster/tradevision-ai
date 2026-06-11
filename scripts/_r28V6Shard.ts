@@ -72,8 +72,17 @@ function loadAligned(): { aligned: Record<string, Candle[]>; minBars: number } {
   };
 }
 
-const cfg: FtmoDaytrade24hConfig =
-  FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6;
+// 2026-05-16 Round 9 KRIT FIX (TS shards agent): wire FTMO_STRICT_PASS=1
+// through to cfg.strictPass. Without this flag, simulate() falls back to
+// the "give-back half" soft-pass tail (final_equity_floor = 1 + pt*0.5),
+// inflating reported pass-rate by ~+7pp vs Rust strict-pass baseline.
+// Memory explicitly documents this drift class. Default ON for honest
+// re-baseline runs; set FTMO_STRICT_PASS=0 only for legacy comparisons.
+const STRICT_PASS = (process.env.FTMO_STRICT_PASS ?? "1") !== "0";
+const cfg: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6,
+  strictPass: STRICT_PASS,
+};
 const { aligned, minBars } = loadAligned();
 // Bug-Audit Round 3 (R3 fix 2): hardcoded `*48` bars/day + `_30m.json`
 // cache name only work for 30m timeframes. Assert so a future 1h or 5m
@@ -99,18 +108,46 @@ for (let start = WARMUP; start + winBars <= minBars; start += stepBars) {
   const trimmed: Record<string, Candle[]> = {};
   for (const k of Object.keys(aligned))
     trimmed[k] = aligned[k]!.slice(start - WARMUP, start + winBars);
-  const r = simulate(trimmed, cfg, WARMUP, WARMUP + winBars, "R28_V6_REVAL");
-  const out = {
-    winIdx,
-    passed: r.passed,
-    reason: r.reason,
-    passDay: r.passDay ?? null,
-    finalEquityPct: r.finalEquityPct,
+  // 2026-05-13 Codex Round 6 HIGH FIX (#SH3): wrap simulate() per window.
+  // Previously one bad window (OOM, candle anomaly, infinite loop guard
+  // panic) killed the shard and left a gap that the aggregator silently
+  // tolerated. Now: emit an error-row so the aggregator's gap-check
+  // catches it AND the surviving windows still complete.
+  let out: {
+    winIdx: number;
+    passed: boolean;
+    reason: string;
+    passDay: number | null;
+    finalEquityPct: number;
+    error?: string;
   };
+  try {
+    const r = simulate(trimmed, cfg, WARMUP, WARMUP + winBars, "R28_V6_REVAL");
+    out = {
+      winIdx,
+      passed: r.passed,
+      reason: r.reason,
+      passDay: r.passDay ?? null,
+      finalEquityPct: r.finalEquityPct,
+    };
+    console.log(
+      `[shard ${SHARD_IDX}/${SHARD_COUNT}] win=${winIdx} passed=${r.passed} reason=${r.reason} eq=${r.finalEquityPct.toFixed(4)} t+${Math.round((Date.now() - t0) / 1000)}s`,
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    out = {
+      winIdx,
+      passed: false,
+      reason: "error",
+      passDay: null,
+      finalEquityPct: 0,
+      error: msg.slice(0, 500),
+    };
+    console.log(
+      `[shard ${SHARD_IDX}/${SHARD_COUNT}] win=${winIdx} ERROR: ${msg.slice(0, 200)}`,
+    );
+  }
   appendFileSync(OUT_FILE, JSON.stringify(out) + "\n");
-  console.log(
-    `[shard ${SHARD_IDX}/${SHARD_COUNT}] win=${winIdx} passed=${r.passed} reason=${r.reason} eq=${r.finalEquityPct.toFixed(4)} t+${Math.round((Date.now() - t0) / 1000)}s`,
-  );
   winIdx++;
 }
 console.log(

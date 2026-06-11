@@ -1,0 +1,15 @@
+{
+  "accounts": {
+    "acc_A": {
+      "status": "ACTIVE"
+    },
+    "acc_B": {
+      "status": "ACTIVE"
+    },
+    "acc_C": {
+      "status": "EXHAUSTED",
+      "exhausted_at_dd": 4.5
+    }
+  },
+  "active_count": 0
+}

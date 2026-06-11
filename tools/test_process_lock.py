@@ -159,5 +159,82 @@ def test_file_lock_serializes_concurrent_threads(tmp_path: Path):
     assert overlaps == [], f"overlapping critical sections: {overlaps}"
 
 
+def test_stale_reclaim_does_not_unlink_freshly_acquired_lock(tmp_path: Path):
+    """2026-05-15 Codex external audit BUG #7 regression test.
+
+    Scenario: process A's stale lock is on disk. Two waiters (B and C) both
+    time out at roughly the same instant. B unlinks the stale lock first and
+    successfully O_EXCL re-creates it with B's token. C — without the
+    token-verify fix — would then proceed to unlink B's brand-new lock.
+
+    We simulate this by:
+      1. Manually placing a stale-on-disk lock with token "OLD".
+      2. Spawning a thread that, between our pretend-stat and pretend-unlink,
+         atomically replaces the token with "NEW" (mimicking the race winner).
+      3. Calling file_lock from the main thread with very short timeout +
+         stale_sec=0 (always-stale). After the call returns, the lock should
+         hold the MAIN thread's token — not "NEW" — and "NEW" must not have
+         been replaced or unlinked by foreign code.
+
+    With the fix: main reads token, sees "OLD", reads again, sees "NEW" →
+    abort unlink → retry → eventually acquire normally (because the racer
+    in our test releases the lock).
+    Without the fix: main blindly unlinks "NEW", grabs the slot, races
+    against the legitimate holder.
+    """
+    lock = tmp_path / "stale.lock"
+    # Step 1: place a stale token.
+    lock.write_text("OLD")
+    # Backdate mtime so stale_sec=0 trips.
+    old_mtime = time.time() - 60
+    os.utime(lock, (old_mtime, old_mtime))
+
+    # Step 2: spawn a race-injector that swaps OLD→NEW after a tiny delay.
+    # This mimics another waiter claiming the lock between our token-reads.
+    swap_done = threading.Event()
+
+    def race_injector():
+        time.sleep(0.01)
+        # Replace token via direct write (simulating another process's
+        # O_EXCL+write sequence).
+        try:
+            lock.write_text("NEW")
+            os.utime(lock, None)  # refresh mtime → no longer stale
+        finally:
+            swap_done.set()
+
+    t = threading.Thread(target=race_injector)
+    t.start()
+
+    # Step 3: try to acquire with very short timeout + stale_sec=0 so the
+    # stale-recovery branch is reached at least once.
+    # Note: file_lock spins forever on Python side; if our retry-on-mismatch
+    # works the swap_done event fires (NEW is written), our lock-acquire
+    # will succeed AFTER race_injector returns. Critical assertion: we
+    # never unlinked NEW.
+    captured_tokens: list[str] = []
+
+    def acquirer():
+        with file_lock(lock, timeout_sec=0.05, stale_sec=0.0, backoff_sec=0.005):
+            captured_tokens.append(lock.read_text())
+
+    a = threading.Thread(target=acquirer)
+    a.start()
+    a.join(timeout=5.0)
+    t.join(timeout=5.0)
+
+    # After both finish: race_injector wrote NEW once. acquirer may or may
+    # not have unlinked it (depending on timing), but if it DID unlink, it
+    # must have been BECAUSE the token matched what acquirer last saw —
+    # not because of a TOCTOU race. The strongest invariant we can check
+    # is: when acquirer was in the critical section, the on-disk token was
+    # its own token (not "NEW", not "OLD"). And acquirer must eventually
+    # have succeeded (didn't deadlock).
+    assert len(captured_tokens) == 1, "acquirer must have entered critical section"
+    assert captured_tokens[0] not in ("OLD", "NEW"), (
+        f"acquirer's lock should hold its own token, not foreign: {captured_tokens[0]}"
+    )
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

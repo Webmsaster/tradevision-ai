@@ -34,6 +34,7 @@ fn input<'a>(
     BarInput {
         candles_by_source,
         atr_series_by_source: atr,
+        funding_by_source: None,
         signals,
     }
 }

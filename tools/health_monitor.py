@@ -9,12 +9,34 @@ Periodically checks if the FTMO bot is alive. Sends Telegram alert if:
 
 Self-throttles: alerts at most once every 30 minutes per error type.
 
-Usage (PM2 separate process):
-    pm2 start tools/health_monitor.py --name ftmo-health --interpreter python3 \
+⚠️ 2026-05-25 Wave5 KRIT (audit): SINGLE-ACCOUNT BY DESIGN.
+This script reads ONE FTMO_TF + FTMO_ACCOUNT_ID per process. For
+Phase-Adaptive Stack-4 deployment (4 accounts), you MUST run 4×
+PM2 instances, one per account. Otherwise 3 of 4 accounts go
+unmonitored silently (bot dies → no alert).
+
+Stack-4 PM2 wiring example (add to ecosystem.phase_adaptive4stack.config.js):
+    apps: [
+      ...buildSupervisor(envFile, label),
+      // Health monitor PER account — reads same .env file
+      {
+        name: `health-${label}`,
+        script: "python3",
+        args: "-u tools/health_monitor.py",
+        env: { ...env, PYTHONUNBUFFERED: "1" },
+        cron_restart: "*/15 * * * *",
+        autorestart: false,  // cron-only
+      },
+    ]
+
+Or run as a top-level cron loop scanning ALL ftmo-state-* dirs (TODO).
+
+Usage (single-account PM2):
+    pm2 start tools/health_monitor.py --name ftmo-health-A --interpreter python3 \
       --cron-restart="*/15 * * * *"
 
 Or as cron job:
-    */15 * * * * cd /path/to/tradevision-ai && python3 tools/health_monitor.py
+    */15 * * * * cd /path/to/tradevision-ai && FTMO_ACCOUNT_ID=A python3 tools/health_monitor.py
 
 Env vars (same as ftmo_executor):
     FTMO_TF                    — strategy timeframe (used to find state-dir)
@@ -58,7 +80,10 @@ def _state_dir() -> Path:
     explicit = os.environ.get("FTMO_STATE_DIR")
     if explicit:
         return Path(explicit)
-    tf = os.environ.get("FTMO_TF", "default")
+    # 2026-05-15 (Audit-Round-4 / Agent #9 HIGH): unified default.
+    # Sibling import (tools/ is on sys.path via the insert at module top).
+    from _ftmo_defaults import DEFAULT_FTMO_TF  # type: ignore
+    tf = os.environ.get("FTMO_TF", DEFAULT_FTMO_TF)
     aid = os.environ.get("FTMO_ACCOUNT_ID")
     if aid:
         return Path.cwd() / f"ftmo-state-{tf}-{aid}"
@@ -106,10 +131,30 @@ def _read_alert_state() -> dict[str, float]:
 
 def _write_alert_state(state: dict[str, float]) -> None:
     """Write alert state. Caller must hold ``file_lock(_alert_lock_path())``
-    (R67-R17 fix #1)."""
+    (R67-R17 fix #1).
+
+    2026-05-15 (Audit-Round-5 / Agent #9 KRIT): atomic tmp+rename. Prior
+    `write_text` was non-atomic — a power-loss mid-write left a truncated
+    alerts.json → next read failed (silent fallback to empty state) →
+    cooldown reset → spam of double-alerts in the 30-min window. Mirrors
+    the pattern in ftmo_kill.py:160-170 and ftmo_executor.py's write_json.
+    """
     p = _alert_state_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(state, indent=2))
+    payload = json.dumps(state, indent=2)
+    tmp = p.with_suffix(f"{p.suffix}.tmp.{os.getpid()}")
+    try:
+        tmp.write_text(payload)
+        # Atomic rename: POSIX guarantees readers see either old or new content,
+        # never a torn write. On Windows os.replace is also atomic.
+        os.replace(tmp, p)
+    except Exception:
+        # If the tmp file leaked, try to remove it so we don't leave debris.
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
 
 
 def _alert(error_type: str, msg: str) -> bool:
@@ -221,6 +266,120 @@ def check_executor_log_freshness() -> str | None:
     return None
 
 
+def check_real_liveness() -> str | None:
+    """2026-05-23 Wave1 audit fix (HIGH): bot-liveness ≠ trading-liveness.
+    Previous checks (account.json mtime, executor-log.jsonl mtime) confirm
+    the process IS WRITING, not that it CAN TRADE. A bot stuck in an
+    MT5-reconnect loop updates account.json but emits zero `order_placed`
+    events — health stays green while no trades happen.
+
+    This check parses the last 200 executor-log entries and alerts when:
+      (a) Most recent event is `mt5_disconnected` without a follow-up
+          `mt5_connected` (broker connection wedged), OR
+      (b) `signal_received` events present but NO `order_placed` in last
+          24h (signal-rejection cascade — every signal stale-dropped,
+          news-blocked, or MCT-capped).
+    """
+    sd = _state_dir()
+    log = sd / "executor-log.jsonl"
+    if not log.exists():
+        return None  # already covered by check_executor_log_freshness
+    try:
+        lines = log.read_text(encoding="utf-8").splitlines()[-200:]
+    except OSError:
+        return None
+    events: list[dict] = []
+    for ln in lines:
+        if not ln.strip():
+            continue
+        try:
+            events.append(json.loads(ln))
+        except json.JSONDecodeError:
+            continue
+    if not events:
+        return None
+    # (a) MT5 disconnected without reconnect since.
+    last_disconnect_ts = None
+    last_reconnect_ts = None
+    for e in events:
+        ev = e.get("event") or e.get("ev")
+        ts = e.get("ts") or e.get("timestamp")
+        if ev == "mt5_disconnected":
+            last_disconnect_ts = ts
+        # 2026-05-23 Wave2 fix (KRIT-2): add "mt5_reconnected" to the
+        # accepted set. The Python executor's reconnect path emits exactly
+        # that string (ftmo_executor.py:1471) — without it, a real
+        # disconnect→reconnect cycle produced a false-positive "no reconnect
+        # since" alert.
+        elif ev in ("mt5_connected", "mt5_ensure_connected_ok", "mt5_reconnected"):
+            last_reconnect_ts = ts
+    # 2026-05-23 Wave2 fix (HIGH-3): parse ISO timestamps before comparison.
+    # Lexicographic compare breaks across mixed offsets (`+00:00` vs `Z`).
+    def _parse_iso(ts: str | None) -> float | None:
+        if not isinstance(ts, str):
+            return None
+        try:
+            from datetime import datetime as _dt
+            return _dt.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+        except (ValueError, TypeError):
+            return None
+    ld = _parse_iso(last_disconnect_ts)
+    lr = _parse_iso(last_reconnect_ts)
+    if ld is not None and (lr is None or lr < ld):
+        return f"MT5 disconnected at {last_disconnect_ts} — no reconnect since"
+    # (b) Signal-rejection cascade — 24h with signals but zero orders placed.
+    # 2026-05-23 Wave2 fix (KRIT-1): the executor never emitted
+    # `signal_received`/`signal_validated`/`signal_passed_gates` — those
+    # event names were aspirational. The real intake/validation events
+    # are: signal_invalid_schema (rejected), signal_missing_ts,
+    # signal_stale_drop, signal_future_drop, signals_paused_mid_batch,
+    # signals_skipped_post_target. Accept ANY of these as "signal-was-seen".
+    now = time.time()
+    twentyfour_h = 24 * 3600
+    signals = [
+        e for e in events
+        if (e.get("event") or e.get("ev")) in (
+            "signal_received", "signal_validated", "signal_passed_gates",
+            "signal_invalid_schema", "signal_missing_ts",
+            "signal_stale_drop", "signal_future_drop",
+        )
+    ]
+    orders = [
+        e for e in events
+        if (e.get("event") or e.get("ev")) in ("order_placed", "order_filled")
+    ]
+    # 2026-05-23 Wave2 fix (MEDIUM-4): skip the cascade check entirely when
+    # the bot is in a legitimate idle window (post-target pause, news
+    # blackout). Otherwise a 12h news window with 3 stale rejected signals
+    # = false alarm.
+    legitimate_idle = any(
+        (e.get("event") or e.get("ev")) in (
+            "signals_skipped_post_target", "news_blackout_block",
+            "signals_paused_mid_batch",
+        )
+        for e in events
+    )
+    # 2026-05-23 Wave2 fix (MEDIUM-5): lower threshold from 3→1 so low-volume
+    # days with a single rejected signal can still trigger the cascade alert.
+    if not legitimate_idle and len(signals) >= 1 and len(orders) == 0:
+        # No fresh orders despite signals — try to find oldest signal age.
+        sig_ages = []
+        for e in signals:
+            ts = e.get("ts") or e.get("timestamp")
+            if isinstance(ts, str):
+                try:
+                    from datetime import datetime as _dt
+                    sig_ages.append(now - _dt.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+                except (ValueError, TypeError):
+                    continue
+        if sig_ages and max(sig_ages) > twentyfour_h:
+            return (
+                f"{len(signals)} signals in last 200 events but ZERO orders placed — "
+                f"signal-rejection cascade (oldest signal {max(sig_ages)/3600:.1f}h ago)"
+            )
+    return None
+
+
 def check_disk_space() -> str | None:
     import shutil
     free = shutil.disk_usage(Path.cwd()).free
@@ -255,6 +414,7 @@ def main() -> int:
         ("state_dir_missing", check_state_dir_exists),
         ("account_stale", check_account_freshness),
         ("log_stale", check_executor_log_freshness),
+        ("trading_dead", check_real_liveness),  # Wave1 audit HIGH fix
         ("disk_low", check_disk_space),
         ("signals_stuck", check_pending_signals_not_stuck),
     ]

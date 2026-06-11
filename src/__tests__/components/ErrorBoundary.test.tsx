@@ -1,7 +1,9 @@
 import React from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { ErrorBoundary } from "@/components/ErrorBoundary";
+// Test the inner class directly (no router context needed); the default export
+// is a usePathname()-keyed wrapper around it.
+import { ErrorBoundaryInner as ErrorBoundary } from "@/components/ErrorBoundary";
 
 function ThrowingChild({
   message = "Boom",

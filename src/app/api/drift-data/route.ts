@@ -159,11 +159,25 @@ async function isAuthenticated(): Promise<{
     // createServerSupabaseClient throws if cookies() is unavailable in
     // the runtime — treat that as "no auth backend" and let the request
     // through (matches the localStorage-fallback path of the rest of the app).
-    return { ok: true, reason: "no-auth-backend" };
+    //
+    // 2026-05-16 Round 9 KRIT SECURITY FIX (api drift-data agent): the
+    // bare-no-auth-backend fail-OPEN allowed any anonymous caller to read
+    // any state-dir via `?ftmo_tf=<slug>` on a deployment that had
+    // FTMO_MONITOR_ENABLED=1 (live data exposed) but a broken/missing
+    // Supabase config. Now: explicit FTMO_MONITOR_AUTH_BYPASS=1 is
+    // required to pass through, matching the same gate `ftmoMonitorAuth.ts`
+    // already uses. Production single-owner VPS must set the bypass env
+    // var; SaaS multi-tenant fails closed by default.
+    return process.env.FTMO_MONITOR_AUTH_BYPASS === "1"
+      ? { ok: true, reason: "no-auth-backend" }
+      : { ok: false, reason: "no-auth-backend" };
   }
   if (!supabase) {
     // Supabase env vars not configured — no auth to enforce.
-    return { ok: true, reason: "no-auth-backend" };
+    // 2026-05-16 Round 9 KRIT SECURITY FIX: same fail-CLOSED gate.
+    return process.env.FTMO_MONITOR_AUTH_BYPASS === "1"
+      ? { ok: true, reason: "no-auth-backend" }
+      : { ok: false, reason: "no-auth-backend" };
   }
   try {
     const { data, error } = await supabase.auth.getUser();
@@ -213,6 +227,14 @@ function canReadArbitrarySlug(auth: {
 // Path resolution (security: whitelist + resolve-and-prefix-check)
 // ---------------------------------------------------------------------------
 
+// 2026-05-24 Codex audit MED FIX: reverted from the 2026-05-14 widening
+// (uppercase + underscore) back to lowercase-only to match the SQL CHECK
+// at migration_r29_user_ftmo_accounts.sql:29 and the userFtmoAccounts.test.ts
+// contract that explicitly filters "UPPER" slugs. The widening was dead
+// code in practice because SQL rejects any uppercase row, so a slug-from-DB
+// query never returns uppercase. State-dir paths (e.g. Account_A_*) are
+// driven by FTMO_ACCOUNT_ID env, not the slug — so this revert doesn't
+// break multi-account routing.
 const TF_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 /**
@@ -679,17 +701,30 @@ interface NewsMarker {
  * markers on the equity chart.
  */
 function extractNewsMarkers(executorLog: ExecutorEvent[]): NewsMarker[] {
+  // 2026-05-14 Codex Wave-2 Bug #12 FIX: recognise the executor's actual
+  // event names. Python writes `news_blackout_block` (entry-side skip) and
+  // `news_auto_close_trigger` (active auto-close) — neither was in the
+  // legacy whitelist, so news blackouts have been invisible on the chart.
+  const NEWS_EVENTS = new Set([
+    "news_blackout_skip",
+    "news_blackout",
+    "blackout_skip",
+    "news_blackout_block",
+    "news_auto_close_trigger",
+  ]);
   const markers: NewsMarker[] = [];
   for (const e of executorLog) {
-    if (
-      e.event === "news_blackout_skip" ||
-      e.event === "news_blackout" ||
-      e.event === "blackout_skip"
-    ) {
-      markers.push({
-        ts: e.ts,
-        label: (e["reason"] as string | undefined) ?? "news",
-      });
+    if (NEWS_EVENTS.has(e.event)) {
+      // Label: prefer reason; fall back to a short event-tag so auto-close
+      // markers (which usually don't carry "reason") still surface clearly.
+      const reason = e["reason"] as string | undefined;
+      const tag =
+        e.event === "news_auto_close_trigger"
+          ? "news-auto-close"
+          : e.event === "news_blackout_block"
+            ? "news-block"
+            : "news";
+      markers.push({ ts: e.ts, label: reason ?? tag });
     }
   }
   return markers;
@@ -762,14 +797,63 @@ function computeHealth(
 
 interface ActivePosition extends OpenPosition {
   ageMin: number;
+  /** Last-known current price (from executor-log) or null if unavailable. */
+  currentPrice: number | null;
+  /** Unrealised PnL % vs entry (positive=profit, negative=loss). */
+  pnlPct: number | null;
 }
 
-function annotatePositions(positions: OpenPosition[]): ActivePosition[] {
+/**
+ * Scan the executor log for the most-recent price observation per ticket.
+ * The executor emits `trailing_activated`, `trailing_sl_updated`,
+ * `chandelier_sl_updated`, `break_even_moved`, `partial_tp_fired`,
+ * `partial_tp_level_fired` — each carries `price` (current bid/ask at
+ * the time of the event) plus `ticket`. That's the freshest price-info
+ * available to the route without re-querying MT5.
+ */
+function buildLatestPriceByTicket(
+  executorLog: ExecutorEvent[],
+): Map<number, number> {
+  const PRICE_EVENTS = new Set([
+    "trailing_activated",
+    "trailing_sl_updated",
+    "trailing_skip",
+    "chandelier_sl_updated",
+    "break_even_moved",
+    "partial_tp_fired",
+    "partial_tp_level_fired",
+    "partial_close",
+  ]);
+  const out = new Map<number, number>();
+  for (const e of executorLog) {
+    if (!PRICE_EVENTS.has(e.event)) continue;
+    const ticket = e["ticket"];
+    const price = e["price"];
+    if (typeof ticket !== "number" || typeof price !== "number") continue;
+    if (!Number.isFinite(price) || price <= 0) continue;
+    out.set(ticket, price); // last write wins (executor log is chronological)
+  }
+  return out;
+}
+
+function annotatePositions(
+  positions: OpenPosition[],
+  executorLog: ExecutorEvent[],
+): ActivePosition[] {
+  // 2026-05-14 Codex Wave-2 Bug #13 FIX: compute live unrealised PnL %
+  // from latest executor-log price events instead of hardcoding 0.
   const now = Date.now();
+  const lastPriceByTicket = buildLatestPriceByTicket(executorLog);
   return positions.map((p) => {
     const opened = new Date(p.opened_at).getTime();
     const ageMin = Number.isFinite(opened) ? (now - opened) / 60_000 : 0;
-    return { ...p, ageMin: Math.max(0, ageMin) };
+    const currentPrice = lastPriceByTicket.get(p.ticket) ?? null;
+    let pnlPct: number | null = null;
+    if (currentPrice !== null && p.entry_price > 0) {
+      const raw = (currentPrice - p.entry_price) / p.entry_price;
+      pnlPct = p.direction === "long" ? raw : -raw;
+    }
+    return { ...p, ageMin: Math.max(0, ageMin), currentPrice, pnlPct };
   });
 }
 
@@ -788,7 +872,13 @@ export async function GET(req: NextRequest) {
   // in a tight loop) could turn that into a sustained read-amp DoS. Cap at
   // 60/min/IP — the dashboard polls at most every 5 s so legit traffic is
   // safely under the limit.
+  // 2026-05-16 Codex audit Bug #6 (NIEDRIG): prefer x-vercel-forwarded-for
+  // (set BY Vercel, not spoofable) over x-forwarded-for (passed through
+  // from the client and trivially spoofable). The previous order let a
+  // hostile client masquerade as multiple IPs to evade the rate limiter.
+  // Matches the IP-resolution order used elsewhere in the codebase.
   const ip =
+    req.headers.get("x-vercel-forwarded-for")?.split(",")[0]?.trim() ||
     req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
     req.headers.get("x-real-ip") ||
     "unknown";
@@ -819,18 +909,24 @@ export async function GET(req: NextRequest) {
   // Multi-tenant SaaS users — admin sees all, regular users see only the
   // slugs they're explicitly mapped to.
   //
+  // 2026-05-24 Codex audit HIGH FIX: prior code only enforced the mapping
+  // check when `?ftmo_tf=` was present in the query — without the param,
+  // every authenticated non-admin user could read the DEFAULT state-dir
+  // which is the bot operator's own FTMO_STATE_DIR. In a SaaS deploy
+  // that's a cross-tenant equity/position leak. Require admin OR an
+  // explicit mapping for EVERY non-admin request, regardless of param.
+  //
   // FAST path: admin-email match (`FTMO_ADMIN_EMAIL`) or env-based bypass
   //            for single-owner VPS / no-auth-backend deploys.
   // SECOND chance (R29): if the FAST path fails AND tfSlug is provided,
   //            consult the `user_ftmo_accounts` mapping table. RLS keeps
   //            tenants isolated; a missing migration fails CLOSED (helper
   //            returns false on any DB error).
-  // OTHERWISE: 403. Non-admin users without a mapping can still read the
-  //            default state-dir (no `?ftmo_tf=` param) which is the bot's
-  //            own FTMO_STATE_DIR.
-  if (tfSlug && !canReadArbitrarySlug(auth)) {
+  // OTHERWISE: 403 — non-admins must either pass an explicitly-mapped
+  //            tfSlug OR rely on env-bypass for solo-VPS deploys.
+  if (!canReadArbitrarySlug(auth)) {
     let mappedAllowed = false;
-    if (auth.userId && auth.supabase) {
+    if (tfSlug && auth.userId && auth.supabase) {
       mappedAllowed = await canUserReadSlug(auth.userId, tfSlug, auth.supabase);
     }
     if (!mappedAllowed) {
@@ -882,6 +978,15 @@ export async function GET(req: NextRequest) {
     "bot-controls.json",
     { paused: false, killRequested: false },
   );
+  // 2026-05-14 Codex Wave-2 Bug #5: load V4 engine state so passStatus can
+  // ALSO check FTMO min-trading-days + pause-state. Without this the
+  // dashboard flagged accounts as passed the moment equity crossed +8%,
+  // hiding the FTMO 4-trading-day rule from the operator.
+  const v4State = readJson<{
+    tradingDays?: number[];
+    pausedAtTarget?: boolean;
+    firstTargetHitDay?: number | null;
+  }>(stateDir, "v4-engine.json", {});
   const pending = readJson<{ signals: unknown[] }>(
     stateDir,
     "pending-signals.json",
@@ -929,8 +1034,22 @@ export async function GET(req: NextRequest) {
   const totalPnlPct = (liveEquityUsd / startBalanceUsd - 1) * 100;
 
   // Pass status
+  // 2026-05-14 Codex Wave-2 Bug #5 FIX: passing requires +8% AND
+  // FTMO min-trading-days (4) AND not currently in a paused/blocked state.
+  // Previous logic flagged the account as passed the instant equity crossed
+  // +8%, even if FTMO would still hold the account in min-trading-days.
+  const FTMO_MIN_TRADING_DAYS = 4;
+  const tradingDayCount = Array.isArray(v4State.tradingDays)
+    ? v4State.tradingDays.length
+    : 0;
+  const isPaused = v4State.pausedAtTarget === true || controls.paused === true;
   let passStatus: "passed" | "active" | "failed" = "active";
-  if (totalPnlPct >= FTMO_PROFIT_TARGET * 100) passStatus = "passed";
+  if (
+    totalPnlPct >= FTMO_PROFIT_TARGET * 100 &&
+    tradingDayCount >= FTMO_MIN_TRADING_DAYS &&
+    !isPaused
+  )
+    passStatus = "passed";
   else if (totalPnlPct <= -FTMO_TOTAL_LOSS_CAP * 100) passStatus = "failed";
   else if (dailyPnlPct <= -FTMO_DAILY_LOSS_CAP * 100) passStatus = "failed";
 
@@ -970,7 +1089,7 @@ export async function GET(req: NextRequest) {
     return out as ExecutorEvent;
   };
   const recentEvents = executorLog.slice(-20).reverse().map(_capEvent);
-  const positions = annotatePositions(openPosRaw.positions);
+  const positions = annotatePositions(openPosRaw.positions, executorLog);
   const health = computeHealth(
     executorLog,
     pending.signals.length,

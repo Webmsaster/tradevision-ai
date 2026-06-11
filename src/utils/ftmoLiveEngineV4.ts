@@ -841,11 +841,19 @@ function processPositionExit(
     if (ptpHit && (!stopHit || gapPastPtp)) {
       pos.ptpTriggered = true;
       pos.ptpRealizedPct = ptp.closeFraction * ptp.triggerPct;
-      // Auto-move stop to break-even (mirrors backtest fix).
+      // 2026-05-25 Wave5 KRIT FIX (audit PTP): cost-adjusted BE to mirror
+      // Rust `cost_adjusted_be()` (exit.rs:23-34). Raw entryPrice gave
+      // ~costBp pessimism drift vs Rust backtest on PTP-BE'd trades.
+      const asset = cfg.assets?.find((a) => a.symbol === pos.symbol);
+      const costFrac = (asset?.costBp ?? 0) / 10_000;
+      const beStop =
+        pos.direction === "long"
+          ? pos.entryPrice * (1 + costFrac)
+          : pos.entryPrice * (1 - costFrac);
       if (pos.direction === "long") {
-        if (pos.entryPrice > pos.stopPrice) pos.stopPrice = pos.entryPrice;
+        if (beStop > pos.stopPrice) pos.stopPrice = beStop;
       } else {
-        if (pos.entryPrice < pos.stopPrice) pos.stopPrice = pos.entryPrice;
+        if (beStop < pos.stopPrice) pos.stopPrice = beStop;
       }
       pos.beActive = true;
       // Reset chandelier reference to current close.
@@ -911,13 +919,33 @@ function processPositionExit(
   }
 
   // 3. BreakEven shift.
+  // 2026-05-25 Wave5 KRIT FIX (audit agent — TS↔Rust parity): mirror Rust
+  // Wave2 standalone-BE fix at engine-rust/.../exit.rs:285-307.
+  //   (a) MONOTONE guard: don't LOOSEN a tighter chandelier stop. If
+  //       chandelier already trailed past entry, BE-shift must not drag SL
+  //       back down. Was: `pos.stopPrice = entryPrice` unconditional → live
+  //       exposure on R28_V6_PASSLOCK + chandelierExit configs.
+  //   (b) COST-ADJUSTED BE: include cost_bp to mirror Rust's
+  //       `cost_adjusted_be()` so BE booked at flat-after-cost (long: entry ×
+  //       (1 + cost/10_000)) — was raw entry, ~3bp drift per BE-hit.
   if (cfg.breakEven && !pos.beActive) {
     const fav =
       pos.direction === "long"
         ? (candle.close - pos.entryPrice) / pos.entryPrice
         : (pos.entryPrice - candle.close) / pos.entryPrice;
     if (fav >= cfg.breakEven.threshold) {
-      pos.stopPrice = pos.entryPrice;
+      const asset = cfg.assets?.find((a) => a.symbol === pos.symbol);
+      const costBp = asset?.costBp ?? 0;
+      const costFrac = costBp / 10_000;
+      const beStop =
+        pos.direction === "long"
+          ? pos.entryPrice * (1 + costFrac)
+          : pos.entryPrice * (1 - costFrac);
+      if (pos.direction === "long") {
+        if (beStop > pos.stopPrice) pos.stopPrice = beStop;
+      } else {
+        if (beStop < pos.stopPrice) pos.stopPrice = beStop;
+      }
       pos.beActive = true;
     }
   }
@@ -1879,6 +1907,27 @@ export function pollLive(
           continue;
         }
 
+        // 2026-05-24 mutex_long_short gate. Mirrors engine-rust
+        // harness.rs:907. When enabled, refuses to open an entry whose
+        // direction is opposite to ANY currently-open position — required
+        // for AMBER+SHORTS single-account variants to avoid the shared-
+        // equity hedge that empirically wiped out the 9 prior hybrid
+        // attempts (best 29.23% vs AMBER alone 32.10% per 2026-05-23
+        // debunk). With this gate, BIDIR-style configs trade either-
+        // direction over time without simultaneous opposing positions.
+        if (cfg.mutexLongShort && state.openPositions.length > 0) {
+          const hasOpposite = state.openPositions.some(
+            (p) => p.direction !== matched.direction,
+          );
+          if (hasOpposite) {
+            result.skipped.push({
+              asset: asset.symbol,
+              reason: `mutex_long_short: ${matched.direction} blocked (opposite position open)`,
+            });
+            continue;
+          }
+        }
+
         // correlationFilter check — count open same-direction.
         if (cfg.correlationFilter) {
           const sameDir = state.openPositions.filter(
@@ -2218,7 +2267,13 @@ export function simulate(
   const targetHit =
     state.firstTargetHitDay !== null &&
     state.tradingDays.length >= cfg.minTradingDays;
-  const finalEquityFloor = 1 + cfg.profitTarget * 0.5;
+  // 2026-05-15 (Audit-Round-4 / Agent #5 HIGH): strict-pass support. When
+  // `cfg.strictPass === true`, the give-back floor is the FULL profit target,
+  // matching Rust `--strict-pass`. Otherwise legacy soft-pass behaviour: half
+  // of the profit target is tolerated as "give-back". The TS shard-runners
+  // (`_r28V6Shard.ts` etc.) were reporting +7pp inflated rates vs Rust until
+  // this flag was wired through.
+  const finalEquityFloor = 1 + cfg.profitTarget * (cfg.strictPass ? 1.0 : 0.5);
   const giveBackTooFar =
     targetHit &&
     Number.isFinite(state.equity) &&

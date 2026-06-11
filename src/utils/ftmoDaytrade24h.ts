@@ -254,10 +254,41 @@ export interface FtmoDaytrade24hConfig {
   tpPct: number;
   stopPct: number;
   holdBars: number;
+  /**
+   * Codex Round 4 #3 — alias for `timeExitEnabled`. When true, the live
+   * V4-wrapper emits `maxHoldUntil` so the Python executor force-closes
+   * after holdBars elapsed. The V4 SIM explicitly disables time-exits
+   * (ftmoLiveEngineV4.ts), so leaving this default-false keeps live in
+   * lockstep with the sim. Existing legacy/V231 deploys can opt back into
+   * time-exits by setting this true for backwards compat.
+   *
+   * Default false. Live-Backtest divergence class: live force-closed at
+   * holdBars hours, sim let positions run until natural SL/TP → live
+   * pass-rate consistently 1-3pp below sim on configs with holdBars≤6.
+   */
+  emitMaxHoldUntil?: boolean;
   /** Cosmetic only — engine derives bar duration from candle timestamps. */
   timeframe: "5m" | "15m" | "30m" | "1h" | "2h" | "4h";
   assets: Daytrade24hAssetCfg[];
   profitTarget: number;
+  /**
+   * 2026-05-15 (Audit-Round-4 / Agent #5 HIGH): strict-pass mode.
+   *
+   * The Rust ftmo-sweep binary added `--strict-pass` in 2026-05-13 (memory
+   * `project_session_2026_05_13_80pct_audit.md`) — it requires final equity
+   * to be ≥ (1 + profitTarget) at window end, NOT just the "give-back half"
+   * fallback (1 + 0.5×profitTarget). Champion C2 dropped from 80.04% →
+   * 73.25% strict, single-account ceiling 76.32%.
+   *
+   * TS V4-Sim never grew the equivalent flag, so every TS-shard re-run
+   * (`scripts/_r28V6Shard.ts`, `_r29*Shard.ts`) reported the inflated soft-
+   * pass rate while Rust reported honest numbers — silent inflation of all
+   * TS-validated baselines. Set `strictPass: true` on the cfg to mirror
+   * Rust strict semantics.
+   *
+   * Default: `false` (legacy soft-pass behaviour — give-back half allowed).
+   */
+  strictPass?: boolean;
   maxDailyLoss: number;
   maxTotalLoss: number;
   minTradingDays: number;
@@ -542,6 +573,13 @@ export interface FtmoDaytrade24hConfig {
     period: number; // ATR period
     mult: number; // K multiplier on ATR
     minMoveR?: number; // require price to move >= minMoveR × stopPct first (default 0.5)
+    /**
+     * Codex Round 4 #7 — when set ≥ 1, the Python live executor recomputes
+     * ATR every N exit-management cycles (matches TS/Rust sim behaviour).
+     * Default 0 = use atrAtEntry for all cycles (legacy behaviour;
+     * acceptable on 30m+ TFs where intra-trade ATR drift is small).
+     */
+    atrRecomputeIntervalBars?: number;
   };
   /**
    * iter262+ Loss-Streak Cooldown — pause new entries after N consecutive losses.
@@ -694,6 +732,15 @@ export interface FtmoDaytrade24hConfig {
    * exposure after the lock-out). Engine asserts no-op if pause is off.
    */
   closeAllOnTargetReached?: boolean;
+  /**
+   * 2026-05-24 mutex_long_short — when true, blocks a new entry whose
+   * direction is opposite to any currently-open position. Eliminates
+   * same-bar long+short hedge of single-account hybrid strategies.
+   * Mirrors engine-rust `cfg.mutex_long_short` (config.rs:675, gate at
+   * harness.rs:907). Used by AMBER+SHORTS single-account variants
+   * (BIDIR_MUTEX, AGGRESSIVE).
+   */
+  mutexLongShort?: boolean;
   /**
    * Round 60 Vol-Adaptive tpMult: scale tpPct at trade-entry by current
    * ATR-fraction regime. Static R28_V6 uses tpMult=0.55 — this lets the
@@ -909,6 +956,42 @@ export interface FtmoDaytrade24hConfig {
    * (ISO timestamp) and passes it through.
    */
   challengeStartTs?: number;
+  /**
+   * 2026-05-15 RegimeConfluence integration into V4 live engine.
+   *
+   * `signalsMode`:
+   *   - "default" (or undefined): legacy path — V4 engine emits whatever
+   *     `detectAsset` produces (R28V6 / Breakout / MR / other), unchanged.
+   *   - "regime": each candidate trade from `detectAsset` is treated as an
+   *     anchor vote (the existing detector's direction). The V4 engine then
+   *     calls `tallyRegimeConfluence` with the configured Top-5 voters
+   *     (POC-Z, BB-Z, Supertrend, SMC-FVG, HMM). A candidate is emitted
+   *     only if the consensus side matches its direction.
+   *
+   * Default OFF — all existing configs keep their original behaviour.
+   * Backwards-compatible: setting `signalsMode="regime"` without a
+   * `regimeConfluence` block falls through to pass-through behaviour —
+   * the gate is SKIPPED entirely and candidates emit unchanged. (Codex
+   * audit Bug #3 / 2026-05-16: the previous default-params path silently
+   * vetoed every candidate because mv=2 with no voters could never be
+   * reached.) To engage the gate you must supply a `regimeConfluence`
+   * block with `minVotes` and at least one voter set true.
+   *
+   * See `src/utils/regimeVoters/index.ts` for the consensus contract.
+   */
+  signalsMode?: "default" | "regime";
+  regimeConfluence?: {
+    /** Strict-majority threshold (winningCount >= minVotes AND > losing). */
+    minVotes: 2 | 3;
+    /** Voter toggles (default all OFF if omitted). */
+    voters: {
+      useBbZMr?: boolean;
+      usePocZ?: boolean;
+      useSupertrend?: boolean;
+      useSmcFvg?: boolean;
+      useHmm?: boolean;
+    };
+  };
 }
 
 function spreadCrossAssetFilter(
@@ -3770,10 +3853,15 @@ export function detectAsset(
                       : triggerBars;
     for (let i = startBar; i < candles.length - 1; i++) {
       if (i < cooldown) continue;
-      // V5 re-entry: skip pattern check if within re-entry window after stop
+      // V5 re-entry: skip pattern check if within re-entry window after stop.
+      // 2026-05-13 Codex Round 6 MED FIX (#S5): the window check compared
+      // against signal index `i`, but actual entry happens at `i + 1` (TS
+      // convention). So the FINAL permitted signal at i=windowEnd would
+      // enter at i+1=windowEnd+1, ONE bar outside the configured window.
+      // Fix: compare entry-bar (i + 1) against reEntryWindowEnd.
       const inReEntryWindow =
         cfg.reEntryAfterStop !== undefined &&
-        reEntryWindowEnd >= i &&
+        reEntryWindowEnd >= i + 1 &&
         reEntryRetriesUsed > 0 &&
         reEntryRetriesUsed <= cfg.reEntryAfterStop.maxRetries;
       let ok = true;
@@ -4493,6 +4581,11 @@ export function detectAsset(
         ? ptpLevels.map(() => false)
         : [];
       let ptpLevelsRealizedPct = 0;
+      // 2026-05-13 Codex Round 6 #S4: monotonic index into ptpLevels for the
+      // new pre-cross multi-level block. Levels are processed in-order; the
+      // while-loop advances ptpLvlIdx as each level realises (mirrors V4
+      // engine + Rust harness convention).
+      let ptpLvlIdx = 0;
       // V4 trailing stop
       const trail = cfg.trailingStop;
       let trailActive = false;
@@ -4539,12 +4632,23 @@ export function detectAsset(
           // already passed the trigger before any wick down to stop.
           if (ptpHit && (!stopHit || gapPastPtp)) {
             ptpTriggered = true;
-            // BUGFIX 2026-04-29 (Agent 7 R10 Bug 3): apply slippage + half-cost on
-            // partial fill. Real MT5 charges commission + slippage on each
-            // partial close. Engine previously credited full triggerPct as gain.
-            // Per-side cost = cost/2 (half round-trip) + slippageBp/10000 (one fill).
-            const ptpFillCost = cost / 2 + (asset.slippageBp ?? 0) / 10000;
-            ptpRealizedPct = ptp.closeFraction * (ptp.triggerPct - ptpFillCost);
+            // 2026-05-13 Codex Round 6 HIGH FIX (#S3): explicit entry-eff /
+            // exit-eff computation. Previously `ptpRealizedPct =
+            // closeFraction × (triggerPct − cost/2 − oneSlippage)` undercharged
+            // because `triggerPct` is raw price-movement, not entry-eff
+            // adjusted. Use entryEff (entry × (1 ± cost/2)) AND apply exit-
+            // side cost to triggerPrice, then subtract BOTH slippage legs
+            // (entry-side + exit-side) on the partial fraction.
+            const ptpExit =
+              direction === "long"
+                ? triggerPrice * (1 - cost / 2)
+                : triggerPrice * (1 + cost / 2);
+            const partialRaw =
+              direction === "long"
+                ? (ptpExit - entryEff) / entryEff
+                : (entryEff - ptpExit) / entryEff;
+            const partialSlip = 2 * ((asset.slippageBp ?? 0) / 10000);
+            ptpRealizedPct = ptp.closeFraction * (partialRaw - partialSlip);
             // BUGFIX 2026-04-29 (Audit Bug A): after PTP, auto-move dynStop
             // to entry on remainder leg. Industry-standard: once partial
             // profit is locked, the trade should be guaranteed-profitable
@@ -4563,6 +4667,63 @@ export function detectAsset(
             beActive = true;
             // Also reset chandelier reference to current bar so the trail
             // anchors at PTP-fire price, not pre-PTP high (Bug B).
+            chanBestClose = bar!.close;
+            chanArmed = false;
+          }
+        }
+        // 2026-05-13 Codex Round 6 HIGH FIX (#S4): pre-cross multi-level PTP
+        // mirroring single-level semantics. Previously multi-level was post-
+        // cross with close-only threshold, no stop-guard, no BE-move, no
+        // cost-net — silently mis-handling vs single-level. Now: wick-based
+        // high/low trigger, stop-guard (stop wins on same-bar tie unless
+        // gap-past-level), gap-past-level exception, cost-net per level, BE
+        // move + chandelier reset on FIRST level realised this bar.
+        if (ptpLevels && ptpLevels.length > 0) {
+          let multiRealisedAny = false;
+          const stopHitMulti =
+            direction === "long" ? bar!.low <= dynStop : bar!.high >= dynStop;
+          while (ptpLvlIdx < ptpLevels.length) {
+            const lvl = ptpLevels[ptpLvlIdx]!;
+            const triggerPriceLvl =
+              direction === "long"
+                ? entry * (1 + lvl.triggerPct)
+                : entry * (1 - lvl.triggerPct);
+            const lvlHit =
+              direction === "long"
+                ? bar!.high >= triggerPriceLvl
+                : bar!.low <= triggerPriceLvl;
+            if (!lvlHit) break;
+            const gapPastLvl =
+              direction === "long"
+                ? bar!.open >= triggerPriceLvl
+                : bar!.open <= triggerPriceLvl;
+            if (stopHitMulti && !gapPastLvl) break;
+            // Cost-net per level (mirrors single-level Codex Round 6 #S3 logic).
+            const lvlExit =
+              direction === "long"
+                ? triggerPriceLvl * (1 - cost / 2)
+                : triggerPriceLvl * (1 + cost / 2);
+            const partialRawLvl =
+              direction === "long"
+                ? (lvlExit - entryEff) / entryEff
+                : (entryEff - lvlExit) / entryEff;
+            const partialSlipLvl = 2 * ((asset.slippageBp ?? 0) / 10000);
+            ptpLevelsRealizedPct +=
+              lvl.closeFraction * (partialRawLvl - partialSlipLvl);
+            ptpLevelsHit[ptpLvlIdx] = true;
+            ptpLvlIdx++;
+            multiRealisedAny = true;
+          }
+          if (multiRealisedAny) {
+            // Cost-adjusted BE — same as single-level Codex Round 6 #S3.
+            const beStop =
+              direction === "long" ? entry * (1 + cost) : entry * (1 - cost);
+            if (direction === "long") {
+              if (beStop > dynStop) dynStop = beStop;
+            } else {
+              if (beStop < dynStop) dynStop = beStop;
+            }
+            beActive = true;
             chanBestClose = bar!.close;
             chanArmed = false;
           }
@@ -4653,20 +4814,11 @@ export function detectAsset(
             ptpRealizedPct = ptp.closeFraction * ptp.triggerPct;
           }
         }
-        // V4 multi-level PTP
-        if (ptpLevels && ptpLevels.length > 0) {
-          const unrealized =
-            direction === "long"
-              ? (bar!.close - entry) / entry
-              : (entry - bar!.close) / entry;
-          for (let lv = 0; lv < ptpLevels.length; lv++) {
-            if (!ptpLevelsHit[lv] && unrealized >= ptpLevels[lv]!.triggerPct) {
-              ptpLevelsHit[lv] = true;
-              ptpLevelsRealizedPct +=
-                ptpLevels[lv]!.closeFraction * ptpLevels[lv]!.triggerPct;
-            }
-          }
-        }
+        // 2026-05-13 Codex Round 6 #S4 FIX: post-cross multi-level PTP block
+        // REMOVED — the pre-cross block above (line ~4582+) handles all
+        // multi-level realisation with proper wick-trigger / stop-guard /
+        // cost-net / BE-move parity to single-level. Keeping a post-cross
+        // close-only fallback here would double-process levels.
         // V4 trailing stop: tighten dynStop after activation
         if (trail) {
           const unrealized =
@@ -4834,9 +4986,15 @@ export function detectAsset(
         const sign = direction === "long" ? +1 : -1;
         const EIGHT_H = 8 * 3_600_000;
         const exitTimeMs = candles[exitBar]!.closeTime;
-        // First settlement strictly after entry openTime.
+        // 2026-05-13 Codex Round 6 MED FIX (#S7): use STRICT less-than so an
+        // entry AT a settlement boundary (00:00 / 08:00 / 16:00 UTC) pays
+        // that bucket's funding. The legacy `<=` skipped the boundary
+        // settlement because the floor bucket equalled entryTime, and the
+        // +=EIGHT_H pushed past the moment the position was actually held
+        // at settlement. Economic-correct rule: position held AT
+        // settlement pays funding.
         let bucket = Math.floor(eb!.openTime / EIGHT_H + 1e-9) * EIGHT_H;
-        if (bucket <= eb!.openTime) bucket += EIGHT_H;
+        if (bucket < eb!.openTime) bucket += EIGHT_H;
         let sumFunding = 0;
         // Cap iteration to avoid pathological infinite loops on bad data.
         let safetyIter = 0;
@@ -5004,11 +5162,30 @@ export function detectAsset(
   return out;
 }
 
+// 2026-05-21 bug-round: `closeAllOnTargetReached` (PASSLOCK force-close of all
+// open positions at first target-hit) is implemented in the RUST engine
+// (force_close_all) but is NOT read by this TS engine — it only honors the
+// weaker `pauseAtTargetReached` (pauses NEW entries, but lets already-open
+// positions ride). So PASSLOCK pass-rates from this TS engine are NOT
+// equity-locked and diverge from Rust. Warn once per process so TS sweeps
+// don't silently present un-locked numbers as PASSLOCK. Use the Rust ftmo-sweep
+// binary for honest PASSLOCK baselines.
+let _warnedCloseAllUnsupportedTs = false;
+
 export function runFtmoDaytrade24h(
   candlesBySymbol: Record<string, Candle[]>,
   cfg: FtmoDaytrade24hConfig = FTMO_DAYTRADE_24H_CONFIG,
   fundingBySymbol?: Record<string, (number | null)[]>,
 ): FtmoDaytrade24hResult {
+  if (cfg.closeAllOnTargetReached && !_warnedCloseAllUnsupportedTs) {
+    _warnedCloseAllUnsupportedTs = true;
+    console.warn(
+      "[ftmoDaytrade24h] closeAllOnTargetReached is NOT enforced by the TS " +
+        "engine (Rust-only; this engine only applies pauseAtTargetReached). " +
+        "PASSLOCK equity-locking is NOT applied here — use the Rust ftmo-sweep " +
+        "binary for honest PASSLOCK pass-rates.",
+    );
+  }
   // Round-15 audit B5/B6: validate critical optional flags eagerly so that
   // a typo in a new config (omitting `pauseAtTargetReached` or omitting
   // `htfTrendFilter.threshold`) fails LOUDLY rather than silently producing
@@ -5435,16 +5612,17 @@ export function runFtmoDaytrade24h(
     // after, making the first loop pure dead code (and incorrect since
     // executed is now sorted by exit-time, not entry-time).
     if (cfg.maxConcurrentTrades !== undefined) {
-      // Phase 32 (Re-Audit FTMO Bug 5): scan `all` with EXPLICIT entry-time
-      // filter — provably lookahead-free regardless of sort order. Was
-      // `liveMode ? executed : all` which (a) under-counted in liveMode
-      // because executed was being built (filters drop trades from it),
-      // and (b) over-counted in research-mode because all includes future
-      // trades by exit-time. The entry-time guard is the correct invariant.
+      // 2026-05-13 Codex Round 6 KRITISCH FIX (#S1): count ACCEPTED trades
+      // only, not all pre-detected candidates. The legacy scan over `all`
+      // counted same-entryTime peers (e.entryTime > t.entryTime is strict
+      // greater, so equal-time peers AREN'T skipped) → with MCT=1, two
+      // parallel candidates both saw 1 "open" peer and BOTH got rejected.
+      // Plus deterministic symbol-priority bias from the outer sort key.
+      // Fix: scan the in-progress `executed` array (trades admitted so far
+      // in this iteration). Trades are processed in t.entryTime order so
+      // same-time candidates are admitted up to the cap, not all rejected.
       let openCount = 0;
-      for (const e of all) {
-        if (e === t) continue;
-        if (e.entryTime > t.entryTime) continue; // future entry, not yet open
+      for (const e of executed) {
         if (e.exitTime > t.entryTime) openCount++;
       }
       if (openCount >= cfg.maxConcurrentTrades) continue;
@@ -5454,11 +5632,12 @@ export function runFtmoDaytrade24h(
     // `all` array, not `executed`. Same selection-bias (later-exit winners
     // not yet in executed) was leaking same-direction concurrent trades.
     if (cfg.correlationFilter) {
-      // Phase 32: same entry-time-filter as MCT (Bug 5 fix).
+      // 2026-05-13 Codex Round 6 KRITISCH FIX (#S1, mirror): same as MCT —
+      // count only ACCEPTED same-direction trades; the legacy scan over
+      // `all` rejected pairs of same-time same-dir parallel signals because
+      // each saw the other as "already open" before either was admitted.
       let sameDirOpen = 0;
-      for (const e of all) {
-        if (e === t) continue;
-        if (e.entryTime > t.entryTime) continue;
+      for (const e of executed) {
         if (e.exitTime > t.entryTime && e.direction === t.direction) {
           sameDirOpen++;
         }
@@ -8541,6 +8720,309 @@ export const FTMO_DAYTRADE_24H_V5_AMBER_PASSLOCK: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER,
   closeAllOnTargetReached: true,
   atrStop: { period: 56, stopMult: 2 },
+};
+// 2026-05-15 (Audit-Round-4 / Agent #12 KRIT): V5_AMBER_MAX_PASSLOCK is the
+// 2026-05-15 champion measured in Rust ftmo-sweep (templates.rs:488,
+// `v5_amber_max_passlock`). It was missing from the TS pipeline → TF_DISPATCH
+// resolveTf + CFG_REGISTRY failed → Live-Deploy of the active champion was
+// blocked. Mirrors Rust: V5_AMBER base + 9 extra (DOT/TRX/ALGO/NEAR + ATOM/
+// LINK/SOL/STX/UNI) at tpPct=0.020, stopPct=0.05, holdBars=240, riskFrac=1.0,
+// invertDirection=true, disableShort=true. PASSLOCK = closeAllOnTargetReached.
+// Costs match the rest of the V5_* family (costBp=30, slippageBp=8, swapBpPerDay=4).
+const _AMBER_MAX_EXTRA_ASSETS: Daytrade24hAssetCfg[] = [
+  "DOT",
+  "TRX",
+  "ALGO",
+  "NEAR",
+  "ATOM",
+  "LINK",
+  "SOL",
+  "STX",
+  "UNI",
+].map((coin) => ({
+  symbol: `${coin}-TREND`,
+  sourceSymbol: `${coin}USDT`,
+  costBp: 30,
+  slippageBp: 8,
+  swapBpPerDay: 4,
+  riskFrac: 1.0,
+  triggerBars: 1,
+  invertDirection: true,
+  disableShort: true,
+  stopPct: 0.05,
+  tpPct: 0.02,
+  holdBars: 240,
+}));
+// 2026-05-23 BNB 18/50 cross-asset filter — mirrors the Rust backtest CLI
+// override (--cross-asset-sym BNBUSDT --cross-asset-fast 18 --cross-asset-slow 50).
+// Both skip flags set → bilateral "any" semantics matching detector_filters.rs:
+// long needs BNB in uptrend, short needs BNB in downtrend, sideways blocks both.
+// Worth 5-10pp vs backtest when wired (was previously dropped on live path).
+const _CROSS_BNB_18_50 = {
+  symbol: "BNBUSDT",
+  emaFastPeriod: 18,
+  emaSlowPeriod: 50,
+  skipShortsIfSecondaryUptrend: true,
+  skipLongsIfSecondaryDowntrend: true,
+};
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER,
+  assets: [
+    ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER.assets,
+    ..._AMBER_MAX_EXTRA_ASSETS.filter(
+      (a) =>
+        !FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_AMBER.assets.some(
+          (b) => b.symbol === a.symbol,
+        ),
+    ),
+  ],
+  closeAllOnTargetReached: true,
+  atrStop: { period: 56, stopMult: 2 },
+  crossAssetFiltersExtra: [_CROSS_BNB_18_50],
+};
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_STEP2: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK,
+    profitTarget: 0.05,
+    maxDays: 60,
+  };
+// 2026-05-17 BIDIR: enable shorts on every asset for the long-only fail-mode
+// (88% of fails by Day 3 in bear/range first-24h windows). Voters already
+// vote both directions; only the asset-level `disableShort=true` upstream
+// filter is flipped. Mirrors engine-rust v5_amber_max_passlock_bidir().
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_BIDIR: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK,
+    assets: FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK.assets.map((a) => ({
+      ...a,
+      disableShort: false,
+    })),
+    crossAssetFiltersExtra: [_CROSS_BNB_18_50],
+  };
+// 2026-05-24 BIDIR_MUTEX: same as BIDIR but with mutex_long_short=true.
+// Eliminates same-bar long+short hedge on shared equity → +0.9pp TRUE-SEQ CF
+// vs AMBER alone (29.30% → 30.20%). Mirrors engine-rust
+// v5_amber_max_passlock_bidir_mutex().
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_BIDIR_MUTEX: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_BIDIR,
+    mutexLongShort: true,
+  };
+
+// 2026-05-24 AGGRESSIVE: single-account boost combo of all three levers
+//   1. bidir (longs + shorts)
+//   2. mutex_long_short (no same-bar hedge)
+//   3. max_concurrent_trades=25 (was 10, more parallel diversification)
+// Note: per-asset riskFrac=0.5 in Rust template is capped by liveCaps to
+// 0.4 anyway (FTMO-realistic). Keeping the 0.5 documented but it has no
+// effective behavior change vs 0.4 here.
+// Empirical: 34.30% TRUE-SEQ CF (+5.0pp vs AMBER baseline 29.30%), n=1000.
+// Mirrors engine-rust v5_amber_max_passlock_aggressive().
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_BIDIR_MUTEX,
+    maxConcurrentTrades: 25,
+    assets: FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_BIDIR_MUTEX.assets.map(
+      (a) => ({
+        ...a,
+        riskFrac: 0.5,
+      }),
+    ),
+  };
+
+// 2026-05-25 AGGRESSIVE_24H_KELLY — same as KELLY_REENTRY but without reentry-
+// after-stop. Useful as a UNIQUE stack-member (single-account 35.90% TRUE-SEQ
+// but contributes +14pp to Stack-3 OR). Live-deploy for Stack-4 plans.
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H_KELLY: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE,
+    allowedHoursUtc: undefined,
+    kellySizing: {
+      windowSize: 30,
+      minTrades: 10,
+      tiers: [
+        { winRateAbove: 0.65, multiplier: 1.0 },
+        { winRateAbove: 0.55, multiplier: 0.75 },
+        { winRateAbove: 0.45, multiplier: 0.5 },
+        { winRateAbove: 0.0, multiplier: 0.25 },
+      ],
+    },
+  };
+
+// 2026-05-25 MIXED_DETECTORS_V3 — per-asset detector mix (wider params).
+// Single-account 32.40% TRUE-SEQ CF (weaker alone than AGG_KR), but
+// contributes UNIQUE passes to Stack-N. Stack-5 with AMBER+SHORTS+TITANIUM+
+// AGG_KELLY+MIXED_V3 = 85.40% TRUE-SEQ CF (n=1000). Mirrors Rust
+// v5_amber_max_passlock_mixed_v3(). Per-asset entry-types: cvd_entry
+// (BTC,ETH,SOL,AVAX,BNB lookback=100), vol_imbalance_entry (LINK,ADA,AAVE,
+// ATOM,DOT longMin=0.60), vol_poc_entry (ALGO,NEAR,ARB,UNI,TRX window=100
+// minDist=0.3%), default R28V6 (BCH,ETC,LTC,XRP).
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_MIXED_V3: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H_KELLY,
+    assets:
+      FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H_KELLY.assets.map(
+        (a) => {
+          const base = a.symbol.split("-")[0];
+          const cvd = new Set(["BTC", "ETH", "SOL", "AVAX", "BNB"]);
+          const volImb = new Set(["LINK", "ADA", "AAVE", "ATOM", "DOT"]);
+          const volPoc = new Set(["ALGO", "NEAR", "ARB", "UNI", "TRX"]);
+          const out = { ...a };
+          if (cvd.has(base ?? "")) {
+            out.cvdEntry = { lookbackBars: 100 };
+          } else if (volImb.has(base ?? "")) {
+            out.volImbalanceEntry = { longMin: 0.6 };
+          } else if (volPoc.has(base ?? "")) {
+            out.volPocEntry = { windowBars: 100, minDistFromPocPct: 0.003 };
+          }
+          return out;
+        },
+      ),
+  };
+
+// 2026-05-24 AGGRESSIVE_24H_KELLY_REENTRY — best-of-stack single-account
+// variant discovered via ceiling-hunt. Combines all working levers:
+//   1. bidir + mutexLongShort (from BIDIR_MUTEX)
+//   2. maxConcurrentTrades=25 (from AGGRESSIVE)
+//   3. allowedHoursUtc removed (24h trading instead of 8h restricted)
+//   4. half-Kelly rolling-WR sizing tiers (multipliers halved vs Rust's
+//      fraction=0.5 + 2.0/1.5/1.0/0.5 since TS KellySizing has no
+//      fraction field — net effect identical)
+//   5. reentryAfterStop: re-enter same direction at half size within 12 bars
+//      after a stop-out (often near reversal → second attempt catches recovery)
+// Empirical: 36.10% TRUE-SEQ CF (+6.80pp vs AMBER baseline 29.30%, n=1000).
+// Walk-forward: in-sample 34.48% / out-of-sample 38.74% (no overfit).
+// Mirrors engine-rust v5_amber_max_passlock_aggressive_24h_kelly_reentry().
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H_KELLY_REENTRY: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE,
+    allowedHoursUtc: undefined,
+    kellySizing: {
+      windowSize: 30,
+      minTrades: 10,
+      tiers: [
+        { winRateAbove: 0.65, multiplier: 1.0 }, // 2.0 × 0.5 fraction
+        { winRateAbove: 0.55, multiplier: 0.75 }, // 1.5 × 0.5
+        { winRateAbove: 0.45, multiplier: 0.5 }, // 1.0 × 0.5
+        { winRateAbove: 0.0, multiplier: 0.25 }, // 0.5 × 0.5
+      ],
+    },
+    reentryAfterStop: {
+      sizeMult: 0.5,
+      withinBars: 12, // 6h on 30m bars
+    },
+  };
+
+// 2026-05-24 SHORTS_ONLY: pure shorts-only variant of AMBER_MAX_PASSLOCK.
+// Mirrors engine-rust v5_amber_max_passlock_shorts_only() — per-asset
+// removes invertDirection, blocks longs, allows shorts. Voter outputs
+// SHORT signals naturally in trend-down windows; this template trades
+// those raw signals directly (no invert).
+//
+// Used as the second stack-member in the 2-Account Stack (AMBER + SHORTS).
+// Window-level anti-correlation vs AMBER: AMBER passes in
+// bullish/MR-bounce setups (via invert), SHORTS passes in bearish/
+// breakdown setups. 1000-window TRUE-SEQUENTIAL backtest (2026-05-24):
+//   - SHORTS_ONLY alone: 29.30% combined-funded
+//   - AMBER + SHORTS Stack-2 OR: 57.30% combined-funded (+7.28pp anti-corr excess)
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_SHORTS_ONLY: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK,
+    invertDirection: false,
+    assets: FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK.assets.map((a) => ({
+      ...a,
+      invertDirection: false,
+      disableLong: true,
+      disableShort: false,
+    })),
+    crossAssetFiltersExtra: [_CROSS_BNB_18_50],
+  };
+// 2026-05-25 SHORTS_AGG — TS-mirror of engine-rust v5_amber_max_passlock_shorts_agg().
+// SHORTS_ONLY base + AGG upgrades: mutex + maxConcurrentTrades=25 + Kelly tiers.
+// Part of GA Stack-4 winner (97.28% OOS).
+//
+// AUDIT-FIX (2026-05-25 KRIT TS#1+#2):
+// 1. Kelly tier multipliers HALVED here because Rust applies `factor × tier ×
+//    ks.fraction(=0.5)` while TS engine multiplies only by `tier`. Mirroring
+//    the Rust EFFECTIVE multipliers (2.0×0.5=1.0, 1.5×0.5=0.75, etc).
+// 2. `reentryAfterStop` REMOVED: Rust template has `reentry_after_stop` set
+//    but TS V4 engine (`ftmoLiveEngineV4.ts`) does NOT implement it →
+//    silently dropped at live runtime → expected -3 to -8pp drift on
+//    SHORTS_AGG. Until reentry handler is wired into TS engine, mirror
+//    without the field so backtest ≈ live.
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_SHORTS_AGG: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_SHORTS_ONLY,
+    mutexLongShort: true,
+    maxConcurrentTrades: 25,
+    allowedHoursUtc: undefined,
+    kellySizing: {
+      windowSize: 30,
+      minTrades: 10,
+      tiers: [
+        // Halved to mirror Rust effective: factor × tier × fraction(0.5)
+        { winRateAbove: 0.65, multiplier: 1.0 },
+        { winRateAbove: 0.55, multiplier: 0.75 },
+        { winRateAbove: 0.45, multiplier: 0.5 },
+        { winRateAbove: 0.0, multiplier: 0.25 },
+      ],
+    },
+  };
+// 2026-05-25 RISK06 — TS-mirror of v5_amber_max_passlock with riskFrac × 0.6.
+// Used as Account-C P1 in GA Stack-4 winner (97.28% OOS).
+//
+// AUDIT-FIX KRIT TS#3: Rust SETS riskFrac absolutely. TS now also sets the
+// per-asset riskFrac to (base × 0.6). The base AMBER riskFrac is 1.0 per
+// `make_assets`. So absolute target = 0.6.
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_RISK06: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK,
+    assets: FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK.assets.map((a) => ({
+      ...a,
+      // KRIT #3 fix: absolute = base_amber_risk(1.0) × 0.6 = 0.6
+      // Was `(a.riskFrac ?? 0.01) * 0.6` which silently fell back to 0.006
+      // for any undefined-riskFrac asset.
+      riskFrac: a.riskFrac !== undefined ? a.riskFrac * 0.6 : 0.6,
+    })),
+  };
+// 2026-05-25 RISK05 — TS-mirror of v5_amber_max_passlock with riskFrac × 0.5.
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_RISK05: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK,
+    assets: FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK.assets.map((a) => ({
+      ...a,
+      riskFrac: a.riskFrac !== undefined ? a.riskFrac * 0.5 : 0.5,
+    })),
+  };
+// 2026-05-19 MR variant — same engine stack, but mean-revert signal class.
+// Flips `invertDirection` and `disableShort` off per asset so RSI MR
+// longs/shorts pass unmodified, and adds `meanReversionSource` so the
+// `--signals meanrev` path uses the canonical thresholds. Mirrors engine-rust
+// v5_amber_max_mr_passlock().
+export const FTMO_DAYTRADE_24H_V5_AMBER_MAX_MR_PASSLOCK: FtmoDaytrade24hConfig =
+  {
+    ...FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK,
+    assets: FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK.assets.map((a) => ({
+      ...a,
+      invertDirection: false,
+      disableShort: false,
+    })),
+    meanReversionSource: {
+      period: 14,
+      oversold: 25,
+      overbought: 75,
+      cooldownBars: 8,
+      sizeMult: 0.5,
+    },
+    crossAssetFiltersExtra: [_CROSS_BNB_18_50],
+  };
+// 2026-05-13 RUBIN + PASSLOCK — closeAllOnTargetReached. Mirrors engine-rust
+// v5_rubin_passlock().
+export const FTMO_DAYTRADE_24H_V5_RUBIN_PASSLOCK: FtmoDaytrade24hConfig = {
+  ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_RUBIN,
+  closeAllOnTargetReached: true,
+  atrStop: { period: 56, stopMult: 2 },
+  crossAssetFiltersExtra: [_CROSS_BNB_18_50],
 };
 export const FTMO_DAYTRADE_24H_V5_OBSIDIAN_PASSLOCK: FtmoDaytrade24hConfig = {
   ...FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_OBSIDIAN,

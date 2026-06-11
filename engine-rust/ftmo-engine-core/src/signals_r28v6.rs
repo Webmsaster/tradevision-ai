@@ -18,13 +18,14 @@
 use crate::candle::Candle;
 use crate::config::{AssetConfig, EngineConfig};
 use crate::detector_filters::{
-    adx, choppiness_index, cross_asset_filter_allows, htf_trend_allows, rsi_filter_allows,
+    adx, choppiness_index, cross_asset_filter_allows, htf_macd_hist_allows, htf_trend_allows,
+    rsi_filter_allows,
 };
 use crate::indicators::{atr, rsi, sma};
 use crate::news::NewsEvent;
 use crate::position::PositionSide;
 use crate::signal::PollSignal;
-use crate::sizing::resolve_sizing_factor;
+use crate::sizing::{apply_post_factor_caps, resolve_sizing_factor};
 use crate::state::EngineState;
 
 /// R29-R7: gate entry on perp funding-rate crowdedness.
@@ -114,6 +115,19 @@ pub struct R28V6Params {
     /// Optional HTF EMA-fast/slow trend confirmation.
     pub htf_fast: usize,
     pub htf_slow: usize,
+
+    /// Detector #13 (2026-05-14) — Higher-timeframe MACD-histogram trend
+    /// confluence gate. When `htf_macd_enabled` is true and `inputs.htf_closes`
+    /// is supplied, the entry must agree with the HTF MACD-hist sign AND
+    /// rising/falling direction over `htf_macd_rising_lookback` bars.
+    /// `htf_macd_min_magnitude` rejects entries when `|hist|` sits inside a
+    /// near-zero noise band (0.0 disables that filter).
+    pub htf_macd_enabled: bool,
+    pub htf_macd_fast: usize,
+    pub htf_macd_slow: usize,
+    pub htf_macd_signal: usize,
+    pub htf_macd_rising_lookback: usize,
+    pub htf_macd_min_magnitude: f64,
 }
 
 impl R28V6Params {
@@ -144,6 +158,17 @@ impl R28V6Params {
             rsi_short_min: None,
             htf_fast: scale_period(9),
             htf_slow: scale_period(21),
+            // Detector #13 defaults — gate dormant until the caller flips
+            // `htf_macd_enabled` (e.g. via `--use-htf-macd-gate` CLI flag).
+            // Periods are the classic MACD(12, 26, 9). `rising_lookback = 1`
+            // = compare current vs previous bar. `min_magnitude = 0.0`
+            // = no near-zero band filter.
+            htf_macd_enabled: false,
+            htf_macd_fast: 12,
+            htf_macd_slow: 26,
+            htf_macd_signal: 9,
+            htf_macd_rising_lookback: 1,
+            htf_macd_min_magnitude: 0.0,
         }
     }
 }
@@ -161,6 +186,14 @@ pub struct R28V6Inputs<'a> {
     /// that bar (skip the gate, don't reject the entry). Length must match
     /// `candles.len()`.
     pub funding_series: Option<&'a [Option<f64>]>,
+    /// 2026-05-14 Detector #34 — Coinbase-Binance Premium series, aligned
+    /// 1:1 onto candle openTimes by `loader::align_cb_premium`. Each entry
+    /// is the fractional premium `(cb_close - bn_close) / bn_close` (e.g.
+    /// `Some(0.0015)` = +15 bp Coinbase richer). `None` element = no data
+    /// for that bar (Coinbase feed gap → voter abstains rather than mis-
+    /// fires). Length must match `candles.len()`. Consumed by the regime-
+    /// confluence voter only — the standalone R28V6 path ignores this slot.
+    pub cb_premium_series: Option<&'a [Option<f64>]>,
 }
 
 pub fn detect_r28_v6(
@@ -180,10 +213,18 @@ pub fn detect_r28_v6(
     // (TS fires on green-bar bursts regardless of trend; Rust required
     // SMA-slow to be sloping the "right" way too).
     let invert = asset.effective_invert_direction(cfg);
-    let candidates: &[PositionSide] = if asset.disable_short {
-        &[PositionSide::Long]
-    } else {
-        &[PositionSide::Long, PositionSide::Short]
+    // 2026-05-13 Codex HIGH FIX (Fix 6): honor disable_long (was unimplemented)
+    // and deactivate_after_day. TS reference: ftmoLiveEngineV4.ts:1787-1792.
+    if let Some(deact) = asset.deactivate_after_day {
+        if state.day >= deact {
+            return None;
+        }
+    }
+    let candidates: &[PositionSide] = match (asset.disable_long, asset.disable_short) {
+        (true, true) => &[],
+        (true, false) => &[PositionSide::Short],
+        (false, true) => &[PositionSide::Long],
+        (false, false) => &[PositionSide::Long, PositionSide::Short],
     };
 
     for &direction in candidates {
@@ -272,13 +313,18 @@ fn try_detect_direction(
         }
         all_match
     } else {
-        // Fallback: SMA-fast pullback-recovery (legacy Rust default —
-        // operates on the full slice including bar `i`).
+        // Fallback: SMA-fast pullback-recovery.
+        // R29-Rust-Phase2 lookahead fix: candles[i] is the entry-bar
+        // (entry-execution @ candles[i].open). The trigger must therefore
+        // reference data available BEFORE entry, i.e. candles[trigger_idx]
+        // = candles[i-1]. Reading sma_fast[i] (which folds in close[i]) or
+        // candles[i].low/high/close would be future-data at signal time.
         let sma_fast = sma(&closes, params.fast_period);
-        let cur_fast = sma_fast[i]?;
+        let cur_fast = sma_fast[trigger_idx]?;
+        let trigger_bar = candles[trigger_idx];
         match direction {
-            PositionSide::Long => last.low <= cur_fast && last.close > cur_fast,
-            PositionSide::Short => last.high >= cur_fast && last.close < cur_fast,
+            PositionSide::Long => trigger_bar.low <= cur_fast && trigger_bar.close > cur_fast,
+            PositionSide::Short => trigger_bar.high >= cur_fast && trigger_bar.close < cur_fast,
         }
     };
     if !triggered {
@@ -311,12 +357,19 @@ fn try_detect_direction(
     }
 
     // 4. Choppiness gate.
+    // 2026-05-16 Audit (Round 8 / signals_r28v6 agent #6): mirror the ADX gate
+    // pattern — abstain on `None` rather than letting an undefined choppiness
+    // value silently allow the entry. Without this branch, warm-up bars
+    // (< choppiness_period available) fired entries that an ADX-gated config
+    // would have blocked. ~0.1pp pass-rate asymmetry.
     if let (Some(p), Some(max)) = (params.choppiness_period, params.choppiness_max) {
         let series = choppiness_index(candles, p);
         if let Some(v) = series[trigger_idx] {
             if v > max {
                 return None;
             }
+        } else {
+            return None;
         }
     }
 
@@ -324,6 +377,28 @@ fn try_detect_direction(
     if let Some(htf_closes) = inputs.htf_closes {
         if !htf_trend_allows(htf_closes, params.htf_fast, params.htf_slow, direction) {
             return None;
+        }
+    }
+
+    // 5b. Detector #13 — HTF MACD-histogram trend confluence gate. Runs in
+    // addition to the EMA-fast/slow gate above; both must agree when both
+    // are active. Dormant by default; user activates via CLI
+    // `--use-htf-macd-gate`. Source: `htf_closes` is the same downsampled
+    // buffer as the EMA gate, populated AFTER step_bar in the sweep loop
+    // (Codex HIGH FIX #4 pattern) so no entry-bar lookahead is introduced.
+    if params.htf_macd_enabled {
+        if let Some(htf_closes) = inputs.htf_closes {
+            if !htf_macd_hist_allows(
+                htf_closes,
+                params.htf_macd_fast,
+                params.htf_macd_slow,
+                params.htf_macd_signal,
+                params.htf_macd_rising_lookback,
+                direction,
+                params.htf_macd_min_magnitude,
+            ) {
+                return None;
+            }
         }
     }
 
@@ -345,14 +420,15 @@ fn try_detect_direction(
 
     // 7b. R29-R7: Funding-rate filter.
     //
-    // 2026-05-13 Bug-Audit Round 2 — Bug D FIX: TS reads
-    // `fundingSeries[i]` (entry-bar candle), Rust was reading at
-    // `trigger_idx = i-1`. At 8h settlement boundary bars (~1.5% of 30m
-    // bars per day) the two indices reference DIFFERENT funding rates
-    // because forward-fill convention places the new rate at the
-    // settlement candle. Read at `i` (entry-bar) for parity with TS
-    // ftmoDaytrade24h.ts:4226.
-    if !funding_filter_allows(cfg, asset, direction, inputs.funding_series, i) {
+    // 2026-05-13 Codex Round 7 #B1 RE-FIX: previous Bug-D fix mis-cited
+    // TS as "reads at entry-bar". Actually TS `ftmoDaytrade24h.ts:4231`
+    // reads `fundingSeries[i]` where `i` is the TS detectAsset LOOP
+    // variable (signal-bar; entry is `eb = candles[i+1]`). So TS reads
+    // at the TRIGGER bar, not the entry bar. Rust's `trigger_idx = i-1`
+    // (where Rust's `i` = entry-bar) IS the matching index. The 8h-
+    // boundary forward-fill that Bug-D was meant to align is now
+    // correctly anchored at the trigger bar.
+    if !funding_filter_allows(cfg, asset, direction, inputs.funding_series, trigger_idx) {
         return None;
     }
 
@@ -387,14 +463,40 @@ fn try_detect_direction(
         }
     }
 
-    // 11. Sizing pipeline.
+    // 11. Sizing pipeline. 2026-05-13 Codex Audit Round 3 — Fix 2:
+    // post-factor caps (dayBased + maxRiskFrac + LIVE_LOSS_CAP) are now
+    // centralized in sizing::apply_post_factor_caps so MR/Breakout/Trend/
+    // V12/ForexMR/R29R5 detectors get the same safety pipeline.
     let factor = resolve_sizing_factor(state, cfg, last.open_time);
-    let mut eff_risk = params.base_risk_frac * factor;
-    if !cfg.bypass_live_caps {
-        if let Some(caps) = cfg.live_caps.as_ref() {
-            eff_risk = eff_risk.min(caps.max_risk_frac);
-        }
-    }
+    // 2026-05-14 Detector #11 Phase-1 — funding-cost sizing modifier.
+    // Multiplicative factor in [min_factor, 1.0]; only penalises pay-side.
+    // Reads funding[trigger_idx] (lookahead-safe — same index already used
+    // by the funding-rate FILTER gate above at L364). Expected-hold proxy
+    // = cfg.hold_bars converted to 8h-buckets via bar_minutes.
+    let funding_factor: f64 = if let Some(fcs) = cfg.funding_cost_sizing.as_ref() {
+        // 8h-buckets covered by an average held trade. bar_minutes is
+        // typically 30 → buckets = hold_bars * 30 / (60 * 8) = hold_bars / 16.
+        // Guard div-by-zero by clamping bar_minutes >= 1.
+        let bar_min = cfg.bar_minutes.max(1) as f64;
+        let buckets = (cfg.hold_bars as f64 * bar_min) / (60.0 * 8.0);
+        crate::sizing::funding_cost_modifier(
+            direction,
+            inputs.funding_series,
+            trigger_idx,
+            buckets.max(0.0),
+            fcs.alpha,
+            fcs.norm_window_buckets as usize,
+            fcs.min_factor,
+        )
+    } else {
+        1.0
+    };
+    let eff_risk = apply_post_factor_caps(
+        cfg,
+        state,
+        params.base_risk_frac * factor * funding_factor,
+        stop_pct,
+    );
     if eff_risk <= 0.0 {
         return None;
     }
@@ -512,6 +614,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: None,
+            cb_premium_series: None,
         };
         assert!(detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs).is_none());
     }
@@ -531,16 +634,20 @@ mod tests {
         p.rsi_long_max = None;
 
         let mut candles = ramp(80, 100.0, 0.5);
-        // Force the last bar to dip to/below SMA-fast then close above.
-        let last = candles.last_mut().unwrap();
-        last.low = 130.0;
-        last.high = 145.0;
-        last.close = 144.0;
+        // 2026-05-14 lookahead fix: trigger now evaluated on signal-bar
+        // (i-1), not entry-bar (i). Pullback dip/close-above must therefore
+        // land on candles[len-2], not candles[len-1].
+        let sig_idx = candles.len() - 2;
+        let sig_bar = candles.get_mut(sig_idx).unwrap();
+        sig_bar.low = 130.0;
+        sig_bar.high = 145.0;
+        sig_bar.close = 144.0;
         let inputs = R28V6Inputs {
             htf_closes: None,
             cross_asset_closes: None,
             news_events: None,
             funding_series: None,
+            cb_premium_series: None,
         };
         let sig = detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs);
         assert!(sig.is_some(), "expected long fire");
@@ -562,11 +669,15 @@ mod tests {
         p.rsi_long_max = None;
 
         let mut candles = ramp(80, 100.0, 0.5);
+        // 2026-05-14 lookahead fix: trigger evaluated on signal-bar (i-1).
+        // News blackout test still uses entry-bar (last) open_time because
+        // news_blackout checks `last.open_time` (entry bar).
         let last_ts = candles.last().unwrap().open_time;
-        let last = candles.last_mut().unwrap();
-        last.low = 130.0;
-        last.high = 145.0;
-        last.close = 144.0;
+        let sig_idx = candles.len() - 2;
+        let sig_bar = candles.get_mut(sig_idx).unwrap();
+        sig_bar.low = 130.0;
+        sig_bar.high = 145.0;
+        sig_bar.close = 144.0;
         let events = vec![NewsEvent {
             name: "FOMC".into(),
             ts_ms: last_ts,
@@ -578,6 +689,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: Some(&events),
             funding_series: None,
+            cb_premium_series: None,
         };
         assert!(detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs).is_none());
     }
@@ -606,10 +718,12 @@ mod tests {
         p.rsi_short_min = None;
 
         let mut candles = ramp(80, 100.0, 0.5);
-        let last = candles.last_mut().unwrap();
-        last.low = 130.0;
-        last.high = 145.0;
-        last.close = 144.0;
+        // 2026-05-14 lookahead fix: trigger on signal-bar (i-1).
+        let sig_idx = candles.len() - 2;
+        let sig_bar = candles.get_mut(sig_idx).unwrap();
+        sig_bar.low = 130.0;
+        sig_bar.high = 145.0;
+        sig_bar.close = 144.0;
 
         // Build crowded-long funding series: 0.001 (= 10bp, > maxFL=0.0005).
         let funding: Vec<Option<f64>> = (0..candles.len()).map(|_| Some(0.001)).collect();
@@ -618,6 +732,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: Some(&funding),
+            cb_premium_series: None,
         };
         assert!(
             detect_r28_v6(
@@ -640,6 +755,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: Some(&funding_ok),
+            cb_premium_series: None,
         };
         let mut s2 = EngineState::initial("x");
         let sig = detect_r28_v6(&mut s2, &cfg, &a, "BTCUSDT", &candles, &p, &inputs_long_ok);
@@ -652,16 +768,19 @@ mod tests {
         // ── Short-side test: downtrend + funding < minFS → blocked ──
         let mut s3 = EngineState::initial("x");
         let mut candles_dn = ramp(80, 200.0, -0.5);
-        let last = candles_dn.last_mut().unwrap();
-        last.high = 170.0;
-        last.low = 155.0;
-        last.close = 156.0;
+        // 2026-05-14 lookahead fix: trigger on signal-bar (i-1).
+        let sig_idx_dn = candles_dn.len() - 2;
+        let sig_bar_dn = candles_dn.get_mut(sig_idx_dn).unwrap();
+        sig_bar_dn.high = 170.0;
+        sig_bar_dn.low = 155.0;
+        sig_bar_dn.close = 156.0;
         let funding_neg: Vec<Option<f64>> = (0..candles_dn.len()).map(|_| Some(-0.001)).collect();
         let inputs_short_blocked = R28V6Inputs {
             htf_closes: None,
             cross_asset_closes: None,
             news_events: None,
             funding_series: Some(&funding_neg),
+            cb_premium_series: None,
         };
         assert!(
             detect_r28_v6(
@@ -692,6 +811,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: Some(&funding_extreme_neg),
+            cb_premium_series: None,
         };
         let sig_short = detect_r28_v6(
             &mut s4,
@@ -726,16 +846,19 @@ mod tests {
         p.rsi_long_max = None;
 
         let mut candles = ramp(80, 100.0, 0.5);
-        let last = candles.last_mut().unwrap();
-        last.low = 130.0;
-        last.high = 145.0;
-        last.close = 144.0;
+        // 2026-05-14 lookahead fix: trigger on signal-bar (i-1).
+        let sig_idx = candles.len() - 2;
+        let sig_bar = candles.get_mut(sig_idx).unwrap();
+        sig_bar.low = 130.0;
+        sig_bar.high = 145.0;
+        sig_bar.close = 144.0;
         let funding: Vec<Option<f64>> = (0..candles.len()).map(|_| Some(0.0008)).collect();
         let inputs = R28V6Inputs {
             htf_closes: None,
             cross_asset_closes: None,
             news_events: None,
             funding_series: Some(&funding),
+            cb_premium_series: None,
         };
         let sig = detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs);
         assert!(sig.is_some(), "per-asset override should permit entry");
@@ -829,6 +952,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: None,
+            cb_premium_series: None,
         };
         let sig = detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs);
         assert!(
@@ -872,6 +996,7 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: None,
+            cb_premium_series: None,
         };
         let sig = detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs);
         assert!(
@@ -906,11 +1031,84 @@ mod tests {
             cross_asset_closes: None,
             news_events: None,
             funding_series: None,
+            cb_premium_series: None,
         };
         let sig = detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs);
         assert!(
             sig.is_some(),
             "per-asset trigger_bars=1 should permit entry"
+        );
+        assert_eq!(sig.unwrap().direction, PositionSide::Long);
+    }
+
+    /// Detector #13 — when `htf_macd_enabled` and the HTF stream is in a
+    /// downtrend, a primary Long entry that would otherwise fire must be
+    /// blocked by the MACD-hist gate (hist negative → long disallowed).
+    #[test]
+    fn macd_gate_blocks_against_htf_trend() {
+        let mut s = EngineState::initial("x");
+        // Pullback-recovery fallback path keeps the test self-contained.
+        let mut cfg = cfg();
+        cfg.trigger_bars = 0;
+        let a = asset();
+        let mut p = R28V6Params::default_for(&a, &cfg);
+        p.adx_min = None;
+        p.choppiness_max = None;
+        p.rsi_long_max = None;
+        // Activate Detector #13 with classic MACD(12, 26, 9).
+        p.htf_macd_enabled = true;
+        p.htf_macd_fast = 12;
+        p.htf_macd_slow = 26;
+        p.htf_macd_signal = 9;
+        p.htf_macd_rising_lookback = 1;
+
+        // Primary uptrend with a pullback-and-recovery on the signal bar
+        // (i-1, just-closed) → would normally trigger a long entry.
+        // 2026-05-14 lookahead fix: trigger on signal-bar (i-1) not entry-bar.
+        let mut candles = ramp(80, 100.0, 0.5);
+        let sig_idx = candles.len() - 2;
+        let sig_bar = candles.get_mut(sig_idx).unwrap();
+        sig_bar.low = 130.0;
+        sig_bar.high = 145.0;
+        sig_bar.close = 144.0;
+
+        // HTF closes describe a clear DOWNTREND → MACD-hist negative →
+        // long must be blocked. Quadratic acceleration keeps the histogram
+        // strictly in expansion (a purely linear ramp would converge the
+        // Wilder-EMA-difference to a steady-state constant).
+        let htf_down: Vec<f64> = (0..120)
+            .map(|i| 200.0 - i as f64 * 0.5 - (i as f64).powi(2) * 0.002)
+            .collect();
+        let inputs_blocked = R28V6Inputs {
+            htf_closes: Some(&htf_down),
+            cross_asset_closes: None,
+            news_events: None,
+            funding_series: None,
+            cb_premium_series: None,
+        };
+        assert!(
+            detect_r28_v6(&mut s, &cfg, &a, "BTCUSDT", &candles, &p, &inputs_blocked).is_none(),
+            "MACD gate must block long when HTF histogram is negative"
+        );
+
+        // Same primary candles but HTF in a strong UPTREND → MACD-hist
+        // positive and rising → gate allows long. We re-run with a fresh
+        // state to avoid cooldown/streak carryover from the blocked attempt.
+        let mut s2 = EngineState::initial("x");
+        let htf_up: Vec<f64> = (0..120)
+            .map(|i| 100.0 + i as f64 * 0.5 + (i as f64).powi(2) * 0.002)
+            .collect();
+        let inputs_allowed = R28V6Inputs {
+            htf_closes: Some(&htf_up),
+            cross_asset_closes: None,
+            news_events: None,
+            funding_series: None,
+            cb_premium_series: None,
+        };
+        let sig = detect_r28_v6(&mut s2, &cfg, &a, "BTCUSDT", &candles, &p, &inputs_allowed);
+        assert!(
+            sig.is_some(),
+            "MACD gate must allow long when HTF histogram is positive-rising"
         );
         assert_eq!(sig.unwrap().direction, PositionSide::Long);
     }

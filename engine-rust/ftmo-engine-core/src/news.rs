@@ -37,6 +37,19 @@ impl NewsEvent {
 /// Hardcoded list of FTMO-relevant macro events for 2026. Default-OFF —
 /// callers must explicitly opt in. Values are placeholders pending the
 /// final 2026 calendar (Fed FOMC, ECB, NFP, CPI).
+// 2026-05-16 Round 10 KRIT FIX (news-blackout agent): the previous hardcoded
+// day offsets had 1-8 day drift vs the actual Fed-published 2026 FOMC schedule
+// (federalreserve.gov/monetarypolicy/fomccalendars.htm). FOMC announcements
+// release at 14:00 ET = 18:00 UTC during EDT (Mar–Oct) and 19:00 UTC during
+// EST (Jan/Dec). Replaced placeholder math with verified day-of-year offsets:
+//   Jan 28 (day 27, EST 19:00 UTC)
+//   Mar 18 (day 76, EDT 18:00 UTC)
+//   Apr 29 (day 118, EDT 18:00 UTC) — was incorrectly labeled "May" + off 6d
+//   Jun 17 (day 167, EDT 18:00 UTC) — was off 1d
+//   Jul 29 (day 209, EDT 18:00 UTC) — was off 1h
+//   Sep 16 (day 258, EDT 18:00 UTC) — was off 1d
+//   Oct 28 (day 300, EDT 18:00 UTC) — was incorrectly labeled "Nov" + off 8d
+//   Dec 9  (day 342, EST 19:00 UTC) — was off 1d
 pub fn default_2026_events() -> Vec<NewsEvent> {
     let h = 3_600_000i64;
     let day = 86_400_000i64;
@@ -51,43 +64,43 @@ pub fn default_2026_events() -> Vec<NewsEvent> {
         },
         NewsEvent {
             name: "FOMC Mar 2026".into(),
-            ts_ms: jan1_2026 + 76 * day + 19 * h,
+            ts_ms: jan1_2026 + 76 * day + 18 * h,
             pre_minutes: 60,
             post_minutes: 60,
         },
         NewsEvent {
-            name: "FOMC May 2026".into(),
-            ts_ms: jan1_2026 + 124 * day + 19 * h,
+            name: "FOMC Apr 2026".into(),
+            ts_ms: jan1_2026 + 118 * day + 18 * h,
             pre_minutes: 60,
             post_minutes: 60,
         },
         NewsEvent {
             name: "FOMC Jun 2026".into(),
-            ts_ms: jan1_2026 + 168 * day + 19 * h,
+            ts_ms: jan1_2026 + 167 * day + 18 * h,
             pre_minutes: 60,
             post_minutes: 60,
         },
         NewsEvent {
             name: "FOMC Jul 2026".into(),
-            ts_ms: jan1_2026 + 209 * day + 19 * h,
+            ts_ms: jan1_2026 + 209 * day + 18 * h,
             pre_minutes: 60,
             post_minutes: 60,
         },
         NewsEvent {
             name: "FOMC Sep 2026".into(),
-            ts_ms: jan1_2026 + 259 * day + 19 * h,
+            ts_ms: jan1_2026 + 258 * day + 18 * h,
             pre_minutes: 60,
             post_minutes: 60,
         },
         NewsEvent {
-            name: "FOMC Nov 2026".into(),
-            ts_ms: jan1_2026 + 308 * day + 19 * h,
+            name: "FOMC Oct 2026".into(),
+            ts_ms: jan1_2026 + 300 * day + 18 * h,
             pre_minutes: 60,
             post_minutes: 60,
         },
         NewsEvent {
             name: "FOMC Dec 2026".into(),
-            ts_ms: jan1_2026 + 343 * day + 19 * h,
+            ts_ms: jan1_2026 + 342 * day + 19 * h,
             pre_minutes: 60,
             post_minutes: 60,
         },

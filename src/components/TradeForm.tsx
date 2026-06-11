@@ -100,6 +100,30 @@ export default function TradeForm({
   // Round 54 fix: deps reduced to [editTrade?.id, isOpen] — re-init only when actually
   // switching trades or open/close. Parent re-renders that pass a new editTrade object
   // identity (e.g. via spread) no longer obliterate user input.
+  //
+  // R29-Frontend-Audit Bug 7: keying on `editTrade?.id` alone also missed
+  // the case where a cloud-sync re-fetched the SAME id with updated
+  // field values — the form kept showing stale data the user thought
+  // they had saved. We now re-init when EITHER the id swaps (different
+  // trade) OR a meaningful payload field changes (entry/exit price,
+  // entry/exit date, direction, quantity). Pure cosmetic re-renders
+  // from the parent (same payload, new object identity from a spread)
+  // still preserve in-progress user input — the Round 54 guarantee.
+
+  // Content-fingerprint: a string that only changes when the underlying
+  // trade record changes, not on cosmetic re-renders. Cheap to compare
+  // by React's deps-array shallow check.
+  const editFingerprint = editTrade
+    ? [
+        editTrade.id,
+        editTrade.entryPrice,
+        editTrade.exitPrice,
+        editTrade.entryDate,
+        editTrade.exitDate,
+        editTrade.direction,
+        editTrade.quantity,
+      ].join("|")
+    : null;
 
   useEffect(() => {
     if (editTrade) {
@@ -129,7 +153,8 @@ export default function TradeForm({
     } else {
       resetForm();
     }
-  }, [editTrade?.id, isOpen]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editFingerprint, isOpen]);
 
   // Escape key and body scroll lock
   useEffect(() => {
@@ -189,7 +214,13 @@ export default function TradeForm({
     const lev = parseLocaleNum(leverage);
     const f = parseLocaleNum(fees);
 
-    if (ep <= 0 || qty <= 0 || !exitPrice) {
+    // 2026-05-24 Wave8 CRITICAL FIX (Agent 2): prior guard `!exitPrice`
+    // checked the raw STRING. For exitPrice="0", `!"0"` is false (truthy)
+    // — guard let xp=0 through to calculatePnl, where positionValue =
+    // exitPrice * qty = 0 → margin = 0 → pnlPercent path returned 0 with
+    // a real entry price, silently misreporting the trade as "no P&L"
+    // instead of warning the user. Validate the PARSED value too.
+    if (ep <= 0 || xp <= 0 || qty <= 0 || !exitPrice) {
       return null;
     }
 
@@ -270,7 +301,13 @@ export default function TradeForm({
   }
 
   // ---- submit ----
-  function handleSubmit(e: React.FormEvent) {
+  // 2026-05-16 Round 9 WARN FIX (TradeForm agent): made async so we can
+  // `await onSubmit(trade)` before clearing submitting flag. Previously
+  // setSubmitting(false) ran synchronously while onSubmit was still
+  // resolving its Supabase write → button re-enabled, user could
+  // double-submit, second click after resetForm() hit reset state
+  // and could collide with the still-flying first request.
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     // Round 54 fix #4: hard-block double-submit (rapid double-click).
     if (submitting) return;
@@ -327,7 +364,10 @@ export default function TradeForm({
         pnlPercent,
       } as Trade;
 
-      onSubmit(trade);
+      // 2026-05-16 Round 9 WARN FIX: await onSubmit so async cloud-writes
+      // are settled before submitting flag clears. If onSubmit returns
+      // void (legacy callers), await is a no-op.
+      await onSubmit(trade);
       resetForm();
       onClose();
     } finally {

@@ -99,6 +99,7 @@ fn sixty_day_soak_preserves_invariants() {
             &BarInput {
                 candles_by_source: &feed,
                 atr_series_by_source: &atr_feed,
+                funding_by_source: None,
                 signals,
             },
             &cfg,

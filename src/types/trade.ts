@@ -67,6 +67,37 @@ export function isValidTrade(obj: unknown): obj is Trade {
     (Array.isArray(t.tags) && t.tags.every((x) => typeof x === "string"));
   const accountIdValid =
     t.accountId === undefined || typeof t.accountId === "string";
+  // 2026-05-16 Round 9 WARN FIX (trade types agent): validate optional
+  // enum fields too. Previously a JSON import payload with garbage
+  // emotion ("blast") or marketCondition ("<script>") slipped through
+  // because only required fields were validated. `dbToTrade` allowlists
+  // these, but isValidTrade is also used at the JSON-import boundary
+  // (see JSDoc). Mirror the allow-lists here.
+  const emotionValid =
+    t.emotion === undefined ||
+    (typeof t.emotion === "string" &&
+      ["confident", "neutral", "fearful", "greedy", "fomo", "revenge"].includes(
+        t.emotion,
+      ));
+  const marketConditionValid =
+    t.marketCondition === undefined ||
+    (typeof t.marketCondition === "string" &&
+      ["trending", "ranging", "volatile", "calm"].includes(t.marketCondition));
+  const confidenceValid =
+    t.confidence === undefined ||
+    (typeof t.confidence === "number" &&
+      Number.isFinite(t.confidence) &&
+      t.confidence >= 1 &&
+      t.confidence <= 5);
+  const screenshotValid =
+    t.screenshot === undefined || typeof t.screenshot === "string";
+  const setupTypeValid =
+    t.setupType === undefined || typeof t.setupType === "string";
+  const timeframeValid =
+    t.timeframe === undefined || typeof t.timeframe === "string";
+  const strategyValid =
+    t.strategy === undefined || typeof t.strategy === "string";
+  const notesValid = t.notes === undefined || typeof t.notes === "string";
   // R67-Final (R15-A3 perf): exitMs/entryMs are an OPTIONAL pre-parsed
   // numeric cache populated at the storage boundary. Tolerate either
   // missing or finite-number values; reject anything else so corrupt
@@ -104,7 +135,15 @@ export function isValidTrade(obj: unknown): obj is Trade {
     typeof t.pnlPercent === "number" &&
     Number.isFinite(t.pnlPercent) &&
     tagsValid &&
-    accountIdValid
+    accountIdValid &&
+    emotionValid &&
+    marketConditionValid &&
+    confidenceValid &&
+    screenshotValid &&
+    setupTypeValid &&
+    timeframeValid &&
+    strategyValid &&
+    notesValid
   );
 }
 

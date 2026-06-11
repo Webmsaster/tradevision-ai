@@ -89,28 +89,40 @@ export function detectLiveSignal(
     );
   }
 
-  // R4-A1 audit fix #2 (HIGH): refuse to fire on a still-forming bar.
-  // `loadBinanceHistory` sets `isFinal = closeTime < Date.now()` but
-  // `detectLiveSignal` previously ignored that flag — a cron run that fires
-  // <1ms after kline-API serves an in-progress next bar would alert on a
-  // partial candle. Drop the trailing bar if not final.
-  const lastBtcRaw = btcCandles[btcCandles.length - 1]!;
-  const lastEthRaw = ethCandles[ethCandles.length - 1]!;
-  if (lastBtcRaw.isFinal === false || lastEthRaw.isFinal === false) {
+  // 2026-05-13 Codex Round 7 #B18 KRITISCH FIX: previously we REJECTED if
+  // trailing bar was in-progress. But Binance's klines API ALWAYS returns
+  // the current in-progress bar as the last element, so the detector
+  // effectively NEVER fired in production — every cron run early-returned
+  // with "trailing bar not yet closed". The just-closed bar (the one we
+  // want to signal on) is at index `length-2`, but the detector never
+  // inspected it. Fix: TRIM in-progress trailing bars before extracting
+  // b1, so b1 = the most-recent CLOSED bar regardless of in-progress
+  // trailing data.
+  while (
+    btcCandles.length &&
+    btcCandles[btcCandles.length - 1]!.isFinal === false
+  ) {
+    btcCandles.pop();
+  }
+  while (
+    ethCandles.length &&
+    ethCandles[ethCandles.length - 1]!.isFinal === false
+  ) {
+    ethCandles.pop();
+  }
+  if (btcCandles.length === 0 || ethCandles.length === 0) {
     return mkNoSignal(
       "BEAR_CHOP",
       "iter212",
-      [
-        `Finality gate: trailing bar still forming (btc.isFinal=${lastBtcRaw.isFinal}, eth.isFinal=${lastEthRaw.isFinal})`,
-      ],
-      "trailing bar not yet closed",
+      ["No closed bars after trimming in-progress trailing"],
+      "no closed bars",
       {
-        btcClose: lastBtcRaw.close,
+        btcClose: 0,
         btcEma10: 0,
         btcEma15: 0,
         btcUptrend: false,
         btcMom24h: 0,
-        ethClose: lastEthRaw.close,
+        ethClose: 0,
       },
     );
   }
@@ -140,12 +152,12 @@ export function detectLiveSignal(
       ],
       "candle timeframe mismatch (expected 4h)",
       {
-        btcClose: lastBtcRaw.close,
+        btcClose: btcCandles[btcCandles.length - 1]!.close,
         btcEma10: 0,
         btcEma15: 0,
         btcUptrend: false,
         btcMom24h: 0,
-        ethClose: lastEthRaw.close,
+        ethClose: ethCandles[ethCandles.length - 1]!.close,
       },
     );
   }
@@ -450,7 +462,7 @@ export function renderAlert(a: SignalAlert): string {
       `    Use 1:2 leverage. Base position size: 100% risk allocation.`,
     );
     lines.push(
-      `    If account equity > +1.5%, ADD 4× pyramid on this signal too.`,
+      `    If account equity &gt; +1.5%, ADD 4× pyramid on this signal too.`,
     );
   } else {
     lines.push(`⏸  NO SIGNAL — ${htmlEscape(a.skipReason ?? "")}`);

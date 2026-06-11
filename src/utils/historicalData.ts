@@ -44,7 +44,11 @@ type RawKline = [
 function parseKline(row: RawKline): Candle {
   // BUGFIX 2026-04-28: was hardcoded isFinal=true → live polling within seconds
   // of a bar close could include the still-forming next bar (closeTime > now)
-  // → phantom signals on incomplete data. Now: closed only if closeTime <= now.
+  // → phantom signals on incomplete data. Now: closed only once we are strictly
+  // PAST the bar's closeTime (Binance closeTime is the bar's last ms, so the bar
+  // is final iff closeTime < now; using <= would mark it final during its own
+  // final millisecond = 1ms premature). 2026-05-21: comment corrected to match
+  // the (correct) code below.
   const closeTime = row[6];
   // Phase 33 (Indicators Audit Bug 4): NaN-validation. A single corrupt
   // Binance row (rare but happens during maintenance windows) was

@@ -1,0 +1,53 @@
+{
+  "_doc_": "Detector #11 Phase 0 — funding-cost bit-parity golden fixture (2026-05-14). Layout: 30 bars × 30min cadence = 15h coverage, starting at a UTC 8h boundary. Funding events at 3 bars (bar 0, bar 16 = +8h, bar 32 = +16h — last index in our 30-bar slice falls AFTER bar 29 so we generate enough for the slice). The expected_cases drive a direct test against compute_eff_pnl_with_funding and the in-test TS-reference walker (see funding_golden_fixture.rs).",
+  "bar_dur_ms": 1800000,
+  "bar0_open_time_ms": 1700006400000,
+  "n_bars": 50,
+  "funding": [
+    { "bar_idx": 0, "rate": 0.00012 },
+    { "bar_idx": 16, "rate": -0.0002 },
+    { "bar_idx": 32, "rate": 0.00015 }
+  ],
+  "_note_": "ts_open_time at boundary; 1700006400000 = floor(1.7e12 / 8h) * 8h. 8h_boundary check: (1700006400000 / (8*3600000)) * (8*3600000) == 1700006400000 → confirmed clean boundary.",
+  "expected_cases": [
+    {
+      "name": "long_three_bucket_24h",
+      "direction": "long",
+      "entry_offset_ms_from_bar0": 1800000,
+      "exit_offset_ms_from_bar0": 86400000,
+      "entry_price": 100.0,
+      "exit_price": 104.0,
+      "eff_risk": 0.4,
+      "leverage": 2.0,
+      "_walk_": "Entry at bar0+30min (NOT on boundary; bucket gets pushed to next 8h boundary). Buckets visited: 16 (+8h), 32 (+16h), 48 (+24h=86400000ms from bar0). funding[48] not in overrides → 0.0. sum = -0.00020 + 0.00015 + 0.0 = -0.00005. Long: raw -= -0.00005 → raw = 0.04 + 0.00005 = 0.04005.",
+      "expected_raw_pnl": 0.04005,
+      "expected_eff_pnl": 0.03204
+    },
+    {
+      "name": "short_entry_at_boundary",
+      "direction": "short",
+      "entry_offset_ms_from_bar0": 0,
+      "exit_offset_ms_from_bar0": 28800000,
+      "entry_price": 100.0,
+      "exit_price": 96.0,
+      "eff_risk": 0.4,
+      "leverage": 2.0,
+      "_walk_": "Entry AT bar0 (== boundary). Buckets visited: 0 (entry boundary itself), 16 (+8h = exit boundary). sum = 0.00012 + (-0.00020) = -0.00008. Short: raw -= sign*sum = raw - (-1)(-0.00008) = raw - 0.00008. Short from 100→96 = +4% raw → 0.04 - 0.00008 = 0.03992.",
+      "expected_raw_pnl": 0.03992,
+      "expected_eff_pnl": 0.031936
+    },
+    {
+      "name": "long_no_boundary_crossed",
+      "direction": "long",
+      "entry_offset_ms_from_bar0": 1800000,
+      "exit_offset_ms_from_bar0": 7200000,
+      "entry_price": 100.0,
+      "exit_price": 102.0,
+      "eff_risk": 0.4,
+      "leverage": 2.0,
+      "_walk_": "Entry at bar0+30min, exit at bar0+2h. Next 8h boundary = bar0+8h = 28800000ms. 28800000 > 7200000 (exit) → 0 buckets visited. raw unchanged.",
+      "expected_raw_pnl": 0.02,
+      "expected_eff_pnl": 0.016
+    }
+  ]
+}

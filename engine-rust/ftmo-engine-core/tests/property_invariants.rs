@@ -44,6 +44,7 @@ fn drive(
             &BarInput {
                 candles_by_source: &feed,
                 atr_series_by_source: &atr,
+                funding_by_source: None,
                 signals,
             },
             cfg,
@@ -204,6 +205,129 @@ proptest! {
             "day_index({h}h) = {di} too far from approx {approx}",
             h = bar_offset_hours, di = di_bar, approx = approx_days
         );
+    }
+
+    /// 2026-05-14 Detector #18 — multi-tier PTP state-corruption safety.
+    ///
+    /// Invariant: a multi-level PTP config with **one** level
+    ///   `[(trigger_pct, close_fraction)]`
+    /// must produce the same realised fraction and stop-price evolution as
+    /// the equivalent single-tier PTP config
+    ///   `{trigger_pct, close_fraction}`
+    /// when fed an identical bar that hits the trigger.
+    ///
+    /// Both branches in `process_position_exit_with_held` share the same
+    /// cost-adjustment, BE-shift, gap-past-trigger rule and stop-guard, so
+    /// running them over a randomised bar sequence must end at the same
+    /// final PnL bookkeeping. Catches regressions where the multi-tier
+    /// branch could mutate `pos.ptp_*` fields differently to the single
+    /// tier (e.g. forgetting to set `be_active` or rolling `ptp_level_idx`
+    /// past the end).
+    #[test]
+    fn ptp_multi_one_level_equals_single_tier(
+        trigger_bp in 100u32..400,        // 0.010..0.040 (in basis points)
+        fraction_bp in 100u32..900,       // 0.010..0.090
+        wick_above_trigger in 0.0f64..2.0, // pct headroom above trigger so the bar prints PTP
+        seed in 0u64..1_000_000,
+    ) {
+        use ftmo_engine_core::candle::Candle;
+        use ftmo_engine_core::config::{
+            EngineConfig, PartialTakeProfit, PartialTakeProfitLevel,
+        };
+        use ftmo_engine_core::exit::process_position_exit;
+        use ftmo_engine_core::position::{OpenPosition, PositionSide};
+
+        let trigger_pct = (trigger_bp as f64) / 10_000.0;
+        let close_fraction = (fraction_bp as f64) / 10_000.0;
+
+        // Build two cfgs that differ ONLY in the PTP branch used.
+        let mut cfg_single = EngineConfig::r28_v6_passlock_template();
+        cfg_single.partial_take_profit = Some(PartialTakeProfit {
+            trigger_pct,
+            close_fraction,
+        });
+        cfg_single.partial_take_profit_levels = None;
+
+        let mut cfg_multi = EngineConfig::r28_v6_passlock_template();
+        cfg_multi.partial_take_profit = None;
+        cfg_multi.partial_take_profit_levels = Some(vec![PartialTakeProfitLevel {
+            trigger_pct,
+            close_fraction,
+        }]);
+
+        // Long position; trigger_price = 100 * (1 + trigger_pct).
+        let make_pos = || OpenPosition {
+            ticket_id: "t".into(),
+            symbol: "BTC-TREND".into(),
+            source_symbol: "BTCUSDT".into(),
+            direction: PositionSide::Long,
+            entry_time: 0,
+            entry_price: 100.0,
+            initial_stop_pct: 0.02,
+            stop_price: 98.0,
+            tp_price: 110.0,
+            eff_risk: 0.4,
+            entry_bar_idx: 0,
+            high_watermark: 100.0,
+            be_active: false,
+            ptp_triggered: false,
+            ptp_realized_pct: 0.0,
+            ptp_level_idx: 0,
+            ptp_levels_realized: 0.0,
+            last_known_price: None,
+            trail_active: false,
+            trail_peak: 0.0,
+        };
+
+        // Bar that ticks the PTP. Use random non-degenerate wicks; ensure
+        // the low stays strictly above the BE stop so neither branch fires
+        // an immediate cross post-realise. (BE = 100 after cost-adjust.)
+        let trigger_price = 100.0 * (1.0 + trigger_pct);
+        let high = trigger_price + wick_above_trigger;
+        // Deterministic per-prop case low ∈ (100, trigger_price]
+        let mut rng = seed | 1;
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        let span = (trigger_price - 100.05).max(0.01);
+        let low = 100.05 + (rng as f64 % 1000.0) / 1000.0 * span;
+        let open = 100.05 + (low - 100.05) * 0.5;
+        let close = trigger_price - 0.01;
+        let bar = Candle::new(0, open, high, low, close, 0.0);
+
+        let mut pos_single = make_pos();
+        let mut pos_multi = make_pos();
+        let r_single = process_position_exit(&mut pos_single, &bar, &cfg_single, None);
+        let r_multi = process_position_exit(&mut pos_multi, &bar, &cfg_multi, None);
+
+        // Neither cfg should have closed the position (low > BE).
+        prop_assert!(r_single.is_none(), "single-tier exited unexpectedly: {r_single:?}");
+        prop_assert!(r_multi.is_none(),  "multi-tier exited unexpectedly: {r_multi:?}");
+
+        // ptp_realized_pct (single-tier branch) must equal
+        // ptp_levels_realized (multi-tier branch) bit-for-bit.
+        prop_assert!(
+            (pos_single.ptp_realized_pct - pos_multi.ptp_levels_realized).abs() < 1e-12,
+            "single ptp_realized_pct={} multi ptp_levels_realized={}",
+            pos_single.ptp_realized_pct, pos_multi.ptp_levels_realized,
+        );
+
+        // Stop-price and BE-flag must agree.
+        prop_assert!(pos_single.be_active, "single-tier must set be_active");
+        prop_assert!(pos_multi.be_active,  "multi-tier must set be_active");
+        prop_assert!(
+            (pos_single.stop_price - pos_multi.stop_price).abs() < 1e-12,
+            "stop_price drift: single={} multi={}",
+            pos_single.stop_price, pos_multi.stop_price,
+        );
+
+        // high_watermark reset to candle.close in both branches.
+        prop_assert!((pos_single.high_watermark - pos_multi.high_watermark).abs() < 1e-12);
+
+        // Cross-branch state: single-tier sets ptp_triggered, multi-tier
+        // advances ptp_level_idx — both signal "first tier realised".
+        prop_assert!(pos_single.ptp_triggered);
+        prop_assert_eq!(pos_multi.ptp_level_idx, 1usize);
     }
 
     /// Gap-fill exit-price monotonicity — for a long position at entry=100

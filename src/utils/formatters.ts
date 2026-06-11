@@ -31,14 +31,23 @@ export function formatPrice(value: number): string {
 
 /** Format PnL with sign: "+123.45" or "-67.89". */
 export function formatPnl(value: number): string {
-  const sign = value > 0 ? "+" : "";
-  return `${sign}${value.toFixed(2)}`;
+  // 2026-05-15 (Audit-Round-6 / Agent #6 HOCH): negative-zero leak. The
+  // old code returned `"-0.00"` for tiny negatives like -0.001 because
+  // `.toFixed(2)` rounds toward zero but preserves the sign. Traders saw
+  // "-$0.00 PnL" — confusing and factually wrong. Round to two decimals
+  // FIRST, then derive the sign from the rounded value.
+  const rounded = Number(value.toFixed(2));
+  const sign = rounded > 0 ? "+" : "";
+  return `${sign}${rounded.toFixed(2)}`;
 }
 
 /** Format a percentage with sign: "+12.3%" or "-4.5%". */
 export function formatPercent(value: number, decimals = 1): string {
-  const sign = value > 0 ? "+" : "";
-  return `${sign}${value.toFixed(decimals)}%`;
+  // 2026-05-15 (Audit-Round-6 / Agent #6 HOCH): same negative-zero fix as
+  // formatPnl above. Round first, then sign.
+  const rounded = Number(value.toFixed(decimals));
+  const sign = rounded > 0 ? "+" : "";
+  return `${sign}${rounded.toFixed(decimals)}%`;
 }
 
 /**
@@ -76,6 +85,10 @@ export function formatTradeDate(
       : typeof date === "number"
         ? new Date(date)
         : date;
+  // 2026-05-16 Round 8 fix: guard against invalid Date — previously
+  // `MONTHS_SHORT[NaN]` yielded "undefined NaN, NaN:NaN". formatShortDate
+  // had this guard; mirror it here and in formatDetailDate.
+  if (isNaN(d.getTime())) return typeof date === "string" ? date : "";
   const months = MONTHS_SHORT;
   const utc = options.displayInUTC === true;
   const month = months[utc ? d.getUTCMonth() : d.getMonth()];
@@ -94,6 +107,7 @@ export function formatDetailDate(
   options: DateFormatOptions = {},
 ): string {
   const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return dateStr;
   const months = MONTHS_SHORT;
   const utc = options.displayInUTC === true;
   const month = months[utc ? d.getUTCMonth() : d.getMonth()];

@@ -94,10 +94,20 @@ export function detectRevengeTrade(trades: Trade[]): AIInsight | null {
     const current = sorted[i];
 
     if (prev1!.pnl < 0 && prev2!.pnl < 0) {
-      const prevAvgSize =
-        (prev1!.quantity * prev1!.entryPrice +
-          prev2!.quantity * prev2!.entryPrice) /
-        2;
+      // 2026-05-24 Codex audit MED FIX: the Round 9 "fix" multiplied by
+      // leverage but called the result "margin" — that's actually
+      // notional × leverage (leveraged_notional), which doesn't model
+      // actual risk size. True margin = notional / leverage (capital
+      // committed). For revenge-trade detection we want the trader's
+      // EXPOSURE, which is best captured by notional alone (qty × price)
+      // since two trades with the same notional pose the same
+      // directional risk regardless of how much margin backs them.
+      // Switching from 2× to 10× lev on the SAME notional shouldn't
+      // trigger a "200% size increase" — but the prior formula did
+      // exactly that (10× / 2× = 5× false alarm).
+      const margin1 = prev1!.quantity * prev1!.entryPrice;
+      const margin2 = prev2!.quantity * prev2!.entryPrice;
+      const prevAvgSize = (margin1 + margin2) / 2;
       const currentSize = current!.quantity * current!.entryPrice;
 
       // Guard against zero-cost reference (corrupt data, cash positions).

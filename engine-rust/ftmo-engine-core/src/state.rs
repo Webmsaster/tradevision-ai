@@ -2,7 +2,11 @@
 //!
 //! State is intentionally serialisable with camelCase field names so the
 //! Rust engine can read / write the same `v4-engine.json` files the
-//! TypeScript engine produces and the Python executor consumes.
+//! TypeScript engine produces. (2026-05-16 Round 9-Final FIX: Python
+//! executor does NOT consume `v4-engine.json` — that was a stale comment.
+//! Python ↔ TS bridges via `open-positions.json`, `pending-signals.json`,
+//! `executed-signals.json`, `challenge-peak.json`, `pause-state.json` —
+//! each owned by separate writer/reader pairs.)
 //!
 //! Schema version 3 (Round 57 V4-3):
 //! - v1 → v2: `lossStreakByAssetDir.cdUntilBarIdx` → `cdUntilBarsSeen` rename
@@ -24,6 +28,14 @@ pub enum StoppedReason {
     TotalLoss,
     DailyLoss,
     Time,
+    /// 2026-05-19 Damage-Limitation Early-Abort: window aborted by the
+    /// `--early-abort-after-losses N` or `--early-abort-after-trades N
+    /// --early-abort-min-cum X` CLI rules. Surfaces as a normal stop so the
+    /// pass-rate counter treats the window as a fail, but every remaining
+    /// open position is force-closed so the equity tail no longer accrues
+    /// further losses (motivation: 0/31 = 0% pass-rate on windows with 2
+    /// initial losers — saving the give-back is pure equity preservation).
+    EarlyAbort,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +115,17 @@ pub struct EngineState {
         skip_serializing_if = "Option::is_none"
     )]
     pub kelly_tier_idx: Option<usize>,
+    /// Detector #49 — persisted Sharpe-tier index for hysteresis (HYST=0.05).
+    /// Mirrors `kelly_tier_idx`: `None` = cold start (greedy lookup), `Some(i)`
+    /// = last-chosen tier in the descending-`sharpe_above` order. Skipped
+    /// during serialization when `None` to keep state-blob small for
+    /// pre-Sharpe configs.
+    #[serde(
+        rename = "sharpeTierIdx",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sharpe_tier_idx: Option<usize>,
     #[serde(rename = "closedTrades", default)]
     pub closed_trades: Vec<ClosedTrade>,
     #[serde(rename = "barsSeen", default)]
@@ -112,6 +135,50 @@ pub struct EngineState {
     /// V5R re-entry slots, keyed by `ls_key(symbol, direction)`.
     #[serde(rename = "pendingReentries", default)]
     pub pending_reentries: HashMap<String, ReentryState>,
+    /// 2026-05-19 Pattern-D fix — consecutive stop-loss counter (resets at
+    /// day boundary OR after a non-stop exit). When ≥ cfg.max_consec_stops_per_day,
+    /// `consec_stops_paused` is set, blocking new entries until next day.
+    #[serde(rename = "dayConsecStops", default)]
+    pub day_consec_stops: u32,
+    #[serde(rename = "consecStopsPaused", default)]
+    pub consec_stops_paused: bool,
+    /// 2026-05-19 Pattern-C fix — trailing-DD-lock state. Armed when
+    /// realized equity reaches `cfg.trail_dd_lock_trigger`. Tracks peak
+    /// realized equity post-arm. If equity drops by `trail_dd_lock_floor`
+    /// from peak → force-close + halt.
+    #[serde(rename = "trailDdArmed", default)]
+    pub trail_dd_armed: bool,
+    #[serde(rename = "trailDdPeak", default)]
+    pub trail_dd_peak: f64,
+    /// 2026-05-20 Intra-Window Kill-Switch (Agent 6 design). One-shot flag: set
+    /// `true` once the kill-switch hour boundary has been evaluated for this
+    /// window so the predicate cannot re-fire on subsequent bars. AND'd
+    /// predicate at first bar where `(state.last_bar_open_time -
+    /// state.challenge_start_ts) / 3_600_000 >= kill_switch_hour`:
+    ///   closed_trades.len() < kill_switch_min_trades
+    ///   AND
+    ///   (state.equity - 1.0) < kill_switch_min_equity
+    /// → force_close_all_external + StoppedReason::EarlyAbort.
+    #[serde(rename = "killSwitchEvaluated", default)]
+    pub kill_switch_evaluated: bool,
+    /// 2026-05-29 DailyEquityGuardian halt latch. Set `true` when the guardian
+    /// force-closes all positions at -trigger_pct intraday MTM; blocks NEW
+    /// entries until the next day rollover (cleared alongside
+    /// `consec_stops_paused`). Without this latch the guardian only converts
+    /// the unrealised drawdown into a realised one and lets fresh signals
+    /// re-open the same day — so the account can still drift into the -5% hard
+    /// DailyLoss the soft-stop was meant to prevent. The latch makes the
+    /// guardian an actual intraday soft-stop: once today's loss reaches the
+    /// trigger, trading is parked for the rest of the day.
+    #[serde(rename = "guardianHalted", default)]
+    pub guardian_halted: bool,
+    /// 2026-05-29 BrightFunded daily-loss floor (used only when
+    /// `cfg.daily_loss_eod_hwm`). Set at each day rollover to
+    /// `max(prev-EoD balance, prev-EoD equity) − max_daily_loss` and frozen for
+    /// the day; the intraday daily-loss check compares `min(balance, equity)`
+    /// against it. In FTMO mode this field is unused.
+    #[serde(rename = "eodHwmFloor", default)]
+    pub eod_hwm_floor: f64,
 }
 
 impl EngineState {
@@ -136,10 +203,18 @@ impl EngineState {
             loss_streak_by_asset_dir: HashMap::new(),
             kelly_pnls: vec![],
             kelly_tier_idx: None,
+            sharpe_tier_idx: None,
             closed_trades: vec![],
             bars_seen: 0,
             stopped_reason: None,
             pending_reentries: HashMap::new(),
+            day_consec_stops: 0,
+            consec_stops_paused: false,
+            trail_dd_armed: false,
+            trail_dd_peak: 0.0,
+            kill_switch_evaluated: false,
+            guardian_halted: false,
+            eod_hwm_floor: 0.0,
         }
     }
 

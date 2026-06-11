@@ -9,11 +9,16 @@ use std::io::Write;
 
 fn synth_model_json() -> String {
     let features: Vec<String> = EXPECTED_FEATURES.iter().map(|s| (*s).to_string()).collect();
+    // 2026-05-23 Wave2 fix: schema v3 requires feature_medians. Loader now
+    // hard-fails on schema>=3 without medians. Provide a zero-filled vector
+    // of correct length (test doesn't rely on imputation behavior).
+    let medians: Vec<f64> = EXPECTED_FEATURES.iter().map(|_| 0.0).collect();
     let json = serde_json::json!({
         "schema_version": EXPECTED_SCHEMA_VERSION,
         "type": "random_forest",
         "n_trees": 2,
         "features": features,
+        "feature_medians": medians,
         "trees": [
             { "feature": 0, "threshold": 50.0,
               "left":  { "leaf": true, "value": 0.3 },

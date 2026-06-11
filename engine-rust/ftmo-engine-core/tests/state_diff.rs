@@ -143,6 +143,7 @@ fn find_first_divergence() {
             &BarInput {
                 candles_by_source: &feeds,
                 atr_series_by_source: &atr_feed,
+                funding_by_source: None,
                 signals,
             },
             &fix.cfg,

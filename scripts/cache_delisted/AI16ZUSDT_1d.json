@@ -1,0 +1,5242 @@
+[
+  {
+    "openTime": 1735776000000,
+    "open": 2.0762,
+    "high": 2.4883,
+    "low": 1.8994,
+    "close": 2.4,
+    "volume": 76658503.1,
+    "closeTime": 1735862399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1735862400000,
+    "open": 2.3991,
+    "high": 2.4051,
+    "low": 1.9029,
+    "close": 2.1036,
+    "volume": 139665413.4,
+    "closeTime": 1735948799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1735948800000,
+    "open": 2.103,
+    "high": 2.1625,
+    "low": 1.8304,
+    "close": 2.0405,
+    "volume": 115545561.6,
+    "closeTime": 1736035199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1736035200000,
+    "open": 2.0409,
+    "high": 2.0911,
+    "low": 1.7451,
+    "close": 1.8152,
+    "volume": 117372170.0,
+    "closeTime": 1736121599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1736121600000,
+    "open": 1.8152,
+    "high": 2.33,
+    "low": 1.7628,
+    "close": 2.1868,
+    "volume": 229045549.3,
+    "closeTime": 1736207999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1736208000000,
+    "open": 2.1868,
+    "high": 2.3862,
+    "low": 1.8598,
+    "close": 1.8764,
+    "volume": 191986090.8,
+    "closeTime": 1736294399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1736294400000,
+    "open": 1.8764,
+    "high": 1.896,
+    "low": 1.5921,
+    "close": 1.7195,
+    "volume": 158292437.6,
+    "closeTime": 1736380799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1736380800000,
+    "open": 1.7195,
+    "high": 1.7611,
+    "low": 1.2675,
+    "close": 1.4287,
+    "volume": 319784407.8,
+    "closeTime": 1736467199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1736467200000,
+    "open": 1.4289,
+    "high": 1.7253,
+    "low": 1.386,
+    "close": 1.3966,
+    "volume": 273556428.7,
+    "closeTime": 1736553599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1736553600000,
+    "open": 1.3966,
+    "high": 1.403,
+    "low": 1.1331,
+    "close": 1.1606,
+    "volume": 348441026.4,
+    "closeTime": 1736639999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1736640000000,
+    "open": 1.1607,
+    "high": 1.2206,
+    "low": 1.0143,
+    "close": 1.0577,
+    "volume": 368135346.7,
+    "closeTime": 1736726399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1736726400000,
+    "open": 1.0578,
+    "high": 1.1946,
+    "low": 0.9211,
+    "close": 1.1333,
+    "volume": 653194757.6,
+    "closeTime": 1736812799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1736812800000,
+    "open": 1.1333,
+    "high": 1.445,
+    "low": 1.1011,
+    "close": 1.3825,
+    "volume": 547519786.8,
+    "closeTime": 1736899199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1736899200000,
+    "open": 1.3823,
+    "high": 1.641,
+    "low": 1.2621,
+    "close": 1.5728,
+    "volume": 458342182.3,
+    "closeTime": 1736985599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1736985600000,
+    "open": 1.573,
+    "high": 1.589,
+    "low": 1.3001,
+    "close": 1.324,
+    "volume": 210363271.7,
+    "closeTime": 1737071999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1737072000000,
+    "open": 1.3238,
+    "high": 1.3729,
+    "low": 1.1156,
+    "close": 1.1645,
+    "volume": 271352351.7,
+    "closeTime": 1737158399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1737158400000,
+    "open": 1.1643,
+    "high": 1.1701,
+    "low": 0.93,
+    "close": 1.0823,
+    "volume": 418113727.6,
+    "closeTime": 1737244799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1737244800000,
+    "open": 1.0826,
+    "high": 1.2409,
+    "low": 0.75,
+    "close": 0.8338,
+    "volume": 564063027.6,
+    "closeTime": 1737331199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1737331200000,
+    "open": 0.8337,
+    "high": 0.9692,
+    "low": 0.725,
+    "close": 0.9334,
+    "volume": 507114670.6,
+    "closeTime": 1737417599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1737417600000,
+    "open": 0.9334,
+    "high": 1.1832,
+    "low": 0.8444,
+    "close": 1.1315,
+    "volume": 436806169.9,
+    "closeTime": 1737503999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1737504000000,
+    "open": 1.1316,
+    "high": 1.2675,
+    "low": 1.0018,
+    "close": 1.0057,
+    "volume": 394893775.0,
+    "closeTime": 1737590399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1737590400000,
+    "open": 1.0058,
+    "high": 1.0471,
+    "low": 0.8826,
+    "close": 0.893,
+    "volume": 371068267.8,
+    "closeTime": 1737676799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1737676800000,
+    "open": 0.8931,
+    "high": 0.926,
+    "low": 0.7987,
+    "close": 0.8084,
+    "volume": 285787619.4,
+    "closeTime": 1737763199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1737763200000,
+    "open": 0.8084,
+    "high": 0.8762,
+    "low": 0.7747,
+    "close": 0.8234,
+    "volume": 198485495.3,
+    "closeTime": 1737849599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1737849600000,
+    "open": 0.8233,
+    "high": 0.8907,
+    "low": 0.7601,
+    "close": 0.7657,
+    "volume": 175040939.4,
+    "closeTime": 1737935999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1737936000000,
+    "open": 0.7658,
+    "high": 0.7822,
+    "low": 0.6064,
+    "close": 0.7153,
+    "volume": 441145688.1,
+    "closeTime": 1738022399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1738022400000,
+    "open": 0.7153,
+    "high": 0.7624,
+    "low": 0.55,
+    "close": 0.5651,
+    "volume": 299375015.3,
+    "closeTime": 1738108799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1738108800000,
+    "open": 0.5652,
+    "high": 0.7272,
+    "low": 0.5611,
+    "close": 0.6255,
+    "volume": 388943525.6,
+    "closeTime": 1738195199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1738195200000,
+    "open": 0.6256,
+    "high": 0.739,
+    "low": 0.5908,
+    "close": 0.632,
+    "volume": 354652580.1,
+    "closeTime": 1738281599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1738281600000,
+    "open": 0.632,
+    "high": 0.6923,
+    "low": 0.5919,
+    "close": 0.6006,
+    "volume": 318692841.2,
+    "closeTime": 1738367999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1738368000000,
+    "open": 0.6007,
+    "high": 0.6233,
+    "low": 0.4174,
+    "close": 0.428,
+    "volume": 400485553.4,
+    "closeTime": 1738454399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1738454400000,
+    "open": 0.428,
+    "high": 0.4561,
+    "low": 0.3766,
+    "close": 0.4152,
+    "volume": 532748865.4,
+    "closeTime": 1738540799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1738540800000,
+    "open": 0.4152,
+    "high": 0.4808,
+    "low": 0.2439,
+    "close": 0.4536,
+    "volume": 821453496.5,
+    "closeTime": 1738627199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1738627200000,
+    "open": 0.4535,
+    "high": 0.454,
+    "low": 0.3564,
+    "close": 0.359,
+    "volume": 474549144.5,
+    "closeTime": 1738713599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1738713600000,
+    "open": 0.3592,
+    "high": 0.3974,
+    "low": 0.3128,
+    "close": 0.3244,
+    "volume": 378698872.1,
+    "closeTime": 1738799999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1738800000000,
+    "open": 0.3244,
+    "high": 0.3407,
+    "low": 0.2619,
+    "close": 0.2938,
+    "volume": 577121184.8,
+    "closeTime": 1738886399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1738886400000,
+    "open": 0.2939,
+    "high": 0.3877,
+    "low": 0.283,
+    "close": 0.3044,
+    "volume": 912856320.7,
+    "closeTime": 1738972799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1738972800000,
+    "open": 0.3044,
+    "high": 0.3505,
+    "low": 0.298,
+    "close": 0.3372,
+    "volume": 508800712.2,
+    "closeTime": 1739059199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1739059200000,
+    "open": 0.3372,
+    "high": 0.3942,
+    "low": 0.3292,
+    "close": 0.3636,
+    "volume": 555550704.8,
+    "closeTime": 1739145599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1739145600000,
+    "open": 0.3637,
+    "high": 0.4676,
+    "low": 0.3574,
+    "close": 0.3965,
+    "volume": 741413230.5,
+    "closeTime": 1739231999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1739232000000,
+    "open": 0.3965,
+    "high": 0.6291,
+    "low": 0.3924,
+    "close": 0.5346,
+    "volume": 1118923257.4,
+    "closeTime": 1739318399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1739318400000,
+    "open": 0.5347,
+    "high": 0.5876,
+    "low": 0.4218,
+    "close": 0.5486,
+    "volume": 939171273.0,
+    "closeTime": 1739404799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1739404800000,
+    "open": 0.5488,
+    "high": 0.5522,
+    "low": 0.4474,
+    "close": 0.4575,
+    "volume": 424175887.5,
+    "closeTime": 1739491199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1739491200000,
+    "open": 0.4575,
+    "high": 0.525,
+    "low": 0.4406,
+    "close": 0.4911,
+    "volume": 495419524.8,
+    "closeTime": 1739577599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1739577600000,
+    "open": 0.4911,
+    "high": 0.4922,
+    "low": 0.4119,
+    "close": 0.4241,
+    "volume": 275009140.1,
+    "closeTime": 1739663999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1739664000000,
+    "open": 0.4241,
+    "high": 0.4361,
+    "low": 0.3842,
+    "close": 0.3952,
+    "volume": 278088540.6,
+    "closeTime": 1739750399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1739750400000,
+    "open": 0.3952,
+    "high": 0.4106,
+    "low": 0.34,
+    "close": 0.3576,
+    "volume": 371686735.8,
+    "closeTime": 1739836799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1739836800000,
+    "open": 0.3575,
+    "high": 0.3635,
+    "low": 0.2832,
+    "close": 0.3167,
+    "volume": 365220287.1,
+    "closeTime": 1739923199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1739923200000,
+    "open": 0.3168,
+    "high": 0.3246,
+    "low": 0.2878,
+    "close": 0.3073,
+    "volume": 330837875.0,
+    "closeTime": 1740009599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1740009600000,
+    "open": 0.3074,
+    "high": 0.3665,
+    "low": 0.3006,
+    "close": 0.3625,
+    "volume": 430294775.0,
+    "closeTime": 1740095999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1740096000000,
+    "open": 0.3624,
+    "high": 0.4137,
+    "low": 0.332,
+    "close": 0.3414,
+    "volume": 529906316.6,
+    "closeTime": 1740182399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1740182400000,
+    "open": 0.3414,
+    "high": 0.4208,
+    "low": 0.3367,
+    "close": 0.3911,
+    "volume": 373467215.6,
+    "closeTime": 1740268799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1740268800000,
+    "open": 0.3911,
+    "high": 0.3979,
+    "low": 0.3363,
+    "close": 0.3524,
+    "volume": 312950268.7,
+    "closeTime": 1740355199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1740355200000,
+    "open": 0.3525,
+    "high": 0.366,
+    "low": 0.2875,
+    "close": 0.3012,
+    "volume": 383320232.1,
+    "closeTime": 1740441599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1740441600000,
+    "open": 0.3012,
+    "high": 0.3301,
+    "low": 0.2613,
+    "close": 0.3207,
+    "volume": 441108021.1,
+    "closeTime": 1740527999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1740528000000,
+    "open": 0.3208,
+    "high": 0.3789,
+    "low": 0.3005,
+    "close": 0.3594,
+    "volume": 434986979.3,
+    "closeTime": 1740614399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1740614400000,
+    "open": 0.3595,
+    "high": 0.3741,
+    "low": 0.3352,
+    "close": 0.3484,
+    "volume": 281104362.6,
+    "closeTime": 1740700799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1740700800000,
+    "open": 0.3484,
+    "high": 0.4136,
+    "low": 0.3146,
+    "close": 0.4047,
+    "volume": 471676020.3,
+    "closeTime": 1740787199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1740787200000,
+    "open": 0.4048,
+    "high": 0.4152,
+    "low": 0.3487,
+    "close": 0.3608,
+    "volume": 322714667.4,
+    "closeTime": 1740873599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1740873600000,
+    "open": 0.3608,
+    "high": 0.4567,
+    "low": 0.3459,
+    "close": 0.4424,
+    "volume": 379591507.4,
+    "closeTime": 1740959999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1740960000000,
+    "open": 0.4425,
+    "high": 0.4447,
+    "low": 0.318,
+    "close": 0.3232,
+    "volume": 442024528.2,
+    "closeTime": 1741046399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1741046400000,
+    "open": 0.3233,
+    "high": 0.3317,
+    "low": 0.2756,
+    "close": 0.2969,
+    "volume": 449827170.7,
+    "closeTime": 1741132799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1741132800000,
+    "open": 0.2969,
+    "high": 0.3125,
+    "low": 0.283,
+    "close": 0.2908,
+    "volume": 277735753.3,
+    "closeTime": 1741219199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1741219200000,
+    "open": 0.2908,
+    "high": 0.303,
+    "low": 0.2589,
+    "close": 0.2615,
+    "volume": 348999703.9,
+    "closeTime": 1741305599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1741305600000,
+    "open": 0.2615,
+    "high": 0.2704,
+    "low": 0.2255,
+    "close": 0.2295,
+    "volume": 502037812.6,
+    "closeTime": 1741391999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1741392000000,
+    "open": 0.2295,
+    "high": 0.2417,
+    "low": 0.2013,
+    "close": 0.2039,
+    "volume": 342632871.0,
+    "closeTime": 1741478399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1741478400000,
+    "open": 0.2039,
+    "high": 0.2187,
+    "low": 0.1905,
+    "close": 0.193,
+    "volume": 469343910.4,
+    "closeTime": 1741564799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1741564800000,
+    "open": 0.193,
+    "high": 0.2037,
+    "low": 0.176,
+    "close": 0.1814,
+    "volume": 589182886.7,
+    "closeTime": 1741651199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1741651200000,
+    "open": 0.1814,
+    "high": 0.1857,
+    "low": 0.1586,
+    "close": 0.1688,
+    "volume": 620744739.7,
+    "closeTime": 1741737599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1741737600000,
+    "open": 0.1689,
+    "high": 0.1803,
+    "low": 0.159,
+    "close": 0.176,
+    "volume": 499584997.1,
+    "closeTime": 1741823999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1741824000000,
+    "open": 0.1759,
+    "high": 0.1966,
+    "low": 0.1649,
+    "close": 0.175,
+    "volume": 505439563.2,
+    "closeTime": 1741910399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1741910400000,
+    "open": 0.175,
+    "high": 0.202,
+    "low": 0.174,
+    "close": 0.1849,
+    "volume": 380415721.4,
+    "closeTime": 1741996799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1741996800000,
+    "open": 0.1849,
+    "high": 0.2049,
+    "low": 0.183,
+    "close": 0.1976,
+    "volume": 341289004.1,
+    "closeTime": 1742083199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1742083200000,
+    "open": 0.1976,
+    "high": 0.2259,
+    "low": 0.1903,
+    "close": 0.1948,
+    "volume": 662374830.2,
+    "closeTime": 1742169599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1742169600000,
+    "open": 0.1949,
+    "high": 0.2089,
+    "low": 0.1908,
+    "close": 0.2021,
+    "volume": 379288935.8,
+    "closeTime": 1742255999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1742256000000,
+    "open": 0.2021,
+    "high": 0.2026,
+    "low": 0.1633,
+    "close": 0.1709,
+    "volume": 365374838.7,
+    "closeTime": 1742342399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1742342400000,
+    "open": 0.1709,
+    "high": 0.194,
+    "low": 0.1686,
+    "close": 0.1912,
+    "volume": 456861585.0,
+    "closeTime": 1742428799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1742428800000,
+    "open": 0.1912,
+    "high": 0.1983,
+    "low": 0.1793,
+    "close": 0.1856,
+    "volume": 302486276.3,
+    "closeTime": 1742515199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1742515200000,
+    "open": 0.1855,
+    "high": 0.1999,
+    "low": 0.1708,
+    "close": 0.1969,
+    "volume": 281822864.3,
+    "closeTime": 1742601599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1742601600000,
+    "open": 0.1968,
+    "high": 0.2046,
+    "low": 0.192,
+    "close": 0.1997,
+    "volume": 225159535.0,
+    "closeTime": 1742687999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1742688000000,
+    "open": 0.1996,
+    "high": 0.2053,
+    "low": 0.1846,
+    "close": 0.199,
+    "volume": 239182908.5,
+    "closeTime": 1742774399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1742774400000,
+    "open": 0.199,
+    "high": 0.2268,
+    "low": 0.1904,
+    "close": 0.2007,
+    "volume": 418941178.7,
+    "closeTime": 1742860799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1742860800000,
+    "open": 0.2007,
+    "high": 0.2183,
+    "low": 0.1927,
+    "close": 0.2099,
+    "volume": 254975319.0,
+    "closeTime": 1742947199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1742947200000,
+    "open": 0.2098,
+    "high": 0.2256,
+    "low": 0.1805,
+    "close": 0.1855,
+    "volume": 320722107.8,
+    "closeTime": 1743033599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1743033600000,
+    "open": 0.1855,
+    "high": 0.2022,
+    "low": 0.185,
+    "close": 0.1986,
+    "volume": 245600357.8,
+    "closeTime": 1743119999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1743120000000,
+    "open": 0.1987,
+    "high": 0.2089,
+    "low": 0.1704,
+    "close": 0.1791,
+    "volume": 328572573.1,
+    "closeTime": 1743206399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1743206400000,
+    "open": 0.1791,
+    "high": 0.1811,
+    "low": 0.1534,
+    "close": 0.158,
+    "volume": 327593282.6,
+    "closeTime": 1743292799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1743292800000,
+    "open": 0.158,
+    "high": 0.1669,
+    "low": 0.1548,
+    "close": 0.1606,
+    "volume": 229383742.2,
+    "closeTime": 1743379199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1743379200000,
+    "open": 0.1607,
+    "high": 0.1689,
+    "low": 0.1564,
+    "close": 0.1649,
+    "volume": 306594443.7,
+    "closeTime": 1743465599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1743465600000,
+    "open": 0.1649,
+    "high": 0.2092,
+    "low": 0.1637,
+    "close": 0.1953,
+    "volume": 802761261.7,
+    "closeTime": 1743551999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1743552000000,
+    "open": 0.1953,
+    "high": 0.1983,
+    "low": 0.1666,
+    "close": 0.1715,
+    "volume": 572904686.1,
+    "closeTime": 1743638399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1743638400000,
+    "open": 0.1715,
+    "high": 0.1813,
+    "low": 0.1444,
+    "close": 0.1577,
+    "volume": 420093317.6,
+    "closeTime": 1743724799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1743724800000,
+    "open": 0.1578,
+    "high": 0.1584,
+    "low": 0.1323,
+    "close": 0.1429,
+    "volume": 551399241.1,
+    "closeTime": 1743811199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1743811200000,
+    "open": 0.1429,
+    "high": 0.147,
+    "low": 0.1182,
+    "close": 0.1276,
+    "volume": 537682368.8,
+    "closeTime": 1743897599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1743897600000,
+    "open": 0.1276,
+    "high": 0.1277,
+    "low": 0.1034,
+    "close": 0.1089,
+    "volume": 558071948.0,
+    "closeTime": 1743983999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1743984000000,
+    "open": 0.1088,
+    "high": 0.1238,
+    "low": 0.0986,
+    "close": 0.1133,
+    "volume": 577088260.0,
+    "closeTime": 1744070399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1744070400000,
+    "open": 0.1133,
+    "high": 0.1221,
+    "low": 0.1037,
+    "close": 0.1047,
+    "volume": 373404767.0,
+    "closeTime": 1744156799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1744156800000,
+    "open": 0.1047,
+    "high": 0.138,
+    "low": 0.1,
+    "close": 0.128,
+    "volume": 503444716.6,
+    "closeTime": 1744243199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1744243200000,
+    "open": 0.1279,
+    "high": 0.1379,
+    "low": 0.1203,
+    "close": 0.1345,
+    "volume": 569456726.4,
+    "closeTime": 1744329599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1744329600000,
+    "open": 0.1345,
+    "high": 0.145,
+    "low": 0.1269,
+    "close": 0.1346,
+    "volume": 557176723.0,
+    "closeTime": 1744415999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1744416000000,
+    "open": 0.1347,
+    "high": 0.1563,
+    "low": 0.1285,
+    "close": 0.1538,
+    "volume": 503099193.7,
+    "closeTime": 1744502399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1744502400000,
+    "open": 0.1538,
+    "high": 0.158,
+    "low": 0.1269,
+    "close": 0.1342,
+    "volume": 438637414.0,
+    "closeTime": 1744588799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1744588800000,
+    "open": 0.1342,
+    "high": 0.1429,
+    "low": 0.1293,
+    "close": 0.1349,
+    "volume": 357410092.5,
+    "closeTime": 1744675199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1744675200000,
+    "open": 0.1349,
+    "high": 0.1439,
+    "low": 0.1283,
+    "close": 0.1296,
+    "volume": 352393128.9,
+    "closeTime": 1744761599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1744761600000,
+    "open": 0.1295,
+    "high": 0.1371,
+    "low": 0.1222,
+    "close": 0.1301,
+    "volume": 350980997.7,
+    "closeTime": 1744847999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1744848000000,
+    "open": 0.1302,
+    "high": 0.14,
+    "low": 0.1276,
+    "close": 0.1332,
+    "volume": 294501079.8,
+    "closeTime": 1744934399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1744934400000,
+    "open": 0.1332,
+    "high": 0.136,
+    "low": 0.128,
+    "close": 0.1326,
+    "volume": 214479647.6,
+    "closeTime": 1745020799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1745020800000,
+    "open": 0.1326,
+    "high": 0.1505,
+    "low": 0.1294,
+    "close": 0.15,
+    "volume": 175371846.3,
+    "closeTime": 1745107199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1745107200000,
+    "open": 0.15,
+    "high": 0.1574,
+    "low": 0.142,
+    "close": 0.1448,
+    "volume": 233136503.1,
+    "closeTime": 1745193599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1745193600000,
+    "open": 0.1448,
+    "high": 0.151,
+    "low": 0.1302,
+    "close": 0.1331,
+    "volume": 241763064.0,
+    "closeTime": 1745279999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1745280000000,
+    "open": 0.1331,
+    "high": 0.1776,
+    "low": 0.1306,
+    "close": 0.1769,
+    "volume": 429368237.5,
+    "closeTime": 1745366399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1745366400000,
+    "open": 0.177,
+    "high": 0.1972,
+    "low": 0.171,
+    "close": 0.1795,
+    "volume": 647056617.9,
+    "closeTime": 1745452799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1745452800000,
+    "open": 0.1795,
+    "high": 0.1963,
+    "low": 0.1672,
+    "close": 0.1943,
+    "volume": 302557875.2,
+    "closeTime": 1745539199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1745539200000,
+    "open": 0.1943,
+    "high": 0.2554,
+    "low": 0.1921,
+    "close": 0.2335,
+    "volume": 640304930.0,
+    "closeTime": 1745625599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1745625600000,
+    "open": 0.2335,
+    "high": 0.2654,
+    "low": 0.2268,
+    "close": 0.24,
+    "volume": 321897668.8,
+    "closeTime": 1745711999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1745712000000,
+    "open": 0.24,
+    "high": 0.2515,
+    "low": 0.2263,
+    "close": 0.2395,
+    "volume": 197334905.8,
+    "closeTime": 1745798399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1745798400000,
+    "open": 0.2395,
+    "high": 0.2911,
+    "low": 0.2222,
+    "close": 0.2704,
+    "volume": 402736247.1,
+    "closeTime": 1745884799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1745884800000,
+    "open": 0.2705,
+    "high": 0.3291,
+    "low": 0.2696,
+    "close": 0.2882,
+    "volume": 540852061.0,
+    "closeTime": 1745971199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1745971200000,
+    "open": 0.288,
+    "high": 0.2973,
+    "low": 0.2379,
+    "close": 0.2761,
+    "volume": 415697334.8,
+    "closeTime": 1746057599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1746057600000,
+    "open": 0.2761,
+    "high": 0.3186,
+    "low": 0.271,
+    "close": 0.3116,
+    "volume": 438148781.5,
+    "closeTime": 1746143999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1746144000000,
+    "open": 0.3116,
+    "high": 0.3236,
+    "low": 0.2812,
+    "close": 0.2988,
+    "volume": 312741891.5,
+    "closeTime": 1746230399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1746230400000,
+    "open": 0.2987,
+    "high": 0.3024,
+    "low": 0.2601,
+    "close": 0.2612,
+    "volume": 270542607.6,
+    "closeTime": 1746316799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1746316800000,
+    "open": 0.2612,
+    "high": 0.2691,
+    "low": 0.2368,
+    "close": 0.2555,
+    "volume": 339593027.7,
+    "closeTime": 1746403199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1746403200000,
+    "open": 0.2554,
+    "high": 0.2828,
+    "low": 0.249,
+    "close": 0.2583,
+    "volume": 364004560.5,
+    "closeTime": 1746489599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1746489600000,
+    "open": 0.2583,
+    "high": 0.2831,
+    "low": 0.2389,
+    "close": 0.2653,
+    "volume": 459260533.2,
+    "closeTime": 1746575999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1746576000000,
+    "open": 0.2653,
+    "high": 0.2778,
+    "low": 0.2426,
+    "close": 0.265,
+    "volume": 335033942.3,
+    "closeTime": 1746662399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1746662400000,
+    "open": 0.2649,
+    "high": 0.3245,
+    "low": 0.2585,
+    "close": 0.3233,
+    "volume": 464044138.3,
+    "closeTime": 1746748799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1746748800000,
+    "open": 0.3234,
+    "high": 0.3738,
+    "low": 0.3124,
+    "close": 0.3556,
+    "volume": 437937815.1,
+    "closeTime": 1746835199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1746835200000,
+    "open": 0.3555,
+    "high": 0.371,
+    "low": 0.3323,
+    "close": 0.3681,
+    "volume": 258953768.0,
+    "closeTime": 1746921599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1746921600000,
+    "open": 0.368,
+    "high": 0.3695,
+    "low": 0.3199,
+    "close": 0.3515,
+    "volume": 250817237.2,
+    "closeTime": 1747007999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1747008000000,
+    "open": 0.3514,
+    "high": 0.4089,
+    "low": 0.3276,
+    "close": 0.3613,
+    "volume": 427120192.9,
+    "closeTime": 1747094399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1747094400000,
+    "open": 0.3613,
+    "high": 0.3896,
+    "low": 0.3291,
+    "close": 0.3806,
+    "volume": 253224236.5,
+    "closeTime": 1747180799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1747180800000,
+    "open": 0.3806,
+    "high": 0.3812,
+    "low": 0.3365,
+    "close": 0.3411,
+    "volume": 184745602.7,
+    "closeTime": 1747267199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1747267200000,
+    "open": 0.3411,
+    "high": 0.3469,
+    "low": 0.2862,
+    "close": 0.3027,
+    "volume": 275243913.1,
+    "closeTime": 1747353599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1747353600000,
+    "open": 0.3028,
+    "high": 0.3175,
+    "low": 0.2835,
+    "close": 0.2895,
+    "volume": 176719311.9,
+    "closeTime": 1747439999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1747440000000,
+    "open": 0.2895,
+    "high": 0.2909,
+    "low": 0.2602,
+    "close": 0.2672,
+    "volume": 143113998.3,
+    "closeTime": 1747526399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1747526400000,
+    "open": 0.2673,
+    "high": 0.3079,
+    "low": 0.2636,
+    "close": 0.3,
+    "volume": 220607956.3,
+    "closeTime": 1747612799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1747612800000,
+    "open": 0.3003,
+    "high": 0.3026,
+    "low": 0.2639,
+    "close": 0.2821,
+    "volume": 170268232.6,
+    "closeTime": 1747699199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1747699200000,
+    "open": 0.2822,
+    "high": 0.2999,
+    "low": 0.277,
+    "close": 0.2934,
+    "volume": 181031023.7,
+    "closeTime": 1747785599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1747785600000,
+    "open": 0.2935,
+    "high": 0.3391,
+    "low": 0.284,
+    "close": 0.3135,
+    "volume": 291254755.3,
+    "closeTime": 1747871999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1747872000000,
+    "open": 0.3136,
+    "high": 0.3465,
+    "low": 0.3125,
+    "close": 0.3432,
+    "volume": 200839286.7,
+    "closeTime": 1747958399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1747958400000,
+    "open": 0.3432,
+    "high": 0.3623,
+    "low": 0.2954,
+    "close": 0.2988,
+    "volume": 296583815.7,
+    "closeTime": 1748044799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1748044800000,
+    "open": 0.2988,
+    "high": 0.3079,
+    "low": 0.2898,
+    "close": 0.2949,
+    "volume": 123550515.0,
+    "closeTime": 1748131199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1748131200000,
+    "open": 0.2949,
+    "high": 0.3037,
+    "low": 0.262,
+    "close": 0.3014,
+    "volume": 177760779.5,
+    "closeTime": 1748217599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1748217600000,
+    "open": 0.3015,
+    "high": 0.3242,
+    "low": 0.2877,
+    "close": 0.2923,
+    "volume": 232900002.7,
+    "closeTime": 1748303999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1748304000000,
+    "open": 0.2924,
+    "high": 0.3277,
+    "low": 0.2801,
+    "close": 0.3179,
+    "volume": 238347218.8,
+    "closeTime": 1748390399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1748390400000,
+    "open": 0.3179,
+    "high": 0.327,
+    "low": 0.2828,
+    "close": 0.2997,
+    "volume": 179962612.1,
+    "closeTime": 1748476799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1748476800000,
+    "open": 0.2997,
+    "high": 0.3134,
+    "low": 0.2683,
+    "close": 0.2749,
+    "volume": 198910163.7,
+    "closeTime": 1748563199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1748563200000,
+    "open": 0.2748,
+    "high": 0.2749,
+    "low": 0.2083,
+    "close": 0.2096,
+    "volume": 375036414.9,
+    "closeTime": 1748649599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1748649600000,
+    "open": 0.2097,
+    "high": 0.2303,
+    "low": 0.1937,
+    "close": 0.2236,
+    "volume": 302618645.3,
+    "closeTime": 1748735999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1748736000000,
+    "open": 0.2236,
+    "high": 0.2584,
+    "low": 0.2088,
+    "close": 0.2531,
+    "volume": 284908047.6,
+    "closeTime": 1748822399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1748822400000,
+    "open": 0.2531,
+    "high": 0.2575,
+    "low": 0.2285,
+    "close": 0.2451,
+    "volume": 340902856.0,
+    "closeTime": 1748908799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1748908800000,
+    "open": 0.2451,
+    "high": 0.2577,
+    "low": 0.2325,
+    "close": 0.2355,
+    "volume": 277544434.1,
+    "closeTime": 1748995199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1748995200000,
+    "open": 0.2354,
+    "high": 0.2425,
+    "low": 0.207,
+    "close": 0.2103,
+    "volume": 238096588.6,
+    "closeTime": 1749081599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1749081600000,
+    "open": 0.2103,
+    "high": 0.2222,
+    "low": 0.1905,
+    "close": 0.2061,
+    "volume": 372042933.4,
+    "closeTime": 1749167999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1749168000000,
+    "open": 0.206,
+    "high": 0.2139,
+    "low": 0.1963,
+    "close": 0.2036,
+    "volume": 246073657.4,
+    "closeTime": 1749254399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1749254400000,
+    "open": 0.2036,
+    "high": 0.2203,
+    "low": 0.2032,
+    "close": 0.2141,
+    "volume": 187999634.9,
+    "closeTime": 1749340799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1749340800000,
+    "open": 0.2141,
+    "high": 0.2252,
+    "low": 0.2047,
+    "close": 0.2168,
+    "volume": 191990117.7,
+    "closeTime": 1749427199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1749427200000,
+    "open": 0.2168,
+    "high": 0.2544,
+    "low": 0.2106,
+    "close": 0.2523,
+    "volume": 287408373.2,
+    "closeTime": 1749513599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1749513600000,
+    "open": 0.2523,
+    "high": 0.2542,
+    "low": 0.2308,
+    "close": 0.2425,
+    "volume": 338370660.2,
+    "closeTime": 1749599999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1749600000000,
+    "open": 0.2426,
+    "high": 0.2428,
+    "low": 0.1981,
+    "close": 0.2025,
+    "volume": 404872745.7,
+    "closeTime": 1749686399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1749686400000,
+    "open": 0.2025,
+    "high": 0.2026,
+    "low": 0.1689,
+    "close": 0.1714,
+    "volume": 484753196.6,
+    "closeTime": 1749772799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1749772800000,
+    "open": 0.1715,
+    "high": 0.1777,
+    "low": 0.1536,
+    "close": 0.174,
+    "volume": 574007371.3,
+    "closeTime": 1749859199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1749859200000,
+    "open": 0.1741,
+    "high": 0.1778,
+    "low": 0.1658,
+    "close": 0.1714,
+    "volume": 227228826.2,
+    "closeTime": 1749945599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1749945600000,
+    "open": 0.1715,
+    "high": 0.1837,
+    "low": 0.1699,
+    "close": 0.1783,
+    "volume": 254425877.2,
+    "closeTime": 1750031999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1750032000000,
+    "open": 0.1784,
+    "high": 0.1978,
+    "low": 0.1731,
+    "close": 0.1825,
+    "volume": 423401070.8,
+    "closeTime": 1750118399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1750118400000,
+    "open": 0.1825,
+    "high": 0.1899,
+    "low": 0.1602,
+    "close": 0.1625,
+    "volume": 374344113.9,
+    "closeTime": 1750204799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1750204800000,
+    "open": 0.1625,
+    "high": 0.1745,
+    "low": 0.1567,
+    "close": 0.1742,
+    "volume": 300345888.5,
+    "closeTime": 1750291199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1750291200000,
+    "open": 0.1742,
+    "high": 0.1762,
+    "low": 0.1604,
+    "close": 0.1627,
+    "volume": 191403050.7,
+    "closeTime": 1750377599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1750377600000,
+    "open": 0.1627,
+    "high": 0.1692,
+    "low": 0.1473,
+    "close": 0.1541,
+    "volume": 278210892.4,
+    "closeTime": 1750463999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1750464000000,
+    "open": 0.1541,
+    "high": 0.1581,
+    "low": 0.1346,
+    "close": 0.1449,
+    "volume": 225349297.2,
+    "closeTime": 1750550399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1750550400000,
+    "open": 0.1449,
+    "high": 0.1486,
+    "low": 0.1262,
+    "close": 0.1364,
+    "volume": 358109509.3,
+    "closeTime": 1750636799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1750636800000,
+    "open": 0.1364,
+    "high": 0.1626,
+    "low": 0.1322,
+    "close": 0.1609,
+    "volume": 351010237.4,
+    "closeTime": 1750723199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1750723200000,
+    "open": 0.1609,
+    "high": 0.1679,
+    "low": 0.1529,
+    "close": 0.1585,
+    "volume": 279956770.7,
+    "closeTime": 1750809599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1750809600000,
+    "open": 0.1586,
+    "high": 0.1604,
+    "low": 0.1399,
+    "close": 0.1417,
+    "volume": 279746289.8,
+    "closeTime": 1750895999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1750896000000,
+    "open": 0.1417,
+    "high": 0.1504,
+    "low": 0.1294,
+    "close": 0.135,
+    "volume": 312186940.2,
+    "closeTime": 1750982399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1750982400000,
+    "open": 0.1351,
+    "high": 0.1397,
+    "low": 0.1308,
+    "close": 0.1362,
+    "volume": 268192038.6,
+    "closeTime": 1751068799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1751068800000,
+    "open": 0.1363,
+    "high": 0.1486,
+    "low": 0.1352,
+    "close": 0.1444,
+    "volume": 172208006.3,
+    "closeTime": 1751155199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1751155200000,
+    "open": 0.1444,
+    "high": 0.1599,
+    "low": 0.1408,
+    "close": 0.1563,
+    "volume": 241344079.7,
+    "closeTime": 1751241599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1751241600000,
+    "open": 0.1562,
+    "high": 0.1634,
+    "low": 0.1469,
+    "close": 0.1563,
+    "volume": 358612965.0,
+    "closeTime": 1751327999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1751328000000,
+    "open": 0.1563,
+    "high": 0.1574,
+    "low": 0.1343,
+    "close": 0.1376,
+    "volume": 282075950.5,
+    "closeTime": 1751414399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1751414400000,
+    "open": 0.1377,
+    "high": 0.1698,
+    "low": 0.1372,
+    "close": 0.1624,
+    "volume": 363828673.5,
+    "closeTime": 1751500799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1751500800000,
+    "open": 0.1624,
+    "high": 0.1718,
+    "low": 0.1561,
+    "close": 0.1603,
+    "volume": 372994455.2,
+    "closeTime": 1751587199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1751587200000,
+    "open": 0.1603,
+    "high": 0.1614,
+    "low": 0.1444,
+    "close": 0.152,
+    "volume": 247936714.3,
+    "closeTime": 1751673599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1751673600000,
+    "open": 0.1519,
+    "high": 0.1756,
+    "low": 0.1434,
+    "close": 0.1528,
+    "volume": 842247975.0,
+    "closeTime": 1751759999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1751760000000,
+    "open": 0.1529,
+    "high": 0.1609,
+    "low": 0.1516,
+    "close": 0.1559,
+    "volume": 353409887.0,
+    "closeTime": 1751846399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1751846400000,
+    "open": 0.156,
+    "high": 0.1648,
+    "low": 0.1462,
+    "close": 0.1508,
+    "volume": 348848389.6,
+    "closeTime": 1751932799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1751932800000,
+    "open": 0.1507,
+    "high": 0.1553,
+    "low": 0.145,
+    "close": 0.1527,
+    "volume": 240851280.7,
+    "closeTime": 1752019199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1752019200000,
+    "open": 0.1527,
+    "high": 0.1679,
+    "low": 0.1488,
+    "close": 0.1665,
+    "volume": 362830900.7,
+    "closeTime": 1752105599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1752105600000,
+    "open": 0.1666,
+    "high": 0.194,
+    "low": 0.1653,
+    "close": 0.1916,
+    "volume": 533359650.5,
+    "closeTime": 1752191999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1752192000000,
+    "open": 0.1916,
+    "high": 0.2024,
+    "low": 0.1786,
+    "close": 0.1848,
+    "volume": 458606222.9,
+    "closeTime": 1752278399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1752278400000,
+    "open": 0.1848,
+    "high": 0.191,
+    "low": 0.1703,
+    "close": 0.1804,
+    "volume": 277562960.6,
+    "closeTime": 1752364799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1752364800000,
+    "open": 0.1803,
+    "high": 0.1955,
+    "low": 0.1778,
+    "close": 0.1848,
+    "volume": 290658882.8,
+    "closeTime": 1752451199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1752451200000,
+    "open": 0.1849,
+    "high": 0.2029,
+    "low": 0.1772,
+    "close": 0.1831,
+    "volume": 324776262.9,
+    "closeTime": 1752537599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1752537600000,
+    "open": 0.1831,
+    "high": 0.1934,
+    "low": 0.1727,
+    "close": 0.1926,
+    "volume": 307239751.3,
+    "closeTime": 1752623999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1752624000000,
+    "open": 0.1926,
+    "high": 0.2019,
+    "low": 0.1841,
+    "close": 0.1919,
+    "volume": 300102062.4,
+    "closeTime": 1752710399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1752710400000,
+    "open": 0.1919,
+    "high": 0.2092,
+    "low": 0.1812,
+    "close": 0.1883,
+    "volume": 520537756.3,
+    "closeTime": 1752796799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1752796800000,
+    "open": 0.1884,
+    "high": 0.1989,
+    "low": 0.1643,
+    "close": 0.1704,
+    "volume": 504791931.1,
+    "closeTime": 1752883199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1752883200000,
+    "open": 0.1703,
+    "high": 0.1743,
+    "low": 0.163,
+    "close": 0.1717,
+    "volume": 226488250.0,
+    "closeTime": 1752969599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1752969600000,
+    "open": 0.1717,
+    "high": 0.1898,
+    "low": 0.1695,
+    "close": 0.1808,
+    "volume": 273850214.9,
+    "closeTime": 1753055999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1753056000000,
+    "open": 0.1809,
+    "high": 0.2056,
+    "low": 0.1749,
+    "close": 0.204,
+    "volume": 373657751.5,
+    "closeTime": 1753142399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1753142400000,
+    "open": 0.2041,
+    "high": 0.2112,
+    "low": 0.1875,
+    "close": 0.2027,
+    "volume": 651436420.1,
+    "closeTime": 1753228799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1753228800000,
+    "open": 0.2027,
+    "high": 0.2158,
+    "low": 0.1657,
+    "close": 0.1738,
+    "volume": 877325690.2,
+    "closeTime": 1753315199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1753315200000,
+    "open": 0.1738,
+    "high": 0.1766,
+    "low": 0.1475,
+    "close": 0.1517,
+    "volume": 877156705.6,
+    "closeTime": 1753401599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1753401600000,
+    "open": 0.1518,
+    "high": 0.1547,
+    "low": 0.14,
+    "close": 0.1527,
+    "volume": 513513180.8,
+    "closeTime": 1753487999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1753488000000,
+    "open": 0.1526,
+    "high": 0.1548,
+    "low": 0.1502,
+    "close": 0.1509,
+    "volume": 180394209.4,
+    "closeTime": 1753574399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1753574400000,
+    "open": 0.1509,
+    "high": 0.1629,
+    "low": 0.1505,
+    "close": 0.1614,
+    "volume": 234796725.9,
+    "closeTime": 1753660799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1753660800000,
+    "open": 0.1614,
+    "high": 0.1637,
+    "low": 0.141,
+    "close": 0.1446,
+    "volume": 336176506.1,
+    "closeTime": 1753747199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1753747200000,
+    "open": 0.1446,
+    "high": 0.155,
+    "low": 0.1372,
+    "close": 0.143,
+    "volume": 339012861.0,
+    "closeTime": 1753833599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1753833600000,
+    "open": 0.1431,
+    "high": 0.1443,
+    "low": 0.13,
+    "close": 0.1409,
+    "volume": 331045678.8,
+    "closeTime": 1753919999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1753920000000,
+    "open": 0.141,
+    "high": 0.1437,
+    "low": 0.1263,
+    "close": 0.1275,
+    "volume": 271609174.6,
+    "closeTime": 1754006399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1754006400000,
+    "open": 0.1276,
+    "high": 0.1309,
+    "low": 0.1117,
+    "close": 0.1224,
+    "volume": 491903097.2,
+    "closeTime": 1754092799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1754092800000,
+    "open": 0.1224,
+    "high": 0.1238,
+    "low": 0.1132,
+    "close": 0.1166,
+    "volume": 294194866.2,
+    "closeTime": 1754179199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1754179200000,
+    "open": 0.1166,
+    "high": 0.1217,
+    "low": 0.1146,
+    "close": 0.1202,
+    "volume": 164506964.1,
+    "closeTime": 1754265599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1754265600000,
+    "open": 0.1203,
+    "high": 0.1316,
+    "low": 0.1199,
+    "close": 0.131,
+    "volume": 207147123.8,
+    "closeTime": 1754351999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1754352000000,
+    "open": 0.1311,
+    "high": 0.1315,
+    "low": 0.1156,
+    "close": 0.1185,
+    "volume": 317764954.2,
+    "closeTime": 1754438399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1754438400000,
+    "open": 0.1186,
+    "high": 0.1254,
+    "low": 0.1154,
+    "close": 0.1242,
+    "volume": 266424090.3,
+    "closeTime": 1754524799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1754524800000,
+    "open": 0.1243,
+    "high": 0.1349,
+    "low": 0.1233,
+    "close": 0.1337,
+    "volume": 243926413.0,
+    "closeTime": 1754611199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1754611200000,
+    "open": 0.1338,
+    "high": 0.1389,
+    "low": 0.1314,
+    "close": 0.1366,
+    "volume": 264234602.0,
+    "closeTime": 1754697599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1754697600000,
+    "open": 0.1367,
+    "high": 0.1465,
+    "low": 0.1345,
+    "close": 0.1403,
+    "volume": 212110796.4,
+    "closeTime": 1754783999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1754784000000,
+    "open": 0.1404,
+    "high": 0.1546,
+    "low": 0.1336,
+    "close": 0.1502,
+    "volume": 351230327.1,
+    "closeTime": 1754870399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1754870400000,
+    "open": 0.1501,
+    "high": 0.1529,
+    "low": 0.1248,
+    "close": 0.1284,
+    "volume": 436870949.4,
+    "closeTime": 1754956799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1754956800000,
+    "open": 0.1283,
+    "high": 0.1417,
+    "low": 0.1253,
+    "close": 0.1391,
+    "volume": 305240964.3,
+    "closeTime": 1755043199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1755043200000,
+    "open": 0.1392,
+    "high": 0.1463,
+    "low": 0.1363,
+    "close": 0.1426,
+    "volume": 285620830.6,
+    "closeTime": 1755129599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1755129600000,
+    "open": 0.1427,
+    "high": 0.1471,
+    "low": 0.1177,
+    "close": 0.1228,
+    "volume": 428078924.7,
+    "closeTime": 1755215999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1755216000000,
+    "open": 0.1227,
+    "high": 0.1252,
+    "low": 0.1159,
+    "close": 0.1236,
+    "volume": 273375129.3,
+    "closeTime": 1755302399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1755302400000,
+    "open": 0.1237,
+    "high": 0.1254,
+    "low": 0.1213,
+    "close": 0.1249,
+    "volume": 109245791.5,
+    "closeTime": 1755388799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1755388800000,
+    "open": 0.1248,
+    "high": 0.1314,
+    "low": 0.1236,
+    "close": 0.1273,
+    "volume": 137058422.3,
+    "closeTime": 1755475199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1755475200000,
+    "open": 0.1273,
+    "high": 0.1277,
+    "low": 0.1179,
+    "close": 0.1211,
+    "volume": 236688370.4,
+    "closeTime": 1755561599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1755561600000,
+    "open": 0.1212,
+    "high": 0.1237,
+    "low": 0.1125,
+    "close": 0.1138,
+    "volume": 291238457.1,
+    "closeTime": 1755647999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1755648000000,
+    "open": 0.1137,
+    "high": 0.1217,
+    "low": 0.1129,
+    "close": 0.1206,
+    "volume": 208409614.9,
+    "closeTime": 1755734399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1755734400000,
+    "open": 0.1206,
+    "high": 0.1216,
+    "low": 0.1111,
+    "close": 0.114,
+    "volume": 205223263.4,
+    "closeTime": 1755820799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1755820800000,
+    "open": 0.114,
+    "high": 0.1291,
+    "low": 0.1068,
+    "close": 0.1286,
+    "volume": 497539471.8,
+    "closeTime": 1755907199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1755907200000,
+    "open": 0.1286,
+    "high": 0.1304,
+    "low": 0.1216,
+    "close": 0.1281,
+    "volume": 178415221.2,
+    "closeTime": 1755993599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1755993600000,
+    "open": 0.128,
+    "high": 0.1324,
+    "low": 0.1207,
+    "close": 0.1252,
+    "volume": 250159978.9,
+    "closeTime": 1756079999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1756080000000,
+    "open": 0.1252,
+    "high": 0.1268,
+    "low": 0.0944,
+    "close": 0.1022,
+    "volume": 693661772.6,
+    "closeTime": 1756166399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1756166400000,
+    "open": 0.1023,
+    "high": 0.1074,
+    "low": 0.1006,
+    "close": 0.1055,
+    "volume": 375339893.5,
+    "closeTime": 1756252799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1756252800000,
+    "open": 0.1055,
+    "high": 0.1071,
+    "low": 0.1027,
+    "close": 0.1049,
+    "volume": 321056630.6,
+    "closeTime": 1756339199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1756339200000,
+    "open": 0.1049,
+    "high": 0.114,
+    "low": 0.1041,
+    "close": 0.1138,
+    "volume": 278556920.3,
+    "closeTime": 1756425599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1756425600000,
+    "open": 0.1139,
+    "high": 0.1143,
+    "low": 0.0972,
+    "close": 0.1007,
+    "volume": 524358710.0,
+    "closeTime": 1756511999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1756512000000,
+    "open": 0.1006,
+    "high": 0.1058,
+    "low": 0.0986,
+    "close": 0.1034,
+    "volume": 184558108.3,
+    "closeTime": 1756598399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1756598400000,
+    "open": 0.1034,
+    "high": 0.1057,
+    "low": 0.0986,
+    "close": 0.0986,
+    "volume": 146422850.2,
+    "closeTime": 1756684799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1756684800000,
+    "open": 0.0986,
+    "high": 0.1014,
+    "low": 0.086,
+    "close": 0.0903,
+    "volume": 523229178.3,
+    "closeTime": 1756771199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1756771200000,
+    "open": 0.0903,
+    "high": 0.0935,
+    "low": 0.0863,
+    "close": 0.0927,
+    "volume": 455337734.1,
+    "closeTime": 1756857599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1756857600000,
+    "open": 0.0927,
+    "high": 0.096,
+    "low": 0.0913,
+    "close": 0.0956,
+    "volume": 241673221.8,
+    "closeTime": 1756943999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1756944000000,
+    "open": 0.0956,
+    "high": 0.0961,
+    "low": 0.0847,
+    "close": 0.0874,
+    "volume": 355717650.8,
+    "closeTime": 1757030399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1757030400000,
+    "open": 0.0874,
+    "high": 0.0955,
+    "low": 0.0872,
+    "close": 0.0939,
+    "volume": 348219980.2,
+    "closeTime": 1757116799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1757116800000,
+    "open": 0.094,
+    "high": 0.0956,
+    "low": 0.0915,
+    "close": 0.0931,
+    "volume": 190107505.6,
+    "closeTime": 1757203199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1757203200000,
+    "open": 0.093,
+    "high": 0.0969,
+    "low": 0.0928,
+    "close": 0.0956,
+    "volume": 194537550.5,
+    "closeTime": 1757289599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1757289600000,
+    "open": 0.0957,
+    "high": 0.1225,
+    "low": 0.0941,
+    "close": 0.12,
+    "volume": 631594147.8,
+    "closeTime": 1757375999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1757376000000,
+    "open": 0.1199,
+    "high": 0.1305,
+    "low": 0.1063,
+    "close": 0.1127,
+    "volume": 827273611.5,
+    "closeTime": 1757462399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1757462400000,
+    "open": 0.1127,
+    "high": 0.1169,
+    "low": 0.1078,
+    "close": 0.113,
+    "volume": 300868822.8,
+    "closeTime": 1757548799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1757548800000,
+    "open": 0.113,
+    "high": 0.1155,
+    "low": 0.1073,
+    "close": 0.115,
+    "volume": 229221467.0,
+    "closeTime": 1757635199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1757635200000,
+    "open": 0.115,
+    "high": 0.1227,
+    "low": 0.1117,
+    "close": 0.1217,
+    "volume": 290316868.4,
+    "closeTime": 1757721599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1757721600000,
+    "open": 0.1217,
+    "high": 0.1396,
+    "low": 0.1204,
+    "close": 0.132,
+    "volume": 417257241.7,
+    "closeTime": 1757807999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1757808000000,
+    "open": 0.132,
+    "high": 0.1335,
+    "low": 0.1156,
+    "close": 0.1173,
+    "volume": 280460890.4,
+    "closeTime": 1757894399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1757894400000,
+    "open": 0.1172,
+    "high": 0.1192,
+    "low": 0.1018,
+    "close": 0.1079,
+    "volume": 351127873.1,
+    "closeTime": 1757980799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1757980800000,
+    "open": 0.1079,
+    "high": 0.1146,
+    "low": 0.1071,
+    "close": 0.1137,
+    "volume": 195978943.8,
+    "closeTime": 1758067199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1758067200000,
+    "open": 0.1137,
+    "high": 0.1286,
+    "low": 0.1084,
+    "close": 0.127,
+    "volume": 278810496.5,
+    "closeTime": 1758153599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1758153600000,
+    "open": 0.127,
+    "high": 0.1289,
+    "low": 0.1203,
+    "close": 0.1261,
+    "volume": 217820284.2,
+    "closeTime": 1758239999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1758240000000,
+    "open": 0.1261,
+    "high": 0.1278,
+    "low": 0.1112,
+    "close": 0.1129,
+    "volume": 209558242.0,
+    "closeTime": 1758326399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1758326400000,
+    "open": 0.1129,
+    "high": 0.1176,
+    "low": 0.1107,
+    "close": 0.1149,
+    "volume": 121125862.3,
+    "closeTime": 1758412799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1758412800000,
+    "open": 0.1149,
+    "high": 0.1178,
+    "low": 0.1086,
+    "close": 0.1098,
+    "volume": 164209648.2,
+    "closeTime": 1758499199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1758499200000,
+    "open": 0.1098,
+    "high": 0.111,
+    "low": 0.0867,
+    "close": 0.0939,
+    "volume": 437208681.3,
+    "closeTime": 1758585599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1758585600000,
+    "open": 0.0938,
+    "high": 0.0962,
+    "low": 0.0889,
+    "close": 0.093,
+    "volume": 244151416.8,
+    "closeTime": 1758671999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1758672000000,
+    "open": 0.0929,
+    "high": 0.0966,
+    "low": 0.0886,
+    "close": 0.093,
+    "volume": 246448055.7,
+    "closeTime": 1758758399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1758758400000,
+    "open": 0.093,
+    "high": 0.0931,
+    "low": 0.0823,
+    "close": 0.0837,
+    "volume": 464735673.1,
+    "closeTime": 1758844799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1758844800000,
+    "open": 0.0837,
+    "high": 0.0885,
+    "low": 0.0817,
+    "close": 0.088,
+    "volume": 312870260.8,
+    "closeTime": 1758931199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1758931200000,
+    "open": 0.088,
+    "high": 0.0901,
+    "low": 0.0857,
+    "close": 0.0864,
+    "volume": 154697039.7,
+    "closeTime": 1759017599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1759017600000,
+    "open": 0.0864,
+    "high": 0.0905,
+    "low": 0.0834,
+    "close": 0.09,
+    "volume": 163117034.3,
+    "closeTime": 1759103999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1759104000000,
+    "open": 0.09,
+    "high": 0.0901,
+    "low": 0.084,
+    "close": 0.0859,
+    "volume": 190569759.6,
+    "closeTime": 1759190399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1759190400000,
+    "open": 0.0858,
+    "high": 0.0864,
+    "low": 0.0805,
+    "close": 0.0853,
+    "volume": 287646855.5,
+    "closeTime": 1759276799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1759276800000,
+    "open": 0.0853,
+    "high": 0.0938,
+    "low": 0.0841,
+    "close": 0.092,
+    "volume": 241215724.2,
+    "closeTime": 1759363199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1759363200000,
+    "open": 0.0921,
+    "high": 0.1004,
+    "low": 0.0914,
+    "close": 0.1,
+    "volume": 325195663.4,
+    "closeTime": 1759449599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1759449600000,
+    "open": 0.1001,
+    "high": 0.1012,
+    "low": 0.0946,
+    "close": 0.0999,
+    "volume": 244737397.4,
+    "closeTime": 1759535999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1759536000000,
+    "open": 0.0999,
+    "high": 0.1045,
+    "low": 0.092,
+    "close": 0.0971,
+    "volume": 262003923.8,
+    "closeTime": 1759622399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1759622400000,
+    "open": 0.0972,
+    "high": 0.1033,
+    "low": 0.095,
+    "close": 0.0964,
+    "volume": 238981660.8,
+    "closeTime": 1759708799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1759708800000,
+    "open": 0.0963,
+    "high": 0.1035,
+    "low": 0.0937,
+    "close": 0.1013,
+    "volume": 172651191.6,
+    "closeTime": 1759795199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1759795200000,
+    "open": 0.1014,
+    "high": 0.1021,
+    "low": 0.092,
+    "close": 0.0927,
+    "volume": 260283984.3,
+    "closeTime": 1759881599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1759881600000,
+    "open": 0.0927,
+    "high": 0.1006,
+    "low": 0.0901,
+    "close": 0.0986,
+    "volume": 176001316.7,
+    "closeTime": 1759967999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1759968000000,
+    "open": 0.0986,
+    "high": 0.0989,
+    "low": 0.085,
+    "close": 0.0869,
+    "volume": 267910956.1,
+    "closeTime": 1760054399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1760054400000,
+    "open": 0.0869,
+    "high": 0.0913,
+    "low": 0.0114,
+    "close": 0.0476,
+    "volume": 1212334429.1,
+    "closeTime": 1760140799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1760140800000,
+    "open": 0.0476,
+    "high": 0.0583,
+    "low": 0.0464,
+    "close": 0.0519,
+    "volume": 777871867.4,
+    "closeTime": 1760227199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1760227200000,
+    "open": 0.0519,
+    "high": 0.0651,
+    "low": 0.0509,
+    "close": 0.0622,
+    "volume": 499939365.2,
+    "closeTime": 1760313599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1760313600000,
+    "open": 0.0622,
+    "high": 0.0709,
+    "low": 0.0595,
+    "close": 0.0696,
+    "volume": 662365677.6,
+    "closeTime": 1760399999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1760400000000,
+    "open": 0.0696,
+    "high": 0.07,
+    "low": 0.0579,
+    "close": 0.066,
+    "volume": 563259784.5,
+    "closeTime": 1760486399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1760486400000,
+    "open": 0.066,
+    "high": 0.068,
+    "low": 0.0606,
+    "close": 0.0623,
+    "volume": 454848783.0,
+    "closeTime": 1760572799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1760572800000,
+    "open": 0.0624,
+    "high": 0.0659,
+    "low": 0.0567,
+    "close": 0.0584,
+    "volume": 516803153.9,
+    "closeTime": 1760659199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1760659200000,
+    "open": 0.0584,
+    "high": 0.0612,
+    "low": 0.0535,
+    "close": 0.0568,
+    "volume": 511430088.2,
+    "closeTime": 1760745599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1760745600000,
+    "open": 0.0568,
+    "high": 0.0589,
+    "low": 0.0548,
+    "close": 0.0566,
+    "volume": 293702642.5,
+    "closeTime": 1760831999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1760832000000,
+    "open": 0.0565,
+    "high": 0.061,
+    "low": 0.0554,
+    "close": 0.0584,
+    "volume": 269489324.1,
+    "closeTime": 1760918399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1760918400000,
+    "open": 0.0585,
+    "high": 0.0634,
+    "low": 0.0568,
+    "close": 0.058,
+    "volume": 292520808.2,
+    "closeTime": 1761004799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1761004800000,
+    "open": 0.0581,
+    "high": 0.0636,
+    "low": 0.0556,
+    "close": 0.0567,
+    "volume": 317069446.7,
+    "closeTime": 1761091199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1761091200000,
+    "open": 0.0568,
+    "high": 0.0588,
+    "low": 0.0515,
+    "close": 0.0539,
+    "volume": 356491001.0,
+    "closeTime": 1761177599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1761177600000,
+    "open": 0.054,
+    "high": 0.0582,
+    "low": 0.0538,
+    "close": 0.0573,
+    "volume": 154440259.6,
+    "closeTime": 1761263999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1761264000000,
+    "open": 0.0574,
+    "high": 0.0631,
+    "low": 0.057,
+    "close": 0.0617,
+    "volume": 217146427.7,
+    "closeTime": 1761350399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1761350400000,
+    "open": 0.0618,
+    "high": 0.0762,
+    "low": 0.0601,
+    "close": 0.0738,
+    "volume": 679334904.4,
+    "closeTime": 1761436799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1761436800000,
+    "open": 0.0737,
+    "high": 0.0757,
+    "low": 0.068,
+    "close": 0.0712,
+    "volume": 515480930.4,
+    "closeTime": 1761523199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1761523200000,
+    "open": 0.0712,
+    "high": 0.0809,
+    "low": 0.0642,
+    "close": 0.06508,
+    "volume": 513286161.8,
+    "closeTime": 1761609599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1761609600000,
+    "open": 0.06509,
+    "high": 0.0708,
+    "low": 0.06253,
+    "close": 0.06541,
+    "volume": 701264000.3,
+    "closeTime": 1761695999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1761696000000,
+    "open": 0.06541,
+    "high": 0.06902,
+    "low": 0.06175,
+    "close": 0.06553,
+    "volume": 363827743.1,
+    "closeTime": 1761782399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1761782400000,
+    "open": 0.06551,
+    "high": 0.06643,
+    "low": 0.0554,
+    "close": 0.05783,
+    "volume": 439497302.2,
+    "closeTime": 1761868799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1761868800000,
+    "open": 0.05783,
+    "high": 0.08956,
+    "low": 0.05748,
+    "close": 0.0749,
+    "volume": 3115970536.8,
+    "closeTime": 1761955199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1761955200000,
+    "open": 0.07491,
+    "high": 0.10146,
+    "low": 0.0727,
+    "close": 0.09278,
+    "volume": 3464298021.5,
+    "closeTime": 1762041599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1762041600000,
+    "open": 0.09278,
+    "high": 0.09332,
+    "low": 0.07888,
+    "close": 0.08123,
+    "volume": 900524754.2,
+    "closeTime": 1762127999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1762128000000,
+    "open": 0.08122,
+    "high": 0.08125,
+    "low": 0.06421,
+    "close": 0.06887,
+    "volume": 744133529.4,
+    "closeTime": 1762214399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1762214400000,
+    "open": 0.06886,
+    "high": 0.06999,
+    "low": 0.05306,
+    "close": 0.05711,
+    "volume": 762065885.3,
+    "closeTime": 1762300799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1762300800000,
+    "open": 0.05711,
+    "high": 0.07344,
+    "low": 0.05267,
+    "close": 0.0648,
+    "volume": 1000417207.7,
+    "closeTime": 1762387199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1762387200000,
+    "open": 0.06487,
+    "high": 0.06716,
+    "low": 0.05855,
+    "close": 0.06168,
+    "volume": 234771116.7,
+    "closeTime": 1762473599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1762473600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1762559999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1762560000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1762646399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1762646400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1762732799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1762732800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1762819199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1762819200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1762905599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1762905600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1762991999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1762992000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1763078399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1763078400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1763164799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1763164800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1763251199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1763251200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1763337599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1763337600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1763423999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1763424000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1763510399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1763510400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1763596799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1763596800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1763683199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1763683200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1763769599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1763769600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1763855999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1763856000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1763942399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1763942400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1764028799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1764028800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1764115199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1764115200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1764201599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1764201600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1764287999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1764288000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1764374399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1764374400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1764460799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1764460800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1764547199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1764547200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1764633599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1764633600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1764719999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1764720000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1764806399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1764806400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1764892799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1764892800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1764979199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1764979200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1765065599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1765065600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1765151999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1765152000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1765238399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1765238400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1765324799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1765324800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1765411199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1765411200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1765497599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1765497600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1765583999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1765584000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1765670399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1765670400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1765756799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1765756800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1765843199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1765843200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1765929599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1765929600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1766015999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1766016000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1766102399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1766102400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1766188799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1766188800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1766275199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1766275200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1766361599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1766361600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1766447999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1766448000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1766534399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1766534400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1766620799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1766620800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1766707199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1766707200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1766793599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1766793600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1766879999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1766880000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1766966399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1766966400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1767052799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1767052800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1767139199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1767139200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1767225599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1767225600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1767311999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1767312000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1767398399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1767398400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1767484799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1767484800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1767571199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1767571200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1767657599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1767657600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1767743999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1767744000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1767830399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1767830400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1767916799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1767916800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1768003199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1768003200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1768089599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1768089600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1768175999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1768176000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1768262399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1768262400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1768348799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1768348800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1768435199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1768435200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1768521599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1768521600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1768607999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1768608000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1768694399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1768694400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1768780799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1768780800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1768867199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1768867200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1768953599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1768953600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1769039999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1769040000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1769126399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1769126400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1769212799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1769212800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1769299199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1769299200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1769385599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1769385600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1769471999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1769472000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1769558399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1769558400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1769644799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1769644800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1769731199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1769731200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1769817599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1769817600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1769903999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1769904000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1769990399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1769990400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1770076799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1770076800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1770163199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1770163200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1770249599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1770249600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1770335999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1770336000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1770422399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1770422400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1770508799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1770508800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1770595199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1770595200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1770681599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1770681600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1770767999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1770768000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1770854399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1770854400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1770940799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1770940800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1771027199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1771027200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1771113599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1771113600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1771199999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1771200000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1771286399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1771286400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1771372799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1771372800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1771459199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1771459200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1771545599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1771545600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1771631999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1771632000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1771718399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1771718400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1771804799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1771804800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1771891199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1771891200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1771977599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1771977600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1772063999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1772064000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1772150399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1772150400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1772236799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1772236800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1772323199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1772323200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1772409599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1772409600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1772495999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1772496000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1772582399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1772582400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1772668799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1772668800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1772755199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1772755200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1772841599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1772841600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1772927999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1772928000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1773014399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1773014400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1773100799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1773100800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1773187199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1773187200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1773273599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1773273600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1773359999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1773360000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1773446399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1773446400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1773532799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1773532800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1773619199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1773619200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1773705599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1773705600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1773791999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1773792000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1773878399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1773878400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1773964799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1773964800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1774051199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1774051200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1774137599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1774137600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1774223999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1774224000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1774310399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1774310400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1774396799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1774396800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1774483199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1774483200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1774569599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1774569600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1774655999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1774656000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1774742399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1774742400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1774828799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1774828800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1774915199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1774915200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1775001599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1775001600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1775087999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1775088000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1775174399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1775174400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1775260799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1775260800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1775347199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1775347200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1775433599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1775433600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1775519999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1775520000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1775606399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1775606400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1775692799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1775692800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1775779199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1775779200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1775865599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1775865600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1775951999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1775952000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1776038399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1776038400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1776124799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1776124800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1776211199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1776211200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1776297599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1776297600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1776383999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1776384000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1776470399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1776470400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1776556799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1776556800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1776643199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1776643200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1776729599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1776729600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1776815999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1776816000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1776902399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1776902400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1776988799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1776988800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1777075199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1777075200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1777161599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1777161600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1777247999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1777248000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1777334399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1777334400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1777420799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1777420800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1777507199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1777507200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1777593599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1777593600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1777679999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1777680000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1777766399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1777766400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1777852799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1777852800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1777939199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1777939200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1778025599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1778025600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1778111999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1778112000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1778198399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1778198400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1778284799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1778284800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1778371199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1778371200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1778457599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1778457600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1778543999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1778544000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1778630399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1778630400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1778716799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1778716800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1778803199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1778803200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1778889599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1778889600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1778975999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1778976000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1779062399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1779062400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1779148799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1779148800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1779235199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1779235200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1779321599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1779321600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1779407999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1779408000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1779494399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1779494400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1779580799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1779580800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1779667199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1779667200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1779753599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1779753600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1779839999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1779840000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1779926399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1779926400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1780012799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1780012800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1780099199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1780099200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1780185599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1780185600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1780271999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1780272000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1780358399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1780358400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1780444799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1780444800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1780531199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1780531200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1780617599999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1780617600000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1780703999999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1780704000000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1780790399999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1780790400000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1780876799999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1780876800000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1780963199999,
+    "isFinal": true
+  },
+  {
+    "openTime": 1780963200000,
+    "open": 0.06168,
+    "high": 0.06168,
+    "low": 0.06168,
+    "close": 0.06168,
+    "volume": 0.0,
+    "closeTime": 1781049599999,
+    "isFinal": true
+  }
+]

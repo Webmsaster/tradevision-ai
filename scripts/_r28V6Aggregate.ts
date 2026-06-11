@@ -47,6 +47,28 @@ const rows: Row[] = [...byWin.values()].sort((a, b) => a.winIdx - b.winIdx);
 // Without detection, the aggregator silently reports a smaller-than-real
 // denominator and an inflated rate. Walk the contiguous winIdx range and
 // list missing indices so the user can re-run only the dead shards.
+// 2026-05-13 Codex Round 6 HIGH FIX (#SH1+#SH2): fail-closed on coverage
+// gaps OR duplicate winIdx. Previously gaps were warned-but-aggregated
+// (silent denominator shrink → inflated rate). Now: gaps + duplicates
+// throw. Set FTMO_AGG_ALLOW_GAPS=1 to suppress for ad-hoc partial runs.
+const allowGaps =
+  process.env.FTMO_AGG_ALLOW_GAPS === "1" ||
+  process.env.FTMO_AGG_ALLOW_GAPS === "true";
+const seenIds = new Set<number>();
+const duplicateIds: number[] = [];
+for (const name of shardFiles) {
+  const f = `${CACHE_DIR}/${name}`;
+  for (const line of readFileSync(f, "utf-8").split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const r = JSON.parse(line) as Row;
+      if (seenIds.has(r.winIdx)) duplicateIds.push(r.winIdx);
+      seenIds.add(r.winIdx);
+    } catch {
+      // ignore — already counted via byWin.set, will be caught by gap-check
+    }
+  }
+}
 if (rows.length > 0) {
   const maxIdx = rows[rows.length - 1]!.winIdx;
   const present = new Set(rows.map((r) => r.winIdx));
@@ -62,6 +84,27 @@ if (rows.length > 0) {
     plog(
       `  Hint: re-run the shard whose (winIdx % SHARD_COUNT) matches those indices.`,
     );
+    if (!allowGaps) {
+      throw new Error(
+        `Aggregate FAILED: ${missing.length} missing winIdx between 0 and ${maxIdx}. ` +
+          `Re-run the dead shard(s) or set FTMO_AGG_ALLOW_GAPS=1 to compute on partial data.`,
+      );
+    }
+  }
+  if (duplicateIds.length > 0) {
+    plog(
+      `⚠ DUPLICATE WINDOWS: ${duplicateIds.length} winIdx repeated across shards`,
+    );
+    plog(
+      `  first 10: ${duplicateIds.slice(0, 10).join(",")}${duplicateIds.length > 10 ? ", ..." : ""}`,
+    );
+    if (!allowGaps) {
+      throw new Error(
+        `Aggregate FAILED: ${duplicateIds.length} duplicate winIdx. ` +
+          `Likely stale shard output from a prior run was not cleaned up. ` +
+          `Delete old jsonl files or set FTMO_AGG_ALLOW_GAPS=1.`,
+      );
+    }
   }
 }
 

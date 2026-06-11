@@ -86,13 +86,16 @@ def _account_prefix() -> str:
     return f"[acct:{acct}] " if acct else ""
 
 
-def tg_send(text: str) -> bool:
+def tg_send(text: str, critical: bool = False) -> bool:
     token = _resolve_account_env("BOT_TOKEN")
     chat_id = _resolve_account_env("CHAT_ID")
     if not token or not chat_id:
         return False
-    # Suppression-active → skip without hitting urlopen.
-    if time.time() < _suppress_until_ts:
+    # 2026-05-20 bug-find round: critical alerts (breach, emergency-close,
+    # wrong-account, target-latch) BYPASS the 429/backoff suppression window —
+    # a routine burst (e.g. 18 order placements) must never silence a breach
+    # notification for 60s. Non-critical sends still respect suppression.
+    if not critical and time.time() < _suppress_until_ts:
         return False
     # Round 57: prefix with account id for multi-account chats. Prefix counts
     # toward the 4000-char Telegram budget so we apply it before truncation.
@@ -129,9 +132,25 @@ def tg_send(text: str) -> bool:
             print(f"[telegram] auth/bot error {status}: {msg}")
             _enter_suppression(float("inf"), f"HTTP {status}")
         elif status == 429 or 500 <= status < 600:
-            # Rate-limited or server error → 60s cooldown.
-            print(f"[telegram] backoff {status}: {msg}")
-            _enter_suppression(60.0, f"HTTP {status}")
+            # 2026-05-23 Wave2 fix (BUG-1 HIGH): honor `parameters.retry_after`
+            # from the Telegram 429 response body. Previously hardcoded 60s
+            # could be SHORTER than the server-requested cooldown → repeat-429
+            # ban-spam loop. Clamp to [1, 600] seconds. 5xx still gets the
+            # 60s default since there's no retry-after for server errors.
+            cooldown = 60.0
+            if status == 429:
+                try:
+                    body_bytes = e.read() if hasattr(e, "read") else b""
+                    if body_bytes:
+                        body = json.loads(body_bytes.decode("utf-8", errors="ignore"))
+                        params = body.get("parameters") or {}
+                        ra = params.get("retry_after")
+                        if isinstance(ra, (int, float)) and ra > 0:
+                            cooldown = max(1.0, min(600.0, float(ra)))
+                except (json.JSONDecodeError, ValueError, OSError):
+                    pass
+            print(f"[telegram] backoff {status}: {msg} (cooldown {cooldown:.0f}s)")
+            _enter_suppression(cooldown, f"HTTP {status}")
         else:
             print(f"[telegram] send error {status}: {msg}")
         return False

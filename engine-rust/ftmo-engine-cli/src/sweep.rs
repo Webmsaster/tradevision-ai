@@ -37,6 +37,7 @@ use ftmo_engine_core::harness::{step_bar, BarInput};
 use ftmo_engine_core::indicators::atr;
 use ftmo_engine_core::signal::PollSignal;
 use ftmo_engine_core::signals_breakout::{detect_breakout, BreakoutParams};
+use ftmo_engine_core::signals_forex_mr::{detect_forex_mr, ForexMrParams};
 use ftmo_engine_core::signals_meanrev::detect_mean_reversion;
 use ftmo_engine_core::signals_r28v6::{detect_r28_v6, R28V6Inputs, R28V6Params};
 use ftmo_engine_core::signals_r29r5::{
@@ -62,6 +63,27 @@ struct WindowResult {
     passed: bool,
     fail_reason: Option<String>,
     elapsed_ms: f64,
+    /// 2026-05-17 Codex Breadth-Gate (Phase 41) — None when no gate configured;
+    /// Some(true/false) when --min-initial-signal-breadth or --min-initial-majors
+    /// is active. The pass-rate reported in finalise_report then uses
+    /// passed/qualified instead of passed/total to mirror live deploy (don't
+    /// start the challenge on under-broad opening clusters).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    qualified_at_start: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_cluster_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_cluster_majors: Option<usize>,
+    /// 2026-05-19 cluster-only-mode runtime stats. None when the gate is off.
+    /// `cluster_blocked_bars` = bars where >=1 candidate signal was suppressed
+    /// because the rolling cluster was red. `cluster_blocked_signals` = total
+    /// dropped signal count across the window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cluster_blocked_bars: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cluster_passed_bars: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cluster_blocked_signals: Option<u32>,
 }
 
 fn ml_features_for_signal(
@@ -220,12 +242,107 @@ struct MultiSignalCfg {
     regime_vol_mult: f64,
     /// Force MR-source override even if template doesn't carry one.
     regime_force_mr: bool,
+    /// 2026-05-14 Detector #34 — Coinbase-Binance Premium voter activation
+    /// plus tunable knobs. CLI flags: `--regime-use-cb-premium`,
+    /// `--cb-threshold-bps`, `--cb-consecutive`. The premium data
+    /// directory comes via `--cb-premium-dir` (separate top-level
+    /// argument so the loader call sees it before MultiSignalCfg is built).
+    regime_use_cb_premium: bool,
+    cb_threshold_bps: u32,
+    cb_consecutive_bars: usize,
     /// 2026-05-13 Audit Round 3: when true, disable the engine's "soft pass"
     /// tail check that allows a window to pass if target was ever hit AND
     /// `final_equity >= 0.5 × target`. Strict mode requires `final_equity ≥
     /// target` at end. Champion C2 (pt=0.04) drops from 80.04% → 73.25%
     /// under strict rule; Champion B (pt=0.08) drops 72.37% → 64.04%.
     strict_pass: bool,
+    /// 2026-05-13 Phase 3b: VWAP-trend 5th-voter activation + params.
+    regime_use_vwap_trend: bool,
+    regime_vwap_period: usize,
+    regime_vwap_min_dev: f64,
+    /// 2026-05-14 Detector #14 — Stop-Hunt Liquidity-Sweep Reversal voter
+    /// activation + params. 6th independent voter in the REGIME panel.
+    regime_use_stop_hunt: bool,
+    regime_sh_lookback: usize,
+    regime_sh_wick_pct: f64,
+    regime_sh_close_strict: bool,
+    /// 2026-05-14 Detector #1 — Bollinger-Band Z-score Mean-Reversion voter
+    /// activation + params. 7th independent voter in the REGIME panel.
+    regime_use_bb_z_mr: bool,
+    regime_bb_z_period: u32,
+    regime_bb_z_mult: f64,
+    regime_bb_z_threshold: f64,
+    regime_bb_z_cooldown: u64,
+    /// 2026-05-14 Detector #2 — Order-Flow-Imbalance Persistent Cluster.
+    /// `also_fire_ofi_persistent` adds the detector as an ADDITIVE entry
+    /// alongside R28V6 (mirrors `also_fire_meanrev/breakout`). `regime_use_ofi`
+    /// enrolls it as the 8th independent voter inside the regime panel.
+    /// Tuneable knobs: window_bars (5), delta_threshold (0.20 ≈ 60/40 ratio),
+    /// SMA-period (20), cooldown (12 bars on a 30m feed = 6 hours).
+    also_fire_ofi_persistent: bool,
+    regime_use_ofi: bool,
+    regime_use_funding_accel: bool,
+    ofi_window: usize,
+    ofi_threshold: f64,
+    ofi_sma: usize,
+    ofi_cooldown: u64,
+    // 2026-05-14 Phase-2 voter flags (CMF + RSI-Hidden-Divergence wired).
+    regime_use_cmf: bool,
+    regime_use_rsi_hidden_div: bool,
+    // 2026-05-14 Phase-3 voter flags (7 new modules — cb_premium deferred for series loader).
+    regime_use_ad_line: bool,
+    regime_use_aroon: bool,
+    regime_use_double_top: bool,
+    regime_use_smc_fvg: bool,
+    regime_use_supertrend: bool,
+    regime_use_kalman_trend: bool,
+    // 2026-05-14 — macro / cross-market voters. Toggle-only; external series
+    // are still default-None until per-feed loaders ship.
+    // (regime_use_cb_premium is defined above with detector-34 knobs.)
+    regime_use_cme_basis: bool,
+    regime_use_hmm: bool,
+    regime_use_nupl: bool,
+    regime_use_top_trader_ls: bool,
+    regime_use_stablecoin: bool,
+    /// 2026-05-14 Detector #13 — Higher-timeframe MACD-histogram trend
+    /// confluence gate. Wired into both standalone-R28V6
+    /// (`apply_r28v6_param_overrides`) and REGIME mode
+    /// (`RegimeConfluenceParams.htf_macd_*`). Dormant by default; activate
+    /// with `--use-htf-macd-gate`. Operates on the same `htf_closes` buffer
+    /// as the EMA-9/21 gate so the user only needs to pass `--use-htf-confirm`
+    /// once.
+    use_htf_macd_gate: bool,
+    htf_macd_fast: usize,
+    htf_macd_slow: usize,
+    htf_macd_signal: usize,
+    htf_macd_rising_lookback: usize,
+    htf_macd_min_magnitude: f64,
+    /// 2026-05-14 Detector #12 — multi-bar Volume-Profile POC-Z distance
+    /// voter activation + params. Independent voter in the REGIME panel.
+    regime_use_poc_z: bool,
+    regime_poc_period: u32,
+    regime_poc_bucket: f64,
+    regime_poc_z_min: f64,
+    // 2026-05-16 Phase 2.2 — POC-Zone Hard-Gate (HVN block)
+    regime_use_poc_zone_gate: bool,
+    regime_poc_zone_hvn_min_ratio: f64,
+    // 2026-05-16 Phase 16 — Voter-Disagreement-Bonus (Hunt 40#3)
+    regime_disagreement_bonus: bool,
+    // 2026-05-16 Phase 17 — Fisher Transform voter (Hunt 3)
+    regime_use_fisher: bool,
+    // 2026-05-17 KAMA voter (Architecture-Brainstorm Hunt 2)
+    regime_use_kama: bool,
+    // 2026-05-17 Stufe-1 batch voters
+    regime_use_squeeze: bool,
+    regime_use_hurst: bool,
+    regime_use_wavelet: bool,
+    regime_use_pivot: bool,
+    regime_use_fib: bool,
+    regime_use_vah_val: bool,
+    regime_use_ichimoku: bool,
+    regime_use_arima: bool,
+    regime_use_garch_gate: bool,
+    regime_use_bocpd_gate: bool,
     // Below: deliberately at end so the field-init order in `let cfg =
     // MultiSignalCfg { ... }` stays stable for existing call sites.
     /// R29-Audit-2026-05-12: phantom_suppress field REMOVED. The feature
@@ -237,18 +354,174 @@ struct MultiSignalCfg {
     /// gate disabled.
     ml_model: Option<Arc<ftmo_engine_core::ml_gate::MlModel>>,
     ml_threshold: f64,
+    /// 2026-05-17 Phase 27 — Pre-loaded HMM model (3- or 4-state). When
+    /// `regime_use_hmm = true` and this is None, the voter falls back to the
+    /// hardcoded `HmmModel::default_btc_30m()` (3-state). Loaded once at
+    /// sweep-start from `--hmm-model <path>` so the JSON-parse cost is paid
+    /// exactly once, not per-window.
+    hmm_model: Option<Arc<ftmo_engine_core::signals_hmm_regime::HmmModel>>,
+    /// 2026-05-17 Phase 28 — HMM threshold overrides. NaN sentinel = use
+    /// HmmRegimeParams::default_30m_crypto() defaults (0.55/0.55/0.20).
+    regime_hmm_p_bull: f64,
+    regime_hmm_p_bear: f64,
+    regime_hmm_p_opposite: f64,
+    /// 0 sentinel = use default 200 (warmup_bars).
+    regime_hmm_warmup: usize,
+    /// 2026-05-17 Phase 41 — Codex Challenge-Start-Breadth-Gate.
+    /// 0 = gate disabled. Otherwise: a window's `qualified_at_start` is true
+    /// iff its first-cluster (trades inside `initial_window_hours` after the
+    /// first trade) contains >= `min_initial_signal_breadth` distinct symbols
+    /// AND >= `min_initial_majors` from `majors_prefixes`.
+    min_initial_signal_breadth: usize,
+    min_initial_majors: usize,
+    initial_window_hours: u32,
+    /// Short symbol prefixes (e.g. "BTC,ETH,BNB,SOL") — a trade symbol matches
+    /// when it starts with `"<prefix>-"` or equals the prefix exactly.
+    majors_prefixes: Vec<String>,
+    /// 2026-05-19 — cluster-only intra-challenge gate. When true, the engine
+    /// computes a sliding-window cluster (breadth + majors) at every bar and
+    /// drops all candidate signals when the cluster is currently red. Mirrors
+    /// live `check_cluster_entry_block` (ftmo_executor.py) semantics: signals
+    /// only fire when, in the past `initial_window_hours`, the union of
+    /// already-detected signals satisfies
+    ///   breadth >= min_initial_signal_breadth AND
+    ///   majors  >= min_initial_majors.
+    /// Reuses the same thresholds & majors_prefixes as the start-gate. Default
+    /// off so existing sweeps keep their behaviour; activate with the CLI flag
+    /// `--cluster-only-mode`.
+    cluster_only_mode: bool,
     /// R29-Audit: random-gate sanity check. When set to Some(f), each signal
     /// is kept with probability f (deterministic per `random_gate_seed +
     /// entry_time + symbol_hash`). Used to confirm ML "wins" come from signal
     /// quality, not trade-count reduction.
     random_gate_keep: Option<f64>,
     random_gate_seed: u64,
+    /// 2026-05-19 Damage-Limitation Early-Abort.
+    /// `early_abort_after_losses N` (default 0 = disabled): if the FIRST N
+    /// trades of the window are ALL losers (eff_pnl ≤ 0), force-close every
+    /// remaining open position and stop the window (StoppedReason::EarlyAbort).
+    /// `early_abort_after_trades N` + `early_abort_min_cum X` (default 0 / 0.0
+    /// = disabled): if after the FIRST N trades the cumulative final_equity_pct
+    /// (state.equity - 1.0) is at or below X (X is negative, e.g. -0.02 for
+    /// -2%), force-close + abort. Motivation: backtest shows windows with 2
+    /// initial losers pass at 0/31 = 0% and windows below -2% after 5 trades
+    /// pass at 0/30 = 0% — aborting saves -2pp average-loss per fail.
+    early_abort_after_losses: u32,
+    early_abort_after_trades: u32,
+    early_abort_min_cum: f64,
+    /// 2026-05-20 Intra-Window Kill-Switch (Agent 6). Evaluated ONCE at the
+    /// first bar whose `elapsed_hours >= kill_switch_hour`. Predicate:
+    ///   closed_trades.len() < kill_switch_min_trades
+    ///   AND
+    ///   (state.equity - 1.0) < kill_switch_min_equity
+    /// fires → force-close + StoppedReason::EarlyAbort. Defaults disabled
+    /// (`kill_switch_hour == 0`).
+    kill_switch_hour: u32,
+    kill_switch_min_trades: u32,
+    kill_switch_min_equity: f64,
 }
 
 /// 2026-05-13 65%-hunt: apply CLI-flag overrides for the secondary R28V6
 /// detector gates (ADX, choppiness, RSI). All gates default to None in
 /// `R28V6Params::default_for`; this helper activates them when the user
 /// passed `--override-adx-min` etc.
+/// 2026-05-14 Detector #18 — parse `--ptp-levels "0.02:0.30,0.04:0.30,0.06:0.40"`.
+///
+/// Validation rules (mirror `exit.rs` invariants):
+///   * each token must be `trigger_pct:close_fraction` floats
+///   * trigger_pct strictly monotone increasing (early-stop in
+///     `process_position_exit_with_held` requires sorted-ascending levels)
+///   * every trigger_pct > 0 and every close_fraction > 0
+///   * sum(close_fraction) <= 1.0 (cannot close more than 100% of the
+///     remaining position across all tiers)
+fn parse_ptp_levels(csv: &str) -> Result<Vec<ftmo_engine_core::config::PartialTakeProfitLevel>> {
+    let mut out: Vec<ftmo_engine_core::config::PartialTakeProfitLevel> = Vec::new();
+    let mut prev_trigger: Option<f64> = None;
+    let mut frac_sum = 0.0_f64;
+    for raw in csv.split(',') {
+        let tok = raw.trim();
+        if tok.is_empty() {
+            continue;
+        }
+        let mut parts = tok.splitn(2, ':');
+        let t_str = parts
+            .next()
+            .ok_or_else(|| anyhow!("--ptp-levels token '{tok}' missing trigger_pct"))?;
+        let f_str = parts
+            .next()
+            .ok_or_else(|| anyhow!("--ptp-levels token '{tok}' missing close_fraction"))?;
+        let trigger_pct: f64 = t_str
+            .trim()
+            .parse()
+            .map_err(|e| anyhow!("--ptp-levels '{tok}': trigger_pct parse error: {e}"))?;
+        let close_fraction: f64 = f_str
+            .trim()
+            .parse()
+            .map_err(|e| anyhow!("--ptp-levels '{tok}': close_fraction parse error: {e}"))?;
+        // Safety: keep the negated forms below — "nan".parse::<f64>() succeeds,
+        // and NaN must FAIL these validations; `trigger_pct <= 0.0` would let
+        // NaN slip through into the engine.
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        if !(trigger_pct > 0.0) {
+            return Err(anyhow!(
+                "--ptp-levels '{tok}': trigger_pct must be > 0 (got {trigger_pct})"
+            ));
+        }
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        if !(close_fraction > 0.0) {
+            return Err(anyhow!(
+                "--ptp-levels '{tok}': close_fraction must be > 0 (got {close_fraction})"
+            ));
+        }
+        if let Some(prev) = prev_trigger {
+            // Safety: NaN (parseable!) must fail the strictly-increasing check.
+            #[allow(clippy::neg_cmp_op_on_partial_ord)]
+            if !(trigger_pct > prev) {
+                return Err(anyhow!(
+                    "--ptp-levels: trigger_pct must be strictly increasing (got {trigger_pct} after {prev})"
+                ));
+            }
+        }
+        prev_trigger = Some(trigger_pct);
+        frac_sum += close_fraction;
+        out.push(ftmo_engine_core::config::PartialTakeProfitLevel {
+            trigger_pct,
+            close_fraction,
+        });
+    }
+    if out.is_empty() {
+        return Err(anyhow!("--ptp-levels: at least one level required"));
+    }
+    // Allow tiny FP slack so "0.30,0.30,0.40" doesn't trip on epsilon drift.
+    if frac_sum > 1.0 + 1e-9 {
+        return Err(anyhow!(
+            "--ptp-levels: sum(close_fraction) = {frac_sum} > 1.0 (cannot close more than full position)"
+        ));
+    }
+    Ok(out)
+}
+
+fn parse_u32_csv_flag(csv: &str, flag: &str, min: u32, max: u32) -> Result<Vec<u32>> {
+    let mut out = Vec::new();
+    for raw in csv.split(',') {
+        let tok = raw.trim();
+        if tok.is_empty() {
+            continue;
+        }
+        let v: u32 = tok
+            .parse()
+            .map_err(|_| anyhow!("{flag}: invalid integer token '{tok}'"))?;
+        if v < min || v > max {
+            anyhow::bail!("{flag}: value {v} outside [{min}, {max}]");
+        }
+        out.push(v);
+    }
+    if out.is_empty() {
+        anyhow::bail!("{flag}: list must contain at least one value");
+    }
+    Ok(out)
+}
+
 fn apply_r28v6_param_overrides(
     params: &mut ftmo_engine_core::signals_r28v6::R28V6Params,
     cfg: &MultiSignalCfg,
@@ -266,6 +539,18 @@ fn apply_r28v6_param_overrides(
         params.rsi_long_max = cfg.r28v6_rsi_long_max;
         params.rsi_short_min = cfg.r28v6_rsi_short_min;
     }
+    // 2026-05-14 Detector #13 — HTF MACD-histogram gate. Mirror of the
+    // wiring in `RegimeConfluenceParams::apply_r28v6_overrides` so the same
+    // CLI flags govern both signal paths (Codex Round 2 bug class: silent
+    // no-op when REGIME mode rebuilds R28V6Params via `default_for`).
+    if cfg.use_htf_macd_gate {
+        params.htf_macd_enabled = true;
+        params.htf_macd_fast = cfg.htf_macd_fast;
+        params.htf_macd_slow = cfg.htf_macd_slow;
+        params.htf_macd_signal = cfg.htf_macd_signal;
+        params.htf_macd_rising_lookback = cfg.htf_macd_rising_lookback;
+        params.htf_macd_min_magnitude = cfg.htf_macd_min_magnitude;
+    }
 }
 
 /// R29-PassrateHunt: post-template config mutations. Bundle all override
@@ -278,6 +563,7 @@ struct CfgOverrides {
     trail_activate: Option<f64>,
     trail_pct: Option<f64>,
     leverage: Option<f64>,
+    risk_frac_mult: Option<f64>,
     hold_bars: Option<u32>,
     hours: Option<String>,
     dows: Option<String>,
@@ -296,9 +582,40 @@ struct CfgOverrides {
     cpts_trail: Option<f64>,
     idl_threshold: Option<f64>,
     idl_factor: Option<f64>,
+    /// 2026-05-29 DailyEquityGuardian intraday soft-stop. When set, injects
+    /// `cfg.daily_equity_guardian = Some(DailyEquityGuardian { trigger_pct })`
+    /// so any template (not just V5R) gets the force-close + halt-for-day at
+    /// -trigger_pct intraday MTM. Probes whether parking the day below the
+    /// hard -5% DailyLoss lifts true-seq pass-rate.
+    daily_equity_guardian: Option<f64>,
+    /// 2026-05-29 BrightFunded daily-loss floor. When true, sets
+    /// `cfg.daily_loss_eod_hwm = true` so the daily floor is anchored to the
+    /// prev-day EoD high-water-mark (max balance/equity − mdl), frozen per day,
+    /// breach still checked intraday. Differs from FTMO only in the anchor.
+    daily_loss_eod_hwm: bool,
+    /// 2026-05-29 Intra-bar drawdown check — sets `cfg.intrabar_dd_check = true`
+    /// so the DL/TL floors also test the worst intra-bar MTM (bar low/high), not
+    /// just the close. Pairs with `daily_loss_eod` for an honest BrightFunded TL.
+    intrabar_dd_check: bool,
     min_trading_days: Option<u32>,
     profit_target: Option<f64>,
     max_days: Option<u32>,
+    /// 2026-05-29 firm-rule overrides. --max-daily-loss 1.0 effectively DISABLES
+    /// the intraday daily-loss check (only the overall --max-total-loss floor
+    /// remains) → models a prop firm with NO intraday daily-loss limit, which
+    /// directly bypasses the ~97 %-of-fails daily-loss killer.
+    max_daily_loss: Option<f64>,
+    max_total_loss: Option<f64>,
+    /// 2026-05-29 CTI-style HARD trailing-drawdown bust (fail at `trail` below
+    /// the challenge peak). Pair with --max-daily-loss 1.0 to model a no-daily
+    /// + 5%-trailing firm; with --intrabar-dd-check the trailing is intra-bar.
+    trailing_max_loss: Option<f64>,
+    /// 2026-05-19 Pattern-D fix: max consecutive stop-loss exits per day
+    /// before pausing new entries until next day rollover. 0 = disabled.
+    max_consec_stops_per_day: Option<u32>,
+    /// 2026-05-19 Pattern-C fix: trailing-DD-lock trigger + floor (realized).
+    trail_dd_lock_trigger: Option<f64>,
+    trail_dd_lock_floor: Option<f64>,
     lscool_after: Option<u32>,
     lscool_bars: Option<u64>,
     /// 2026-05-13 Hebel 2: cross-asset stress filter (e.g. BTC trend gate
@@ -308,6 +625,78 @@ struct CfgOverrides {
     cross_asset_dir: Option<String>,
     cross_asset_fast: Option<u32>,
     cross_asset_slow: Option<u32>,
+    /// 2026-05-14 Detector #18 — multi-level PTP CSV override.
+    /// Format: "trigger_pct:close_fraction[,trigger_pct:close_fraction]...".
+    /// Parsed list is forwarded to `cfg.partial_take_profit_levels` and the
+    /// single-tier `partial_take_profit` is forcibly cleared so the two
+    /// branches in `exit::process_position_exit` cannot double-fire on the
+    /// same bar.
+    ptp_levels: Option<Vec<ftmo_engine_core::config::PartialTakeProfitLevel>>,
+    /// Detector #20 — 3-phase day-stage sizing (aggressive → neutral →
+    /// defensive). When any of the `ds_*_factor` flags is set, a fresh tier
+    /// ladder is built in `apply_overrides`. Template-supplied tiers are
+    /// kept when no flag is supplied.
+    ds_aggressive_until: Option<u32>,
+    ds_aggressive_factor: Option<f64>,
+    ds_neutral_until: Option<u32>,
+    ds_neutral_factor: Option<f64>,
+    ds_defensive_factor: Option<f64>,
+    /// Detector #20 cross-cut — equity-progress early-defensive trigger.
+    ds_progress_frac: Option<f64>,
+    ds_progress_factor: Option<f64>,
+    /// Detector #20 kill-switch — wipes day-stage AND early-progress.
+    disable_day_stage: bool,
+    /// 2026-05-14 Detector #11 Phase-1 — funding-cost sizing modifier.
+    /// All three flags wire `cfg.funding_cost_sizing = Some(...)`. Any
+    /// `Some` value triggers activation; defaults match `FundingCostSizing::default()`.
+    funding_sizing_alpha: Option<f64>,
+    funding_sizing_window: Option<u32>,
+    funding_sizing_min_factor: Option<f64>,
+    /// 2026-05-14 (detector-41): when set, the cross-asset filter inverts
+    /// secondary-trend semantics before gating (DXY ↔ crypto-style).
+    cross_asset_inverse: bool,
+    /// 2026-05-14 Detector #48 — Time-Decay Sizing CLI override knobs.
+    /// `td_enable=true` activates the modifier; the four knobs fall back to
+    /// spec defaults (decay=0.7, start_day=15, min_factor=0.3, mode=CapDown).
+    td_enable: bool,
+    td_decay: Option<f64>,
+    td_start_day: Option<u32>,
+    td_min_factor: Option<f64>,
+    td_mode: Option<String>,
+    /// 2026-05-14 Detector #49 — Sharpe-ratio-optimized sizing modifier.
+    /// `--sharpe-sizing` toggles activation; when set, the template's
+    /// `sharpe_sizing` (or a stock default ladder if none) is kept while
+    /// `--sharpe-window` / `--sharpe-min-trades` can patch the window
+    /// parameters without recompiling.
+    sharpe_sizing_enable: bool,
+    sharpe_window: Option<u32>,
+    sharpe_min_trades: Option<u32>,
+    // 2026-05-16 Phase 1 — Kelly-Sizing CLI activation (from 50-agent
+    // brainstorm). Engine has Kelly infrastructure (sizing.rs:124-173)
+    // bug-free + lookahead-safe, but no CLI flag existed. Pattern mirrors
+    // sharpe-sizing exactly.
+    kelly_sizing_enable: bool,
+    kelly_window: Option<u32>,
+    kelly_min_trades: Option<u32>,
+    /// 2026-05-16 Phase 14 — Fractional-Kelly (Hunt 17 brainstorm). 1.0 = full
+    /// Kelly, 0.5 = Half-Kelly. Multiplies tier multiplier at apply-time.
+    kelly_fraction: Option<f64>,
+    /// 2026-05-16 Phase 15 — Per-asset tp_mult CSV (Hunt 41 brainstorm).
+    /// Format `--override-tp-mult-per-asset BTCUSDT=1.05,SOLUSDT=1.30`.
+    /// Composes with global `--override-tp-mult` (per-asset applied AFTER).
+    tp_mult_per_asset: Option<std::collections::HashMap<String, f64>>,
+    // 2026-05-16 Phase 2 — Phase-aware risk multiplier. When profit_target
+    // ≈ 0.05 (P2), multiply all per-asset risk_frac by this factor.
+    // Default 1.0 = no change. Hypothesis: P2 (5% target) benefits from
+    // lower risk = fewer DL tail failures, more pass-rate.
+    phase2_risk_mult: Option<f64>,
+    // 2026-05-16 Phase 3 — News-Blackout opt-in. When true, populate
+    // EngineConfig.news_events with the hardcoded 2026 FOMC list. Default
+    // OFF so prior behaviour is untouched.
+    news_blackout_enable: bool,
+    // 2026-05-19 Agent-21-repro: native pre-window skip filter thresholds.
+    skip_sol30d_gt: Option<f64>,
+    skip_bnb7d_gt: Option<f64>,
 }
 
 fn apply_overrides(
@@ -315,8 +704,9 @@ fn apply_overrides(
     ov: &CfgOverrides,
 ) -> Result<()> {
     use ftmo_engine_core::config::{
-        BreakEven, FundingRateFilter, IntradayDailyLossThrottle, LossStreakCooldown,
-        PeakDrawdownThrottle, PeakTrailingStop, TrailingStop,
+        BreakEven, DailyEquityGuardian, DayProgressiveTier, EarlyDefensiveOnProgress,
+        FundingRateFilter, IntradayDailyLossThrottle, LossStreakCooldown, PeakDrawdownThrottle,
+        PeakTrailingStop, TimeDecayMode, TimeDecaySizing, TrailingStop,
     };
 
     if let Some(m) = ov.tp_mult {
@@ -325,6 +715,37 @@ fn apply_overrides(
                 a.tp_pct = Some(t * m);
             } else {
                 a.tp_pct = Some(cfg.tp_pct * m);
+            }
+        }
+    }
+    // 2026-05-16 Phase 15 — Per-asset tp_mult CSV (Hunt 41). Composes with
+    // global --override-tp-mult (applied above first, so per-asset acts on
+    // already-multiplied tpPct). User passes "BTCUSDT=1.05,SOLUSDT=1.30".
+    // Asset config symbols are suffixed "BTC-TREND" etc.; match by base
+    // ticker (strip "-TREND"/"-MR" suffix from asset.symbol, strip "USDT"
+    // suffix from user key, then case-insensitive compare).
+    if let Some(ref per_asset) = ov.tp_mult_per_asset {
+        let normalized: std::collections::HashMap<String, f64> = per_asset
+            .iter()
+            .map(|(k, v)| {
+                let base = k.trim().to_uppercase();
+                let base = base.strip_suffix("USDT").unwrap_or(&base).to_string();
+                (base, *v)
+            })
+            .collect();
+        for a in cfg.assets.iter_mut() {
+            let asset_base = a
+                .symbol
+                .split('-')
+                .next()
+                .unwrap_or(a.symbol.as_str())
+                .to_uppercase();
+            if let Some(&pm) = normalized.get(&asset_base) {
+                if let Some(t) = a.tp_pct {
+                    a.tp_pct = Some(t * pm);
+                } else {
+                    a.tp_pct = Some(cfg.tp_pct * pm);
+                }
             }
         }
     }
@@ -339,6 +760,11 @@ fn apply_overrides(
     }
     if let Some(l) = ov.leverage {
         cfg.leverage = l;
+    }
+    if let Some(m) = ov.risk_frac_mult {
+        for a in cfg.assets.iter_mut() {
+            a.risk_frac *= m;
+        }
     }
     if let Some(h) = ov.hold_bars {
         cfg.hold_bars = h;
@@ -372,17 +798,11 @@ fn apply_overrides(
         cfg.break_even = Some(BreakEven { threshold: t });
     }
     if let Some(csv) = &ov.hours {
-        let v: Vec<u32> = csv
-            .split(',')
-            .filter_map(|s| s.trim().parse().ok())
-            .collect();
+        let v = parse_u32_csv_flag(csv, "--override-hours", 0, 23)?;
         cfg.allowed_hours_utc = Some(v);
     }
     if let Some(csv) = &ov.dows {
-        let v: Vec<u32> = csv
-            .split(',')
-            .filter_map(|s| s.trim().parse().ok())
-            .collect();
+        let v = parse_u32_csv_flag(csv, "--override-dows", 0, 6)?;
         cfg.allowed_dows_utc = Some(v);
     }
     if let Some(csv) = &ov.drop_symbols {
@@ -433,8 +853,26 @@ fn apply_overrides(
     if let Some(d) = ov.min_trading_days {
         cfg.min_trading_days = d;
     }
+    if let Some(v) = ov.max_daily_loss {
+        cfg.max_daily_loss = v;
+    }
+    if let Some(v) = ov.max_total_loss {
+        cfg.max_total_loss = v;
+    }
+    if let Some(v) = ov.trailing_max_loss {
+        cfg.trailing_max_loss = Some(v);
+    }
     if let Some(d) = ov.max_days {
         cfg.max_days = d;
+    }
+    if let Some(n) = ov.max_consec_stops_per_day {
+        cfg.max_consec_stops_per_day = n;
+    }
+    if let Some(t) = ov.trail_dd_lock_trigger {
+        cfg.trail_dd_lock_trigger = t;
+    }
+    if let Some(f) = ov.trail_dd_lock_floor {
+        cfg.trail_dd_lock_floor = f;
     }
     if let Some(sym) = ov.cross_asset_sym.as_ref() {
         cfg.cross_asset_filter = Some(ftmo_engine_core::config::CrossAssetFilter {
@@ -442,9 +880,13 @@ fn apply_overrides(
             direction: ov
                 .cross_asset_dir
                 .clone()
+                .map(|d| d.to_ascii_lowercase())
                 .unwrap_or_else(|| "any".to_string()),
             fast_period: ov.cross_asset_fast.unwrap_or(9),
             slow_period: ov.cross_asset_slow.unwrap_or(21),
+            skip_longs_if_secondary_downtrend: false,
+            skip_shorts_if_secondary_uptrend: false,
+            inverse_correlation: ov.cross_asset_inverse,
         });
     }
     if ov.pdd_from_peak.is_some() || ov.pdd_factor.is_some() {
@@ -477,6 +919,15 @@ fn apply_overrides(
             soft_factor: ov.idl_factor.unwrap_or(cur.soft_factor),
         });
     }
+    if let Some(trigger_pct) = ov.daily_equity_guardian {
+        cfg.daily_equity_guardian = Some(DailyEquityGuardian { trigger_pct });
+    }
+    if ov.daily_loss_eod_hwm {
+        cfg.daily_loss_eod_hwm = true;
+    }
+    if ov.intrabar_dd_check {
+        cfg.intrabar_dd_check = true;
+    }
     if ov.lscool_after.is_some() || ov.lscool_bars.is_some() {
         let cur = cfg.loss_streak_cooldown.unwrap_or(LossStreakCooldown {
             after_losses: 3,
@@ -485,6 +936,65 @@ fn apply_overrides(
         cfg.loss_streak_cooldown = Some(LossStreakCooldown {
             after_losses: ov.lscool_after.unwrap_or(cur.after_losses),
             cooldown_bars: ov.lscool_bars.unwrap_or(cur.cooldown_bars),
+        });
+    }
+    // 2026-05-14 Detector #18 — multi-level PTP override. When set, we
+    // FORCE-CLEAR single-tier `partial_take_profit` so the two PRE-cross PTP
+    // branches in `exit::process_position_exit_with_held` cannot stack on the
+    // same bar (single-tier sets ptp_triggered + BE; multi-level then would
+    // also realise its levels and shift BE a second time). Documented in
+    // CfgOverrides::ptp_levels above.
+    if let Some(levels) = ov.ptp_levels.as_ref() {
+        cfg.partial_take_profit = None;
+        cfg.partial_take_profit_levels = Some(levels.clone());
+    }
+    // ─── Detector #20 — 3-phase day-stage sizing + equity-progress ──
+    if ov.disable_day_stage {
+        cfg.day_progressive_sizing = None;
+        cfg.early_defensive_on_progress = None;
+    } else if ov.ds_aggressive_factor.is_some()
+        || ov.ds_defensive_factor.is_some()
+        || ov.ds_neutral_factor.is_some()
+        || ov.ds_aggressive_until.is_some()
+        || ov.ds_neutral_until.is_some()
+    {
+        let agg_until = ov.ds_aggressive_until.unwrap_or(3);
+        let neu_until = ov.ds_neutral_until.unwrap_or(8);
+        let agg_f = ov.ds_aggressive_factor.unwrap_or(1.5);
+        let neu_f = ov.ds_neutral_factor.unwrap_or(1.0);
+        let def_f = ov.ds_defensive_factor.unwrap_or(0.7);
+        cfg.day_progressive_sizing = Some(vec![
+            DayProgressiveTier {
+                day_at_least: 0,
+                factor: agg_f,
+            },
+            DayProgressiveTier {
+                day_at_least: agg_until,
+                factor: neu_f,
+            },
+            DayProgressiveTier {
+                day_at_least: neu_until,
+                factor: def_f,
+            },
+        ]);
+    }
+    if let (Some(p), Some(f)) = (ov.ds_progress_frac, ov.ds_progress_factor) {
+        cfg.early_defensive_on_progress = Some(EarlyDefensiveOnProgress {
+            progress_frac: p,
+            factor: f,
+        });
+    }
+    // 2026-05-14 Detector #11 Phase-1 — funding-cost sizing modifier.
+    // Any flag activates the modifier; missing flags fall back to defaults.
+    if ov.funding_sizing_alpha.is_some()
+        || ov.funding_sizing_window.is_some()
+        || ov.funding_sizing_min_factor.is_some()
+    {
+        let cur = cfg.funding_cost_sizing.unwrap_or_default();
+        cfg.funding_cost_sizing = Some(ftmo_engine_core::config::FundingCostSizing {
+            alpha: ov.funding_sizing_alpha.unwrap_or(cur.alpha),
+            norm_window_buckets: ov.funding_sizing_window.unwrap_or(cur.norm_window_buckets),
+            min_factor: ov.funding_sizing_min_factor.unwrap_or(cur.min_factor),
         });
     }
     if let Some(csv) = &ov.adaptive_tp {
@@ -512,6 +1022,133 @@ fn apply_overrides(
             }
         }
     }
+    // 2026-05-14 Detector #48 — Time-Decay Sizing CLI activation. Any
+    // `--td-*` flag activates the modifier; missing knobs fall back to the
+    // spec defaults. `--td-enable` alone activates with full defaults.
+    if ov.td_enable
+        || ov.td_decay.is_some()
+        || ov.td_start_day.is_some()
+        || ov.td_min_factor.is_some()
+        || ov.td_mode.is_some()
+    {
+        let mode = match ov
+            .td_mode
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("mult") | Some("multiplicative") => TimeDecayMode::Multiplicative,
+            // Default & explicit "capdown" both land here.
+            _ => TimeDecayMode::CapDown,
+        };
+        let cur = cfg.time_decay_sizing.unwrap_or(TimeDecaySizing {
+            decay: 0.7,
+            start_day: 15,
+            min_factor: 0.3,
+            mode,
+        });
+        cfg.time_decay_sizing = Some(TimeDecaySizing {
+            decay: ov.td_decay.unwrap_or(cur.decay),
+            start_day: ov.td_start_day.unwrap_or(cur.start_day),
+            min_factor: ov.td_min_factor.unwrap_or(cur.min_factor),
+            mode,
+        });
+    }
+    // 2026-05-14 Detector #49 — Sharpe-ratio-optimized sizing modifier.
+    // Three activation paths:
+    //  1. `--sharpe-sizing` with an empty `sharpe_sizing` on the template:
+    //     install a stock 4-tier ladder so sweeps don't need a custom
+    //     selector to test the feature.
+    //  2. `--sharpe-sizing` with a template-supplied ladder: keep tiers,
+    //     possibly patch `window_size` / `min_trades`.
+    //  3. `--sharpe-window` / `--sharpe-min-trades` without `--sharpe-sizing`
+    //     and without a template ladder: NO-OP (don't fabricate config).
+    //     With a template ladder: patch only the window-params.
+    {
+        use ftmo_engine_core::config::{SharpeSizing, SharpeTier};
+        let want_activate = ov.sharpe_sizing_enable;
+        let cur = cfg.sharpe_sizing.clone();
+        if want_activate || cur.is_some() {
+            let base = cur.unwrap_or_else(|| SharpeSizing {
+                window_size: 100,
+                min_trades: 30,
+                tiers: vec![
+                    SharpeTier {
+                        sharpe_above: 0.30,
+                        multiplier: 1.0,
+                    },
+                    SharpeTier {
+                        sharpe_above: 0.10,
+                        multiplier: 0.85,
+                    },
+                    SharpeTier {
+                        sharpe_above: -0.10,
+                        multiplier: 0.60,
+                    },
+                    SharpeTier {
+                        sharpe_above: f64::NEG_INFINITY,
+                        multiplier: 0.40,
+                    },
+                ],
+            });
+            cfg.sharpe_sizing = Some(SharpeSizing {
+                window_size: ov.sharpe_window.unwrap_or(base.window_size),
+                min_trades: ov.sharpe_min_trades.unwrap_or(base.min_trades),
+                tiers: base.tiers,
+            });
+        }
+    }
+    // 2026-05-16 Phase 1 — Kelly-Sizing CLI activation. Mirrors sharpe pattern
+    // exactly. Stock half-Kelly ladder (top tier 1.0 = no over-leverage,
+    // bottom tier 0.3 = defensive on weak win-rate).
+    {
+        use ftmo_engine_core::config::{KellySizing, KellyTier};
+        let want_activate = ov.kelly_sizing_enable;
+        let cur = cfg.kelly_sizing.clone();
+        if want_activate || cur.is_some() {
+            let base = cur.unwrap_or_else(|| KellySizing {
+                window_size: 60,
+                min_trades: 20,
+                tiers: vec![
+                    KellyTier {
+                        win_rate_above: 0.65,
+                        multiplier: 1.0,
+                    },
+                    KellyTier {
+                        win_rate_above: 0.55,
+                        multiplier: 0.75,
+                    },
+                    KellyTier {
+                        win_rate_above: 0.45,
+                        multiplier: 0.50,
+                    },
+                    KellyTier {
+                        win_rate_above: f64::NEG_INFINITY,
+                        multiplier: 0.30,
+                    },
+                ],
+                fraction: 1.0,
+            });
+            cfg.kelly_sizing = Some(KellySizing {
+                window_size: ov.kelly_window.unwrap_or(base.window_size),
+                min_trades: ov.kelly_min_trades.unwrap_or(base.min_trades),
+                tiers: base.tiers,
+                fraction: ov.kelly_fraction.unwrap_or(base.fraction),
+            });
+        }
+    }
+    // 2026-05-16 Phase 2 — Phase-aware risk multiplier. Applied only when
+    // profit_target ≈ 0.05 (FTMO Phase 2 heuristic). Multiplies all
+    // per-asset risk_frac. Bug-frei: deterministic per-run scalar from CLI,
+    // no lookahead. The actual application happens at sizing-time via
+    // the cfg field below.
+    if let Some(mult) = ov.phase2_risk_mult {
+        if (cfg.profit_target - 0.05).abs() < 1e-6 {
+            for a in cfg.assets.iter_mut() {
+                a.risk_frac *= mult;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -534,6 +1171,10 @@ enum SignalSrc {
     /// when `min_votes` detectors agree on direction. See
     /// `signals_regime_confluence.rs`.
     RegimeConfluence,
+    /// 2026-05-23 — Forex Bollinger-Band mean-reversion detector with RSI
+    /// confluence + per-direction cooldown. See `signals_forex_mr.rs`.
+    /// Cross-asset-class diversification candidate vs crypto trend stack.
+    ForexMr,
 }
 
 fn main() -> Result<()> {
@@ -555,10 +1196,16 @@ fn main() -> Result<()> {
     // All overrides are post-template (applied after `template_by_selector`).
     let mut override_tp_mult: Option<f64> = None;
     let mut override_stop_pct: Option<f64> = None;
+    // 2026-05-19 Pattern-D fix CLI: 0 = disabled.
+    let mut max_consec_stops_per_day: u32 = 0;
+    // 2026-05-19 Pattern-C trailing-DD-lock CLI flags.
+    let mut trail_dd_lock_trigger: f64 = 0.0;
+    let mut trail_dd_lock_floor: f64 = 0.0;
     let mut override_mct: Option<u32> = None;
     let mut override_trail_activate: Option<f64> = None;
     let mut override_trail_pct: Option<f64> = None;
     let mut override_leverage: Option<f64> = None;
+    let mut risk_frac_mult: Option<f64> = None;
     let mut override_hold_bars: Option<u32> = None;
     let mut override_hours: Option<String> = None; // CSV "2,4,6,..."
     let mut override_dows: Option<String> = None; // CSV "1,2,3,4,5"
@@ -577,13 +1224,45 @@ fn main() -> Result<()> {
     let mut cpts_trail: Option<f64> = None; // challenge_peak_trailing_stop.trail_distance
     let mut idl_threshold: Option<f64> = None; // intraday_daily_loss_throttle.hard_loss_threshold
     let mut idl_factor: Option<f64> = None; // intraday_daily_loss_throttle.size_factor
+    let mut daily_equity_guardian: Option<f64> = None; // daily_equity_guardian.trigger_pct
+    let mut daily_loss_eod_hwm: bool = false; // BrightFunded prev-EoD-HWM daily floor
+    let mut intrabar_dd_check: bool = false; // intra-bar low/high DL/TL check
     let mut min_trading_days: Option<u32> = None;
     let mut profit_target: Option<f64> = None;
     let mut max_days: Option<u32> = None;
+    let mut max_daily_loss: Option<f64> = None;
+    let mut max_total_loss: Option<f64> = None;
+    let mut trailing_max_loss: Option<f64> = None;
     let mut cross_asset_sym: Option<String> = None;
     let mut cross_asset_dir: Option<String> = None;
     let mut cross_asset_fast: Option<u32> = None;
     let mut cross_asset_slow: Option<u32> = None;
+    // 2026-05-19 Agent-21-repro: native pre-window skip filter. Skip a window
+    // if SOLUSDT 30d return > X OR BNBUSDT 7d return > Y, measured at window
+    // start (lookahead-safe). Skipped windows excluded from num+denom.
+    let mut skip_sol30d_gt: Option<f64> = None;
+    let mut skip_bnb7d_gt: Option<f64> = None;
+    // Detector #20 — 3-phase day-stage sizing + equity-progress trigger.
+    let mut ds_aggressive_until: Option<u32> = None;
+    let mut ds_aggressive_factor: Option<f64> = None;
+    let mut ds_neutral_until: Option<u32> = None;
+    let mut ds_neutral_factor: Option<f64> = None;
+    let mut ds_defensive_factor: Option<f64> = None;
+    let mut ds_progress_frac: Option<f64> = None;
+    let mut ds_progress_factor: Option<f64> = None;
+    let mut disable_day_stage: bool = false;
+    // 2026-05-14 Detector #11 Phase-1 — funding-cost sizing modifier flags.
+    let mut funding_sizing_alpha: Option<f64> = None;
+    let mut funding_sizing_window: Option<u32> = None;
+    let mut funding_sizing_min_factor: Option<f64> = None;
+    // 2026-05-14 (detector-41): inverse-correlation gate for DXY-style drivers.
+    let mut cross_asset_inverse: bool = false;
+    // 2026-05-14 Detector #48 — Time-Decay Sizing CLI flags.
+    let mut td_enable: bool = false;
+    let mut td_decay: Option<f64> = None;
+    let mut td_start_day: Option<u32> = None;
+    let mut td_min_factor: Option<f64> = None;
+    let mut td_mode: Option<String> = None;
     let mut adx_min: Option<f64> = None;
     let mut adx_period: Option<usize> = None;
     let mut chop_max: Option<f64> = None;
@@ -594,6 +1273,24 @@ fn main() -> Result<()> {
     let mut lscool_after: Option<u32> = None;
     let mut lscool_bars: Option<u64> = None;
     let mut ml_model_path: Option<PathBuf> = None;
+    let mut hmm_model_path: Option<PathBuf> = None;
+    let mut regime_hmm_p_bull: f64 = f64::NAN;
+    let mut regime_hmm_p_bear: f64 = f64::NAN;
+    let mut regime_hmm_p_opposite: f64 = f64::NAN;
+    let mut regime_hmm_warmup: usize = 0;
+    let mut min_initial_signal_breadth: usize = 0; // 0 = gate disabled
+    let mut min_initial_majors: usize = 0;
+    let mut initial_window_hours: u32 = 24;
+    let mut majors_prefixes: Vec<String> = vec![
+        "BTC".to_string(),
+        "ETH".to_string(),
+        "BNB".to_string(),
+        "SOL".to_string(),
+    ];
+    // 2026-05-19 — cluster-only intra-challenge gate (mirrors live executor's
+    // CLUSTER_ONLY_ENABLED behaviour). Off by default; activate with
+    // `--cluster-only-mode`. Re-uses the same thresholds as the start-gate.
+    let mut cluster_only_mode: bool = false;
     // R29-Audit-Round3 2026-05-12 (Bug-1 fix): default sentinel `NaN` lets us
     // detect "user passed `--ml-model` but forgot `--ml-threshold`" and
     // fail-loud below instead of silently keeping every signal (threshold=0
@@ -615,11 +1312,112 @@ fn main() -> Result<()> {
     let mut regime_vol_mult: f64 = 1.2;
     let mut regime_force_mr: bool = false;
     let mut strict_pass: bool = false;
+    let mut regime_use_vwap_trend: bool = false;
+    let mut regime_vwap_period: usize = 20;
+    let mut regime_vwap_min_dev: f64 = 0.0;
+    // 2026-05-14 Detector #14 — Stop-Hunt Liquidity-Sweep voter knobs.
+    let mut regime_use_stop_hunt: bool = false;
+    let mut regime_sh_lookback: usize = 20;
+    let mut regime_sh_wick_pct: f64 = 0.003;
+    let mut regime_sh_close_strict: bool = false;
+    // 2026-05-14 Detector #1 — Bollinger-Band Z-score MR voter knobs.
+    let mut regime_use_bb_z_mr: bool = false;
+    let mut regime_bb_z_period: u32 = 20;
+    let mut regime_bb_z_mult: f64 = 2.0;
+    let mut regime_bb_z_threshold: f64 = 2.0;
+    let mut regime_bb_z_cooldown: u64 = 8;
+    // 2026-05-14 Detector #2 — OFI persistent-cluster knobs. Defaults mirror
+    // `OfiPersistentParams::default_30m_crypto()` so flag-free callers see
+    // the same shape as direct API users.
+    let mut also_fire_ofi_persistent: bool = false;
+    let mut regime_use_ofi: bool = false;
+    let mut regime_use_funding_accel: bool = false;
+    let mut ofi_window: usize = 5;
+    let mut ofi_threshold: f64 = 0.20;
+    let mut ofi_sma: usize = 20;
+    let mut ofi_cooldown: u64 = 12;
+    // 2026-05-14 Phase-2 — voter on/off flags.
+    let mut regime_use_cmf: bool = false;
+    let mut regime_use_rsi_hidden_div: bool = false;
+    // 2026-05-14 Phase-3 — voter on/off flags (defaults off).
+    let mut regime_use_ad_line: bool = false;
+    let mut regime_use_aroon: bool = false;
+    let mut regime_use_double_top: bool = false;
+    let mut regime_use_smc_fvg: bool = false;
+    let mut regime_use_supertrend: bool = false;
+    let mut regime_use_kalman_trend: bool = false;
+    let mut regime_use_cb_premium: bool = false;
+    let mut regime_use_cme_basis: bool = false;
+    let mut regime_use_hmm: bool = false;
+    let mut regime_use_nupl: bool = false;
+    let mut regime_use_top_trader_ls: bool = false;
+    let mut regime_use_stablecoin: bool = false;
+    // 2026-05-14 Detector #34 — Coinbase-Binance Premium voter knobs.
+    let mut cb_threshold_bps: u32 = 15;
+    let mut cb_consecutive_bars: usize = 2;
+    let mut cb_premium_dir: Option<PathBuf> = None;
+    // Detector #13 — HTF MACD-histogram gate. Defaults match classic
+    // MACD(12, 26, 9) with `rising_lookback = 1` (bar-over-bar momentum).
+    let mut use_htf_macd_gate: bool = false;
+    let mut htf_macd_fast: usize = 12;
+    let mut htf_macd_slow: usize = 26;
+    let mut htf_macd_signal: usize = 9;
+    let mut htf_macd_rising_lookback: usize = 1;
+    let mut htf_macd_min_magnitude: f64 = 0.0;
+    // 2026-05-14 Detector #12 — POC-Z voter knobs.
+    let mut regime_use_poc_z: bool = false;
+    let mut regime_poc_period: u32 = 20;
+    let mut regime_poc_bucket: f64 = 0.005;
+    let mut regime_poc_z_min: f64 = 1.5;
+    // 2026-05-16 Phase 2.2 — POC-Zone Hard-Gate (HVN block)
+    let mut regime_use_poc_zone_gate: bool = false;
+    let mut regime_poc_zone_hvn_min_ratio: f64 = 1.5;
+    let mut regime_disagreement_bonus: bool = false;
+    let mut regime_use_fisher: bool = false;
+    let mut regime_use_kama: bool = false;
+    let mut regime_use_squeeze: bool = false;
+    let mut regime_use_hurst: bool = false;
+    let mut regime_use_wavelet: bool = false;
+    let mut regime_use_pivot: bool = false;
+    let mut regime_use_fib: bool = false;
+    let mut regime_use_vah_val: bool = false;
+    let mut regime_use_ichimoku: bool = false;
+    let mut regime_use_arima: bool = false;
+    let mut regime_use_garch_gate: bool = false;
+    let mut regime_use_bocpd_gate: bool = false;
     let mut mr_period: Option<u32> = None;
     let mut mr_oversold: Option<f64> = None;
     let mut mr_overbought: Option<f64> = None;
     let mut mr_cooldown: Option<u64> = None;
     let mut mr_size_mult: Option<f64> = None;
+    // 2026-05-14 Detector #18 — multi-level PTP CLI override.
+    let mut ptp_levels: Option<Vec<ftmo_engine_core::config::PartialTakeProfitLevel>> = None;
+    // 2026-05-14 Detector #49 — Sharpe-ratio-optimized sizing modifier.
+    let mut sharpe_sizing_enable: bool = false;
+    let mut sharpe_window: Option<u32> = None;
+    let mut sharpe_min_trades: Option<u32> = None;
+    // 2026-05-16 Phase 1 — Kelly-Sizing CLI activation
+    let mut kelly_sizing_enable: bool = false;
+    let mut kelly_window: Option<u32> = None;
+    let mut kelly_min_trades: Option<u32> = None;
+    // 2026-05-16 Phase 14 — Fractional-Kelly modifier (default OFF).
+    let mut kelly_fraction: Option<f64> = None;
+    // 2026-05-16 Phase 15 — Per-asset tp_mult CSV (Hunt 41).
+    let mut tp_mult_per_asset: Option<std::collections::HashMap<String, f64>> = None;
+    // 2026-05-16 Phase 2 — Phase-aware risk multiplier
+    let mut phase2_risk_mult: Option<f64> = None;
+    // 2026-05-16 Phase 3 — News-Blackout opt-in (default OFF).
+    let mut news_blackout_enable: bool = false;
+    // 2026-05-19 Damage-Limitation Early-Abort. Defaults disabled (0).
+    let mut early_abort_after_losses: u32 = 0;
+    let mut early_abort_after_trades: u32 = 0;
+    let mut early_abort_min_cum: f64 = 0.0;
+    // 2026-05-20 Intra-Window Kill-Switch (Agent 6). Defaults disabled
+    // (`kill_switch_hour == 0`). Typical activation: --kill-switch-hour 24
+    // --kill-switch-min-trades 6 --kill-switch-min-equity -0.02.
+    let mut kill_switch_hour: u32 = 0;
+    let mut kill_switch_min_trades: u32 = 6;
+    let mut kill_switch_min_equity: f64 = -0.02;
 
     // R67 audit (Round 2): replace `args.next().unwrap()` with `ok_or_else`
     // — `ftmo-sweep --candles` (no path follows) panics with the usual Rust
@@ -654,6 +1452,7 @@ fn main() -> Result<()> {
                     "r28v6" => SignalSrc::R28V6,
                     "per-asset" => SignalSrc::PerAssetCfg,
                     "regime" | "regime-confluence" => SignalSrc::RegimeConfluence,
+                    "forex_mr" | "forex-mr" => SignalSrc::ForexMr,
                     other => return Err(anyhow!("unknown --signals: {other}")),
                 };
             }
@@ -664,6 +1463,15 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             // R29-PassrateHunt overrides
+            "--max-consec-stops-per-day" => {
+                max_consec_stops_per_day = need!("--max-consec-stops-per-day").parse()?;
+            }
+            "--trail-dd-lock-trigger-pct" => {
+                trail_dd_lock_trigger = need!("--trail-dd-lock-trigger-pct").parse()?;
+            }
+            "--trail-dd-lock-floor-pct" => {
+                trail_dd_lock_floor = need!("--trail-dd-lock-floor-pct").parse()?;
+            }
             "--override-tp-mult" => override_tp_mult = Some(need!("--override-tp-mult").parse()?),
             "--override-stop-pct" => {
                 override_stop_pct = Some(need!("--override-stop-pct").parse()?)
@@ -678,6 +1486,7 @@ fn main() -> Result<()> {
             "--override-leverage" => {
                 override_leverage = Some(need!("--override-leverage").parse()?)
             }
+            "--risk-frac-mult" => risk_frac_mult = Some(need!("--risk-frac-mult").parse()?),
             "--override-hold-bars" => {
                 override_hold_bars = Some(need!("--override-hold-bars").parse()?)
             }
@@ -700,13 +1509,29 @@ fn main() -> Result<()> {
             "--cpts-trail" => cpts_trail = Some(need!("--cpts-trail").parse()?),
             "--idl-threshold" => idl_threshold = Some(need!("--idl-threshold").parse()?),
             "--idl-factor" => idl_factor = Some(need!("--idl-factor").parse()?),
+            "--daily-equity-guardian" => {
+                daily_equity_guardian = Some(need!("--daily-equity-guardian").parse()?)
+            }
+            "--daily-loss-eod-hwm" => daily_loss_eod_hwm = true,
+            "--intrabar-dd-check" => intrabar_dd_check = true,
             "--min-trading-days" => min_trading_days = Some(need!("--min-trading-days").parse()?),
             "--profit-target" => profit_target = Some(need!("--profit-target").parse()?),
+            "--max-daily-loss" => max_daily_loss = Some(need!("--max-daily-loss").parse()?),
+            "--max-total-loss" => max_total_loss = Some(need!("--max-total-loss").parse()?),
+            "--trailing-max-loss" => {
+                trailing_max_loss = Some(need!("--trailing-max-loss").parse()?)
+            }
             "--max-days" => max_days = Some(need!("--max-days").parse()?),
             "--cross-asset-sym" => cross_asset_sym = Some(need!("--cross-asset-sym")),
             "--cross-asset-dir" => cross_asset_dir = Some(need!("--cross-asset-dir")),
             "--cross-asset-fast" => cross_asset_fast = Some(need!("--cross-asset-fast").parse()?),
             "--cross-asset-slow" => cross_asset_slow = Some(need!("--cross-asset-slow").parse()?),
+            // 2026-05-19 Agent-21-repro pre-window skip filter.
+            "--skip-sol30d-gt" => skip_sol30d_gt = Some(need!("--skip-sol30d-gt").parse()?),
+            "--skip-bnb7d-gt" => skip_bnb7d_gt = Some(need!("--skip-bnb7d-gt").parse()?),
+            // 2026-05-14 (detector-41): boolean flag — presence enables inverse
+            // correlation (DXY ↔ crypto). Defaults to false (direct-correlation).
+            "--cross-asset-inverse" => cross_asset_inverse = true,
             "--override-adx-min" => adx_min = Some(need!("--override-adx-min").parse()?),
             "--override-adx-period" => adx_period = Some(need!("--override-adx-period").parse()?),
             "--override-chop-max" => chop_max = Some(need!("--override-chop-max").parse()?),
@@ -722,6 +1547,14 @@ fn main() -> Result<()> {
             "--override-rsi-period" => rsi_period = Some(need!("--override-rsi-period").parse()?),
             "--lscool-after" => lscool_after = Some(need!("--lscool-after").parse()?),
             "--lscool-bars" => lscool_bars = Some(need!("--lscool-bars").parse()?),
+            // 2026-05-14 Detector #48 — Time-Decay Sizing flags. `--td-enable`
+            // alone activates the modifier with spec defaults; the four knobs
+            // override individual parameters (capdown is the default mode).
+            "--td-enable" => td_enable = true,
+            "--td-decay" => td_decay = Some(need!("--td-decay").parse()?),
+            "--td-start-day" => td_start_day = Some(need!("--td-start-day").parse()?),
+            "--td-min-factor" => td_min_factor = Some(need!("--td-min-factor").parse()?),
+            "--td-mode" => td_mode = Some(need!("--td-mode")),
             "--trades-out" => trades_out = Some(PathBuf::from(need!("--trades-out"))),
             "--debug-window" => debug_window = Some(need!("--debug-window").parse()?),
             // R29-Audit-2026-05-12: --phantom-suppress flag removed.
@@ -732,6 +1565,35 @@ fn main() -> Result<()> {
             }
             "--ml-model" => ml_model_path = Some(PathBuf::from(need!("--ml-model"))),
             "--ml-threshold" => ml_threshold = need!("--ml-threshold").parse()?,
+            "--hmm-model" => hmm_model_path = Some(PathBuf::from(need!("--hmm-model"))),
+            "--hmm-p-bull" => regime_hmm_p_bull = need!("--hmm-p-bull").parse()?,
+            "--hmm-p-bear" => regime_hmm_p_bear = need!("--hmm-p-bear").parse()?,
+            "--hmm-p-opposite" => regime_hmm_p_opposite = need!("--hmm-p-opposite").parse()?,
+            "--hmm-warmup" => regime_hmm_warmup = need!("--hmm-warmup").parse()?,
+            "--min-initial-signal-breadth" => {
+                min_initial_signal_breadth = need!("--min-initial-signal-breadth").parse()?;
+            }
+            "--min-initial-majors" => {
+                min_initial_majors = need!("--min-initial-majors").parse()?;
+            }
+            "--initial-window-hours" => {
+                initial_window_hours = need!("--initial-window-hours").parse()?;
+                if initial_window_hours == 0 {
+                    return Err(anyhow!("--initial-window-hours must be > 0"));
+                }
+            }
+            "--majors-list" => {
+                let raw = need!("--majors-list");
+                majors_prefixes = raw
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if majors_prefixes.is_empty() {
+                    return Err(anyhow!("--majors-list must contain at least one prefix"));
+                }
+            }
+            "--cluster-only-mode" => cluster_only_mode = true,
             "--start-after-ts" => start_after_ts = Some(need!("--start-after-ts").parse()?),
             "--random-gate-keep" => {
                 random_gate_keep = Some(need!("--random-gate-keep").parse()?);
@@ -745,17 +1607,248 @@ fn main() -> Result<()> {
             "--use-htf-confirm" => use_htf_confirm = true,
             "--htf-stride" => htf_stride = need!("--htf-stride").parse()?,
             "--strict-pass" => strict_pass = true,
-            "--regime-min-votes" => regime_min_votes = need!("--regime-min-votes").parse()?,
+            "--regime-min-votes" => {
+                // 2026-05-15 (Audit-Round-4 / Agent #4 MED): refuse 0. With
+                // min=0 every consensus pair fires (signals_regime_confluence.rs
+                // line ~979 `if winning_count < min`). A Codex audit fixed the
+                // u8::MAX upper-clamp but the 0-floor was still open.
+                let mv: usize = need!("--regime-min-votes").parse()?;
+                if mv == 0 {
+                    anyhow::bail!(
+                        "--regime-min-votes must be ≥ 1 (0 would fire on every consensus pair)"
+                    );
+                }
+                regime_min_votes = mv;
+            }
             "--regime-require-r28v6" => regime_require_r28v6 = true,
             "--regime-vol-confirm" => regime_use_vol_confirm = true,
             "--regime-vol-period" => regime_vol_period = need!("--regime-vol-period").parse()?,
             "--regime-vol-mult" => regime_vol_mult = need!("--regime-vol-mult").parse()?,
             "--regime-force-mr" => regime_force_mr = true,
+            "--regime-vwap-trend" => regime_use_vwap_trend = true,
+            "--regime-vwap-period" => regime_vwap_period = need!("--regime-vwap-period").parse()?,
+            "--regime-vwap-min-dev" => {
+                regime_vwap_min_dev = need!("--regime-vwap-min-dev").parse()?
+            }
+            // 2026-05-14 Detector #14 — Stop-Hunt Liquidity-Sweep voter flags.
+            "--regime-stophunt" => regime_use_stop_hunt = true,
+            "--regime-sh-lookback" => regime_sh_lookback = need!("--regime-sh-lookback").parse()?,
+            "--regime-sh-wick-pct" => regime_sh_wick_pct = need!("--regime-sh-wick-pct").parse()?,
+            "--regime-sh-close-strict" => regime_sh_close_strict = true,
+            // 2026-05-14 Detector #1 — Bollinger-Band Z-score MR voter flags.
+            "--regime-bb-z-mr" => regime_use_bb_z_mr = true,
+            "--regime-bb-z-period" => regime_bb_z_period = need!("--regime-bb-z-period").parse()?,
+            "--regime-bb-z-mult" => regime_bb_z_mult = need!("--regime-bb-z-mult").parse()?,
+            "--regime-bb-z-threshold" => {
+                regime_bb_z_threshold = need!("--regime-bb-z-threshold").parse()?
+            }
+            "--regime-bb-z-cooldown" => {
+                regime_bb_z_cooldown = need!("--regime-bb-z-cooldown").parse()?
+            }
+            // 2026-05-14 Detector #2 — Order-Flow-Imbalance Persistent Cluster.
+            // `--also-fire-ofi-persistent` runs OFI as an additive entry source
+            // alongside the primary R28V6 detector; `--regime-use-ofi` enrolls
+            // it as the 8th voter in regime-confluence.
+            "--also-fire-ofi-persistent" => also_fire_ofi_persistent = true,
+            "--regime-use-ofi" => regime_use_ofi = true,
+            "--regime-use-funding-accel" => regime_use_funding_accel = true,
+            "--ofi-window" => ofi_window = need!("--ofi-window").parse()?,
+            "--ofi-threshold" => ofi_threshold = need!("--ofi-threshold").parse()?,
+            "--ofi-sma" => ofi_sma = need!("--ofi-sma").parse()?,
+            "--ofi-cooldown" => ofi_cooldown = need!("--ofi-cooldown").parse()?,
+            // 2026-05-14 Phase-2 voter flags
+            "--regime-use-cmf" => regime_use_cmf = true,
+            "--regime-use-rsi-hidden-div" => regime_use_rsi_hidden_div = true,
+            // 2026-05-14 Phase-3 voter flags
+            "--regime-use-ad-line" => regime_use_ad_line = true,
+            "--regime-use-aroon" => regime_use_aroon = true,
+            "--regime-use-double-top" => regime_use_double_top = true,
+            "--regime-use-smc-fvg" => regime_use_smc_fvg = true,
+            "--regime-use-supertrend" => regime_use_supertrend = true,
+            "--regime-use-kalman-trend" => regime_use_kalman_trend = true,
+            // 2026-05-14 macro / cross-market voter toggles. Series loaders
+            // are pending; until then these flags enable the voter machinery
+            // but the helper abstains on missing series → zero votes
+            // contributed. CLI surface is forward-compatible so a follow-up
+            // loader patch immediately activates the voters.
+            "--regime-use-cb-premium" => regime_use_cb_premium = true,
+            "--regime-use-cme-basis" => regime_use_cme_basis = true,
+            "--regime-use-hmm" => regime_use_hmm = true,
+            "--regime-use-nupl" => regime_use_nupl = true,
+            "--regime-use-top-trader-ls" => regime_use_top_trader_ls = true,
+            "--regime-use-stablecoin" => regime_use_stablecoin = true,
+            // Detector #20 — day-stage sizing CLI flags.
+            "--ds-aggressive-until" => {
+                ds_aggressive_until = Some(need!("--ds-aggressive-until").parse()?)
+            }
+            "--ds-aggressive-factor" => {
+                ds_aggressive_factor = Some(need!("--ds-aggressive-factor").parse()?)
+            }
+            "--ds-neutral-until" => ds_neutral_until = Some(need!("--ds-neutral-until").parse()?),
+            "--ds-neutral-factor" => {
+                ds_neutral_factor = Some(need!("--ds-neutral-factor").parse()?)
+            }
+            "--ds-defensive-factor" => {
+                ds_defensive_factor = Some(need!("--ds-defensive-factor").parse()?)
+            }
+            "--ds-progress-frac" => ds_progress_frac = Some(need!("--ds-progress-frac").parse()?),
+            "--ds-progress-factor" => {
+                ds_progress_factor = Some(need!("--ds-progress-factor").parse()?)
+            }
+            "--disable-day-stage" => disable_day_stage = true,
+            // 2026-05-14 Detector #34 — Coinbase-Binance Premium voter flags.
+            "--cb-premium-dir" => cb_premium_dir = Some(PathBuf::from(need!("--cb-premium-dir"))),
+            // 2026-05-14 R2-Fix Bug #3: removed `--regime-cb-premium` duplicate
+            // (use `--regime-use-cb-premium` which matches the naming pattern
+            // of all other voter-toggle flags, e.g. `--regime-use-flow-pulse`).
+            "--cb-threshold-bps" => cb_threshold_bps = need!("--cb-threshold-bps").parse()?,
+            "--cb-consecutive" => cb_consecutive_bars = need!("--cb-consecutive").parse()?,
+            // Detector #13 — HTF MACD-histogram trend confluence gate.
+            "--use-htf-macd-gate" => use_htf_macd_gate = true,
+            "--htf-macd-fast" => htf_macd_fast = need!("--htf-macd-fast").parse()?,
+            "--htf-macd-slow" => htf_macd_slow = need!("--htf-macd-slow").parse()?,
+            "--htf-macd-signal" => htf_macd_signal = need!("--htf-macd-signal").parse()?,
+            "--htf-macd-rising-lookback" => {
+                htf_macd_rising_lookback = need!("--htf-macd-rising-lookback").parse()?
+            }
+            "--htf-macd-min-magnitude" => {
+                htf_macd_min_magnitude = need!("--htf-macd-min-magnitude").parse()?
+            }
+            // 2026-05-14 Detector #12 — POC-Z voter flags.
+            "--regime-poc-z" => regime_use_poc_z = true,
+            "--regime-poc-period" => regime_poc_period = need!("--regime-poc-period").parse()?,
+            "--regime-poc-bucket" => regime_poc_bucket = need!("--regime-poc-bucket").parse()?,
+            "--regime-poc-z-min" => regime_poc_z_min = need!("--regime-poc-z-min").parse()?,
+            // 2026-05-16 Phase 2.2 — POC-Zone Hard-Gate
+            "--regime-poc-zone-gate" => regime_use_poc_zone_gate = true,
+            // 2026-05-16 Phase 16 — Voter-Disagreement-Bonus (Hunt 40#3).
+            "--regime-disagreement-bonus" => regime_disagreement_bonus = true,
+            // 2026-05-16 Phase 17 — Fisher Transform voter (Hunt 3).
+            "--regime-use-fisher" => regime_use_fisher = true,
+            // 2026-05-17 KAMA voter (Architecture-Brainstorm).
+            "--regime-use-kama" => regime_use_kama = true,
+            // 2026-05-17 Stufe-1 batch wireup
+            "--regime-use-squeeze" => regime_use_squeeze = true,
+            "--regime-use-hurst" => regime_use_hurst = true,
+            "--regime-use-wavelet" => regime_use_wavelet = true,
+            "--regime-use-pivot" => regime_use_pivot = true,
+            "--regime-use-fib" => regime_use_fib = true,
+            "--regime-use-vah-val" => regime_use_vah_val = true,
+            "--regime-use-ichimoku" => regime_use_ichimoku = true,
+            "--regime-use-arima" => regime_use_arima = true,
+            "--regime-use-garch-gate" => regime_use_garch_gate = true,
+            "--regime-use-bocpd-gate" => regime_use_bocpd_gate = true,
+            "--poc-zone-hvn-min-ratio" => {
+                regime_poc_zone_hvn_min_ratio = need!("--poc-zone-hvn-min-ratio").parse()?
+            }
             "--mr-period" => mr_period = Some(need!("--mr-period").parse()?),
             "--mr-oversold" => mr_oversold = Some(need!("--mr-oversold").parse()?),
             "--mr-overbought" => mr_overbought = Some(need!("--mr-overbought").parse()?),
             "--mr-cooldown" => mr_cooldown = Some(need!("--mr-cooldown").parse()?),
             "--mr-size-mult" => mr_size_mult = Some(need!("--mr-size-mult").parse()?),
+            // 2026-05-14 Detector #18 — multi-level PTP exposure. Parser +
+            // validator lives in `parse_ptp_levels` above. Setting this
+            // clears `cfg.partial_take_profit` in `apply_overrides` so the
+            // two PRE-cross branches in `exit.rs` cannot double-fire.
+            "--ptp-levels" => {
+                ptp_levels = Some(parse_ptp_levels(&need!("--ptp-levels"))?);
+            }
+            // 2026-05-14 Detector #11 Phase-1 — funding-cost sizing modifier.
+            "--funding-sizing-alpha" => {
+                funding_sizing_alpha = Some(need!("--funding-sizing-alpha").parse()?)
+            }
+            "--funding-sizing-window" => {
+                funding_sizing_window = Some(need!("--funding-sizing-window").parse()?)
+            }
+            "--funding-sizing-min-factor" => {
+                funding_sizing_min_factor = Some(need!("--funding-sizing-min-factor").parse()?)
+            }
+            // 2026-05-14 Detector #49 — Sharpe-ratio-optimized sizing modifier.
+            "--sharpe-sizing" => sharpe_sizing_enable = true,
+            "--sharpe-window" => sharpe_window = Some(need!("--sharpe-window").parse()?),
+            "--sharpe-min-trades" => {
+                sharpe_min_trades = Some(need!("--sharpe-min-trades").parse()?)
+            }
+            // 2026-05-16 Phase 1 — Kelly-Sizing CLI activation
+            "--kelly-sizing" => kelly_sizing_enable = true,
+            "--kelly-window" => kelly_window = Some(need!("--kelly-window").parse()?),
+            "--kelly-min-trades" => kelly_min_trades = Some(need!("--kelly-min-trades").parse()?),
+            // 2026-05-16 Phase 14 — Fractional-Kelly modifier (Half-Kelly etc.).
+            "--kelly-fraction" => {
+                let v: f64 = need!("--kelly-fraction").parse()?;
+                if !(v > 0.0 && v <= 1.0) {
+                    anyhow::bail!("--kelly-fraction must be in (0, 1] (got {v})");
+                }
+                kelly_fraction = Some(v)
+            }
+            // 2026-05-16 Phase 15 — Per-asset tp_mult CSV (Hunt 41).
+            "--override-tp-mult-per-asset" => {
+                let raw = need!("--override-tp-mult-per-asset");
+                let mut map = std::collections::HashMap::new();
+                for tok in raw.split(',') {
+                    let tok = tok.trim();
+                    if tok.is_empty() {
+                        continue;
+                    }
+                    let (sym, val) = tok
+                        .split_once('=')
+                        .or_else(|| tok.split_once(':'))
+                        .ok_or_else(|| {
+                            anyhow!("invalid --override-tp-mult-per-asset token: {tok}")
+                        })?;
+                    let v: f64 = val
+                        .parse()
+                        .map_err(|_| anyhow!("invalid f64 in per-asset tp-mult: {val}"))?;
+                    if !(v > 0.0 && v <= 10.0) {
+                        anyhow::bail!("per-asset tp-mult must be in (0, 10] (got {v})");
+                    }
+                    map.insert(sym.to_string(), v);
+                }
+                tp_mult_per_asset = Some(map);
+            }
+            // 2026-05-16 Phase 2 — Phase-aware risk multiplier (applied only
+            // when profit_target ≈ 0.05). Bug-frei: scalar from CLI, no state.
+            "--phase2-risk-mult" => {
+                let v: f64 = need!("--phase2-risk-mult").parse()?;
+                if !(v > 0.0 && v <= 2.0) {
+                    anyhow::bail!("--phase2-risk-mult must be in (0, 2] (got {v})");
+                }
+                phase2_risk_mult = Some(v)
+            }
+            // 2026-05-16 Phase 3 — News-Blackout opt-in (FOMC 2026 ±60min).
+            "--news-blackout" => news_blackout_enable = true,
+            // 2026-05-19 Damage-Limitation Early-Abort.
+            "--early-abort-after-losses" => {
+                let v: u32 = need!("--early-abort-after-losses").parse()?;
+                early_abort_after_losses = v;
+            }
+            "--early-abort-after-trades" => {
+                let v: u32 = need!("--early-abort-after-trades").parse()?;
+                early_abort_after_trades = v;
+            }
+            "--early-abort-min-cum" => {
+                let v: f64 = need!("--early-abort-min-cum").parse()?;
+                if !v.is_finite() {
+                    anyhow::bail!("--early-abort-min-cum must be finite (got {v})");
+                }
+                early_abort_min_cum = v;
+            }
+            // 2026-05-20 Intra-Window Kill-Switch (Agent 6). Defaults disabled.
+            "--kill-switch-hour" => {
+                let v: u32 = need!("--kill-switch-hour").parse()?;
+                kill_switch_hour = v;
+            }
+            "--kill-switch-min-trades" => {
+                let v: u32 = need!("--kill-switch-min-trades").parse()?;
+                kill_switch_min_trades = v;
+            }
+            "--kill-switch-min-equity" => {
+                let v: f64 = need!("--kill-switch-min-equity").parse()?;
+                if !v.is_finite() {
+                    anyhow::bail!("--kill-switch-min-equity must be finite (got {v})");
+                }
+                kill_switch_min_equity = v;
+            }
             other => return Err(anyhow!("unknown arg: {other}")),
         }
     }
@@ -802,11 +1895,321 @@ fn main() -> Result<()> {
         }
     }
 
+    // 2026-05-16 Round 9-Final FIX (sweep CLI agent): validate risk-parameter
+    // CLI flags against physical bounds. Negative or zero on physically-positive
+    // values would silently corrupt the engine (e.g. negative stop_pct
+    // inverts stop above entry → instant fill; profit_target=0 → 100% pass-
+    // rate trivially). Previously only --threads and --regime-min-votes had
+    // numeric floors; this audit adds floors for the rest of the hot-path
+    // risk parameters.
+    if let Some(pt) = profit_target {
+        if !(pt > 0.0 && pt < 1.0) {
+            anyhow::bail!(
+                "--profit-target must be in (0, 1) (got {pt}); 0.10 = FTMO Phase 1, 0.05 = Phase 2"
+            );
+        }
+    }
+    if let Some(sd) = step_days {
+        if sd == 0 {
+            anyhow::bail!("--step-days must be > 0 (got 0)");
+        }
+    }
+    if let Some(mct) = override_mct {
+        if mct == 0 {
+            anyhow::bail!("--override-mct must be > 0 (got 0)");
+        }
+    }
+    if let Some(max_days) = max_days {
+        if max_days == 0 {
+            anyhow::bail!("--max-days must be > 0 (got 0)");
+        }
+    }
+    if let Some(m) = risk_frac_mult {
+        if !(m.is_finite() && m > 0.0) {
+            anyhow::bail!("--risk-frac-mult must be finite and > 0 (got {m})");
+        }
+    }
+    if let Some(sp) = override_stop_pct {
+        if !(sp > 0.0 && sp < 1.0) {
+            anyhow::bail!("--override-stop-pct must be in (0, 1) (got {sp})");
+        }
+    }
+    if let Some(lev) = override_leverage {
+        if !(lev > 0.0 && lev <= 100.0) {
+            anyhow::bail!("--override-leverage must be in (0, 100] (got {lev})");
+        }
+    }
+    if let Some(tm) = override_tp_mult {
+        if !(tm > 0.0 && tm <= 10.0) {
+            anyhow::bail!("--override-tp-mult must be in (0, 10] (got {tm})");
+        }
+    }
+    if let Some(hb) = override_hold_bars {
+        if hb == 0 {
+            anyhow::bail!("--override-hold-bars must be > 0 (got 0)");
+        }
+    }
+    if let Some(act) = override_trail_activate {
+        if !(act.is_finite() && act > 0.0 && act < 1.0) {
+            anyhow::bail!("--override-trail-activate must be finite and in (0, 1) (got {act})");
+        }
+    }
+    if let Some(pct) = override_trail_pct {
+        if !(pct.is_finite() && pct > 0.0 && pct < 1.0) {
+            anyhow::bail!("--override-trail-pct must be finite and in (0, 1) (got {pct})");
+        }
+    }
+    if let Some(t) = be_threshold {
+        if !(t.is_finite() && t > 0.0 && t < 1.0) {
+            anyhow::bail!("--be-threshold must be finite and in (0, 1) (got {t})");
+        }
+    }
+    if let Some(keep) = random_gate_keep {
+        if !(keep.is_finite() && (0.0..=1.0).contains(&keep)) {
+            anyhow::bail!("--random-gate-keep must be finite and in [0, 1] (got {keep})");
+        }
+    }
+    if htf_stride == 0 {
+        anyhow::bail!("--htf-stride must be > 0 (got 0)");
+    }
+    if let Some(fast) = cross_asset_fast {
+        if fast == 0 {
+            anyhow::bail!("--cross-asset-fast must be > 0 (got 0)");
+        }
+    }
+    if let Some(slow) = cross_asset_slow {
+        if slow == 0 {
+            anyhow::bail!("--cross-asset-slow must be > 0 (got 0)");
+        }
+    }
+    if let Some(dir) = cross_asset_dir.as_deref() {
+        let d = dir.to_ascii_lowercase();
+        if !matches!(d.as_str(), "long" | "short" | "any") {
+            anyhow::bail!("--cross-asset-dir must be one of long, short, any (got {dir})");
+        }
+    }
+    if let Some(v) = funding_max_long {
+        if !v.is_finite() {
+            anyhow::bail!("--funding-max-long must be finite (got {v})");
+        }
+    }
+    if let Some(v) = funding_min_short {
+        if !v.is_finite() {
+            anyhow::bail!("--funding-min-short must be finite (got {v})");
+        }
+    }
     if let Some(t) = threads {
-        rayon::ThreadPoolBuilder::new()
+        // 2026-05-13 Codex Round 7 #B10 FIX: reject --threads 0. Rayon
+        // interprets 0 as "all logical CPUs" — surprising semantic when a
+        // hunt loop computes threads from another arg and produces 0.
+        if t == 0 {
+            anyhow::bail!("--threads must be > 0 (got 0; rayon would silently use all CPUs)");
+        }
+        // .ok() previously swallowed double-init failures; surface them.
+        if let Err(e) = rayon::ThreadPoolBuilder::new()
             .num_threads(t)
             .build_global()
-            .ok();
+        {
+            eprintln!("[sweep] WARN: rayon thread-pool init failed: {e}");
+        }
+    }
+
+    // 2026-05-15 (Audit-Round-6 / Agent #11 WARNUNG): mutually-exclusive flag
+    // combinations that previously silently last-write-wins or no-op. Bail
+    // loud so script bugs are surfaced instead of producing misleading
+    // pass-rates.
+    if disable_passlock && enable_passlock {
+        anyhow::bail!("--disable-passlock and --enable-passlock are mutually exclusive");
+    }
+    if drop_symbols.is_some() && keep_symbols.is_some() {
+        anyhow::bail!("use --keep-symbols (whitelist) OR --drop-symbols (blacklist), not both");
+    }
+    if disable_trail && (override_trail_pct.is_some() || override_trail_activate.is_some()) {
+        anyhow::bail!(
+            "--disable-trail conflicts with --override-trail-pct / --override-trail-activate (the override would be silently ignored)"
+        );
+    }
+    if debug_window.is_some() && trades_out.is_none() {
+        anyhow::bail!("--debug-window requires --trades-out PATH to capture the per-trade dump");
+    }
+
+    // 2026-05-13 Codex Round 7 #B8 FIX: hard-error when single-asset path
+    // (--candles) is combined with flags that ONLY work via --candles-dir
+    // + --symbols multi-asset orchestration. Previously silently ignored.
+    // Done BEFORE the CfgOverrides struct literal so we can still read the
+    // option-values by reference.
+    if candles_path.is_some() {
+        let mut unsupported: Vec<&str> = Vec::new();
+        if strict_pass {
+            unsupported.push("--strict-pass");
+        }
+        if ml_model_path.is_some() {
+            unsupported.push("--ml-model");
+        }
+        if random_gate_keep.is_some() {
+            unsupported.push("--random-gate-keep");
+        }
+        if step_days.is_some()
+            || funding_dir.is_some()
+            || cb_premium_dir.is_some()
+            || trades_out.is_some()
+            || debug_window.is_some()
+            || start_after_ts.is_some()
+            || timeframe.is_some()
+            || hmm_model_path.is_some()
+        {
+            unsupported.push("--step-days / external feeds / debug dumps / HMM model");
+        }
+        if matches!(
+            signals,
+            SignalSrc::PerAssetCfg | SignalSrc::RegimeConfluence
+        ) {
+            unsupported.push("--signals per-asset / regime");
+        }
+        if use_htf_confirm {
+            unsupported.push("--use-htf-confirm");
+        }
+        if cross_asset_sym.is_some()
+            || cross_asset_dir.is_some()
+            || cross_asset_fast.is_some()
+            || cross_asset_slow.is_some()
+            || cross_asset_inverse
+        {
+            unsupported.push("--cross-asset-*");
+        }
+        if also_fire_meanrev {
+            unsupported.push("--also-fire-meanrev");
+        }
+        if also_fire_breakout {
+            unsupported.push("--also-fire-breakout");
+        }
+        if also_fire_ofi_persistent {
+            unsupported.push("--also-fire-ofi-persistent");
+        }
+        // 2026-05-18 Bug-Audit (HOCH): breadth-gate is multi-asset only.
+        // Silently ignoring it on the single-asset path would let users run
+        // validation sweeps that look qualified=0/N (all false) and conclude
+        // "the gate is broken" when it's just not applicable.
+        if min_initial_signal_breadth > 0 || min_initial_majors > 0 {
+            unsupported.push("--min-initial-signal-breadth / --min-initial-majors");
+        }
+        if risk_frac_mult.is_some() {
+            unsupported.push("--risk-frac-mult");
+        }
+        if override_tp_mult.is_some()
+            || override_stop_pct.is_some()
+            || override_mct.is_some()
+            || override_leverage.is_some()
+            || override_hold_bars.is_some()
+            || override_hours.is_some()
+            || override_dows.is_some()
+            || min_trading_days.is_some()
+            || profit_target.is_some()
+            || max_days.is_some()
+        {
+            unsupported.push(
+                "--override-* config knobs / --profit-target / --min-trading-days / --max-days",
+            );
+        }
+        if drop_symbols.is_some()
+            || keep_symbols.is_some()
+            || funding_max_long.is_some()
+            || funding_min_short.is_some()
+        {
+            unsupported.push("--keep-symbols / --drop-symbols / --funding-*");
+        }
+        if disable_trail
+            || override_trail_activate.is_some()
+            || override_trail_pct.is_some()
+            || disable_passlock
+            || enable_passlock
+            || be_threshold.is_some()
+            || adaptive_tp_per_asset.is_some()
+            || pdd_from_peak.is_some()
+            || pdd_factor.is_some()
+            || dpts_trail.is_some()
+            || cpts_trail.is_some()
+            || idl_threshold.is_some()
+            || idl_factor.is_some()
+            || max_consec_stops_per_day > 0
+            || trail_dd_lock_trigger > 0.0
+            || trail_dd_lock_floor > 0.0
+            || lscool_after.is_some()
+            || lscool_bars.is_some()
+            || ptp_levels.is_some()
+        {
+            unsupported.push("trail/passlock/BE/PTP/DD/loss-cooldown override flags");
+        }
+        if ds_aggressive_until.is_some()
+            || ds_aggressive_factor.is_some()
+            || ds_neutral_until.is_some()
+            || ds_neutral_factor.is_some()
+            || ds_defensive_factor.is_some()
+            || ds_progress_frac.is_some()
+            || ds_progress_factor.is_some()
+            || disable_day_stage
+            || funding_sizing_alpha.is_some()
+            || funding_sizing_window.is_some()
+            || funding_sizing_min_factor.is_some()
+            || td_enable
+            || td_decay.is_some()
+            || td_start_day.is_some()
+            || td_min_factor.is_some()
+            || td_mode.is_some()
+            || sharpe_sizing_enable
+            || sharpe_window.is_some()
+            || sharpe_min_trades.is_some()
+            || kelly_sizing_enable
+            || kelly_window.is_some()
+            || kelly_min_trades.is_some()
+            || kelly_fraction.is_some()
+            || tp_mult_per_asset.is_some()
+            || phase2_risk_mult.is_some()
+            || news_blackout_enable
+            || skip_sol30d_gt.is_some()
+            || skip_bnb7d_gt.is_some()
+        {
+            unsupported.push("sizing/day-stage/phase/news/skip override flags");
+        }
+        if cluster_only_mode
+            || early_abort_after_losses > 0
+            || early_abort_after_trades > 0
+            || early_abort_min_cum != 0.0
+            || kill_switch_hour > 0
+            || kill_switch_min_trades != 6
+            || kill_switch_min_equity != -0.02
+        {
+            unsupported.push("cluster-only/early-abort/kill-switch flags");
+        }
+        if mr_period.is_some()
+            || mr_oversold.is_some()
+            || mr_overbought.is_some()
+            || mr_cooldown.is_some()
+            || mr_size_mult.is_some()
+        {
+            unsupported.push("--mr-* overrides");
+        }
+        if regime_use_vol_confirm
+            || regime_use_vwap_trend
+            || regime_use_stop_hunt
+            || regime_use_bb_z_mr
+            || regime_use_ofi
+            || regime_use_funding_accel
+            || regime_force_mr
+            || adx_min.is_some()
+            || chop_max.is_some()
+            || rsi_long_max.is_some()
+            || rsi_short_min.is_some()
+        {
+            unsupported
+                .push("--regime-* / --override-adx-* / --override-chop-* / --override-rsi-*");
+        }
+        if !unsupported.is_empty() {
+            anyhow::bail!(
+                "single-asset path (--candles) does not honor: {}. Use --candles-dir + --symbols instead.",
+                unsupported.join(", "),
+            );
+        }
     }
 
     let overrides = CfgOverrides {
@@ -816,6 +2219,7 @@ fn main() -> Result<()> {
         trail_activate: override_trail_activate,
         trail_pct: override_trail_pct,
         leverage: override_leverage,
+        risk_frac_mult,
         hold_bars: override_hold_bars,
         hours: override_hours,
         dows: override_dows,
@@ -834,21 +2238,73 @@ fn main() -> Result<()> {
         cpts_trail,
         idl_threshold,
         idl_factor,
+        daily_equity_guardian,
+        daily_loss_eod_hwm,
+        intrabar_dd_check,
         min_trading_days,
         profit_target,
+        max_daily_loss,
+        max_total_loss,
+        trailing_max_loss,
         max_days,
+        max_consec_stops_per_day: if max_consec_stops_per_day > 0 {
+            Some(max_consec_stops_per_day)
+        } else {
+            None
+        },
+        trail_dd_lock_trigger: if trail_dd_lock_trigger > 0.0 {
+            Some(trail_dd_lock_trigger)
+        } else {
+            None
+        },
+        trail_dd_lock_floor: if trail_dd_lock_floor > 0.0 {
+            Some(trail_dd_lock_floor)
+        } else {
+            None
+        },
         cross_asset_sym,
         cross_asset_dir,
         cross_asset_fast,
         cross_asset_slow,
+        cross_asset_inverse,
         lscool_after,
         lscool_bars,
+        ptp_levels,
+        ds_aggressive_until,
+        ds_aggressive_factor,
+        ds_neutral_until,
+        ds_neutral_factor,
+        ds_defensive_factor,
+        ds_progress_frac,
+        ds_progress_factor,
+        disable_day_stage,
+        funding_sizing_alpha,
+        funding_sizing_window,
+        funding_sizing_min_factor,
+        td_enable,
+        td_decay,
+        td_start_day,
+        td_min_factor,
+        td_mode,
+        sharpe_sizing_enable,
+        sharpe_window,
+        sharpe_min_trades,
+        kelly_sizing_enable,
+        kelly_window,
+        kelly_min_trades,
+        kelly_fraction,
+        tp_mult_per_asset,
+        phase2_risk_mult,
+        news_blackout_enable,
+        skip_sol30d_gt,
+        skip_bnb7d_gt,
     };
 
     if candles_dir.is_some() || symbols_arg.is_some() {
         return run_multi_asset(
             candles_dir,
             funding_dir,
+            cb_premium_dir,
             symbols_arg,
             config_selector,
             windows,
@@ -885,6 +2341,71 @@ fn main() -> Result<()> {
                 regime_vol_mult,
                 regime_force_mr,
                 strict_pass,
+                regime_use_vwap_trend,
+                regime_vwap_period,
+                regime_vwap_min_dev,
+                regime_use_stop_hunt,
+                regime_sh_lookback,
+                regime_sh_wick_pct,
+                regime_sh_close_strict,
+                regime_use_bb_z_mr,
+                regime_bb_z_period,
+                regime_bb_z_mult,
+                regime_bb_z_threshold,
+                regime_bb_z_cooldown,
+                // Build-fix: OFI voter fields default off — not exposed as
+                // CLI flags in this Detector #20 patch.
+                also_fire_ofi_persistent,
+                regime_use_ofi,
+                regime_use_funding_accel,
+                ofi_window,
+                ofi_threshold,
+                ofi_sma,
+                ofi_cooldown,
+                regime_use_cmf,
+                regime_use_rsi_hidden_div,
+                regime_use_ad_line,
+                regime_use_aroon,
+                regime_use_double_top,
+                regime_use_smc_fvg,
+                regime_use_supertrend,
+                regime_use_kalman_trend,
+                regime_use_cb_premium,
+                regime_use_cme_basis,
+                regime_use_hmm,
+                regime_use_nupl,
+                regime_use_top_trader_ls,
+                regime_use_stablecoin,
+                // 2026-05-14 Detector #34 — CB-premium voter init.
+                cb_threshold_bps,
+                cb_consecutive_bars,
+                // 2026-05-14 Detector #13 — HTF MACD-histogram gate.
+                use_htf_macd_gate,
+                htf_macd_fast,
+                htf_macd_slow,
+                htf_macd_signal,
+                htf_macd_rising_lookback,
+                htf_macd_min_magnitude,
+                // 2026-05-14 Detector #12 — POC-Z voter init.
+                regime_use_poc_z,
+                regime_poc_period,
+                regime_poc_bucket,
+                regime_poc_z_min,
+                regime_use_poc_zone_gate,
+                regime_poc_zone_hvn_min_ratio,
+                regime_disagreement_bonus,
+                regime_use_fisher,
+                regime_use_kama,
+                regime_use_squeeze,
+                regime_use_hurst,
+                regime_use_wavelet,
+                regime_use_pivot,
+                regime_use_fib,
+                regime_use_vah_val,
+                regime_use_ichimoku,
+                regime_use_arima,
+                regime_use_garch_gate,
+                regime_use_bocpd_gate,
                 ml_model: match &ml_model_path {
                     Some(p) => {
                         let m = ftmo_engine_core::ml_gate::MlModel::load_from_path(
@@ -900,8 +2421,39 @@ fn main() -> Result<()> {
                     None => None,
                 },
                 ml_threshold,
+                hmm_model: match &hmm_model_path {
+                    Some(p) => {
+                        let m = ftmo_engine_core::signals_hmm_regime::HmmModel::load_from_json(p)
+                            .map_err(|e| anyhow!("hmm model load {}: {e}", p.display()))?;
+                        eprintln!(
+                            "[hmm] loaded {} states from {} (labels={:?})",
+                            m.n_states,
+                            p.display(),
+                            m.state_labels
+                        );
+                        Some(Arc::new(m))
+                    }
+                    None => None,
+                },
+                regime_hmm_p_bull,
+                regime_hmm_p_bear,
+                regime_hmm_p_opposite,
+                regime_hmm_warmup,
+                min_initial_signal_breadth,
+                min_initial_majors,
+                initial_window_hours,
+                majors_prefixes,
+                cluster_only_mode,
                 random_gate_keep,
                 random_gate_seed,
+                // 2026-05-19 Damage-Limitation Early-Abort knobs.
+                early_abort_after_losses,
+                early_abort_after_trades,
+                early_abort_min_cum,
+                // 2026-05-20 Intra-Window Kill-Switch (Agent 6) knobs.
+                kill_switch_hour,
+                kill_switch_min_trades,
+                kill_switch_min_equity,
             },
         );
     }
@@ -982,13 +2534,21 @@ fn run_single_asset(
                     || a.symbol == format!("{}-TREND", symbol.as_str())
             }) {
                 a.clone()
-            } else if !cfg.assets.is_empty() {
-                cfg.assets[0].clone()
             } else {
+                // 2026-05-20 bug-find round: a symbol absent from the template
+                // previously cloned cfg.assets[0] (= BTC-TREND's tp/stop/cost
+                // config) and ran the symbol under BTC's per-asset params —
+                // silently wrong. Now build a config with the CORRECT symbol and
+                // empty per-asset overrides, so `from_cfg` inherits the cfg-level
+                // defaults instead of another asset's tuning.
+                eprintln!(
+                    "[sweep] WARN: symbol '{symbol}' not in template; using cfg-default \
+                     per-asset params (no per-asset tuning)."
+                );
                 AssetConfig {
                     symbol: format!("{symbol}-TREND"),
                     source_symbol: Some(symbol.to_string()),
-                    risk_frac: 0.4,
+                    risk_frac: cfg.assets.first().map(|a| a.risk_frac).unwrap_or(0.4),
                     ..Default::default()
                 }
             };
@@ -1009,6 +2569,21 @@ fn run_single_asset(
                 let signals_for_bar: Vec<PollSignal> = match signals {
                     SignalSrc::None | SignalSrc::PerAssetCfg | SignalSrc::RegimeConfluence => {
                         vec![]
+                    }
+                    SignalSrc::ForexMr => {
+                        let arr = feed.get(symbol.as_str()).unwrap();
+                        let params = ForexMrParams::default_for(&asset, cfg.as_ref());
+                        match detect_forex_mr(
+                            &mut state,
+                            cfg.as_ref(),
+                            &asset,
+                            symbol.as_str(),
+                            arr,
+                            &params,
+                        ) {
+                            Some(s) => vec![s],
+                            None => vec![],
+                        }
                     }
                     SignalSrc::Breakout => {
                         let arr = feed.get(symbol.as_str()).unwrap();
@@ -1072,6 +2647,7 @@ fn run_single_asset(
                             cross_asset_closes: None,
                             news_events: None,
                             funding_series: None,
+                            cb_premium_series: None,
                         };
                         match detect_r28_v6(
                             &mut state,
@@ -1092,6 +2668,7 @@ fn run_single_asset(
                     &BarInput {
                         candles_by_source: &feed,
                         atr_series_by_source: &atr_feed,
+                        funding_by_source: None,
                         signals: signals_for_bar,
                     },
                     cfg.as_ref(),
@@ -1108,8 +2685,18 @@ fn run_single_asset(
                 let target_hit = state.first_target_hit_day.is_some()
                     && state.trading_days.len() >= cfg.min_trading_days as usize;
                 let final_equity_floor = 1.0 + cfg.profit_target * 0.5;
-                let give_back_too_far =
-                    target_hit && state.equity.is_finite() && state.equity < final_equity_floor;
+                // 2026-05-24 Wave2 MED FIX (Agent 8): soft-pass tail only
+                // checked realized `state.equity`, ignoring `state.mtm_equity`.
+                // Window ending with open underwater positions (mtm < equity)
+                // would soft-pass, but force-close at next-bar would realize
+                // the loss and the bot would actually fail. Inflated soft-
+                // pass-rate by ~1-3pp on configs that hold positions through
+                // window-end. `--strict-pass` already AND'd both (see L4329-
+                // 4330); this brings the single-asset soft-pass to parity.
+                let give_back_too_far = target_hit
+                    && state.equity.is_finite()
+                    && state.mtm_equity.is_finite()
+                    && state.equity.min(state.mtm_equity) < final_equity_floor;
                 if target_hit && !give_back_too_far {
                     last_passed = true;
                 }
@@ -1124,11 +2711,27 @@ fn run_single_asset(
                 passed: last_passed,
                 fail_reason: last_fail.or_else(|| state.stopped_reason.map(|r| format!("{r:?}"))),
                 elapsed_ms: win_started.elapsed().as_secs_f64() * 1000.0,
+                // Single-asset path does not expose a MultiSignalCfg, so the
+                // breadth-gate is intentionally inert here (gate is a multi-
+                // asset feature). None preserves backwards-compat JSONL schema.
+                qualified_at_start: None,
+                first_cluster_size: None,
+                first_cluster_majors: None,
+                cluster_blocked_bars: None,
+                cluster_passed_bars: None,
+                cluster_blocked_signals: None,
             };
             if let Ok(mut g) = writer.lock() {
                 if let Some(w) = g.as_mut() {
                     if let Ok(line) = serde_json::to_string(&report) {
-                        let _ = writeln!(w, "{line}");
+                        // 2026-05-15 (Audit-Round-5 / Agent #3 WARNUNG):
+                        // surface write failures instead of swallowing with
+                        // `let _ = …`. Disk-full / EBADF would otherwise let
+                        // the sweep print "100% pass" while the JSONL is
+                        // empty / truncated — silently invalid audit data.
+                        if let Err(e) = writeln!(w, "{line}") {
+                            eprintln!("[sweep] WARN: failed to write window report: {e}");
+                        }
                     }
                 }
             }
@@ -1155,6 +2758,7 @@ fn signal_label(s: SignalSrc) -> &'static str {
         SignalSrc::R28V6 => "r28v6",
         SignalSrc::PerAssetCfg => "per-asset",
         SignalSrc::RegimeConfluence => "regime",
+        SignalSrc::ForexMr => "forex_mr",
     }
 }
 
@@ -1177,6 +2781,30 @@ fn finalise_report(reports: &[WindowResult], windows: usize, started: Instant) {
         "passed={passed} / {windows} ({:.2}%)",
         passed as f64 / windows as f64 * 100.0
     );
+    // 2026-05-17 Phase 41 — Codex Challenge-Start-Breadth-Gate report. Print
+    // an additional line when any window carries a qualified_at_start flag.
+    // Production-relevant stat is passed/qualified (live deploy skips windows
+    // that don't form a wide-enough opening cluster).
+    let qualified_count: usize = reports
+        .iter()
+        .filter(|r| matches!(r.qualified_at_start, Some(true)))
+        .count();
+    let gated_any: bool = reports.iter().any(|r| r.qualified_at_start.is_some());
+    if gated_any {
+        let passed_qualified: usize = reports
+            .iter()
+            .filter(|r| matches!(r.qualified_at_start, Some(true)) && r.passed)
+            .count();
+        let pct_qualified = qualified_count as f64 / windows as f64 * 100.0;
+        let pct_passed_of_qualified = if qualified_count == 0 {
+            0.0
+        } else {
+            passed_qualified as f64 / qualified_count as f64 * 100.0
+        };
+        println!(
+            "qualified={qualified_count} / {windows} ({pct_qualified:.2}%) — passed_of_qualified={passed_qualified} / {qualified_count} ({pct_passed_of_qualified:.2}%)"
+        );
+    }
 }
 
 // ───────────────── Multi-asset (R29-R5) path ────────────────────────
@@ -1185,6 +2813,7 @@ fn finalise_report(reports: &[WindowResult], windows: usize, started: Instant) {
 fn run_multi_asset(
     candles_dir: Option<PathBuf>,
     funding_dir: Option<PathBuf>,
+    cb_premium_dir: Option<PathBuf>,
     symbols_arg: Option<String>,
     config_selector: Option<String>,
     windows: usize,
@@ -1200,6 +2829,18 @@ fn run_multi_asset(
     multi_signal: MultiSignalCfg,
 ) -> Result<()> {
     let dir = candles_dir.ok_or_else(|| anyhow!("--candles-dir is required for multi-asset"))?;
+    // 2026-05-19 Agent-21-repro: pull pre-window skip thresholds out of overrides.
+    let skip_sol30d_gt = overrides.skip_sol30d_gt;
+    let skip_bnb7d_gt = overrides.skip_bnb7d_gt;
+    // 2026-05-16 Phase 3 — pre-build the FOMC blackout list once. Lifetime
+    // outlives the per-symbol loops; `news_evts.as_deref()` plugs into each
+    // R28V6Inputs entry below.
+    let news_evts: Option<Vec<ftmo_engine_core::news::NewsEvent>> =
+        if overrides.news_blackout_enable {
+            Some(ftmo_engine_core::news::default_2026_events())
+        } else {
+            None
+        };
     let symbols_str =
         symbols_arg.ok_or_else(|| anyhow!("--symbols is required for multi-asset"))?;
     let symbols: Vec<String> = symbols_str
@@ -1259,6 +2900,27 @@ fn run_multi_asset(
         ));
     }
 
+    // 2026-05-18 Bug-Audit (MITTEL): warn loudly if --majors-list prefixes
+    // don't appear in any cfg-asset. Without this, a user typing
+    // `--majors-list BTCUSDT,ETHUSDT` against assets named `BTC-TREND`
+    // would silently get majors=0 every window → falsely concludes the
+    // gate doesn't work or the strategy can never qualify.
+    if multi_signal.min_initial_majors > 0 {
+        let cfg_symbols: Vec<&str> = cfg.assets.iter().map(|a| a.symbol.as_str()).collect();
+        for prefix in multi_signal.majors_prefixes.iter() {
+            let any_match = cfg_symbols
+                .iter()
+                .any(|s| *s == prefix.as_str() || s.starts_with(&format!("{prefix}-")));
+            if !any_match {
+                eprintln!(
+                    "[sweep] WARN: --majors-list prefix '{}' does not match any cfg.assets \
+                     (have: {:?}). Gate will likely report majors=0 for all windows.",
+                    prefix, cfg_symbols
+                );
+            }
+        }
+    }
+
     // Load candles per symbol.
     let mut candles_by_sym: HashMap<String, Vec<Candle>> = HashMap::new();
     for sym in &symbols {
@@ -1267,11 +2929,60 @@ fn run_multi_asset(
         candles_by_sym.insert(sym.clone(), candles);
     }
 
+    // 2026-05-13 Codex Round 7 #B17 FIX: warn on duplicate openTimes
+    // (silent dedup hides corrupt cache files).
+    for (sym, cs) in candles_by_sym.iter() {
+        let mut seen: std::collections::HashSet<i64> =
+            std::collections::HashSet::with_capacity(cs.len());
+        let mut dupes = 0usize;
+        for c in cs.iter() {
+            if !seen.insert(c.open_time) {
+                dupes += 1;
+            }
+        }
+        if dupes > 0 {
+            eprintln!(
+                "[sweep] WARN: {sym} has {dupes} duplicate openTime entries — \
+                 silently using last-seen close. Cache file may be corrupt."
+            );
+        }
+    }
+
     // Align by openTime intersection. Build a sorted vector of bar-times
     // present in EVERY symbol — those are our common bars.
     let aligned_times = align_open_times(&candles_by_sym);
     if aligned_times.is_empty() {
         return Err(anyhow!("no overlapping openTimes across symbols"));
+    }
+
+    // 2026-05-13 Codex Round 7 #B16 FIX: assert observed bar-duration
+    // matches cfg.bar_minutes. funding-cost bucket-indexing relies on this
+    // invariant; a 5m cache loaded with a 30m cfg silently mis-bucketizes
+    // funding by 6×.
+    //
+    // 2026-05-15 (Audit-Round-5 / Agent #10 KRIT): previously this only
+    // emitted `eprintln WARN`. If a sweep accidentally loaded a 5m cache
+    // against a 30m cfg the run still printed a valid-looking `pass_rate`
+    // and that number could land in champion-claim memory. Promoted to a
+    // hard `bail!` — refuse to run rather than risk inflated numbers.
+    // Sample over the median of the first ~100 bars instead of just [0..1]
+    // so a single odd gap can't trick the check.
+    if aligned_times.len() >= 2 {
+        let sample_n = aligned_times.len().min(100);
+        let mut deltas: Vec<i64> = (1..sample_n)
+            .map(|i| aligned_times[i] - aligned_times[i - 1])
+            .collect();
+        deltas.sort_unstable();
+        let observed_ms = deltas[deltas.len() / 2];
+        let expected_ms = (cfg.bar_minutes as i64) * 60_000;
+        if expected_ms > 0 && observed_ms != expected_ms {
+            anyhow::bail!(
+                "observed bar duration {observed_ms} ms ≠ cfg.bar_minutes \
+                 {expected_ms} ms ({} min). Funding-cost bucket indexing would mis-align. \
+                 Check --candles-dir matches cfg.timeframe.",
+                cfg.bar_minutes,
+            );
+        }
     }
 
     // Build aligned per-symbol candle vectors of length aligned_times.len().
@@ -1369,14 +3080,68 @@ fn run_multi_asset(
             .collect(),
     };
 
+    // 2026-05-14 Detector #22 — load DefiLlama USDT-supply macro feed once and
+    // forward-fill it onto each symbol's candle timeline. Single global feed
+    // reused across the basket. Missing file → all symbols get `vec![None; n]`.
+    let stablecoin_by_sym: HashMap<String, Vec<Option<f64>>> = match &funding_dir {
+        Some(fd) => {
+            let pts = loader::load_stablecoin_supply(fd).unwrap_or(None);
+            let mut map = HashMap::new();
+            for sym in symbols.iter() {
+                let candles_for_sym = aligned.get(sym).expect("aligned missing sym");
+                let series = match &pts {
+                    Some(p) => loader::align_stablecoin_supply(candles_for_sym, p),
+                    None => vec![None; candles_for_sym.len()],
+                };
+                map.insert(sym.clone(), series);
+            }
+            map
+        }
+        None => symbols
+            .iter()
+            .map(|s| {
+                let n = aligned.get(s).map(|v| v.len()).unwrap_or(0);
+                (s.clone(), vec![None; n])
+            })
+            .collect(),
+    };
+
+    // 2026-05-14 Detector #34 — load + forward-fill Coinbase-Binance Premium
+    // series per symbol, aligned 1:1 onto the candle openTime sequence.
+    // Missing files become `vec![None; n]` so the voter sees "no data →
+    // abstain" semantics (matches funding-rate convention).
+    let cb_premium_by_sym: HashMap<String, Vec<Option<f64>>> = match &cb_premium_dir {
+        Some(pd) => {
+            let mut map = HashMap::new();
+            for sym in symbols.iter() {
+                let candles_for_sym = aligned.get(sym).expect("aligned missing sym");
+                let pts = loader::load_cb_premium(pd, sym)?;
+                let series = match pts {
+                    Some(p) => loader::align_cb_premium(candles_for_sym, &p),
+                    None => vec![None; candles_for_sym.len()],
+                };
+                map.insert(sym.clone(), series);
+            }
+            map
+        }
+        None => symbols
+            .iter()
+            .map(|s| {
+                let n = aligned.get(s).map(|v| v.len()).unwrap_or(0);
+                (s.clone(), vec![None; n])
+            })
+            .collect(),
+    };
+
     let total_bars = aligned_times.len();
     println!(
-        "ftmo-sweep (multi-asset): {} symbols × {} bars; cfg={}; {} threads; funding={}",
+        "ftmo-sweep (multi-asset): {} symbols × {} bars; cfg={}; {} threads; funding={}; cb_premium={}",
         symbols.len(),
         total_bars,
         cfg.label,
         rayon::current_num_threads(),
         if funding_dir.is_some() { "yes" } else { "no" },
+        if cb_premium_dir.is_some() { "yes" } else { "no" },
     );
 
     // Effective signal mode default for multi-asset: PerAssetCfg unless user
@@ -1394,7 +3159,16 @@ fn run_multi_asset(
     // Match TS shard plan: windows start at bar `WARMUP + w*stride` and run
     // for `max_days*48` bars. The detector consumes the WARMUP bars before
     // the window-start to seed indicators (mirrors `_r28V6Round60Shard.ts`).
-    const WIN_PLAN_WARMUP: usize = 5000;
+    // 2026-05-23: scale warmup with bar_minutes so daily forex (sparse bars)
+    // isn't blanket-rejected. 5000 bars on 30m ≈ 104d warmup; same chrono
+    // window on daily ≈ 100 bars; on 1h ≈ 208 bars.
+    let win_plan_warmup: usize = match timeframe.as_deref() {
+        Some("1d") | Some("daily") => 100,
+        Some("4h") => 600,
+        Some("2h") => 1200,
+        Some("1h") => 2500,
+        _ => 5000,
+    };
     // R29-Audit-2026-05-10: bars_per_day was hardcoded to 48 (30m). For 5m
     // it's 288, for 1h 24, for 2h 12, for 4h 6. Derive from --timeframe
     // flag; default 30m to preserve back-compat.
@@ -1405,6 +3179,7 @@ fn run_multi_asset(
         Some("1h") => 24,
         Some("2h") => 12,
         Some("4h") => 6,
+        Some("1d") | Some("daily") => 1,
         Some(other) => return Err(anyhow!("unknown --timeframe: {other}")),
     };
     let win_plans: Vec<(usize, usize)> = if let Some(sd) = step_days {
@@ -1412,7 +3187,7 @@ fn run_multi_asset(
         let max_w_bars = cfg.max_days as usize * bars_per_day;
         (0..windows)
             .map(|w| {
-                let lo = WIN_PLAN_WARMUP + w * stride;
+                let lo = win_plan_warmup + w * stride;
                 let hi = (lo + max_w_bars).min(total_bars);
                 (lo, hi)
             })
@@ -1456,7 +3231,103 @@ fn run_multi_asset(
     } else {
         win_plans
     };
+    // 2026-05-19 Agent-21-repro: NATIVE pre-window skip filter. Skip a window
+    // when SOLUSDT 30d-return > X OR BNBUSDT 7d-return > Y.
+    // 2026-05-20 LOOKAHEAD FIX (bug-find round): the return is measured from the
+    // last CLOSED bar before the first entry — `lo-1` — NOT `lo`. The first
+    // trade at bar `lo` is triggered by the close of bar `lo-1` (engine
+    // convention, sweep.rs entry path), so bar `lo`'s close is not yet known at
+    // the decision point. Window N+1 of a basket should be decided from data
+    // ending at its start, which is bar `lo-1`. 30d @ 30m = 1440 bars; 7d = 336.
+    // Skipped windows are excluded from numerator AND denominator (= "not
+    // taken"). When the lookback predates data start the feature is unavailable
+    // → take the window (conservative). Missing SOL/BNB in the basket warns once
+    // and disables that leg (no silent dormancy).
+    let total_before_skip = win_plans.len();
+    let win_plans: Vec<(usize, usize)> = if skip_sol30d_gt.is_some() || skip_bnb7d_gt.is_some() {
+        const SOL_LB: usize = 30 * 48; // 1440 bars
+        const BNB_LB: usize = 7 * 48; // 336 bars
+        let sol = aligned.get("SOLUSDT");
+        let bnb = aligned.get("BNBUSDT");
+        if skip_sol30d_gt.is_some() && sol.is_none() {
+            eprintln!("[sweep] WARN: --skip-sol30d-gt set but SOLUSDT not in basket → SOL skip-leg disabled.");
+        }
+        if skip_bnb7d_gt.is_some() && bnb.is_none() {
+            eprintln!("[sweep] WARN: --skip-bnb7d-gt set but BNBUSDT not in basket → BNB skip-leg disabled.");
+        }
+        win_plans
+            .into_iter()
+            .filter(|(lo, _)| {
+                let lo = *lo;
+                // SOL 30d gate — measured at last closed bar `lo-1` (lookahead-safe).
+                if let (Some(thr), Some(cs)) = (skip_sol30d_gt, sol) {
+                    if lo > SOL_LB {
+                        let now = cs[lo - 1].close;
+                        let past = cs[lo - 1 - SOL_LB].close;
+                        if past > 0.0 {
+                            let ret = now / past - 1.0;
+                            if ret > thr {
+                                return false; // skip
+                            }
+                        }
+                    }
+                }
+                // BNB 7d gate — measured at last closed bar `lo-1` (lookahead-safe).
+                if let (Some(thr), Some(cs)) = (skip_bnb7d_gt, bnb) {
+                    if lo > BNB_LB {
+                        let now = cs[lo - 1].close;
+                        let past = cs[lo - 1 - BNB_LB].close;
+                        if past > 0.0 {
+                            let ret = now / past - 1.0;
+                            if ret > thr {
+                                return false; // skip
+                            }
+                        }
+                    }
+                }
+                true // take
+            })
+            .collect()
+    } else {
+        win_plans
+    };
+    if skip_sol30d_gt.is_some() || skip_bnb7d_gt.is_some() {
+        let accepted = win_plans.len();
+        let accept_rate = if total_before_skip > 0 {
+            100.0 * accepted as f64 / total_before_skip as f64
+        } else {
+            0.0
+        };
+        eprintln!(
+            "[sweep] pre-window skip-filter: accepted {accepted}/{total_before_skip} \
+             ({accept_rate:.2}% accept-rate); skipped {} \
+             (sol30d_gt={:?}, bnb7d_gt={:?})",
+            total_before_skip - accepted,
+            skip_sol30d_gt,
+            skip_bnb7d_gt
+        );
+    }
     let actual_windows = win_plans.len();
+    // 2026-05-13 Codex Round 7 #B9 FIX: warn loudly when window-plan
+    // construction drops everything (cache too short for requested
+    // --max-days + --step-days, or --start-after-ts cuts past the cache).
+    // Without this, output reads `passed=0 / 0 (NaN%)` — looks identical
+    // to "all windows failed" and the unsatisfiable-request reason is
+    // hidden.
+    if actual_windows == 0 && windows > 0 {
+        eprintln!(
+            "[sweep] WARN: --windows {windows} requested but ZERO survived planning. \
+             Likely causes: (a) cache too short for max_days × bars_per_day, \
+             (b) --start-after-ts cuts past the cache end, \
+             (c) step_days × windows exceeds cache range."
+        );
+        anyhow::bail!("no windows survived planning; refusing to report passed=0 / 0");
+    } else if actual_windows < (windows / 2).max(1) && windows > 0 {
+        eprintln!(
+            "[sweep] WARN: only {actual_windows}/{windows} windows survived planning. \
+             Check --max-days / --start-after-ts vs cache extent."
+        );
+    }
 
     let writer: Arc<Mutex<Option<BufWriter<File>>>> = Arc::new(Mutex::new(match &out_path {
         Some(p) => Some(BufWriter::new(File::create(p)?)),
@@ -1472,6 +3343,8 @@ fn run_multi_asset(
     let aligned = Arc::new(aligned);
     let atr_by_sym = Arc::new(atr_by_sym);
     let funding_by_sym = Arc::new(funding_by_sym);
+    let stablecoin_by_sym = Arc::new(stablecoin_by_sym);
+    let cb_premium_by_sym = Arc::new(cb_premium_by_sym);
     let symbols = Arc::new(symbols);
     let multi_signal = Arc::new(multi_signal);
     let ml_features_by_sym = Arc::new(ml_features_by_sym);
@@ -1481,6 +3354,13 @@ fn run_multi_asset(
         .par_iter()
         .enumerate()
         .map(|(w_idx, (lo, hi))| {
+            // 2026-05-24 PERF: disable per-bar PollSkip allocations on this
+            // rayon worker. sweep never reads result.skipped; the
+            // allocations (asset clone + format!-reason String per skipped
+            // signal × thousands of bars × hundreds of windows) were
+            // millions of wasted heap traffic. Toggle is thread-local so
+            // live executor and tests are unaffected.
+            ftmo_engine_core::harness::set_collect_skip_diagnostics(false);
             run_one_window(
                 w_idx,
                 *lo,
@@ -1489,6 +3369,8 @@ fn run_multi_asset(
                 aligned.as_ref(),
                 atr_by_sym.as_ref(),
                 funding_by_sym.as_ref(),
+                stablecoin_by_sym.as_ref(),
+                cb_premium_by_sym.as_ref(),
                 symbols.as_ref(),
                 signals_mode,
                 writer.clone(),
@@ -1496,6 +3378,7 @@ fn run_multi_asset(
                 debug_window,
                 multi_signal.as_ref(),
                 ml_features_by_sym.as_ref(),
+                news_evts.as_deref(),
             )
         })
         .collect();
@@ -1532,7 +3415,15 @@ fn locate_candle_file_tf(dir: &Path, symbol: &str, timeframe: Option<&str>) -> R
         Some("1h") => &["_1h.json"],
         Some("2h") => &["_2h.json"],
         Some("4h") => &["_4h.json"],
-        _ => &["_30m.json", "_1h.json", "_2h.json", "_4h.json", "_15m.json"],
+        Some("1d") | Some("daily") => &["_daily.json", "_1d.json"],
+        _ => &[
+            "_30m.json",
+            "_1h.json",
+            "_2h.json",
+            "_4h.json",
+            "_15m.json",
+            "_daily.json",
+        ],
     };
     for ext in preferred {
         let p = dir.join(format!("{symbol}{ext}"));
@@ -1569,6 +3460,8 @@ fn run_one_window(
     aligned: &HashMap<String, Vec<Candle>>,
     atr_by_sym: &HashMap<String, Vec<Option<f64>>>,
     funding_by_sym: &HashMap<String, Vec<Option<f64>>>,
+    stablecoin_by_sym: &HashMap<String, Vec<Option<f64>>>,
+    cb_premium_by_sym: &HashMap<String, Vec<Option<f64>>>,
     symbols: &[String],
     signals_mode: SignalSrc,
     writer: Arc<Mutex<Option<BufWriter<File>>>>,
@@ -1576,6 +3469,7 @@ fn run_one_window(
     debug_window: Option<usize>,
     multi_signal: &MultiSignalCfg,
     ml_features_by_sym: &HashMap<String, MlFeatureSeries>,
+    news_evts: Option<&[ftmo_engine_core::news::NewsEvent]>,
 ) -> WindowResult {
     let win_started = Instant::now();
     let mut state = EngineState::initial(&cfg.label);
@@ -1585,6 +3479,14 @@ fn run_one_window(
     let mut feed: HashMap<String, Vec<Candle>> = HashMap::new();
     let mut atr_feed: HashMap<String, Vec<Option<f64>>> = HashMap::new();
     let mut funding_feed: HashMap<String, Vec<Option<f64>>> = HashMap::new();
+    // 2026-05-14 Detector #22 — per-symbol growing stablecoin-supply feed,
+    // parallel to funding_feed. Each bar appends `stablecoin_by_sym[sym][i]`.
+    let mut stablecoin_feed: HashMap<String, Vec<Option<f64>>> = HashMap::new();
+    // 2026-05-14 Detector #34 — per-symbol Coinbase-Binance Premium growing
+    // feed. Mirrors `funding_feed` shape exactly so the slice consumed by
+    // `R28V6Inputs.cb_premium_series` matches the candle-feed length at
+    // every poll. Empty / None-only entries are safe (the voter abstains).
+    let mut cb_premium_feed: HashMap<String, Vec<Option<f64>>> = HashMap::new();
     // 2026-05-13 65%-hunt: per-symbol HTF closes (every `htf_stride`-th
     // primary close). Only populated when `multi_signal.use_htf_confirm`.
     let mut htf_closes_buf: HashMap<String, Vec<f64>> = HashMap::new();
@@ -1592,7 +3494,17 @@ fn run_one_window(
         feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
         atr_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
         funding_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
-        if multi_signal.use_htf_confirm {
+        stablecoin_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
+        cb_premium_feed.insert(sym.clone(), Vec::with_capacity(hi - lo));
+        // 2026-05-16 Round 10 KRIT FIX (HTF cross-confirm agent): previously
+        // htf_closes_buf was only initialized when --use-htf-confirm was ON.
+        // But --use-htf-macd-gate ALSO needs htf_closes (the MACD histogram
+        // is computed from the same buffer). Without buf init, the gate
+        // silently fell through to `return true` in detector_filters.rs:277
+        // (empty slice = dormant). Hunt L01-L04 results were therefore
+        // identical to baseline = NOT actually testing the gate at all.
+        // Fix: init buf when EITHER flag is set.
+        if multi_signal.use_htf_confirm || multi_signal.use_htf_macd_gate {
             htf_closes_buf.insert(
                 sym.clone(),
                 Vec::with_capacity((hi - lo) / multi_signal.htf_stride + 8),
@@ -1617,6 +3529,18 @@ fn run_one_window(
     let mut last_passed = false;
     let mut last_fail: Option<String> = None;
 
+    // 2026-05-19 — cluster-only-mode: rolling buffer of (entry_time_ms, symbol)
+    // for every signal detected after gates in this window. Used to compute
+    // the live-cluster (breadth + distinct majors) inside the past
+    // `initial_window_hours` whenever a new candidate signal is about to be
+    // pushed. Mirrors live `compute_live_cluster` / `check_cluster_entry_block`
+    // semantics. Stays empty when `cluster_only_mode` is off.
+    let mut cluster_signal_log: Vec<(i64, String)> = Vec::new();
+    // Cluster runtime stats — surfaced in WindowResult for sweep aggregation.
+    let mut cluster_blocked_bars: u32 = 0;
+    let mut cluster_passed_bars: u32 = 0;
+    let mut cluster_blocked_signals: u32 = 0;
+
     // R29-Rust-Phase2: pre-fill feed with WARMUP bars BEFORE the challenge
     // window. The TS shard test (`scripts/_r28V6Round60Shard.ts:112`) runs
     // simulate(slice, cfg, WARMUP, WARMUP+winBars) with WARMUP=5000, giving
@@ -1637,7 +3561,25 @@ fn run_one_window(
                 .and_then(|s| s.get(i).copied())
                 .flatten();
             funding_feed.get_mut(sym).unwrap().push(f);
-            if multi_signal.use_htf_confirm && i % multi_signal.htf_stride == 0 {
+            let sc = stablecoin_by_sym
+                .get(sym)
+                .and_then(|s| s.get(i).copied())
+                .flatten();
+            stablecoin_feed.get_mut(sym).unwrap().push(sc);
+            // 2026-05-14 Detector #34 — keep CB-premium feed in lock-step
+            // with funding_feed shape. None entries are safe (voter abstains).
+            let cb_p = cb_premium_by_sym
+                .get(sym)
+                .and_then(|s| s.get(i).copied())
+                .flatten();
+            cb_premium_feed.get_mut(sym).unwrap().push(cb_p);
+            // 2026-05-23 ML Round 11.3 R2-2: buffer-init at line 3422 already
+            // OR's both flags, but the push site here was gated on use_htf_confirm
+            // alone → MACD-gate-only runs allocated buffer but never filled it →
+            // detector saw empty slice → MACD-gate silent no-op. Match the init.
+            if (multi_signal.use_htf_confirm || multi_signal.use_htf_macd_gate)
+                && i % multi_signal.htf_stride == 0
+            {
                 if let Some(buf) = htf_closes_buf.get_mut(sym) {
                     buf.push(c.close);
                 }
@@ -1677,7 +3619,16 @@ fn run_one_window(
     };
 
     for i in lo..hi {
-        // Push current bar for every symbol.
+        // Push current bar for every symbol. `feed` MUST contain bar i so
+        // `step_bar` can apply exits against the just-arrived candle; detectors
+        // that read it use `candles.len()-1` as the entry bar and rely on
+        // their own trigger_idx = i-1 convention to avoid lookahead.
+        //
+        // 2026-05-13 Codex HIGH FIX (Fix 4): the HTF-close buffer must NOT
+        // include bar i's close at detector-time — the filter calls .last()
+        // on it. Push is deferred to the END of the loop iter so detectors
+        // for bar i only see HTF closes up to bar i-1 (TS V4 parity:
+        // `htfCloses` series in ts-source is built from CLOSED bars only).
         for sym in symbols.iter() {
             let c = aligned.get(sym).expect("aligned missing sym")[i];
             feed.get_mut(sym).unwrap().push(c);
@@ -1688,11 +3639,17 @@ fn run_one_window(
                 .and_then(|s| s.get(i).copied())
                 .flatten();
             funding_feed.get_mut(sym).unwrap().push(f);
-            if multi_signal.use_htf_confirm && i % multi_signal.htf_stride == 0 {
-                if let Some(buf) = htf_closes_buf.get_mut(sym) {
-                    buf.push(c.close);
-                }
-            }
+            let sc = stablecoin_by_sym
+                .get(sym)
+                .and_then(|s| s.get(i).copied())
+                .flatten();
+            stablecoin_feed.get_mut(sym).unwrap().push(sc);
+            // 2026-05-14 Detector #34 — keep CB-premium feed in lock-step.
+            let cb_p = cb_premium_by_sym
+                .get(sym)
+                .and_then(|s| s.get(i).copied())
+                .flatten();
+            cb_premium_feed.get_mut(sym).unwrap().push(cb_p);
         }
 
         // Build signals: one detector pass per asset entry, dispatched off
@@ -1702,11 +3659,21 @@ fn run_one_window(
         // 2026-05-13 Hebel 2: build cross-asset closes (e.g. BTCUSDT) once
         // per bar, then re-use for every asset's detector call below. Only
         // built when cfg.cross_asset_filter is set (CLI flag activated).
+        //
+        // 2026-05-13 Codex HIGH FIX (Fix 4): cross_closes EXCLUDES bar i so
+        // the EMA-cross trend filter (which calls .last() on this slice) is
+        // computed only on closed bars. Without this skip, signal-time
+        // direction-test sees future bar-i close → lookahead. `v.len() - 1`
+        // is safe because we always push to feed BEFORE building this slice;
+        // saturating_sub keeps it well-defined on bar 0.
         let cross_closes_owned: Option<Vec<f64>> = cfg
             .cross_asset_filter
             .as_ref()
             .and_then(|f| feed.get(f.symbol.as_str()))
-            .map(|v| v.iter().map(|c| c.close).collect());
+            .map(|v| {
+                let end = v.len().saturating_sub(1);
+                v.iter().take(end).map(|c| c.close).collect()
+            });
         let cross_closes_slice: Option<&[f64]> = cross_closes_owned.as_deref();
 
         for asset in cfg.assets.iter() {
@@ -1749,8 +3716,14 @@ fn run_one_window(
                                 None
                             },
                             cross_asset_closes: cross_closes_slice,
-                            news_events: None,
+                            news_events: news_evts,
                             funding_series: funding,
+                            // 2026-05-14 Detector #34: CB-premium is wired to
+                            // None on the per-asset primary R28V6 path. The
+                            // voter is only consulted inside the regime-
+                            // confluence panel where the slice is plumbed in
+                            // via `cb_premium_feed`.
+                            cb_premium_series: None,
                         };
                         detect_r28_v6(&mut state, cfg, asset, &source, arr, &r28p, &r28in)
                     }
@@ -1775,8 +3748,9 @@ fn run_one_window(
                             None
                         },
                         cross_asset_closes: None,
-                        news_events: None,
+                        news_events: news_evts,
                         funding_series: funding,
+                        cb_premium_series: None,
                     };
                     detect_r28_v6(&mut state, cfg, asset, &source, arr, &r28p, &r28in)
                 }
@@ -1792,9 +3766,19 @@ fn run_one_window(
                     );
                     detect_mean_reversion(&mut state, cfg, asset, &source, arr, &src)
                 }
+                SignalSrc::ForexMr => {
+                    let params = ForexMrParams::default_for(asset, cfg);
+                    detect_forex_mr(&mut state, cfg, asset, &source, arr, &params)
+                }
                 SignalSrc::RegimeConfluence => {
                     let funding = funding_feed.get(&source).map(|v| v.as_slice());
                     let htf_buf = htf_closes_buf.get(&source).map(|v| v.as_slice());
+                    // 2026-05-14 Detector #34 — wire growing CB-premium feed
+                    // into the regime panel so `compute_cb_premium_vote` sees
+                    // the per-asset slice matched to the current candle feed
+                    // length. None when --regime-use-cb-premium isn't active or
+                    // the symbol has no premium cache file (voter abstains).
+                    let cb_premium = cb_premium_feed.get(&source).map(|v| v.as_slice());
                     let r28in = R28V6Inputs {
                         htf_closes: if multi_signal.use_htf_confirm {
                             htf_buf
@@ -1802,8 +3786,9 @@ fn run_one_window(
                             None
                         },
                         cross_asset_closes: cross_closes_slice,
-                        news_events: None,
+                        news_events: news_evts,
                         funding_series: funding,
+                        cb_premium_series: cb_premium,
                     };
                     let mr_override = if multi_signal.regime_force_mr {
                         Some(ftmo_engine_core::config::MeanReversionSource {
@@ -1834,9 +3819,179 @@ fn run_one_window(
                             r28v6_rsi_long_max: multi_signal.r28v6_rsi_long_max,
                             r28v6_rsi_short_min: multi_signal.r28v6_rsi_short_min,
                             r28v6_rsi_period: multi_signal.r28v6_rsi_period,
+                            use_vwap_trend: multi_signal.regime_use_vwap_trend,
+                            vwap_period: multi_signal.regime_vwap_period,
+                            vwap_min_dev_pct: multi_signal.regime_vwap_min_dev,
+                            use_stop_hunt: multi_signal.regime_use_stop_hunt,
+                            stop_hunt_lookback: multi_signal.regime_sh_lookback,
+                            stop_hunt_wick_pct: multi_signal.regime_sh_wick_pct,
+                            stop_hunt_close_strict: multi_signal.regime_sh_close_strict,
+                            use_bb_z_mr: multi_signal.regime_use_bb_z_mr,
+                            bb_z_params: ftmo_engine_core::signals_bb_zscore_mr::BollingerZScoreSource {
+                                bb_period: multi_signal.regime_bb_z_period,
+                                bb_mult: multi_signal.regime_bb_z_mult,
+                                z_threshold: multi_signal.regime_bb_z_threshold,
+                                cooldown_bars: multi_signal.regime_bb_z_cooldown,
+                                ..ftmo_engine_core::signals_bb_zscore_mr::BollingerZScoreSource::default()
+                            },
+                            // 2026-05-14 Detector #2 — wire CLI-supplied OFI knobs
+                            // through to the regime voter. Keep the rest of the
+                            // `OfiPersistentParams` defaults so the user only
+                            // overrides what they explicitly passed.
+                            use_ofi: multi_signal.regime_use_ofi,
+                            ofi_params: ftmo_engine_core::signals_ofi::OfiPersistentParams {
+                                window_bars: multi_signal.ofi_window,
+                                delta_threshold: multi_signal.ofi_threshold,
+                                sma_period: multi_signal.ofi_sma,
+                                cooldown_bars: multi_signal.ofi_cooldown,
+                                ..ftmo_engine_core::signals_ofi::OfiPersistentParams::default_30m_crypto()
+                            },
+                            use_funding_accel: multi_signal.regime_use_funding_accel,
+                            funding_accel_params: ftmo_engine_core::signals_funding_accel::FundingAccelParams::default_30m_crypto(),
+                            use_cmf: multi_signal.regime_use_cmf,
+                            cmf_params: ftmo_engine_core::signals_cmf::CmfParams::default_30m_crypto(),
+                            use_cme_basis: multi_signal.regime_use_cme_basis,
+                            cme_basis_params: ftmo_engine_core::signals_cme_basis::CmeBasisParams::default(),
+                            use_hmm_regime: multi_signal.regime_use_hmm,
+                            hmm_regime_params: {
+                                let mut p = ftmo_engine_core::signals_hmm_regime::HmmRegimeParams::default();
+                                if multi_signal.regime_hmm_p_bull.is_finite() {
+                                    p.p_threshold_bull = multi_signal.regime_hmm_p_bull;
+                                }
+                                if multi_signal.regime_hmm_p_bear.is_finite() {
+                                    p.p_threshold_bear = multi_signal.regime_hmm_p_bear;
+                                }
+                                if multi_signal.regime_hmm_p_opposite.is_finite() {
+                                    p.p_opposite_max = multi_signal.regime_hmm_p_opposite;
+                                }
+                                if multi_signal.regime_hmm_warmup > 0 {
+                                    p.warmup_bars = multi_signal.regime_hmm_warmup;
+                                }
+                                p
+                            },
+                            use_nupl: multi_signal.regime_use_nupl,
+                            nupl_params: ftmo_engine_core::signals_nupl::NuplParams::default(),
+                            use_rsi_hidden_div: multi_signal.regime_use_rsi_hidden_div,
+                            rsi_hidden_div_params: ftmo_engine_core::signals_rsi_hidden_div::RsiHiddenDivParams::default(),
+                            use_top_trader_ls: multi_signal.regime_use_top_trader_ls,
+                            top_trader_ls_params: ftmo_engine_core::signals_top_trader_ls::TopTraderLsParams::default(),
+                            // 2026-05-14 Phase-3 voters — default-off; CLI flags wired below in a follow-up.
+                            use_ad_line: multi_signal.regime_use_ad_line,
+                            ad_line_params: ftmo_engine_core::signals_ad_line::AdLineTrendParams::default_30m_crypto(),
+                            use_aroon: multi_signal.regime_use_aroon,
+                            aroon_params: ftmo_engine_core::signals_aroon::AroonParams::default_30m_crypto(),
+                            use_double_top: multi_signal.regime_use_double_top,
+                            double_top_params: ftmo_engine_core::signals_double_top::DoubleTopParams::default(),
+                            use_smc_fvg: multi_signal.regime_use_smc_fvg,
+                            smc_fvg_params: ftmo_engine_core::signals_smc_fvg::FvgParams::default_30m_crypto(),
+                            use_supertrend: multi_signal.regime_use_supertrend,
+                            supertrend_params: ftmo_engine_core::signals_supertrend::SupertrendParams::default_30m_crypto(),
+                            use_kalman_trend: multi_signal.regime_use_kalman_trend,
+                            kalman_trend_params: ftmo_engine_core::signals_kalman_trend::KalmanTrendParams::default_30m_crypto(),
+                            // 2026-05-14 — newly-wired macro / cross-market voters.
+                            //
+                            // Activation status per voter:
+                            //   --regime-use-hmm       ACTIVE (HMM falls back to
+                            //                          `HmmModel::default_btc_30m()`
+                            //                          when hmm_model is None, so
+                            //                          the voter fires immediately
+                            //                          on any backtest).
+                            //   --regime-use-cb-premium     INERT until a per-bar
+                            //   --regime-use-cme-basis        cb_premium / cme_basis
+                            //   --regime-use-top-trader-ls   / top-trader-LS /
+                            //   --regime-use-nupl             nupl-samples /
+                            //   --regime-use-stablecoin       stablecoin supply
+                            //                          series is fed via
+                            //                          `RegimeConfluenceInputs`.
+                            //                          Loader-side helpers exist
+                            //                          for stablecoin
+                            //                          (`loader::load_stablecoin_
+                            //                          supply`) but are not yet
+                            //                          wired into the sweep loop.
+                            //                          CLI flag accepts the
+                            //                          toggle so future loader
+                            //                          patches activate the
+                            //                          voter without re-touching
+                            //                          this surface.
+                            // 2026-05-14 Detector #34 — CB-premium voter wired
+                            // through CLI flags (threshold_bps, consecutive_bars).
+                            // `cb_premium_series` is plumbed via `R28V6Inputs`
+                            // / `RegimeConfluenceInputs` on the side that owns
+                            // the per-asset loaded data.
+                            use_cb_premium: multi_signal.regime_use_cb_premium,
+                            cb_premium_params:
+                                ftmo_engine_core::signals_cb_premium::CbPremiumParams {
+                                    threshold_bps: multi_signal.cb_threshold_bps,
+                                    consecutive_bars: multi_signal.cb_consecutive_bars,
+                                    ..ftmo_engine_core::signals_cb_premium::CbPremiumParams::default_30m_crypto()
+                                },
+                            use_stablecoin_flow: multi_signal.regime_use_stablecoin,
+                            stablecoin_flow_params: ftmo_engine_core::signals_stablecoin_flow::StablecoinFlowParams::default_30m_crypto(),
+                            // 2026-05-17 Phase 27 — Pre-loaded HMM model (3- or
+                            // 4-state). When None the voter falls back to the
+                            // hardcoded `HmmModel::default_btc_30m()` inside
+                            // signals_hmm_regime.
+                            hmm_model: multi_signal.hmm_model.as_deref().cloned(),
+                            nupl_samples: None,
+                            // 2026-05-14 Detector #13 — forward HTF MACD-hist
+                            // params so the same CLI flags activate the gate
+                            // inside REGIME mode AND on standalone-R28V6.
+                            htf_macd_enabled: multi_signal.use_htf_macd_gate,
+                            htf_macd_fast: multi_signal.htf_macd_fast,
+                            htf_macd_slow: multi_signal.htf_macd_slow,
+                            htf_macd_signal: multi_signal.htf_macd_signal,
+                            htf_macd_rising_lookback: multi_signal.htf_macd_rising_lookback,
+                            htf_macd_min_magnitude: multi_signal.htf_macd_min_magnitude,
+                            // 2026-05-14 Detector #12 — POC-Z voter wiring.
+                            use_poc_z: multi_signal.regime_use_poc_z,
+                            poc_window_bars: multi_signal.regime_poc_period,
+                            poc_bucket_pct: multi_signal.regime_poc_bucket,
+                            poc_z_min: multi_signal.regime_poc_z_min,
+                            use_poc_zone_gate: multi_signal.regime_use_poc_zone_gate,
+                            poc_zone_hvn_min_ratio: multi_signal.regime_poc_zone_hvn_min_ratio,
+                            disagreement_bonus: multi_signal.regime_disagreement_bonus,
+                            use_fisher: multi_signal.regime_use_fisher,
+                            fisher_params: ftmo_engine_core::signals_fisher::FisherParams::default(),
+                            use_kama: multi_signal.regime_use_kama,
+                            kama_params: ftmo_engine_core::signals_kama::KamaParams::default(),
+                            use_squeeze: multi_signal.regime_use_squeeze,
+                            squeeze_params: ftmo_engine_core::signals_squeeze::SqueezeParams::default(),
+                            use_hurst: multi_signal.regime_use_hurst,
+                            hurst_params: ftmo_engine_core::signals_hurst::HurstParams::default(),
+                            use_wavelet: multi_signal.regime_use_wavelet,
+                            wavelet_params: ftmo_engine_core::signals_wavelet::WaveletParams::default(),
+                            use_pivot: multi_signal.regime_use_pivot,
+                            pivot_params: ftmo_engine_core::signals_pivot::PivotParams::default(),
+                            use_fib: multi_signal.regime_use_fib,
+                            fib_params: ftmo_engine_core::signals_fib::FibParams::default(),
+                            use_vah_val: multi_signal.regime_use_vah_val,
+                            vah_val_params: ftmo_engine_core::signals_vah_val::VahValParams::default(),
+                            use_ichimoku: multi_signal.regime_use_ichimoku,
+                            ichimoku_params: ftmo_engine_core::signals_ichimoku::IchimokuParams::default(),
+                            use_arima: multi_signal.regime_use_arima,
+                            arima_params: ftmo_engine_core::signals_arima::ArimaParams::default(),
+                            use_garch_gate: multi_signal.regime_use_garch_gate,
+                            garch_params: ftmo_engine_core::signals_garch::GarchParams::default(),
+                            use_bocpd_gate: multi_signal.regime_use_bocpd_gate,
+                            bocpd_params: ftmo_engine_core::signals_bocpd::BocpdParams::default(),
+                        };
+                    let stablecoin_slice = stablecoin_feed.get(&source).map(|v| v.as_slice());
+                    let cb_premium_slice = cb_premium_feed.get(&source).map(|v| v.as_slice());
+                    let regime_inputs =
+                        ftmo_engine_core::signals_regime_confluence::RegimeConfluenceInputs {
+                            stablecoin_supply_series: stablecoin_slice,
+                            cb_premium_series: cb_premium_slice,
+                            ..ftmo_engine_core::signals_regime_confluence::RegimeConfluenceInputs::default()
                         };
                     ftmo_engine_core::signals_regime_confluence::detect_regime_confluence(
-                        &mut state, cfg, asset, &source, arr, &rc_params, &r28in,
+                        &mut state,
+                        cfg,
+                        asset,
+                        &source,
+                        arr,
+                        &rc_params,
+                        &r28in,
+                        &regime_inputs,
                     )
                 }
                 SignalSrc::None => None,
@@ -1951,10 +4106,12 @@ fn run_one_window(
             // can both reach the harness for the same asset on the same
             // bar. The harness's per-asset+direction trade-exclusivity
             // gate (commit 50194dc) ensures only one position opens.
-            if multi_signal.also_meanrev
-                && matches!(signals_mode, SignalSrc::PerAssetCfg)
-                && asset_uses_r28v6_fallback(asset)
-            {
+            // 2026-05-13 Codex Round 7 #B11 FIX: drop the PerAssetCfg gate.
+            // The extras should fire when the asset's primary path is
+            // R28V6-style (asset_uses_r28v6_fallback), regardless of the
+            // outer signals_mode. Previously --signals r28v6 --also-fire-meanrev
+            // silently no-op'd because signals_mode != PerAssetCfg.
+            if multi_signal.also_meanrev && asset_uses_r28v6_fallback(asset) {
                 let arr = match feed.get(&source) {
                     Some(v) => v,
                     None => continue,
@@ -1972,10 +4129,8 @@ fn run_one_window(
                     push_with_gates(s, &mut signals_for_bar);
                 }
             }
-            if multi_signal.also_breakout
-                && matches!(signals_mode, SignalSrc::PerAssetCfg)
-                && asset_uses_r28v6_fallback(asset)
-            {
+            // 2026-05-13 Codex Round 7 #B11 FIX: mirror of also_meanrev gate fix.
+            if multi_signal.also_breakout && asset_uses_r28v6_fallback(asset) {
                 let arr = match feed.get(&source) {
                     Some(v) => v,
                     None => continue,
@@ -1985,6 +4140,97 @@ fn run_one_window(
                     push_with_gates(s, &mut signals_for_bar);
                 }
             }
+            // 2026-05-14 Detector #2 — additive OFI persistent-cluster. Mirrors
+            // the `also_fire_breakout` wiring. Same `push_with_gates` pipeline
+            // (phantom-suppress + random-gate + ML-gate) applies.
+            if multi_signal.also_fire_ofi_persistent && asset_uses_r28v6_fallback(asset) {
+                let arr = match feed.get(&source) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                let ofi_p = ftmo_engine_core::signals_ofi::OfiPersistentParams {
+                    window_bars: multi_signal.ofi_window,
+                    delta_threshold: multi_signal.ofi_threshold,
+                    sma_period: multi_signal.ofi_sma,
+                    cooldown_bars: multi_signal.ofi_cooldown,
+                    ..ftmo_engine_core::signals_ofi::OfiPersistentParams::default_30m_crypto()
+                };
+                if let Some(s) = ftmo_engine_core::signals_ofi::detect_ofi_persistent(
+                    &mut state, cfg, asset, &source, arr, &ofi_p,
+                ) {
+                    push_with_gates(s, &mut signals_for_bar);
+                }
+            }
+        }
+
+        // 2026-05-19 cluster-only intra-challenge gate. Off by default;
+        // activated by --cluster-only-mode. The gate counts distinct symbols
+        // and majors among signals detected in the past
+        // `initial_window_hours` (current candidate signals included). If the
+        // resulting cluster is RED (breadth < min_breadth OR majors < min_majors)
+        // we drop ALL candidate signals for this bar. Open positions keep
+        // running — only NEW entries are blocked. Mirrors the live executor's
+        // `check_cluster_entry_block` semantics.
+        if multi_signal.cluster_only_mode && !signals_for_bar.is_empty() {
+            let window_ms = (multi_signal.initial_window_hours as i64) * 3_600_000;
+            // Use the first candidate's entry_time as the "now" anchor (all
+            // signals on the same bar share the same entry_time).
+            let now_ms = signals_for_bar[0].entry_time;
+            let cutoff_ms = now_ms - window_ms;
+            // Drop stale entries from the front of the buffer to keep memory
+            // bounded across a 30-day challenge.
+            while cluster_signal_log
+                .first()
+                .map(|(t, _)| *t < cutoff_ms)
+                .unwrap_or(false)
+            {
+                cluster_signal_log.remove(0);
+            }
+            // Build cluster from BOTH past entries and current candidates so
+            // the gate can self-bootstrap (a wide opening burst on bar lo
+            // qualifies immediately, just like the live signal-history).
+            let mut symbols_set: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            let mut majors_set: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            let count_one =
+                |sym: &str,
+                 symbols_set: &mut std::collections::HashSet<String>,
+                 majors_set: &mut std::collections::HashSet<String>| {
+                    let key = cluster_symbol_key(sym);
+                    symbols_set.insert(key.clone());
+                    for prefix in multi_signal.majors_prefixes.iter() {
+                        if key == *prefix || key.starts_with(&format!("{prefix}-")) {
+                            majors_set.insert(prefix.clone());
+                            break;
+                        }
+                    }
+                };
+            for (_t, sym) in cluster_signal_log.iter() {
+                count_one(sym, &mut symbols_set, &mut majors_set);
+            }
+            for s in signals_for_bar.iter() {
+                count_one(&s.symbol, &mut symbols_set, &mut majors_set);
+            }
+            let qualified = symbols_set.len() >= multi_signal.min_initial_signal_breadth
+                && majors_set.len() >= multi_signal.min_initial_majors;
+            let current_candidates: Vec<(i64, String)> = signals_for_bar
+                .iter()
+                .map(|s| (s.entry_time, s.symbol.clone()))
+                .collect();
+            // Live ftmo_executor logs signal arrivals before checking
+            // cluster-only entry blocking. Mirror that: a red cluster's
+            // blocked candidates still become signal-history, so breadth can
+            // form across multiple bars instead of only via same-bar bursts.
+            cluster_signal_log.extend(current_candidates);
+            if !qualified {
+                cluster_blocked_signals =
+                    cluster_blocked_signals.saturating_add(signals_for_bar.len() as u32);
+                cluster_blocked_bars = cluster_blocked_bars.saturating_add(1);
+                signals_for_bar.clear();
+            } else {
+                cluster_passed_bars = cluster_passed_bars.saturating_add(1);
+            }
         }
 
         let r = step_bar(
@@ -1992,11 +4238,135 @@ fn run_one_window(
             &BarInput {
                 candles_by_source: &feed,
                 atr_series_by_source: &atr_feed,
+                // 2026-05-13 Phase 2: feed funding series into harness so
+                // apply_exits can deduct funding-cost over 8h settlement
+                // boundaries crossed during the trade lifetime. Closes the
+                // CLAUDE.md-documented "Rust gap" (perp-crypto funding
+                // payments were filtered but never charged against PnL).
+                funding_by_source: Some(&funding_feed),
                 signals: signals_for_bar,
             },
             cfg,
         );
         bars += 1;
+        // 2026-05-19 Damage-Limitation Early-Abort. Two independent rules:
+        //   (a) `early_abort_after_losses N` — first N closed trades all losers
+        //       (eff_pnl ≤ 0) ⇒ force-close + StoppedReason::EarlyAbort.
+        //   (b) `early_abort_after_trades N` + `early_abort_min_cum X` — after
+        //       N closed trades, if cumulative realised equity_pct ≤ X (X is
+        //       negative, e.g. -0.02) ⇒ force-close + abort.
+        // Both rules consult `state.closed_trades` (post step_bar) and only
+        // trip when the engine isn't already stopped — we don't double-abort
+        // a TotalLoss/DailyLoss/Time-out window. Rules trigger at most once
+        // per window via the `state.stopped_reason.is_none()` guard.
+        if !r.challenge_ended && state.stopped_reason.is_none() {
+            let nt = state.closed_trades.len();
+            let mut should_abort = false;
+            if multi_signal.early_abort_after_losses > 0
+                && nt >= multi_signal.early_abort_after_losses as usize
+            {
+                let n = multi_signal.early_abort_after_losses as usize;
+                let first_n_all_losers =
+                    state.closed_trades.iter().take(n).all(|t| t.eff_pnl <= 0.0);
+                if first_n_all_losers {
+                    should_abort = true;
+                }
+            }
+            if !should_abort
+                && multi_signal.early_abort_after_trades > 0
+                && nt >= multi_signal.early_abort_after_trades as usize
+            {
+                let cum = state.equity - 1.0;
+                if cum <= multi_signal.early_abort_min_cum {
+                    should_abort = true;
+                }
+            }
+            if should_abort {
+                // Use the bar's open_time (already stamped by step_bar) as
+                // the close timestamp. force_close_all_external also resets
+                // mtm_equity = equity (no remaining unrealised tail).
+                let last_bar_time = state.last_bar_open_time;
+                let bar_input = BarInput {
+                    candles_by_source: &feed,
+                    atr_series_by_source: &atr_feed,
+                    funding_by_source: Some(&funding_feed),
+                    signals: vec![],
+                };
+                let _ = ftmo_engine_core::harness::force_close_all_external(
+                    &mut state,
+                    &bar_input,
+                    cfg,
+                    last_bar_time,
+                );
+                state.stopped_reason = Some(ftmo_engine_core::state::StoppedReason::EarlyAbort);
+                last_passed = false;
+                last_fail = Some("EarlyAbort".to_string());
+                break;
+            }
+        }
+        // 2026-05-20 Intra-Window Kill-Switch (Agent 6). Evaluated ONCE per
+        // window at the first bar whose `elapsed_hours >= kill_switch_hour`.
+        // AND'd predicate: (closed_trades.len() < min_trades) AND
+        // (equity - 1.0 < min_equity). Goal: kill the failure-tail where a
+        // window has had too few trades AND is already underwater after the
+        // initial cluster — historical 0/N pass-rate on those windows so any
+        // give-back is pure equity waste.
+        if multi_signal.kill_switch_hour > 0
+            && !state.kill_switch_evaluated
+            && !r.challenge_ended
+            && state.stopped_reason.is_none()
+            && state.challenge_start_ts > 0
+        {
+            let elapsed_ms = state.last_bar_open_time - state.challenge_start_ts;
+            if elapsed_ms >= 0 {
+                let elapsed_hours = (elapsed_ms / 3_600_000) as u32;
+                if elapsed_hours >= multi_signal.kill_switch_hour {
+                    state.kill_switch_evaluated = true;
+                    let trade_count = state.closed_trades.len() as u32;
+                    let cum_pct = state.equity - 1.0;
+                    let too_few_trades = trade_count < multi_signal.kill_switch_min_trades;
+                    let underwater = cum_pct < multi_signal.kill_switch_min_equity;
+                    if too_few_trades && underwater {
+                        let last_bar_time = state.last_bar_open_time;
+                        let bar_input = BarInput {
+                            candles_by_source: &feed,
+                            atr_series_by_source: &atr_feed,
+                            funding_by_source: Some(&funding_feed),
+                            signals: vec![],
+                        };
+                        let _ = ftmo_engine_core::harness::force_close_all_external(
+                            &mut state,
+                            &bar_input,
+                            cfg,
+                            last_bar_time,
+                        );
+                        state.stopped_reason =
+                            Some(ftmo_engine_core::state::StoppedReason::EarlyAbort);
+                        last_passed = false;
+                        last_fail = Some("KillSwitch".to_string());
+                        break;
+                    }
+                }
+            }
+        }
+        // 2026-05-13 Codex HIGH FIX (Fix 4): HTF push deferred to AFTER
+        // step_bar so the NEXT bar's detector pass sees this bar's close
+        // (now closed and safe). Pushing BEFORE detector at the same i
+        // would make bar i's close visible via htf_closes_buf.last() →
+        // lookahead through htf_trend_allows.
+        // Round 11.3 R2-2: include use_htf_macd_gate in push-gate (mirror
+        // the buffer-init at 3422). Otherwise MACD-gate-only runs get empty
+        // buffer → silent dormant detector.
+        if (multi_signal.use_htf_confirm || multi_signal.use_htf_macd_gate)
+            && i % multi_signal.htf_stride == 0
+        {
+            for sym in symbols.iter() {
+                let c = aligned.get(sym).expect("aligned missing sym")[i];
+                if let Some(buf) = htf_closes_buf.get_mut(sym) {
+                    buf.push(c.close);
+                }
+            }
+        }
         if r.challenge_ended {
             last_passed = r.passed;
             last_fail = r.fail_reason.map(|f| format!("{f:?}"));
@@ -2019,8 +4389,18 @@ fn run_one_window(
         let target_hit = state.first_target_hit_day.is_some()
             && state.trading_days.len() >= cfg.min_trading_days as usize;
         let final_equity_floor = 1.0 + cfg.profit_target * 0.5;
-        let give_back_too_far =
-            target_hit && state.equity.is_finite() && state.equity < final_equity_floor;
+        // 2026-05-16 Round 8 HIGH FIX (harness-deep agent): soft-pass tail
+        // previously checked only `state.equity` (realised). A window that
+        // ended without challenge_ended AND with open positions could leave
+        // mtm_equity deeply underwater while realised equity satisfied the
+        // floor — silent inflation 2-4pp. Mirror the strict_pass branch
+        // below which checks BOTH equity AND mtm_equity. The
+        // `mtm_equity.is_finite()` guard handles configs that never updated
+        // mtm (rare; treat as missing data = fail-closed).
+        let give_back_too_far = target_hit
+            && state.equity.is_finite()
+            && state.mtm_equity.is_finite()
+            && (state.equity < final_equity_floor || state.mtm_equity < final_equity_floor);
         if target_hit && !give_back_too_far {
             last_passed = true;
         }
@@ -2042,6 +4422,33 @@ fn run_one_window(
         last_passed = true;
     }
 
+    // 2026-05-17 Phase 41 — Codex Challenge-Start-Breadth-Gate. Compute
+    // first-cluster breadth + majors count from closed_trades. Disabled
+    // when both thresholds are 0.
+    let breadth_gate_active =
+        multi_signal.min_initial_signal_breadth > 0 || multi_signal.min_initial_majors > 0;
+    let (qualified_at_start, first_cluster_size, first_cluster_majors) =
+        if breadth_gate_active && !state.closed_trades.is_empty() {
+            let trade_pairs: Vec<(i64, String)> = state
+                .closed_trades
+                .iter()
+                .map(|t| (t.entry_time, t.symbol.clone()))
+                .collect();
+            let (breadth, majors) = compute_first_cluster_counts(
+                &trade_pairs,
+                multi_signal.initial_window_hours,
+                &multi_signal.majors_prefixes,
+            );
+            let qualified = breadth >= multi_signal.min_initial_signal_breadth
+                && majors >= multi_signal.min_initial_majors;
+            (Some(qualified), Some(breadth), Some(majors))
+        } else if breadth_gate_active {
+            // Active gate but no trades produced → does not qualify (no cluster formed).
+            (Some(false), Some(0), Some(0))
+        } else {
+            (None, None, None)
+        };
+
     let report = WindowResult {
         win_idx: w_idx,
         config_label: cfg.label.clone(),
@@ -2052,11 +4459,33 @@ fn run_one_window(
         passed: last_passed,
         fail_reason: last_fail.or_else(|| state.stopped_reason.map(|r| format!("{r:?}"))),
         elapsed_ms: win_started.elapsed().as_secs_f64() * 1000.0,
+        qualified_at_start,
+        first_cluster_size,
+        first_cluster_majors,
+        cluster_blocked_bars: if multi_signal.cluster_only_mode {
+            Some(cluster_blocked_bars)
+        } else {
+            None
+        },
+        cluster_passed_bars: if multi_signal.cluster_only_mode {
+            Some(cluster_passed_bars)
+        } else {
+            None
+        },
+        cluster_blocked_signals: if multi_signal.cluster_only_mode {
+            Some(cluster_blocked_signals)
+        } else {
+            None
+        },
     };
     if let Ok(mut g) = writer.lock() {
         if let Some(w) = g.as_mut() {
             if let Ok(line) = serde_json::to_string(&report) {
-                let _ = writeln!(w, "{line}");
+                // 2026-05-15 (Audit-Round-5 / Agent #3 WARNUNG): surface
+                // write failures instead of swallowing with `let _ = …`.
+                if let Err(e) = writeln!(w, "{line}") {
+                    eprintln!("[sweep] WARN: failed to write window report: {e}");
+                }
             }
         }
     }
@@ -2075,10 +4504,335 @@ fn run_one_window(
                     if let Some(o) = line.as_object_mut() {
                         o.insert("winIdx".into(), serde_json::json!(w_idx));
                     }
-                    let _ = writeln!(w, "{line}");
+                    // 2026-05-15 (Audit-Round-5 / Agent #3 WARNUNG): surface
+                    // trades-out write failures (was `let _ = …`).
+                    if let Err(e) = writeln!(w, "{line}") {
+                        eprintln!("[sweep] WARN: failed to write trades-out line: {e}");
+                    }
                 }
             }
         }
     }
     report
+}
+
+/// 2026-05-19 cluster-only-mode helper. Counts distinct symbols + majors
+/// among `(entry_time, symbol)` pairs whose `entry_time` lies inside the
+/// rolling window `(now_ms - window_hours * 3.6M, now_ms]`. Used by the
+/// intra-challenge `--cluster-only-mode` gate to decide whether the live
+/// cluster is currently RED before letting fresh entries through. Pure
+/// function so tests can exercise it without spinning up `run_one_window`.
+fn cluster_symbol_key(sym: &str) -> String {
+    sym.strip_suffix("-PYRAMID")
+        .map(|base| format!("{base}-TREND"))
+        .unwrap_or_else(|| sym.to_string())
+}
+
+pub fn compute_rolling_cluster_counts(
+    entries: &[(i64, String)],
+    now_ms: i64,
+    window_hours: u32,
+    majors_prefixes: &[String],
+) -> (usize, usize) {
+    if entries.is_empty() {
+        return (0, 0);
+    }
+    let cutoff_ms = now_ms.saturating_sub((window_hours as i64) * 3_600_000);
+    let mut symbols_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut majors_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (t, sym) in entries.iter() {
+        if *t <= cutoff_ms || *t > now_ms {
+            continue;
+        }
+        let key = cluster_symbol_key(sym);
+        symbols_set.insert(key.clone());
+        for prefix in majors_prefixes.iter() {
+            if key == *prefix || key.starts_with(&format!("{prefix}-")) {
+                majors_set.insert(prefix.clone());
+                break;
+            }
+        }
+    }
+    (symbols_set.len(), majors_set.len())
+}
+
+/// 2026-05-18 Bug-Audit (Round 2): pure function for first-cluster
+/// breadth + majors counting, extracted from run_one_window so it can be
+/// unit-tested. Given closed trades (entry_time, symbol) and the initial
+/// window in hours, returns (distinct_symbols, distinct_majors) within
+/// the first cluster (from first trade's entry_time to +window_hours).
+///
+/// Major-match rule: a symbol matches a prefix if the symbol equals the
+/// prefix exactly OR starts with `<prefix>-` (dash-delimited).
+pub fn compute_first_cluster_counts(
+    trades: &[(i64, String)],
+    initial_window_hours: u32,
+    majors_prefixes: &[String],
+) -> (usize, usize) {
+    if trades.is_empty() {
+        return (0, 0);
+    }
+    let mut sorted: Vec<&(i64, String)> = trades.iter().collect();
+    sorted.sort_by_key(|t| t.0);
+    let first_entry = sorted[0].0;
+    let cutoff_ms = first_entry + (initial_window_hours as i64) * 3_600_000;
+    let mut symbols_in_cluster: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    let mut majors_in_cluster: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (entry_time, symbol) in sorted.iter() {
+        if *entry_time > cutoff_ms {
+            break;
+        }
+        let key = cluster_symbol_key(symbol);
+        symbols_in_cluster.insert(key.clone());
+        for prefix in majors_prefixes.iter() {
+            let starts_dashed = key.starts_with(&format!("{prefix}-"));
+            if starts_dashed || key == *prefix {
+                majors_in_cluster.insert(prefix.clone());
+                break;
+            }
+        }
+    }
+    (symbols_in_cluster.len(), majors_in_cluster.len())
+}
+
+#[cfg(test)]
+mod cli_parse_tests {
+    use super::parse_u32_csv_flag;
+
+    #[test]
+    fn parse_u32_csv_flag_rejects_invalid_token() {
+        let err = parse_u32_csv_flag("4,wat", "--override-hours", 0, 23).unwrap_err();
+        assert!(err.to_string().contains("invalid integer token"));
+    }
+
+    #[test]
+    fn parse_u32_csv_flag_rejects_out_of_range() {
+        let err = parse_u32_csv_flag("1,24", "--override-hours", 0, 23).unwrap_err();
+        assert!(err.to_string().contains("outside [0, 23]"));
+    }
+
+    #[test]
+    fn parse_u32_csv_flag_accepts_valid_values() {
+        let values = parse_u32_csv_flag("4, 10,22", "--override-hours", 0, 23).unwrap();
+        assert_eq!(values, vec![4, 10, 22]);
+    }
+}
+
+#[cfg(test)]
+mod breadth_gate_tests {
+    use super::compute_first_cluster_counts;
+
+    fn s(x: &str) -> String {
+        x.to_string()
+    }
+    fn t(time: i64, sym: &str) -> (i64, String) {
+        (time, s(sym))
+    }
+
+    #[test]
+    fn empty_trades_returns_zero_zero() {
+        let res = compute_first_cluster_counts(&[], 24, &[s("BTC")]);
+        assert_eq!(res, (0, 0));
+    }
+
+    #[test]
+    fn four_distinct_within_24h_with_three_majors() {
+        let trades = vec![
+            t(0, "BTC-TREND"),
+            t(1_000, "ETH-TREND"),
+            t(2_000, "BNB-TREND"),
+            t(3_000, "AAVE-TREND"),
+            t(24 * 3_600_000 + 1, "SOL-TREND"),
+        ];
+        let majors = vec![s("BTC"), s("ETH"), s("BNB"), s("SOL")];
+        let (breadth, majors_count) = compute_first_cluster_counts(&trades, 24, &majors);
+        assert_eq!(breadth, 4, "4 distinct (BTC,ETH,BNB,AAVE)");
+        assert_eq!(
+            majors_count, 3,
+            "3 majors (BTC,ETH,BNB) — SOL outside window"
+        );
+    }
+
+    #[test]
+    fn trade_at_exact_cutoff_is_included() {
+        let trades = vec![t(0, "BTC-TREND"), t(24 * 3_600_000, "ETH-TREND")];
+        let majors = vec![s("BTC"), s("ETH")];
+        let (breadth, _) = compute_first_cluster_counts(&trades, 24, &majors);
+        assert_eq!(breadth, 2, "trade at exact cutoff must be included");
+    }
+
+    #[test]
+    fn major_match_prefix_dashed_only_not_substring() {
+        let trades = vec![t(0, "BTC-TREND"), t(1_000, "BTCDOM"), t(2_000, "BTC")];
+        let majors = vec![s("BTC")];
+        let (breadth, majors_count) = compute_first_cluster_counts(&trades, 24, &majors);
+        assert_eq!(breadth, 3, "3 distinct symbols counted");
+        assert_eq!(majors_count, 1, "BTC matched once (HashSet dedups)");
+    }
+
+    #[test]
+    fn duplicate_symbol_counted_once() {
+        let trades = vec![
+            t(0, "BTC-TREND"),
+            t(1_000, "BTC-TREND"),
+            t(2_000, "BTC-TREND"),
+        ];
+        let majors = vec![s("BTC")];
+        let (breadth, majors_count) = compute_first_cluster_counts(&trades, 24, &majors);
+        assert_eq!(breadth, 1, "same symbol 3× = breadth 1");
+        assert_eq!(majors_count, 1);
+    }
+
+    #[test]
+    fn pyramid_clone_does_not_inflate_first_cluster_breadth() {
+        let trades = vec![
+            t(0, "BTC-TREND"),
+            t(1_000, "BTC-PYRAMID"),
+            t(2_000, "ETH-TREND"),
+        ];
+        let majors = vec![s("BTC"), s("ETH")];
+        let (breadth, majors_count) = compute_first_cluster_counts(&trades, 24, &majors);
+        assert_eq!(breadth, 2, "BTC pyramid clone must count as BTC-TREND");
+        assert_eq!(majors_count, 2);
+    }
+
+    #[test]
+    fn trades_out_of_order_still_anchored_to_min_entry_time() {
+        let trades = vec![
+            t(5_000, "ETH-TREND"),
+            t(0, "BTC-TREND"),
+            t(24 * 3_600_000 - 1, "SOL-TREND"),
+            t(24 * 3_600_000 + 1, "BNB-TREND"),
+        ];
+        let majors = vec![s("BTC"), s("ETH"), s("BNB"), s("SOL")];
+        let (breadth, majors_count) = compute_first_cluster_counts(&trades, 24, &majors);
+        assert_eq!(breadth, 3, "BTC,ETH,SOL inside; BNB outside");
+        assert_eq!(majors_count, 3);
+    }
+
+    #[test]
+    fn no_majors_list_returns_zero_majors() {
+        let trades = vec![t(0, "BTC-TREND"), t(1, "ETH-TREND")];
+        let (breadth, majors_count) = compute_first_cluster_counts(&trades, 24, &[]);
+        assert_eq!(breadth, 2);
+        assert_eq!(majors_count, 0);
+    }
+}
+
+#[cfg(test)]
+mod cluster_only_mode_tests {
+    use super::compute_rolling_cluster_counts;
+
+    fn s(x: &str) -> String {
+        x.to_string()
+    }
+    fn t(time: i64, sym: &str) -> (i64, String) {
+        (time, s(sym))
+    }
+    const H: i64 = 3_600_000;
+
+    #[test]
+    fn empty_entries_returns_zero_zero() {
+        let res = compute_rolling_cluster_counts(&[], 24 * H, 24, &[s("BTC")]);
+        assert_eq!(res, (0, 0));
+    }
+
+    #[test]
+    fn rolling_window_excludes_older_entries() {
+        // now=48h, window=24h → only entries in (24h, 48h] count.
+        let entries = vec![
+            t(0, "BTC-TREND"),       // outside (too old)
+            t(20 * H, "ETH-TREND"),  // outside (too old)
+            t(30 * H, "BNB-TREND"),  // inside
+            t(45 * H, "SOL-TREND"),  // inside
+            t(48 * H, "AAVE-TREND"), // inside (== now)
+        ];
+        let majors = vec![s("BTC"), s("ETH"), s("BNB"), s("SOL")];
+        let (breadth, majors_count) = compute_rolling_cluster_counts(&entries, 48 * H, 24, &majors);
+        assert_eq!(breadth, 3, "BNB,SOL,AAVE within rolling 24h");
+        assert_eq!(majors_count, 2, "BNB + SOL are majors; AAVE is not");
+    }
+
+    #[test]
+    fn future_entries_are_excluded() {
+        // Defensive: entry_time > now_ms should never contribute.
+        let entries = vec![
+            t(10 * H, "BTC-TREND"),
+            t(100 * H, "ETH-TREND"), // far future
+        ];
+        let majors = vec![s("BTC"), s("ETH")];
+        let (breadth, majors_count) = compute_rolling_cluster_counts(&entries, 12 * H, 24, &majors);
+        assert_eq!(breadth, 1);
+        assert_eq!(majors_count, 1);
+    }
+
+    #[test]
+    fn cutoff_is_strict_left_exclusive() {
+        // entry exactly at cutoff (now - window) must NOT count (strict >).
+        let entries = vec![
+            t(0, "BTC-TREND"), // cutoff
+            t(1, "ETH-TREND"), // just inside
+        ];
+        let majors = vec![s("BTC"), s("ETH")];
+        let (breadth, majors_count) = compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
+        assert_eq!(breadth, 1, "BTC at cutoff excluded; only ETH counts");
+        assert_eq!(majors_count, 1);
+    }
+
+    #[test]
+    fn duplicates_are_deduplicated() {
+        let entries = vec![
+            t(10 * H, "BTC-TREND"),
+            t(11 * H, "BTC-TREND"),
+            t(12 * H, "BTC-TREND"),
+        ];
+        let majors = vec![s("BTC")];
+        let (breadth, majors_count) = compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
+        assert_eq!(breadth, 1);
+        assert_eq!(majors_count, 1);
+    }
+
+    #[test]
+    fn pyramid_clone_does_not_inflate_rolling_cluster_breadth() {
+        let entries = vec![
+            t(10 * H, "BTC-TREND"),
+            t(11 * H, "BTC-PYRAMID"),
+            t(12 * H, "ETH-TREND"),
+        ];
+        let majors = vec![s("BTC"), s("ETH")];
+        let (breadth, majors_count) = compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
+        assert_eq!(breadth, 2);
+        assert_eq!(majors_count, 2);
+    }
+
+    #[test]
+    fn majors_count_caps_at_majors_list_size() {
+        let entries = vec![
+            t(H, "BTC-TREND"),
+            t(2 * H, "ETH-TREND"),
+            t(3 * H, "BNB-TREND"),
+            t(4 * H, "SOL-TREND"),
+            t(5 * H, "AAVE-TREND"),
+            t(6 * H, "LINK-TREND"),
+        ];
+        let majors = vec![s("BTC"), s("ETH"), s("BNB"), s("SOL")];
+        let (breadth, majors_count) = compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
+        assert_eq!(breadth, 6, "all 6 symbols counted toward breadth");
+        assert_eq!(majors_count, 4, "majors clamped at 4 (BTC,ETH,BNB,SOL)");
+    }
+
+    #[test]
+    fn red_cluster_when_under_threshold() {
+        // Simulates the gate decision: breadth >= 4 AND majors >= 2 required.
+        let entries = vec![
+            t(H, "BTC-TREND"),
+            t(2 * H, "ETH-TREND"),
+            t(3 * H, "AAVE-TREND"),
+        ];
+        let majors = vec![s("BTC"), s("ETH"), s("BNB"), s("SOL")];
+        let (breadth, majors_count) = compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
+        let qualified = breadth >= 4 && majors_count >= 2;
+        assert!(!qualified, "3 distinct < 4 needed → cluster RED");
+    }
 }

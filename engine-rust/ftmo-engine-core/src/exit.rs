@@ -1,15 +1,37 @@
 //! Exit logic — port of `processPositionExit` from `ftmoLiveEngineV4.ts`.
 //!
-//! Fires PTP / BE / chandelier mutation in-order, then resolves SL/TP at the
-//! current bar with the same gap-fill semantics as the backtest engine
-//! `runFtmoDaytrade24h` (R54 `R54-V4-3` parity tie-breaks for same-bar
-//! PTP+stop, weekend-gap exit prices). Returns `Some(ExitOutcome)` if the
-//! position closed at this bar, `None` otherwise.
+//! 2026-05-13 Codex Round 6 #P2+P4 FIX: SL/TP cross-detection runs FIRST at
+//! each call; high-watermark / PTP / BE / trailingStop / chandelier are
+//! POST-CROSS state-updates that only mutate state when no exit fired. This
+//! mirrors source backtest `ftmoDaytrade24h.ts:4575+4620+4692` and was
+//! shipped earlier to TS V4 in commit `a6a411c` (Codex Round 5 #2). The
+//! legacy "mutate-then-cross" order let BE/chandelier tighten the stop
+//! using the same bar's high/low and then immediately stop out within that
+//! same bar — diverging from source by 1-3pp on chandelier-heavy configs.
 
 use crate::candle::Candle;
 use crate::config::EngineConfig;
 use crate::position::{OpenPosition, PositionSide};
 use crate::trade::ExitReason;
+
+/// 2026-05-13 Codex Round 6 #P3 FIX: cost-adjusted BE stop level. Source
+/// backtest `ftmoDaytrade24h.ts:4634` moves the BE stop to
+///   entry × (1 + cost) for longs, entry × (1 - cost) for shorts
+/// so a BE-stop-out realises ~0 net of round-trip cost. Rust previously
+/// moved to raw entry, leaving a -cost bp drag on every BE-stop. Mirrors
+/// the TS-side `computeBeStop` shipped in commit `a6a411c`.
+fn cost_adjusted_be(pos: &OpenPosition, cfg: &EngineConfig) -> f64 {
+    let asset = cfg.assets.iter().find(|a| a.symbol == pos.symbol);
+    let cost_bp = asset.and_then(|a| a.cost_bp).unwrap_or(0.0);
+    if cost_bp <= 0.0 {
+        return pos.entry_price;
+    }
+    let cost = cost_bp / 10_000.0;
+    match pos.direction {
+        PositionSide::Long => pos.entry_price * (1.0 + cost),
+        PositionSide::Short => pos.entry_price * (1.0 - cost),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExitOutcome {
@@ -42,6 +64,22 @@ pub fn process_position_exit_with_held(
     atr_at_bar: Option<f64>,
     bars_held: u64,
 ) -> Option<ExitOutcome> {
+    // 2026-05-13 Codex Round 6 #P2+P4 FIX (REVISED): exit-modifier ordering
+    // mirrors source backtest `ftmoDaytrade24h.ts` exactly:
+    //   1. high-watermark update (pre-cross)
+    //   2. PTP single-tier (PRE-cross; has stop-guard + gap-past-ptp
+    //      exception that lets PTP fire even when stop also hit — source
+    //      ftmoDaytrade24h.ts:4520-4569)
+    //   3. PTP multi-level (PRE-cross — same gap-past + stop-guard rules)
+    //   4. SL/TP cross-check (with the possibly BE-adjusted stop from PTP)
+    //   5. POST-cross: standalone-BE, trailingStop, chandelier (these MUST
+    //      stay post-cross because their same-bar tighten-then-stop pattern
+    //      is the bug Codex Round 5 flagged — they read candle.high/low
+    //      and could otherwise fire stop_hit within the same bar)
+    //   6. Optional time-exit (post-cross)
+    // The earlier Round 6 attempt moved PTP to post-cross too, which broke
+    // gap-past-ptp + same-bar-stop → BE-stop semantics.
+
     // 1. Update high-watermark.
     match pos.direction {
         PositionSide::Long => {
@@ -56,7 +94,7 @@ pub fn process_position_exit_with_held(
         }
     }
 
-    // 2. PartialTakeProfit (single-tier).
+    // 2. PartialTakeProfit (single-tier) — PRE-cross with stop-guard.
     if let Some(ptp) = cfg.partial_take_profit {
         if !pos.ptp_triggered {
             let trigger_price = match pos.direction {
@@ -78,17 +116,27 @@ pub fn process_position_exit_with_held(
             // R54-V4-3: stop wins same-bar tie unless the bar GAPPED past PTP.
             if ptp_hit && (!stop_hit || gap_past_ptp) {
                 pos.ptp_triggered = true;
+                // PTP realized = closeFraction × triggerPct (GROSS, no cost).
+                // 2026-05-21 bug-round: the prior `(trigger_pct - cost)` here
+                // double-charged the closed fraction — pnl.rs:97 ALREADY
+                // subtracts the FULL round-trip cost on the blended PnL, so
+                // netting cost here too charged cf×cost twice, diverging from
+                // the parity reference TS computeEffPnl (ftmoLiveEngineV4.ts:843
+                // sets ptpRealizedPct = closeFraction×triggerPct gross; cost is
+                // applied once at line 1065). Understated pass-rates on every
+                // PTP exit.
                 pos.ptp_realized_pct = ptp.close_fraction * ptp.trigger_pct;
-                // Auto-BE.
+                // Auto-BE — cost-adjusted (Codex Round 6 #P3).
+                let be_stop = cost_adjusted_be(pos, cfg);
                 match pos.direction {
                     PositionSide::Long => {
-                        if pos.entry_price > pos.stop_price {
-                            pos.stop_price = pos.entry_price;
+                        if be_stop > pos.stop_price {
+                            pos.stop_price = be_stop;
                         }
                     }
                     PositionSide::Short => {
-                        if pos.entry_price < pos.stop_price {
-                            pos.stop_price = pos.entry_price;
+                        if be_stop < pos.stop_price {
+                            pos.stop_price = be_stop;
                         }
                     }
                 }
@@ -135,20 +183,27 @@ pub fn process_position_exit_with_held(
             if stop_hit_multi && !gap_past_lvl {
                 break;
             }
+            // PTP-level realized = closeFraction × triggerPct (GROSS, no cost).
+            // 2026-05-21 bug-round: removed the `- cost` netting here — pnl.rs:97
+            // already subtracts the FULL round-trip cost once on the blended
+            // PnL, so this double-charged cf×cost per level. Matches TS
+            // computeEffPnl (ftmoLiveEngineV4.ts:898 gross + 1065 single cost).
             pos.ptp_levels_realized += lvl.close_fraction * lvl.trigger_pct;
             pos.ptp_level_idx += 1;
             realised_any = true;
         }
         if realised_any {
+            // 2026-05-13 Codex Round 6 #P3: cost-adjusted BE after partial.
+            let be_stop = cost_adjusted_be(pos, cfg);
             match pos.direction {
                 PositionSide::Long => {
-                    if pos.entry_price > pos.stop_price {
-                        pos.stop_price = pos.entry_price;
+                    if be_stop > pos.stop_price {
+                        pos.stop_price = be_stop;
                     }
                 }
                 PositionSide::Short => {
-                    if pos.entry_price < pos.stop_price {
-                        pos.stop_price = pos.entry_price;
+                    if be_stop < pos.stop_price {
+                        pos.stop_price = be_stop;
                     }
                 }
             }
@@ -157,50 +212,10 @@ pub fn process_position_exit_with_held(
         }
     }
 
-    // 3. BreakEven shift.
-    if let Some(be) = cfg.break_even {
-        if !pos.be_active {
-            let fav = match pos.direction {
-                PositionSide::Long => (candle.close - pos.entry_price) / pos.entry_price,
-                PositionSide::Short => (pos.entry_price - candle.close) / pos.entry_price,
-            };
-            if fav >= be.threshold {
-                pos.stop_price = pos.entry_price;
-                pos.be_active = true;
-            }
-        }
-    }
-
-    // 4. ChandelierExit — ATR-smoothed trailing stop gated by minMoveR.
-    if let (Some(chand), Some(atr)) = (cfg.chandelier_exit, atr_at_bar) {
-        let min_move_r = chand.min_move_r.unwrap_or(0.5);
-        let original_r = pos.initial_stop_pct * pos.entry_price;
-        if original_r > 0.0 {
-            let move_r = match pos.direction {
-                PositionSide::Long => (pos.high_watermark - pos.entry_price) / original_r,
-                PositionSide::Short => (pos.entry_price - pos.high_watermark) / original_r,
-            };
-            if move_r >= min_move_r {
-                let trail_dist = chand.mult * atr;
-                match pos.direction {
-                    PositionSide::Long => {
-                        let new_stop = pos.high_watermark - trail_dist;
-                        if new_stop > pos.stop_price {
-                            pos.stop_price = new_stop;
-                        }
-                    }
-                    PositionSide::Short => {
-                        let new_stop = pos.high_watermark + trail_dist;
-                        if new_stop < pos.stop_price {
-                            pos.stop_price = new_stop;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // 5. SL/TP cross-detection with weekend-gap parity.
+    // 2c. SL/TP cross-check — runs AFTER PTP pre-cross (which may have moved
+    // stop to BE) but BEFORE standalone-BE/trailingStop/chandelier (which
+    // must be post-cross to avoid same-bar tighten-then-stop). Mirrors
+    // source backtest ftmoDaytrade24h.ts:4575+.
     match pos.direction {
         PositionSide::Long => {
             let stop_hit = candle.low <= pos.stop_price;
@@ -260,7 +275,68 @@ pub fn process_position_exit_with_held(
         }
     }
 
-    // 6. POST-CROSS TrailingStop — only updates state if the position
+    // 3. BreakEven shift — cost-adjusted (Codex Round 6 #P3). POST-CROSS.
+    // 2026-05-23 Wave2 fix: monotone guard. Standalone-BE was setting
+    // `pos.stop_price = be_stop` UNCONDITIONALLY, which would LOOSEN a stop
+    // already trailed by chandelier above entry (Long: trailed-stop > entry+cost
+    // → BE-shift drags it back down). R28_V6_PASSLOCK has both break_even AND
+    // chandelier_exit configured → real production exposure. Mirror the
+    // PTP-BE branches at L133-139 and L200-205 which already guard direction.
+    if let Some(be) = cfg.break_even {
+        if !pos.be_active {
+            let fav = match pos.direction {
+                PositionSide::Long => (candle.close - pos.entry_price) / pos.entry_price,
+                PositionSide::Short => (pos.entry_price - candle.close) / pos.entry_price,
+            };
+            if fav >= be.threshold {
+                let be_stop = cost_adjusted_be(pos, cfg);
+                match pos.direction {
+                    PositionSide::Long => {
+                        if be_stop > pos.stop_price {
+                            pos.stop_price = be_stop;
+                        }
+                    }
+                    PositionSide::Short => {
+                        if be_stop < pos.stop_price {
+                            pos.stop_price = be_stop;
+                        }
+                    }
+                }
+                pos.be_active = true;
+            }
+        }
+    }
+
+    // 4. ChandelierExit — ATR-smoothed trailing stop gated by minMoveR.
+    if let (Some(chand), Some(atr)) = (cfg.chandelier_exit, atr_at_bar) {
+        let min_move_r = chand.min_move_r.unwrap_or(0.5);
+        let original_r = pos.initial_stop_pct * pos.entry_price;
+        if original_r > 0.0 {
+            let move_r = match pos.direction {
+                PositionSide::Long => (pos.high_watermark - pos.entry_price) / original_r,
+                PositionSide::Short => (pos.entry_price - pos.high_watermark) / original_r,
+            };
+            if move_r >= min_move_r {
+                let trail_dist = chand.mult * atr;
+                match pos.direction {
+                    PositionSide::Long => {
+                        let new_stop = pos.high_watermark - trail_dist;
+                        if new_stop > pos.stop_price {
+                            pos.stop_price = new_stop;
+                        }
+                    }
+                    PositionSide::Short => {
+                        let new_stop = pos.high_watermark + trail_dist;
+                        if new_stop < pos.stop_price {
+                            pos.stop_price = new_stop;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. POST-CROSS TrailingStop — only updates state if the position
     //    survived this bar's SL/TP cross. Mirrors `ftmoDaytrade24h.ts:4670-4691`
     //    where trailingStop runs AFTER the cross-detection block at L4587-4619.
     //    Tightened stop affects the NEXT bar's cross, not the current — TS
@@ -309,7 +385,11 @@ pub fn process_position_exit_with_held(
             .find(|a| a.symbol == pos.symbol)
             .and_then(|a| a.hold_bars)
             .unwrap_or(cfg.hold_bars) as u64;
-        if hold_limit > 0 && bars_held >= hold_limit {
+        // 2026-05-23 Wave1 audit fix [HIGH-C1]: was `>=`, TS V4 reference
+        // uses strict `>` (position closes ONE bar after hold_limit). Off-by-
+        // one drove 1-3pp pass-rate drift on chandelier/time-exit-heavy
+        // configs vs TS parity. Strict `>` matches ftmoDaytrade24h.ts V4.
+        if hold_limit > 0 && bars_held > hold_limit {
             return Some(ExitOutcome {
                 exit_price: candle.close,
                 reason: ExitReason::Time,
@@ -585,6 +665,100 @@ mod tests {
         assert!(
             (r.exit_price - 100.0).abs() < 1e-9,
             "exit at BE, not orig stop"
+        );
+    }
+
+    /// 2026-05-14 Detector #18 — 3-tier sequence test (state-corruption
+    /// safety for the multi-bar path).
+    ///
+    /// Setup: 3 PTP tiers (1%, 2%, 3%) each closing 0.25, cost_bp=30.
+    ///   Bar 1 — high tags tier 1 (≥101), low stays above BE → realise tier 1.
+    ///   Bar 2 — high tags tier 2 (≥102), low stays above BE → realise tier 2.
+    ///   Bar 3 — low crosses the BE stop → exit at cost-adjusted BE.
+    ///
+    /// Asserts:
+    ///   * `ptp_levels_realized` == sum_{tier∈{1,2}} fraction × (trigger − cost).
+    ///   * exit_price == entry × (1 + cost_bp/10_000).
+    ///   * tier 3 is left untouched in `ptp_level_idx`.
+    #[test]
+    fn multi_level_ptp_three_tier_sequence_then_be_stop() {
+        use crate::config::AssetConfig;
+        let mut cfg = base_cfg();
+        // Inject explicit cost_bp on the test symbol so the BE adjustment is
+        // observable (raw entry would be 100.0 otherwise).
+        cfg.assets = vec![AssetConfig {
+            symbol: "BTC-TREND".into(),
+            source_symbol: Some("BTCUSDT".into()),
+            risk_frac: 0.4,
+            cost_bp: Some(30.0),
+            ..Default::default()
+        }];
+        cfg.partial_take_profit = None;
+        cfg.partial_take_profit_levels = Some(vec![
+            PartialTakeProfitLevel {
+                trigger_pct: 0.01,
+                close_fraction: 0.25,
+            },
+            PartialTakeProfitLevel {
+                trigger_pct: 0.02,
+                close_fraction: 0.25,
+            },
+            PartialTakeProfitLevel {
+                trigger_pct: 0.03,
+                close_fraction: 0.25,
+            },
+        ]);
+
+        let cost = 30.0 / 10_000.0; // = 0.003
+        let be_stop = 100.0 * (1.0 + cost); // = 100.30
+
+        let mut p = long_pos(100.0);
+
+        // Bar 1: high 101.2 hits tier 1 (≥101.0), tier 2 (≥102.0) NOT hit.
+        // Low must stay above BE (100.30) so no cross on this bar.
+        let bar1 = bar(100.5, 101.2, 100.4, 101.0);
+        let r1 = process_position_exit(&mut p, &bar1, &cfg, None);
+        assert!(r1.is_none(), "bar1 must not exit");
+        assert_eq!(p.ptp_level_idx, 1, "tier 1 realised");
+        assert!(p.be_active, "BE shift after first realise");
+        assert!(
+            (p.stop_price - be_stop).abs() < 1e-9,
+            "stop pushed to cost-adjusted BE = {be_stop}, got {}",
+            p.stop_price
+        );
+
+        // Bar 2: high 102.5 hits tier 2 (≥102.0), tier 3 (≥103.0) NOT hit.
+        // Low must stay above BE so no cross.
+        let bar2 = bar(101.1, 102.5, 100.5, 102.2);
+        let r2 = process_position_exit(&mut p, &bar2, &cfg, None);
+        assert!(r2.is_none(), "bar2 must not exit");
+        assert_eq!(p.ptp_level_idx, 2, "tier 2 realised");
+        // tier 1 + tier 2 GROSS realised (closeFraction × triggerPct, no cost).
+        // 2026-05-21 bug-round: was cost-netted (0.006) which double-charged
+        // cf×cost vs pnl.rs:97's full-cost subtraction. Cost is applied once on
+        // the blended PnL (TS V4 parity), so the per-level realised is gross.
+        let expected_realised = 0.25 * 0.01 + 0.25 * 0.02; // = 0.0075
+        assert!(
+            (p.ptp_levels_realized - expected_realised).abs() < 1e-12,
+            "ptp_levels_realized = {expected_realised}, got {}",
+            p.ptp_levels_realized
+        );
+
+        // Bar 3: low 100.20 < BE (100.30) → stop crosses at cost-adjusted BE.
+        let bar3 = bar(101.0, 101.5, 100.20, 100.50);
+        let r3 = process_position_exit(&mut p, &bar3, &cfg, None).unwrap();
+        assert_eq!(r3.reason, ExitReason::Stop);
+        assert!(
+            (r3.exit_price - be_stop).abs() < 1e-9,
+            "exit at cost-adjusted BE = {be_stop}, got {}",
+            r3.exit_price
+        );
+        // Tier 3 must NOT have been touched (bar3 high was 101.5 — below the
+        // 103 trigger — and the cross fires before any wick could).
+        assert_eq!(p.ptp_level_idx, 2, "tier 3 must remain unrealised");
+        assert!(
+            (p.ptp_levels_realized - expected_realised).abs() < 1e-12,
+            "ptp_levels_realized unchanged on bar 3"
         );
     }
 

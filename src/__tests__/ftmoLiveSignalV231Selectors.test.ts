@@ -32,9 +32,15 @@ beforeAll(async () => {
   getActiveCfgInfo = mod.getActiveCfgInfo;
 });
 
-// Champion configs live-deployable (per CLAUDE.md project memory). If any
-// of these go missing, the V231 registry is broken.
-const CHAMPION_CONFIG_NAMES = [
+// Configs that must still be exported for backward-compat (selectors live
+// in CFG_REGISTRY even when archived) or that are active champions per
+// CLAUDE.md. Mix of active + legacy on purpose — list name is historical;
+// CLAUDE.md 2026-05-15 active champion is AMBER_MAX_PASSLOCK (added
+// separately to V231 CFG_REGISTRY by Round 4). V5_ONYX is ARCHIVED per
+// CLAUDE.md but stays here because the V231 export must still resolve —
+// otherwise live envs that rolled back to ONYX during the 2026-04-29 →
+// 2026-05-04 window would fail to boot.
+const EXPORTED_CONFIG_NAMES = [
   // R28 family (post-R56-58 audit)
   "FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V6",
   "FTMO_DAYTRADE_24H_CONFIG_TREND_2H_V5_QUARTZ_LITE_R28_V5",
@@ -59,7 +65,7 @@ const CHAMPION_CONFIG_NAMES = [
 ] as const;
 
 describe("V231 champion config exports (R60 inventory)", () => {
-  it.each(CHAMPION_CONFIG_NAMES)(
+  it.each(EXPORTED_CONFIG_NAMES)(
     "exports %s with required FTMO fields",
     (name) => {
       const cfg = (Cfgs as Record<string, unknown>)[name];

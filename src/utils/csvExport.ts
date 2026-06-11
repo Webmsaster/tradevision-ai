@@ -1,4 +1,5 @@
 import { Trade } from "@/types/trade";
+import { sanitizeCSVField } from "@/utils/csvParser";
 
 const COLUMNS: { key: keyof Trade; header: string }[] = [
   { key: "id", header: "ID" },
@@ -38,6 +39,14 @@ function escapeCell(value: unknown): string {
   } else {
     str = String(value);
   }
+  // 2026-05-21 bug-round: CSV formula-injection guard on EXPORT. A cell
+  // beginning with =, @, tab or CR is executed as a formula when the export is
+  // opened directly in Excel/Sheets (e.g. a note "=HYPERLINK(...)" or "=1+1"
+  // would run / display as a computed value). The IMPORT side already strips
+  // these via sanitizeCSVField; the export side did not. Reuse the SAME helper
+  // so export↔import round-trips identically and numeric columns are untouched
+  // (it deliberately does NOT strip +/-, which lead valid numbers like "-50.5").
+  str = sanitizeCSVField(str);
   const needsQuoting = /[",\n\r]/.test(str);
   if (needsQuoting) {
     return `"${str.replace(/"/g, '""')}"`;

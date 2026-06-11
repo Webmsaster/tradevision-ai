@@ -354,12 +354,28 @@ def order_send(request: dict) -> OrderResult | None:
     if position_id and position_id in _STATE["positions"] and action != TRADE_ACTION_SLTP:
         pos = _STATE["positions"][position_id]
         fill_price = info.ask if pos.type == POSITION_TYPE_SELL else info.bid
-        pnl = _compute_pnl(pos, fill_price)
+        # 2026-05-21: model PARTIAL closes faithfully. Real MT5 REDUCES the
+        # position volume when the close request's volume is < the live volume;
+        # only a close >= live volume flattens it. The mock previously deleted
+        # the whole position on ANY close, which hid executor partial-close /
+        # PTP-level volume-tracking bugs (a partial that should leave a
+        # reduced position looked like a full exit). A full close (volume ==
+        # pos.volume, or omitted) still deletes — identical to the old path.
+        close_vol = min(volume if volume > 0 else pos.volume, pos.volume)
+        remaining = pos.volume - close_vol
+        frac = close_vol / pos.volume if pos.volume > 0 else 1.0
+        pnl = _compute_pnl(pos, fill_price) * frac
         _STATE["balance"] += pnl
         # R67-r11: Hedge-Mode support — emit configurable deal entry tag.
         close_entry = _STATE.get("close_deal_entry", DEAL_ENTRY_OUT)
+        # Record the deal for the CLOSED portion only.
+        pos.volume = close_vol
         _record_deal(pos, fill_price, pnl, close_entry)
-        del _STATE["positions"][position_id]
+        step = info.volume_step or 0.01
+        if remaining < step / 2:
+            del _STATE["positions"][position_id]
+        else:
+            pos.volume = round(remaining, 8)
         return OrderResult(retcode=TRADE_RETCODE_DONE, order=position_id, price=fill_price, comment="mock close")
 
     # Open new position

@@ -134,9 +134,91 @@ pub fn compute_eff_pnl_with_time(
     // the loss-floor into a profit-floor — that would turn a -150% R loss
     // into a +150% R "gain" silently. The PnL itself uses raw eff_risk for
     // parity with TS, the floor is the defensive clamp.
-    let risk_for_floor = pos.eff_risk.max(0.0);
-    let eff_pnl = (raw_pnl * cfg.leverage * pos.eff_risk).max(GAP_TAIL_MULT * risk_for_floor);
+    // 2026-05-16 Round 8 KRIT FIX (sizing-pnl agent): use the clamped value
+    // in the PnL multiplication too. With raw negative eff_risk a positive
+    // raw_pnl flips sign (Long winner → "Loss"); the floor (=GAP_TAIL_MULT*0)
+    // would NOT catch it because the formula reads max(eff_pnl_neg, 0.0) and
+    // the original eff_pnl already passed the floor. Mirror clamp on both
+    // sides — TS-parity preserved (raw_pnl unchanged, just NaN/<0 defense).
+    let risk_eff = pos.eff_risk.max(0.0);
+    let eff_pnl = (raw_pnl * cfg.leverage * risk_eff).max(GAP_TAIL_MULT * risk_eff);
     EffPnl { raw_pnl, eff_pnl }
+}
+
+/// 2026-05-13 Round-2 Audit Bug A FIX — funding-cost-deduction port of TS
+/// `ftmoDaytrade24h.ts:4819-4862` (R56 audit fix). Walks every 8h settlement
+/// boundary in `(entry_time, exit_time]` and deducts the funding rate at the
+/// containing bar from raw_pnl.
+///
+/// Sign convention: positive funding rate ⇒ long pays, short receives.
+/// → Long position: raw_pnl -= sum_funding
+/// → Short position: raw_pnl += sum_funding
+///
+/// `funding_series` is forward-filled per-bar (typically from `align_funding`
+/// in loader.rs). `bar_open_time_0` is the open_time of `funding_series[0]`.
+/// `bar_dur_ms` is the candle duration (e.g. 1_800_000 for 30m).
+pub fn compute_eff_pnl_with_funding(
+    pos: &OpenPosition,
+    exit_price: f64,
+    cfg: &EngineConfig,
+    exit_time: Option<i64>,
+    funding_series: Option<&[Option<f64>]>,
+    bar_open_time_0: i64,
+    bar_dur_ms: i64,
+) -> EffPnl {
+    // Compute base PnL via existing path (without funding).
+    let mut base = compute_eff_pnl_with_time(pos, exit_price, cfg, exit_time);
+    // Funding-cost only when series provided AND exit_time known AND bar_dur valid.
+    let (Some(funding), Some(exit_t)) = (funding_series, exit_time) else {
+        return base;
+    };
+    if bar_dur_ms <= 0 || funding.is_empty() {
+        return base;
+    }
+    const EIGHT_H_MS: i64 = 8 * 3_600_000;
+    let sign: f64 = match pos.direction {
+        PositionSide::Long => 1.0,
+        PositionSide::Short => -1.0,
+    };
+    // 2026-05-13 Codex Round 6 MED FIX (#S7): use STRICT less-than so an
+    // entry AT a settlement boundary (00:00 / 08:00 / 16:00 UTC) pays that
+    // bucket's funding. The legacy `<=` skipped the boundary settlement.
+    // Now matches TS source-of-truth (ftmoDaytrade24h.ts:4908 after Codex
+    // Round 6 fix). Economic-correct rule: position held AT settlement
+    // pays funding.
+    let mut bucket = (pos.entry_time.div_euclid(EIGHT_H_MS)) * EIGHT_H_MS;
+    if bucket < pos.entry_time {
+        bucket += EIGHT_H_MS;
+    }
+    let mut sum_funding = 0.0_f64;
+    let max_iter = (funding.len() as i64).saturating_add(8);
+    let mut iter = 0_i64;
+    while bucket <= exit_t && iter < max_iter {
+        iter += 1;
+        let bar_idx_signed = (bucket - bar_open_time_0).div_euclid(bar_dur_ms);
+        if bar_idx_signed >= 0 {
+            let bar_idx = bar_idx_signed as usize;
+            if bar_idx < funding.len() {
+                if let Some(f) = funding[bar_idx] {
+                    if f.is_finite() {
+                        sum_funding += f;
+                    }
+                }
+            }
+        }
+        bucket += EIGHT_H_MS;
+    }
+    if sum_funding != 0.0 {
+        base.raw_pnl -= sign * sum_funding;
+        // Recompute eff_pnl with same GAP_TAIL floor.
+        // 2026-05-20 bug-find round: multiply by the CLAMPED risk, matching the
+        // base path (line 143-144, Round-8 KRIT fix). Using raw `pos.eff_risk`
+        // here reverted that clamp on the funding code path (the production
+        // crypto path) — a negative eff_risk would sign-flip the PnL.
+        let risk_eff = pos.eff_risk.max(0.0);
+        base.eff_pnl = (base.raw_pnl * cfg.leverage * risk_eff).max(GAP_TAIL_MULT * risk_eff);
+    }
+    base
 }
 
 /// Mark-to-market equity = realised + Σ unrealised at the current bar.
@@ -190,9 +272,85 @@ pub fn compute_mtm_equity(
         }
         // R29-R3.C: same defensive clamp as compute_eff_pnl_with_time —
         // negative eff_risk must not invert the unrealised-loss floor.
+        // 2026-05-21 bug-find round: multiply by the CLAMPED risk, matching
+        // compute_eff_pnl_with_time (line 143-144) and the funding path
+        // (line 218-220). Using raw `pos.eff_risk` here re-introduced the
+        // sign-flip the Round-8 KRIT fix removed: a negative eff_risk turns a
+        // positive raw_pnl into a positive unrealised "gain" (floor uses the
+        // clamped value, so it never catches it) → inflated MTM equity / peak
+        // → false target-hits and entry-gate corruption.
         let risk_for_floor = pos.eff_risk.max(0.0);
         let unrealised =
-            (raw_pnl * cfg.leverage * pos.eff_risk).max(GAP_TAIL_MULT * risk_for_floor);
+            (raw_pnl * cfg.leverage * risk_for_floor).max(GAP_TAIL_MULT * risk_for_floor);
+        mtm *= 1.0 + unrealised;
+    }
+    mtm
+}
+
+/// Worst-case intra-bar mark-to-market equity: like `compute_mtm_equity` but
+/// each open position is priced at its ADVERSE intra-bar extreme (the bar LOW
+/// for longs, the bar HIGH for shorts) instead of the close. Used for the
+/// optional intra-bar drawdown check (`cfg.intrabar_dd_check`) so a position
+/// that pierces the loss floor mid-bar and recovers by the close is still
+/// caught — matching a broker's real-time, tick-by-tick equity monitoring.
+///
+/// ⚠️ 2026-05-29 KNOWN LIMITATION — over-counts multi-asset drawdown. This sums
+/// EVERY open position at its OWN intra-bar extreme, i.e. it assumes all assets
+/// hit their worst tick SIMULTANEOUSLY. That is exact for a SINGLE position but
+/// a hard upper bound for a basket: real assets do not bottom in the same tick.
+/// Empirically (2026-05-29) the single-asset penalty is ~3% relative while a
+/// 4-asset basket showed ~19% — ~6× inflation that is pure artifact. So treat
+/// this as a single-asset / worst-case tool only; for honest multi-asset
+/// pass-rates prefer the close-based MTM (≈ truth minus a small ~3-10% haircut),
+/// NOT this. A faithful multi-asset version needs joint sub-bar (e.g. 5m) data.
+///
+/// READ-ONLY: unlike `compute_mtm_equity` it does NOT write `last_known_price`,
+/// so it is safe to call alongside the close-based MTM in the same bar.
+/// `intrabar_by_source` maps source symbol → (bar_low, bar_high).
+pub fn compute_stress_mtm_equity(
+    state: &EngineState,
+    intrabar_by_source: &HashMap<String, (f64, f64)>,
+    cfg: &EngineConfig,
+) -> f64 {
+    let mut mtm = state.equity;
+    for pos in state.open_positions.iter() {
+        let Some(&(low, high)) = intrabar_by_source.get(&pos.source_symbol) else {
+            continue;
+        };
+        let price = match pos.direction {
+            PositionSide::Long => low,
+            PositionSide::Short => high,
+        };
+        if !price.is_finite() || price <= 0.0 {
+            continue;
+        }
+        if !pos.entry_price.is_finite() || pos.entry_price <= 0.0 {
+            continue;
+        }
+        let mut raw_pnl = match pos.direction {
+            PositionSide::Long => (price - pos.entry_price) / pos.entry_price,
+            PositionSide::Short => (pos.entry_price - price) / pos.entry_price,
+        };
+        // Mirror compute_mtm_equity's PTP-aware blend so a partially-closed
+        // position's remaining exposure is sized identically.
+        if pos.ptp_triggered {
+            if let Some(ptp) = cfg.partial_take_profit {
+                let close_frac = ptp.close_fraction;
+                raw_pnl = pos.ptp_realized_pct + (1.0 - close_frac) * raw_pnl;
+            }
+        } else if pos.ptp_levels_realized > 0.0 {
+            if let Some(levels) = cfg.partial_take_profit_levels.as_ref() {
+                let total_closed: f64 = levels
+                    .iter()
+                    .take(pos.ptp_level_idx)
+                    .map(|l| l.close_fraction)
+                    .sum();
+                raw_pnl = pos.ptp_levels_realized + (1.0 - total_closed) * raw_pnl;
+            }
+        }
+        let risk_for_floor = pos.eff_risk.max(0.0);
+        let unrealised =
+            (raw_pnl * cfg.leverage * risk_for_floor).max(GAP_TAIL_MULT * risk_for_floor);
         mtm *= 1.0 + unrealised;
     }
     mtm
@@ -485,5 +643,285 @@ mod tests {
         assert_eq!(state.kelly_pnls.len(), 500);
         // Oldest should be dropped — kept the LAST 500 (close_time 500..999)
         assert_eq!(state.kelly_pnls[0].close_time, 500);
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // Detector #11 Phase 0 — funding-cost bit-parity test suite.
+    // Reference: ftmoDaytrade24h.ts:4888-4937 (post Codex Round 6 #S7).
+    // ────────────────────────────────────────────────────────────────
+
+    const BAR_DUR_30M: i64 = 30 * 60 * 1_000;
+    const EIGHT_H_MS: i64 = 8 * 3_600 * 1_000;
+
+    fn make_funding(n_bars: usize, overrides: &[(usize, f64)]) -> Vec<Option<f64>> {
+        let mut v = vec![Some(0.0_f64); n_bars];
+        for &(idx, rate) in overrides {
+            v[idx] = Some(rate);
+        }
+        v
+    }
+
+    fn ts_reference_funding_walk(
+        entry_time: i64,
+        exit_time: i64,
+        funding: &[Option<f64>],
+        bar0_open: i64,
+        bar_dur_ms: i64,
+    ) -> (f64, usize) {
+        let mut bucket = entry_time.div_euclid(EIGHT_H_MS) * EIGHT_H_MS;
+        if bucket < entry_time {
+            bucket += EIGHT_H_MS;
+        }
+        let mut sum = 0.0_f64;
+        let mut n = 0usize;
+        let max_iter = funding.len() + 8;
+        let mut iter = 0usize;
+        while bucket <= exit_time && iter < max_iter {
+            iter += 1;
+            let bar_idx_signed = (bucket - bar0_open).div_euclid(bar_dur_ms);
+            if bar_idx_signed >= 0 {
+                let bar_idx = bar_idx_signed as usize;
+                if bar_idx < funding.len() {
+                    if let Some(f) = funding[bar_idx] {
+                        if f.is_finite() {
+                            sum += f;
+                            n += 1;
+                        }
+                    }
+                }
+            }
+            bucket += EIGHT_H_MS;
+        }
+        (sum, n)
+    }
+
+    #[test]
+    fn funding_parity_entry_at_8h_boundary_pays_that_bucket() {
+        let cfg = base_cfg();
+        let mut pos = make_pos(PositionSide::Long, 100.0);
+        let boundary = (1_700_000_000_000_i64 / EIGHT_H_MS) * EIGHT_H_MS;
+        pos.entry_time = boundary;
+        let bar0_open = boundary;
+        let exit_time = boundary + EIGHT_H_MS;
+        let funding = make_funding(50, &[(0, 0.0001), (16, 0.0002)]);
+        let (sum_ref, n_buckets) =
+            ts_reference_funding_walk(pos.entry_time, exit_time, &funding, bar0_open, BAR_DUR_30M);
+        assert_eq!(n_buckets, 2);
+        assert!((sum_ref - 0.0003).abs() < 1e-15);
+        let r = compute_eff_pnl_with_funding(
+            &pos,
+            104.0,
+            &cfg,
+            Some(exit_time),
+            Some(&funding),
+            bar0_open,
+            BAR_DUR_30M,
+        );
+        let expected_raw = 0.04 - 0.0003;
+        assert!(
+            (r.raw_pnl - expected_raw).abs() < 1e-12,
+            "raw_pnl={} expected={}",
+            r.raw_pnl,
+            expected_raw
+        );
+    }
+
+    #[test]
+    fn funding_parity_three_bucket_mixed_signs() {
+        let cfg = base_cfg();
+        let mut pos = make_pos(PositionSide::Long, 100.0);
+        let bar0_open = (1_700_000_000_000_i64 / EIGHT_H_MS) * EIGHT_H_MS;
+        pos.entry_time = bar0_open + BAR_DUR_30M;
+        let exit_time = bar0_open + 3 * EIGHT_H_MS;
+        let funding = make_funding(100, &[(16, 0.0001), (32, -0.0002), (48, 0.00015)]);
+        let (sum_ref, n_buckets) =
+            ts_reference_funding_walk(pos.entry_time, exit_time, &funding, bar0_open, BAR_DUR_30M);
+        assert_eq!(n_buckets, 3);
+        let expected_sum = 0.0001 - 0.0002 + 0.00015;
+        assert!((sum_ref - expected_sum).abs() < 1e-15);
+        let r = compute_eff_pnl_with_funding(
+            &pos,
+            104.0,
+            &cfg,
+            Some(exit_time),
+            Some(&funding),
+            bar0_open,
+            BAR_DUR_30M,
+        );
+        let expected_raw = 0.04 - expected_sum;
+        assert!(
+            (r.raw_pnl - expected_raw).abs() < 1e-12,
+            "raw_pnl={} expected={}",
+            r.raw_pnl,
+            expected_raw
+        );
+    }
+
+    #[test]
+    fn funding_parity_short_position_symmetric() {
+        let cfg = base_cfg();
+        let mut pos = make_pos(PositionSide::Short, 100.0);
+        let bar0_open = (1_700_000_000_000_i64 / EIGHT_H_MS) * EIGHT_H_MS;
+        pos.entry_time = bar0_open + BAR_DUR_30M;
+        let exit_time = bar0_open + 2 * EIGHT_H_MS;
+        let funding = make_funding(100, &[(16, 0.0001), (32, 0.0002)]);
+        let (sum_ref, n_buckets) =
+            ts_reference_funding_walk(pos.entry_time, exit_time, &funding, bar0_open, BAR_DUR_30M);
+        assert_eq!(n_buckets, 2);
+        assert!((sum_ref - 0.0003).abs() < 1e-15);
+        let r = compute_eff_pnl_with_funding(
+            &pos,
+            96.0,
+            &cfg,
+            Some(exit_time),
+            Some(&funding),
+            bar0_open,
+            BAR_DUR_30M,
+        );
+        let expected_raw = 0.04 + 0.0003;
+        assert!(
+            (r.raw_pnl - expected_raw).abs() < 1e-12,
+            "raw_pnl={} expected={}",
+            r.raw_pnl,
+            expected_raw
+        );
+    }
+
+    #[test]
+    fn funding_parity_empty_series_identical_to_with_time() {
+        let cfg = base_cfg();
+        let mut pos = make_pos(PositionSide::Long, 100.0);
+        pos.entry_time = 1_700_000_000_000;
+        let exit_time = pos.entry_time + 86_400_000;
+        let baseline = compute_eff_pnl_with_time(&pos, 104.0, &cfg, Some(exit_time));
+        let with_none = compute_eff_pnl_with_funding(
+            &pos,
+            104.0,
+            &cfg,
+            Some(exit_time),
+            None,
+            pos.entry_time,
+            BAR_DUR_30M,
+        );
+        assert_eq!(baseline.raw_pnl, with_none.raw_pnl);
+        assert_eq!(baseline.eff_pnl, with_none.eff_pnl);
+        let empty: Vec<Option<f64>> = vec![];
+        let with_empty = compute_eff_pnl_with_funding(
+            &pos,
+            104.0,
+            &cfg,
+            Some(exit_time),
+            Some(&empty),
+            pos.entry_time,
+            BAR_DUR_30M,
+        );
+        assert_eq!(baseline.raw_pnl, with_empty.raw_pnl);
+        assert_eq!(baseline.eff_pnl, with_empty.eff_pnl);
+    }
+
+    #[test]
+    fn funding_parity_exit_equals_entry_yields_zero_funding() {
+        let cfg = base_cfg();
+        let mut pos = make_pos(PositionSide::Long, 100.0);
+        let bar0_open = (1_700_000_000_000_i64 / EIGHT_H_MS) * EIGHT_H_MS;
+        pos.entry_time = bar0_open + 60_000;
+        let exit_time = pos.entry_time;
+        let funding = make_funding(50, &[(0, 0.0001), (16, 0.0002)]);
+        let (_, n_buckets) =
+            ts_reference_funding_walk(pos.entry_time, exit_time, &funding, bar0_open, BAR_DUR_30M);
+        assert_eq!(n_buckets, 0);
+        let r = compute_eff_pnl_with_funding(
+            &pos,
+            104.0,
+            &cfg,
+            Some(exit_time),
+            Some(&funding),
+            bar0_open,
+            BAR_DUR_30M,
+        );
+        assert!((r.raw_pnl - 0.04).abs() < 1e-12);
+        // Entry-on-boundary, exit==entry: exactly 1 bucket visited.
+        pos.entry_time = bar0_open;
+        let exit_time_b = pos.entry_time;
+        let (sum_b, n_b) = ts_reference_funding_walk(
+            pos.entry_time,
+            exit_time_b,
+            &funding,
+            bar0_open,
+            BAR_DUR_30M,
+        );
+        assert_eq!(n_b, 1);
+        assert!((sum_b - 0.0001).abs() < 1e-15);
+        let r_b = compute_eff_pnl_with_funding(
+            &pos,
+            104.0,
+            &cfg,
+            Some(exit_time_b),
+            Some(&funding),
+            bar0_open,
+            BAR_DUR_30M,
+        );
+        assert!((r_b.raw_pnl - (0.04 - 0.0001)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn funding_parity_reference_walker_matches_engine_across_random_cases() {
+        let cfg = base_cfg();
+        let bar0_open = (1_700_000_000_000_i64 / EIGHT_H_MS) * EIGHT_H_MS;
+        let funding = make_funding(
+            200,
+            &[
+                (16, 0.00007),
+                (32, -0.00015),
+                (48, 0.00022),
+                (64, -0.00009),
+                (80, 0.00004),
+            ],
+        );
+        let cases: &[(PositionSide, i64, i64)] = &[
+            (PositionSide::Long, BAR_DUR_30M, 4 * EIGHT_H_MS),
+            (PositionSide::Long, 0, EIGHT_H_MS),
+            (PositionSide::Short, BAR_DUR_30M * 3, 2 * EIGHT_H_MS),
+            (PositionSide::Short, EIGHT_H_MS / 2, 3 * EIGHT_H_MS),
+            (PositionSide::Long, 7 * EIGHT_H_MS / 8, 5 * EIGHT_H_MS),
+            (PositionSide::Long, 0, 0),
+        ];
+        for (i, (dir, entry_off, exit_off)) in cases.iter().enumerate() {
+            let mut pos = make_pos(*dir, 100.0);
+            pos.entry_time = bar0_open + entry_off;
+            let exit_time = bar0_open + exit_off;
+            let exit_price = match dir {
+                PositionSide::Long => 104.0,
+                PositionSide::Short => 96.0,
+            };
+            let (sum_ref, _) = ts_reference_funding_walk(
+                pos.entry_time,
+                exit_time,
+                &funding,
+                bar0_open,
+                BAR_DUR_30M,
+            );
+            let sign = match dir {
+                PositionSide::Long => 1.0,
+                PositionSide::Short => -1.0,
+            };
+            let expected_raw = 0.04 - sign * sum_ref;
+            let r = compute_eff_pnl_with_funding(
+                &pos,
+                exit_price,
+                &cfg,
+                Some(exit_time),
+                Some(&funding),
+                bar0_open,
+                BAR_DUR_30M,
+            );
+            assert!(
+                (r.raw_pnl - expected_raw).abs() < 1e-12,
+                "case {}: raw_pnl={} expected={}",
+                i,
+                r.raw_pnl,
+                expected_raw
+            );
+        }
     }
 }

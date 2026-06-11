@@ -10,20 +10,89 @@
 use crate::candle::Candle;
 
 /// Simple moving average. `out[i]` is `Some` once `i + 1 ≥ period`.
+///
+/// 2026-05-13 Codex Round 7 #B15 FIX: NaN self-heal. A single NaN/Inf input
+/// previously poisoned `sum` for the remainder of the series (rolling
+/// subtract NaN never recovers). Now: track `nan_count` in the rolling
+/// window; when it drops to 0, recompute `sum` from scratch from
+/// `values[i-period+1..=i]` so a single bad bar doesn't kill the rest.
+/// Symmetric with EMA/RSI/ATR which already self-heal.
 pub fn sma(values: &[f64], period: usize) -> Vec<Option<f64>> {
     let mut out: Vec<Option<f64>> = vec![None; values.len()];
     if period == 0 || values.len() < period {
         return out;
     }
-    let mut sum: f64 = values[..period].iter().sum();
+    let count_nan = |slice: &[f64]| slice.iter().filter(|v| !v.is_finite()).count();
+    let mut nan_count: usize = count_nan(&values[..period]);
+    let mut sum: f64 = if nan_count == 0 {
+        values[..period].iter().sum()
+    } else {
+        f64::NAN
+    };
     if sum.is_finite() {
         out[period - 1] = Some(sum / period as f64);
     }
     for i in period..values.len() {
-        sum += values[i] - values[i - period];
+        let added = values[i];
+        let removed = values[i - period];
+        // Maintain NaN-count in window.
+        if !added.is_finite() {
+            nan_count += 1;
+        }
+        if !removed.is_finite() {
+            nan_count = nan_count.saturating_sub(1);
+        }
+        if nan_count == 0 {
+            if sum.is_finite() {
+                // Normal rolling update.
+                sum += added - removed;
+            } else {
+                // Sum was NaN-poisoned but window is now clean → recompute.
+                sum = values[i + 1 - period..=i].iter().sum();
+            }
+        } else {
+            sum = f64::NAN;
+        }
         if sum.is_finite() {
             out[i] = Some(sum / period as f64);
         }
+    }
+    out
+}
+
+/// 2026-05-14 Detector #1 — Bollinger-Band Z-score Mean-Reversion voter.
+/// Rolling population standard deviation. `out[i]` is `Some` once
+/// `i + 1 ≥ period`. STD is computed with ddof=0 (divide by `period`, NOT
+/// `period - 1`) for TS-parity with `Math.sqrt(sum((x-mu)^2)/n)` on the
+/// upstream signal-service. NaN/Inf inputs follow the same self-heal pattern
+/// as `sma()`: while the rolling window contains ≥ 1 non-finite sample the
+/// output is None; once the bad bar slides out, the std is recomputed from
+/// scratch over the clean window so a single broken candle doesn't poison
+/// the series forever.
+///
+/// Returns `Some(0.0)` for a constant window (mean == values), guarding the
+/// caller against division-by-std-zero (caller must check `std > 0` before
+/// dividing; `compute_bb_zscore_vote` uses `min_std_pct` for that).
+pub fn rolling_std(values: &[f64], period: usize) -> Vec<Option<f64>> {
+    let mut out: Vec<Option<f64>> = vec![None; values.len()];
+    if period == 0 || values.len() < period {
+        return out;
+    }
+    let recompute = |slice: &[f64]| -> Option<f64> {
+        if slice.iter().any(|v| !v.is_finite()) {
+            return None;
+        }
+        let mean = slice.iter().sum::<f64>() / period as f64;
+        let var = slice.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / period as f64;
+        let s = var.sqrt();
+        if s.is_finite() {
+            Some(s)
+        } else {
+            None
+        }
+    };
+    for i in (period - 1)..values.len() {
+        out[i] = recompute(&values[i + 1 - period..=i]);
     }
     out
 }
@@ -159,7 +228,18 @@ pub fn atr(candles: &[Candle], period: usize) -> Vec<Option<f64>> {
         }
         sum += t;
     }
-    let mut prev = sum / period as f64;
+    // 2026-05-24 Wave2 HIGH FIX: when seed contains any NaN/Inf, prior code
+    // set `prev = sum / period` using the PARTIAL sum (skipping bad bars)
+    // and let the Wilder smoothing carry that biased anchor for the rest of
+    // the series — every downstream ATR value was permanently scaled too
+    // low (proportional to bad-bar fraction in seed). Match the EMA/RSI
+    // self-heal: mark prev as NaN on invalid seed so the loop's `if !prev.is_finite()`
+    // branch re-anchors prev = first valid TR when the bad bar slides out.
+    let mut prev = if seed_valid {
+        sum / period as f64
+    } else {
+        f64::NAN
+    };
     out[period] = if seed_valid && prev.is_finite() {
         Some(prev)
     } else {
@@ -259,5 +339,39 @@ mod tests {
         assert!(a[20].unwrap().is_finite());
         // Subsequent bars resume normal smoothing — must remain finite.
         assert!(a[29].unwrap().is_finite());
+    }
+
+    // 2026-05-14 Detector #1 (Bollinger-Band Z-score MR) — rolling_std tests.
+
+    #[test]
+    fn rolling_std_constant_series_is_zero() {
+        let s = rolling_std(&[100.0_f64; 20], 20);
+        assert_eq!(s[19], Some(0.0));
+    }
+
+    #[test]
+    fn rolling_std_known_window() {
+        // Window [2,4,4,4,5,5,7,9] — textbook population std = sqrt(32/8) = 2.
+        let v = vec![2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0];
+        let s = rolling_std(&v, 8);
+        let got = s[7].expect("std at end of window");
+        assert!((got - 2.0).abs() < 1e-9, "expected 2.0, got {got}");
+    }
+
+    #[test]
+    fn rolling_std_too_short_returns_all_none() {
+        assert_eq!(rolling_std(&[1.0, 2.0], 3), vec![None, None]);
+    }
+
+    #[test]
+    fn rolling_std_self_heals_after_nan_bar() {
+        let mut v: Vec<f64> = (0..40).map(|_| 100.0).collect();
+        v[15] = f64::NAN;
+        let s = rolling_std(&v, 5);
+        // Bar 19 still has bar 15 in its window (idx 15..=19) → None.
+        assert!(s[19].is_none(), "NaN still in window must yield None");
+        // Bar 20: window 16..=20, no NaN → finite (std=0 on flat series).
+        assert_eq!(s[20], Some(0.0), "self-heal after NaN slides out");
+        assert!(s[39].unwrap().is_finite(), "tail must self-heal");
     }
 }

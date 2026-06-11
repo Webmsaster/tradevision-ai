@@ -102,7 +102,36 @@ pub fn load_state(state_dir: &Path) -> Result<EngineState> {
 
 /// Lenient load — never panics, always produces a usable state. Migrations
 /// are attempted; corrupt state is backed up and a fresh state returned.
+///
+/// 2026-05-13 Codex Round 7 #B12 FIX: acquire the same advisory lock that
+/// `save_state` uses so a concurrent writer doesn't rename the final-path
+/// out from under us between `read_with_retry` and the migration logic.
 pub fn load_state_or_reset(state_dir: &Path, cfg_label: &str) -> LoadOutcome {
+    // 2026-05-24 Wave2 HIGH FIX: prior code silently fell through with
+    // `_guard = None` whenever `acquire_state_lock` returned Err (which
+    // happens when ANOTHER process actively holds the lock, not only when
+    // the lock dir is missing). Continuing lockless then risked calling
+    // `backup_corrupt()` — which RENAMES the state file — on data that
+    // was actually a valid-but-in-flight write from the concurrent writer
+    // we lost the race to. Result: live state could be moved to a
+    // `.bak.<ts>` file and replaced with fresh-initial state, wiping the
+    // bot's open positions, kelly history, trading-days, etc.
+    //
+    // Fix: retry the lock with bounded backoff (~2s total). On final
+    // failure we initialize but skip backup_corrupt — losing the load is
+    // recoverable on next poll, losing the file is not.
+    let mut guard = None;
+    for delay_ms in [10u64, 25, 50, 100, 250, 500, 1000].iter() {
+        match acquire_state_lock(state_dir) {
+            Ok(g) => {
+                guard = Some(g);
+                break;
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(*delay_ms)),
+        }
+    }
+    let have_lock = guard.is_some();
+    let _guard = guard;
     let path = state_path(state_dir);
     let raw = match read_with_retry(&path) {
         Ok(b) => b,
@@ -113,11 +142,21 @@ pub fn load_state_or_reset(state_dir: &Path, cfg_label: &str) -> LoadOutcome {
             }
         }
     };
+    // Only rename-on-corruption when we hold the lock — otherwise a concurrent
+    // writer's mid-rename state could be misread and the live file would be
+    // moved aside on a false-positive parse error.
+    let do_backup = |p: &Path| -> Option<PathBuf> {
+        if have_lock {
+            backup_corrupt(p).ok().flatten()
+        } else {
+            None
+        }
+    };
     // Step 1: parse as Value first so we can read the schema_version safely.
     let value: Value = match serde_json::from_slice(&raw) {
         Ok(v) => v,
         Err(_) => {
-            let bak = backup_corrupt(&path).ok().flatten();
+            let bak = do_backup(&path);
             return LoadOutcome::Reset {
                 backed_up_to: bak,
                 state: EngineState::initial(cfg_label),
@@ -129,12 +168,38 @@ pub fn load_state_or_reset(state_dir: &Path, cfg_label: &str) -> LoadOutcome {
         .and_then(Value::as_u64)
         .unwrap_or(0) as u32;
 
+    // 2026-05-13 Codex Audit Round 3 — Fix 5: reject future schema versions.
+    // Previously migrate_to_current force-bumped schemaVersion to the
+    // current value, silently downgrading TS-written state with unknown
+    // future fields. TS parity (ftmoLiveEngineV4.ts:455) → reset+backup.
+    if from_version > SCHEMA_VERSION {
+        let bak = do_backup(&path);
+        return LoadOutcome::Reset {
+            backed_up_to: bak,
+            state: EngineState::initial(cfg_label),
+        };
+    }
+
+    // 2026-05-13 Codex Audit Round 3 — Fix 4: reject state from a different
+    // config label. TS parity (ftmoLiveEngineV4.ts:442). Without this gate,
+    // restarting a bot under a new config kept old open positions, Kelly
+    // tier, loss streaks, pause state, and target state — silent cross-
+    // config contamination.
+    let persisted_cfg_label = value.get("cfgLabel").and_then(Value::as_str).unwrap_or("");
+    if persisted_cfg_label != cfg_label {
+        let bak = do_backup(&path);
+        return LoadOutcome::Reset {
+            backed_up_to: bak,
+            state: EngineState::initial(cfg_label),
+        };
+    }
+
     // Step 2: try direct parse first for the happy path.
     if from_version == SCHEMA_VERSION {
         match serde_json::from_value::<EngineState>(value.clone()) {
             Ok(state) => return LoadOutcome::Loaded(state),
             Err(_) => {
-                let bak = backup_corrupt(&path).ok().flatten();
+                let bak = do_backup(&path);
                 return LoadOutcome::Reset {
                     backed_up_to: bak,
                     state: EngineState::initial(cfg_label),
@@ -150,7 +215,7 @@ pub fn load_state_or_reset(state_dir: &Path, cfg_label: &str) -> LoadOutcome {
             state,
         },
         None => {
-            let bak = backup_corrupt(&path).ok().flatten();
+            let bak = do_backup(&path);
             LoadOutcome::Reset {
                 backed_up_to: bak,
                 state: EngineState::initial(cfg_label),
@@ -227,10 +292,19 @@ fn read_with_retry(path: &Path) -> Result<Vec<u8>> {
 pub fn save_state(state: &EngineState, state_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(state_dir)
         .with_context(|| format!("creating state dir {}", state_dir.display()))?;
+    // 2026-05-13 Codex Round 7 #B12 FIX: acquire advisory file lock + use
+    // pid-suffixed tmp file. Previously save_state had NO lock protection
+    // and used a fixed tmp filename ({STATE_FILENAME}.tmp) → two processes
+    // could truncate each other's tmpfile mid-write, producing a
+    // partial-JSON output. The acquire_state_lock helper existed since
+    // commit f3d9814 but was dead code (never called). fs4 locks auto-
+    // release on process death (incl. SIGKILL) so no orphan lock.
+    let _guard = acquire_state_lock(state_dir)?;
     let final_path = state_path(state_dir);
-    let tmp_path = state_dir.join(format!("{STATE_FILENAME}.tmp"));
+    let pid = std::process::id();
+    let tmp_path = state_dir.join(format!("{STATE_FILENAME}.tmp.{pid}"));
     let json = serde_json::to_vec_pretty(state).context("serialising state")?;
-    {
+    let write_res: Result<()> = (|| -> Result<()> {
         let mut tmp = OpenOptions::new()
             .write(true)
             .create(true)
@@ -240,8 +314,18 @@ pub fn save_state(state: &EngineState, state_dir: &Path) -> Result<()> {
         tmp.write_all(&json)?;
         tmp.flush()?;
         tmp.sync_all()?;
+        Ok(())
+    })();
+    if let Err(e) = write_res {
+        // Clean up tmp on write failure so we don't leak orphan files.
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
     }
-    std::fs::rename(&tmp_path, &final_path)
+    let rename_res = std::fs::rename(&tmp_path, &final_path);
+    if rename_res.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    rename_res
         .with_context(|| format!("renaming {} → {}", tmp_path.display(), final_path.display()))?;
     // R67-r10: POSIX requires fsync of parent directory for rename durability.
     if let Ok(dir) = File::open(state_dir) {

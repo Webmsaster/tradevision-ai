@@ -177,6 +177,7 @@ fn main() -> Result<()> {
                     &BarInput {
                         candles_by_source: &feed,
                         atr_series_by_source: &atr_feed,
+                        funding_by_source: None,
                         signals: signals_for_bar,
                     },
                     cfg.as_ref(),

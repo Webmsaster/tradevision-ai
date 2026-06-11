@@ -1,0 +1,11 @@
+[package]
+name = "ftmo-gpu-accel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# wgpu = "22"  # enable when GPU dev kicks off
+
+[lib]
+name = "ftmo_gpu_accel"
+path = "src/lib.rs"

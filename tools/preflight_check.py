@@ -105,6 +105,29 @@ def check_ftmo_tf() -> tuple[bool, str]:
     return True, f"{tf} (note: not R28_V6 family — verify intentional)"
 
 
+# 2026-05-24 Wave2 KRIT FIX: the prior `@check("FTMO_ACCOUNT_ID …",
+# blocking=False)` decorator was on the wrong function (`check_live_mock_collision`)
+# AND marked non-blocking, so an operator who set BOTH FTMO_LIVE=1 and
+# FTMO_MOCK=1 (e.g. leftover shell env after switching from mock-test to
+# live) would see a yellow warning instead of refusal-to-start — the docstring
+# explicitly says "refuse to start", which the wrong decorator silently
+# downgraded. Below: the collision check is now blocking, and `check_account_id`
+# gets its own proper `@check` decorator (without it, the function returned a
+# bare tuple instead of a Result → AttributeError-crash inside main()'s
+# `r.render()` loop on every preflight run that included it).
+@check("FTMO_LIVE / FTMO_MOCK collision", blocking=True)
+def check_live_mock_collision() -> tuple[bool, str]:
+    """2026-05-16 Round 9 KRIT FIX (preflight agent): FTMO_LIVE=1 AND
+    FTMO_MOCK=1 are mutually exclusive — live trading on real MT5 vs mock
+    test harness. Operator setting both signals dangerous misconfig.
+    """
+    live = os.environ.get("FTMO_LIVE") == "1"
+    mock = os.environ.get("FTMO_MOCK") == "1"
+    if live and mock:
+        return False, "INCONSISTENT: FTMO_LIVE=1 AND FTMO_MOCK=1 both set — refuse to start"
+    return True, f"live={live} mock={mock} OK"
+
+
 @check("FTMO_ACCOUNT_ID env var (multi-account)", blocking=False)
 def check_account_id() -> tuple[bool, str]:
     aid = os.environ.get("FTMO_ACCOUNT_ID")
@@ -196,12 +219,17 @@ def check_telegram_chat() -> tuple[bool, str]:
         os.environ.get(f"TELEGRAM_CHAT_ID_{aid}") if aid else None
     ) or os.environ.get("TELEGRAM_CHAT_ID")
     if not cid:
-        return False, "missing — set TELEGRAM_CHAT_ID (positive integer)"
+        return False, "missing — set TELEGRAM_CHAT_ID (positive or negative integer)"
     try:
         cid_int = int(cid)
-        if cid_int <= 0:
-            return False, f"chat ID must be positive (got {cid_int}); negative = group/channel"
-        return True, f"chat={cid_int}"
+        # 2026-05-15 Codex-Audit Bug 12: negative chat IDs are valid Telegram
+        # group/channel IDs (super-groups start with -100xxxxxxxxxx). Previous
+        # check rejected them outright → preflight blocked any operator using
+        # a notifications group. Accept any non-zero integer.
+        if cid_int == 0:
+            return False, "chat ID must be a non-zero integer"
+        kind = "group/channel" if cid_int < 0 else "private chat"
+        return True, f"chat={cid_int} ({kind})"
     except ValueError:
         return False, f"not an integer: {cid!r}"
 
@@ -238,7 +266,14 @@ def check_round60_passlock_engine() -> tuple[bool, str]:
 
 @check("State directory writable", blocking=True)
 def check_state_dir() -> tuple[bool, str]:
-    tf = os.environ.get("FTMO_TF", "default")
+    # 2026-05-15 (Audit-Round-4 / Agent #9 HIGH): unified default.
+    import sys as _sys
+    from pathlib import Path as _Path
+    _td = str(_Path(__file__).resolve().parent)
+    if _td not in _sys.path:
+        _sys.path.insert(0, _td)
+    from _ftmo_defaults import DEFAULT_FTMO_TF  # type: ignore
+    tf = os.environ.get("FTMO_TF", DEFAULT_FTMO_TF)
     aid = os.environ.get("FTMO_ACCOUNT_ID")
     explicit = os.environ.get("FTMO_STATE_DIR")
     if explicit:
@@ -309,7 +344,15 @@ def check_mt5_connect() -> tuple[bool, str]:
         import MetaTrader5 as mt5  # type: ignore
     except ImportError:
         return False, "MetaTrader5 not installed (skipping)"
-    if not mt5.initialize():
+    # 2026-05-15 Codex-Audit Bug 13: honor MT5_PATH if set. The bare
+    # `mt5.initialize()` previously launched whichever terminal was last
+    # used by the system, which on multi-terminal VPS deployments could
+    # attach to the wrong broker. The executor itself already honors
+    # MT5_PATH (ftmo_executor.py:_mt5_init_with_retry) so preflight must
+    # mirror it.
+    mt5_path = os.environ.get("MT5_PATH", "").strip()
+    init_ok = mt5.initialize(mt5_path) if mt5_path else mt5.initialize()
+    if not init_ok:
         err = mt5.last_error()
         return False, f"initialize() failed: {err}"
     info = mt5.account_info()
@@ -393,8 +436,17 @@ def check_slippage() -> tuple[bool, str]:
 # Main
 # =============================================================================
 
-def load_env_file(path: Path) -> None:
-    """Load KEY=VALUE pairs from a file into os.environ (bash-style)."""
+def load_env_file(path: Path, override: bool = True) -> None:
+    """Load KEY=VALUE pairs from a file into os.environ (bash-style).
+
+    2026-05-15 Codex-Audit Bug 13: previously used `setdefault`, so an env-file
+    explicitly passed on the CLI could never overwrite a shell value that was
+    set wrongly (e.g. a leftover FTMO_TF from a previous shell session). Now
+    we OVERWRITE by default — the operator's invocation
+    `python preflight_check.py prod.env` is the source of truth.
+    `override=False` preserves the legacy lazy behaviour for callers that
+    explicitly want shell-wins semantics.
+    """
     if not path.exists():
         return
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -406,7 +458,9 @@ def load_env_file(path: Path) -> None:
         k, _, v = line.partition("=")
         # strip surrounding quotes
         v = v.strip().strip('"').strip("'")
-        os.environ.setdefault(k.strip(), v)
+        key = k.strip()
+        if override or key not in os.environ:
+            os.environ[key] = v
 
 
 def main() -> int:
@@ -432,6 +486,7 @@ def main() -> int:
                 break
 
     checks = [
+        check_live_mock_collision,
         check_ftmo_tf,
         check_account_id,
         check_expected_login,

@@ -111,6 +111,28 @@ const TF_DISPATCH: Record<string, TfTag> = {
   // OBSIDIAN, QUARTZ_LITE_R28). R3-Bug #2: STEP2 selector.
   "2h-trend-v5-titanium-passlock": "30m",
   "2h-trend-v5-amber-passlock": "30m",
+  // 2026-05-15 (Audit-Round-4 / Agent #12 KRIT): 2026-05-15 champion was
+  // missing → service crashed at boot with "not registered in TF_DISPATCH".
+  "2h-trend-v5-amber-max-passlock": "30m",
+  "2h-trend-v5-amber-max-passlock-step2": "30m",
+  // 2026-05-23 Orthogonal 3-stack deploy (AMBER + BIDIR + MR with corr~0).
+  // V5_RUBIN_PASSLOCK kept for legacy 4-stack ecosystem.4stack.config.js.
+  "2h-trend-v5-amber-max-passlock-bidir": "30m",
+  // 2026-05-24 Stack-2 partner (anti-corr +7.28pp vs AMBER alone).
+  "2h-trend-v5-amber-max-passlock-shorts-only": "30m",
+  // 2026-05-24 single-account boosters (mutex_long_short enabled).
+  "2h-trend-v5-amber-max-passlock-bidir-mutex": "30m",
+  "2h-trend-v5-amber-max-passlock-aggressive": "30m",
+  // 2026-05-24 single-account ceiling winner (36.10% TRUE-SEQ).
+  "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly-reentry": "30m",
+  "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly": "30m",
+  "2h-trend-v5-amber-max-passlock-mixed-v3": "30m",
+  // 2026-05-25 GA Stack-4 winners (97.28% OOS deploy templates).
+  "2h-trend-v5-amber-max-passlock-shorts-agg": "30m",
+  "2h-trend-v5-amber-max-passlock-risk06": "30m",
+  "2h-trend-v5-amber-max-passlock-risk05": "30m",
+  "2h-trend-v5-amber-max-mr-passlock": "30m",
+  "2h-trend-v5-rubin-passlock": "30m",
   "2h-trend-v5-obsidian-passlock": "30m",
   "2h-trend-v5-quartz-lite-r28-passlock": "30m",
   "2h-trend-v5-quartz-lite-r28-step2": "30m",
@@ -669,34 +691,48 @@ async function runOneCheck(): Promise<DetectionResult> {
   // Phase 37 (R44-CFG-2): also include {DOT, TRX, ALGO, NEAR, ATOM, STX}
   // for V5_SAPPHIR/EMERALD/PEARL/OPAL/AGATE/JADE basket — without these
   // the live bot silently loaded 14/20 assets when running these tags.
-  // Override with FTMO_EXTRA_SYMBOLS=... to narrow.
-  const extraSymbols = process.env.FTMO_EXTRA_SYMBOLS
-    ? process.env.FTMO_EXTRA_SYMBOLS.split(",")
-    : [
-        "BNBUSDT",
-        "ADAUSDT",
-        "AVAXUSDT",
-        "BCHUSDT",
-        "DOGEUSDT",
-        "LTCUSDT",
-        "LINKUSDT",
-        // R28 9-asset basket additions:
-        "ETCUSDT",
-        "XRPUSDT",
-        "AAVEUSDT",
-        // V5_QUARTZ / V5_OBSIDIAN superset:
-        "INJUSDT",
-        "RUNEUSDT",
-        "SANDUSDT",
-        "ARBUSDT",
-        // V5_SAPPHIR..V5_JADE 18-20 asset basket:
-        "DOTUSDT",
-        "TRXUSDT",
-        "ALGOUSDT",
-        "NEARUSDT",
-        "ATOMUSDT",
-        "STXUSDT",
-      ];
+  // 2026-05-14 Codex Wave-2 Bug #2 FIX: by default FTMO_EXTRA_SYMBOLS is
+  // DEDUPE-UNIONED with the built-in defaults so a user who adds one symbol
+  // doesn't accidentally disable the rest. Use the literal token `--reset`
+  // (anywhere in the comma-list) to opt-in to a hard replace.
+  const DEFAULT_EXTRA_SYMBOLS = [
+    "BNBUSDT",
+    "ADAUSDT",
+    "AVAXUSDT",
+    "BCHUSDT",
+    "DOGEUSDT",
+    "LTCUSDT",
+    "LINKUSDT",
+    // R28 9-asset basket additions:
+    "ETCUSDT",
+    "XRPUSDT",
+    "AAVEUSDT",
+    // V5_QUARTZ / V5_OBSIDIAN superset:
+    "INJUSDT",
+    "RUNEUSDT",
+    "SANDUSDT",
+    "ARBUSDT",
+    // V5_SAPPHIR..V5_JADE 18-20 asset basket:
+    "DOTUSDT",
+    "TRXUSDT",
+    "ALGOUSDT",
+    "NEARUSDT",
+    "ATOMUSDT",
+    "STXUSDT",
+  ];
+  let extraSymbols: string[];
+  if (process.env.FTMO_EXTRA_SYMBOLS) {
+    const userTokens = process.env.FTMO_EXTRA_SYMBOLS.split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    const wantsReset = userTokens.includes("--reset");
+    const userSymbols = userTokens.filter((s) => s !== "--reset");
+    extraSymbols = wantsReset
+      ? userSymbols
+      : [...new Set([...DEFAULT_EXTRA_SYMBOLS, ...userSymbols])];
+  } else {
+    extraSymbols = DEFAULT_EXTRA_SYMBOLS;
+  }
 
   // Phase 85 (R51-LIVE-1): de-dupe so a user-supplied FTMO_EXTRA_SYMBOLS
   // overlap doesn't fetch the same symbol twice in parallel — the second
@@ -788,6 +824,25 @@ async function runOneCheck(): Promise<DetectionResult> {
   const isExplicitPasslockSister =
     ftmoTf === "2h-trend-v5-titanium-passlock" ||
     ftmoTf === "2h-trend-v5-amber-passlock" ||
+    ftmoTf === "2h-trend-v5-amber-max-passlock" ||
+    ftmoTf === "2h-trend-v5-amber-max-passlock-step2" ||
+    ftmoTf === "2h-trend-v5-amber-max-passlock-bidir" ||
+    ftmoTf === "2h-trend-v5-amber-max-passlock-shorts-only" ||
+    ftmoTf === "2h-trend-v5-amber-max-passlock-bidir-mutex" ||
+    ftmoTf === "2h-trend-v5-amber-max-passlock-aggressive" ||
+    ftmoTf === "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly-reentry" ||
+    ftmoTf === "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly" ||
+    ftmoTf === "2h-trend-v5-amber-max-passlock-mixed-v3" ||
+    ftmoTf === "2h-trend-v5-amber-max-passlock-shorts-agg" ||
+    ftmoTf === "2h-trend-v5-amber-max-passlock-risk06" ||
+    ftmoTf === "2h-trend-v5-amber-max-passlock-risk05" ||
+    // 2026-05-25 Wave5 KRIT FIX: mr-passlock was IN TF_DISPATCH but MISSING
+    // from isExplicitPasslockSister whitelist → silent fall-through to V231
+    // legacy WITHOUT PASSLOCK enforcement = -8pp pass-rate hit on the MR
+    // account in 3/4-Stack deployments.
+    ftmoTf === "2h-trend-v5-amber-mr-passlock" ||
+    ftmoTf === "2h-trend-v5-amber-max-mr-passlock" ||
+    ftmoTf === "2h-trend-v5-rubin-passlock" ||
     ftmoTf === "2h-trend-v5-obsidian-passlock" ||
     ftmoTf === "2h-trend-v5-quartz-lite-r28-passlock" ||
     ftmoTf === "2h-trend-v5-quartz-lite-r28-step2";
@@ -1220,6 +1275,18 @@ async function main() {
     `🤖 <b>FTMO Signal Service ONLINE (${TF})</b>\nState dir: <code>${htmlEscape(STATE_DIR)}</code>\nCFG: ${htmlEscape(cfgInfo.label)} (FTMO_TF=${htmlEscape(ftmoTfEnv)})\nNext check at next ${TF} UTC boundary.`,
   );
 
+  // 2026-05-14 Codex Wave-2 Bug #8 FIX: short-circuit --once BEFORE the
+  // telegram supervisor fires. The bot's long-poll has no clean exit handle
+  // → starting it for a single one-shot run leaves the process hanging on
+  // the open fetch indefinitely.
+  const oneShot = process.argv.includes("--once");
+
+  if (oneShot) {
+    await runOneCheck();
+    console.log("[ftmo-live] --once mode, exiting");
+    return;
+  }
+
   // BUGFIX 2026-04-28 (Round 10 Bug 5): supervisor restarts the bot if its
   // poll loop crashes. Without this an unhandled rejection in startTelegramBot
   // (e.g. unparseable response, transient network failure) silently killed
@@ -1248,14 +1315,6 @@ async function main() {
   telegramSupervisor().catch((e) =>
     console.error("[ftmo-live] telegram supervisor fatal:", e),
   );
-
-  const oneShot = process.argv.includes("--once");
-
-  if (oneShot) {
-    await runOneCheck();
-    console.log("[ftmo-live] --once mode, exiting");
-    return;
-  }
 
   // BUGFIX 2026-04-28 (Round 10 Bug 9): track consecutive Binance failures
   // and alert via Telegram if they persist. Without this the service

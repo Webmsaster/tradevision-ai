@@ -63,21 +63,58 @@ def load_data():
     return rows
 
 
-def build_xy(rows, target="is_win"):
+def build_xy(rows, target="is_win", precomputed_medians: list | None = None):
+    """Returns (X, y, feature_medians).
+
+    feature_medians is a list of float length == len(FEATURES) — the
+    per-feature median used to impute NaN at training time. The Rust
+    inference path MUST apply the same medians on NaN/missing features
+    so training and inference distributions align (Round 11.3 R2-1 fix).
+
+    2026-05-23 Wave1 audit follow-up: when `precomputed_medians` is given,
+    use them instead of recomputing on this slice. Caller should pass the
+    TRAIN-set medians when imputing the TEST set so the test-imputation
+    doesn't leak test-distribution info backward into training.
+    """
     X = np.array([[r[k] for k in FEATURES] for r in rows], dtype=np.float64)
     y = np.array([r[target] for r in rows], dtype=np.int64)
-    # Replace NaN with 0 for sklearn (gradient boosting can't handle NaN
-    # without HistGradientBoosting; use simple imputation).
-    X = np.nan_to_num(X, nan=0.0)
-    return X, y
+    if precomputed_medians is not None:
+        feature_medians = list(precomputed_medians)
+    else:
+        feature_medians = []
+        for col in range(X.shape[1]):
+            col_vals = X[:, col]
+            finite_vals = col_vals[np.isfinite(col_vals)]
+            median = float(np.median(finite_vals)) if len(finite_vals) > 0 else 0.0
+            feature_medians.append(median)
+    # Apply imputation (medians may be from train or this slice).
+    for col in range(X.shape[1]):
+        col_vals = X[:, col]
+        if np.any(np.isnan(col_vals)):
+            X[:, col] = np.where(np.isnan(col_vals), feature_medians[col], col_vals)
+    X = np.nan_to_num(X, nan=0.0, posinf=1e9, neginf=-1e9)
+    return X, y, feature_medians
 
 
 def main():
     rows = load_data()
     print(f"loaded {len(rows)} trades")
+    # 2026-05-23 BUG FIX Round 11.2 (verification agent): drop malformed rows
+    # FIRST, before CUTOFF compare. Previous code used .get("entry_time", 0)
+    # which (a) crashed on entry_time=None ("'<' not supported between
+    # NoneType and int") and (b) sorted missing rows to position 0 later.
+    # Also reject bool (isinstance(True, int)==True surprise).
+    pre_n = len(rows)
+    rows = [
+        r for r in rows
+        if isinstance(r.get("entry_time"), (int, float))
+        and not isinstance(r.get("entry_time"), bool)
+    ]
+    if len(rows) < pre_n:
+        print(f"[ml-train] dropped {pre_n - len(rows)} rows missing/invalid entry_time")
     if CUTOFF_TS is not None:
         before = len(rows)
-        rows = [r for r in rows if r.get("entry_time", 0) < CUTOFF_TS]
+        rows = [r for r in rows if r["entry_time"] < CUTOFF_TS]
         print(
             f"applied cutoff < {CUTOFF_TS} → kept {len(rows)} of {before} trades for training"
         )
@@ -88,14 +125,32 @@ def main():
     # which is direct future-leakage even if individual rows differ.
     # Validation AUC was inflated by this leakage. We now sort by entry_time
     # and put the LATEST 30% into validation (= true out-of-sample).
-    rows.sort(key=lambda r: r.get("entry_time", 0))
-    X, y = build_xy(rows, target="is_win")
+    # 2026-05-23 BUG FIX (ML audit Round 11): `.get("entry_time", 0)` silently
+    # sorts rows-missing-entry_time to position 0 → corrupts chronological
+    # split. Hard-skip rows lacking the field so split stays clean.
+    pre_n = len(rows)
+    rows = [r for r in rows if isinstance(r.get("entry_time"), (int, float))]
+    if len(rows) < pre_n:
+        print(f"[ml-train] WARN: dropped {pre_n - len(rows)} rows missing entry_time")
+    rows.sort(key=lambda r: r["entry_time"])
+    # 2026-05-23 Wave1 audit fix: compute medians on TRAIN slice only, then
+    # apply same medians to TEST. Previously medians were computed on full
+    # dataset → minor (~1-position-rank) leakage of test distribution into
+    # train imputation. Split FIRST, then build_xy(train) → medians,
+    # then build_xy(test, precomputed_medians=...).
+    rows_tr = rows[: int(len(rows) * 0.7)]
+    rows_va = rows[int(len(rows) * 0.7) :]
+    X_tr, y_tr, feature_medians = build_xy(rows_tr, target="is_win")
+    X_va, y_va, _ = build_xy(rows_va, target="is_win", precomputed_medians=feature_medians)
+    # Re-stack for downstream prints + final model fit on all rows (using
+    # train medians) — std sklearn pattern: train medians applied to deploy.
+    X = np.vstack([X_tr, X_va])
+    y = np.concatenate([y_tr, y_va])
     print(f"X shape={X.shape}, win rate={y.mean():.3f}")
+    print(f"feature_medians (TRAIN-only): {dict(zip(FEATURES, [round(m, 6) for m in feature_medians]))}")
 
     # Time-based 70/30 split.
-    split_idx = int(len(rows) * 0.7)
-    X_tr, X_va = X[:split_idx], X[split_idx:]
-    y_tr, y_va = y[:split_idx], y[split_idx:]
+    # X_tr/y_tr/X_va/y_va already split above (train-only-median fix).
     if len(y_tr) == 0 or len(y_va) == 0:
         raise RuntimeError("time-based split produced an empty side")
     if y_tr.sum() == 0 or y_tr.sum() == len(y_tr):
@@ -202,7 +257,27 @@ def main():
     # and Rust inference asserts `cfg.bar_minutes == 30`. To support a
     # different TF you must regenerate training data on that TF, retrain,
     # and lift/replace the Rust-side bar_minutes assertion.
-    SCHEMA_VERSION = 1
+    # 2026-05-23 BUG FIX (ML audit Round 11): stamp model with engine-commit-
+    # hash + training-data-mtime + UTC timestamp so Rust inference can detect
+    # stale model vs current engine (matches stale-cache disaster pattern in
+    # MEMORY.md champion-debunk #5 — 2026-05-12 R28_V6_PASSLOCK 63% → 41% from
+    # stale 2026-05-05 cache). Loader can warn/refuse if mismatch.
+    import subprocess as _sp
+    import os as _os
+    import time as _time
+    try:
+        git_hash = _sp.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=_os.path.dirname(__file__) or "."
+        ).decode().strip()
+    except Exception:
+        git_hash = "unknown"
+    train_file_mtime = (
+        int(_os.path.getmtime(TRAIN_FILE)) if _os.path.exists(TRAIN_FILE) else 0
+    )
+    # Round 11.3 R2-1 fix: bump to schema=3 — feature_medians now embedded
+    # so Rust inference applies same median imputation as training (was using
+    # 0.0 on missing → re-introduced the bias the Round 11 fix eliminated).
+    SCHEMA_VERSION = 3
     model = {
         "schema_version": SCHEMA_VERSION,
         "type": "random_forest",
@@ -213,6 +288,11 @@ def main():
         "validation_auc": float(auc),
         "asset_id_map": asset_id_map,
         "training_timeframe": "30m",
+        "git_commit": git_hash,
+        "training_data_mtime": train_file_mtime,
+        "trained_at_utc": int(_time.time()),
+        # Round 11.3 R2-1: per-feature medians for inference-time imputation
+        "feature_medians": feature_medians,
     }
     OUT_MODEL.write_text(json.dumps(model))
     print(

@@ -273,10 +273,24 @@ for (const t of result.trades) {
     const hour = dt.getUTCHours();
     const dow = dt.getUTCDay();
     const atrPct = atr14[i] !== null ? atr14[i]! / px : null;
-    // R29-R2.5: funding rate at last 8h event ≤ candle[i].openTime. Use the
-    // last-fully-closed bar's open timestamp so the model never peeks at a
-    // funding bar published after entry.
-    const fundingAt = findFundingAt(fundingRaw, candles[i]!.openTime);
+    // R29-R2.5: funding rate at last 8h event during bar i (i = entryIdx-1).
+    // 2026-05-23 ML Round 11.3 R2-3 fix: previous code used candles[i].openTime
+    // which EXCLUDED events that fired DURING bar i. Rust inference at
+    // sweep.rs:3983 uses funding_by_sym[i-1] which INCLUDES events during
+    // bar (i-1). Trainer was 1-bar-behind for ~6% of trades → training/
+    // inference feature drift on funding_rate. Use openTime + bar-duration
+    // (= start of NEXT bar = end of bar i) to match Rust's align_funding
+    // half-open interval [bar_open, bar_open + bar_dur). At entry-time
+    // (entryIdx), bar i = entryIdx-1 is fully closed → events during bar i
+    // are legitimately known.
+    const _barDur =
+      candles.length >= 2
+        ? Math.max(1, candles[1]!.openTime - candles[0]!.openTime)
+        : 30 * 60 * 1000;
+    const fundingAt = findFundingAt(
+      fundingRaw,
+      candles[i]!.openTime + _barDur - 1,
+    );
     const isWin = t.effPnl > 0 ? 1 : 0;
     // Full TP = tp reason AND raw pnl reached at least 95% of asset.tpPct.
     const assetCfg = (

@@ -14,6 +14,7 @@ import {
   beforeAll,
   afterAll,
   beforeEach,
+  afterEach,
   vi,
 } from "vitest";
 import * as fs from "node:fs";
@@ -159,6 +160,16 @@ describe("/api/drift-data route", () => {
     vi.resetModules();
     process.env.FTMO_MONITOR_ENABLED = "1";
     process.env.FTMO_STATE_DIR = testStateDir;
+    // 2026-05-16 Round 9-Final: drift-data now fail-CLOSED when Supabase
+    // unavailable unless FTMO_MONITOR_AUTH_BYPASS=1 is set. Test env has
+    // no Supabase configured → set bypass so existing tests run against
+    // the headless single-VPS path (which is the intended dev semantic).
+    // The dedicated "fail-closed without bypass" test removes the env var
+    // explicitly.
+    process.env.FTMO_MONITOR_AUTH_BYPASS = "1";
+  });
+  afterEach(() => {
+    delete process.env.FTMO_MONITOR_AUTH_BYPASS;
   });
 
   it("returns full drift payload from the configured state dir", async () => {
@@ -213,13 +224,23 @@ describe("/api/drift-data route", () => {
     expect(body.meta.backtestRef.passRatePct).toBe(64.77);
   });
 
-  it("flags pass status as 'passed' when total P&L ≥ +10%", async () => {
+  it("flags pass status as 'passed' when total P&L ≥ +10% AND min trading days met", async () => {
     fs.writeFileSync(
       path.join(testStateDir, "account.json"),
       JSON.stringify({
         equity: 1.105,
         day: 5,
         raw_equity_usd: 110_500,
+      }),
+    );
+    // 2026-05-14 Codex Wave-2 Bug #5: passStatus now also requires
+    // FTMO min-trading-days (4) AND not paused. Provide v4-engine.json
+    // to clear both gates.
+    fs.writeFileSync(
+      path.join(testStateDir, "v4-engine.json"),
+      JSON.stringify({
+        tradingDays: [0, 1, 2, 3, 4],
+        pausedAtTarget: false,
       }),
     );
     const { GET } = await import("@/app/api/drift-data/route");
@@ -238,6 +259,38 @@ describe("/api/drift-data route", () => {
         updated_at: "2026-04-26T18:00:00Z",
       }),
     );
+    fs.rmSync(path.join(testStateDir, "v4-engine.json"), { force: true });
+  });
+
+  it("does NOT flag pass when +10% but min-trading-days < 4 (FTMO rule)", async () => {
+    fs.writeFileSync(
+      path.join(testStateDir, "account.json"),
+      JSON.stringify({
+        equity: 1.105,
+        day: 2,
+        raw_equity_usd: 110_500,
+      }),
+    );
+    fs.writeFileSync(
+      path.join(testStateDir, "v4-engine.json"),
+      JSON.stringify({ tradingDays: [0, 1], pausedAtTarget: false }),
+    );
+    const { GET } = await import("@/app/api/drift-data/route");
+    const resp = await GET(makeReq());
+    const body = await resp.json();
+    expect(body.header.passStatus).toBe("active");
+
+    fs.writeFileSync(
+      path.join(testStateDir, "account.json"),
+      JSON.stringify({
+        equity: 1.025,
+        day: 3,
+        raw_equity_usd: 102_500,
+        equityAtDayStart: 1.015,
+        updated_at: "2026-04-26T18:00:00Z",
+      }),
+    );
+    fs.rmSync(path.join(testStateDir, "v4-engine.json"), { force: true });
   });
 
   it("returns 404 when FTMO_MONITOR_ENABLED is unset", async () => {
@@ -249,7 +302,10 @@ describe("/api/drift-data route", () => {
 
   it("rejects ftmo_tf slugs with invalid characters (path-traversal guard)", async () => {
     const { GET } = await import("@/app/api/drift-data/route");
-    const bad = ["../etc", "foo/bar", "FOO", "x".repeat(80), "..", ""];
+    // Lowercase-only whitelist (2026-05-24 Codex audit revert of the
+    // Wave-2 widening). Must reject path-traversal characters
+    // (`.`, `/`, `\`) and over-length slugs.
+    const bad = ["../etc", "foo/bar", "x".repeat(80), "..", ""];
     for (const slug of bad) {
       const resp = await GET(makeReq(`?ftmo_tf=${encodeURIComponent(slug)}`));
       // Empty slug falls through to default state-dir (200 OK)
@@ -258,6 +314,28 @@ describe("/api/drift-data route", () => {
       } else {
         expect(resp.status).toBe(400);
       }
+    }
+  });
+
+  it("rejects uppercase + underscore slugs (lowercase-only contract)", async () => {
+    const { GET } = await import("@/app/api/drift-data/route");
+    // 2026-05-24 Codex audit MED FIX (commit 38489c6): the 2026-05-14
+    // widening to uppercase + underscore was REVERTED. The design contract
+    // is lowercase-only so the route regex matches both the SQL CHECK in
+    // migration_r29_user_ftmo_accounts.sql and the userFtmoAccounts.test.ts
+    // contract (which filters "UPPER" slugs). Multi-account state-dir paths
+    // are driven by FTMO_ACCOUNT_ID env, not the slug, so this does not
+    // break multi-account routing.
+    const rejected = ["Account_A", "FOO", "x1_y2-z3"];
+    for (const slug of rejected) {
+      const resp = await GET(makeReq(`?ftmo_tf=${encodeURIComponent(slug)}`));
+      expect(resp.status).toBe(400);
+    }
+    // Lowercase equivalents stay accepted.
+    const accepted = ["account-a", "foo", "x1-y2-z3"];
+    for (const slug of accepted) {
+      const resp = await GET(makeReq(`?ftmo_tf=${encodeURIComponent(slug)}`));
+      expect(resp.status).toBe(200);
     }
   });
 
@@ -278,6 +356,9 @@ describe("/api/drift-data route", () => {
   // request has no valid session, return 401 — defends against a tenant on
   // the same monitor URL reading another user's equity by guessing the slug.
   it("returns 401 when Supabase is configured but the user is not signed in", async () => {
+    // 2026-05-16 Round 9-Final: this test verifies the AUTH-required path,
+    // so explicitly remove the bypass that the global beforeEach sets.
+    delete process.env.FTMO_MONITOR_AUTH_BYPASS;
     // Mock the supabase-server helper directly: it returns a client whose
     // auth.getUser() resolves with no user (i.e. no session cookie present).
     vi.doMock("@/lib/supabase-server", () => ({
@@ -342,6 +423,8 @@ describe("/api/drift-data route", () => {
   // tenants' live equity. Admin (FTMO_ADMIN_EMAIL match) keeps full access.
   describe("R67-Final cross-tenant slug enumeration guard", () => {
     it("blocks slug-based reads for non-admin authenticated users (403)", async () => {
+      // 2026-05-16 Round 9-Final: AUTH-required path, remove bypass.
+      delete process.env.FTMO_MONITOR_AUTH_BYPASS;
       process.env.FTMO_ADMIN_EMAIL = "admin@example.com";
       vi.doMock("@/lib/supabase-server", () => ({
         createServerSupabaseClient: async () => ({
@@ -438,6 +521,8 @@ describe("/api/drift-data route", () => {
     it("blocks slug reads when FTMO_ADMIN_EMAIL is unset (fail-closed)", async () => {
       // No FTMO_ADMIN_EMAIL → no user can pass a slug. Default-dir reads
       // still work (covered above).
+      // 2026-05-16 Round 9-Final: AUTH-required path, remove bypass.
+      delete process.env.FTMO_MONITOR_AUTH_BYPASS;
       delete process.env.FTMO_ADMIN_EMAIL;
       vi.doMock("@/lib/supabase-server", () => ({
         createServerSupabaseClient: async () => ({
@@ -478,6 +563,8 @@ describe("/api/drift-data route", () => {
   // liveness via the drift-data /403 timing channel afterwards).
   describe("R4 cross-tenant slug picker isolation", () => {
     it("non-admin user only sees their mapped slugs in availableTfSlugs", async () => {
+      // 2026-05-16 Round 9-Final: AUTH-required path, remove bypass.
+      delete process.env.FTMO_MONITOR_AUTH_BYPASS;
       // The default state-dir from beforeAll is already on disk; add a
       // sibling so the picker has two slugs to discriminate between.
       const cwd = process.cwd();
@@ -486,7 +573,41 @@ describe("/api/drift-data route", () => {
       fs.writeFileSync(path.join(siblingDir, "account.json"), "{}");
 
       // Mock supabase: authenticated tenant-A user; `user_ftmo_accounts`
-      // returns only `tenant-a-only` for them.
+      // maps them to `tenant-a-only` only. The query builder must be both
+      // chainable AND awaitable (thenable) because the route uses two
+      // shapes: getAllowedSlugsForUser (single .eq → array) and
+      // canUserReadSlug (.eq().eq().limit(1) → array).
+      const mappedRows = [{ tf_slug: "tenant-a-only" }];
+      const makeQuery = () => {
+        const filters: Array<[string, string]> = [];
+        const run = () => {
+          const userOk = filters.some(
+            ([c, v]) => c === "user_id" && v === "user-tenant-a",
+          );
+          if (!userOk) return { data: [], error: null };
+          const slugEq = filters.find(([c]) => c === "tf_slug");
+          const data = slugEq
+            ? mappedRows.filter((r) => r.tf_slug === slugEq[1])
+            : mappedRows;
+          return { data, error: null };
+        };
+        const q = {
+          eq(col: string, val: string) {
+            filters.push([col, val]);
+            return q;
+          },
+          limit(_n: number) {
+            return q;
+          },
+          then(
+            onFulfilled?: (v: unknown) => unknown,
+            onRejected?: (e: unknown) => unknown,
+          ) {
+            return Promise.resolve(run()).then(onFulfilled, onRejected);
+          },
+        };
+        return q;
+      };
       vi.doMock("@/lib/supabase-server", () => ({
         createServerSupabaseClient: async () => ({
           auth: {
@@ -496,18 +617,7 @@ describe("/api/drift-data route", () => {
             }),
           },
           from: (_table: string) => ({
-            select: () => ({
-              eq: (col: string, val: string) => {
-                if (col === "user_id" && val === "user-tenant-a") {
-                  // Match getAllowedSlugsForUser pattern (single .eq → array)
-                  return Promise.resolve({
-                    data: [{ tf_slug: "tenant-a-only" }],
-                    error: null,
-                  });
-                }
-                return Promise.resolve({ data: [], error: null });
-              },
-            }),
+            select: () => makeQuery(),
           }),
         }),
       }));
@@ -518,7 +628,14 @@ describe("/api/drift-data route", () => {
         fs.writeFileSync(path.join(tenantADir, "account.json"), "{}");
         try {
           const { GET } = await import("@/app/api/drift-data/route");
-          const resp = await GET(makeReq());
+          // 2026-05-24 Codex audit HIGH FIX (commit 7f7061f): a non-admin
+          // request WITHOUT ?ftmo_tf= no longer falls through to the
+          // DEFAULT state-dir (that leaked the operator's own equity to
+          // every authenticated tenant) — it now fails closed with 403.
+          const blocked = await GET(makeReq());
+          expect(blocked.status).toBe(403);
+          // Tenants must request a slug they're explicitly mapped to.
+          const resp = await GET(makeReq("?ftmo_tf=tenant-a-only"));
           expect(resp.status).toBe(200);
           const body = await resp.json();
           // Non-admin must see ONLY `tenant-a-only` — not `tenant-b-only`,

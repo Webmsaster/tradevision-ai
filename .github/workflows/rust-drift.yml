@@ -2,18 +2,23 @@ name: Rust drift report
 
 on:
   schedule:
-    - cron: '17 5 * * *' # daily 05:17 UTC
+    - cron: "17 5 * * *" # daily 05:17 UTC
   workflow_dispatch:
   pull_request:
     paths:
-      - 'engine-rust/**'
-      - 'src/utils/ftmoLiveEngineV4.ts'
-      - 'src/utils/ftmoDaytrade24h.ts'
-      - 'scripts/dumpRustGoldenFixture.ts'
-      - '.github/workflows/rust-drift.yml'
+      - "engine-rust/**"
+      - "src/utils/ftmoLiveEngineV4.ts"
+      - "src/utils/ftmoDaytrade24h.ts"
+      - "scripts/dumpRustGoldenFixture.ts"
+      - ".github/workflows/rust-drift.yml"
 
 env:
   CARGO_TERM_COLOR: always
+
+# 2026-05-15 (Audit-Round-7 / Agent #34 HIGH): least-privilege permissions.
+# Workflow uploads artifacts but doesn't modify repo contents.
+permissions:
+  contents: read
 
 jobs:
   drift:
@@ -21,20 +26,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # R67-Final: SHA-pinned 3rd-party actions (R51 supply-chain policy).
-      - uses: actions/checkout@v4
+      # 2026-05-24 Wave9 HIGH FIX: actions/checkout@v4 and actions/setup-node@v4
+      # were the ONLY non-SHA-pinned 3rd-party actions in the repo (every
+      # other workflow + this one's later steps SHA-pin properly). The R51
+      # supply-chain policy was violated here; a tag move (malicious or
+      # accidental) on `v4` could compromise CI.
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
         with:
           lfs: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@1a4442cacd436585916779262731d5b162bc6ec7 # v3.8.1
         with:
-          node-version: '20'
+          node-version: "20"
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable @ 2026-04-23
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.7.10
         with:
           workspaces: engine-rust
       - name: Install npm deps (tsx)
+        # 2026-05-24 Codex audit LOW FIX: prior `npm ci || npm install`
+        # silently masked lockfile drift — when package-lock.json was
+        # out-of-sync with package.json the workflow would mutate the
+        # lockfile and continue green, hiding a real CI integrity issue.
+        # `npm ci` alone fails fast on drift; operators see the failure
+        # and either commit the regenerated lock or fix the dependency.
         run: |
-          npm ci --no-audit --prefer-offline || npm install --no-audit
-      - name: Cache: pull crypto candles (BTC/ETH/AAVE only — keep CI fast)
+          npm ci --no-audit --prefer-offline
+      - name: "Cache: pull crypto candles (BTC/ETH/AAVE only — keep CI fast)"
         run: |
           mkdir -p scripts/cache_bakeoff
           # Skip if user already has cached candles in the repo (gitignored otherwise).
@@ -62,7 +78,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload drift artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3 # v4.3.1
         with:
           name: drift-report
           path: /tmp/drift.txt

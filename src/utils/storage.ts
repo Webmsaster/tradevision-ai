@@ -139,6 +139,10 @@ export function tradeContentHash(t: Trade): string {
   // works for users whose pre-R22 trades stored `BTC/USDT` raw — without
   // this, the new CSV-imported `BTCUSDT` hashes differently and the user
   // gets duplicates. Lower-case for legacy compatibility.
+  // R29-Frontend-Audit Bug 4: include accountId in the hash so the same
+  // CSV can be cleanly imported into multiple accounts. Legacy trades
+  // without an accountId fall back to "default" to match the runtime
+  // filter convention.
   const canonical = [
     normaliseSymbolForHash(t.pair).toLowerCase(),
     t.direction,
@@ -147,6 +151,7 @@ export function tradeContentHash(t: Trade): string {
     Number(t.quantity).toFixed(8),
     toMs(t.entryDate),
     toMs(t.exitDate),
+    t.accountId ?? "default",
   ].join("|");
   // FNV-1a 32-bit
   let hash = 0x811c9dc5;
@@ -1067,12 +1072,44 @@ export function importFromJSON(file: File): Promise<Trade[]> {
 }
 
 /**
- * Remove all saved trade data from localStorage.
+ * Remove ONLY trade data (trades + screenshots + pending bulk-retry queue +
+ * owner stamp). Settings, accounts, and webhook stay intact.
  *
- * R67 audit (Round 3): also clear SETTINGS_KEY (webhook URLs, account list,
+ * R29-Frontend-Audit (Bug 6): the legacy `clearAllData()` removed the
+ * settings blob too — the UI string "Clear Trading Data" promised only
+ * trades. This split lets the UI call the variant that matches its
+ * promise.
+ *
+ * R29-Frontend-Audit (Bug 5): also drop the `tradevision-owner` stamp so
+ * the next anonymous trade doesn't get linked back to a previous user's id.
+ */
+export function clearTrades(): void {
+  try {
+    if (typeof window !== "undefined") {
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(SCREENSHOTS_KEY);
+      localStorage.removeItem(BULK_RETRY_KEY);
+      // R29-Frontend-Audit Bug 5: drop owner stamp so future local
+      // trades don't get attributed to the previous owner.
+      localStorage.removeItem("tradevision-owner");
+    }
+  } catch (error) {
+    console.error("Failed to clear trade data from localStorage:", error);
+  }
+}
+
+/**
+ * Remove ALL saved app data from localStorage — trades, screenshots,
+ * settings (webhook + accounts + active account + dashboard widgets),
+ * retry-queue, and the owner stamp.
+ *
+ * R67 audit (Round 3): clears SETTINGS_KEY (webhook URLs, account list,
  * activeAccountId, dashboard widgets — User-A's webhook would otherwise
  * leak across logout→login as User-B) and BULK_RETRY_KEY (User-A's pending
  * bulk-uploads would be flushed under User-B's session on next mount).
+ *
+ * R29-Frontend-Audit (Bug 5): also clear the `tradevision-owner` stamp so
+ * the next mount doesn't compare against the previous user's id.
  */
 export function clearAllData(): void {
   try {
@@ -1082,6 +1119,8 @@ export function clearAllData(): void {
       // R67-r3: prevent cross-user data leakage on logout
       localStorage.removeItem("tradevision-settings");
       localStorage.removeItem(BULK_RETRY_KEY);
+      // R29-Frontend-Audit Bug 5: drop owner stamp
+      localStorage.removeItem("tradevision-owner");
     }
   } catch (error) {
     console.error("Failed to clear trade data from localStorage:", error);

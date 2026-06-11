@@ -154,12 +154,17 @@ test.describe("Multi-Account Management", () => {
     await radioButtons.nth(1).click();
     await expect(radioButtons.nth(1)).toBeChecked();
 
-    // Remove the active account
-    const removeButtons = page.locator('button:has-text("Remove")');
-    await removeButtons.nth(0).click();
+    // Remove the *active* account. Target it by its exact aria-label rather
+    // than `button:has-text("Remove")` — the latter also matches the
+    // AccountSwitcher trigger (top nav) once "Account to Remove" is active,
+    // because that button's text echoes the active account name.
+    await page
+      .getByRole("button", { name: "Remove Account to Remove" })
+      .click();
 
-    // Verify first account is now active (fallback)
+    // Only the original account remains, and it becomes the active fallback.
     const remainingRadios = page.locator('input[name="activeAccount"]');
+    await expect(remainingRadios).toHaveCount(1);
     await expect(remainingRadios.nth(0)).toBeChecked();
   });
 });

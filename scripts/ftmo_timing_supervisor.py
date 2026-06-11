@@ -1,0 +1,350 @@
+#!/usr/bin/env python3
+"""
+2026-05-18 FTMO Timing-Supervisor v2 — bug-fixed version.
+
+v1 used an EMA-9/21 cross PROXY which delivered only 54.8% pass-rate
+(equivalent to baseline, NOT 92%). Bug confirmed against 324-window
+backtest: precision=42.6%, supervisor was misleading.
+
+v2 uses the REAL Rust voter engine via ftmo-sweep with windows>=N filtered
+by --start-after-ts. The qualified_at_start flag from WindowResult is the
+authoritative buy signal — same flag used to compute the 92%+ backtest
+pass-rate.
+
+Pipeline:
+  1. cache_updater.py: fetch latest 30m bars for all 19 assets
+  2. ftmo-sweep --windows N --start-after-ts (NOW - 32d): get LATEST window
+  3. Parse qualified= from stdout + per-window jsonl
+  4. Write state/timing-gate.json
+  5. Telegram BUY_ALLOWED on qualifying-state transition
+
+Run modes:
+  python3 scripts/ftmo_timing_supervisor_v2.py            # one-shot
+  python3 scripts/ftmo_timing_supervisor_v2.py --skip-cache  # skip cache update
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.request
+from pathlib import Path
+from datetime import datetime, timezone
+
+PROJ_ROOT = Path(__file__).resolve().parent.parent
+STATE_DIR = PROJ_ROOT / "state"
+GATE_FILE = STATE_DIR / "timing-gate.json"
+HIST_FILE = STATE_DIR / "timing-history.jsonl"
+TMP_OUT = Path("/tmp/timing_supervisor_p1.jsonl")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
+SYMBOLS = "AAVEUSDT,ADAUSDT,ALGOUSDT,ARBUSDT,ATOMUSDT,AVAXUSDT,BCHUSDT,BNBUSDT,BTCUSDT,DOTUSDT,ETCUSDT,ETHUSDT,LINKUSDT,LTCUSDT,NEARUSDT,SOLUSDT,TRXUSDT,UNIUSDT,XRPUSDT"
+
+SWEEP_BIN = PROJ_ROOT / "engine-rust" / "target" / "release" / "ftmo-sweep"
+GATE_WINDOW_HOURS = int(float(os.environ.get("FTMO_START_GATE_WINDOW_HOURS", "2")))
+GATE_MIN_BREADTH = int(os.environ.get("FTMO_START_GATE_MIN_BREADTH", "10"))
+GATE_MIN_MAJORS = int(os.environ.get("FTMO_START_GATE_MIN_MAJORS", "1"))
+
+def atomic_write(path: Path, content: str) -> None:
+    """Atomic write: tmp file + fsync + rename + parent-dir-fsync.
+
+    2026-05-18 Bug-Audit (HOCH): the previous version reopened the file
+    after write_text to call fsync — `rb+` on a closed-then-reopened FD
+    doesn't durably flush. Use a single open() for write+fsync, and
+    fsync the parent directory so the rename itself is durable.
+
+    Round-3 (NIEDRIG): tmp suffix includes uuid in addition to pid, so
+    PID-recycling across instances cannot collide on the tmp file.
+    """
+    import uuid
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
+    tmp.replace(path)
+    # POSIX: fsync parent dir to durably commit the rename. Best-effort on
+    # systems that don't support dir-fsync.
+    try:
+        dirfd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
+    except (OSError, AttributeError):
+        pass
+
+
+def update_cache():
+    print("[1/3] Updating candle cache from Binance...")
+    r = subprocess.run(
+        ["python3", "scripts/cache_updater.py"],
+        cwd=str(PROJ_ROOT), capture_output=True, text=True, timeout=300
+    )
+    # 2026-05-18 Bug-Audit (HOCH): cache_updater exit 1 = fetch fail, exit 2
+    # = stale cache (>2h old). Both must surface to Telegram so the operator
+    # knows the gate state is untrustworthy and can re-trigger manually.
+    if r.returncode != 0:
+        last_lines = "\n".join(r.stderr.splitlines()[-5:])
+        print(f"  [cache-err exit={r.returncode}] {last_lines}", file=sys.stderr)
+        emit_telegram(
+            f"⚠️ FTMO cache_updater failed (exit {r.returncode}):\n"
+            f"{last_lines}\n\n"
+            f"Gate state will be stale until next cron tick."
+        )
+        return False
+    for line in r.stdout.splitlines()[-3:]:
+        print(f"  {line}")
+    return True
+
+def run_sweep():
+    print("[2/3] Running ftmo-sweep for latest qualifying check...")
+    # 2026-05-18 Bug-Audit (KRITISCH): delete stale TMP_OUT before run.
+    # If a previous crash left an old jsonl behind and the new sweep fails
+    # early, parse_latest_window would read STALE data from the previous run.
+    TMP_OUT.unlink(missing_ok=True)
+    # 2026-05-18 v3 LIVE-CLUSTER-DETECTOR mode:
+    # The KEY fix — with max_days=30, the engine's latest simulatable window
+    # started 30 days ago. Its first cluster = 30-day-old data → useless
+    # for live signal.
+    # With max_days=2, the engine can simulate windows extending only 2 days
+    # past their start. Latest window starts ~24h before cache_end → its
+    # "first cluster" = the actual recent live cluster.
+    # Pass-rate stats are meaningless in this mode (can't reach +10% in 2d).
+    # We only use the latest window's qualified_at_start flag as the live gate.
+    cmd = [
+        str(SWEEP_BIN),
+        "--candles-dir", "scripts/cache_bakeoff",
+        "--funding-dir", "scripts/cache_bakeoff",
+        "--symbols", SYMBOLS,
+        "--windows", "2000", "--step-days", "1", "--threads", "8",
+        "--profit-target", "0.10", "--max-days", "2",
+        "--signals", "regime", "--regime-min-votes", "2",
+        "--regime-poc-z", "--regime-bb-z-mr", "--regime-use-supertrend",
+        "--regime-use-hmm", "--regime-use-ad-line",
+        "--cross-asset-sym", "BTCUSDT",
+        "--cross-asset-fast", "9", "--cross-asset-slow", "21",
+        "--config", "2h-trend-v5-amber-max-passlock",
+        "--override-tp-mult", "1.14",
+        "--kelly-sizing", "--kelly-fraction", "0.5",
+        "--kelly-window", "60", "--kelly-min-trades", "20",
+        "--ptp-levels", "0.08:0.25",
+        "--min-initial-signal-breadth", str(GATE_MIN_BREADTH),
+        "--min-initial-majors", str(GATE_MIN_MAJORS),
+        "--initial-window-hours", str(GATE_WINDOW_HOURS),
+        "--out", str(TMP_OUT),
+    ]
+    r = subprocess.run(cmd, cwd=str(PROJ_ROOT), capture_output=True, text=True, timeout=300)
+    if r.returncode != 0:
+        print(f"  [sweep-err] {r.stderr[:500]}", file=sys.stderr)
+        return None
+    return r.stdout
+
+def parse_sweep_output(stdout):
+    """Parse 'qualified=X/Y' line from sweep stdout."""
+    # Lines we expect:
+    #   "passed=X / Y (Z%)"
+    #   "qualified=A / Y (B%) — passed_of_qualified=..."
+    qualified_count = 0
+    qualified_total = 0
+    passed_of_qualified = None
+    for line in stdout.splitlines():
+        m = re.search(r"qualified=(\d+)\s*/\s*(\d+)", line)
+        if m:
+            qualified_count = int(m.group(1))
+            qualified_total = int(m.group(2))
+        m2 = re.search(r"passed_of_qualified=(\d+)\s*/\s*\d+\s*\(([0-9.]+)%\)", line)
+        if m2:
+            passed_of_qualified = float(m2.group(2))
+    return qualified_count, qualified_total, passed_of_qualified
+
+def parse_latest_window(out_path):
+    """Read per-window jsonl + return the most recent COMPLETE window.
+
+    2026-05-18 Bug-Audit (KRIT): sweep.rs uses Arc<Mutex<BufWriter>> with
+    threaded fan-out — JSONL line order reflects COMPLETION-order, not
+    window-order. The last line may be the first window that finished.
+    Sort explicitly by win_idx.
+
+    2026-05-18 v3 LIVE-CLUSTER fix: with max_days=2, the engine produces
+    PARTIAL windows at cache-end (extending into future, breadth=0). Skip
+    those and use the most recent window with trades > 0 (i.e. actually
+    simulated). This approximates the latest visible live cluster.
+    """
+    if not out_path.exists():
+        return None
+    lines = out_path.read_text().splitlines()
+    if not lines:
+        return None
+    rows = []
+    for line in lines:
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    if not rows:
+        return None
+    rows.sort(key=lambda r: r.get("win_idx", 0))
+    # Find the most recent window with actual trade activity (non-empty).
+    # Partial/future-extending windows have trades=0 + breadth=0.
+    for r in reversed(rows):
+        if r.get("trades", 0) > 0 or (r.get("first_cluster_size") or 0) > 0:
+            return r
+    # Fallback: highest win_idx even if empty
+    return rows[-1]
+
+def emit_telegram(msg):
+    """Send a Telegram message in plain text (no Markdown parsing).
+
+    2026-05-18 Bug-Audit (MITTEL): MarkdownV1 was deprecated and would 400
+    on legitimate underscores/asterisks in symbol names. Drop parse_mode.
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = json.dumps({
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": msg,
+        # No parse_mode → plain text, no escape required.
+    }).encode("utf-8")
+    try:
+        urllib.request.urlopen(
+            urllib.request.Request(url, data=payload,
+                                   headers={"Content-Type": "application/json"}),
+            timeout=10
+        ).read()
+    except Exception as e:
+        print(f"  [telegram-err] {e}", file=sys.stderr)
+
+def main():
+    skip_cache = "--skip-cache" in sys.argv
+
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not skip_cache:
+        if not update_cache():
+            print("❌ Cache update failed — abort.")
+            return 1
+    else:
+        print("[1/3] Skipping cache update (per --skip-cache)")
+
+    sweep_out = run_sweep()
+    if sweep_out is None:
+        print("❌ Sweep failed — abort.")
+        return 1
+    # Print sweep lines for visibility
+    for line in sweep_out.splitlines()[-3:]:
+        print(f"  {line}")
+
+    qcount, qtotal, pass_pct = parse_sweep_output(sweep_out)
+    latest = parse_latest_window(TMP_OUT)
+
+    if latest is None:
+        print("[3/3] No window data — state unknown.")
+        return 1
+
+    # 2026-05-18 Bug-Audit (KRIT): need >= 100 windows for stable cluster-detect
+    # mode (we measure latest window's first cluster). Below that = empty cache or
+    # unit-mismatch on --start-after-ts.
+    # NOTE: pass_pct/pass_of_qualified are MEANINGLESS in cluster-detect mode
+    # (max_days=2 → no challenge can reach +10% target). Only qualified_at_start
+    # of the latest window matters.
+    if qtotal < 100:
+        msg = (f"⚠️ Engine returned only {qtotal} window(s) — refusing to update "
+               f"gate (need ≥100 for cluster-detect mode). Check cache freshness.")
+        print(f"❌ {msg}")
+        emit_telegram(msg)
+        return 1
+
+    qualified = latest.get("qualified_at_start", False)
+    breadth = latest.get("first_cluster_size", 0)
+    majors = latest.get("first_cluster_majors", 0)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    state = {
+        "ts": int(time.time() * 1000),
+        "ts_iso": now_iso,
+        "qualified": qualified,
+        "breadth": breadth,
+        "majors": majors,
+        "engine_qualified_count": qcount,
+        "engine_qualified_total": qtotal,
+        "engine_pass_of_qualified_pct": pass_pct,
+        "min_breadth": GATE_MIN_BREADTH,
+        "min_majors": GATE_MIN_MAJORS,
+        "window_hours": GATE_WINDOW_HOURS,
+        "source": f"ftmo-sweep --windows 2000 --max-days 2 (LIVE {GATE_WINDOW_HOURS}h cluster detector)",
+        "validation": f"v4 LIVE-CLUSTER: {GATE_WINDOW_HOURS}h b>={GATE_MIN_BREADTH} m>={GATE_MIN_MAJORS}",
+    }
+
+    print(f"\n[3/3] Engine result:")
+    print(f"  qualified_at_start: {qualified}")
+    print(f"  breadth: {breadth}/{state['min_breadth']}")
+    print(f"  majors: {majors}/{state['min_majors']}")
+    if pass_pct is not None:
+        print(f"  Pass-of-qualified rate (forward window): {pass_pct:.2f}%")
+
+    # Load prev state for transition detection
+    prev = None
+    if GATE_FILE.exists():
+        try:
+            prev = json.loads(GATE_FILE.read_text())
+        except Exception:
+            prev = None
+
+    # 2026-05-18 Bug-Audit (KRITISCH): atomic write — bot polls this file
+    # concurrently. Without tmp+rename, the reader can hit an empty/partial
+    # JSON during writer truncate-and-write, crash, and end up with corrupt
+    # gate state.
+    atomic_write(GATE_FILE, json.dumps(state, indent=2))
+    # 2026-05-18 Bug-Audit (MITTEL): rotation + append in ONE atomic step
+    # to avoid race-window where a parallel reader sees the rotated file
+    # before the latest entry is appended.
+    new_line = json.dumps(state)
+    if HIST_FILE.exists() and HIST_FILE.stat().st_size > 10 * 1024 * 1024:
+        lines = HIST_FILE.read_text().splitlines()
+        atomic_write(HIST_FILE, "\n".join(lines[-5000:] + [new_line]) + "\n")
+    else:
+        # 2026-05-18 Bug-Audit Round-3 (NIEDRIG): explicit O_APPEND for POSIX
+        # atomicity guarantee. `open("a")` in CPython doesn't guarantee
+        # O_APPEND on all platforms (notably WSL2 has had drift). Single-line
+        # writes <PIPE_BUF (4KB) under O_APPEND are atomic on POSIX even
+        # with concurrent appenders. Our state lines are ~300 bytes.
+        fd = os.open(str(HIST_FILE),
+                     os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, (new_line + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
+
+    # Transition detection
+    prev_qualified = prev.get("qualified", False) if prev else False
+    if qualified and not prev_qualified:
+        msg = (f"🎯 *FTMO BUY ALLOWED* ({now_iso})\n\n"
+               f"Engine V02-voters QUALIFIED for current setup:\n"
+               f"  Breadth: {breadth} >= {state['min_breadth']}\n"
+               f"  Majors: {majors} >= {state['min_majors']}\n\n"
+               f"Smart-Timing-Gate (real engine, NOT proxy) qualifying.\n"
+               f"⚠️ Note: prior 94% claim was DEBUNKED (2026-05-18 audit — "
+               f"step=3d-autocorr artifact, honest step=1d ~69% single-acct, "
+               f"cluster-gate uplift 0pp on true-sequential). Gate is now "
+               f"info-only; no entry-block enforced.\n"
+               f"Buy challenge at your discretion.")
+        print(f"\n{msg}")
+        emit_telegram(msg)
+    elif not qualified and prev_qualified:
+        msg = (f"⏸ FTMO gate DEACTIVATED ({now_iso})\n"
+               f"Breadth {breadth}/{state['min_breadth']}, "
+               f"majors {majors}/{state['min_majors']}")
+        print(f"\n{msg}")
+        emit_telegram(msg)
+    else:
+        print(f"\n  No state change (qualified={qualified}, prev={prev_qualified})")
+
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

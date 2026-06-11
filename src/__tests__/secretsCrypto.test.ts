@@ -86,10 +86,13 @@ describe("secretsCrypto - round-trip", () => {
 
   it("returns '' when ciphertext is corrupted", async () => {
     const ct = await encryptSecret(SAMPLE_TG, "user-aaa");
-    // Flip a byte in the middle of the base64 payload
-    const head = ct.slice(0, ENC_PREFIX.length + 10);
-    const tail = ct.slice(ENC_PREFIX.length + 11);
-    const corrupted = `${head}A${tail}`;
+    // Flip a byte in the middle of the base64 payload. The replacement
+    // char must differ from the original — a hardcoded "A" was a no-op
+    // (and a flaky pass) whenever the random ciphertext already had an
+    // "A" at that position (~1/64 of runs).
+    const idx = ENC_PREFIX.length + 10;
+    const replacement = ct[idx] === "A" ? "B" : "A";
+    const corrupted = `${ct.slice(0, idx)}${replacement}${ct.slice(idx + 1)}`;
     const out = await decryptSecret(corrupted, "user-aaa");
     expect(out).toBe("");
   });

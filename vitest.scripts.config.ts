@@ -12,8 +12,12 @@ export default defineConfig({
     include: ["scripts/**/*.test.ts"],
     fileParallelism: false,
     pool: "forks",
-    // @ts-expect-error vitest 4.x InlineConfig PoolOptions union not yet typed; correct at runtime per docs
-    poolOptions: { forks: { singleFork: true } },
+    // 2026-05-21 bug-round: `poolOptions` was REMOVED in Vitest 4 (silently
+    // ignored + deprecation warning), so the intended `singleFork: true` never
+    // took effect. Per the v4 migration guide, forks.singleFork → top-level
+    // `maxWorkers: 1`. (fileParallelism:false already forces 1 worker, so this
+    // is consistent — stateful paper-trade scripts stay serialized.)
+    maxWorkers: 1,
   },
   resolve: {
     alias: {

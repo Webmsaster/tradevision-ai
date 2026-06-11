@@ -75,6 +75,24 @@ export interface LiveSignal {
   sourceSymbol: string;
   direction: "short" | "long";
   regime: Regime;
+  /**
+   * 2026-05-13 Codex Round 4 Python #9 FIX: engine-side canonical ticket id
+   * `${symbol}@${entryTime}@${direction}` — matches `OpenPositionV4.ticketId`
+   * format at `ftmoLiveEngineV4.ts:2018` and Rust `position::make_ticket_id`
+   * post commit `bdc26bb`. The Python executor persists this on its
+   * position records so restart-recovery via MT5 enumeration can join
+   * broker tickets back to engine state (instead of hashing a synthesized
+   * id and losing all PTP/trail/chandelier modifiers). Optional for back-
+   * compat with older signal log replays.
+   */
+  engineTicketId?: string;
+  /**
+   * 2026-05-13 Codex Round 4 Python #9 FIX: entryTime in ms-since-epoch so
+   * the executor can persist the engine-side anchor and reconstruct
+   * ticketId deterministically on restart even if `engineTicketId` got
+   * truncated by a downstream consumer.
+   */
+  entryTime?: number;
   entryPrice: number; // market-bar close; exec price will be next-bar open
   stopPrice: number;
   tpPrice: number;
@@ -124,6 +142,20 @@ export interface LiveSignal {
     minMoveR: number;
     /** stopPct used for minMoveR gating (price-fraction units). */
     stopPct: number;
+    /**
+     * Codex Round 4 #7 — ATR period (used by executor to recompute ATR
+     * each cycle if `atrRecomputeIntervalBars > 0`). When omitted or
+     * `atrRecomputeIntervalBars <= 0`, executor falls back to the fixed
+     * `atrAtEntry` value (legacy behaviour).
+     */
+    atrPeriod?: number;
+    /**
+     * Codex Round 4 #7 — re-evaluate ATR every N bars to match
+     * TS/Rust sim behaviour. Default 0 = use `atrAtEntry` for all cycles
+     * (legacy backwards-compat). Set ≥ 1 to recompute (Python tries
+     * mt5.copy_rates_from_pos; falls back to atrAtEntry on failure).
+     */
+    atrRecomputeIntervalBars?: number;
   };
   breakEvenAtProfit?: {
     threshold: number;
@@ -532,6 +564,74 @@ const CFG_REGISTRY: Record<string, CfgRegistryEntry> = {
     cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_PASSLOCK,
     label: "V5_AMBER_PASSLOCK (closeAllOnTargetReached)",
   },
+  // 2026-05-15 (Audit-Round-4 / Agent #12 KRIT): champion AMBER_MAX_PASSLOCK
+  // was missing from CFG_REGISTRY → resolve threw "not in CFG_REGISTRY" at
+  // service boot. See ftmoDaytrade24h.ts:8678 for the config definition.
+  "2h-trend-v5-amber-max-passlock": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK,
+    label: "V5_AMBER_MAX_PASSLOCK (2026-05-15 champion, 24 assets)",
+  },
+  "2h-trend-v5-amber-max-passlock-step2": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_STEP2,
+    label: "V5_AMBER_MAX_PASSLOCK_STEP2 (5% target, start-gated)",
+  },
+  "2h-trend-v5-amber-max-passlock-bidir": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_BIDIR,
+    label: "V5_AMBER_MAX_PASSLOCK_BIDIR (long+short, anti-long-only-fail)",
+  },
+  "2h-trend-v5-amber-max-passlock-shorts-only": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_SHORTS_ONLY,
+    label:
+      "V5_AMBER_MAX_PASSLOCK_SHORTS_ONLY (pure shorts; Stack-2 partner to AMBER, anti-corr +7.28pp)",
+  },
+  "2h-trend-v5-amber-max-passlock-shorts-agg": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_SHORTS_AGG,
+    label:
+      "V5_AMBER_MAX_PASSLOCK_SHORTS_AGG (SHORTS_ONLY + AGG upgrades; GA Stack-4 P1+P2 member 97.28% OOS)",
+  },
+  "2h-trend-v5-amber-max-passlock-risk06": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_RISK06,
+    label:
+      "V5_AMBER_MAX_PASSLOCK_RISK06 (AMBER × 0.6 riskFrac; GA Stack-4 winner Account-C)",
+  },
+  "2h-trend-v5-amber-max-passlock-risk05": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_RISK05,
+    label:
+      "V5_AMBER_MAX_PASSLOCK_RISK05 (AMBER × 0.5 riskFrac; defensive variant)",
+  },
+  "2h-trend-v5-amber-max-passlock-bidir-mutex": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_BIDIR_MUTEX,
+    label:
+      "V5_AMBER_MAX_PASSLOCK_BIDIR_MUTEX (bidir + no-hedge gate, +0.9pp single-acc)",
+  },
+  "2h-trend-v5-amber-max-passlock-aggressive": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE,
+    label:
+      "V5_AMBER_MAX_PASSLOCK_AGGRESSIVE (bidir+mutex+MCT=25, +5pp single-acc winner)",
+  },
+  "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly-reentry": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H_KELLY_REENTRY,
+    label:
+      "V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H_KELLY_REENTRY (best single-acc, +6.8pp = 36.10% TRUE-SEQ)",
+  },
+  "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H_KELLY,
+    label:
+      "V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H_KELLY (Stack-N partner, 35.90% single-acc)",
+  },
+  "2h-trend-v5-amber-max-passlock-mixed-v3": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_PASSLOCK_MIXED_V3,
+    label:
+      "V5_AMBER_MAX_PASSLOCK_MIXED_V3 (per-asset cvd/volImb/volPoc mix — Stack-5 contributor)",
+  },
+  "2h-trend-v5-amber-max-mr-passlock": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_AMBER_MAX_MR_PASSLOCK,
+    label: "V5_AMBER_MAX_MR_PASSLOCK (RSI mean-revert signal class)",
+  },
+  "2h-trend-v5-rubin-passlock": {
+    cfg: CFGS.FTMO_DAYTRADE_24H_V5_RUBIN_PASSLOCK,
+    label: "V5_RUBIN_PASSLOCK (closeAllOnTargetReached)",
+  },
   "2h-trend-v5-obsidian-passlock": {
     cfg: CFGS.FTMO_DAYTRADE_24H_V5_OBSIDIAN_PASSLOCK,
     label: "V5_OBSIDIAN_PASSLOCK (closeAllOnTargetReached)",
@@ -607,7 +707,13 @@ if (_ftmoTfRaw && _ftmoTfRaw.trim() !== _ftmoTfRaw) {
 }
 const _ftmoTfKey = _ftmoTfRaw?.trim() ?? "";
 const _registryHit =
-  _ftmoTfKey in CFG_REGISTRY ? CFG_REGISTRY[_ftmoTfKey] : null;
+  // 2026-05-25 Wave5 KRIT FIX: `in` operator matches Prototype properties
+  // (`__proto__`, `toString`, `constructor`). If FTMO_TF=constructor were set,
+  // `_registryHit` would be truthy with cfg=undefined → assertConfigValid(undefined)
+  // crash. Use Object.hasOwnProperty.call for own-property check only.
+  Object.prototype.hasOwnProperty.call(CFG_REGISTRY, _ftmoTfKey)
+    ? CFG_REGISTRY[_ftmoTfKey]
+    : null;
 // Round 54 Fix #3 + #7: when env was SET but didn't match any registry key
 // (typo, trim mismatch, removed config), THROW at module load instead of
 // silently falling back to V261 4h. Operators easily miss console.error
@@ -1017,6 +1123,44 @@ export function detectLiveSignalsV231(
 
   // BEAR/CHOP regime: use iter231 short-only mean-reversion (original logic).
   const blockedByBtcFilter = btcUptrend || btcMom24h > momThr;
+
+  // 2026-05-23 Cross-asset BNB 18/50 patch (and any other CFG.crossAssetFiltersExtra).
+  // The Rust backtest applies these as bilateral gates (`direction:"any"` semantics:
+  // long needs secondary in uptrend, short needs secondary in downtrend). The TS
+  // live engine previously hardcoded BTC + short-only; this block adds the missing
+  // bilateral secondary gates so PASSLOCK / BIDIR / MR sister CFGs see the same
+  // entry universe live as in backtest. Trend is computed ONCE here (not per asset)
+  // using the 3-way EMA test that matches detector_filters.rs:201-207.
+  type ExtraTrend = "long" | "short" | null;
+  const extraCrossTrends: Array<{
+    symbol: string;
+    trend: ExtraTrend;
+    skipShorts: boolean;
+    skipLongs: boolean;
+  }> = [];
+  if (CFG.crossAssetFiltersExtra && extraCandles) {
+    for (const f of CFG.crossAssetFiltersExtra) {
+      const secCandles = extraCandles[f.symbol];
+      if (!secCandles || secCandles.length === 0) continue;
+      const secCloses = secCandles.map((c) => c.close);
+      const fastArr = ema(secCloses, f.emaFastPeriod);
+      const slowArr = ema(secCloses, f.emaSlowPeriod);
+      const lastF = fastArr[fastArr.length - 1];
+      const lastS = slowArr[slowArr.length - 1];
+      const lastC = secCloses[secCloses.length - 1];
+      let trend: ExtraTrend = null;
+      if (lastF != null && lastS != null && lastC != null) {
+        if (lastC > lastF && lastF > lastS) trend = "long";
+        else if (lastC < lastF && lastF < lastS) trend = "short";
+      }
+      extraCrossTrends.push({
+        symbol: f.symbol,
+        trend,
+        skipShorts: f.skipShortsIfSecondaryUptrend ?? false,
+        skipLongs: f.skipLongsIfSecondaryDowntrend ?? false,
+      });
+    }
+  }
   if (blockedByBtcFilter) {
     result.notes.push(
       `BTC bullish (uptrend=${btcUptrend}, mom24h=${(btcMom24h * 100).toFixed(2)}%) — short signals blocked, longs OK`,
@@ -1050,7 +1194,24 @@ export function detectLiveSignalsV231(
   const tfHours = cfgTfMs / 3600_000;
   const ethLastIdx = ethCandles.length - 1;
   const b1 = ethCandles[ethLastIdx];
-  const entryOpenTime = b1!.openTime + tfHours * 3600_000;
+  // 2026-05-15 (Audit-Round-5 / Agent #8 KRIT): NaN-Guards. Binance can return
+  // partial candles (openTime/close NaN/Inf) during reconnect. Without these
+  // guards a NaN `entryOpenTime` produced `entryHour = NaN`, `allowedHours
+  // .includes(NaN) = false` → signal fired outside allowed hours; a NaN entry
+  // price propagated into stop/tp and reached the MT5 executor as a NaN price
+  // → MT5 DLL crash with no retry.
+  if (
+    !b1 ||
+    !Number.isFinite(b1.openTime) ||
+    !Number.isFinite(b1.close) ||
+    b1.close <= 0
+  ) {
+    result.notes.push(
+      `Skip: invalid candle (openTime=${b1?.openTime}, close=${b1?.close}).`,
+    );
+    return result;
+  }
+  const entryOpenTime = b1.openTime + tfHours * 3600_000;
   const entryHour = new Date(entryOpenTime).getUTCHours();
   // Default allowed hours by bar-cadence (overridable via CFG.allowedHoursUtc).
   // Sub-2h timeframes get all 24 hours; 2h gets every-other-hour; 4h gets the
@@ -1281,6 +1442,30 @@ export function detectLiveSignalsV231(
       });
       continue;
     }
+    // 2026-05-23 Bilateral cross-asset filters (CFG.crossAssetFiltersExtra).
+    // skipShortsIfSecondaryUptrend blocks shorts when secondary in uptrend;
+    // skipLongsIfSecondaryDowntrend blocks longs when secondary in downtrend.
+    // Setting BOTH (BNB 18/50 setup) mirrors Rust's `direction:"any"` semantics.
+    let blockedByExtraCross = false;
+    for (const f of extraCrossTrends) {
+      if (direction === "short" && f.skipShorts && f.trend === "long") {
+        result.skipped.push({
+          asset: a.asset,
+          reason: `${f.symbol} uptrend blocks short signal`,
+        });
+        blockedByExtraCross = true;
+        break;
+      }
+      if (direction === "long" && f.skipLongs && f.trend === "short") {
+        result.skipped.push({
+          asset: a.asset,
+          reason: `${f.symbol} downtrend blocks long signal`,
+        });
+        blockedByExtraCross = true;
+        break;
+      }
+    }
+    if (blockedByExtraCross) continue;
     if (direction === "short" && a.disableShort) {
       result.skipped.push({
         asset: a.asset,
@@ -1310,7 +1495,12 @@ export function detectLiveSignalsV231(
         atrSeries.length >= 2 ? atrSeries[atrSeries.length - 2] : undefined;
       const cur = atrSeries[atrSeries.length - 1];
       const atrVal = prev ?? cur;
-      if (atrVal !== null && atrVal !== undefined) {
+      // 2026-05-24 Wave3 HIGH FIX: `null/undefined` check let through NaN
+      // values (which atr() can produce on flat candles or NaN-input feeds).
+      // `Math.max(stopPct, NaN) === NaN` then propagated NaN into stopPct →
+      // MT5 received `stop_loss = NaN`, either crashing the order or
+      // silently sending it with a default stop. Add isFinite guard.
+      if (atrVal !== null && atrVal !== undefined && Number.isFinite(atrVal)) {
         const atrFrac = (CFG.atrStop.stopMult * atrVal) / entryPrice;
         stopPct = Math.max(stopPct, atrFrac);
       }
@@ -1361,7 +1551,12 @@ export function detectLiveSignalsV231(
         chSeries.length >= 2 ? chSeries[chSeries.length - 2] : undefined;
       const cur = chSeries[chSeries.length - 1];
       const v = prev ?? cur;
-      if (v !== null && v !== undefined) chandelierAtrAtEntry = v;
+      // 2026-05-15 (Audit-Round-5 / Agent #8 HIGH): ATR can return NaN/Infinity
+      // when high==low on flat-candle windows. A NaN `chandelierAtrAtEntry`
+      // propagates to the Python executor where `entry - chandelier * NaN`
+      // produces NaN → trailing-stop never fires, position never closes.
+      if (v !== null && v !== undefined && Number.isFinite(v) && v > 0)
+        chandelierAtrAtEntry = v;
     }
 
     result.signals.push({
@@ -1475,15 +1670,32 @@ function detectBullSignals(
   const ethLastIdx = ethCandles.length - 1;
   const b0 = ethCandles[ethLastIdx - 1];
   const b1 = ethCandles[ethLastIdx];
+  // 2026-05-15 (Audit-Round-5 / Agent #8 KRIT): unified NaN-guard parity with
+  // the main detector (line 1092). Without these guards a NaN close from
+  // partial Binance data slipped through both branches asymmetrically.
+  if (
+    !b0 ||
+    !b1 ||
+    !Number.isFinite(b0.close) ||
+    !Number.isFinite(b1.close) ||
+    !Number.isFinite(b1.openTime) ||
+    b1.close <= 0
+  ) {
+    result.notes.push(
+      `Skip BULL: invalid candle (b1.close=${b1?.close}, b0.close=${b0?.close}).`,
+    );
+    return result;
+  }
+  const prevPrev = ethCandles[ethLastIdx - 2]?.close;
   const last2Green =
-    b1!.close > b0!.close &&
-    b0!.close > (ethCandles[ethLastIdx - 2]?.close ?? Infinity);
+    b1.close > b0.close &&
+    b0.close > (Number.isFinite(prevPrev) ? (prevPrev as number) : Infinity);
   if (!last2Green) {
     result.notes.push("No 2-green sequence → no BULL signal");
     return result;
   }
 
-  const entryOpenTime = b1!.openTime + tfHours * 3600_000;
+  const entryOpenTime = b1.openTime + tfHours * 3600_000;
   if (isNewsBlackout(entryOpenTime, newsEvents, NEWS_BLACKOUT_MINUTES)) {
     result.notes.push("News blackout");
     return result;
@@ -1496,8 +1708,17 @@ function detectBullSignals(
   const tpPrice = entryPrice * (1 + tpPct); // long: TP above
   const maxHoldHours = (BULL.holdBars + 1) * tfHours; // bugfix 2026-04-28: backtest parity
   const baseAsset = BULL.assets[0];
-  // Live risk = baseRisk × factor, capped at LIVE_MAX_RISK_FRAC (no leverage multiplier).
-  const rawRiskFrac = baseAsset!.riskFrac * factor;
+  // 2026-05-21 bug-round: convert engine POSITION-fraction riskFrac to an
+  // equity-LOSS fraction BEFORE capping — the same unit fix already applied to
+  // the main/MR detector (line 1402-1411). BULL.assets riskFrac is a position
+  // fraction (ETH-BULL 1.0, pyramid 4.0), but the Python executor's
+  // compute_lot_size treats riskFrac as a direct loss-at-stop fraction. The
+  // prior `baseRisk × factor` (then clamp to LIVE_MAX_RISK_FRAC) emitted the
+  // raw position fraction → it pinned every BULL trade to the LIVE_MAX_RISK_FRAC
+  // cap (~4% loss) instead of the backtested positionFrac × stopPct × leverage
+  // (1.0 × 0.015 × 2 = 3%, ×factor), over-sizing BULL by ~1.3-1.8× vs backtest.
+  const enginePositionFrac = baseAsset!.riskFrac * factor;
+  const rawRiskFrac = enginePositionFrac * stopPct * BULL.leverage;
   const effectiveRiskFrac = Math.min(rawRiskFrac, LIVE_MAX_RISK_FRAC);
 
   // Long-stop safety cap.
@@ -1532,7 +1753,12 @@ function detectBullSignals(
   // Bull pyramid (ETH-BULL-PYRAMID) when equity ahead by 1.5%+
   if (account.equity - 1 >= 0.015) {
     const pyr = BULL.assets[1];
-    const pyrRawRisk = pyr!.riskFrac * factor;
+    // 2026-05-21 bug-round: same POSITION-fraction → equity-LOSS conversion as
+    // the base BULL signal above (pyramid riskFrac is 4.0, a position fraction,
+    // NOT a loss fraction). Without it the pyramid pinned to the LIVE_MAX_RISK_FRAC
+    // cap instead of the backtested 4.0 × stopPct × leverage (×factor).
+    const pyrEnginePositionFrac = pyr!.riskFrac * factor;
+    const pyrRawRisk = pyrEnginePositionFrac * stopPct * BULL.leverage;
     const pyrEffRisk = Math.min(pyrRawRisk, LIVE_MAX_RISK_FRAC);
     result.signals.push({
       assetSymbol: "ETH-BULL-PYRAMID",

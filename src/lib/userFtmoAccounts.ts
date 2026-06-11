@@ -27,6 +27,15 @@ import type { SupabaseClient } from "@supabase/supabase-js";
  * helper can defensively reject malformed slugs before going to the DB.
  * Belt-and-suspenders: the DB CHECK constraint enforces the same regex, but
  * rejecting client-side avoids a wasted round-trip.
+ *
+ * 2026-05-24 Codex audit MED FIX: my Wave4 change widened this regex to
+ * uppercase + underscore based on a single agent claim. The
+ * userFtmoAccounts.test.ts case at L214-227 explicitly asserts that
+ * "UPPER" slugs MUST be filtered out — meaning the design contract is
+ * lowercase-only. Reverted to original `/^[a-z0-9][a-z0-9-]{0,63}$/`
+ * which now matches both the test contract AND the SQL CHECK constraint
+ * at migration_r29_user_ftmo_accounts.sql:29. The companion
+ * /api/drift-data route also reverted in this commit.
  */
 const TF_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 

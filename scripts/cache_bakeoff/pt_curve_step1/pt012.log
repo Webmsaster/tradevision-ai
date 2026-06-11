@@ -1,0 +1,6 @@
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ALGOUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ARBUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/ATOMUSDT_30m.json
+[loader] dropped 1 non-final tail bar(s) from scripts/cache_bakeoff/NEARUSDT_30m.json
+ftmo-sweep (multi-asset): 18 symbols × 55348 bars; cfg=V5_AMBER_MAX_PASSLOCK; 2 threads; funding=yes; cb_premium=no
+[sweep] WARN: only 1019/9999 windows survived planning. Check --max-days / --start-after-ts vs cache extent.

@@ -8,26 +8,45 @@
  *   pm2-startup install   # auto-start on boot
  *
  * To switch timeframe between deploys, edit FTMO_TF in the env block
- * for both processes (must match), then `pm2 reload ecosystem.config.js`.
+ * for all processes (must match), then `pm2 reload ecosystem.config.js`.
  *
  * Common commands:
  *   pm2 list                # show running services
  *   pm2 logs ftmo-signal    # tail Node service log
+ *   pm2 logs ftmo-tracker   # tail warm-up tracker log
  *   pm2 logs ftmo-executor  # tail Python executor log
- *   pm2 restart all         # restart both
- *   pm2 stop all            # stop both
+ *   pm2 restart all         # restart services
+ *   pm2 stop all            # stop services
  *   pm2 delete all          # remove from PM2
  */
 const path = require("path");
 
-// R67-r12 audit fix: default bumped to Round 60 PASSLOCK champion
-// (63.24% V4-Engine pass-rate). Previously defaulted to R28_V4-era config
-// `2h-trend-v5-quartz-lite-r28-v4engine` — operator running `pm2 start`
-// without FTMO_TF lost +6.62pp pass-rate vs the Pass-Lock champion that
-// CLAUDE.md / PASSLOCK_DEPLOY_RUNBOOK.md / Memory all claim is current.
-const TF = process.env.FTMO_TF || "2h-trend-v5-r28-v6-passlock";
-const STATE_DIR = path.resolve(__dirname, "..", `ftmo-state-${TF}`);
+// 2026-05-15 (Audit-Round-6 / Agent #5 KRIT): default unified with the
+// Python toolkit (tools/_ftmo_defaults.py) and Next API route
+// (src/app/api/ftmo-state/route.ts). Was "2h-trend-v5-r28-v6-passlock"
+// — the prior 2026-05-04 R28_V6 champion. R28_V6 is now superseded by
+// AMBER_MAX_PASSLOCK (2026-05-15). PM2 starting without an env-override
+// would otherwise boot the outdated strategy.
+const TF = process.env.FTMO_TF || "2h-trend-v5-amber-max-passlock";
+// 2026-05-16 Round 9 KRIT FIX (ecosystem agent): STATE_DIR previously had no
+// FTMO_ACCOUNT_ID suffix. With multi-account 3-stack (the documented "only
+// realistic path" per CLAUDE.md), all three PM2 instances would write to the
+// same state directory → MAGIC collisions, state-file corruption, double
+// trades. Per-account state-dirs via FTMO_ACCOUNT_ID env, matching
+// ftmo_executor.py and ftmo_kill.py conventions.
+const ACCT = process.env.FTMO_ACCOUNT_ID || "default";
+const STATE_DIR = path.resolve(__dirname, "..", `ftmo-state-${TF}-${ACCT}`);
 const REPO_ROOT = path.resolve(__dirname, "..");
+
+// 2026-05-16 Round 9 WARN FIX: PM2 opens out_file/error_file immediately.
+// If STATE_DIR doesn't exist on first boot (new TF or new ACCT), the open()
+// fails and autorestart loops until max_restarts is exhausted. Create on
+// load.
+try {
+  require("fs").mkdirSync(STATE_DIR, { recursive: true });
+} catch (e) {
+  console.warn(`[pm2] mkdir failed for ${STATE_DIR}: ${e.message}`);
+}
 
 // Telegram — Phase 12 (CRITICAL Auth Bug 1): hardcoded fallback removed.
 // Previously contained committed bot token + chat-id (visible in git history).
@@ -50,6 +69,15 @@ const sharedEnv = {
   FTMO_TF: TF,
   FTMO_STATE_DIR: STATE_DIR,
   FTMO_START_BALANCE: "100000",
+  FTMO_START_GATE_ENABLED: "1",
+  FTMO_START_GATE_PATH: path.join(REPO_ROOT, "state", "timing-gate.json"),
+  FTMO_START_GATE_WINDOW_HOURS: "2",
+  FTMO_START_GATE_MIN_BREADTH: "10",
+  FTMO_START_GATE_MIN_MAJORS: "1",
+  FTMO_START_GATE_MIN_HISTORY_HOURS: "0",
+  FTMO_START_GATE_MAX_AGE_MIN: "180",
+  FTMO_CLUSTER_ONLY_ENABLED: "0",
+  FTMO_CLUSTER_ONLY_MIN_HISTORY_HOURS: "0",
   TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHAT_ID,
 };
@@ -65,10 +93,41 @@ module.exports = {
       autorestart: true,
       max_restarts: 50,
       restart_delay: 5000, // 5s between restarts
-      max_memory_restart: "500M",
+      // 2026-05-24 Wave2 HIGH FIX: PM2 default kill_timeout is 1600ms — too
+      // short for the Node signal service to finish its in-flight
+      // Binance fetch/cluster write + telegram long-poll graceful shutdown.
+      // Without this, `pm2 reload` SIGKILLs mid-write → partial
+      // signal-alerts.log lines + dropped getUpdates offset → duplicate
+      // /commands on restart.
+      kill_timeout: 20000,
       out_file: path.join(STATE_DIR, "pm2-signal.out.log"),
       error_file: path.join(STATE_DIR, "pm2-signal.err.log"),
       time: true, // prefix timestamps to log lines
+    },
+    {
+      name: "ftmo-tracker",
+      cwd: REPO_ROOT,
+      script: "python",
+      args: "-u tools/signal_tracker_mode.py",
+      interpreter: "none",
+      env: {
+        ...sharedEnv,
+        PYTHONUNBUFFERED: "1",
+        PYTHONIOENCODING: "utf-8",
+        FTMO_MOCK: "1",
+        SIGNAL_TRACKER_INTERVAL: "30",
+        SIGNAL_TRACKER_ALERTS: "1",
+      },
+      autorestart: true,
+      max_restarts: 50,
+      restart_delay: 5000,
+      // Tracker is a fast poll loop with a 30s sleep — 15s kill_timeout
+      // is enough to drain the in-flight HTTP fetch + Telegram alert.
+      kill_timeout: 15000,
+      max_memory_restart: "150M",
+      out_file: path.join(STATE_DIR, "pm2-tracker.out.log"),
+      error_file: path.join(STATE_DIR, "pm2-tracker.err.log"),
+      time: true,
     },
     {
       name: "ftmo-executor",
@@ -100,6 +159,11 @@ module.exports = {
       autorestart: true,
       max_restarts: 50,
       restart_delay: 10000, // 10s — give MT5 time to come back after disconnect
+      // Executor has the most critical cleanup path: state-file lock
+      // release, mt5.shutdown(), close-all-positions-on-SIGTERM. A premature
+      // SIGKILL here corrupts state-file locks (orphan .lock until next OS
+      // restart) and leaves open MT5 positions un-tracked. 30s budget.
+      kill_timeout: 30000,
       max_memory_restart: "300M",
       out_file: path.join(STATE_DIR, "pm2-executor.out.log"),
       error_file: path.join(STATE_DIR, "pm2-executor.err.log"),

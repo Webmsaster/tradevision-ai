@@ -1,0 +1,15 @@
+{
+  "ts": 1779710491309,
+  "ts_iso": "2026-05-25T12:01:31.309380+00:00",
+  "qualified": true,
+  "breadth": 10,
+  "majors": 3,
+  "engine_qualified_count": 300,
+  "engine_qualified_total": 1053,
+  "engine_pass_of_qualified_pct": 0.0,
+  "min_breadth": 10,
+  "min_majors": 1,
+  "window_hours": 2,
+  "source": "ftmo-sweep --windows 2000 --max-days 2 (LIVE 2h cluster detector)",
+  "validation": "v4 LIVE-CLUSTER: 2h b>=10 m>=1"
+}

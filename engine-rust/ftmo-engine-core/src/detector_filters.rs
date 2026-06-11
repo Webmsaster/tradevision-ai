@@ -162,7 +162,13 @@ pub fn choppiness_index(candles: &[Candle], period: usize) -> Vec<Option<f64>> {
             .fold(f64::MAX, f64::min);
         let range = max_h - min_l;
         if range > 0.0 && sum_tr > 0.0 {
-            out[i] = Some(100.0 * (sum_tr / range).log10() / log_p);
+            // 2026-05-13 Codex Audit Round 4 — Fix 1: clamp to documented
+            // [0, 100] scale (TS indicators.ts:301). log10(sum_tr/range)
+            // is negative when sum_tr < range (compact range) → CI can be
+            // negative; sum_tr ≫ range can drive CI above 100. Both cases
+            // would mis-fire `choppiness_max` gates.
+            let ci = 100.0 * (sum_tr / range).log10() / log_p;
+            out[i] = Some(ci.clamp(0.0, 100.0));
         }
     }
     out
@@ -175,28 +181,157 @@ pub fn cross_asset_filter_allows(
     side: PositionSide,
     cross_closes: &[f64],
 ) -> bool {
+    // 2026-05-23 Wave2 fix (KRIT — semantic contradiction with the EMA-warmup
+    // gate at L198-200). Previously: empty `cross_closes` → return `true` =
+    // "no data, don't gate". But the warmup branch below already returns
+    // `false` on incomplete EMAs. So a missing/late-loaded driver symbol
+    // (e.g. DXY before its first candle aligns) silently let EVERY signal
+    // through, while a 1-bar slice (also "no usable data") blocked them all.
+    // Asymmetric → exploitable gate-bypass that inflates measured pass-rates.
+    // Fix: empty feed is also "no usable data" → fail closed like the warmup
+    // branch. Production runs should never operate without a configured
+    // cross-asset feed; if `cross_asset_filter` is set, the feed MUST be wired.
     if cross_closes.is_empty() {
-        return true; // no data = don't gate
+        return false;
     }
+    // 2026-05-13 Codex Round 7 #B3 FIX: TS source `ftmoDaytrade24h.ts:4282`
+    // uses 3-way trend test (price > fast AND fast > slow). Rust previously
+    // only checked fast > slow which over-blocks when current close sits
+    // between fast and slow EMAs (e.g. mean-reverting bars). Read the last
+    // close (post-B2 fix this is the closed-signal-bar's close, no
+    // lookahead) and require ALL three relationships.
     let fast = ema(cross_closes, filter.fast_period as usize);
     let slow = ema(cross_closes, filter.slow_period as usize);
     let last_fast = fast.last().copied().flatten();
     let last_slow = slow.last().copied().flatten();
-    let (Some(f), Some(s)) = (last_fast, last_slow) else {
+    let last_close = cross_closes.last().copied();
+    let (Some(f), Some(s), Some(c)) = (last_fast, last_slow, last_close) else {
         return false;
     };
-    let trend = if f > s {
+    let trend = if c > f && f > s {
         Some(PositionSide::Long)
-    } else if f < s {
+    } else if c < f && f < s {
         Some(PositionSide::Short)
     } else {
         None
     };
+    // 2026-05-14 (detector-41): for inverse-correlated drivers (e.g. DXY vs
+    // crypto), swap the secondary trend before applying any gate. A *down*-
+    // trending DXY then counts as a Long-supporting signal, an *up*-trending
+    // DXY as a Short-supporting signal. Direct-correlation (default) keeps
+    // the original direction-match semantics. Boolean blockers below also
+    // consult `trend_for_gate` so inverse-correlation propagates uniformly.
+    let trend_for_gate = if filter.inverse_correlation {
+        match trend {
+            Some(PositionSide::Long) => Some(PositionSide::Short),
+            Some(PositionSide::Short) => Some(PositionSide::Long),
+            None => None,
+        }
+    } else {
+        trend
+    };
+    // TS-style boolean blockers take precedence over legacy `direction` field.
+    if filter.skip_longs_if_secondary_downtrend
+        && side == PositionSide::Long
+        && trend_for_gate == Some(PositionSide::Short)
+    {
+        return false;
+    }
+    if filter.skip_shorts_if_secondary_uptrend
+        && side == PositionSide::Short
+        && trend_for_gate == Some(PositionSide::Long)
+    {
+        return false;
+    }
+    if filter.skip_longs_if_secondary_downtrend || filter.skip_shorts_if_secondary_uptrend {
+        return true;
+    }
     match filter.direction.as_str() {
-        "long" => trend == Some(PositionSide::Long) && side == PositionSide::Long,
-        "short" => trend == Some(PositionSide::Short) && side == PositionSide::Short,
+        "long" => trend_for_gate == Some(PositionSide::Long) && side == PositionSide::Long,
+        "short" => trend_for_gate == Some(PositionSide::Short) && side == PositionSide::Short,
         // "any" or unknown → require trend matches signal side
-        _ => trend == Some(side),
+        _ => trend_for_gate == Some(side),
+    }
+}
+
+/// Detector #13 (2026-05-14) — Higher-timeframe MACD-histogram trend
+/// confluence gate. The classic MACD = EMA(fast) − EMA(slow); signal-line =
+/// EMA(period) of the MACD; histogram = MACD − signal. We gate entries on
+/// (a) histogram sign (positive for long, negative for short) AND
+/// (b) histogram momentum (rising for long, falling for short across
+/// `rising_lookback` bars). Optional `min_magnitude` rejects entries when
+/// `|hist|` sits inside a near-zero noise band.
+///
+/// Behavioural contract mirrors `htf_trend_allows`:
+///   - Empty / warmup-short input → return `true` (gate dormant; no data
+///     to base a verdict on).
+///   - Direction matches sign-and-momentum requirements → `true`.
+///   - Otherwise (e.g. long but hist < 0, or hist not rising) → `false`.
+///
+/// Index discipline: we read `hist[n-1]` (the latest closed HTF bar). HTF
+/// closes buffer is pushed AFTER step_bar in the sweep loop (Codex HIGH
+/// FIX #4 pattern), so `hist[n-1]` is at-or-before the current primary
+/// entry-bar — no lookahead introduced.
+pub fn htf_macd_hist_allows(
+    htf_closes: &[f64],
+    fast: usize,
+    slow: usize,
+    signal: usize,
+    rising_lookback: usize,
+    side: PositionSide,
+    min_magnitude: f64,
+) -> bool {
+    // Need slow + signal + lookback bars to define `hist[n-1]` AND
+    // `hist[n-1-lookback]`. Below warmup → gate dormant.
+    let need = slow.saturating_add(signal).saturating_add(rising_lookback);
+    if htf_closes.len() < need || fast == 0 || slow == 0 || signal == 0 {
+        return true; // warmup-tolerant (same pattern as htf_trend_allows)
+    }
+
+    // MACD line = EMA(fast) − EMA(slow). Both EMAs share the same length
+    // as the input series; bars before each EMA's warmup are `None`.
+    let ema_fast = ema(htf_closes, fast);
+    let ema_slow = ema(htf_closes, slow);
+    let macd_line: Vec<f64> = ema_fast
+        .iter()
+        .zip(ema_slow.iter())
+        .map(|(f, s)| match (f, s) {
+            (Some(a), Some(b)) => a - b,
+            _ => f64::NAN,
+        })
+        .collect();
+
+    // Signal line — EMA over the MACD line. `ema` self-heals on NaN by
+    // carrying the previous valid value, so the warmup-NaN run at the
+    // start of `macd_line` doesn't poison the recursion.
+    let signal_line = ema(&macd_line, signal);
+
+    // Histogram series. Pair each MACD bar with its signal-bar; both must
+    // be finite for the histogram entry to exist.
+    let n = macd_line.len();
+    let hist: Vec<Option<f64>> = (0..n)
+        .map(|i| match (macd_line[i].is_finite(), signal_line[i]) {
+            (true, Some(s)) => Some(macd_line[i] - s),
+            _ => None,
+        })
+        .collect();
+
+    let h_now = hist[n - 1];
+    let h_prev = hist[n - 1 - rising_lookback];
+
+    match (h_now, h_prev) {
+        (Some(now), Some(prev)) => {
+            if min_magnitude > 0.0 && now.abs() < min_magnitude {
+                return false; // magnitude band — near-zero histogram = no edge
+            }
+            match side {
+                PositionSide::Long => now > 0.0 && now > prev,
+                PositionSide::Short => now < 0.0 && now < prev,
+            }
+        }
+        // Histogram not yet defined on one of the two reference bars → gate
+        // dormant (mirror the empty/warmup branch above).
+        _ => true,
     }
 }
 
@@ -327,5 +462,283 @@ mod tests {
     #[test]
     fn htf_trend_no_data_does_not_gate() {
         assert!(htf_trend_allows(&[], 9, 21, PositionSide::Long));
+    }
+
+    // ---------------------------------------------------------------
+    // 2026-05-14 detector-41: inverse-correlation gate (DXY-style)
+    // ---------------------------------------------------------------
+
+    fn cross_filter(direction: &str, inverse: bool) -> crate::config::CrossAssetFilter {
+        crate::config::CrossAssetFilter {
+            symbol: "DXY".to_string(),
+            direction: direction.to_string(),
+            fast_period: 9,
+            slow_period: 21,
+            inverse_correlation: inverse,
+            skip_longs_if_secondary_downtrend: false,
+            skip_shorts_if_secondary_uptrend: false,
+        }
+    }
+
+    /// Inverse-correlation, direction="long": when DXY (secondary) shows an
+    /// up-trend (fast > slow), inversion treats it as bearish for the primary
+    /// → block long entries.
+    #[test]
+    fn inverse_correlation_long_blocks_on_secondary_uptrend() {
+        // Secondary uptrend: rising closes → fast EMA > slow EMA
+        let closes: Vec<f64> = (0..60).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let filter = cross_filter("long", true);
+        assert!(!cross_asset_filter_allows(
+            &filter,
+            PositionSide::Long,
+            &closes
+        ));
+        // Sanity check: with inverse=false the same data WOULD allow.
+        let filter_direct = cross_filter("long", false);
+        assert!(cross_asset_filter_allows(
+            &filter_direct,
+            PositionSide::Long,
+            &closes
+        ));
+    }
+
+    /// Inverse-correlation, direction="long": when DXY shows a down-trend,
+    /// inversion treats it as bullish → allow long entries.
+    #[test]
+    fn inverse_correlation_long_allows_on_secondary_downtrend() {
+        // Secondary downtrend: falling closes → fast EMA < slow EMA
+        let closes: Vec<f64> = (0..60).map(|i| 100.0 - i as f64 * 0.5).collect();
+        let filter = cross_filter("long", true);
+        assert!(cross_asset_filter_allows(
+            &filter,
+            PositionSide::Long,
+            &closes
+        ));
+        // Sanity check: with inverse=false the same downtrend BLOCKS long.
+        let filter_direct = cross_filter("long", false);
+        assert!(!cross_asset_filter_allows(
+            &filter_direct,
+            PositionSide::Long,
+            &closes
+        ));
+    }
+
+    /// Inverse-correlation, direction="short": when DXY shows a down-trend,
+    /// inversion treats it as bullish for the primary → block short entries.
+    #[test]
+    fn inverse_correlation_short_blocks_on_secondary_downtrend() {
+        // Secondary downtrend
+        let closes: Vec<f64> = (0..60).map(|i| 100.0 - i as f64 * 0.5).collect();
+        let filter = cross_filter("short", true);
+        assert!(!cross_asset_filter_allows(
+            &filter,
+            PositionSide::Short,
+            &closes
+        ));
+        // Same data with inverse=false: downtrend confirms short → allow.
+        let filter_direct = cross_filter("short", false);
+        assert!(cross_asset_filter_allows(
+            &filter_direct,
+            PositionSide::Short,
+            &closes
+        ));
+    }
+
+    /// Default `inverse_correlation = false` must preserve existing
+    /// direct-correlation behavior. Long allowed on secondary uptrend,
+    /// short allowed on secondary downtrend.
+    #[test]
+    fn inverse_correlation_default_false_preserves_existing_behavior() {
+        let up_closes: Vec<f64> = (0..60).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let down_closes: Vec<f64> = (0..60).map(|i| 100.0 - i as f64 * 0.5).collect();
+        // direction="any" relies on trend matching side
+        let any = cross_filter("any", false);
+        assert!(cross_asset_filter_allows(
+            &any,
+            PositionSide::Long,
+            &up_closes
+        ));
+        assert!(!cross_asset_filter_allows(
+            &any,
+            PositionSide::Short,
+            &up_closes
+        ));
+        assert!(cross_asset_filter_allows(
+            &any,
+            PositionSide::Short,
+            &down_closes
+        ));
+        assert!(!cross_asset_filter_allows(
+            &any,
+            PositionSide::Long,
+            &down_closes
+        ));
+        // direction="long" requires secondary uptrend
+        let long = cross_filter("long", false);
+        assert!(cross_asset_filter_allows(
+            &long,
+            PositionSide::Long,
+            &up_closes
+        ));
+        assert!(!cross_asset_filter_allows(
+            &long,
+            PositionSide::Long,
+            &down_closes
+        ));
+    }
+
+    // ─── Detector #13 — HTF MACD-histogram gate ──────────────────────────
+
+    #[test]
+    fn macd_hist_long_requires_positive_rising() {
+        // Accelerating uptrend → MACD line growing → histogram positive AND
+        // rising bar-over-bar → long allowed. A perfectly linear ramp would
+        // converge the Wilder-EMA-difference to a steady-state constant
+        // (hist == prev) which would correctly fail "strictly rising"; the
+        // quadratic component below keeps the histogram in expansion.
+        let closes: Vec<f64> = (0..120)
+            .map(|i| 100.0 + i as f64 * 0.5 + (i as f64).powi(2) * 0.002)
+            .collect();
+        assert!(
+            htf_macd_hist_allows(&closes, 12, 26, 9, 1, PositionSide::Long, 0.0),
+            "long must be allowed on rising-positive histogram"
+        );
+        // Same series → short must be blocked (hist positive, not negative).
+        assert!(
+            !htf_macd_hist_allows(&closes, 12, 26, 9, 1, PositionSide::Short, 0.0),
+            "short must be blocked on rising-positive histogram"
+        );
+    }
+
+    #[test]
+    fn macd_hist_short_requires_negative_falling() {
+        // Accelerating downtrend (linear + quadratic acceleration) so the
+        // histogram stays in strict expansion rather than asymptoting to a
+        // steady-state constant.
+        let closes: Vec<f64> = (0..120)
+            .map(|i| 200.0 - i as f64 * 0.5 - (i as f64).powi(2) * 0.002)
+            .collect();
+        assert!(
+            htf_macd_hist_allows(&closes, 12, 26, 9, 1, PositionSide::Short, 0.0),
+            "short must be allowed on falling-negative histogram"
+        );
+        assert!(
+            !htf_macd_hist_allows(&closes, 12, 26, 9, 1, PositionSide::Long, 0.0),
+            "long must be blocked on negative histogram"
+        );
+    }
+
+    #[test]
+    fn macd_hist_dormant_until_warmup() {
+        // Below `slow + signal + lookback` = 26 + 9 + 1 = 36 bars → gate
+        // dormant (returns true regardless of direction). Mirrors the
+        // empty/warmup-tolerant contract of htf_trend_allows.
+        let closes: Vec<f64> = (0..20).map(|i| 100.0 + i as f64).collect();
+        assert!(htf_macd_hist_allows(
+            &closes,
+            12,
+            26,
+            9,
+            1,
+            PositionSide::Long,
+            0.0
+        ));
+        assert!(htf_macd_hist_allows(
+            &closes,
+            12,
+            26,
+            9,
+            1,
+            PositionSide::Short,
+            0.0
+        ));
+        // Exactly at warmup boundary should also dormant-pass (need - 1).
+        let need = 26 + 9 + 1;
+        let exact: Vec<f64> = (0..need - 1).map(|i| 100.0 + i as f64).collect();
+        assert!(htf_macd_hist_allows(
+            &exact,
+            12,
+            26,
+            9,
+            1,
+            PositionSide::Long,
+            0.0
+        ));
+    }
+
+    #[test]
+    fn macd_hist_strict_vs_permissive_lookback() {
+        // Accelerating uptrend so the histogram is strictly rising under both
+        // lookback=1 (recent slope) and lookback=20 (multi-bar slope).
+        let closes: Vec<f64> = (0..120)
+            .map(|i| 100.0 + i as f64 * 0.3 + (i as f64).powi(2) * 0.002)
+            .collect();
+        assert!(htf_macd_hist_allows(
+            &closes,
+            12,
+            26,
+            9,
+            1,
+            PositionSide::Long,
+            0.0
+        ));
+        assert!(htf_macd_hist_allows(
+            &closes,
+            12,
+            26,
+            9,
+            20,
+            PositionSide::Long,
+            0.0
+        ));
+        // Reversal series: first 80 bars uptrend, last 40 bars decay. With
+        // lookback large enough to span the reversal, MACD-hist must be
+        // falling → long blocked.
+        let mut decay: Vec<f64> = (0..80).map(|i| 100.0 + i as f64 * 0.5).collect();
+        decay.extend((0..40).map(|i| 140.0 - i as f64 * 0.5));
+        assert!(!htf_macd_hist_allows(
+            &decay,
+            12,
+            26,
+            9,
+            20,
+            PositionSide::Long,
+            0.0
+        ));
+    }
+
+    #[test]
+    fn macd_hist_min_magnitude_blocks_near_zero() {
+        // Almost-flat closes → MACD near zero → near-zero histogram.
+        // min_magnitude=1.0 is a large band → must block regardless of sign.
+        let closes: Vec<f64> = (0..120).map(|i| 100.0 + i as f64 * 0.001).collect();
+        let strict = htf_macd_hist_allows(&closes, 12, 26, 9, 1, PositionSide::Long, 1.0);
+        assert!(
+            !strict,
+            "long must be blocked when |hist| < min_magnitude band"
+        );
+    }
+
+    #[test]
+    fn macd_hist_handles_empty_closes() {
+        // No data → gate dormant (returns true).
+        assert!(htf_macd_hist_allows(
+            &[],
+            12,
+            26,
+            9,
+            1,
+            PositionSide::Long,
+            0.0
+        ));
+        assert!(htf_macd_hist_allows(
+            &[],
+            12,
+            26,
+            9,
+            1,
+            PositionSide::Short,
+            0.0
+        ));
     }
 }

@@ -57,7 +57,11 @@ const IS_TEST =
  * process. We re-use `redactToken` (Telegram-token shape) and also strip
  * generic `Bearer xxxx` headers and JWT-shaped strings.
  */
-const BEARER_RE = /Bearer\s+[A-Za-z0-9._\-]+/g;
+// 2026-05-15 (Audit-Round-5 / Agent #7 WARNUNG): case-insensitive Bearer
+// (lowercase variant `bearer xxx` from 3rd-party SDK stack-traces was missed)
+// + extra generic patterns for OpenAI / Stripe / GitHub / Anthropic /
+// password / api_key / client_secret in error messages.
+const BEARER_RE = /[Bb]earer\s+[A-Za-z0-9._\-]+/g;
 const JWT_RE = /eyJ[A-Za-z0-9._\-]{20,}/g;
 // R67-RR5-Round2 audit fix (MED): opaque Supabase token shapes that
 // don't match JWT/Bearer. refresh_token is a 20+-char base64url after
@@ -67,17 +71,68 @@ const SUPABASE_PAT_RE = /\bsbp?_[A-Za-z0-9]{20,}\b/g;
 const SUPABASE_SECRET_RE = /\bsb-secret-[A-Za-z0-9]{20,}\b/g;
 const REFRESH_TOKEN_RE = /(refresh[_-]?token)["'=:\s]+([A-Za-z0-9._\-]{20,})/gi;
 const ACCESS_TOKEN_RE = /(access[_-]?token)["'=:\s]+([A-Za-z0-9._\-]{20,})/gi;
+// 2026-05-15 (Audit-Round-5 / Agent #7 WARNUNG): vendor key prefixes.
+const OPENAI_KEY_RE = /\bsk-[A-Za-z0-9]{16,}\b/g;
+const ANTHROPIC_KEY_RE = /\bsk-ant-[A-Za-z0-9_-]{20,}\b/g;
+const STRIPE_LIVE_KEY_RE = /\b(?:sk|pk|rk)_live_[A-Za-z0-9]{20,}\b/g;
+const GITHUB_TOKEN_RE = /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b/g;
+const GENERIC_SECRET_RE =
+  /(api[_-]?key|password|client[_-]?secret|secret)["'=:\s]+([^\s,"'}]{8,})/gi;
+// PII: route-path UUIDs (e.g. /api/trades/<uuid>/edit) — DSGVO concern.
+const UUID_RE =
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 
 export function redactSensitive(s: string): string {
   if (!s) return s;
   let out = redactToken(s);
   out = out.replace(BEARER_RE, "Bearer <REDACTED>");
   out = out.replace(JWT_RE, "<REDACTED_JWT>");
+  // Anthropic prefix matches `sk-…` too, so run the more specific one first.
+  out = out.replace(ANTHROPIC_KEY_RE, "<REDACTED_ANTHROPIC>");
+  out = out.replace(STRIPE_LIVE_KEY_RE, "<REDACTED_STRIPE_LIVE>");
+  out = out.replace(GITHUB_TOKEN_RE, "<REDACTED_GITHUB>");
+  out = out.replace(OPENAI_KEY_RE, "<REDACTED_OPENAI>");
   out = out.replace(SUPABASE_PAT_RE, "<REDACTED_SBP>");
   out = out.replace(SUPABASE_SECRET_RE, "<REDACTED_SB_SECRET>");
   out = out.replace(REFRESH_TOKEN_RE, "$1=<REDACTED>");
   out = out.replace(ACCESS_TOKEN_RE, "$1=<REDACTED>");
+  out = out.replace(GENERIC_SECRET_RE, "$1=<REDACTED>");
+  out = out.replace(UUID_RE, "<uuid>");
   return out;
+}
+
+/**
+ * 2026-05-24 Wave9 MED FIX (Agent 2): `extra` was passed through verbatim
+ * to the /api/log-error sink. Callers using `captureException(err, {
+ * extra: { email, sessionToken, ... } })` would exfiltrate PII/secrets
+ * past the message+stack redact pipeline. Walk string-valued keys and
+ * apply the same redactSensitive() pipeline; other types pass through
+ * (already serialized safely upstream).
+ */
+function redactExtra(
+  extra: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!extra) return undefined;
+  return redactValue(extra, 0) as Record<string, unknown>;
+}
+
+// 2026-05-24 Codex audit MED FIX: prior Wave9 redactExtra only walked the
+// TOP-LEVEL string values. Nested objects (e.g. `extra: { user: { email,
+// token } }`) bypassed the redaction. Now recursive with a 4-level depth
+// cap to avoid runaway on cyclic refs (errors with circular .cause chains).
+function redactValue(v: unknown, depth: number): unknown {
+  if (depth > 4) return "[depth-limit]";
+  if (v == null) return v;
+  if (typeof v === "string") return redactSensitive(v);
+  if (Array.isArray(v)) return v.map((x) => redactValue(x, depth + 1));
+  if (typeof v === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      out[k] = redactValue(val, depth + 1);
+    }
+    return out;
+  }
+  return v;
 }
 
 function buildExceptionPayload(
@@ -96,7 +151,7 @@ function buildExceptionPayload(
     stack: e.stack ? redactSensitive(e.stack).slice(0, 4000) : undefined,
     source: ctx?.source,
     tags: ctx?.tags,
-    extra: ctx?.extra,
+    extra: redactExtra(ctx?.extra),
     url:
       typeof window !== "undefined" && window.location
         ? window.location.href
@@ -118,7 +173,7 @@ function buildMessagePayload(
     message: redactSensitive(msg),
     source: ctx?.source,
     tags: ctx?.tags,
-    extra: ctx?.extra,
+    extra: redactExtra(ctx?.extra),
     url:
       typeof window !== "undefined" && window.location
         ? window.location.href

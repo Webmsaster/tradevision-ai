@@ -46,44 +46,91 @@ export interface AcquireResult {
 export function acquireSingletonLock(stateDir: string): AcquireResult {
   fs.mkdirSync(stateDir, { recursive: true });
   const pidFile = path.join(stateDir, SINGLETON_PID_FILE);
-  if (fs.existsSync(pidFile)) {
-    let otherPid = 0;
+
+  // 2026-05-14 Codex Wave-2 Bug #4 FIX: atomic create-or-fail. Replaces the
+  // read-then-write race where two simultaneous starts could both observe
+  // "no peer" and both write their PID. `wx` = O_CREAT|O_EXCL — kernel-level
+  // exclusivity. On EEXIST we inspect liveness; if dead we clear-and-retry.
+  const tryAtomicCreate = (): { ok: true } | { ok: false; err: Error } => {
     try {
-      otherPid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10) || 0;
-    } catch {
-      otherPid = 0;
-    }
-    if (otherPid > 0 && otherPid !== process.pid) {
-      let alive = false;
+      const fd = fs.openSync(pidFile, "wx");
       try {
-        // Signal 0 doesn't deliver — only checks permission/existence.
-        process.kill(otherPid, 0);
-        alive = true;
-      } catch (e) {
-        // ESRCH = no such process; EPERM = exists but not ours (still alive).
-        const code = (e as NodeJS.ErrnoException).code;
-        alive = code === "EPERM";
+        fs.writeSync(fd, String(process.pid));
+      } finally {
+        fs.closeSync(fd);
       }
-      if (alive) {
-        return {
-          acquired: false,
-          otherPid,
-          reason: `another signal service is already running (pid=${otherPid}, state_dir=${stateDir})`,
-        };
-      }
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, err: e as Error };
     }
+  };
+
+  let attempt = tryAtomicCreate();
+  if (attempt.ok) {
+    registerCleanup(pidFile);
+    return { acquired: true };
   }
-  try {
-    fs.writeFileSync(pidFile, String(process.pid));
-  } catch (e) {
-    // Best-effort: read-only FS / permission edge cases. Match Python.
+
+  // EEXIST path: inspect peer liveness.
+  const code = (attempt.err as NodeJS.ErrnoException).code;
+  if (code !== "EEXIST") {
+    // Some other error (EACCES / EROFS / ENOSPC). Match Python — log and continue.
     return {
       acquired: true,
-      reason: `pid file write failed: ${(e as Error).message}`,
+      reason: `pid file write failed: ${attempt.err.message}`,
     };
   }
-  registerCleanup(pidFile);
-  return { acquired: true };
+
+  let otherPid = 0;
+  try {
+    otherPid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10) || 0;
+  } catch {
+    otherPid = 0;
+  }
+
+  if (otherPid > 0 && otherPid !== process.pid) {
+    let alive = false;
+    try {
+      // Signal 0 doesn't deliver — only checks permission/existence.
+      process.kill(otherPid, 0);
+      alive = true;
+    } catch (e) {
+      // ESRCH = no such process; EPERM = exists but not ours (still alive).
+      const killCode = (e as NodeJS.ErrnoException).code;
+      alive = killCode === "EPERM";
+    }
+    if (alive) {
+      return {
+        acquired: false,
+        otherPid,
+        reason: `another signal service is already running (pid=${otherPid}, state_dir=${stateDir})`,
+      };
+    }
+  }
+
+  // Peer is dead (ESRCH) or pidfile was malformed. Clear + retry atomic-create.
+  try {
+    fs.unlinkSync(pidFile);
+  } catch {
+    /* race: someone else claimed it between our read and unlink */
+  }
+  attempt = tryAtomicCreate();
+  if (attempt.ok) {
+    registerCleanup(pidFile);
+    return { acquired: true };
+  }
+  // Lost the race: another process claimed it after we unlinked.
+  let raceOtherPid = 0;
+  try {
+    raceOtherPid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10) || 0;
+  } catch {
+    /* ignore */
+  }
+  return {
+    acquired: false,
+    otherPid: raceOtherPid,
+    reason: `race lost — another signal service claimed lock (pid=${raceOtherPid}, state_dir=${stateDir})`,
+  };
 }
 
 /**
