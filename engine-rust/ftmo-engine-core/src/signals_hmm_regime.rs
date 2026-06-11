@@ -399,9 +399,9 @@ fn forward_posterior(model: &HmmModel, obs: &[[f64; 2]]) -> Option<Vec<f64>> {
     let mut alpha = vec![0.0_f64; n];
 
     // Initialization: alpha[0][k] = start_prob[k] * emission_pdf(obs[0], k).
-    for k in 0..n {
+    for (k, a) in alpha.iter_mut().enumerate() {
         let pdf = gaussian_pdf_diag(&obs[0], &model.means[k], &model.covars[k]);
-        alpha[k] = model.start_prob[k] * pdf;
+        *a = model.start_prob[k] * pdf;
     }
     let s0: f64 = alpha.iter().sum();
     if !s0.is_finite() || s0 <= 0.0 {
@@ -418,14 +418,14 @@ fn forward_posterior(model: &HmmModel, obs: &[[f64; 2]]) -> Option<Vec<f64>> {
 
     // Recurrence: alpha[t][k] = emission_pdf(obs[t], k) · Σ_j alpha[t-1][j] · A[j][k].
     let mut next = vec![0.0_f64; n];
-    for t in 1..obs.len() {
-        for k in 0..n {
+    for ob in obs.iter().skip(1) {
+        for (k, nx) in next.iter_mut().enumerate() {
             let mut acc = 0.0_f64;
-            for j in 0..n {
-                acc += alpha[j] * model.trans_mat[j][k];
+            for (j, a) in alpha.iter().enumerate() {
+                acc += a * model.trans_mat[j][k];
             }
-            let pdf = gaussian_pdf_diag(&obs[t], &model.means[k], &model.covars[k]);
-            next[k] = acc * pdf;
+            let pdf = gaussian_pdf_diag(ob, &model.means[k], &model.covars[k]);
+            *nx = acc * pdf;
         }
         let s: f64 = next.iter().sum();
         if !s.is_finite() || s <= 0.0 {

@@ -45,7 +45,7 @@ impl Hmm4StateModel {
                     }
                     let mu_ret = self.means[s][0];
                     let mu_vol = self.means[s][1];
-                    let var_ret = self.covars[s].get(0).copied().unwrap_or(1.0);
+                    let var_ret = self.covars[s].first().copied().unwrap_or(1.0);
                     let var_vol = self.covars[s].get(1).copied().unwrap_or(1.0);
                     // log-Gaussian per feature, sum
                     let dr = obs.0 - mu_ret;

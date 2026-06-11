@@ -107,19 +107,11 @@ pub fn compute_funding_accel_vote(
 mod tests {
     use super::*;
 
-    fn build_series(n: usize, values: &[(usize, f64)]) -> Vec<Option<f64>> {
-        let mut s = vec![None; n];
-        for &(i, v) in values {
-            s[i] = Some(v);
-        }
-        s
-    }
-
     #[test]
     fn fires_short_on_fast_positive_acceleration() {
         let n = 10;
         // Funding rising fast: prev=0.0001, cur=0.001 → delta=+0.0009 > 0.0003
-        let mut series: Vec<Option<f64>> = (0..n)
+        let series: Vec<Option<f64>> = (0..n)
             .map(|i| Some(0.0001 + (i as f64) * 0.00015))
             .collect();
         // signal_idx = 8, accel_window=3 → prev=series[5]=0.000850

@@ -185,8 +185,8 @@ pub fn compute_top_trader_ls_vote(
     let mut direction: Option<PositionSide> = None;
     let long_hi = 1.0 + params.long_threshold;
     let short_lo = 1.0 - params.short_threshold;
-    for i in window_start..=signal_idx {
-        let v = top[i]?;
+    for entry in top.iter().take(signal_idx + 1).skip(window_start) {
+        let v = (*entry)?;
         if !v.is_finite() {
             return None;
         }
@@ -232,10 +232,12 @@ pub fn compute_top_trader_ls_vote(
         }
         let mut sum = 0.0_f64;
         let mut count = 0usize;
-        for j in (signal_idx - params.sma_period)..signal_idx {
-            let Some(v) = top[j] else {
-                return None;
-            };
+        for entry in top
+            .iter()
+            .take(signal_idx)
+            .skip(signal_idx - params.sma_period)
+        {
+            let v = (*entry)?;
             if !v.is_finite() {
                 return None;
             }
@@ -284,15 +286,17 @@ mod tests {
     }
 
     fn btc_asset() -> AssetConfig {
-        let mut a = AssetConfig::default();
-        a.symbol = "BTCUSDT".to_string();
-        a
+        AssetConfig {
+            symbol: "BTCUSDT".to_string(),
+            ..AssetConfig::default()
+        }
     }
 
     fn alt_asset() -> AssetConfig {
-        let mut a = AssetConfig::default();
-        a.symbol = "DOGEUSDT".to_string();
-        a
+        AssetConfig {
+            symbol: "DOGEUSDT".to_string(),
+            ..AssetConfig::default()
+        }
     }
 
     #[test]

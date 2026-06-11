@@ -165,16 +165,14 @@ fn ema_over_optional(series: &[Option<f64>], period: usize) -> Option<f64> {
     }
     let alpha = 2.0 / (period as f64 + 1.0);
     let mut acc: Option<f64> = None;
-    for val in series {
-        if let Some(v) = val {
-            if !v.is_finite() {
-                continue;
-            }
-            acc = Some(match acc {
-                Some(prev) => prev + alpha * (v - prev),
-                None => *v,
-            });
+    for v in series.iter().flatten() {
+        if !v.is_finite() {
+            continue;
         }
+        acc = Some(match acc {
+            Some(prev) => prev + alpha * (v - prev),
+            None => *v,
+        });
     }
     acc
 }
@@ -334,17 +332,19 @@ mod tests {
     }
 
     fn btc_asset() -> AssetConfig {
-        let mut a = AssetConfig::default();
-        a.symbol = "BTC-TREND".to_string();
-        a.source_symbol = Some("BTCUSDT".to_string());
-        a
+        AssetConfig {
+            symbol: "BTC-TREND".to_string(),
+            source_symbol: Some("BTCUSDT".to_string()),
+            ..AssetConfig::default()
+        }
     }
 
     fn eth_asset() -> AssetConfig {
-        let mut a = AssetConfig::default();
-        a.symbol = "ETH-TREND".to_string();
-        a.source_symbol = Some("ETHUSDT".to_string());
-        a
+        AssetConfig {
+            symbol: "ETH-TREND".to_string(),
+            source_symbol: Some("ETHUSDT".to_string()),
+            ..AssetConfig::default()
+        }
     }
 
     fn constant_basis(n: usize, value: f64) -> Vec<Option<f64>> {
@@ -400,9 +400,11 @@ mod tests {
         let candles = flat_candles(50);
         let basis = constant_basis(50, 0.12);
         let funding = vec![Some(0.0002); 50];
-        let mut params = CmeBasisParams::default();
-        params.mode = CmeBasisMode::Spread;
-        params.spread_threshold_pct = 0.04;
+        let params = CmeBasisParams {
+            mode: CmeBasisMode::Spread,
+            spread_threshold_pct: 0.04,
+            ..CmeBasisParams::default()
+        };
         let asset = btc_asset();
         let vote = compute_cme_basis_vote(&candles, Some(&basis), Some(&funding), &asset, &params);
         assert_eq!(vote, Some(PositionSide::Short));
@@ -418,8 +420,10 @@ mod tests {
     fn spread_mode_requires_funding_input() {
         let candles = flat_candles(50);
         let basis = constant_basis(50, 0.15);
-        let mut params = CmeBasisParams::default();
-        params.mode = CmeBasisMode::Spread;
+        let params = CmeBasisParams {
+            mode: CmeBasisMode::Spread,
+            ..CmeBasisParams::default()
+        };
         let asset = btc_asset();
         let vote = compute_cme_basis_vote(&candles, Some(&basis), None, &asset, &params);
         assert!(vote.is_none());
@@ -504,8 +508,8 @@ mod tests {
         assert!(vote.is_none());
 
         let mut basis_warm: Vec<Option<f64>> = vec![None; 50];
-        for i in 39..49 {
-            basis_warm[i] = Some(0.20);
+        for b in basis_warm.iter_mut().take(49).skip(39) {
+            *b = Some(0.20);
         }
         let vote2 = compute_cme_basis_vote(&candles, Some(&basis_warm), None, &asset, &params);
         assert_eq!(vote2, Some(PositionSide::Long));
@@ -515,8 +519,10 @@ mod tests {
     fn allowlist_extension_unlocks_extra_assets() {
         let candles = flat_candles(50);
         let basis = constant_basis(50, 0.15);
-        let mut params = CmeBasisParams::default();
-        params.symbol_allowlist = vec!["ETHUSDT".to_string()];
+        let params = CmeBasisParams {
+            symbol_allowlist: vec!["ETHUSDT".to_string()],
+            ..CmeBasisParams::default()
+        };
         let asset = eth_asset();
         let vote = compute_cme_basis_vote(&candles, Some(&basis), None, &asset, &params);
         assert_eq!(vote, Some(PositionSide::Long));
@@ -526,8 +532,10 @@ mod tests {
     fn empty_allowlist_disables_gating() {
         let candles = flat_candles(50);
         let basis = constant_basis(50, 0.15);
-        let mut params = CmeBasisParams::default();
-        params.symbol_allowlist = vec![];
+        let params = CmeBasisParams {
+            symbol_allowlist: vec![],
+            ..CmeBasisParams::default()
+        };
         let asset = eth_asset();
         let vote = compute_cme_basis_vote(&candles, Some(&basis), None, &asset, &params);
         assert_eq!(vote, Some(PositionSide::Long));
@@ -540,12 +548,16 @@ mod tests {
         p.basis_threshold_pct = f64::NAN;
         assert!(!p.is_well_formed());
 
-        let mut p = CmeBasisParams::default();
-        p.basis_threshold_pct = -0.05;
+        let p = CmeBasisParams {
+            basis_threshold_pct: -0.05,
+            ..CmeBasisParams::default()
+        };
         assert!(!p.is_well_formed());
 
-        let mut p = CmeBasisParams::default();
-        p.spread_threshold_pct = f64::INFINITY;
+        let p = CmeBasisParams {
+            spread_threshold_pct: f64::INFINITY,
+            ..CmeBasisParams::default()
+        };
         assert!(!p.is_well_formed());
     }
 
@@ -555,9 +567,11 @@ mod tests {
         let candles = flat_candles(n);
         let mut basis: Vec<Option<f64>> = vec![Some(0.10); n];
         basis[n - 2] = Some(0.50);
-        let mut params = CmeBasisParams::default();
-        params.basis_threshold_pct = 0.20;
-        params.basis_ema_period = 16;
+        let params = CmeBasisParams {
+            basis_threshold_pct: 0.20,
+            basis_ema_period: 16,
+            ..CmeBasisParams::default()
+        };
         let asset = btc_asset();
         let vote = compute_cme_basis_vote(&candles, Some(&basis), None, &asset, &params);
         assert!(vote.is_none());

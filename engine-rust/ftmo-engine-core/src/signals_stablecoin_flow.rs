@@ -166,10 +166,11 @@ impl StablecoinFlowParams {
         if bars_per_day <= 1 {
             return Self::default_daily();
         }
-        let mut p = Self::default();
-        // 1 day publishing lag, expressed in bars.
-        p.publishing_lag_bars = bars_per_day;
-        p
+        Self {
+            // 1 day publishing lag, expressed in bars.
+            publishing_lag_bars: bars_per_day,
+            ..Self::default()
+        }
     }
 }
 
@@ -269,12 +270,8 @@ pub fn compute_stablecoin_flow_vote(
     let mut daily_samples: Vec<f64> = Vec::with_capacity(params.z_window_days as usize + 1);
     for k in 0..=params.z_window_days as usize {
         let offset = k * bars_per_day;
-        let Some(idx) = lagged_idx.checked_sub(offset) else {
-            return None;
-        };
-        let Some(v) = supply[idx] else {
-            return None;
-        };
+        let idx = lagged_idx.checked_sub(offset)?;
+        let v = supply[idx]?;
         if !v.is_finite() || v <= 0.0 {
             return None;
         }
@@ -497,9 +494,7 @@ mod tests {
             .map(|i| flat_candle(i as i64 * 1_800_000, 100.0 + i as f64 * 0.01))
             .collect();
         // 31 daily snapshots, each 0.7% larger than previous.
-        let daily: Vec<f64> = (0..=30)
-            .map(|k| 1.0e11 * (1.007_f64).powi(k as i32))
-            .collect();
+        let daily: Vec<f64> = (0..=30).map(|k| 1.0e11 * (1.007_f64).powi(k)).collect();
         let supply = supply_from_daily(&candles, &daily);
         let params = StablecoinFlowParams::default();
         let v = compute_stablecoin_flow_vote(Some(&supply), &candles, &params);
@@ -519,9 +514,7 @@ mod tests {
             .map(|i| flat_candle(i as i64 * 1_800_000, 200.0 - i as f64 * 0.01))
             .collect();
         // 31 daily snapshots, each 0.7% smaller.
-        let daily: Vec<f64> = (0..=30)
-            .map(|k| 1.0e11 * (0.993_f64).powi(k as i32))
-            .collect();
+        let daily: Vec<f64> = (0..=30).map(|k| 1.0e11 * (0.993_f64).powi(k)).collect();
         let supply = supply_from_daily(&candles, &daily);
         let params = StablecoinFlowParams::default(); // long_only=true
         let v = compute_stablecoin_flow_vote(Some(&supply), &candles, &params);
@@ -540,9 +533,7 @@ mod tests {
         let candles: Vec<Candle> = (0..n_bars)
             .map(|i| flat_candle(i as i64 * 1_800_000, 200.0 - i as f64 * 0.01))
             .collect();
-        let daily: Vec<f64> = (0..=30)
-            .map(|k| 1.0e11 * (1.007_f64).powi(k as i32))
-            .collect();
+        let daily: Vec<f64> = (0..=30).map(|k| 1.0e11 * (1.007_f64).powi(k)).collect();
         let supply = supply_from_daily(&candles, &daily);
         let params = StablecoinFlowParams::default();
         let v = compute_stablecoin_flow_vote(Some(&supply), &candles, &params);
@@ -572,9 +563,7 @@ mod tests {
         let candles: Vec<Candle> = (0..n_bars)
             .map(|i| flat_candle(i as i64 * 1_800_000, 100.0 + i as f64 * 0.01))
             .collect();
-        let daily: Vec<f64> = (0..=30)
-            .map(|k| 1.0e11 * (1.007_f64).powi(k as i32))
-            .collect();
+        let daily: Vec<f64> = (0..=30).map(|k| 1.0e11 * (1.007_f64).powi(k)).collect();
         let mut supply = supply_from_daily(&candles, &daily);
         let params = StablecoinFlowParams::default();
         let signal_idx = candles.len() - 2;
@@ -615,9 +604,7 @@ mod tests {
         let candles: Vec<Candle> = (0..n_bars)
             .map(|i| flat_candle(i as i64 * 1_800_000, 100.0 + i as f64 * 0.01))
             .collect();
-        let daily: Vec<f64> = (0..=30)
-            .map(|k| 1.0e11 * (1.007_f64).powi(k as i32))
-            .collect();
+        let daily: Vec<f64> = (0..=30).map(|k| 1.0e11 * (1.007_f64).powi(k)).collect();
         let supply = supply_from_daily(&candles, &daily);
         let v1 = compute_stablecoin_flow_vote(Some(&supply), &candles, &p);
         let v2 = compute_stablecoin_flow_vote(Some(&supply), &candles, &p);
@@ -632,9 +619,7 @@ mod tests {
         let candles: Vec<Candle> = (0..n_bars)
             .map(|i| flat_candle(i as i64 * 1_800_000, 200.0 - i as f64 * 0.01))
             .collect();
-        let daily: Vec<f64> = (0..=30)
-            .map(|k| 1.0e11 * (0.993_f64).powi(k as i32))
-            .collect();
+        let daily: Vec<f64> = (0..=30).map(|k| 1.0e11 * (0.993_f64).powi(k)).collect();
         let supply = supply_from_daily(&candles, &daily);
         let params = StablecoinFlowParams {
             long_only: false,

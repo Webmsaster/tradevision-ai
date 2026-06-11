@@ -214,8 +214,8 @@ mod tests {
         // Right edge k+2=12: low=101.0 > anchor.high=100.5 → FVG [100.5, 101.0].
         candles[12] = ohlcv(12 * 1_800_000, 102.0, 102.5, 101.0, 102.0, 100.0);
         // Continuation bars to keep the gap unfilled.
-        for i in 13..28 {
-            candles[i] = ohlcv(i as i64 * 1_800_000, 102.0, 102.5, 101.5, 102.0, 100.0);
+        for (i, c) in candles.iter_mut().enumerate().take(28).skip(13) {
+            *c = ohlcv(i as i64 * 1_800_000, 102.0, 102.5, 101.5, 102.0, 100.0);
         }
         // Signal bar (idx 28) wicks INTO the zone and closes back above.
         candles[28] = ohlcv(28 * 1_800_000, 101.6, 102.0, 100.6, 101.7, 100.0);
@@ -247,8 +247,8 @@ mod tests {
         candles[11] = ohlcv(11 * 1_800_000, 100.0, 100.1, 97.8, 98.0, 200.0);
         // Right edge k+2=12: high=99.0 < anchor.low=99.5 → FVG [99.0, 99.5].
         candles[12] = ohlcv(12 * 1_800_000, 98.0, 99.0, 97.5, 98.0, 100.0);
-        for i in 13..28 {
-            candles[i] = ohlcv(i as i64 * 1_800_000, 98.0, 98.5, 97.5, 98.0, 100.0);
+        for (i, c) in candles.iter_mut().enumerate().take(28).skip(13) {
+            *c = ohlcv(i as i64 * 1_800_000, 98.0, 98.5, 97.5, 98.0, 100.0);
         }
         // Signal bar (idx 28) wicks UP into [99.0, 99.5] and closes back below.
         candles[28] = ohlcv(28 * 1_800_000, 98.4, 99.4, 98.0, 98.3, 100.0);
@@ -279,8 +279,8 @@ mod tests {
         // independent failure mode under test.
         candles[11] = ohlcv(11 * 1_800_000, 100.0, 100.8, 100.0, 100.7, 200.0);
         candles[12] = ohlcv(12 * 1_800_000, 100.7, 100.8, 100.55, 100.7, 100.0);
-        for i in 13..28 {
-            candles[i] = ohlcv(i as i64 * 1_800_000, 100.7, 100.8, 100.5, 100.7, 100.0);
+        for (i, c) in candles.iter_mut().enumerate().take(28).skip(13) {
+            *c = ohlcv(i as i64 * 1_800_000, 100.7, 100.8, 100.5, 100.7, 100.0);
         }
         // Signal bar revisits — but the gap was too narrow to qualify in
         // the first place.

@@ -62,8 +62,7 @@ pub fn compute_fisher_vote(candles: &[Candle], params: &FisherParams) -> Option<
         let mut hi = f64::MIN;
         let mut lo = f64::MAX;
         let mut bad = false;
-        for j in lo_start..=i {
-            let c = candles[j];
+        for c in candles.iter().take(i + 1).skip(lo_start) {
             if !c.high.is_finite() || !c.low.is_finite() {
                 bad = true;
                 break;

@@ -38,6 +38,7 @@ fn detect_bar_duration(candles: &[Candle]) -> i64 {
 /// - WARN-only when age >= ENGINE_CACHE_WARN_DAYS (default 7);
 /// - HARD-FAIL (anyhow Err on caller) when ENGINE_CACHE_STRICT=1 AND
 ///   age >= ENGINE_CACHE_STRICT_DAYS (default 14).
+///
 /// Silent no-op when path mtime is unreadable or env vars unset.
 fn cache_age_check(path: &Path) {
     let warn_days: u64 = std::env::var("ENGINE_CACHE_WARN_DAYS")
@@ -257,11 +258,14 @@ pub fn load_funding(dir: &Path, symbol: &str) -> Result<Option<Vec<FundingPt>>> 
 /// inclusive only when `funding.t == candle.open_time` EXACTLY), events
 /// at `boundary + 3ms` attributed to the NEXT candle → off-by-one bar in
 /// the rate-feed. ~45% of historical events on BTC/AAVE drift past the
-/// strict boundary. Fix: attribute any event with `t ∈ [bar_start, bar_start
-/// + bar_dur)` to this bar. Derive bar_dur from spacing[1]-spacing[0] of
-/// candles; falls back to 30min if only 1 candle.
+/// strict boundary. Fix: attribute any event with
+/// `t ∈ [bar_start, bar_start + bar_dur)` to this bar. Derive bar_dur from
+/// spacing[1]-spacing[0] of candles; falls back to 30min if only 1 candle.
 ///
 /// Mirrors fixed `alignFunding` in `scripts/_r29Round7Shard.ts:96-112`.
+// dead_code: loader.rs is a module shared by multiple [[bin]] targets; this
+// helper is used by ftmo-sweep (sweep.rs) + tests but not by ftmo-engine.
+#[allow(dead_code)]
 pub fn align_funding(candles: &[Candle], funding: &[FundingPt]) -> Vec<Option<f64>> {
     let mut out = Vec::with_capacity(candles.len());
     let mut f_idx = 0usize;

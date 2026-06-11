@@ -243,7 +243,7 @@ struct MultiSignalCfg {
     /// Force MR-source override even if template doesn't carry one.
     regime_force_mr: bool,
     /// 2026-05-14 Detector #34 — Coinbase-Binance Premium voter activation
-    /// + tunable knobs. CLI flags: `--regime-use-cb-premium`,
+    /// plus tunable knobs. CLI flags: `--regime-use-cb-premium`,
     /// `--cb-threshold-bps`, `--cb-consecutive`. The premium data
     /// directory comes via `--cb-premium-dir` (separate top-level
     /// argument so the loader call sees it before MultiSignalCfg is built).
@@ -458,17 +458,24 @@ fn parse_ptp_levels(csv: &str) -> Result<Vec<ftmo_engine_core::config::PartialTa
             .trim()
             .parse()
             .map_err(|e| anyhow!("--ptp-levels '{tok}': close_fraction parse error: {e}"))?;
+        // Safety: keep the negated forms below — "nan".parse::<f64>() succeeds,
+        // and NaN must FAIL these validations; `trigger_pct <= 0.0` would let
+        // NaN slip through into the engine.
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
         if !(trigger_pct > 0.0) {
             return Err(anyhow!(
                 "--ptp-levels '{tok}': trigger_pct must be > 0 (got {trigger_pct})"
             ));
         }
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
         if !(close_fraction > 0.0) {
             return Err(anyhow!(
                 "--ptp-levels '{tok}': close_fraction must be > 0 (got {close_fraction})"
             ));
         }
         if let Some(prev) = prev_trigger {
+            // Safety: NaN (parseable!) must fail the strictly-increasing check.
+            #[allow(clippy::neg_cmp_op_on_partial_ord)]
             if !(trigger_pct > prev) {
                 return Err(anyhow!(
                     "--ptp-levels: trigger_pct must be strictly increasing (got {trigger_pct} after {prev})"
@@ -983,9 +990,7 @@ fn apply_overrides(
         || ov.funding_sizing_window.is_some()
         || ov.funding_sizing_min_factor.is_some()
     {
-        let cur = cfg
-            .funding_cost_sizing
-            .unwrap_or_else(ftmo_engine_core::config::FundingCostSizing::default);
+        let cur = cfg.funding_cost_sizing.unwrap_or_default();
         cfg.funding_cost_sizing = Some(ftmo_engine_core::config::FundingCostSizing {
             alpha: ov.funding_sizing_alpha.unwrap_or(cur.alpha),
             norm_window_buckets: ov.funding_sizing_window.unwrap_or(cur.norm_window_buckets),
@@ -3256,7 +3261,7 @@ fn run_multi_asset(
                 let lo = *lo;
                 // SOL 30d gate — measured at last closed bar `lo-1` (lookahead-safe).
                 if let (Some(thr), Some(cs)) = (skip_sol30d_gt, sol) {
-                    if lo >= SOL_LB + 1 {
+                    if lo > SOL_LB {
                         let now = cs[lo - 1].close;
                         let past = cs[lo - 1 - SOL_LB].close;
                         if past > 0.0 {
@@ -3269,7 +3274,7 @@ fn run_multi_asset(
                 }
                 // BNB 7d gate — measured at last closed bar `lo-1` (lookahead-safe).
                 if let (Some(thr), Some(cs)) = (skip_bnb7d_gt, bnb) {
-                    if lo >= BNB_LB + 1 {
+                    if lo > BNB_LB {
                         let now = cs[lo - 1].close;
                         let past = cs[lo - 1 - BNB_LB].close;
                         if past > 0.0 {
@@ -4804,7 +4809,7 @@ mod cluster_only_mode_tests {
     #[test]
     fn majors_count_caps_at_majors_list_size() {
         let entries = vec![
-            t(1 * H, "BTC-TREND"),
+            t(H, "BTC-TREND"),
             t(2 * H, "ETH-TREND"),
             t(3 * H, "BNB-TREND"),
             t(4 * H, "SOL-TREND"),
@@ -4821,7 +4826,7 @@ mod cluster_only_mode_tests {
     fn red_cluster_when_under_threshold() {
         // Simulates the gate decision: breadth >= 4 AND majors >= 2 required.
         let entries = vec![
-            t(1 * H, "BTC-TREND"),
+            t(H, "BTC-TREND"),
             t(2 * H, "ETH-TREND"),
             t(3 * H, "AAVE-TREND"),
         ];

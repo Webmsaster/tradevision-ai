@@ -335,7 +335,12 @@ pub fn poc_zone_gate_allows(
     let signal_bucket_vol = *buckets.get(&signal_bucket_key).unwrap_or(&0.0);
 
     // Block (return false) when signal sits in HVN cluster.
-    !(signal_bucket_vol >= hvn_threshold)
+    // Safety: keep the negated form — a NaN threshold (NaN ratio param) must
+    // yield true (gate allows) like the invalid-data paths above; the
+    // de-negated `<` comparison would silently flip that to false.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    let allows = !(signal_bucket_vol >= hvn_threshold);
+    allows
 }
 
 // 2026-05-14 Detector #34 — dropped Copy: `cb_premium_params.symbol_allowlist`

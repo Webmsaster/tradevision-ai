@@ -26,8 +26,7 @@ fn mid_range(candles: &[Candle], end: usize, period: usize) -> Option<f64> {
     let lo = end + 1 - period;
     let mut hi = f64::NEG_INFINITY;
     let mut lw = f64::INFINITY;
-    for j in lo..=end {
-        let c = candles[j];
+    for c in candles.iter().take(end + 1).skip(lo) {
         if !c.high.is_finite() || !c.low.is_finite() {
             return None;
         }

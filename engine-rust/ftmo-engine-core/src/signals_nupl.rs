@@ -208,6 +208,7 @@ impl<'a> NuplSeries<'a> {
 
 /// Optional inputs threaded through the engine to the NUPL detector. Only
 /// `btc_series` is consumed today — per-asset extensions go in this struct.
+#[derive(Default)]
 pub struct NuplInputs<'a> {
     /// BTC NUPL time-series — the canonical cycle indicator.
     pub btc_series: Option<NuplSeries<'a>>,
@@ -215,15 +216,6 @@ pub struct NuplInputs<'a> {
     /// proxies are available. Currently unused.
     #[allow(dead_code)]
     pub eth_series: Option<NuplSeries<'a>>,
-}
-
-impl<'a> Default for NuplInputs<'a> {
-    fn default() -> Self {
-        Self {
-            btc_series: None,
-            eth_series: None,
-        }
-    }
 }
 
 /// Tunable parameters for the NUPL voter. All fields default to a
@@ -485,11 +477,15 @@ mod tests {
         p.long_below = 0.8;
         p.short_above = 0.2;
         assert!(!p.is_well_formed(), "inverted thresholds must be rejected");
-        let mut p = NuplParams::default();
-        p.long_below = -2.0;
+        let p = NuplParams {
+            long_below: -2.0,
+            ..NuplParams::default()
+        };
         assert!(!p.is_well_formed(), "OOB thresholds must be rejected");
-        let mut p = NuplParams::default();
-        p.short_above = f64::NAN;
+        let p = NuplParams {
+            short_above: f64::NAN,
+            ..NuplParams::default()
+        };
         assert!(!p.is_well_formed(), "NaN must be rejected");
     }
 
@@ -498,9 +494,11 @@ mod tests {
         let samples = make_series(&[(0, -0.2)]);
         let series = NuplSeries::new(&samples);
         let bar = Candle::new(DAY_MS, 100.0, 100.0, 100.0, 100.0, 0.0);
-        let mut params = NuplParams::default();
-        params.enabled = false;
-        params.min_dwell_days = 0;
+        let params = NuplParams {
+            enabled: false,
+            min_dwell_days: 0,
+            ..NuplParams::default()
+        };
         assert_eq!(compute_nupl_vote(&bar, &series, &params), None);
     }
 
@@ -518,9 +516,11 @@ mod tests {
         ]);
         let series = NuplSeries::new(&samples);
         let bar = Candle::new(DAY_MS * 7 + 1, 100.0, 100.0, 100.0, 100.0, 0.0);
-        let mut params = NuplParams::default();
-        params.enabled = true;
-        params.min_dwell_days = 7;
+        let params = NuplParams {
+            enabled: true,
+            min_dwell_days: 7,
+            ..NuplParams::default()
+        };
         assert_eq!(
             compute_nupl_vote(&bar, &series, &params),
             Some(PositionSide::Long)
@@ -543,9 +543,11 @@ mod tests {
         ]);
         let series = NuplSeries::new(&samples);
         let bar = Candle::new(DAY_MS * 8 + 1, 100.0, 100.0, 100.0, 100.0, 0.0);
-        let mut params = NuplParams::default();
-        params.enabled = true;
-        params.min_dwell_days = 7;
+        let params = NuplParams {
+            enabled: true,
+            min_dwell_days: 7,
+            ..NuplParams::default()
+        };
         assert_eq!(
             compute_nupl_vote(&bar, &series, &params),
             Some(PositionSide::Short)
@@ -563,9 +565,11 @@ mod tests {
         ]);
         let series = NuplSeries::new(&samples);
         let bar = Candle::new(DAY_MS * 3 + 1, 100.0, 100.0, 100.0, 100.0, 0.0);
-        let mut params = NuplParams::default();
-        params.enabled = true;
-        params.min_dwell_days = 7;
+        let params = NuplParams {
+            enabled: true,
+            min_dwell_days: 7,
+            ..NuplParams::default()
+        };
         assert_eq!(compute_nupl_vote(&bar, &series, &params), None);
     }
 
@@ -576,9 +580,11 @@ mod tests {
         // Bar is 30 days after the last sample — max staleness is 3 by
         // default, so the voter must abstain instead of firing on stale data.
         let bar = Candle::new(DAY_MS * 30, 100.0, 100.0, 100.0, 100.0, 0.0);
-        let mut params = NuplParams::default();
-        params.enabled = true;
-        params.min_dwell_days = 0;
+        let params = NuplParams {
+            enabled: true,
+            min_dwell_days: 0,
+            ..NuplParams::default()
+        };
         assert_eq!(compute_nupl_vote(&bar, &series, &params), None);
     }
 
@@ -596,9 +602,11 @@ mod tests {
         ]);
         let series = NuplSeries::new(&samples);
         let bar = Candle::new(DAY_MS * 7 + 1, 100.0, 100.0, 100.0, 100.0, 0.0);
-        let mut params = NuplParams::default();
-        params.enabled = true;
-        params.min_dwell_days = 7;
+        let params = NuplParams {
+            enabled: true,
+            min_dwell_days: 7,
+            ..NuplParams::default()
+        };
         assert_eq!(compute_nupl_vote(&bar, &series, &params), None);
     }
 }

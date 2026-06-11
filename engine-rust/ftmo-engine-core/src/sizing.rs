@@ -404,14 +404,12 @@ pub fn funding_cost_modifier(
     let mut n = 0usize;
     let mut sum = 0.0_f64;
     let mut sum_sq = 0.0_f64;
-    for opt in window {
-        if let Some(v) = opt {
-            if v.is_finite() {
-                let signed = sign * v * expected_hold_8h_buckets;
-                sum += signed;
-                sum_sq += signed * signed;
-                n += 1;
-            }
+    for v in window.iter().flatten() {
+        if v.is_finite() {
+            let signed = sign * v * expected_hold_8h_buckets;
+            sum += signed;
+            sum_sq += signed * signed;
+            n += 1;
         }
     }
     if n < 2 {
@@ -841,7 +839,7 @@ mod tests {
         });
         let mut s = EngineState::initial("x");
         // 20 PnLs — well below min_trades=30.
-        seed_pnls(&mut s, &vec![-0.005; 20]);
+        seed_pnls(&mut s, &[-0.005; 20]);
         let f = resolve_sizing_factor(&mut s, &c, 10_000);
         assert!(
             (f - 1.0).abs() < 1e-9,
@@ -969,7 +967,7 @@ mod tests {
         // Same magnitude of "expected funding cost from position's POV":
         // long with +funding paying = short with -funding paying. Result
         // must be identical.
-        let mut v_long_pos: Vec<f64> = vec![0.0001, -0.0001].repeat(50);
+        let mut v_long_pos: Vec<f64> = [0.0001, -0.0001].repeat(50);
         v_long_pos.push(0.003);
         let series_long = mk_funding(&v_long_pos);
         let m_long = funding_cost_modifier(
@@ -983,7 +981,7 @@ mod tests {
         );
 
         // Mirror for short: same rate-magnitude, opposite sign → short pays.
-        let mut v_short_pay: Vec<f64> = vec![-0.0001, 0.0001].repeat(50);
+        let mut v_short_pay: Vec<f64> = [-0.0001, 0.0001].repeat(50);
         v_short_pay.push(-0.003);
         let series_short = mk_funding(&v_short_pay);
         let m_short = funding_cost_modifier(
@@ -1143,7 +1141,7 @@ mod tests {
         let series = mk_funding(&v);
         let m = funding_cost_modifier(PositionSide::Long, Some(&series), 100, 3.0, 1.5, 100, 0.4);
         assert!(
-            m >= 0.4 && m <= 1.0,
+            (0.4..=1.0).contains(&m),
             "modifier {} out of [min_factor=0.4, 1.0]",
             m
         );

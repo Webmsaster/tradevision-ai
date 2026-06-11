@@ -126,36 +126,6 @@ fn make_assets(symbols: &[&str], risk_frac: f64) -> Vec<AssetConfig> {
         .collect()
 }
 
-/// Per-asset round-trip cost in basis points (commission + spread).
-/// Source: `scripts/ftmoRealCostsResearch.test.ts` Scenario B (mid-realistic).
-/// FTMO commission = 6.5 bp RT (0.0325% × 2). Spread varies per asset.
-fn cost_bp_for(symbol: &str) -> f64 {
-    match symbol {
-        "BTC-TREND" => 15.0,
-        "ETH-TREND" => 25.0,
-        // alts: SOL/AVAX/XRP/ADA/LTC/BCH/BNB/AAVE/LINK/DOT/UNI/ATOM/ALGO/NEAR/ARB/TRX/ETC/DOGE/RUNE/SAND/INJ
-        _ => 35.0,
-    }
-}
-
-/// Per-asset slippage in basis points per fill (estimate; live-only).
-fn slippage_bp_for(symbol: &str) -> f64 {
-    match symbol {
-        "BTC-TREND" => 10.0,
-        "ETH-TREND" => 10.0,
-        _ => 12.0,
-    }
-}
-
-/// Per-asset overnight swap in basis points per day held.
-fn swap_bp_per_day_for(symbol: &str) -> f64 {
-    match symbol {
-        "BTC-TREND" => 5.0,
-        "ETH-TREND" => 5.0,
-        _ => 7.0,
-    }
-}
-
 /// Per-asset tp_pct overrides for the R28_V6 family (from
 /// `ftmoDaytrade24h.ts:R28_V6` PTP-design comment, 2026-05-03):
 ///
@@ -833,7 +803,7 @@ pub fn v5_amber_max_passlock_p2_grinder() -> EngineConfig {
     });
     cfg.break_even = Some(crate::config::BreakEven { threshold: 0.008 });
     for asset in cfg.assets.iter_mut() {
-        asset.risk_frac = asset.risk_frac * 0.5;
+        asset.risk_frac *= 0.5;
     }
     cfg
 }
@@ -879,13 +849,13 @@ pub fn v5_amber_max_passlock_agg_kr_combo() -> EngineConfig {
     cfg
 }
 
-/// 2026-05-25 Wave5 — INTRADAY hour-restricted templates.
-/// Hypothesis: crypto liquidity concentrates in US-overlap hours (13-16 UTC).
-/// Trading only during these "best hours" reduces noise-trades that lose to
-/// spreads/slippage during low-liquidity overnight (20-04 UTC).
-///
-/// Base = v5_amber_max_passlock (best trend template). Override only
-/// `allowed_hours_utc` to restrict entries.
+// 2026-05-25 Wave5 — INTRADAY hour-restricted templates.
+// Hypothesis: crypto liquidity concentrates in US-overlap hours (13-16 UTC).
+// Trading only during these "best hours" reduces noise-trades that lose to
+// spreads/slippage during low-liquidity overnight (20-04 UTC).
+//
+// Base = v5_amber_max_passlock (best trend template). Override only
+// `allowed_hours_utc` to restrict entries.
 
 /// US-PEAK: 13-16 UTC only (4 hours, US open + EU close overlap).
 pub fn v5_amber_max_passlock_intraday_us_peak() -> EngineConfig {

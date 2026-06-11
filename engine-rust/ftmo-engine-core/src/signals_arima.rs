@@ -61,7 +61,7 @@ pub fn compute_arima_vote(candles: &[Candle], p: &ArimaParams) -> Option<Positio
     let mut forecast_price = closes[closes.len() - 1];
     let mut d = last_diff;
     for _ in 0..p.horizon {
-        d = phi * d;
+        d *= phi;
         forecast_price += d + mean_d;
     }
     if !forecast_price.is_finite() {

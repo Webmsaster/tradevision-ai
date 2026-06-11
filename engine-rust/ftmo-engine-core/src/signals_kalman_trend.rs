@@ -231,8 +231,8 @@ pub fn compute_kalman_trend_vote(
     // noise on a perfectly flat constant series).
     const S_FLOOR: f64 = 1e-12;
 
-    for k in 1..=signal_idx {
-        let z = candles[k].close;
+    for c in candles.iter().take(signal_idx + 1).skip(1) {
+        let z = c.close;
         if !z.is_finite() {
             // Defensive abstention: poisoned data → refuse to vote.
             return None;
@@ -525,8 +525,8 @@ mod tests {
         let r_meas = stds[stds.len() - 1].unwrap_or(1.0).powi(2);
         let qp = p.process_noise_price;
         let qv = p.process_noise_velocity;
-        for k in 1..=signal_idx {
-            let z = candles[k].close;
+        for (k, c) in candles.iter().enumerate().take(signal_idx + 1).skip(1) {
+            let z = c.close;
             let pred_price = p_price + p_vel;
             let pred_vel = p_vel;
             let pp00 = p00 + 2.0 * p01 + p11 + qp;

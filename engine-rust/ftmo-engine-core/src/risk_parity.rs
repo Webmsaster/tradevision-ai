@@ -1,6 +1,5 @@
 //! 2026-05-17 Risk-Parity Portfolio per-asset weighting.
 //! Weight_i = (1/ATR_i) / Σ(1/ATR_j), clamped [0.5, 1.5], mean-preserving.
-use crate::candle::Candle;
 
 pub fn inverse_atr_weight(atr_value: f64, median_atr: f64, clamp_lo: f64, clamp_hi: f64) -> f64 {
     if atr_value <= 0.0 || median_atr <= 0.0 {

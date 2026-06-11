@@ -653,12 +653,12 @@ mod tests {
         // Now ANNIHILATE the pre-SMA-tail history with mirror-image bars
         // (MFM=-1, even huger volume). If the detector leaks pre-window
         // history, ad_now will explode in the OPPOSITE direction.
-        for k in 0..200 {
-            candles[k].close = 40.0; // close pinned to LOW now → MFM=-1
-            candles[k].high = 60.0;
-            candles[k].low = 40.0;
-            candles[k].open = 50.0;
-            candles[k].volume = 1_000_000.0;
+        for c in candles.iter_mut().take(200) {
+            c.close = 40.0; // close pinned to LOW now → MFM=-1
+            c.high = 60.0;
+            c.low = 40.0;
+            c.open = 50.0;
+            c.volume = 1_000_000.0;
         }
         let after = compute_ad_line_vote(&candles, &p, &cfg);
         assert_eq!(

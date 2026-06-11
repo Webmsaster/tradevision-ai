@@ -206,12 +206,13 @@ pub fn compute_rsi_hidden_div_vote(
             }
             // Strict-on-left, non-strict-on-right convention so the LATEST
             // among tied lows wins. Mirrors the LAST-occurrence convention
-            // used by Aroon ties.
-            if !(b_bar.low < left) {
+            // used by Aroon ties. (Both operands are finite-checked above,
+            // so the de-negated comparisons are exact.)
+            if b_bar.low >= left {
                 is_low = false;
                 break;
             }
-            if !(b_bar.low <= right) {
+            if b_bar.low > right {
                 is_low = false;
                 break;
             }
@@ -228,11 +229,12 @@ pub fn compute_rsi_hidden_div_vote(
                 is_high = false;
                 break;
             }
-            if !(b_bar.high > left) {
+            // Finite-checked above — de-negated comparisons are exact.
+            if b_bar.high <= left {
                 is_high = false;
                 break;
             }
-            if !(b_bar.high >= right) {
+            if b_bar.high < right {
                 is_high = false;
                 break;
             }
@@ -291,6 +293,9 @@ fn check_bullish_hidden_div(
         return false;
     }
     let price_threshold = older_low * (1.0 + params.min_price_divergence_pct);
+    // Safety: keep the negated form — a NaN threshold (NaN param) must take
+    // this branch and abstain; `newest_low < price_threshold` would not.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     if !(newest_low >= price_threshold) {
         return false;
     }
@@ -302,6 +307,9 @@ fn check_bullish_hidden_div(
         Some(v) if v.is_finite() => v,
         _ => return false,
     };
+    // Safety: keep the negated form — a NaN param makes the RHS NaN and must
+    // take this branch and abstain; the de-negated comparison would not.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     if !(newest_rsi <= older_rsi - params.min_rsi_divergence) {
         return false;
     }
@@ -311,6 +319,8 @@ fn check_bullish_hidden_div(
         Some(v) if v.is_finite() => v,
         _ => return false,
     };
+    // Safety: keep the negated form — NaN param must abstain (see above).
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     if !(signal_rsi <= params.max_rsi_on_long_signal) {
         return false;
     }
@@ -348,6 +358,9 @@ fn check_bearish_hidden_div(
         return false;
     }
     let price_threshold = older_high * (1.0 - params.min_price_divergence_pct);
+    // Safety: keep the negated form — a NaN threshold (NaN param) must take
+    // this branch and abstain; `newest_high > price_threshold` would not.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     if !(newest_high <= price_threshold) {
         return false;
     }
@@ -359,6 +372,9 @@ fn check_bearish_hidden_div(
         Some(v) if v.is_finite() => v,
         _ => return false,
     };
+    // Safety: keep the negated form — a NaN param makes the RHS NaN and must
+    // take this branch and abstain; the de-negated comparison would not.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     if !(newest_rsi >= older_rsi + params.min_rsi_divergence) {
         return false;
     }
@@ -366,6 +382,8 @@ fn check_bearish_hidden_div(
         Some(v) if v.is_finite() => v,
         _ => return false,
     };
+    // Safety: keep the negated form — NaN param must abstain (see above).
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     if !(signal_rsi >= params.min_rsi_on_short_signal) {
         return false;
     }
@@ -427,34 +445,6 @@ mod tests {
                 b.open = flank_close;
                 b.high = (flank_close + 0.2).max(b.open);
                 b.low = flank_low;
-                b.close = flank_close;
-            }
-        }
-    }
-
-    fn sculpt_pivot_high(
-        bars: &mut [Candle],
-        idx: usize,
-        pivot_high: f64,
-        pivot_close: f64,
-        flank_high: f64,
-        flank_close: f64,
-        strength: usize,
-    ) {
-        let p = &mut bars[idx];
-        p.open = flank_close;
-        p.low = pivot_close.min(p.open) - 0.2;
-        p.high = pivot_high;
-        p.close = pivot_close;
-        for s in 1..=strength {
-            for off in [idx.wrapping_sub(s), idx + s] {
-                if off >= bars.len() {
-                    continue;
-                }
-                let b = &mut bars[off];
-                b.open = flank_close;
-                b.low = (flank_close - 0.2).min(b.open);
-                b.high = flank_high;
                 b.close = flank_close;
             }
         }
@@ -523,13 +513,13 @@ mod tests {
         //   - 62..65: SHARP multi-bar crash (104→99) → newer pivot RSI ~25.
         //   - 66..78: tiny up-drift; signal-bar RSI ~30 (below 50 continuation gate).
         let mut closes: Vec<f64> = vec![100.0; 80];
-        for i in 31..50 {
-            closes[i] = 100.0 + (i as f64 - 30.0) * 0.1;
+        for (i, c) in closes.iter_mut().enumerate().take(50).skip(31) {
+            *c = 100.0 + (i as f64 - 30.0) * 0.1;
         }
         // closes[49] = 100 + 19*0.1 = 101.9
         closes[50] = 101.5; // small pullback close (RSI stays ~60)
-        for i in 51..62 {
-            closes[i] = 101.5 + (i as f64 - 50.0) * 0.25;
+        for (i, c) in closes.iter_mut().enumerate().take(62).skip(51) {
+            *c = 101.5 + (i as f64 - 50.0) * 0.25;
         }
         // closes[61] = 101.5 + 11*0.25 = 104.25
         // Sharp crash spread over 4 bars to drive RSI < 30.
@@ -541,8 +531,8 @@ mod tests {
                            // candidates appear in the scan window. Use a small step (0.05) so
                            // RSI at signal_idx (i=78) ends in the 30-45 band — well below the
                            // continuation gate (≤50).
-        for i in 66..80 {
-            closes[i] = 99.0 + (i as f64 - 65.0) * 0.05;
+        for (i, c) in closes.iter_mut().enumerate().take(80).skip(66) {
+            *c = 99.0 + (i as f64 - 65.0) * 0.05;
         }
         // closes[78] = 99.0 + 13*0.05 = 99.65
         let low_overrides = vec![
@@ -592,13 +582,13 @@ mod tests {
     #[test]
     fn bear_hidden_div_fires_symmetric() {
         let mut closes: Vec<f64> = vec![100.0; 80];
-        for i in 31..50 {
-            closes[i] = 100.0 - (i as f64 - 30.0) * 0.1;
+        for (i, c) in closes.iter_mut().enumerate().take(50).skip(31) {
+            *c = 100.0 - (i as f64 - 30.0) * 0.1;
         }
         // closes[49] = 100 - 19*0.1 = 98.1
         closes[50] = 98.5; // small bounce close (older pivot-high RSI ~29)
-        for i in 51..62 {
-            closes[i] = 98.5 - (i as f64 - 50.0) * 0.25;
+        for (i, c) in closes.iter_mut().enumerate().take(62).skip(51) {
+            *c = 98.5 - (i as f64 - 50.0) * 0.25;
         }
         // closes[61] = 98.5 - 11*0.25 = 95.75
         // VIOLENT rally so newer pivot-high RSI ≫ older's.
@@ -610,8 +600,8 @@ mod tests {
                             // ≤ older_high × (1 - 0.003). Older high = 102.0 → newer high ≤
                             // 101.69. So newer pivot HIGH must be ≤ 101.69. We override it to
                             // 101.5 below.
-        for i in 66..80 {
-            closes[i] = 101.0 - (i as f64 - 65.0) * 0.05;
+        for (i, c) in closes.iter_mut().enumerate().take(80).skip(66) {
+            *c = 101.0 - (i as f64 - 65.0) * 0.05;
         }
         let high_overrides = vec![
             // Older pivot-high at 50. Flank highs MUST be < 102.0.
@@ -668,23 +658,19 @@ mod tests {
         bars[48].low = 99.1;
         bars[49].close = 99.1;
         bars[49].low = 99.0;
-        for i in 51..65 {
-            let mut b = bars[i];
+        for (i, b) in bars.iter_mut().enumerate().take(65).skip(51) {
             b.open = 99.5 + (i as f64 - 51.0) * 0.05;
             b.close = 99.5 + (i as f64 - 50.0) * 0.05;
             b.high = b.close + 0.2;
             b.low = b.open - 0.1;
-            bars[i] = b;
         }
         // Newer pivot — deeper low but very mild lead-in so RSI doesn't crash.
         sculpt_pivot_low(&mut bars, 65, 98.0, 99.8, 99.5, 99.7, 2);
-        for i in 66..78 {
-            let mut b = bars[i];
+        for b in bars.iter_mut().take(78).skip(66) {
             b.open = 99.8;
             b.close = 99.8;
             b.high = 100.0;
             b.low = 99.7;
-            bars[i] = b;
         }
 
         let p = RsiHiddenDivParams::default();
@@ -704,18 +690,18 @@ mod tests {
         sculpt_pivot_low(&mut bars, 50, 98.0, 99.5, 99.8, 100.0, 2);
         // Newer pivot at idx 65; signal_idx = 118 → age 53 > default 40.
         sculpt_pivot_low(&mut bars, 65, 99.0, 99.0, 99.8, 100.0, 2);
-        for i in 66..118 {
-            let mut b = bars[i];
+        for b in bars.iter_mut().take(118).skip(66) {
             b.open = 99.5;
             b.close = 99.5;
             b.high = 99.7;
             b.low = 99.3;
-            bars[i] = b;
         }
-        let mut p = RsiHiddenDivParams::default();
         // Stretch lookback so the OLDER pivot is still inside the scan,
         // otherwise the test would be trivially None for a different reason.
-        p.swing_lookback = 80;
+        let p = RsiHiddenDivParams {
+            swing_lookback: 80,
+            ..RsiHiddenDivParams::default()
+        };
         let v = compute_rsi_hidden_div_vote(&bars, &p);
         assert!(
             v.is_none(),
@@ -736,13 +722,11 @@ mod tests {
         bars[64].close = 99.1;
         // Drive a STRONG rally between idx 66 and signal_idx so RSI at
         // signal_idx is high (e.g. 70+).
-        for i in 66..78 {
-            let mut b = bars[i];
+        for (i, b) in bars.iter_mut().enumerate().take(78).skip(66) {
             b.open = 100.0 + (i as f64 - 66.0) * 0.5;
             b.close = 100.0 + (i as f64 - 65.0) * 0.5;
             b.high = b.close + 0.3;
             b.low = b.open - 0.1;
-            bars[i] = b;
         }
         let p = RsiHiddenDivParams {
             max_rsi_on_long_signal: 50.0,
@@ -764,25 +748,21 @@ mod tests {
         // Same fixture as the bullish-fires test.
         let mut bars = flat_bars(80, 100.0);
         sculpt_pivot_low(&mut bars, 50, 98.0, 99.5, 99.8, 100.0, 2);
-        for i in 51..65 {
-            let mut b = bars[i];
+        for b in bars.iter_mut().take(65).skip(51) {
             b.open = 100.0;
             b.close = 100.0;
             b.high = 100.6;
             b.low = 99.6;
-            bars[i] = b;
         }
         sculpt_pivot_low(&mut bars, 65, 99.0, 99.0, 99.8, 100.0, 2);
         bars[62].close = 99.5;
         bars[63].close = 99.3;
         bars[64].close = 99.1;
-        for i in 66..78 {
-            let mut b = bars[i];
+        for (i, b) in bars.iter_mut().enumerate().take(78).skip(66) {
             b.open = 99.1 + (i as f64 - 66.0) * 0.02;
             b.close = 99.1 + (i as f64 - 65.0) * 0.02;
             b.high = b.close + 0.2;
             b.low = b.open - 0.1;
-            bars[i] = b;
         }
         let p = RsiHiddenDivParams::default();
         let v1 = compute_rsi_hidden_div_vote(&bars, &p);
@@ -804,25 +784,21 @@ mod tests {
         // Start with the bullish-fires fixture.
         let mut bars = flat_bars(80, 100.0);
         sculpt_pivot_low(&mut bars, 50, 98.0, 99.5, 99.8, 100.0, 2);
-        for i in 51..65 {
-            let mut b = bars[i];
+        for b in bars.iter_mut().take(65).skip(51) {
             b.open = 100.0;
             b.close = 100.0;
             b.high = 100.6;
             b.low = 99.6;
-            bars[i] = b;
         }
         sculpt_pivot_low(&mut bars, 65, 99.0, 99.0, 99.8, 100.0, 2);
         bars[62].close = 99.5;
         bars[63].close = 99.3;
         bars[64].close = 99.1;
-        for i in 66..78 {
-            let mut b = bars[i];
+        for (i, b) in bars.iter_mut().enumerate().take(78).skip(66) {
             b.open = 99.1 + (i as f64 - 66.0) * 0.02;
             b.close = 99.1 + (i as f64 - 65.0) * 0.02;
             b.high = b.close + 0.2;
             b.low = b.open - 0.1;
-            bars[i] = b;
         }
         let p = RsiHiddenDivParams::default();
         // Baseline vote (entry bar idx 79 is benign flat).
@@ -854,13 +830,11 @@ mod tests {
         // ONE legitimate older pivot-low at idx 50.
         sculpt_pivot_low(&mut bars, 50, 98.0, 99.5, 99.8, 100.0, 2);
         // Make bars 51..76 flat at 100.0 (no other pivots).
-        for i in 51..77 {
-            let mut b = bars[i];
+        for b in bars.iter_mut().take(77).skip(51) {
             b.open = 100.0;
             b.close = 100.0;
             b.high = 100.5;
             b.low = 99.5;
-            bars[i] = b;
         }
         // Place a SHARP low at signal_idx (idx 78) — this MUST be excluded
         // from the pivot-scan. If included, the helper would treat (78) as
@@ -912,13 +886,11 @@ mod tests {
         bars[62].close = 99.5;
         bars[63].close = 99.3;
         bars[64].close = 99.1;
-        for i in 66..78 {
-            let mut b = bars[i];
+        for (i, b) in bars.iter_mut().enumerate().take(78).skip(66) {
             b.open = 99.1 + (i as f64 - 66.0) * 0.02;
             b.close = 99.1 + (i as f64 - 65.0) * 0.02;
             b.high = b.close + 0.2;
             b.low = b.open - 0.1;
-            bars[i] = b;
         }
         let p = RsiHiddenDivParams::default();
         let v = compute_rsi_hidden_div_vote(&bars, &p);

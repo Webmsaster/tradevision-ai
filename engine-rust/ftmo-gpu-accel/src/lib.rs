@@ -14,7 +14,7 @@ pub enum GpuBackend {
     Vulkan,
     Metal,
     Dx12,
-    Cpu_Fallback,
+    CpuFallback,
 }
 
 impl fmt::Display for GpuBackend {
@@ -23,14 +23,14 @@ impl fmt::Display for GpuBackend {
     }
 }
 
-/// Probe available GPU backends. Returns `Cpu_Fallback` if no GPU is detected.
+/// Probe available GPU backends. Returns `CpuFallback` if no GPU is detected.
 /// Real impl would use `wgpu::Instance::new` and enumerate adapters.
 pub fn detect_backend() -> GpuBackend {
     // STUB: detect via /sys/class/drm or similar
     if std::path::Path::new("/sys/class/drm/card0").exists() {
         GpuBackend::Vulkan
     } else {
-        GpuBackend::Cpu_Fallback
+        GpuBackend::CpuFallback
     }
 }
 
