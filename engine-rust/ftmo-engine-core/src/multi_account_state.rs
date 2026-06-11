@@ -115,14 +115,8 @@ mod tests {
 
     #[test]
     fn each_mut_preserves_insertion_order() {
-        let mut m = MultiAccountState::initial(&[
-            ("acct_a", "AMBER"),
-            ("acct_b", "RUBIN"),
-        ]);
-        let ids: Vec<String> = m
-            .each_mut()
-            .map(|(id, _)| id.to_string())
-            .collect();
+        let mut m = MultiAccountState::initial(&[("acct_a", "AMBER"), ("acct_b", "RUBIN")]);
+        let ids: Vec<String> = m.each_mut().map(|(id, _)| id.to_string()).collect();
         assert_eq!(ids, vec!["acct_a", "acct_b"]);
     }
 

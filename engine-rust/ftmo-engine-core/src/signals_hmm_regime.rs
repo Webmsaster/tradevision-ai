@@ -176,11 +176,7 @@ impl HmmModel {
                 vec![0.02, 0.96, 0.02],
                 vec![0.01, 0.03, 0.96],
             ],
-            means: vec![
-                vec![-0.004, 0.012],
-                vec![0.0, 0.004],
-                vec![0.004, 0.012],
-            ],
+            means: vec![vec![-0.004, 0.012], vec![0.0, 0.004], vec![0.004, 0.012]],
             // Diagonal-covariance — stored as per-feature variance.
             // log-return variance = 4e-6 ⇒ σ = 0.002 (narrow band around µ)
             // realized-vol variance = 4e-6 ⇒ σ = 0.002 (narrow band around µ)
@@ -331,11 +327,7 @@ fn gaussian_pdf_diag(obs: &[f64], mean: &[f64], var: &[f64]) -> f64 {
 ///
 /// Returns `None` if any input is non-finite, idx is 0 (no log-return), or
 /// `idx + 1 < vol_lookback_bars` (not enough history for the rolling std).
-fn compute_features(
-    candles: &[Candle],
-    idx: usize,
-    vol_lookback_bars: usize,
-) -> Option<[f64; 2]> {
+fn compute_features(candles: &[Candle], idx: usize, vol_lookback_bars: usize) -> Option<[f64; 2]> {
     if idx == 0 {
         return None;
     }
@@ -495,15 +487,11 @@ pub fn compute_hmm_size_mult(
     vol_lookback_bars: usize,
     sizes_by_label: &[(String, f64)],
 ) -> f64 {
-    let posterior = match compute_hmm_state_distribution(
-        candles,
-        model,
-        warmup_bars,
-        vol_lookback_bars,
-    ) {
-        Some(p) => p,
-        None => return 1.0,
-    };
+    let posterior =
+        match compute_hmm_state_distribution(candles, model, warmup_bars, vol_lookback_bars) {
+            Some(p) => p,
+            None => return 1.0,
+        };
     if model.state_labels.len() != posterior.len() {
         return 1.0;
     }
@@ -516,7 +504,11 @@ pub fn compute_hmm_size_mult(
             .unwrap_or(1.0);
         acc += p * mult;
     }
-    if acc.is_finite() && acc >= 0.0 { acc } else { 1.0 }
+    if acc.is_finite() && acc >= 0.0 {
+        acc
+    } else {
+        1.0
+    }
 }
 
 /// Compute the HMM-regime vote for the most recent closed bar.
@@ -599,13 +591,19 @@ mod tests {
     /// Deterministic via a tiny linear-congruential RNG so tests are
     /// reproducible without bringing in an extra dependency.
     fn synth_series(n: usize, start: f64, drift: f64, vol: f64, seed: u64) -> Vec<Candle> {
-        let mut state = seed.wrapping_mul(2_862_933_555_777_941_757).wrapping_add(3_037_000_493);
+        let mut state = seed
+            .wrapping_mul(2_862_933_555_777_941_757)
+            .wrapping_add(3_037_000_493);
         // Box-Muller pair generator using the LCG above. Reuse for two samples
         // at a time.
         let next_normal = |s: &mut u64| -> f64 {
-            *s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            *s = s
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             let u1 = ((*s >> 11) as f64) / ((1u64 << 53) as f64);
-            *s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            *s = s
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             let u2 = ((*s >> 11) as f64) / ((1u64 << 53) as f64);
             let u1c = u1.max(1.0e-12);
             (-2.0 * u1c.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
@@ -796,10 +794,12 @@ mod tests {
     #[test]
     fn hmm_loads_4state_trained_model() {
         let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
-        let p = std::path::PathBuf::from(manifest)
-            .join("../../models/hmm_4state_btc_30m.json");
+        let p = std::path::PathBuf::from(manifest).join("../../models/hmm_4state_btc_30m.json");
         if !p.exists() {
-            eprintln!("[skip] {} not present (run hmm_4state_train.py first)", p.display());
+            eprintln!(
+                "[skip] {} not present (run hmm_4state_train.py first)",
+                p.display()
+            );
             return;
         }
         let m = HmmModel::load_from_json(&p).expect("load 4-state model");

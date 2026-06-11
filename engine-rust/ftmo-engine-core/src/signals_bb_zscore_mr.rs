@@ -310,8 +310,12 @@ pub fn detect_bb_zscore_mr(
         }
     }
     let factor = resolve_sizing_factor(state, cfg, entry_bar.open_time);
-    let eff_risk =
-        apply_post_factor_caps(cfg, state, asset.risk_frac * factor * src.size_mult, stop_pct);
+    let eff_risk = apply_post_factor_caps(
+        cfg,
+        state,
+        asset.risk_frac * factor * src.size_mult,
+        stop_pct,
+    );
     if eff_risk <= 0.0 {
         return None;
     }
@@ -383,7 +387,14 @@ mod tests {
         let mut v: Vec<Candle> = Vec::new();
         for i in 0..40_i64 {
             let osc = if i % 2 == 0 { 100.5 } else { 99.5 };
-            v.push(Candle::new(i * 1_800_000, osc, osc + 0.2, osc - 0.2, osc, 1.0));
+            v.push(Candle::new(
+                i * 1_800_000,
+                osc,
+                osc + 0.2,
+                osc - 0.2,
+                osc,
+                1.0,
+            ));
         }
         // Bar at idx 40 — deep drop (below lower band, big negative z).
         v.push(Candle::new(40 * 1_800_000, 100.0, 100.0, 90.0, 90.0, 1.0));
@@ -391,14 +402,7 @@ mod tests {
         // terms but we'll cross back above the NEW lower band thanks to a
         // mean shift. To make this clean we just bring close back to ~98 so
         // it sits between lower_now and the mean.
-        v.push(Candle::new(
-            41 * 1_800_000,
-            93.0,
-            98.5,
-            92.5,
-            98.0,
-            1.0,
-        ));
+        v.push(Candle::new(41 * 1_800_000, 93.0, 98.5, 92.5, 98.0, 1.0));
         // Bar at idx 42 — entry bar (we read .open). Anything finite works.
         v.push(Candle::new(42 * 1_800_000, 98.5, 99.0, 98.0, 98.7, 1.0));
         v
@@ -454,10 +458,7 @@ mod tests {
             .expect("first signal must fire");
         // Same call: bars_seen unchanged → cooldown still active → None.
         let again = detect_bb_zscore_mr(&mut s, &cfg(), &asset(), "BTCUSDT", &candles, &src());
-        assert!(
-            again.is_none(),
-            "back-to-back call must hit cooldown gate"
-        );
+        assert!(again.is_none(), "back-to-back call must hit cooldown gate");
         // Advance past cooldown — signal must come back.
         s.bars_seen += src().cooldown_bars + 1;
         let third = detect_bb_zscore_mr(&mut s, &cfg(), &asset(), "BTCUSDT", &candles, &src());
@@ -525,7 +526,14 @@ mod tests {
         let mut v: Vec<Candle> = Vec::new();
         for i in 0..40_i64 {
             let osc = if i % 2 == 0 { 100.5 } else { 99.5 };
-            v.push(Candle::new(i * 1_800_000, osc, osc + 0.2, osc - 0.2, osc, 1.0));
+            v.push(Candle::new(
+                i * 1_800_000,
+                osc,
+                osc + 0.2,
+                osc - 0.2,
+                osc,
+                1.0,
+            ));
         }
         v.push(Candle::new(40 * 1_800_000, 100.0, 110.0, 100.0, 110.0, 1.0));
         v.push(Candle::new(41 * 1_800_000, 107.0, 107.5, 101.5, 102.0, 1.0));

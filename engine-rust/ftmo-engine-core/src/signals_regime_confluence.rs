@@ -568,7 +568,8 @@ impl RegimeConfluenceParams {
             use_ofi: false,
             ofi_params: crate::signals_ofi::OfiPersistentParams::default_30m_crypto(),
             use_funding_accel: false,
-            funding_accel_params: crate::signals_funding_accel::FundingAccelParams::default_30m_crypto(),
+            funding_accel_params:
+                crate::signals_funding_accel::FundingAccelParams::default_30m_crypto(),
             use_cmf: false,
             cmf_params: crate::signals_cmf::CmfParams::default_30m_crypto(),
             use_cme_basis: false,
@@ -623,7 +624,8 @@ impl RegimeConfluenceParams {
             use_bocpd_gate: false,
             bocpd_params: crate::signals_bocpd::BocpdParams::default(),
             use_kalman_trend: false,
-            kalman_trend_params: crate::signals_kalman_trend::KalmanTrendParams::default_30m_crypto(),
+            kalman_trend_params: crate::signals_kalman_trend::KalmanTrendParams::default_30m_crypto(
+            ),
             htf_macd_enabled: false,
             htf_macd_fast: 12,
             htf_macd_slow: 26,
@@ -902,44 +904,53 @@ pub fn detect_regime_confluence(
     // Stufe-1 batch wireup voters
     let squeeze_vote = if params.use_squeeze {
         crate::signals_squeeze::compute_squeeze_vote(candles, &params.squeeze_params)
-    } else { None };
+    } else {
+        None
+    };
     let hurst_vote = if params.use_hurst {
         crate::signals_hurst::compute_hurst_vote(candles, &params.hurst_params)
-    } else { None };
+    } else {
+        None
+    };
     let wavelet_vote = if params.use_wavelet {
         crate::signals_wavelet::compute_wavelet_vote(candles, &params.wavelet_params)
-    } else { None };
+    } else {
+        None
+    };
     let pivot_vote = if params.use_pivot {
         crate::signals_pivot::compute_pivot_vote(candles, &params.pivot_params)
-    } else { None };
+    } else {
+        None
+    };
     let fib_vote = if params.use_fib {
         crate::signals_fib::compute_fib_vote(candles, &params.fib_params)
-    } else { None };
+    } else {
+        None
+    };
     let vah_val_vote = if params.use_vah_val {
         crate::signals_vah_val::compute_vah_val_vote(candles, &params.vah_val_params)
-    } else { None };
+    } else {
+        None
+    };
     let ichimoku_vote = if params.use_ichimoku {
         crate::signals_ichimoku::compute_ichimoku_vote(candles, &params.ichimoku_params)
-    } else { None };
+    } else {
+        None
+    };
     let arima_vote = if params.use_arima {
         crate::signals_arima::compute_arima_vote(candles, &params.arima_params)
-    } else { None };
+    } else {
+        None
+    };
     // Veto-gates (return early if blocking)
-    if params.use_garch_gate
-        && !crate::signals_garch::allow_entry(candles, &params.garch_params)
-    {
+    if params.use_garch_gate && !crate::signals_garch::allow_entry(candles, &params.garch_params) {
         return None;
     }
-    if params.use_bocpd_gate
-        && !crate::signals_bocpd::allow_entry(candles, &params.bocpd_params)
-    {
+    if params.use_bocpd_gate && !crate::signals_bocpd::allow_entry(candles, &params.bocpd_params) {
         return None;
     }
     let kalman_vote = if params.use_kalman_trend {
-        crate::signals_kalman_trend::compute_kalman_trend_vote(
-            candles,
-            &params.kalman_trend_params,
-        )
+        crate::signals_kalman_trend::compute_kalman_trend_vote(candles, &params.kalman_trend_params)
     } else {
         None
     };
@@ -1157,9 +1168,23 @@ pub fn detect_regime_confluence(
             PositionSide::Short => short_votes += 1,
         }
     }
-    for v in [squeeze_vote, hurst_vote, wavelet_vote, pivot_vote,
-              fib_vote, vah_val_vote, ichimoku_vote, arima_vote].iter().flatten() {
-        match v { PositionSide::Long => long_votes += 1, PositionSide::Short => short_votes += 1 }
+    for v in [
+        squeeze_vote,
+        hurst_vote,
+        wavelet_vote,
+        pivot_vote,
+        fib_vote,
+        vah_val_vote,
+        ichimoku_vote,
+        arima_vote,
+    ]
+    .iter()
+    .flatten()
+    {
+        match v {
+            PositionSide::Long => long_votes += 1,
+            PositionSide::Short => short_votes += 1,
+        }
     }
     if let Some(side) = kalman_vote {
         match side {
@@ -1999,7 +2024,14 @@ mod tests {
         );
         // Integration must not panic, regardless of consensus outcome.
         let _ = detect_regime_confluence(
-            &mut state, &cfg, &asset, "BTCUSDT", &candles, &params, &inputs, &regime_inputs,
+            &mut state,
+            &cfg,
+            &asset,
+            "BTCUSDT",
+            &candles,
+            &params,
+            &inputs,
+            &regime_inputs,
         );
     }
 }

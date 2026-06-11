@@ -23,7 +23,10 @@ pub struct FisherParams {
 
 impl Default for FisherParams {
     fn default() -> Self {
-        Self { period: 9, alpha: 0.5 }
+        Self {
+            period: 9,
+            alpha: 0.5,
+        }
     }
 }
 
@@ -141,8 +144,13 @@ mod tests {
 
     #[test]
     fn fisher_returns_none_on_short_input() {
-        let candles: Vec<Candle> = (0..5).map(|i| mk(i as f64 + 1.0, i as f64, i as f64 + 0.5)).collect();
-        assert_eq!(compute_fisher_vote(&candles, &FisherParams::default()), None);
+        let candles: Vec<Candle> = (0..5)
+            .map(|i| mk(i as f64 + 1.0, i as f64, i as f64 + 0.5))
+            .collect();
+        assert_eq!(
+            compute_fisher_vote(&candles, &FisherParams::default()),
+            None
+        );
     }
 
     #[test]
@@ -162,6 +170,9 @@ mod tests {
         candles[last].low = f64::NAN;
         candles[last].close = f64::NAN;
         let poisoned_vote = compute_fisher_vote(&candles, &FisherParams::default());
-        assert_eq!(ref_vote, poisoned_vote, "fisher voter must not read entry bar");
+        assert_eq!(
+            ref_vote, poisoned_vote,
+            "fisher voter must not read entry bar"
+        );
     }
 }

@@ -279,7 +279,14 @@ pub fn detect_ofi_persistent(
     // need to fork finalise_signal's signature.
     let mut sized_asset = asset.clone();
     sized_asset.risk_frac = asset.risk_frac * params.size_mult;
-    let s = finalise_signal(state, cfg, &sized_asset, source_symbol, &entry_bar, direction)?;
+    let s = finalise_signal(
+        state,
+        cfg,
+        &sized_asset,
+        source_symbol,
+        &entry_bar,
+        direction,
+    )?;
 
     // Successful emit → install cooldown (after the eff_risk gate inside
     // finalise_signal so a dropped signal does NOT block the next bar).
@@ -584,7 +591,10 @@ mod tests {
         let p = default_params();
         let mut s = EngineState::initial("x");
         let sig = detect_ofi_persistent(&mut s, &cfg, &asset(), "BTCUSDT", &candles, &p);
-        assert!(sig.is_none(), "corrupt TBV>volume bar must produce no signal");
+        assert!(
+            sig.is_none(),
+            "corrupt TBV>volume bar must produce no signal"
+        );
     }
 
     /// Spoofed direction: all bars have 80% TBV (ratio strongly Long), but
@@ -641,7 +651,10 @@ mod tests {
 
         let mut s = EngineState::initial("x");
         let sig = detect_ofi_persistent(&mut s, &cfg, &a, "BTCUSDT", &candles, &p);
-        assert!(sig.is_some(), "5m TF-scaled window must still fire on uptrend");
+        assert!(
+            sig.is_some(),
+            "5m TF-scaled window must still fire on uptrend"
+        );
         assert_eq!(sig.unwrap().direction, PositionSide::Long);
 
         // Now build a SHORTER feed below the scaled threshold — must abstain
@@ -652,6 +665,9 @@ mod tests {
         }
         let cfg = cfg_5m();
         let v = compute_ofi_vote(&short_candles, &p, &cfg);
-        assert!(v.is_none(), "below TF-scaled backward requirement → safe None");
+        assert!(
+            v.is_none(),
+            "below TF-scaled backward requirement → safe None"
+        );
     }
 }

@@ -216,8 +216,7 @@ pub fn compute_eff_pnl_with_funding(
         // here reverted that clamp on the funding code path (the production
         // crypto path) — a negative eff_risk would sign-flip the PnL.
         let risk_eff = pos.eff_risk.max(0.0);
-        base.eff_pnl =
-            (base.raw_pnl * cfg.leverage * risk_eff).max(GAP_TAIL_MULT * risk_eff);
+        base.eff_pnl = (base.raw_pnl * cfg.leverage * risk_eff).max(GAP_TAIL_MULT * risk_eff);
     }
     base
 }
@@ -734,10 +733,7 @@ mod tests {
         let bar0_open = (1_700_000_000_000_i64 / EIGHT_H_MS) * EIGHT_H_MS;
         pos.entry_time = bar0_open + BAR_DUR_30M;
         let exit_time = bar0_open + 3 * EIGHT_H_MS;
-        let funding = make_funding(
-            100,
-            &[(16, 0.0001), (32, -0.0002), (48, 0.00015)],
-        );
+        let funding = make_funding(100, &[(16, 0.0001), (32, -0.0002), (48, 0.00015)]);
         let (sum_ref, n_buckets) =
             ts_reference_funding_walk(pos.entry_time, exit_time, &funding, bar0_open, BAR_DUR_30M);
         assert_eq!(n_buckets, 3);
@@ -847,8 +843,13 @@ mod tests {
         // Entry-on-boundary, exit==entry: exactly 1 bucket visited.
         pos.entry_time = bar0_open;
         let exit_time_b = pos.entry_time;
-        let (sum_b, n_b) =
-            ts_reference_funding_walk(pos.entry_time, exit_time_b, &funding, bar0_open, BAR_DUR_30M);
+        let (sum_b, n_b) = ts_reference_funding_walk(
+            pos.entry_time,
+            exit_time_b,
+            &funding,
+            bar0_open,
+            BAR_DUR_30M,
+        );
         assert_eq!(n_b, 1);
         assert!((sum_b - 0.0001).abs() < 1e-15);
         let r_b = compute_eff_pnl_with_funding(

@@ -57,7 +57,9 @@ fn cache_age_check(path: &Path) {
                     eprintln!(
                         "[loader] FATAL: cache {} is {}d old (>= ENGINE_CACHE_STRICT_DAYS={}). \
                          Run scripts/cache_updater.py before re-running.",
-                        path.display(), age_days, strict_days
+                        path.display(),
+                        age_days,
+                        strict_days
                     );
                     std::process::exit(2);
                 }
@@ -65,14 +67,15 @@ fn cache_age_check(path: &Path) {
                     eprintln!(
                         "[loader] WARN: cache {} is {}d old (>= {}d). Consider rerunning \
                          scripts/cache_updater.py before trusting these results.",
-                        path.display(), age_days, warn_days
+                        path.display(),
+                        age_days,
+                        warn_days
                     );
                 }
             }
         }
     }
 }
-
 
 pub fn load_candles_json(path: &Path) -> Result<Vec<Candle>> {
     let f = File::open(path).with_context(|| format!("opening {}", path.display()))?;
@@ -333,10 +336,7 @@ pub fn align_funding(candles: &[Candle], funding: &[FundingPt]) -> Vec<Option<f6
 /// rate" which matches `align_funding` exactly — function is safe to call
 /// on those TFs too but adds no value.
 #[allow(dead_code)]
-pub fn align_funding_summed_per_bar(
-    candles: &[Candle],
-    funding: &[FundingPt],
-) -> Vec<Option<f64>> {
+pub fn align_funding_summed_per_bar(candles: &[Candle], funding: &[FundingPt]) -> Vec<Option<f64>> {
     let mut out = Vec::with_capacity(candles.len());
     let mut f_idx = 0usize;
     let bar_dur_ms = detect_bar_duration(candles);
@@ -358,7 +358,6 @@ pub fn align_funding_summed_per_bar(
     }
     out
 }
-
 
 /// 2026-05-14 Detector #36 — Top-Trader Long/Short Ratio sample. Mirrors
 /// the Binance `/futures/data/topLongShortAccountRatio` JSON shape:
@@ -563,10 +562,7 @@ pub fn load_stablecoin_supply(dir: &Path) -> Result<Option<Vec<StablecoinSupplyP
 /// the first sample. Non-finite `supply_usd` values are filtered at this edge
 /// so downstream detectors never see NaN.
 #[allow(dead_code)]
-pub fn align_stablecoin_supply(
-    candles: &[Candle],
-    pts: &[StablecoinSupplyPt],
-) -> Vec<Option<f64>> {
+pub fn align_stablecoin_supply(candles: &[Candle], pts: &[StablecoinSupplyPt]) -> Vec<Option<f64>> {
     let mut out = Vec::with_capacity(candles.len());
     let mut p_idx = 0usize;
     let mut cur: Option<f64> = None;
@@ -622,10 +618,7 @@ mod tests {
         let candles: Vec<Candle> = [10, 20, 30, 100, 110].iter().map(|t| candle(*t)).collect();
         let aligned = align_funding(&candles, &funding);
         // bar_dur=10. candle@10 covers [10,20) — no event. ... candle@100 covers [100,110) — event @100.
-        assert_eq!(
-            aligned,
-            vec![None, None, None, Some(0.5), Some(0.5)]
-        );
+        assert_eq!(aligned, vec![None, None, None, Some(0.5), Some(0.5)]);
     }
 
     #[test]
@@ -651,8 +644,14 @@ mod tests {
     #[test]
     fn align_stablecoin_supply_forward_fills() {
         let pts = vec![
-            StablecoinSupplyPt { t: 10, supply_usd: 1.0e11 },
-            StablecoinSupplyPt { t: 30, supply_usd: 1.05e11 },
+            StablecoinSupplyPt {
+                t: 10,
+                supply_usd: 1.0e11,
+            },
+            StablecoinSupplyPt {
+                t: 30,
+                supply_usd: 1.05e11,
+            },
         ];
         let candles: Vec<Candle> = [5, 15, 25, 35, 45].iter().map(|t| candle(*t)).collect();
         let aligned = align_stablecoin_supply(&candles, &pts);
@@ -661,7 +660,13 @@ mod tests {
         // → captures @30. Subsequent bars carry forward 1.05e11.
         assert_eq!(
             aligned,
-            vec![Some(1.0e11), Some(1.0e11), Some(1.05e11), Some(1.05e11), Some(1.05e11)]
+            vec![
+                Some(1.0e11),
+                Some(1.0e11),
+                Some(1.05e11),
+                Some(1.05e11),
+                Some(1.05e11)
+            ]
         );
     }
 
@@ -670,8 +675,14 @@ mod tests {
         // Upstream cache bug occasionally emits NaN — must be rejected at the
         // loader edge so detectors never see NaN through align.
         let pts = vec![
-            StablecoinSupplyPt { t: 10, supply_usd: f64::NAN },
-            StablecoinSupplyPt { t: 20, supply_usd: 9.5e10 },
+            StablecoinSupplyPt {
+                t: 10,
+                supply_usd: f64::NAN,
+            },
+            StablecoinSupplyPt {
+                t: 20,
+                supply_usd: 9.5e10,
+            },
         ];
         let candles: Vec<Candle> = [5, 15, 25].iter().map(|t| candle(*t)).collect();
         let aligned = align_stablecoin_supply(&candles, &pts);
@@ -691,9 +702,18 @@ mod tests {
         // bar_dur derives from candles[1] - candles[0]. Use stride 10 so the
         // semantics match `align_funding_forward_fills`.
         let pts = vec![
-            CbPremiumPt { t: 10, premium_pct: 0.0015 },
-            CbPremiumPt { t: 20, premium_pct: 0.0025 },
-            CbPremiumPt { t: 30, premium_pct: 0.0035 },
+            CbPremiumPt {
+                t: 10,
+                premium_pct: 0.0015,
+            },
+            CbPremiumPt {
+                t: 20,
+                premium_pct: 0.0025,
+            },
+            CbPremiumPt {
+                t: 30,
+                premium_pct: 0.0035,
+            },
         ];
         let candles: Vec<Candle> = [5, 15, 25, 35, 45].iter().map(|t| candle(*t)).collect();
         let aligned = align_cb_premium(&candles, &pts);
@@ -718,7 +738,10 @@ mod tests {
 
     #[test]
     fn align_cb_premium_no_pre_event_returns_none() {
-        let pts = vec![CbPremiumPt { t: 100, premium_pct: 0.005 }];
+        let pts = vec![CbPremiumPt {
+            t: 100,
+            premium_pct: 0.005,
+        }];
         let candles: Vec<Candle> = [10, 20, 30, 100, 110].iter().map(|t| candle(*t)).collect();
         let aligned = align_cb_premium(&candles, &pts);
         assert_eq!(aligned, vec![None, None, None, Some(0.005), Some(0.005)]);

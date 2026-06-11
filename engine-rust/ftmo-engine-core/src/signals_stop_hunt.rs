@@ -41,10 +41,7 @@ impl StopHuntParams {
     }
 }
 
-pub fn compute_stop_hunt_vote(
-    candles: &[Candle],
-    params: &StopHuntParams,
-) -> Option<PositionSide> {
+pub fn compute_stop_hunt_vote(candles: &[Candle], params: &StopHuntParams) -> Option<PositionSide> {
     if params.lookback == 0 || candles.len() < params.lookback + 2 {
         return None;
     }

@@ -131,9 +131,7 @@ mod tests {
     #[test]
     fn fires_short_when_btc_outperforms_alt() {
         // Alt up 1%, BTC up 5% → delta=+4% > threshold 2% → Short alt
-        let alt: Vec<Candle> = (0..60)
-            .map(|i| bar(100.0 + (i as f64) * 0.017))
-            .collect();
+        let alt: Vec<Candle> = (0..60).map(|i| bar(100.0 + (i as f64) * 0.017)).collect();
         let btc: Vec<f64> = (0..60).map(|i| 30000.0 + (i as f64) * 25.0).collect();
         let params = BtcdProxyParams::default_30m_crypto();
         let vote = compute_btcd_proxy_vote(&alt, Some(&btc), "ETHUSDT", &params);

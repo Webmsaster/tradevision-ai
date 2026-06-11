@@ -87,8 +87,7 @@ fn parse_args() -> Result<CliArgs> {
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let need = |a: &mut std::iter::Skip<std::env::Args>, name: &str| {
-            a.next()
-                .ok_or_else(|| anyhow!("missing value for {name}"))
+            a.next().ok_or_else(|| anyhow!("missing value for {name}"))
         };
         match flag.as_str() {
             "--sweep-binary" => sweep_binary = Some(PathBuf::from(need(&mut args, &flag)?)),
@@ -105,9 +104,7 @@ fn parse_args() -> Result<CliArgs> {
             "--threads" => threads = Some(need(&mut args, &flag)?.parse()?),
             "--mutation-rate" => mutation_rate = need(&mut args, &flag)?.parse()?,
             "--seed" => seed = need(&mut args, &flag)?.parse()?,
-            "--validate-step-days" => {
-                validate_step_days = Some(need(&mut args, &flag)?.parse()?)
-            }
+            "--validate-step-days" => validate_step_days = Some(need(&mut args, &flag)?.parse()?),
             "--help" | "-h" => {
                 println!("{}", HELP);
                 std::process::exit(0);
@@ -124,8 +121,7 @@ fn parse_args() -> Result<CliArgs> {
     let mutation_rate = mutation_rate.clamp(0.0, 1.0);
 
     Ok(CliArgs {
-        sweep_binary: sweep_binary
-            .ok_or_else(|| anyhow!("--sweep-binary required"))?,
+        sweep_binary: sweep_binary.ok_or_else(|| anyhow!("--sweep-binary required"))?,
         candles_dir: candles_dir.ok_or_else(|| anyhow!("--candles-dir required"))?,
         funding_dir,
         symbols: symbols.ok_or_else(|| anyhow!("--symbols required"))?,

@@ -31,25 +31,35 @@ impl Hmm4StateModel {
     /// Returns most-likely state per observation via simple argmax of
     /// emission × state-occupancy (light HMM, not full Viterbi).
     pub fn classify(&self, observations: &[(f64, f64)]) -> Vec<usize> {
-        observations.iter().map(|obs| {
-            let mut best_state = 0;
-            let mut best_score = f64::NEG_INFINITY;
-            for s in 0..self.n_states {
-                if s >= self.means.len() { continue; }
-                if self.means[s].len() < 2 { continue; }
-                let mu_ret = self.means[s][0];
-                let mu_vol = self.means[s][1];
-                let var_ret = self.covars[s].get(0).copied().unwrap_or(1.0);
-                let var_vol = self.covars[s].get(1).copied().unwrap_or(1.0);
-                // log-Gaussian per feature, sum
-                let dr = obs.0 - mu_ret;
-                let dv = obs.1 - mu_vol;
-                let ll = -0.5 * (dr*dr / var_ret + dv*dv / var_vol)
-                       - 0.5 * (var_ret.ln() + var_vol.ln());
-                if ll > best_score { best_score = ll; best_state = s; }
-            }
-            best_state
-        }).collect()
+        observations
+            .iter()
+            .map(|obs| {
+                let mut best_state = 0;
+                let mut best_score = f64::NEG_INFINITY;
+                for s in 0..self.n_states {
+                    if s >= self.means.len() {
+                        continue;
+                    }
+                    if self.means[s].len() < 2 {
+                        continue;
+                    }
+                    let mu_ret = self.means[s][0];
+                    let mu_vol = self.means[s][1];
+                    let var_ret = self.covars[s].get(0).copied().unwrap_or(1.0);
+                    let var_vol = self.covars[s].get(1).copied().unwrap_or(1.0);
+                    // log-Gaussian per feature, sum
+                    let dr = obs.0 - mu_ret;
+                    let dv = obs.1 - mu_vol;
+                    let ll = -0.5 * (dr * dr / var_ret + dv * dv / var_vol)
+                        - 0.5 * (var_ret.ln() + var_vol.ln());
+                    if ll > best_score {
+                        best_score = ll;
+                        best_state = s;
+                    }
+                }
+                best_state
+            })
+            .collect()
     }
 
     pub fn label_at(&self, state_idx: usize) -> Option<&str> {
@@ -60,12 +70,12 @@ impl Hmm4StateModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test] fn load_real_model_if_present() {
+    #[test]
+    fn load_real_model_if_present() {
         // Resolve via CARGO_MANIFEST_DIR so the test works regardless of the
         // working directory `cargo test` is invoked from.
         let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
-        let path = std::path::PathBuf::from(manifest)
-            .join("../../models/hmm_4state_btc_30m.json");
+        let path = std::path::PathBuf::from(manifest).join("../../models/hmm_4state_btc_30m.json");
         if !path.exists() {
             eprintln!("[skip] {} not present", path.display());
             return;

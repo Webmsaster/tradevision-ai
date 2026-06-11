@@ -133,8 +133,7 @@ pub fn detect_trend_pullback(
     // Sizing — 2026-05-13 Codex Audit Round 3 — Fix 2: centralized post-factor
     // caps (dayBased + maxRiskFrac + LIVE_LOSS_CAP) via sizing helper.
     let factor = resolve_sizing_factor(state, cfg, entry_bar.open_time);
-    let eff_risk =
-        apply_post_factor_caps(cfg, state, params.base_risk_frac * factor, stop_pct);
+    let eff_risk = apply_post_factor_caps(cfg, state, params.base_risk_frac * factor, stop_pct);
     if eff_risk <= 0.0 {
         return None;
     }

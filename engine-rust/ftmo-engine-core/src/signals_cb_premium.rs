@@ -427,7 +427,7 @@ mod tests {
     fn single_spike_blocked_by_persistence_filter() {
         let candles = rising_candles(10);
         let mut premium = vec![Some(0.0003); 10]; // 3 bp baseline (< min_abs)
-        // Spike ONLY on signal bar (idx 8 for len=10 → signal_idx=8).
+                                                  // Spike ONLY on signal bar (idx 8 for len=10 → signal_idx=8).
         premium[8] = Some(0.0030); // +30 bp
         let asset = btc_asset();
         let p = CbPremiumParams::default();
@@ -503,8 +503,7 @@ mod tests {
         // 7c. None inside the persistence window (signal_idx=8, n=2 → window=[7,8]).
         let mut premium_with_none = uniform_premium(10, 30.0);
         premium_with_none[7] = None;
-        let v_none_inside =
-            compute_cb_premium_vote(&candles, Some(&premium_with_none), &asset, &p);
+        let v_none_inside = compute_cb_premium_vote(&candles, Some(&premium_with_none), &asset, &p);
         assert!(v_none_inside.is_none(), "None inside window → no vote");
 
         // 7d. NaN inside the window.

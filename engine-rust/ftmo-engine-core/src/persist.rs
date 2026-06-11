@@ -185,10 +185,7 @@ pub fn load_state_or_reset(state_dir: &Path, cfg_label: &str) -> LoadOutcome {
     // restarting a bot under a new config kept old open positions, Kelly
     // tier, loss streaks, pause state, and target state — silent cross-
     // config contamination.
-    let persisted_cfg_label = value
-        .get("cfgLabel")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let persisted_cfg_label = value.get("cfgLabel").and_then(Value::as_str).unwrap_or("");
     if persisted_cfg_label != cfg_label {
         let bak = do_backup(&path);
         return LoadOutcome::Reset {

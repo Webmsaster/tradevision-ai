@@ -555,7 +555,12 @@ mod tests {
     #[test]
     fn dwell_filter_blocks_fresh_band_flip() {
         // Two days in capitulation → fails 7-day dwell gate.
-        let samples = make_series(&[(0, 0.10), (DAY_MS, 0.05), (DAY_MS * 2, -0.05), (DAY_MS * 3, -0.10)]);
+        let samples = make_series(&[
+            (0, 0.10),
+            (DAY_MS, 0.05),
+            (DAY_MS * 2, -0.05),
+            (DAY_MS * 3, -0.10),
+        ]);
         let series = NuplSeries::new(&samples);
         let bar = Candle::new(DAY_MS * 3 + 1, 100.0, 100.0, 100.0, 100.0, 0.0);
         let mut params = NuplParams::default();

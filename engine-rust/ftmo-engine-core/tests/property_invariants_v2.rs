@@ -22,9 +22,7 @@
 use std::collections::HashMap;
 
 use ftmo_engine_core::candle::Candle;
-use ftmo_engine_core::config::{
-    AssetConfig, EngineConfig, ReentryAfterStop,
-};
+use ftmo_engine_core::config::{AssetConfig, EngineConfig, ReentryAfterStop};
 use ftmo_engine_core::harness::{step_bar, BarInput};
 use ftmo_engine_core::position::PositionSide;
 use ftmo_engine_core::signal::PollSignal;
@@ -416,11 +414,7 @@ fn day_index_dst_spring_forward_2026() {
         .timestamp_millis();
     let di = day_index(bar, anchor);
     // Calendar-day diff = 8 in Prague TZ. Allow ±0 — exact match required.
-    assert_eq!(
-        di, 8,
-        "day_index across DST returned {} (expected 8)",
-        di
-    );
+    assert_eq!(di, 8, "day_index across DST returned {} (expected 8)", di);
 }
 
 #[test]
@@ -540,8 +534,7 @@ fn min_trading_days_blocks_early_pass() {
     // gate) OR no trades closed (no assertion to make).
     if s.equity >= 1.0 + cfg.profit_target - 1e-9 {
         assert!(
-            s.trading_days.len() < cfg.min_trading_days as usize
-                || s.stopped_reason.is_some(),
+            s.trading_days.len() < cfg.min_trading_days as usize || s.stopped_reason.is_some(),
             "early pass: equity={} target={} trading_days={:?} min={}",
             s.equity,
             1.0 + cfg.profit_target,
@@ -602,7 +595,11 @@ fn paused_state_blocks_new_entries() {
         "paused_at_target leaked a new entry: {:?}",
         r.decision.opens
     );
-    assert_eq!(state.open_positions.len(), 0, "paused state opened a position");
+    assert_eq!(
+        state.open_positions.len(),
+        0,
+        "paused state opened a position"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -715,7 +712,15 @@ fn stopped_total_loss_freezes_equity() {
         &cfg,
     );
     assert!(r.challenge_ended, "stopped state must mark challenge_ended");
-    assert_eq!(state.equity.to_bits(), eq_before, "equity mutated after stop");
+    assert_eq!(
+        state.equity.to_bits(),
+        eq_before,
+        "equity mutated after stop"
+    );
     assert_eq!(state.bars_seen, bars_before, "bars_seen mutated after stop");
-    assert_eq!(state.closed_trades.len(), trades_before, "trades mutated after stop");
+    assert_eq!(
+        state.closed_trades.len(),
+        trades_before,
+        "trades mutated after stop"
+    );
 }

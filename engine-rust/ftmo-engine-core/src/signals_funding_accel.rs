@@ -119,11 +119,15 @@ mod tests {
     fn fires_short_on_fast_positive_acceleration() {
         let n = 10;
         // Funding rising fast: prev=0.0001, cur=0.001 → delta=+0.0009 > 0.0003
-        let mut series: Vec<Option<f64>> = (0..n).map(|i| Some(0.0001 + (i as f64) * 0.00015)).collect();
+        let mut series: Vec<Option<f64>> = (0..n)
+            .map(|i| Some(0.0001 + (i as f64) * 0.00015))
+            .collect();
         // signal_idx = 8, accel_window=3 → prev=series[5]=0.000850
         // cur=series[8]=0.001300 → delta=0.000450 > 0.0003 → Short
         let _ = series; // already constructed
-        let series_v: Vec<Option<f64>> = (0..n).map(|i| Some(0.0001 + (i as f64) * 0.00015)).collect();
+        let series_v: Vec<Option<f64>> = (0..n)
+            .map(|i| Some(0.0001 + (i as f64) * 0.00015))
+            .collect();
         let params = FundingAccelParams::default_30m_crypto();
         let vote = compute_funding_accel_vote(Some(&series_v), n, &params);
         assert_eq!(vote, Some(PositionSide::Short));
@@ -144,7 +148,9 @@ mod tests {
     fn abstains_on_slow_change() {
         let n = 10;
         // tiny change well below threshold
-        let series: Vec<Option<f64>> = (0..n).map(|i| Some(0.0001 + (i as f64) * 0.00001)).collect();
+        let series: Vec<Option<f64>> = (0..n)
+            .map(|i| Some(0.0001 + (i as f64) * 0.00001))
+            .collect();
         let params = FundingAccelParams::default_30m_crypto();
         let vote = compute_funding_accel_vote(Some(&series), n, &params);
         assert_eq!(vote, None);
@@ -184,7 +190,9 @@ mod tests {
     fn lookahead_safe_no_entry_bar_read() {
         // Mutate entry bar (signal_idx + 1 = last index); vote should NOT change.
         let n = 10;
-        let mut series_base: Vec<Option<f64>> = (0..n).map(|i| Some(0.0001 + (i as f64) * 0.00015)).collect();
+        let mut series_base: Vec<Option<f64>> = (0..n)
+            .map(|i| Some(0.0001 + (i as f64) * 0.00015))
+            .collect();
         let params = FundingAccelParams::default_30m_crypto();
         let vote_a = compute_funding_accel_vote(Some(&series_base), n, &params);
         // Mutate the entry-bar value (index n-1 = 9)

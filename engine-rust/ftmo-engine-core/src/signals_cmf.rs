@@ -108,11 +108,7 @@ impl CmfParams {
 /// Returns `None` for corrupt bars (NaN OHLC or NaN volume) so the caller
 /// can hard-fail rather than coerce.
 fn per_bar_money_flow(c: &Candle) -> Option<(f64, f64)> {
-    if !c.high.is_finite()
-        || !c.low.is_finite()
-        || !c.close.is_finite()
-        || !c.volume.is_finite()
-    {
+    if !c.high.is_finite() || !c.low.is_finite() || !c.close.is_finite() || !c.volume.is_finite() {
         return None;
     }
     let range = c.high - c.low;
@@ -327,7 +323,14 @@ pub fn detect_cmf(
 
     let mut sized_asset = asset.clone();
     sized_asset.risk_frac = asset.risk_frac * params.size_mult;
-    let s = finalise_signal(state, cfg, &sized_asset, source_symbol, &entry_bar, direction)?;
+    let s = finalise_signal(
+        state,
+        cfg,
+        &sized_asset,
+        source_symbol,
+        &entry_bar,
+        direction,
+    )?;
 
     state.loss_streak_by_asset_dir.insert(
         key,
@@ -487,7 +490,10 @@ mod tests {
 
         let p = default_params();
         let sig = detect_cmf(&mut s, &cfg, &a, "BTCUSDT", &candles, &p);
-        assert!(sig.is_none(), "neutral CMF ≈ 0 must not fire below threshold");
+        assert!(
+            sig.is_none(),
+            "neutral CMF ≈ 0 must not fire below threshold"
+        );
     }
 
     /// Doji-guard: bar with `high == low` contributes 0 to both sums (no NaN
@@ -650,8 +656,8 @@ mod tests {
         candles.push(c_neutral(50 * 1_800_000, 115.0, 100.0));
 
         let p = default_params();
-        let _ = detect_cmf(&mut s, &cfg, &a, "BTCUSDT", &candles, &p)
-            .expect("first call must fire");
+        let _ =
+            detect_cmf(&mut s, &cfg, &a, "BTCUSDT", &candles, &p).expect("first call must fire");
         // Immediate re-call (no bars_seen advance) — cooldown gates it.
         let sig2 = detect_cmf(&mut s, &cfg, &a, "BTCUSDT", &candles, &p);
         assert!(sig2.is_none(), "cooldown must suppress repeat emit");
@@ -691,7 +697,10 @@ mod tests {
 
         let mut s = EngineState::initial("x");
         let sig = detect_cmf(&mut s, &cfg, &a, "BTCUSDT", &candles, &p);
-        assert!(sig.is_some(), "5m TF-scaled window must still fire on uptrend");
+        assert!(
+            sig.is_some(),
+            "5m TF-scaled window must still fire on uptrend"
+        );
         assert_eq!(sig.unwrap().direction, PositionSide::Long);
 
         // Now build a too-short feed below the TF-scaled threshold — must
@@ -701,7 +710,10 @@ mod tests {
             short_candles.push(c_neutral(k * 300_000, 100.0, 100.0));
         }
         let v = compute_cmf_vote(&short_candles, &p, &cfg);
-        assert!(v.is_none(), "below TF-scaled backward requirement → safe None");
+        assert!(
+            v.is_none(),
+            "below TF-scaled backward requirement → safe None"
+        );
     }
 
     /// Net-return secondary filter blocks "spoofed direction": bars with

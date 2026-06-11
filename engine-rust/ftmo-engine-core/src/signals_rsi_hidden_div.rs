@@ -385,7 +385,16 @@ mod tests {
     /// pivots + RSI shape.
     fn flat_bars(n: usize, price: f64) -> Vec<Candle> {
         (0..n)
-            .map(|i| ohlcv(i as i64 * 1_800_000, price, price + 0.5, price - 0.5, price, 100.0))
+            .map(|i| {
+                ohlcv(
+                    i as i64 * 1_800_000,
+                    price,
+                    price + 0.5,
+                    price - 0.5,
+                    price,
+                    100.0,
+                )
+            })
             .collect()
     }
 
@@ -528,29 +537,41 @@ mod tests {
         closes[63] = 101.0;
         closes[64] = 99.5;
         closes[65] = 99.0; // newer pivot close
-        // Modest up-drift after newer pivot so no additional pivot-low
-        // candidates appear in the scan window. Use a small step (0.05) so
-        // RSI at signal_idx (i=78) ends in the 30-45 band — well below the
-        // continuation gate (≤50).
+                           // Modest up-drift after newer pivot so no additional pivot-low
+                           // candidates appear in the scan window. Use a small step (0.05) so
+                           // RSI at signal_idx (i=78) ends in the 30-45 band — well below the
+                           // continuation gate (≤50).
         for i in 66..80 {
             closes[i] = 99.0 + (i as f64 - 65.0) * 0.05;
         }
         // closes[78] = 99.0 + 13*0.05 = 99.65
         let low_overrides = vec![
             // Older pivot-low at 50. Flank lows MUST be > 98.0.
-            (48, 101.5), (49, 101.5),
+            (48, 101.5),
+            (49, 101.5),
             (50, 98.0),
-            (51, 101.5), (52, 101.5),
+            (51, 101.5),
+            (52, 101.5),
             // Newer pivot-low at 65. Flank lows MUST be > 99.0 (strict-on-left)
             // and >= 99.0 (non-strict-on-right but we still set them > 99.0
             // so no tie). Bars 66..signal_idx MUST have monotonically rising
             // lows so no third pivot-low appears in the scan window — keep
             // gap large (≥ 0.3) per bar.
-            (63, 100.5), (64, 99.4),
+            (63, 100.5),
+            (64, 99.4),
             (65, 99.0),
-            (66, 99.5), (67, 100.0), (68, 100.5), (69, 101.0),
-            (70, 101.0), (71, 101.0), (72, 101.0), (73, 101.0),
-            (74, 101.0), (75, 101.0), (76, 101.0), (77, 101.0),
+            (66, 99.5),
+            (67, 100.0),
+            (68, 100.5),
+            (69, 101.0),
+            (70, 101.0),
+            (71, 101.0),
+            (72, 101.0),
+            (73, 101.0),
+            (74, 101.0),
+            (75, 101.0),
+            (76, 101.0),
+            (77, 101.0),
         ];
         let bars = build_bars_from_series(&closes, &low_overrides, &[]);
         let p = RsiHiddenDivParams::default();
@@ -585,27 +606,39 @@ mod tests {
         closes[63] = 99.0;
         closes[64] = 100.5;
         closes[65] = 101.0; // newer pivot close (HIGH but high=102 via override is LOWER than 50's 102.0+epsilon)
-        // To trip the bearish HIDDEN pattern we need price LH: newer_high
-        // ≤ older_high × (1 - 0.003). Older high = 102.0 → newer high ≤
-        // 101.69. So newer pivot HIGH must be ≤ 101.69. We override it to
-        // 101.5 below.
+                            // To trip the bearish HIDDEN pattern we need price LH: newer_high
+                            // ≤ older_high × (1 - 0.003). Older high = 102.0 → newer high ≤
+                            // 101.69. So newer pivot HIGH must be ≤ 101.69. We override it to
+                            // 101.5 below.
         for i in 66..80 {
             closes[i] = 101.0 - (i as f64 - 65.0) * 0.05;
         }
         let high_overrides = vec![
             // Older pivot-high at 50. Flank highs MUST be < 102.0.
-            (48, 98.5), (49, 98.5),
+            (48, 98.5),
+            (49, 98.5),
             (50, 102.0),
-            (51, 98.5), (52, 98.5),
+            (51, 98.5),
+            (52, 98.5),
             // Newer pivot-high at 65. Flank highs strictly < 101.5
             // (strict-on-left) and ≤ 101.5 (non-strict-on-right).
             // Bars 66..signal_idx must have monotonically DECREASING highs
             // so no third pivot-high appears in the scan window.
-            (63, 100.5), (64, 100.6),
+            (63, 100.5),
+            (64, 100.6),
             (65, 101.5),
-            (66, 100.5), (67, 100.0), (68, 99.5), (69, 99.0),
-            (70, 99.0), (71, 99.0), (72, 99.0), (73, 99.0),
-            (74, 99.0), (75, 99.0), (76, 99.0), (77, 99.0),
+            (66, 100.5),
+            (67, 100.0),
+            (68, 99.5),
+            (69, 99.0),
+            (70, 99.0),
+            (71, 99.0),
+            (72, 99.0),
+            (73, 99.0),
+            (74, 99.0),
+            (75, 99.0),
+            (76, 99.0),
+            (77, 99.0),
         ];
         let bars = build_bars_from_series(&closes, &[], &high_overrides);
         let p = RsiHiddenDivParams::default();

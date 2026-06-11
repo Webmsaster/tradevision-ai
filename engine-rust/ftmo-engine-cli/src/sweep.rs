@@ -434,9 +434,7 @@ struct MultiSignalCfg {
 ///   * every trigger_pct > 0 and every close_fraction > 0
 ///   * sum(close_fraction) <= 1.0 (cannot close more than 100% of the
 ///     remaining position across all tiers)
-fn parse_ptp_levels(
-    csv: &str,
-) -> Result<Vec<ftmo_engine_core::config::PartialTakeProfitLevel>> {
+fn parse_ptp_levels(csv: &str) -> Result<Vec<ftmo_engine_core::config::PartialTakeProfitLevel>> {
     let mut out: Vec<ftmo_engine_core::config::PartialTakeProfitLevel> = Vec::new();
     let mut prev_trigger: Option<f64> = None;
     let mut frac_sum = 0.0_f64;
@@ -1028,7 +1026,12 @@ fn apply_overrides(
         || ov.td_min_factor.is_some()
         || ov.td_mode.is_some()
     {
-        let mode = match ov.td_mode.as_deref().map(str::to_ascii_lowercase).as_deref() {
+        let mode = match ov
+            .td_mode
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
             Some("mult") | Some("multiplicative") => TimeDecayMode::Multiplicative,
             // Default & explicit "capdown" both land here.
             _ => TimeDecayMode::CapDown,
@@ -1510,7 +1513,9 @@ fn main() -> Result<()> {
             "--profit-target" => profit_target = Some(need!("--profit-target").parse()?),
             "--max-daily-loss" => max_daily_loss = Some(need!("--max-daily-loss").parse()?),
             "--max-total-loss" => max_total_loss = Some(need!("--max-total-loss").parse()?),
-            "--trailing-max-loss" => trailing_max_loss = Some(need!("--trailing-max-loss").parse()?),
+            "--trailing-max-loss" => {
+                trailing_max_loss = Some(need!("--trailing-max-loss").parse()?)
+            }
             "--max-days" => max_days = Some(need!("--max-days").parse()?),
             "--cross-asset-sym" => cross_asset_sym = Some(need!("--cross-asset-sym")),
             "--cross-asset-dir" => cross_asset_dir = Some(need!("--cross-asset-dir")),
@@ -1604,7 +1609,9 @@ fn main() -> Result<()> {
                 // u8::MAX upper-clamp but the 0-floor was still open.
                 let mv: usize = need!("--regime-min-votes").parse()?;
                 if mv == 0 {
-                    anyhow::bail!("--regime-min-votes must be ≥ 1 (0 would fire on every consensus pair)");
+                    anyhow::bail!(
+                        "--regime-min-votes must be ≥ 1 (0 would fire on every consensus pair)"
+                    );
                 }
                 regime_min_votes = mv;
             }
@@ -1620,21 +1627,13 @@ fn main() -> Result<()> {
             }
             // 2026-05-14 Detector #14 — Stop-Hunt Liquidity-Sweep voter flags.
             "--regime-stophunt" => regime_use_stop_hunt = true,
-            "--regime-sh-lookback" => {
-                regime_sh_lookback = need!("--regime-sh-lookback").parse()?
-            }
-            "--regime-sh-wick-pct" => {
-                regime_sh_wick_pct = need!("--regime-sh-wick-pct").parse()?
-            }
+            "--regime-sh-lookback" => regime_sh_lookback = need!("--regime-sh-lookback").parse()?,
+            "--regime-sh-wick-pct" => regime_sh_wick_pct = need!("--regime-sh-wick-pct").parse()?,
             "--regime-sh-close-strict" => regime_sh_close_strict = true,
             // 2026-05-14 Detector #1 — Bollinger-Band Z-score MR voter flags.
             "--regime-bb-z-mr" => regime_use_bb_z_mr = true,
-            "--regime-bb-z-period" => {
-                regime_bb_z_period = need!("--regime-bb-z-period").parse()?
-            }
-            "--regime-bb-z-mult" => {
-                regime_bb_z_mult = need!("--regime-bb-z-mult").parse()?
-            }
+            "--regime-bb-z-period" => regime_bb_z_period = need!("--regime-bb-z-period").parse()?,
+            "--regime-bb-z-mult" => regime_bb_z_mult = need!("--regime-bb-z-mult").parse()?,
             "--regime-bb-z-threshold" => {
                 regime_bb_z_threshold = need!("--regime-bb-z-threshold").parse()?
             }
@@ -1693,18 +1692,12 @@ fn main() -> Result<()> {
             }
             "--disable-day-stage" => disable_day_stage = true,
             // 2026-05-14 Detector #34 — Coinbase-Binance Premium voter flags.
-            "--cb-premium-dir" => {
-                cb_premium_dir = Some(PathBuf::from(need!("--cb-premium-dir")))
-            }
+            "--cb-premium-dir" => cb_premium_dir = Some(PathBuf::from(need!("--cb-premium-dir"))),
             // 2026-05-14 R2-Fix Bug #3: removed `--regime-cb-premium` duplicate
             // (use `--regime-use-cb-premium` which matches the naming pattern
             // of all other voter-toggle flags, e.g. `--regime-use-flow-pulse`).
-            "--cb-threshold-bps" => {
-                cb_threshold_bps = need!("--cb-threshold-bps").parse()?
-            }
-            "--cb-consecutive" => {
-                cb_consecutive_bars = need!("--cb-consecutive").parse()?
-            }
+            "--cb-threshold-bps" => cb_threshold_bps = need!("--cb-threshold-bps").parse()?,
+            "--cb-consecutive" => cb_consecutive_bars = need!("--cb-consecutive").parse()?,
             // Detector #13 — HTF MACD-histogram trend confluence gate.
             "--use-htf-macd-gate" => use_htf_macd_gate = true,
             "--htf-macd-fast" => htf_macd_fast = need!("--htf-macd-fast").parse()?,
@@ -1774,9 +1767,7 @@ fn main() -> Result<()> {
             // 2026-05-16 Phase 1 — Kelly-Sizing CLI activation
             "--kelly-sizing" => kelly_sizing_enable = true,
             "--kelly-window" => kelly_window = Some(need!("--kelly-window").parse()?),
-            "--kelly-min-trades" => {
-                kelly_min_trades = Some(need!("--kelly-min-trades").parse()?)
-            }
+            "--kelly-min-trades" => kelly_min_trades = Some(need!("--kelly-min-trades").parse()?),
             // 2026-05-16 Phase 14 — Fractional-Kelly modifier (Half-Kelly etc.).
             "--kelly-fraction" => {
                 let v: f64 = need!("--kelly-fraction").parse()?;
@@ -1791,10 +1782,17 @@ fn main() -> Result<()> {
                 let mut map = std::collections::HashMap::new();
                 for tok in raw.split(',') {
                     let tok = tok.trim();
-                    if tok.is_empty() { continue; }
-                    let (sym, val) = tok.split_once('=').or_else(|| tok.split_once(':'))
-                        .ok_or_else(|| anyhow!("invalid --override-tp-mult-per-asset token: {tok}"))?;
-                    let v: f64 = val.parse()
+                    if tok.is_empty() {
+                        continue;
+                    }
+                    let (sym, val) = tok
+                        .split_once('=')
+                        .or_else(|| tok.split_once(':'))
+                        .ok_or_else(|| {
+                            anyhow!("invalid --override-tp-mult-per-asset token: {tok}")
+                        })?;
+                    let v: f64 = val
+                        .parse()
                         .map_err(|_| anyhow!("invalid f64 in per-asset tp-mult: {val}"))?;
                     if !(v > 0.0 && v <= 10.0) {
                         anyhow::bail!("per-asset tp-mult must be in (0, 10] (got {v})");
@@ -2003,7 +2001,10 @@ fn main() -> Result<()> {
             anyhow::bail!("--threads must be > 0 (got 0; rayon would silently use all CPUs)");
         }
         // .ok() previously swallowed double-init failures; surface them.
-        if let Err(e) = rayon::ThreadPoolBuilder::new().num_threads(t).build_global() {
+        if let Err(e) = rayon::ThreadPoolBuilder::new()
+            .num_threads(t)
+            .build_global()
+        {
             eprintln!("[sweep] WARN: rayon thread-pool init failed: {e}");
         }
     }
@@ -2013,14 +2014,10 @@ fn main() -> Result<()> {
     // loud so script bugs are surfaced instead of producing misleading
     // pass-rates.
     if disable_passlock && enable_passlock {
-        anyhow::bail!(
-            "--disable-passlock and --enable-passlock are mutually exclusive"
-        );
+        anyhow::bail!("--disable-passlock and --enable-passlock are mutually exclusive");
     }
     if drop_symbols.is_some() && keep_symbols.is_some() {
-        anyhow::bail!(
-            "use --keep-symbols (whitelist) OR --drop-symbols (blacklist), not both"
-        );
+        anyhow::bail!("use --keep-symbols (whitelist) OR --drop-symbols (blacklist), not both");
     }
     if disable_trail && (override_trail_pct.is_some() || override_trail_activate.is_some()) {
         anyhow::bail!(
@@ -2028,9 +2025,7 @@ fn main() -> Result<()> {
         );
     }
     if debug_window.is_some() && trades_out.is_none() {
-        anyhow::bail!(
-            "--debug-window requires --trades-out PATH to capture the per-trade dump"
-        );
+        anyhow::bail!("--debug-window requires --trades-out PATH to capture the per-trade dump");
     }
 
     // 2026-05-13 Codex Round 7 #B8 FIX: hard-error when single-asset path
@@ -2060,7 +2055,10 @@ fn main() -> Result<()> {
         {
             unsupported.push("--step-days / external feeds / debug dumps / HMM model");
         }
-        if matches!(signals, SignalSrc::PerAssetCfg | SignalSrc::RegimeConfluence) {
+        if matches!(
+            signals,
+            SignalSrc::PerAssetCfg | SignalSrc::RegimeConfluence
+        ) {
             unsupported.push("--signals per-asset / regime");
         }
         if use_htf_confirm {
@@ -2135,9 +2133,7 @@ fn main() -> Result<()> {
             || lscool_bars.is_some()
             || ptp_levels.is_some()
         {
-            unsupported.push(
-                "trail/passlock/BE/PTP/DD/loss-cooldown override flags",
-            );
+            unsupported.push("trail/passlock/BE/PTP/DD/loss-cooldown override flags");
         }
         if ds_aggressive_until.is_some()
             || ds_aggressive_factor.is_some()
@@ -2200,7 +2196,8 @@ fn main() -> Result<()> {
             || rsi_long_max.is_some()
             || rsi_short_min.is_some()
         {
-            unsupported.push("--regime-* / --override-adx-* / --override-chop-* / --override-rsi-*");
+            unsupported
+                .push("--regime-* / --override-adx-* / --override-chop-* / --override-rsi-*");
         }
         if !unsupported.is_empty() {
             anyhow::bail!(
@@ -2787,9 +2784,7 @@ fn finalise_report(reports: &[WindowResult], windows: usize, started: Instant) {
         .iter()
         .filter(|r| matches!(r.qualified_at_start, Some(true)))
         .count();
-    let gated_any: bool = reports
-        .iter()
-        .any(|r| r.qualified_at_start.is_some());
+    let gated_any: bool = reports.iter().any(|r| r.qualified_at_start.is_some());
     if gated_any {
         let passed_qualified: usize = reports
             .iter()
@@ -2908,9 +2903,9 @@ fn run_multi_asset(
     if multi_signal.min_initial_majors > 0 {
         let cfg_symbols: Vec<&str> = cfg.assets.iter().map(|a| a.symbol.as_str()).collect();
         for prefix in multi_signal.majors_prefixes.iter() {
-            let any_match = cfg_symbols.iter().any(|s| {
-                *s == prefix.as_str() || s.starts_with(&format!("{prefix}-"))
-            });
+            let any_match = cfg_symbols
+                .iter()
+                .any(|s| *s == prefix.as_str() || s.starts_with(&format!("{prefix}-")));
             if !any_match {
                 eprintln!(
                     "[sweep] WARN: --majors-list prefix '{}' does not match any cfg.assets \
@@ -3975,10 +3970,8 @@ fn run_one_window(
                             use_bocpd_gate: multi_signal.regime_use_bocpd_gate,
                             bocpd_params: ftmo_engine_core::signals_bocpd::BocpdParams::default(),
                         };
-                    let stablecoin_slice =
-                        stablecoin_feed.get(&source).map(|v| v.as_slice());
-                    let cb_premium_slice =
-                        cb_premium_feed.get(&source).map(|v| v.as_slice());
+                    let stablecoin_slice = stablecoin_feed.get(&source).map(|v| v.as_slice());
+                    let cb_premium_slice = cb_premium_feed.get(&source).map(|v| v.as_slice());
                     let regime_inputs =
                         ftmo_engine_core::signals_regime_confluence::RegimeConfluenceInputs {
                             stablecoin_supply_series: stablecoin_slice,
@@ -4195,18 +4188,19 @@ fn run_one_window(
                 std::collections::HashSet::new();
             let mut majors_set: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
-            let count_one = |sym: &str,
-                             symbols_set: &mut std::collections::HashSet<String>,
-                             majors_set: &mut std::collections::HashSet<String>| {
-                let key = cluster_symbol_key(sym);
-                symbols_set.insert(key.clone());
-                for prefix in multi_signal.majors_prefixes.iter() {
-                    if key == *prefix || key.starts_with(&format!("{prefix}-")) {
-                        majors_set.insert(prefix.clone());
-                        break;
+            let count_one =
+                |sym: &str,
+                 symbols_set: &mut std::collections::HashSet<String>,
+                 majors_set: &mut std::collections::HashSet<String>| {
+                    let key = cluster_symbol_key(sym);
+                    symbols_set.insert(key.clone());
+                    for prefix in multi_signal.majors_prefixes.iter() {
+                        if key == *prefix || key.starts_with(&format!("{prefix}-")) {
+                            majors_set.insert(prefix.clone());
+                            break;
+                        }
                     }
-                }
-            };
+                };
             for (_t, sym) in cluster_signal_log.iter() {
                 count_one(sym, &mut symbols_set, &mut majors_set);
             }
@@ -4225,9 +4219,8 @@ fn run_one_window(
             // form across multiple bars instead of only via same-bar bursts.
             cluster_signal_log.extend(current_candidates);
             if !qualified {
-                cluster_blocked_signals = cluster_blocked_signals.saturating_add(
-                    signals_for_bar.len() as u32,
-                );
+                cluster_blocked_signals =
+                    cluster_blocked_signals.saturating_add(signals_for_bar.len() as u32);
                 cluster_blocked_bars = cluster_blocked_bars.saturating_add(1);
                 signals_for_bar.clear();
             } else {
@@ -4268,11 +4261,8 @@ fn run_one_window(
                 && nt >= multi_signal.early_abort_after_losses as usize
             {
                 let n = multi_signal.early_abort_after_losses as usize;
-                let first_n_all_losers = state
-                    .closed_trades
-                    .iter()
-                    .take(n)
-                    .all(|t| t.eff_pnl <= 0.0);
+                let first_n_all_losers =
+                    state.closed_trades.iter().take(n).all(|t| t.eff_pnl <= 0.0);
                 if first_n_all_losers {
                     should_abort = true;
                 }
@@ -4303,8 +4293,7 @@ fn run_one_window(
                     cfg,
                     last_bar_time,
                 );
-                state.stopped_reason =
-                    Some(ftmo_engine_core::state::StoppedReason::EarlyAbort);
+                state.stopped_reason = Some(ftmo_engine_core::state::StoppedReason::EarlyAbort);
                 last_passed = false;
                 last_fail = Some("EarlyAbort".to_string());
                 break;
@@ -4433,28 +4422,27 @@ fn run_one_window(
     // when both thresholds are 0.
     let breadth_gate_active =
         multi_signal.min_initial_signal_breadth > 0 || multi_signal.min_initial_majors > 0;
-    let (qualified_at_start, first_cluster_size, first_cluster_majors) = if breadth_gate_active
-        && !state.closed_trades.is_empty()
-    {
-        let trade_pairs: Vec<(i64, String)> = state
-            .closed_trades
-            .iter()
-            .map(|t| (t.entry_time, t.symbol.clone()))
-            .collect();
-        let (breadth, majors) = compute_first_cluster_counts(
-            &trade_pairs,
-            multi_signal.initial_window_hours,
-            &multi_signal.majors_prefixes,
-        );
-        let qualified = breadth >= multi_signal.min_initial_signal_breadth
-            && majors >= multi_signal.min_initial_majors;
-        (Some(qualified), Some(breadth), Some(majors))
-    } else if breadth_gate_active {
-        // Active gate but no trades produced → does not qualify (no cluster formed).
-        (Some(false), Some(0), Some(0))
-    } else {
-        (None, None, None)
-    };
+    let (qualified_at_start, first_cluster_size, first_cluster_majors) =
+        if breadth_gate_active && !state.closed_trades.is_empty() {
+            let trade_pairs: Vec<(i64, String)> = state
+                .closed_trades
+                .iter()
+                .map(|t| (t.entry_time, t.symbol.clone()))
+                .collect();
+            let (breadth, majors) = compute_first_cluster_counts(
+                &trade_pairs,
+                multi_signal.initial_window_hours,
+                &multi_signal.majors_prefixes,
+            );
+            let qualified = breadth >= multi_signal.min_initial_signal_breadth
+                && majors >= multi_signal.min_initial_majors;
+            (Some(qualified), Some(breadth), Some(majors))
+        } else if breadth_gate_active {
+            // Active gate but no trades produced → does not qualify (no cluster formed).
+            (Some(false), Some(0), Some(0))
+        } else {
+            (None, None, None)
+        };
 
     let report = WindowResult {
         win_idx: w_idx,
@@ -4585,8 +4573,7 @@ pub fn compute_first_cluster_counts(
     let cutoff_ms = first_entry + (initial_window_hours as i64) * 3_600_000;
     let mut symbols_in_cluster: std::collections::HashSet<String> =
         std::collections::HashSet::new();
-    let mut majors_in_cluster: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut majors_in_cluster: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (entry_time, symbol) in sorted.iter() {
         if *entry_time > cutoff_ms {
             break;
@@ -4631,8 +4618,12 @@ mod cli_parse_tests {
 mod breadth_gate_tests {
     use super::compute_first_cluster_counts;
 
-    fn s(x: &str) -> String { x.to_string() }
-    fn t(time: i64, sym: &str) -> (i64, String) { (time, s(sym)) }
+    fn s(x: &str) -> String {
+        x.to_string()
+    }
+    fn t(time: i64, sym: &str) -> (i64, String) {
+        (time, s(sym))
+    }
 
     #[test]
     fn empty_trades_returns_zero_zero() {
@@ -4652,15 +4643,15 @@ mod breadth_gate_tests {
         let majors = vec![s("BTC"), s("ETH"), s("BNB"), s("SOL")];
         let (breadth, majors_count) = compute_first_cluster_counts(&trades, 24, &majors);
         assert_eq!(breadth, 4, "4 distinct (BTC,ETH,BNB,AAVE)");
-        assert_eq!(majors_count, 3, "3 majors (BTC,ETH,BNB) — SOL outside window");
+        assert_eq!(
+            majors_count, 3,
+            "3 majors (BTC,ETH,BNB) — SOL outside window"
+        );
     }
 
     #[test]
     fn trade_at_exact_cutoff_is_included() {
-        let trades = vec![
-            t(0, "BTC-TREND"),
-            t(24 * 3_600_000, "ETH-TREND"),
-        ];
+        let trades = vec![t(0, "BTC-TREND"), t(24 * 3_600_000, "ETH-TREND")];
         let majors = vec![s("BTC"), s("ETH")];
         let (breadth, _) = compute_first_cluster_counts(&trades, 24, &majors);
         assert_eq!(breadth, 2, "trade at exact cutoff must be included");
@@ -4668,11 +4659,7 @@ mod breadth_gate_tests {
 
     #[test]
     fn major_match_prefix_dashed_only_not_substring() {
-        let trades = vec![
-            t(0, "BTC-TREND"),
-            t(1_000, "BTCDOM"),
-            t(2_000, "BTC"),
-        ];
+        let trades = vec![t(0, "BTC-TREND"), t(1_000, "BTCDOM"), t(2_000, "BTC")];
         let majors = vec![s("BTC")];
         let (breadth, majors_count) = compute_first_cluster_counts(&trades, 24, &majors);
         assert_eq!(breadth, 3, "3 distinct symbols counted");
@@ -4732,8 +4719,12 @@ mod breadth_gate_tests {
 mod cluster_only_mode_tests {
     use super::compute_rolling_cluster_counts;
 
-    fn s(x: &str) -> String { x.to_string() }
-    fn t(time: i64, sym: &str) -> (i64, String) { (time, s(sym)) }
+    fn s(x: &str) -> String {
+        x.to_string()
+    }
+    fn t(time: i64, sym: &str) -> (i64, String) {
+        (time, s(sym))
+    }
     const H: i64 = 3_600_000;
 
     #[test]
@@ -4746,15 +4737,14 @@ mod cluster_only_mode_tests {
     fn rolling_window_excludes_older_entries() {
         // now=48h, window=24h → only entries in (24h, 48h] count.
         let entries = vec![
-            t(0, "BTC-TREND"),         // outside (too old)
-            t(20 * H, "ETH-TREND"),    // outside (too old)
-            t(30 * H, "BNB-TREND"),    // inside
-            t(45 * H, "SOL-TREND"),    // inside
-            t(48 * H, "AAVE-TREND"),   // inside (== now)
+            t(0, "BTC-TREND"),       // outside (too old)
+            t(20 * H, "ETH-TREND"),  // outside (too old)
+            t(30 * H, "BNB-TREND"),  // inside
+            t(45 * H, "SOL-TREND"),  // inside
+            t(48 * H, "AAVE-TREND"), // inside (== now)
         ];
         let majors = vec![s("BTC"), s("ETH"), s("BNB"), s("SOL")];
-        let (breadth, majors_count) =
-            compute_rolling_cluster_counts(&entries, 48 * H, 24, &majors);
+        let (breadth, majors_count) = compute_rolling_cluster_counts(&entries, 48 * H, 24, &majors);
         assert_eq!(breadth, 3, "BNB,SOL,AAVE within rolling 24h");
         assert_eq!(majors_count, 2, "BNB + SOL are majors; AAVE is not");
     }
@@ -4767,8 +4757,7 @@ mod cluster_only_mode_tests {
             t(100 * H, "ETH-TREND"), // far future
         ];
         let majors = vec![s("BTC"), s("ETH")];
-        let (breadth, majors_count) =
-            compute_rolling_cluster_counts(&entries, 12 * H, 24, &majors);
+        let (breadth, majors_count) = compute_rolling_cluster_counts(&entries, 12 * H, 24, &majors);
         assert_eq!(breadth, 1);
         assert_eq!(majors_count, 1);
     }
@@ -4777,12 +4766,11 @@ mod cluster_only_mode_tests {
     fn cutoff_is_strict_left_exclusive() {
         // entry exactly at cutoff (now - window) must NOT count (strict >).
         let entries = vec![
-            t(0, "BTC-TREND"),         // cutoff
-            t(1, "ETH-TREND"),         // just inside
+            t(0, "BTC-TREND"), // cutoff
+            t(1, "ETH-TREND"), // just inside
         ];
         let majors = vec![s("BTC"), s("ETH")];
-        let (breadth, majors_count) =
-            compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
+        let (breadth, majors_count) = compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
         assert_eq!(breadth, 1, "BTC at cutoff excluded; only ETH counts");
         assert_eq!(majors_count, 1);
     }
@@ -4795,8 +4783,7 @@ mod cluster_only_mode_tests {
             t(12 * H, "BTC-TREND"),
         ];
         let majors = vec![s("BTC")];
-        let (breadth, majors_count) =
-            compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
+        let (breadth, majors_count) = compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
         assert_eq!(breadth, 1);
         assert_eq!(majors_count, 1);
     }
@@ -4809,8 +4796,7 @@ mod cluster_only_mode_tests {
             t(12 * H, "ETH-TREND"),
         ];
         let majors = vec![s("BTC"), s("ETH")];
-        let (breadth, majors_count) =
-            compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
+        let (breadth, majors_count) = compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
         assert_eq!(breadth, 2);
         assert_eq!(majors_count, 2);
     }
@@ -4826,8 +4812,7 @@ mod cluster_only_mode_tests {
             t(6 * H, "LINK-TREND"),
         ];
         let majors = vec![s("BTC"), s("ETH"), s("BNB"), s("SOL")];
-        let (breadth, majors_count) =
-            compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
+        let (breadth, majors_count) = compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
         assert_eq!(breadth, 6, "all 6 symbols counted toward breadth");
         assert_eq!(majors_count, 4, "majors clamped at 4 (BTC,ETH,BNB,SOL)");
     }
@@ -4841,8 +4826,7 @@ mod cluster_only_mode_tests {
             t(3 * H, "AAVE-TREND"),
         ];
         let majors = vec![s("BTC"), s("ETH"), s("BNB"), s("SOL")];
-        let (breadth, majors_count) =
-            compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
+        let (breadth, majors_count) = compute_rolling_cluster_counts(&entries, 24 * H, 24, &majors);
         let qualified = breadth >= 4 && majors_count >= 2;
         assert!(!qualified, "3 distinct < 4 needed → cluster RED");
     }

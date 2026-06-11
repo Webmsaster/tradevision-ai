@@ -588,20 +588,36 @@ pub fn v5_amber_max_passlock_bidir() -> EngineConfig {
 pub fn v5_amber_max_passlock_mixed_v2() -> EngineConfig {
     let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly_reentry();
     cfg.label = "V5_AMBER_MAX_PASSLOCK_MIXED_V2".into();
-    let cvd_set: std::collections::HashSet<&str> =
-        ["BTC", "ETH", "SOL", "AVAX", "BNB"].iter().copied().collect();
-    let vol_imb_set: std::collections::HashSet<&str> =
-        ["LINK", "ADA", "AAVE", "ATOM", "DOT"].iter().copied().collect();
-    let vol_poc_set: std::collections::HashSet<&str> =
-        ["ALGO", "NEAR", "ARB", "UNI", "TRX"].iter().copied().collect();
+    let cvd_set: std::collections::HashSet<&str> = ["BTC", "ETH", "SOL", "AVAX", "BNB"]
+        .iter()
+        .copied()
+        .collect();
+    let vol_imb_set: std::collections::HashSet<&str> = ["LINK", "ADA", "AAVE", "ATOM", "DOT"]
+        .iter()
+        .copied()
+        .collect();
+    let vol_poc_set: std::collections::HashSet<&str> = ["ALGO", "NEAR", "ARB", "UNI", "TRX"]
+        .iter()
+        .copied()
+        .collect();
     for asset in cfg.assets.iter_mut() {
-        let base = asset.symbol.split('-').next().unwrap_or(&asset.symbol).to_string();
+        let base = asset
+            .symbol
+            .split('-')
+            .next()
+            .unwrap_or(&asset.symbol)
+            .to_string();
         if cvd_set.contains(base.as_str()) {
-            asset.cvd_entry = Some(crate::config::CvdEntry { lookback_bars: 30 }); // tighter
+            asset.cvd_entry = Some(crate::config::CvdEntry { lookback_bars: 30 });
+        // tighter
         } else if vol_imb_set.contains(base.as_str()) {
-            asset.vol_imbalance_entry = Some(crate::config::VolImbalanceEntry { long_min: 0.70 }); // higher threshold
+            asset.vol_imbalance_entry = Some(crate::config::VolImbalanceEntry { long_min: 0.70 });
+        // higher threshold
         } else if vol_poc_set.contains(base.as_str()) {
-            asset.vol_poc_entry = Some(crate::config::VolPocEntry { window_bars: 30, min_dist_from_poc_pct: 0.008 });
+            asset.vol_poc_entry = Some(crate::config::VolPocEntry {
+                window_bars: 30,
+                min_dist_from_poc_pct: 0.008,
+            });
         }
     }
     cfg
@@ -610,20 +626,36 @@ pub fn v5_amber_max_passlock_mixed_v2() -> EngineConfig {
 pub fn v5_amber_max_passlock_mixed_v3() -> EngineConfig {
     let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly_reentry();
     cfg.label = "V5_AMBER_MAX_PASSLOCK_MIXED_V3".into();
-    let cvd_set: std::collections::HashSet<&str> =
-        ["BTC", "ETH", "SOL", "AVAX", "BNB"].iter().copied().collect();
-    let vol_imb_set: std::collections::HashSet<&str> =
-        ["LINK", "ADA", "AAVE", "ATOM", "DOT"].iter().copied().collect();
-    let vol_poc_set: std::collections::HashSet<&str> =
-        ["ALGO", "NEAR", "ARB", "UNI", "TRX"].iter().copied().collect();
+    let cvd_set: std::collections::HashSet<&str> = ["BTC", "ETH", "SOL", "AVAX", "BNB"]
+        .iter()
+        .copied()
+        .collect();
+    let vol_imb_set: std::collections::HashSet<&str> = ["LINK", "ADA", "AAVE", "ATOM", "DOT"]
+        .iter()
+        .copied()
+        .collect();
+    let vol_poc_set: std::collections::HashSet<&str> = ["ALGO", "NEAR", "ARB", "UNI", "TRX"]
+        .iter()
+        .copied()
+        .collect();
     for asset in cfg.assets.iter_mut() {
-        let base = asset.symbol.split('-').next().unwrap_or(&asset.symbol).to_string();
+        let base = asset
+            .symbol
+            .split('-')
+            .next()
+            .unwrap_or(&asset.symbol)
+            .to_string();
         if cvd_set.contains(base.as_str()) {
-            asset.cvd_entry = Some(crate::config::CvdEntry { lookback_bars: 100 }); // wider
+            asset.cvd_entry = Some(crate::config::CvdEntry { lookback_bars: 100 });
+        // wider
         } else if vol_imb_set.contains(base.as_str()) {
-            asset.vol_imbalance_entry = Some(crate::config::VolImbalanceEntry { long_min: 0.60 }); // lower threshold
+            asset.vol_imbalance_entry = Some(crate::config::VolImbalanceEntry { long_min: 0.60 });
+        // lower threshold
         } else if vol_poc_set.contains(base.as_str()) {
-            asset.vol_poc_entry = Some(crate::config::VolPocEntry { window_bars: 100, min_dist_from_poc_pct: 0.003 });
+            asset.vol_poc_entry = Some(crate::config::VolPocEntry {
+                window_bars: 100,
+                min_dist_from_poc_pct: 0.003,
+            });
         }
     }
     cfg
@@ -634,8 +666,14 @@ pub fn v5_amber_max_passlock_agg_kr_adaptive() -> EngineConfig {
     let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly_reentry();
     cfg.label = "V5_AMBER_MAX_PASSLOCK_AGG_KR_ADAPTIVE".into();
     cfg.adaptive_sizing = Some(vec![
-        crate::config::AdaptiveSizingTier { equity_above: 0.03, factor: 1.5 },
-        crate::config::AdaptiveSizingTier { equity_above: 0.06, factor: 2.0 },
+        crate::config::AdaptiveSizingTier {
+            equity_above: 0.03,
+            factor: 1.5,
+        },
+        crate::config::AdaptiveSizingTier {
+            equity_above: 0.06,
+            factor: 2.0,
+        },
     ]);
     cfg
 }
@@ -645,7 +683,9 @@ pub fn v5_amber_max_passlock_agg_kr_chandelier() -> EngineConfig {
     let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly_reentry();
     cfg.label = "V5_AMBER_MAX_PASSLOCK_AGG_KR_CHANDELIER".into();
     cfg.chandelier_exit = Some(crate::config::ChandelierExit {
-        period: 22, mult: 2.5, min_move_r: Some(0.5),
+        period: 22,
+        mult: 2.5,
+        min_move_r: Some(0.5),
     });
     cfg
 }
@@ -655,7 +695,8 @@ pub fn v5_amber_max_passlock_agg_kr_ptp() -> EngineConfig {
     let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly_reentry();
     cfg.label = "V5_AMBER_MAX_PASSLOCK_AGG_KR_PTP".into();
     cfg.partial_take_profit = Some(crate::config::PartialTakeProfit {
-        trigger_pct: 0.03, close_fraction: 0.3,
+        trigger_pct: 0.03,
+        close_fraction: 0.3,
     });
     cfg
 }
@@ -693,7 +734,9 @@ pub fn v5_amber_max_passlock_agg_kr_high_tp() -> EngineConfig {
     let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly_reentry();
     cfg.label = "V5_AMBER_MAX_PASSLOCK_AGG_KR_HIGH_TP".into();
     for asset in cfg.assets.iter_mut() {
-        if let Some(tp) = asset.tp_pct { asset.tp_pct = Some(tp * 1.5); }
+        if let Some(tp) = asset.tp_pct {
+            asset.tp_pct = Some(tp * 1.5);
+        }
     }
     cfg
 }
@@ -703,7 +746,9 @@ pub fn v5_amber_max_passlock_agg_kr_low_tp() -> EngineConfig {
     let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly_reentry();
     cfg.label = "V5_AMBER_MAX_PASSLOCK_AGG_KR_LOW_TP".into();
     for asset in cfg.assets.iter_mut() {
-        if let Some(tp) = asset.tp_pct { asset.tp_pct = Some(tp * 0.7); }
+        if let Some(tp) = asset.tp_pct {
+            asset.tp_pct = Some(tp * 0.7);
+        }
     }
     cfg
 }
@@ -727,15 +772,32 @@ pub fn v5_amber_max_passlock_shorts_agg() -> EngineConfig {
     cfg.max_concurrent_trades = Some(25);
     cfg.allowed_hours_utc = None;
     cfg.kelly_sizing = Some(crate::config::KellySizing {
-        window_size: 30, min_trades: 10, fraction: 0.5,
+        window_size: 30,
+        min_trades: 10,
+        fraction: 0.5,
         tiers: vec![
-            crate::config::KellyTier { win_rate_above: 0.65, multiplier: 2.0 },
-            crate::config::KellyTier { win_rate_above: 0.55, multiplier: 1.5 },
-            crate::config::KellyTier { win_rate_above: 0.45, multiplier: 1.0 },
-            crate::config::KellyTier { win_rate_above: 0.0, multiplier: 0.5 },
+            crate::config::KellyTier {
+                win_rate_above: 0.65,
+                multiplier: 2.0,
+            },
+            crate::config::KellyTier {
+                win_rate_above: 0.55,
+                multiplier: 1.5,
+            },
+            crate::config::KellyTier {
+                win_rate_above: 0.45,
+                multiplier: 1.0,
+            },
+            crate::config::KellyTier {
+                win_rate_above: 0.0,
+                multiplier: 0.5,
+            },
         ],
     });
-    cfg.reentry_after_stop = Some(crate::config::ReentryAfterStop { within_bars: 12, size_mult: 0.5 });
+    cfg.reentry_after_stop = Some(crate::config::ReentryAfterStop {
+        within_bars: 12,
+        size_mult: 0.5,
+    });
     cfg
 }
 
@@ -765,7 +827,9 @@ pub fn v5_amber_max_passlock_p2_grinder() -> EngineConfig {
         stop_mult: 1.5,
     });
     cfg.chandelier_exit = Some(crate::config::ChandelierExit {
-        period: 22, mult: 2.2, min_move_r: Some(0.5),
+        period: 22,
+        mult: 2.2,
+        min_move_r: Some(0.5),
     });
     cfg.break_even = Some(crate::config::BreakEven { threshold: 0.008 });
     for asset in cfg.assets.iter_mut() {
@@ -798,11 +862,19 @@ pub fn v5_amber_max_passlock_agg_kr_combo() -> EngineConfig {
     let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly_reentry();
     cfg.label = "V5_AMBER_MAX_PASSLOCK_AGG_KR_COMBO".into();
     cfg.adaptive_sizing = Some(vec![
-        crate::config::AdaptiveSizingTier { equity_above: 0.03, factor: 1.5 },
-        crate::config::AdaptiveSizingTier { equity_above: 0.06, factor: 2.0 },
+        crate::config::AdaptiveSizingTier {
+            equity_above: 0.03,
+            factor: 1.5,
+        },
+        crate::config::AdaptiveSizingTier {
+            equity_above: 0.06,
+            factor: 2.0,
+        },
     ]);
     cfg.chandelier_exit = Some(crate::config::ChandelierExit {
-        period: 22, mult: 2.5, min_move_r: Some(0.5),
+        period: 22,
+        mult: 2.5,
+        min_move_r: Some(0.5),
     });
     cfg
 }
@@ -883,12 +955,18 @@ pub fn v5_amber_max_passlock_aggressive_24h_kelly_reentry_pyramid() -> EngineCon
 pub fn v5_amber_max_passlock_mixed_detectors() -> EngineConfig {
     let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly_reentry();
     cfg.label = "V5_AMBER_MAX_PASSLOCK_MIXED_DETECTORS".into();
-    let cvd_set: std::collections::HashSet<&str> =
-        ["BTC", "ETH", "SOL", "AVAX", "BNB"].iter().copied().collect();
-    let vol_imb_set: std::collections::HashSet<&str> =
-        ["LINK", "ADA", "AAVE", "ATOM", "DOT"].iter().copied().collect();
-    let vol_poc_set: std::collections::HashSet<&str> =
-        ["ALGO", "NEAR", "ARB", "UNI", "TRX"].iter().copied().collect();
+    let cvd_set: std::collections::HashSet<&str> = ["BTC", "ETH", "SOL", "AVAX", "BNB"]
+        .iter()
+        .copied()
+        .collect();
+    let vol_imb_set: std::collections::HashSet<&str> = ["LINK", "ADA", "AAVE", "ATOM", "DOT"]
+        .iter()
+        .copied()
+        .collect();
+    let vol_poc_set: std::collections::HashSet<&str> = ["ALGO", "NEAR", "ARB", "UNI", "TRX"]
+        .iter()
+        .copied()
+        .collect();
     for asset in cfg.assets.iter_mut() {
         // strip suffix like "BTC-TREND" → "BTC", or "BTC-AMBER" / "BTC-SHORTS"
         let base = asset
@@ -920,7 +998,7 @@ pub fn v5_amber_max_passlock_aggressive_24h_kelly_reentry() -> EngineConfig {
     let mut cfg = v5_amber_max_passlock_aggressive_24h_kelly();
     cfg.label = "V5_AMBER_MAX_PASSLOCK_AGGRESSIVE_24H_KELLY_REENTRY".into();
     cfg.reentry_after_stop = Some(crate::config::ReentryAfterStop {
-        within_bars: 12,  // re-attempt within 6h (12 × 30m)
+        within_bars: 12, // re-attempt within 6h (12 × 30m)
         size_mult: 0.5,
     });
     cfg
@@ -1490,7 +1568,7 @@ pub fn v5_forex_mr_passlock_tight_stop() -> EngineConfig {
     let mut cfg = v5_forex_mr_passlock_agg();
     cfg.label = "V5_FOREX_MR_PASSLOCK_TIGHT_STOP".into();
     for asset in cfg.assets.iter_mut() {
-        asset.stop_pct = Some(0.015);  // 1.5% hard stop on all forex
+        asset.stop_pct = Some(0.015); // 1.5% hard stop on all forex
     }
     cfg
 }
@@ -1589,7 +1667,7 @@ pub fn v5_forex_neutral_daily() -> EngineConfig {
     cfg.label = "V5_FOREX_NEUTRAL_DAILY".into();
     cfg.bar_minutes = 1440;
     cfg.hold_bars = 30; // 30 daily bars = 30 days max hold (let trends run)
-    // forex-mr params re-scaled to daily bars (10d BB / 2d cooldown):
+                        // forex-mr params re-scaled to daily bars (10d BB / 2d cooldown):
     cfg.mean_reversion_source = Some(crate::config::MeanReversionSource {
         period: 10,
         oversold: 20.0,
@@ -2389,22 +2467,40 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-amber-max-passlock-aggressive" => v5_amber_max_passlock_aggressive(),
         "2h-trend-v5-amber-max-passlock-fully-loaded" => v5_amber_max_passlock_fully_loaded(),
         "2h-trend-v5-amber-max-passlock-aggressive-24h" => v5_amber_max_passlock_aggressive_24h(),
-        "2h-trend-v5-amber-max-passlock-aggressive-mct50" => v5_amber_max_passlock_aggressive_mct50(),
+        "2h-trend-v5-amber-max-passlock-aggressive-mct50" => {
+            v5_amber_max_passlock_aggressive_mct50()
+        }
         "2h-trend-v5-amber-max-passlock-aggressive-be" => v5_amber_max_passlock_aggressive_be(),
-        "2h-trend-v5-amber-max-passlock-aggressive-24h-adaptive" => v5_amber_max_passlock_aggressive_24h_adaptive(),
-        "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly" => v5_amber_max_passlock_aggressive_24h_kelly(),
-        "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly-reentry" => v5_amber_max_passlock_aggressive_24h_kelly_reentry(),
+        "2h-trend-v5-amber-max-passlock-aggressive-24h-adaptive" => {
+            v5_amber_max_passlock_aggressive_24h_adaptive()
+        }
+        "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly" => {
+            v5_amber_max_passlock_aggressive_24h_kelly()
+        }
+        "2h-trend-v5-amber-max-passlock-aggressive-24h-kelly-reentry" => {
+            v5_amber_max_passlock_aggressive_24h_kelly_reentry()
+        }
         "2h-trend-v5-amber-max-passlock-mixed-detectors" => v5_amber_max_passlock_mixed_detectors(),
-        "2h-trend-v5-amber-max-passlock-agg-24h-kr-pyramid" => v5_amber_max_passlock_aggressive_24h_kelly_reentry_pyramid(),
+        "2h-trend-v5-amber-max-passlock-agg-24h-kr-pyramid" => {
+            v5_amber_max_passlock_aggressive_24h_kelly_reentry_pyramid()
+        }
         "2h-trend-v5-amber-max-passlock-mixed-v2" => v5_amber_max_passlock_mixed_v2(),
         "2h-trend-v5-amber-max-passlock-mixed-v3" => v5_amber_max_passlock_mixed_v3(),
-        "2h-trend-v5-amber-max-passlock-mixed-v4-cvd-only" => v5_amber_max_passlock_mixed_v4_cvd_only(),
-        "2h-trend-v5-amber-max-passlock-agg-kr-tight-stop" => v5_amber_max_passlock_agg_kr_tight_stop(),
-        "2h-trend-v5-amber-max-passlock-agg-kr-wide-stop" => v5_amber_max_passlock_agg_kr_wide_stop(),
+        "2h-trend-v5-amber-max-passlock-mixed-v4-cvd-only" => {
+            v5_amber_max_passlock_mixed_v4_cvd_only()
+        }
+        "2h-trend-v5-amber-max-passlock-agg-kr-tight-stop" => {
+            v5_amber_max_passlock_agg_kr_tight_stop()
+        }
+        "2h-trend-v5-amber-max-passlock-agg-kr-wide-stop" => {
+            v5_amber_max_passlock_agg_kr_wide_stop()
+        }
         "2h-trend-v5-amber-max-passlock-agg-kr-high-tp" => v5_amber_max_passlock_agg_kr_high_tp(),
         "2h-trend-v5-amber-max-passlock-agg-kr-low-tp" => v5_amber_max_passlock_agg_kr_low_tp(),
         "2h-trend-v5-amber-max-passlock-agg-kr-adaptive" => v5_amber_max_passlock_agg_kr_adaptive(),
-        "2h-trend-v5-amber-max-passlock-agg-kr-chandelier" => v5_amber_max_passlock_agg_kr_chandelier(),
+        "2h-trend-v5-amber-max-passlock-agg-kr-chandelier" => {
+            v5_amber_max_passlock_agg_kr_chandelier()
+        }
         "2h-trend-v5-amber-max-passlock-agg-kr-ptp" => v5_amber_max_passlock_agg_kr_ptp(),
         "2h-trend-v5-amber-max-passlock-agg-kr-be-early" => v5_amber_max_passlock_agg_kr_be_early(),
         "2h-trend-v5-amber-max-passlock-shorts-agg" => v5_amber_max_passlock_shorts_agg(),
@@ -2416,7 +2512,9 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-amber-max-passlock-bidir-safe" => v5_amber_max_passlock_bidir_safe(),
         "2h-trend-v5-amber-max-passlock-hold480" => v5_amber_max_passlock_hold_480(),
         "2h-trend-v5-amber-max-passlock-hold720" => v5_amber_max_passlock_hold_720(),
-        "2h-trend-v5-amber-max-passlock-amber-plus-shorts" => v5_amber_max_passlock_amber_plus_shorts(),
+        "2h-trend-v5-amber-max-passlock-amber-plus-shorts" => {
+            v5_amber_max_passlock_amber_plus_shorts()
+        }
         "2h-trend-v5-amber-max-passlock-shorts-only" => v5_amber_max_passlock_shorts_only(),
         "v5-forex-mr-passlock" => v5_forex_mr_passlock(),
         "v5-forex-mr-passlock-agg" => v5_forex_mr_passlock_agg(),
@@ -2428,11 +2526,19 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "v5-forex-neutral-2h" => v5_forex_neutral_2h(),
         "v5-forex-neutral-daily" => v5_forex_neutral_daily(),
         "v5-gold-neutral-daily" => v5_gold_neutral_daily(),
-        "2h-trend-v5-amber-max-passlock-intraday-us-peak" => v5_amber_max_passlock_intraday_us_peak(),
+        "2h-trend-v5-amber-max-passlock-intraday-us-peak" => {
+            v5_amber_max_passlock_intraday_us_peak()
+        }
         "2h-trend-v5-amber-max-passlock-intraday-liquid" => v5_amber_max_passlock_intraday_liquid(),
-        "2h-trend-v5-amber-max-passlock-intraday-ny-only" => v5_amber_max_passlock_intraday_ny_only(),
-        "2h-trend-v5-amber-max-passlock-intraday-asia-avoid" => v5_amber_max_passlock_intraday_asia_avoid(),
-        "2h-trend-v5-amber-max-passlock-intraday-4anchor" => v5_amber_max_passlock_intraday_4anchor(),
+        "2h-trend-v5-amber-max-passlock-intraday-ny-only" => {
+            v5_amber_max_passlock_intraday_ny_only()
+        }
+        "2h-trend-v5-amber-max-passlock-intraday-asia-avoid" => {
+            v5_amber_max_passlock_intraday_asia_avoid()
+        }
+        "2h-trend-v5-amber-max-passlock-intraday-4anchor" => {
+            v5_amber_max_passlock_intraday_4anchor()
+        }
         "2h-trend-v5-amber-max-passlock-mptp-v04a" => v5_amber_max_passlock_mptp_v04a(),
         "2h-trend-v5-amber-max-passlock-sharpe-tight" => v5_amber_max_passlock_sharpe_tight(),
         "2h-trend-v5-amber-max-mr-passlock" => v5_amber_max_mr_passlock(),
@@ -2450,7 +2556,9 @@ pub fn template_by_selector(selector: &str) -> Option<EngineConfig> {
         "2h-trend-v5-titanium-passlock-hunter" => v5_titanium_passlock_hunter(),
         "2h-trend-v5-titanium-passlock-5m" => v5_titanium_passlock_5m(),
         "2h-trend-v5-amber-max-passlock-5m" => v5_amber_max_passlock_5m(),
-        "2h-trend-v5-amber-max-passlock-mixed-v4-cvd-only-5m" => v5_amber_max_passlock_mixed_v4_cvd_only_5m(),
+        "2h-trend-v5-amber-max-passlock-mixed-v4-cvd-only-5m" => {
+            v5_amber_max_passlock_mixed_v4_cvd_only_5m()
+        }
         "2h-trend-v5-amber-max-passlock-mixed-v2-5m" => v5_amber_max_passlock_mixed_v2_5m(),
         _ => return None,
     })

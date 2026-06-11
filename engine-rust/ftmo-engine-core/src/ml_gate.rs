@@ -193,7 +193,8 @@ impl MlModel {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "ML model schema_version >= 3 but feature_medians is empty — \
-                 retrain via `scripts/_mlTrainClassifier.py`".to_string(),
+                 retrain via `scripts/_mlTrainClassifier.py`"
+                    .to_string(),
             ));
         }
         // 2026-05-23 Wave1 audit fix: validate stale-cache metadata stamps

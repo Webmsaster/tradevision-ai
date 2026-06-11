@@ -195,10 +195,7 @@ pub fn compute_kalman_trend_vote(
         // helper returns std at index k from the window `(k-period+1)..=k`.
         // We want std at index `signal_idx - 1` so the SIGNAL BAR'S OWN
         // close is excluded from the variance computation.
-        let closes_pre_signal: Vec<f64> = candles[..signal_idx]
-            .iter()
-            .map(|c| c.close)
-            .collect();
+        let closes_pre_signal: Vec<f64> = candles[..signal_idx].iter().map(|c| c.close).collect();
         if closes_pre_signal.len() < period {
             return None;
         }

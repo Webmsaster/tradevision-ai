@@ -105,8 +105,12 @@ fn finish_signal(
     let tp_pct = asset.tp_pct.unwrap_or(cfg.tp_pct);
     let entry_price = entry_bar.open;
     let factor = resolve_sizing_factor(state, cfg, entry_bar.open_time);
-    let eff_risk =
-        apply_post_factor_caps(cfg, state, asset.risk_frac * factor * src.size_mult, stop_pct);
+    let eff_risk = apply_post_factor_caps(
+        cfg,
+        state,
+        asset.risk_frac * factor * src.size_mult,
+        stop_pct,
+    );
     if eff_risk <= 0.0 {
         return None;
     }
@@ -192,8 +196,12 @@ pub fn detect_mean_reversion(
     // only clamped to maxRiskFrac → uncapped against the maxDailyLoss-
     // derived live-loss limit.
     let factor = resolve_sizing_factor(state, cfg, entry_bar.open_time);
-    let eff_risk =
-        apply_post_factor_caps(cfg, state, asset.risk_frac * factor * src.size_mult, stop_pct);
+    let eff_risk = apply_post_factor_caps(
+        cfg,
+        state,
+        asset.risk_frac * factor * src.size_mult,
+        stop_pct,
+    );
     if eff_risk <= 0.0 {
         return None;
     }

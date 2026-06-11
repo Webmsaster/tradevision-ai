@@ -215,8 +215,7 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
         // level = EOD highest value − loss limit … if balance or equity hits
         // this level at any point during the day, the account is breached."
         if cfg.daily_loss_eod_hwm {
-            state.eod_hwm_floor =
-                state.equity.max(state.mtm_equity) - cfg.max_daily_loss;
+            state.eod_hwm_floor = state.equity.max(state.mtm_equity) - cfg.max_daily_loss;
         }
         state.day = new_day as u32;
         state.day_start = state.equity;
@@ -536,8 +535,12 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                         let s_b = slow_series.get(idx_back).copied().flatten();
                         let c_b = cross_closes.get(idx_back).copied();
                         let trend_b = match (f_b, s_b, c_b) {
-                            (Some(f), Some(s), Some(c)) if c > f && f > s => Some(crate::position::PositionSide::Long),
-                            (Some(f), Some(s), Some(c)) if c < f && f < s => Some(crate::position::PositionSide::Short),
+                            (Some(f), Some(s), Some(c)) if c > f && f > s => {
+                                Some(crate::position::PositionSide::Long)
+                            }
+                            (Some(f), Some(s), Some(c)) if c < f && f < s => {
+                                Some(crate::position::PositionSide::Short)
+                            }
                             _ => None,
                         };
                         if trend_b != Some(t) {
@@ -566,7 +569,14 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                     }
                 }
                 if !flip_close.is_empty() {
-                    apply_exits(state, &mut flip_close, cfg, last_bar_time, &mut result, input);
+                    apply_exits(
+                        state,
+                        &mut flip_close,
+                        cfg,
+                        last_bar_time,
+                        &mut result,
+                        input,
+                    );
                 }
             }
         }
@@ -757,9 +767,7 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
         // target after close_all's funding-cost deduction. Otherwise revert
         // the provisional pause/ping-day so the window neither soft-passes
         // nor blocks recovery entries.
-        if state.equity >= 1.0 + cfg.profit_target
-            && state.mtm_equity >= 1.0 + cfg.profit_target
-        {
+        if state.equity >= 1.0 + cfg.profit_target && state.mtm_equity >= 1.0 + cfg.profit_target {
             result.target_hit = true;
             state.first_target_hit_day = Some(state.day);
         } else {
@@ -1026,10 +1034,12 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                     push_skip_if(
                         &mut result.skipped,
                         || sig.symbol.clone(),
-                        || format!(
-                            "mutex_long_short: {:?} blocked (opposite position open)",
-                            sig.direction
-                        ),
+                        || {
+                            format!(
+                                "mutex_long_short: {:?} blocked (opposite position open)",
+                                sig.direction
+                            )
+                        },
                     );
                     continue;
                 }
@@ -1057,10 +1067,12 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                     push_skip_if(
                         &mut result.skipped,
                         || sig.symbol.clone(),
-                        || format!(
-                            "crossAssetFilter[{}] blocks {:?}",
-                            filter.symbol, sig.direction
-                        ),
+                        || {
+                            format!(
+                                "crossAssetFilter[{}] blocks {:?}",
+                                filter.symbol, sig.direction
+                            )
+                        },
                     );
                     continue;
                 }
@@ -1084,10 +1096,12 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                         push_skip_if(
                             &mut result.skipped,
                             || sig.symbol.clone(),
-                            || format!(
-                                "crossAssetFiltersExtra[{}] blocks {:?}",
-                                filter.symbol, sig.direction
-                            ),
+                            || {
+                                format!(
+                                    "crossAssetFiltersExtra[{}] blocks {:?}",
+                                    filter.symbol, sig.direction
+                                )
+                            },
                         );
                         blocked = true;
                         break;
@@ -1177,10 +1191,12 @@ pub fn step_bar(state: &mut EngineState, input: &BarInput<'_>, cfg: &EngineConfi
                         push_skip_if(
                             &mut result.skipped,
                             || sig.symbol.clone(),
-                            || format!(
-                                "lossStreakCooldown until barsSeen={}",
-                                ls.cd_until_bars_seen
-                            ),
+                            || {
+                                format!(
+                                    "lossStreakCooldown until barsSeen={}",
+                                    ls.cd_until_bars_seen
+                                )
+                            },
                         );
                         continue;
                     }
@@ -1440,8 +1456,7 @@ fn apply_exits(
             if state.trail_dd_armed && state.equity > state.trail_dd_peak {
                 state.trail_dd_peak = state.equity;
             }
-            if state.trail_dd_armed
-                && state.equity < state.trail_dd_peak - cfg.trail_dd_lock_floor
+            if state.trail_dd_armed && state.equity < state.trail_dd_peak - cfg.trail_dd_lock_floor
             {
                 // Mirror PASSLOCK's paused-at-target latch — blocks new
                 // entries and lets the bar's existing apply_exits flow
@@ -2032,7 +2047,10 @@ mod tests {
             chandelier_atr_at_entry: None,
         };
         let r = step_bar(&mut state, &make_input(&candles, &atr, vec![sig]), &cfg);
-        assert!(state.guardian_halted, "latch should arm when guardian fires");
+        assert!(
+            state.guardian_halted,
+            "latch should arm when guardian fires"
+        );
         assert!(
             state.open_positions.is_empty(),
             "force-close closed the old long AND blocked the new entry"
@@ -2102,9 +2120,15 @@ mod tests {
         let mut state = eod_state();
         let atr = HashMap::new();
         let mut c = HashMap::new();
-        c.insert("BTCUSDT".into(), vec![make_candle(1_000, 99.0, 99.0, 90.0, 90.0)]);
+        c.insert(
+            "BTCUSDT".into(),
+            vec![make_candle(1_000, 99.0, 99.0, 90.0, 90.0)],
+        );
         let r = step_bar(&mut state, &make_input(&c, &atr, vec![]), &cfg);
-        assert!(r.challenge_ended, "intraday breach of the frozen floor must bust");
+        assert!(
+            r.challenge_ended,
+            "intraday breach of the frozen floor must bust"
+        );
         assert_eq!(state.stopped_reason, Some(StoppedReason::DailyLoss));
     }
 
@@ -2118,13 +2142,22 @@ mod tests {
         let mut state = eod_state();
         let atr = HashMap::new();
         let mut c0 = HashMap::new();
-        c0.insert("BTCUSDT".into(), vec![make_candle(1_000, 100.0, 110.0, 100.0, 110.0)]);
+        c0.insert(
+            "BTCUSDT".into(),
+            vec![make_candle(1_000, 100.0, 110.0, 100.0, 110.0)],
+        );
         let r0 = step_bar(&mut state, &make_input(&c0, &atr, vec![]), &cfg);
         assert!(!r0.challenge_ended);
         let mut c1 = HashMap::new();
         c1.insert(
             "BTCUSDT".into(),
-            vec![make_candle(1_000 + 2 * 86_400_000, 110.0, 111.0, 110.0, 110.0)],
+            vec![make_candle(
+                1_000 + 2 * 86_400_000,
+                110.0,
+                111.0,
+                110.0,
+                110.0,
+            )],
         );
         let _ = step_bar(&mut state, &make_input(&c1, &atr, vec![]), &cfg);
         assert!(
@@ -2143,9 +2176,15 @@ mod tests {
         let mut state = eod_state();
         let atr = HashMap::new();
         let mut c1 = HashMap::new();
-        c1.insert("BTCUSDT".into(), vec![make_candle(1_000, 99.0, 99.0, 90.0, 90.0)]);
+        c1.insert(
+            "BTCUSDT".into(),
+            vec![make_candle(1_000, 99.0, 99.0, 90.0, 90.0)],
+        );
         let r1 = step_bar(&mut state, &make_input(&c1, &atr, vec![]), &cfg);
-        assert!(r1.challenge_ended, "FTMO intraday mode busts on the dip bar");
+        assert!(
+            r1.challenge_ended,
+            "FTMO intraday mode busts on the dip bar"
+        );
         assert_eq!(state.stopped_reason, Some(StoppedReason::DailyLoss));
     }
 
@@ -2170,9 +2209,15 @@ mod tests {
         state.open_positions.push(floating_long(100.0, 0.4));
         let atr = HashMap::new();
         let mut c = HashMap::new();
-        c.insert("BTCUSDT".into(), vec![make_candle(1_000, 95.0, 96.0, 85.0, 95.0)]);
+        c.insert(
+            "BTCUSDT".into(),
+            vec![make_candle(1_000, 95.0, 96.0, 85.0, 95.0)],
+        );
         let r = step_bar(&mut state, &make_input(&c, &atr, vec![]), &cfg);
-        assert!(r.challenge_ended, "intra-bar low through the total floor must bust");
+        assert!(
+            r.challenge_ended,
+            "intra-bar low through the total floor must bust"
+        );
         assert_eq!(state.stopped_reason, Some(StoppedReason::TotalLoss));
     }
 
@@ -2195,9 +2240,15 @@ mod tests {
         state.open_positions.push(floating_long(100.0, 0.4));
         let atr = HashMap::new();
         let mut c = HashMap::new();
-        c.insert("BTCUSDT".into(), vec![make_candle(1_000, 95.0, 96.0, 85.0, 95.0)]);
+        c.insert(
+            "BTCUSDT".into(),
+            vec![make_candle(1_000, 95.0, 96.0, 85.0, 95.0)],
+        );
         let r = step_bar(&mut state, &make_input(&c, &atr, vec![]), &cfg);
-        assert!(!r.challenge_ended, "close-only mode survives the intra-bar dip");
+        assert!(
+            !r.challenge_ended,
+            "close-only mode survives the intra-bar dip"
+        );
     }
 
     #[test]
@@ -2437,17 +2488,30 @@ mod tests {
         let mut state = EngineState::initial("x");
         let mut candles = HashMap::new();
         // Bar 1 — open the long.
-        candles.insert("BTCUSDT".into(), vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)]);
+        candles.insert(
+            "BTCUSDT".into(),
+            vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)],
+        );
         candles.insert("DXY".into(), build_uptrend_feed(40));
         let atr = HashMap::new();
-        step_bar(&mut state, &make_input(&candles, &atr, vec![long_sig()]), &cfg);
+        step_bar(
+            &mut state,
+            &make_input(&candles, &atr, vec![long_sig()]),
+            &cfg,
+        );
         assert_eq!(state.open_positions.len(), 1);
         // Bar 2 — DXY flips to clear downtrend.
-        candles.get_mut("BTCUSDT").unwrap()
+        candles
+            .get_mut("BTCUSDT")
+            .unwrap()
             .push(make_candle(1_001, 100.0, 101.0, 99.0, 100.0));
         candles.insert("DXY".into(), build_downtrend_feed(40));
         let r = step_bar(&mut state, &make_input(&candles, &atr, vec![]), &cfg);
-        assert_eq!(state.open_positions.len(), 1, "flag off → position kept across trend flip");
+        assert_eq!(
+            state.open_positions.len(),
+            1,
+            "flag off → position kept across trend flip"
+        );
         assert!(!r.challenge_ended);
     }
 
@@ -2459,17 +2523,30 @@ mod tests {
         let mut state = EngineState::initial("x");
         // Open a long position first via signal.
         let mut candles = HashMap::new();
-        candles.insert("BTCUSDT".into(), vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)]);
+        candles.insert(
+            "BTCUSDT".into(),
+            vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)],
+        );
         let atr = HashMap::new();
-        step_bar(&mut state, &make_input(&candles, &atr, vec![long_sig()]), &cfg);
+        step_bar(
+            &mut state,
+            &make_input(&candles, &atr, vec![long_sig()]),
+            &cfg,
+        );
         assert_eq!(state.open_positions.len(), 1);
         // Bar 2 — fire a short signal.
-        candles.get_mut("BTCUSDT").unwrap()
+        candles
+            .get_mut("BTCUSDT")
+            .unwrap()
             .push(make_candle(1_001, 100.0, 101.0, 99.0, 100.0));
         let mut short = short_sig();
         short.entry_time = 1_001;
         let r2 = step_bar(&mut state, &make_input(&candles, &atr, vec![short]), &cfg);
-        assert_eq!(r2.decision.opens.len(), 1, "mutex off → opposite-side entry allowed");
+        assert_eq!(
+            r2.decision.opens.len(),
+            1,
+            "mutex off → opposite-side entry allowed"
+        );
         assert_eq!(state.open_positions.len(), 2);
     }
 
@@ -2480,22 +2557,39 @@ mod tests {
         cfg.max_concurrent_trades = Some(5);
         let mut state = EngineState::initial("x");
         let mut candles = HashMap::new();
-        candles.insert("BTCUSDT".into(), vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)]);
+        candles.insert(
+            "BTCUSDT".into(),
+            vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)],
+        );
         let atr = HashMap::new();
         // Bar 1 — open long.
-        step_bar(&mut state, &make_input(&candles, &atr, vec![long_sig()]), &cfg);
+        step_bar(
+            &mut state,
+            &make_input(&candles, &atr, vec![long_sig()]),
+            &cfg,
+        );
         assert_eq!(state.open_positions.len(), 1);
         // Bar 2 — short signal must be BLOCKED.
-        candles.get_mut("BTCUSDT").unwrap()
+        candles
+            .get_mut("BTCUSDT")
+            .unwrap()
             .push(make_candle(1_001, 100.0, 101.0, 99.0, 100.0));
         let mut short = short_sig();
         short.entry_time = 1_001;
         let r2 = step_bar(&mut state, &make_input(&candles, &atr, vec![short]), &cfg);
-        assert_eq!(r2.decision.opens.len(), 0, "mutex on → short blocked while long open");
+        assert_eq!(
+            r2.decision.opens.len(),
+            0,
+            "mutex on → short blocked while long open"
+        );
         assert_eq!(state.open_positions.len(), 1);
         // Skip surfaces on result.skipped (BarStepResult.skipped, not PollDecision).
         let skipped_for_mutex = r2.skipped.iter().any(|s| s.reason.contains("mutex"));
-        assert!(skipped_for_mutex, "skip reason should mention mutex: {:?}", r2.skipped);
+        assert!(
+            skipped_for_mutex,
+            "skip reason should mention mutex: {:?}",
+            r2.skipped
+        );
     }
 
     #[test]
@@ -2508,16 +2602,30 @@ mod tests {
         cfg.max_concurrent_trades = Some(5);
         let mut state = EngineState::initial("x");
         let mut candles = HashMap::new();
-        candles.insert("BTCUSDT".into(), vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)]);
-        candles.insert("ETHUSDT".into(), vec![make_candle(1_000, 200.0, 202.0, 198.0, 200.0)]);
+        candles.insert(
+            "BTCUSDT".into(),
+            vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)],
+        );
+        candles.insert(
+            "ETHUSDT".into(),
+            vec![make_candle(1_000, 200.0, 202.0, 198.0, 200.0)],
+        );
         let atr = HashMap::new();
         // Bar 1 — open long BTC.
-        step_bar(&mut state, &make_input(&candles, &atr, vec![long_sig()]), &cfg);
+        step_bar(
+            &mut state,
+            &make_input(&candles, &atr, vec![long_sig()]),
+            &cfg,
+        );
         assert_eq!(state.open_positions.len(), 1);
         // Bar 2 — long ETH signal must fire (same direction, different asset).
-        candles.get_mut("BTCUSDT").unwrap()
+        candles
+            .get_mut("BTCUSDT")
+            .unwrap()
             .push(make_candle(1_001, 100.0, 101.0, 99.0, 100.0));
-        candles.get_mut("ETHUSDT").unwrap()
+        candles
+            .get_mut("ETHUSDT")
+            .unwrap()
             .push(make_candle(1_001, 200.0, 202.0, 198.0, 200.0));
         let eth_long = PollSignal {
             symbol: "ETH-TREND".into(),
@@ -2532,8 +2640,16 @@ mod tests {
             eff_risk: 0.1,
             chandelier_atr_at_entry: None,
         };
-        let r2 = step_bar(&mut state, &make_input(&candles, &atr, vec![eth_long]), &cfg);
-        assert_eq!(r2.decision.opens.len(), 1, "mutex must NOT block same-direction on different asset");
+        let r2 = step_bar(
+            &mut state,
+            &make_input(&candles, &atr, vec![eth_long]),
+            &cfg,
+        );
+        assert_eq!(
+            r2.decision.opens.len(),
+            1,
+            "mutex must NOT block same-direction on different asset"
+        );
         assert_eq!(state.open_positions.len(), 2);
     }
 
@@ -2544,17 +2660,28 @@ mod tests {
         cfg.max_concurrent_trades = Some(5);
         let mut state = EngineState::initial("x");
         let mut candles = HashMap::new();
-        candles.insert("BTCUSDT".into(), vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)]);
+        candles.insert(
+            "BTCUSDT".into(),
+            vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)],
+        );
         let atr = HashMap::new();
         // Bar 1 — open long.
-        step_bar(&mut state, &make_input(&candles, &atr, vec![long_sig()]), &cfg);
+        step_bar(
+            &mut state,
+            &make_input(&candles, &atr, vec![long_sig()]),
+            &cfg,
+        );
         // Bar 2 — long stops out (price gap-down through 98 stop).
-        candles.get_mut("BTCUSDT").unwrap()
+        candles
+            .get_mut("BTCUSDT")
+            .unwrap()
             .push(make_candle(1_001, 100.0, 100.5, 97.0, 97.5));
         step_bar(&mut state, &make_input(&candles, &atr, vec![]), &cfg);
         assert_eq!(state.open_positions.len(), 0, "long stopped");
         // Bar 3 — short signal must NOW be allowed.
-        candles.get_mut("BTCUSDT").unwrap()
+        candles
+            .get_mut("BTCUSDT")
+            .unwrap()
             .push(make_candle(1_002, 97.5, 98.0, 96.5, 97.0));
         let mut short = short_sig();
         short.entry_time = 1_002;
@@ -2562,7 +2689,11 @@ mod tests {
         short.stop_price = 99.0;
         short.tp_price = 93.0;
         let r3 = step_bar(&mut state, &make_input(&candles, &atr, vec![short]), &cfg);
-        assert_eq!(r3.decision.opens.len(), 1, "mutex re-allows opposite after close");
+        assert_eq!(
+            r3.decision.opens.len(),
+            1,
+            "mutex re-allows opposite after close"
+        );
         assert_eq!(state.open_positions.len(), 1);
     }
 
@@ -2575,10 +2706,19 @@ mod tests {
         assert!(!cfg.mutex_long_short);
         let mut state = EngineState::initial("x");
         let mut candles = HashMap::new();
-        candles.insert("BTCUSDT".into(), vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)]);
+        candles.insert(
+            "BTCUSDT".into(),
+            vec![make_candle(1_000, 100.0, 101.0, 99.0, 100.0)],
+        );
         let atr = HashMap::new();
-        step_bar(&mut state, &make_input(&candles, &atr, vec![long_sig()]), &cfg);
-        candles.get_mut("BTCUSDT").unwrap()
+        step_bar(
+            &mut state,
+            &make_input(&candles, &atr, vec![long_sig()]),
+            &cfg,
+        );
+        candles
+            .get_mut("BTCUSDT")
+            .unwrap()
             .push(make_candle(1_001, 100.0, 101.0, 99.0, 100.0));
         let mut short = short_sig();
         short.entry_time = 1_001;
@@ -2587,5 +2727,4 @@ mod tests {
         assert_eq!(state.open_positions.len(), 2);
         assert_eq!(r2.decision.opens.len(), 1);
     }
-
 }

@@ -304,13 +304,8 @@ mod tests {
         let top: Vec<Option<f64>> = (0..n).map(|_| Some(1.10)).collect();
         let global: Vec<Option<f64>> = (0..n).map(|_| Some(0.80)).collect();
         let params = TopTraderLsParams::default_btc_30m();
-        let v = compute_top_trader_ls_vote(
-            Some(&top),
-            Some(&global),
-            &candles,
-            &alt_asset(),
-            &params,
-        );
+        let v =
+            compute_top_trader_ls_vote(Some(&top), Some(&global), &candles, &alt_asset(), &params);
         assert!(v.is_none(), "non-BTC asset must abstain via allowlist gate");
     }
 
@@ -328,13 +323,8 @@ mod tests {
         top[58] = Some(1.08);
         let global: Vec<Option<f64>> = (0..n).map(|_| Some(0.80)).collect();
         let params = TopTraderLsParams::default_btc_30m();
-        let v = compute_top_trader_ls_vote(
-            Some(&top),
-            Some(&global),
-            &candles,
-            &btc_asset(),
-            &params,
-        );
+        let v =
+            compute_top_trader_ls_vote(Some(&top), Some(&global), &candles, &btc_asset(), &params);
         assert_eq!(v, Some(PositionSide::Long));
     }
 
@@ -351,13 +341,8 @@ mod tests {
         top[58] = Some(0.85);
         let global: Vec<Option<f64>> = (0..n).map(|_| Some(1.20)).collect();
         let params = TopTraderLsParams::default_btc_30m();
-        let v = compute_top_trader_ls_vote(
-            Some(&top),
-            Some(&global),
-            &candles,
-            &btc_asset(),
-            &params,
-        );
+        let v =
+            compute_top_trader_ls_vote(Some(&top), Some(&global), &candles, &btc_asset(), &params);
         assert_eq!(v, Some(PositionSide::Short));
     }
 
@@ -373,13 +358,8 @@ mod tests {
         top[58] = Some(1.10);
         let global: Vec<Option<f64>> = (0..n).map(|_| Some(1.00)).collect();
         let params = TopTraderLsParams::default_btc_30m();
-        let v = compute_top_trader_ls_vote(
-            Some(&top),
-            Some(&global),
-            &candles,
-            &btc_asset(),
-            &params,
-        );
+        let v =
+            compute_top_trader_ls_vote(Some(&top), Some(&global), &candles, &btc_asset(), &params);
         assert!(
             v.is_none(),
             "top+retail aligned long means no informational edge"
@@ -397,13 +377,8 @@ mod tests {
         top[58] = Some(1.10);
         let global: Vec<Option<f64>> = (0..n).map(|_| Some(0.80)).collect();
         let params = TopTraderLsParams::default_btc_30m();
-        let v = compute_top_trader_ls_vote(
-            Some(&top),
-            Some(&global),
-            &candles,
-            &btc_asset(),
-            &params,
-        );
+        let v =
+            compute_top_trader_ls_vote(Some(&top), Some(&global), &candles, &btc_asset(), &params);
         assert!(v.is_none(), "single-bar spike must NOT fire");
     }
 
@@ -421,13 +396,8 @@ mod tests {
         top[58] = Some(1.08);
         let global: Vec<Option<f64>> = (0..n).map(|_| Some(0.80)).collect();
         let params = TopTraderLsParams::default_btc_30m();
-        let baseline = compute_top_trader_ls_vote(
-            Some(&top),
-            Some(&global),
-            &candles,
-            &btc_asset(),
-            &params,
-        );
+        let baseline =
+            compute_top_trader_ls_vote(Some(&top), Some(&global), &candles, &btc_asset(), &params);
         assert_eq!(baseline, Some(PositionSide::Long));
         // Permute the entry-bar sample to an extreme SHORT value. If the
         // helper reads it, the vote will either flip or vanish.
@@ -459,13 +429,8 @@ mod tests {
         top[57] = None; // gap inside the persistence window
         top[56] = Some(1.08);
         top[58] = Some(1.08);
-        let v2 = compute_top_trader_ls_vote(
-            Some(&top),
-            Some(&global),
-            &candles,
-            &btc_asset(),
-            &params,
-        );
+        let v2 =
+            compute_top_trader_ls_vote(Some(&top), Some(&global), &candles, &btc_asset(), &params);
         assert!(v2.is_none(), "None inside persistence window must abstain");
         // 3. Series length mismatch.
         let short_top: Vec<Option<f64>> = top.iter().take(5).cloned().collect();
@@ -492,17 +457,9 @@ mod tests {
         top[58] = Some(1.08);
         let global: Vec<Option<f64>> = (0..n).map(|_| Some(0.60)).collect();
         let params = TopTraderLsParams::default_btc_30m();
-        let v = compute_top_trader_ls_vote(
-            Some(&top),
-            Some(&global),
-            &candles,
-            &btc_asset(),
-            &params,
-        );
-        assert!(
-            v.is_none(),
-            "trailing SMA below 1.0 must block a Long vote"
-        );
+        let v =
+            compute_top_trader_ls_vote(Some(&top), Some(&global), &candles, &btc_asset(), &params);
+        assert!(v.is_none(), "trailing SMA below 1.0 must block a Long vote");
     }
 
     #[test]
@@ -519,13 +476,7 @@ mod tests {
         let params = TopTraderLsParams::default_btc_30m();
         let mut asset = btc_asset();
         asset.disable_short = true;
-        let v = compute_top_trader_ls_vote(
-            Some(&top),
-            Some(&global),
-            &candles,
-            &asset,
-            &params,
-        );
+        let v = compute_top_trader_ls_vote(Some(&top), Some(&global), &candles, &asset, &params);
         assert!(v.is_none(), "disable_short asset MUST NOT vote Short");
     }
 }

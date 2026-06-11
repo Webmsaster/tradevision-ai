@@ -110,10 +110,7 @@ fn compute_aroon_values(
 ///
 /// signal_idx is `candles.len() - 2`. The execution bar (`candles.len() - 1`)
 /// is NEVER consulted.
-pub fn compute_aroon_vote(
-    candles: &[Candle],
-    params: &AroonParams,
-) -> Option<PositionSide> {
+pub fn compute_aroon_vote(candles: &[Candle], params: &AroonParams) -> Option<PositionSide> {
     let period = params.period;
     if period == 0 {
         return None;
@@ -293,7 +290,10 @@ mod tests {
             min_separation: 30.0,
         };
         let v = compute_aroon_vote(&candles, &p);
-        assert!(v.is_none(), "high up alone must NOT fire Long when down also high");
+        assert!(
+            v.is_none(),
+            "high up alone must NOT fire Long when down also high"
+        );
     }
 
     #[test]

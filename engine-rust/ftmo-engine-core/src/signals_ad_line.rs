@@ -151,9 +151,7 @@ pub fn compute_ad_line_vote(
     }
     let signal_idx = candles.len() - 2;
     let signal_bar = &candles[signal_idx];
-    if !signal_bar.close.is_finite()
-        || !signal_bar.high.is_finite()
-        || !signal_bar.low.is_finite()
+    if !signal_bar.close.is_finite() || !signal_bar.high.is_finite() || !signal_bar.low.is_finite()
     {
         return None;
     }
@@ -260,8 +258,7 @@ pub fn compute_ad_line_vote(
     // Price min/max over the divergence window only (NOT the SMA tail) —
     // we want to know if `signal_bar.close` made a new low/high within
     // the recent window, not the historical SMA period.
-    let price_window =
-        &candles[(signal_idx + 1).saturating_sub(n)..=signal_idx];
+    let price_window = &candles[(signal_idx + 1).saturating_sub(n)..=signal_idx];
     let mut price_min = f64::INFINITY;
     let mut price_max = f64::NEG_INFINITY;
     for c in price_window.iter() {
@@ -375,7 +372,14 @@ pub fn detect_ad_line_divergence(
     // need to fork finalise_signal's signature.
     let mut sized_asset = asset.clone();
     sized_asset.risk_frac = asset.risk_frac * params.size_mult;
-    let s = finalise_signal(state, cfg, &sized_asset, source_symbol, &entry_bar, direction)?;
+    let s = finalise_signal(
+        state,
+        cfg,
+        &sized_asset,
+        source_symbol,
+        &entry_bar,
+        direction,
+    )?;
 
     state.loss_streak_by_asset_dir.insert(
         key,
@@ -459,8 +463,15 @@ mod tests {
         for k in 0..20 {
             let t = (50 + k) * 1_800_000;
             let price = 99.0 - k as f64; // 99..=80
-            // wide range with close pinned to top
-            candles.push(cv(t, price + 0.5, price + 1.0, price - 4.0, price + 0.9, 200.0));
+                                         // wide range with close pinned to top
+            candles.push(cv(
+                t,
+                price + 0.5,
+                price + 1.0,
+                price - 4.0,
+                price + 0.9,
+                200.0,
+            ));
         }
         // Force signal bar (idx 69) to print the window's lowest close
         // value so the price_at_min gate triggers. Entry bar at idx 70.
@@ -494,7 +505,14 @@ mod tests {
         for k in 0..20 {
             let t = (50 + k) * 1_800_000;
             let price = 101.0 + k as f64; // 101..=120
-            candles.push(cv(t, price - 0.5, price + 4.0, price - 1.0, price - 0.9, 200.0));
+            candles.push(cv(
+                t,
+                price - 0.5,
+                price + 4.0,
+                price - 1.0,
+                price - 0.9,
+                200.0,
+            ));
         }
         let signal_idx = candles.len() - 1;
         candles[signal_idx].close = 121.0; // strictly above the 120-ceiling
@@ -523,7 +541,14 @@ mod tests {
         for k in 0..20 {
             let t = (50 + k) * 1_800_000;
             let price = 99.0 - k as f64;
-            candles.push(cv(t, price + 0.5, price + 1.0, price - 4.0, price + 0.9, 200.0));
+            candles.push(cv(
+                t,
+                price + 0.5,
+                price + 1.0,
+                price - 4.0,
+                price + 0.9,
+                200.0,
+            ));
         }
         // Convert the signal bar to a doji: high == low == close.
         let signal_idx = candles.len() - 1;
@@ -546,7 +571,14 @@ mod tests {
         for k in 0..20 {
             let t = (50 + k) * 1_800_000;
             let price = 99.0 - k as f64;
-            candles.push(cv(t, price + 0.5, price + 1.0, price - 4.0, price + 0.9, 200.0));
+            candles.push(cv(
+                t,
+                price + 0.5,
+                price + 1.0,
+                price - 4.0,
+                price + 0.9,
+                200.0,
+            ));
         }
         let signal_idx = candles.len() - 1;
         candles[signal_idx].close = 79.0;
@@ -599,7 +631,14 @@ mod tests {
         for k in 0..20 {
             let t = ((250 + k) as i64) * 1_800_000;
             let price = 99.0 - k as f64;
-            candles.push(cv(t, price + 0.5, price + 1.0, price - 4.0, price + 0.9, 200.0));
+            candles.push(cv(
+                t,
+                price + 0.5,
+                price + 1.0,
+                price - 4.0,
+                price + 0.9,
+                200.0,
+            ));
         }
         let signal_idx = candles.len() - 1;
         candles[signal_idx].close = 79.0;
@@ -643,8 +682,8 @@ mod tests {
         for k in 0..20 {
             let t = (50 + k) * 1_800_000;
             let price = 100.0 - 0.05 * (k as f64); // gentle 100..=99.05
-            // Alternating: even bars close near high (MFM ≈ +0.9), odd
-            // near low (MFM ≈ −0.9). Net A/D ≈ 0 with small per-bar swings.
+                                                   // Alternating: even bars close near high (MFM ≈ +0.9), odd
+                                                   // near low (MFM ≈ −0.9). Net A/D ≈ 0 with small per-bar swings.
             let (open, high, low, close) = if k % 2 == 0 {
                 (price, price + 0.5, price - 0.5, price + 0.45)
             } else {
@@ -701,7 +740,14 @@ mod tests {
         for k in 0..20 {
             let t = (50 + k) * 1_800_000;
             let price = 99.0 - k as f64;
-            candles.push(cv(t, price + 0.5, price + 1.0, price - 4.0, price + 0.9, 200.0));
+            candles.push(cv(
+                t,
+                price + 0.5,
+                price + 1.0,
+                price - 4.0,
+                price + 0.9,
+                200.0,
+            ));
         }
         // Corrupt the signal bar with NaN.
         let signal_idx = candles.len() - 1;
@@ -718,7 +764,14 @@ mod tests {
         for k in 0..20 {
             let t = (50 + k) * 1_800_000;
             let price = 99.0 - k as f64;
-            c2.push(cv(t, price + 0.5, price + 1.0, price - 4.0, price + 0.9, 200.0));
+            c2.push(cv(
+                t,
+                price + 0.5,
+                price + 1.0,
+                price - 4.0,
+                price + 0.9,
+                200.0,
+            ));
         }
         let signal_idx = c2.len() - 1;
         c2[signal_idx].close = 79.0;
@@ -742,7 +795,14 @@ mod tests {
         for k in 0..20 {
             let t = (50 + k) * 1_800_000;
             let price = 101.0 + k as f64;
-            candles.push(cv(t, price - 0.5, price + 4.0, price - 1.0, price - 0.9, 200.0));
+            candles.push(cv(
+                t,
+                price - 0.5,
+                price + 4.0,
+                price - 1.0,
+                price - 0.9,
+                200.0,
+            ));
         }
         let signal_idx = candles.len() - 1;
         candles[signal_idx].close = 121.0;
@@ -771,6 +831,9 @@ mod tests {
         a_ok.disable_short = false;
         let mut s2 = EngineState::initial("x");
         let sig2 = detect_ad_line_divergence(&mut s2, &cfg, &a_ok, "BTCUSDT", &candles, &p);
-        assert!(sig2.is_some(), "without disable_short the short signal must emit");
+        assert!(
+            sig2.is_some(),
+            "without disable_short the short signal must emit"
+        );
     }
 }

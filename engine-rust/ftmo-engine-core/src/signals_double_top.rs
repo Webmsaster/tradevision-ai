@@ -361,13 +361,7 @@ mod tests {
         }
         // Valley around idx 50 — single deep low of 94 surrounded by 97, 96, 95.
         let valley_idx = 50;
-        for (off, l) in [
-            (-2, 97.0),
-            (-1, 96.0),
-            (0, 94.0),
-            (1, 96.0),
-            (2, 97.0),
-        ] {
+        for (off, l) in [(-2, 97.0), (-1, 96.0), (0, 94.0), (1, 96.0), (2, 97.0)] {
             let idx = (valley_idx as i64 + off) as usize;
             v[idx] = ohlcv(idx as i64 * 1_800_000, l + 0.5, l + 0.8, l, l + 0.2, 100.0);
         }
@@ -418,13 +412,7 @@ mod tests {
         // Peak between at idx 50 — high=106 (peak > max(90,90)×(1+0.015)=91.35
         // → 106 ≫ that → valid peak).
         let peak_idx = 50;
-        for (off, h) in [
-            (-2, 103.0),
-            (-1, 104.0),
-            (0, 106.0),
-            (1, 104.0),
-            (2, 103.0),
-        ] {
+        for (off, h) in [(-2, 103.0), (-1, 104.0), (0, 106.0), (1, 104.0), (2, 103.0)] {
             let idx = (peak_idx as i64 + off) as usize;
             v[idx] = ohlcv(idx as i64 * 1_800_000, h - 0.5, h, h - 0.8, h - 0.2, 100.0);
         }
@@ -488,7 +476,14 @@ mod tests {
         let mut candles = double_top_breakout_series();
         let peak2_idx = 50_usize;
         let h = 130.0;
-        candles[peak2_idx] = ohlcv(peak2_idx as i64 * 1_800_000, h - 0.2, h, h - 0.5, h - 0.1, 100.0);
+        candles[peak2_idx] = ohlcv(
+            peak2_idx as i64 * 1_800_000,
+            h - 0.2,
+            h,
+            h - 0.5,
+            h - 0.1,
+            100.0,
+        );
         let p = DoubleTopParams::default();
         let v = compute_double_top_vote(&candles, &p);
         assert!(v.is_none(), "peak height mismatch > 2% must abstain");
@@ -565,7 +560,14 @@ mod tests {
         // excluded from pivot validation.
         let suspect = 86_usize;
         let h = 120.0;
-        v[suspect] = ohlcv(suspect as i64 * 1_800_000, h - 0.2, h, h - 0.5, h - 0.1, 100.0);
+        v[suspect] = ohlcv(
+            suspect as i64 * 1_800_000,
+            h - 0.2,
+            h,
+            h - 0.5,
+            h - 0.1,
+            100.0,
+        );
         // Tag bars 87, 88 with high < suspect.high so left-shoulder is fine.
         v[87] = ohlcv(87 * 1_800_000, 100.0, 100.5, 99.5, 100.0, 100.0);
         v[88] = ohlcv(88 * 1_800_000, 100.0, 100.5, 99.5, 100.0, 100.0);

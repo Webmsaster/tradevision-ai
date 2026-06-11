@@ -234,15 +234,11 @@ pub fn resolve_sizing_factor(
                         if cur > 0 && sharpe >= sorted_tiers[cur - 1].sharpe_above + HYST {
                             // Step UP — find highest tier we comfortably cleared.
                             let mut idx = cur - 1;
-                            while idx > 0
-                                && sharpe >= sorted_tiers[idx - 1].sharpe_above + HYST
-                            {
+                            while idx > 0 && sharpe >= sorted_tiers[idx - 1].sharpe_above + HYST {
                                 idx -= 1;
                             }
                             idx
-                        } else if cur < tiers_n - 1
-                            && sharpe <= cur_tier.sharpe_above - HYST
-                        {
+                        } else if cur < tiers_n - 1 && sharpe <= cur_tier.sharpe_above - HYST {
                             // Step DOWN.
                             let mut idx = cur + 1;
                             while idx < tiers_n - 1
@@ -936,15 +932,7 @@ mod tests {
         let mut v = vec![0.0_f64; 100];
         v.push(0.0005); // trigger
         let series = mk_funding(&v);
-        let m = funding_cost_modifier(
-            PositionSide::Long,
-            Some(&series),
-            100,
-            3.0,
-            1.5,
-            50,
-            0.4,
-        );
+        let m = funding_cost_modifier(PositionSide::Long, Some(&series), 100, 3.0, 1.5, 50, 0.4);
         assert_eq!(m, 1.0, "zero-var window must yield no-op");
     }
 
@@ -952,20 +940,10 @@ mod tests {
     fn funding_modifier_no_bonus_for_receive_side() {
         // Build a window where current funding is BIG negative (long receives).
         // Asymmetric clamp must NOT inflate modifier > 1.0.
-        let mut v: Vec<f64> = (0..100)
-            .map(|i| 0.0001 * ((i % 7) as f64 - 3.0))
-            .collect();
+        let mut v: Vec<f64> = (0..100).map(|i| 0.0001 * ((i % 7) as f64 - 3.0)).collect();
         v.push(-0.005); // huge negative funding @ trigger
         let series = mk_funding(&v);
-        let m = funding_cost_modifier(
-            PositionSide::Long,
-            Some(&series),
-            100,
-            3.0,
-            1.5,
-            100,
-            0.4,
-        );
+        let m = funding_cost_modifier(PositionSide::Long, Some(&series), 100, 3.0, 1.5, 100, 0.4);
         assert_eq!(m, 1.0, "negative cost (receive-side) must not lift > 1.0");
     }
 
@@ -978,15 +956,7 @@ mod tests {
             .collect();
         v.push(0.005); // huge positive funding @ trigger → long pays a lot
         let series = mk_funding(&v);
-        let m = funding_cost_modifier(
-            PositionSide::Long,
-            Some(&series),
-            200,
-            3.0,
-            1.5,
-            200,
-            0.4,
-        );
+        let m = funding_cost_modifier(PositionSide::Long, Some(&series), 200, 3.0, 1.5, 200, 0.4);
         // Large +z × 1.5 alpha = strong penalty → clamp to min_factor.
         assert!(
             (m - 0.4).abs() < 1e-12,
@@ -1171,15 +1141,7 @@ mod tests {
             .collect();
         v.push(0.0003);
         let series = mk_funding(&v);
-        let m = funding_cost_modifier(
-            PositionSide::Long,
-            Some(&series),
-            100,
-            3.0,
-            1.5,
-            100,
-            0.4,
-        );
+        let m = funding_cost_modifier(PositionSide::Long, Some(&series), 100, 3.0, 1.5, 100, 0.4);
         assert!(
             m >= 0.4 && m <= 1.0,
             "modifier {} out of [min_factor=0.4, 1.0]",
@@ -1338,7 +1300,11 @@ mod tests {
         }
         seed_pnls(&mut s, &pnls);
         let f1 = resolve_sizing_factor(&mut s, &c, 10_000);
-        assert_eq!(s.sharpe_tier_idx, Some(1), "cold-start at sharpe≈0.1 → tier 1");
+        assert_eq!(
+            s.sharpe_tier_idx,
+            Some(1),
+            "cold-start at sharpe≈0.1 → tier 1"
+        );
         assert!((f1 - 0.85).abs() < 1e-9, "tier 1 multiplier 0.85, got {f1}");
 
         // Now nudge sharpe slightly down to ~0.08 — would CROSS the 0.10
@@ -1472,9 +1438,7 @@ mod tests {
         });
         let mut s = EngineState::initial("x");
         // 30 PnLs: 60% wins (>50% → kelly tier 0 multiplier=1.5).
-        let pnls: Vec<f64> = (0..30)
-            .map(|i| if i < 18 { 0.01 } else { -0.01 })
-            .collect();
+        let pnls: Vec<f64> = (0..30).map(|i| if i < 18 { 0.01 } else { -0.01 }).collect();
         seed_pnls(&mut s, &pnls);
         let f = resolve_sizing_factor(&mut s, &c, 10_000);
         // Kelly raises to 1.5, Sharpe caps to 0.7 → expected 0.7.

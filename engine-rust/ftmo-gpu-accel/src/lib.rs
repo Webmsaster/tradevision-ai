@@ -10,10 +10,17 @@
 use std::fmt;
 
 #[derive(Debug)]
-pub enum GpuBackend { Vulkan, Metal, Dx12, Cpu_Fallback }
+pub enum GpuBackend {
+    Vulkan,
+    Metal,
+    Dx12,
+    Cpu_Fallback,
+}
 
 impl fmt::Display for GpuBackend {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { write!(f, "{:?}", self) }
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 /// Probe available GPU backends. Returns `Cpu_Fallback` if no GPU is detected.
@@ -32,8 +39,14 @@ pub struct GpuIndicatorEngine {
 }
 
 impl GpuIndicatorEngine {
-    pub fn new() -> Self { Self { backend: detect_backend() } }
-    pub fn backend(&self) -> &GpuBackend { &self.backend }
+    pub fn new() -> Self {
+        Self {
+            backend: detect_backend(),
+        }
+    }
+    pub fn backend(&self) -> &GpuBackend {
+        &self.backend
+    }
 
     /// Compute ATR on GPU (skeleton).
     /// In full impl: upload close prices to GPU buffer, dispatch ATR kernel.
@@ -44,7 +57,9 @@ impl GpuIndicatorEngine {
 }
 
 impl Default for GpuIndicatorEngine {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

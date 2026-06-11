@@ -52,13 +52,7 @@ pub const CONFIGS: &[&str] = &[
 
 /// Symbols permitted on the `--drop-symbols` axis. The hunter will pick a
 /// random subset (0-3 symbols) per trial.
-pub const DROPPABLE_SYMBOLS: &[&str] = &[
-    "DOGEUSDT",
-    "RUNEUSDT",
-    "SANDUSDT",
-    "STXUSDT",
-    "INJUSDT",
-];
+pub const DROPPABLE_SYMBOLS: &[&str] = &["DOGEUSDT", "RUNEUSDT", "SANDUSDT", "STXUSDT", "INJUSDT"];
 
 /// Signals mode (mapped to `--signals` CLI flag).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,8 +225,7 @@ impl SearchSpace {
             out.vol_mult = Self::quantize_vol(nudged);
         }
         if rng.gen_bool(mutation_rate) {
-            out.vol_confirm =
-                matches!(out.signals_mode, SignalsMode::Regime) && rng.gen_bool(0.5);
+            out.vol_confirm = matches!(out.signals_mode, SignalsMode::Regime) && rng.gen_bool(0.5);
         }
         if rng.gen_bool(mutation_rate) {
             let n_drop = rng.gen_range(0..=3);

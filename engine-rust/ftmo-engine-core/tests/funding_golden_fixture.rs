@@ -58,7 +58,13 @@ fn build_funding_series(n: usize, events: &[FundingEvent]) -> Vec<Option<f64>> {
     v
 }
 
-fn make_pos(symbol: &str, side: PositionSide, entry_price: f64, entry_time: i64, eff_risk: f64) -> OpenPosition {
+fn make_pos(
+    symbol: &str,
+    side: PositionSide,
+    entry_price: f64,
+    entry_time: i64,
+    eff_risk: f64,
+) -> OpenPosition {
     OpenPosition {
         ticket_id: "fixture-t".into(),
         symbol: symbol.into(),
@@ -120,7 +126,13 @@ fn funding_golden_fixture_all_cases() {
         };
         let entry_time = fix.bar0_open_time_ms + case.entry_offset_ms_from_bar0;
         let exit_time = fix.bar0_open_time_ms + case.exit_offset_ms_from_bar0;
-        let pos = make_pos("BTC-TREND", side, case.entry_price, entry_time, case.eff_risk);
+        let pos = make_pos(
+            "BTC-TREND",
+            side,
+            case.entry_price,
+            entry_time,
+            case.eff_risk,
+        );
 
         let r = compute_eff_pnl_with_funding(
             &pos,
