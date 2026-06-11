@@ -65,7 +65,9 @@ async function main() {
       await dateInputs.nth(1).fill('2026-02-28T14:00');
 
       await page.getByRole('button', { name: 'Add Trade', exact: true }).click();
-      await page.getByText('ETH/USDT').first().waitFor({ state: 'visible', timeout: 20000 });
+      // The trades table may normalize pair symbols (ETH/USDT -> ETHUSDT), so
+      // accept both renderings.
+      await page.getByText(/ETH\/?USDT/).first().waitFor({ state: 'visible', timeout: 20000 });
     });
 
     await runStep('Import page + load sample data', async () => {

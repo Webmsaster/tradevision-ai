@@ -12,10 +12,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadBinanceHistory } from "@/utils/historicalData";
 import { requireFtmoMonitorAuth } from "@/lib/ftmoMonitorAuth";
-import {
-  detectLiveSignalsV231,
-  type AccountState,
-} from "@/utils/ftmoLiveSignalV231";
+// Type-only import is erased at compile time; the runtime module is loaded
+// lazily inside the handler. ftmoLiveSignalV231 resolves FTMO_TF at module
+// init and throws fail-loud when it is unset (R29 R3-Bug #4) — a top-level
+// import would run that guard during `next build` page-data collection,
+// where no live-trading env exists, and kill every Vercel deploy.
+import { type AccountState } from "@/utils/ftmoLiveSignalV231";
 
 function isEnabled() {
   return (
@@ -140,6 +142,8 @@ export async function GET() {
       );
     }
     const account = readAccount();
+    const { detectLiveSignalsV231 } =
+      await import("@/utils/ftmoLiveSignalV231");
     const result = detectLiveSignalsV231(eth, btc, sol, account, []);
     const body = {
       ...result,
