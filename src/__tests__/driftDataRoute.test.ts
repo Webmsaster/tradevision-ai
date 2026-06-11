@@ -302,9 +302,9 @@ describe("/api/drift-data route", () => {
 
   it("rejects ftmo_tf slugs with invalid characters (path-traversal guard)", async () => {
     const { GET } = await import("@/app/api/drift-data/route");
-    // 2026-05-14 Codex Wave-2 Bug #10: regex widened to allow underscores
-    // and uppercase so multi-account state-dirs are resolvable. Still must
-    // reject path-traversal characters (`.`, `/`, `\`) and over-length.
+    // Lowercase-only whitelist (2026-05-24 Codex audit revert of the
+    // Wave-2 widening). Must reject path-traversal characters
+    // (`.`, `/`, `\`) and over-length slugs.
     const bad = ["../etc", "foo/bar", "x".repeat(80), "..", ""];
     for (const slug of bad) {
       const resp = await GET(makeReq(`?ftmo_tf=${encodeURIComponent(slug)}`));
@@ -317,11 +317,23 @@ describe("/api/drift-data route", () => {
     }
   });
 
-  it("accepts uppercase + underscore in slug (multi-account state-dirs)", async () => {
+  it("rejects uppercase + underscore slugs (lowercase-only contract)", async () => {
     const { GET } = await import("@/app/api/drift-data/route");
-    // These were rejected by the prior lowercase-only regex.
-    const good = ["Account_A", "FOO", "x1_y2-z3"];
-    for (const slug of good) {
+    // 2026-05-24 Codex audit MED FIX (commit 38489c6): the 2026-05-14
+    // widening to uppercase + underscore was REVERTED. The design contract
+    // is lowercase-only so the route regex matches both the SQL CHECK in
+    // migration_r29_user_ftmo_accounts.sql and the userFtmoAccounts.test.ts
+    // contract (which filters "UPPER" slugs). Multi-account state-dir paths
+    // are driven by FTMO_ACCOUNT_ID env, not the slug, so this does not
+    // break multi-account routing.
+    const rejected = ["Account_A", "FOO", "x1_y2-z3"];
+    for (const slug of rejected) {
+      const resp = await GET(makeReq(`?ftmo_tf=${encodeURIComponent(slug)}`));
+      expect(resp.status).toBe(400);
+    }
+    // Lowercase equivalents stay accepted.
+    const accepted = ["account-a", "foo", "x1-y2-z3"];
+    for (const slug of accepted) {
       const resp = await GET(makeReq(`?ftmo_tf=${encodeURIComponent(slug)}`));
       expect(resp.status).toBe(200);
     }
@@ -561,7 +573,41 @@ describe("/api/drift-data route", () => {
       fs.writeFileSync(path.join(siblingDir, "account.json"), "{}");
 
       // Mock supabase: authenticated tenant-A user; `user_ftmo_accounts`
-      // returns only `tenant-a-only` for them.
+      // maps them to `tenant-a-only` only. The query builder must be both
+      // chainable AND awaitable (thenable) because the route uses two
+      // shapes: getAllowedSlugsForUser (single .eq → array) and
+      // canUserReadSlug (.eq().eq().limit(1) → array).
+      const mappedRows = [{ tf_slug: "tenant-a-only" }];
+      const makeQuery = () => {
+        const filters: Array<[string, string]> = [];
+        const run = () => {
+          const userOk = filters.some(
+            ([c, v]) => c === "user_id" && v === "user-tenant-a",
+          );
+          if (!userOk) return { data: [], error: null };
+          const slugEq = filters.find(([c]) => c === "tf_slug");
+          const data = slugEq
+            ? mappedRows.filter((r) => r.tf_slug === slugEq[1])
+            : mappedRows;
+          return { data, error: null };
+        };
+        const q = {
+          eq(col: string, val: string) {
+            filters.push([col, val]);
+            return q;
+          },
+          limit(_n: number) {
+            return q;
+          },
+          then(
+            onFulfilled?: (v: unknown) => unknown,
+            onRejected?: (e: unknown) => unknown,
+          ) {
+            return Promise.resolve(run()).then(onFulfilled, onRejected);
+          },
+        };
+        return q;
+      };
       vi.doMock("@/lib/supabase-server", () => ({
         createServerSupabaseClient: async () => ({
           auth: {
@@ -571,18 +617,7 @@ describe("/api/drift-data route", () => {
             }),
           },
           from: (_table: string) => ({
-            select: () => ({
-              eq: (col: string, val: string) => {
-                if (col === "user_id" && val === "user-tenant-a") {
-                  // Match getAllowedSlugsForUser pattern (single .eq → array)
-                  return Promise.resolve({
-                    data: [{ tf_slug: "tenant-a-only" }],
-                    error: null,
-                  });
-                }
-                return Promise.resolve({ data: [], error: null });
-              },
-            }),
+            select: () => makeQuery(),
           }),
         }),
       }));
@@ -593,7 +628,14 @@ describe("/api/drift-data route", () => {
         fs.writeFileSync(path.join(tenantADir, "account.json"), "{}");
         try {
           const { GET } = await import("@/app/api/drift-data/route");
-          const resp = await GET(makeReq());
+          // 2026-05-24 Codex audit HIGH FIX (commit 7f7061f): a non-admin
+          // request WITHOUT ?ftmo_tf= no longer falls through to the
+          // DEFAULT state-dir (that leaked the operator's own equity to
+          // every authenticated tenant) — it now fails closed with 403.
+          const blocked = await GET(makeReq());
+          expect(blocked.status).toBe(403);
+          // Tenants must request a slug they're explicitly mapped to.
+          const resp = await GET(makeReq("?ftmo_tf=tenant-a-only"));
           expect(resp.status).toBe(200);
           const body = await resp.json();
           // Non-admin must see ONLY `tenant-a-only` — not `tenant-b-only`,
