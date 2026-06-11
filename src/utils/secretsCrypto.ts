@@ -123,17 +123,26 @@ function base64ToBuf(b64: string): ArrayBuffer {
   return bytes.buffer;
 }
 
-// Build a fresh ArrayBuffer copy from any byte input. The WebCrypto type
-// definitions in newer @types/node + lib.dom.d.ts require BufferSource
-// backed by an ArrayBuffer (not ArrayBufferLike / SharedArrayBuffer); a
-// plain `new Uint8Array(N)` is typed `Uint8Array<ArrayBufferLike>`,
-// which fails the assignment. Returning the underlying ArrayBuffer
-// directly sidesteps the variance issue and also defends against any
-// accidental SharedArrayBuffer inputs reaching subtle.*.
-function toArrayBuffer(src: Uint8Array): ArrayBuffer {
+// Build a fresh Uint8Array copy (over a new ArrayBuffer) from any byte
+// input. The WebCrypto type definitions in newer @types/node +
+// lib.dom.d.ts require BufferSource backed by an ArrayBuffer (not
+// ArrayBufferLike / SharedArrayBuffer); a plain `new Uint8Array(N)` is
+// typed `Uint8Array<ArrayBufferLike>`, which fails the assignment. The
+// fresh copy also defends against accidental SharedArrayBuffer inputs
+// reaching subtle.*.
+//
+// IMPORTANT: return a typed-array VIEW, not the bare ArrayBuffer. Node's
+// WebCrypto validates bare ArrayBuffers with a realm-sensitive
+// `instanceof ArrayBuffer` check, which rejects buffers created in
+// another realm (e.g. jsdom's globals under vitest), whereas views are
+// accepted via the realm-agnostic `ArrayBuffer.isView()`. Views are
+// valid BufferSource everywhere (browsers + Node), so this is the
+// portable shape.
+function toBufferSource(src: Uint8Array): Uint8Array<ArrayBuffer> {
   const ab = new ArrayBuffer(src.byteLength);
-  new Uint8Array(ab).set(src);
-  return ab;
+  const view = new Uint8Array(ab);
+  view.set(src);
+  return view;
 }
 
 // R67-RR2-Round2 audit fix: per-process derived-key cache. PBKDF2 250k
@@ -167,7 +176,7 @@ async function deriveAesKey(
   const promise = (async () => {
     const baseKey = await subtle.importKey(
       "raw",
-      toArrayBuffer(new TextEncoder().encode(userKey)),
+      toBufferSource(new TextEncoder().encode(userKey)),
       { name: "PBKDF2" },
       false,
       ["deriveKey"],
@@ -175,7 +184,7 @@ async function deriveAesKey(
     return subtle.deriveKey(
       {
         name: "PBKDF2",
-        salt: toArrayBuffer(salt),
+        salt: toBufferSource(salt),
         iterations: PBKDF2_ITERATIONS,
         hash: "SHA-256",
       },
@@ -215,9 +224,9 @@ export async function encryptSecret(
     globalThis.crypto.getRandomValues(iv);
     const aesKey = await deriveAesKey(userKey, salt);
     const ct = await globalThis.crypto.subtle.encrypt(
-      { name: "AES-GCM", iv: toArrayBuffer(iv) },
+      { name: "AES-GCM", iv: toBufferSource(iv) },
       aesKey,
-      toArrayBuffer(new TextEncoder().encode(plaintext)),
+      toBufferSource(new TextEncoder().encode(plaintext)),
     );
     // Concatenate salt | iv | ciphertext+tag
     const ctBytes = new Uint8Array(ct);
@@ -266,9 +275,9 @@ export async function decryptSecret(
     const ct = buf.slice(SALT_LENGTH + IV_LENGTH);
     const aesKey = await deriveAesKey(userKey, salt);
     const pt = await globalThis.crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: toArrayBuffer(iv) },
+      { name: "AES-GCM", iv: toBufferSource(iv) },
       aesKey,
-      toArrayBuffer(ct),
+      toBufferSource(ct),
     );
     return new TextDecoder().decode(pt);
   } catch (err) {
