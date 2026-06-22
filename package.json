@@ -35,7 +35,7 @@
     "react-dom": "^19.2.5",
     "recharts": "^3.8.1",
     "tsx": "^4.21.0",
-    "uuid": "^14.0.0"
+    "uuid": "^14.0.1"
   },
   "lint-staged": {
     "*.{ts,tsx,js,mjs,cjs,json,md,yml,yaml,css}": [
