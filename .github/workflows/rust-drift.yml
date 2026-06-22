@@ -31,7 +31,7 @@ jobs:
       # other workflow + this one's later steps SHA-pin properly). The R51
       # supply-chain policy was violated here; a tag move (malicious or
       # accidental) on `v4` could compromise CI.
-      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           lfs: false
       - uses: actions/setup-node@1a4442cacd436585916779262731d5b162bc6ec7 # v3.8.1
